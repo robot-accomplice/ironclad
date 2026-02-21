@@ -4,51 +4,55 @@ All CLI output in Ironclad must follow these conventions. This applies to every 
 
 ## Color Palette
 
-Seven semantic colors. Use the `Theme` struct from `ironclad_core::style` -- never raw ANSI codes.
+Two text levels + standard semantics. CRT phosphor green aesthetic. Use the `Theme` struct from `ironclad_core::style` -- never raw ANSI codes.
+
+**Text should never be gray.** Only two text levels exist:
 
 | Semantic Name | ANSI Code          | Hex Approx | Usage |
 |---------------|--------------------|------------|-------|
-| `accent`      | `\x1b[38;5;105m`   | #6366f1    | Brand purple. Success steps (gear icon), headings, primary status, "done/created/set" confirmations. The signature Ironclad color. |
-| `dim`         | `\x1b[38;5;243m`   | #767676    | Muted gray. Step counters, metadata labels, secondary info, "skipped" messages, timestamps. |
-| `mono`        | `\x1b[38;5;147m`   | #a5a0e4    | Light purple. Monospace values: IDs, file paths, code snippets, config keys. |
-| `success`     | `\x1b[32m`         | #22c55e    | Green. Explicit "all passed" summaries, enabled/active states. Prefer `accent` for individual step completion. |
-| `warn`        | `\x1b[33m`         | #eab308    | Yellow. Warnings, fallback states, skipped optional items, "WARN" labels. |
-| `error`       | `\x1b[31m`         | #ef4444    | Red. Errors, failures, "FAIL" labels, disabled states, broken chain icon. |
-| `info`        | `\x1b[36m`         | #06b6d4    | Cyan. Auto-fix actions, debug info, provider/model names in discovery. |
+| `accent`      | `\x1b[38;5;46m`    | #00ff00    | Bright phosphor green. Headings, values, emphasis, highlighted text. |
+| `dim`         | `\x1b[38;5;40m`    | #00d700    | Body-text phosphor green. Step counters, metadata, secondary text. Same as body text. |
+| `mono`        | `\x1b[38;5;46m`    | #00ff00    | Bright phosphor green. Monospace values: IDs, file paths, code snippets. Same as accent. |
+| `success`     | `\x1b[92m`         | #00ff00    | Bright green. Explicit "all passed" summaries. |
+| `warn`        | `\x1b[93m`         | #ffff00    | Yellow. Warning labels. Used sparingly -- emojis carry warning color. |
+| `error`       | `\x1b[91m`         | #ff0000    | Red. Error labels only. |
+| `info`        | `\x1b[96m`         | #00ffff    | Cyan. Debug info, provider/model names. |
+| `reset`       | `\x1b[0m\x1b[38;5;40m` | #00d700 | Reset then return to body-text green. |
+
+Use **accent for emphasis** and **reset for body text**, side by side.
 
 **Typography modifiers** (combine with colors):
 
 | Modifier | Code         | Usage |
 |----------|--------------|-------|
 | `bold`   | `\x1b[1m`   | Section titles, command names, emphasis. Never use for body text. |
-| `reset`  | `\x1b[0m`   | After every color/style span. No exceptions. |
+| `reset`  | `\x1b[0m\x1b[38;5;40m` | After every color/style span. Returns to body-text green. |
+| `hard_reset` | `\x1b[0m` | Full terminal reset. Used only at program exit. |
 
-## Symbol System
+## Emoji Icon System
 
-Consistent with the Ironclad robot motif. Symbols must convey meaning without color (accessibility).
+Icons are **actual emojis** that carry their own color -- no ANSI color codes on icons.
 
-| Context          | Symbol | Unicode    | Color   | Notes |
-|------------------|--------|------------|---------|-------|
-| Success step     | `⚙`    | U+2699     | accent  | Gear = task completed. Primary success indicator. |
-| Warning          | `⚠`    | U+26A0     | warn    | Universal warning. Keep as-is. |
-| Error/failure    | `⛓`    | U+26D3     | error   | Broken chain = failure in the iron motif. |
-| Detail pointer   | `▸`    | U+25B8     | dim     | Indented detail lines beneath a step. |
-| Mechanic heading | `🔧`   | U+1F527    | info    | Wrench for mechanic/diagnostic output. |
-| Section divider  | `───`  | Box-drawing| dim     | Horizontal rule between major sections. |
-| Ready/done       | `⚙`    | U+2699     | accent  | Same gear for completion banners. |
+| Context          | Emoji | Unicode        | Meaning |
+|------------------|-------|----------------|---------|
+| Status/pass/OK   | ✅    | U+2705         | Exists, loaded, accessible, PASS, done. |
+| Action/created   | ⚡    | U+26A1         | Created, fixed, installed, ready, power on. |
+| Warning          | ⚠️    | U+26A0 U+FE0F  | Warning, missing, caution, WARN, SKIP. |
+| Detail pointer   | ▸     | U+25B8         | Indented detail lines beneath a step. No color. |
+| Section divider  | ───   | Box-drawing    | Horizontal rule between major sections. |
 
 ## Layout Conventions
 
 ### Step Format (boot sequence, check output)
 ```
-  ⚙ [01/12] Database initialized
+  ✅ [01/12] Database initialized
        ▸ path: ~/.ironclad/state.db
        ▸ mode: WAL (persistent)
 ```
-- 2-space indent before symbol
-- Step counter in dim: `[nn/total]`
+- 2-space indent before emoji
+- Step counter in body text (dim)
 - Message in bold
-- Details indented 7 spaces with dim triangle pointer
+- Details indented 7 spaces with ▸ pointer (inherits body text)
 
 ### Section Headers
 ```
@@ -58,22 +62,23 @@ Consistent with the Ironclad robot motif. Symbols must convey meaning without co
 
 ### Status Lines
 ```
-  ⚙ Ready in 142ms
-  ⚙ Setup complete! Run ironclad serve to start.
+  ⚡ Ready in 142ms
+  ✅ Setup complete! Run ironclad serve to start.
 ```
-- Same 2-space indent + accent gear
+- ⚡ for power-on / startup moments
+- ✅ for completion / done confirmations
 
 ### Error Output
 ```
-  ⛓ Configuration validation failed: missing [models] section
+  ⚠️ Configuration validation failed: missing [models] section
 ```
-- 2-space indent + error-colored chain
+- 2-space indent + warning emoji
 
 ### Table Output
 - Use the existing `print_table_row` / `print_table_header` pattern
 - Column widths calculated from content
-- Headers in dim, data rows in default color
-- Accent or mono for key values
+- Headers in body text, data rows in body text
+- Accent for key values requiring emphasis
 
 ## Banner Rules
 
@@ -111,11 +116,12 @@ All output functions accept `&Theme` or use a thread-local/global theme. Never c
 
 ## Accessibility
 
-- **Symbols carry meaning**: every symbol (gear, chain, warning) is distinguishable without color by shape alone.
-- **No blinking or animation** in CLI output. Spinning indicators belong in the web dashboard only.
-- **Text alternatives**: status is always conveyed in text alongside symbols (e.g., `⚙ PASS` not just `⚙`).
-- **Graceful degradation**: when color is disabled, output is still structured and readable.
-- **Screen readers**: avoid box-drawing for critical information. Use it only for decoration (dividers, tables) where the text content is independently understandable.
+- **Emojis carry meaning and color**: ✅ ⚡ ⚠️ are distinguishable without ANSI codes. Color is inherent.
+- **Text is never gray**: only bright accent and body-text green. Two levels, no murky mid-tones.
+- **CRT typewriter draw**: text renders character-by-character. Disable with `--no-draw`.
+- **Text alternatives**: status is always conveyed in text alongside emojis (e.g., `✅ PASS` not just `✅`).
+- **Graceful degradation**: when color is disabled, emojis still carry meaning. Output remains structured.
+- **Screen readers**: avoid box-drawing for critical information. Use it only for decoration.
 
 ## Future TUI Considerations
 

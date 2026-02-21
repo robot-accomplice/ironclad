@@ -662,11 +662,8 @@ fn cmd_init(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         t.typewrite_line(&format!("  \u{26a0}\u{fe0f} skills/ directory already exists, skipping"), 4);
     } else {
         std::fs::create_dir_all(&skills_dir)?;
-        std::fs::write(
-            skills_dir.join("example.md"),
-            EXAMPLE_SKILL,
-        )?;
-        t.typewrite_line(&format!("  \u{26a1} Created skills/ with example skill"), 4);
+        let count = write_starter_skills(&skills_dir)?;
+        t.typewrite_line(&format!("  \u{26a1} Created skills/ with {count} starter skills"), 4);
     }
 
     eprintln!();
@@ -809,15 +806,3 @@ session_timeout_seconds = 3600
 require_on_chain_identity = true
 "#;
 
-const EXAMPLE_SKILL: &str = r#"---
-name: hello-world
-description: A simple example skill that demonstrates the instruction format
-triggers:
-  keywords: [hello, greet, introduce]
-priority: 5
----
-
-When triggered, greet the user warmly and explain that you are an Ironclad agent.
-Mention your agent name and current capabilities.
-Keep the greeting concise but friendly.
-"#;

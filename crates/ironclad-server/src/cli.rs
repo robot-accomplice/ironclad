@@ -1202,61 +1202,80 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
         }
     }
 
-    // Check gateway
-    match reqwest::get(format!("{base_url}/api/health")).await {
+    // Check gateway reachability first -- all subsequent server checks depend on this
+    let gateway_up = match reqwest::get(format!("{base_url}/api/health")).await {
         Ok(resp) if resp.status().is_success() => {
             println!("  \u{2705} Gateway reachable at {base_url}");
+            true
         }
         Ok(resp) => {
-            println!("  {RED}\u{26d3}{RESET} Gateway returned {}", resp.status());
+            println!("  \u{26a0}\u{fe0f} Gateway returned HTTP {}", resp.status());
+            false
         }
         Err(_) => {
             println!("  \u{26a0}\u{fe0f} Gateway not running at {base_url}");
+            false
         }
-    }
+    };
 
-    // Check config (from server)
-    match reqwest::get(format!("{base_url}/api/config")).await {
-        Ok(resp) if resp.status().is_success() => {
-            println!("  \u{2705} Configuration loaded on server");
+    if gateway_up {
+        // Config
+        match reqwest::get(format!("{base_url}/api/config")).await {
+            Ok(resp) if resp.status().is_success() => {
+                println!("  \u{2705} Configuration loaded on server");
+            }
+            Ok(resp) => {
+                println!("  \u{26a0}\u{fe0f} Config endpoint returned HTTP {}", resp.status());
+            }
+            Err(e) => {
+                println!("  \u{26a0}\u{fe0f} Config check failed: {e}");
+            }
         }
-        _ => {
-            println!("  {DIM}  \u{2500}{RESET} Server config check skipped (gateway not running)");
-        }
-    }
 
-    // Check skills
-    match reqwest::get(format!("{base_url}/api/skills")).await {
-        Ok(resp) if resp.status().is_success() => {
-            let body: serde_json::Value = resp.json().await.unwrap_or_default();
-            let count = body.get("skills").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-            println!("  \u{2705} Skills loaded ({count} skills)");
+        // Skills
+        match reqwest::get(format!("{base_url}/api/skills")).await {
+            Ok(resp) if resp.status().is_success() => {
+                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                let count = body.get("skills").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                println!("  \u{2705} Skills loaded ({count} skills)");
+            }
+            Ok(resp) => {
+                println!("  \u{26a0}\u{fe0f} Skills endpoint returned HTTP {}", resp.status());
+            }
+            Err(e) => {
+                println!("  \u{26a0}\u{fe0f} Skills check failed: {e}");
+            }
         }
-        _ => {
-            println!("  {DIM}  \u{2500}{RESET} Skills check skipped (gateway not running)");
-        }
-    }
 
-    // Check wallet
-    match reqwest::get(format!("{base_url}/api/wallet/balance")).await {
-        Ok(resp) if resp.status().is_success() => {
-            println!("  \u{2705} Wallet accessible");
+        // Wallet
+        match reqwest::get(format!("{base_url}/api/wallet/balance")).await {
+            Ok(resp) if resp.status().is_success() => {
+                println!("  \u{2705} Wallet accessible");
+            }
+            Ok(resp) => {
+                println!("  \u{26a0}\u{fe0f} Wallet endpoint returned HTTP {}", resp.status());
+            }
+            Err(e) => {
+                println!("  \u{26a0}\u{fe0f} Wallet check failed: {e}");
+            }
         }
-        _ => {
-            println!("  {DIM}  \u{2500}{RESET} Wallet check skipped (gateway not running)");
-        }
-    }
 
-    // Check channels
-    match reqwest::get(format!("{base_url}/api/channels/status")).await {
-        Ok(resp) if resp.status().is_success() => {
-            let body: Vec<serde_json::Value> = resp.json().await.unwrap_or_default();
-            let active = body.iter().filter(|c| c.get("connected").and_then(|v| v.as_bool()).unwrap_or(false)).count();
-            println!("  \u{2705} Channels ({active}/{} connected)", body.len());
+        // Channels
+        match reqwest::get(format!("{base_url}/api/channels/status")).await {
+            Ok(resp) if resp.status().is_success() => {
+                let body: Vec<serde_json::Value> = resp.json().await.unwrap_or_default();
+                let active = body.iter().filter(|c| c.get("connected").and_then(|v| v.as_bool()).unwrap_or(false)).count();
+                println!("  \u{2705} Channels ({active}/{} connected)", body.len());
+            }
+            Ok(resp) => {
+                println!("  \u{26a0}\u{fe0f} Channels endpoint returned HTTP {}", resp.status());
+            }
+            Err(e) => {
+                println!("  \u{26a0}\u{fe0f} Channels check failed: {e}");
+            }
         }
-        _ => {
-            println!("  {DIM}  \u{2500}{RESET} Channels check skipped (gateway not running)");
-        }
+    } else {
+        println!("    \u{25b8} Skipping server checks (config, skills, wallet, channels)");
     }
 
     println!();
