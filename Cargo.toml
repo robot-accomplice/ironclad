@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ironclad-core",
+    "crates/ironclad-db",
+    "crates/ironclad-llm",
+    "crates/ironclad-agent",
+    "crates/ironclad-wallet",
+    "crates/ironclad-schedule",
+    "crates/ironclad-channels",
+    "crates/ironclad-server",
+    "crates/ironclad-plugin-sdk",
+    "crates/ironclad-browser",
+    "crates/ironclad-tests",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+ironclad-core = { path = "crates/ironclad-core" }
+ironclad-db = { path = "crates/ironclad-db" }
+ironclad-llm = { path = "crates/ironclad-llm" }
+ironclad-agent = { path = "crates/ironclad-agent" }
+ironclad-wallet = { path = "crates/ironclad-wallet" }
+ironclad-schedule = { path = "crates/ironclad-schedule" }
+ironclad-channels = { path = "crates/ironclad-channels" }
+ironclad-plugin-sdk = { path = "crates/ironclad-plugin-sdk" }
+ironclad-browser = { path = "crates/ironclad-browser" }
+
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"

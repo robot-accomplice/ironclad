@@ -1,0 +1,164 @@
+use std::path::Path;
+use std::process::Stdio;
+
+use tokio::process::{Child, Command};
+use tracing::{debug, info};
+
+use ironclad_core::{IroncladError, Result};
+use ironclad_core::config::BrowserConfig;
+
+pub struct BrowserManager {
+    config: BrowserConfig,
+    process: Option<Child>,
+}
+
+impl BrowserManager {
+    pub fn new(config: BrowserConfig) -> Self {
+        Self {
+            config,
+            process: None,
+        }
+    }
+
+    fn find_chrome_executable(&self) -> Option<String> {
+        if let Some(ref path) = self.config.executable_path {
+            if Path::new(path).exists() {
+                return Some(path.clone());
+            }
+        }
+
+        let candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+        ];
+
+        for candidate in &candidates {
+            if Path::new(candidate).exists() {
+                return Some(candidate.to_string());
+            }
+        }
+
+        None
+    }
+
+    pub async fn start(&mut self) -> Result<()> {
+        if self.process.is_some() {
+            return Ok(());
+        }
+
+        let executable = self.find_chrome_executable()
+            .ok_or_else(|| IroncladError::Tool {
+                tool: "browser".into(),
+                message: "Chrome/Chromium not found".into(),
+            })?;
+
+        let profile = self.config.profile_dir.display().to_string();
+        let mut args = vec![
+            format!("--remote-debugging-port={}", self.config.cdp_port),
+            format!("--user-data-dir={profile}"),
+            "--no-first-run".to_string(),
+            "--no-default-browser-check".to_string(),
+            "--disable-background-networking".to_string(),
+        ];
+
+        if self.config.headless {
+            args.push("--headless=new".to_string());
+        }
+
+        info!(executable = %executable, port = self.config.cdp_port, "starting browser");
+
+        let child = Command::new(&executable)
+            .args(&args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| IroncladError::Tool {
+                tool: "browser".into(),
+                message: format!("failed to start Chrome: {e}"),
+            })?;
+
+        self.process = Some(child);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        debug!("browser started");
+        Ok(())
+    }
+
+    pub async fn stop(&mut self) -> Result<()> {
+        if let Some(mut child) = self.process.take() {
+            debug!("stopping browser");
+            child.kill().await.map_err(|e| IroncladError::Tool {
+                tool: "browser".into(),
+                message: format!("failed to stop Chrome: {e}"),
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.process.is_some()
+    }
+
+    pub fn cdp_port(&self) -> u16 {
+        self.config.cdp_port
+    }
+}
+
+impl Drop for BrowserManager {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.process.take() {
+            let _ = child.start_kill();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manager_defaults() {
+        let mgr = BrowserManager::new(BrowserConfig::default());
+        assert!(!mgr.is_running());
+        assert_eq!(mgr.cdp_port(), 9222);
+    }
+
+    #[test]
+    fn find_chrome_with_explicit_path() {
+        let config = BrowserConfig {
+            executable_path: Some("/usr/bin/false".into()),
+            ..Default::default()
+        };
+        let mgr = BrowserManager::new(config);
+        let found = mgr.find_chrome_executable();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), "/usr/bin/false");
+    }
+
+    #[test]
+    fn find_chrome_explicit_nonexistent() {
+        let config = BrowserConfig {
+            executable_path: Some("/nonexistent/chrome".into()),
+            ..Default::default()
+        };
+        let mgr = BrowserManager::new(config);
+        let found = mgr.find_chrome_executable();
+        if let Some(path) = found {
+            assert!(Path::new(&path).exists());
+        }
+    }
+
+    #[test]
+    fn custom_cdp_port() {
+        let config = BrowserConfig {
+            cdp_port: 9333,
+            ..Default::default()
+        };
+        let mgr = BrowserManager::new(config);
+        assert_eq!(mgr.cdp_port(), 9333);
+    }
+}

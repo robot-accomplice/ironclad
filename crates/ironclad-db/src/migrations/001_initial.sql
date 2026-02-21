@@ -1,0 +1,2 @@
+-- Initial schema is embedded in schema.rs for the initial version.
+-- Future migrations will be standalone SQL files applied incrementally.

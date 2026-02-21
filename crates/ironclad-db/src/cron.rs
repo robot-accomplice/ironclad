@@ -1,0 +1,286 @@
+use rusqlite::OptionalExtension;
+
+use crate::Database;
+use ironclad_core::{IroncladError, Result};
+
+#[derive(Debug, Clone)]
+pub struct CronJob {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub enabled: bool,
+    pub schedule_kind: String,
+    pub schedule_expr: Option<String>,
+    pub schedule_every_ms: Option<i64>,
+    pub schedule_tz: Option<String>,
+    pub agent_id: String,
+    pub session_target: String,
+    pub payload_json: String,
+    pub delivery_mode: Option<String>,
+    pub delivery_channel: Option<String>,
+    pub last_run_at: Option<String>,
+    pub last_status: Option<String>,
+    pub last_duration_ms: Option<i64>,
+    pub consecutive_errors: i64,
+    pub next_run_at: Option<String>,
+    pub last_error: Option<String>,
+    pub lease_holder: Option<String>,
+    pub lease_expires_at: Option<String>,
+}
+
+pub fn create_job(
+    db: &Database,
+    name: &str,
+    agent_id: &str,
+    schedule_kind: &str,
+    schedule_expr: Option<&str>,
+    payload_json: &str,
+) -> Result<String> {
+    let conn = db.conn();
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO cron_jobs (id, name, agent_id, schedule_kind, schedule_expr, payload_json) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            id,
+            name,
+            agent_id,
+            schedule_kind,
+            schedule_expr,
+            payload_json
+        ],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(id)
+}
+
+pub fn list_jobs(db: &Database) -> Result<Vec<CronJob>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, description, enabled, schedule_kind, schedule_expr, \
+             schedule_every_ms, schedule_tz, agent_id, session_target, payload_json, \
+             delivery_mode, delivery_channel, last_run_at, last_status, last_duration_ms, \
+             consecutive_errors, next_run_at, last_error, lease_holder, lease_expires_at \
+             FROM cron_jobs ORDER BY name ASC",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(CronJob {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                enabled: row.get::<_, i32>(3)? != 0,
+                schedule_kind: row.get(4)?,
+                schedule_expr: row.get(5)?,
+                schedule_every_ms: row.get(6)?,
+                schedule_tz: row.get(7)?,
+                agent_id: row.get(8)?,
+                session_target: row.get(9)?,
+                payload_json: row.get(10)?,
+                delivery_mode: row.get(11)?,
+                delivery_channel: row.get(12)?,
+                last_run_at: row.get(13)?,
+                last_status: row.get(14)?,
+                last_duration_ms: row.get(15)?,
+                consecutive_errors: row.get(16)?,
+                next_run_at: row.get(17)?,
+                last_error: row.get(18)?,
+                lease_holder: row.get(19)?,
+                lease_expires_at: row.get(20)?,
+            })
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
+pub fn get_job(db: &Database, id: &str) -> Result<Option<CronJob>> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT id, name, description, enabled, schedule_kind, schedule_expr, \
+         schedule_every_ms, schedule_tz, agent_id, session_target, payload_json, \
+         delivery_mode, delivery_channel, last_run_at, last_status, last_duration_ms, \
+         consecutive_errors, next_run_at, last_error, lease_holder, lease_expires_at \
+         FROM cron_jobs WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(CronJob {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                enabled: row.get::<_, i32>(3)? != 0,
+                schedule_kind: row.get(4)?,
+                schedule_expr: row.get(5)?,
+                schedule_every_ms: row.get(6)?,
+                schedule_tz: row.get(7)?,
+                agent_id: row.get(8)?,
+                session_target: row.get(9)?,
+                payload_json: row.get(10)?,
+                delivery_mode: row.get(11)?,
+                delivery_channel: row.get(12)?,
+                last_run_at: row.get(13)?,
+                last_status: row.get(14)?,
+                last_duration_ms: row.get(15)?,
+                consecutive_errors: row.get(16)?,
+                next_run_at: row.get(17)?,
+                last_error: row.get(18)?,
+                lease_holder: row.get(19)?,
+                lease_expires_at: row.get(20)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
+pub fn delete_job(db: &Database, id: &str) -> Result<bool> {
+    let conn = db.conn();
+    let changed = conn
+        .execute("DELETE FROM cron_jobs WHERE id = ?1", [id])
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(changed > 0)
+}
+
+/// Attempts to acquire a 60-second lease for `instance_id` on the given job.
+/// Returns `true` if the lease was acquired (no existing valid lease or expired).
+pub fn acquire_lease(db: &Database, job_id: &str, instance_id: &str) -> Result<bool> {
+    let conn = db.conn();
+    let changed = conn
+        .execute(
+            "UPDATE cron_jobs SET lease_holder = ?1, lease_expires_at = datetime('now', '+60 seconds') \
+             WHERE id = ?2 AND (lease_holder IS NULL OR lease_expires_at < datetime('now'))",
+            rusqlite::params![instance_id, job_id],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(changed > 0)
+}
+
+pub fn release_lease(db: &Database, job_id: &str) -> Result<()> {
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE cron_jobs SET lease_holder = NULL, lease_expires_at = NULL WHERE id = ?1",
+        [job_id],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(())
+}
+
+pub fn record_run(
+    db: &Database,
+    job_id: &str,
+    status: &str,
+    duration_ms: Option<i64>,
+    error: Option<&str>,
+) -> Result<String> {
+    let conn = db.conn();
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO cron_runs (id, job_id, status, duration_ms, error) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, job_id, status, duration_ms, error],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    if status == "success" {
+        conn.execute(
+            "UPDATE cron_jobs SET last_run_at = datetime('now'), last_status = ?1, \
+             last_duration_ms = ?2, consecutive_errors = 0, last_error = NULL WHERE id = ?3",
+            rusqlite::params![status, duration_ms, job_id],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    } else {
+        conn.execute(
+            "UPDATE cron_jobs SET last_run_at = datetime('now'), last_status = ?1, \
+             last_duration_ms = ?2, consecutive_errors = consecutive_errors + 1, \
+             last_error = ?3 WHERE id = ?4",
+            rusqlite::params![status, duration_ms, error, job_id],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+
+    Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_db() -> Database {
+        Database::new(":memory:").unwrap()
+    }
+
+    #[test]
+    fn create_and_list_jobs() {
+        let db = test_db();
+        create_job(
+            &db,
+            "heartbeat",
+            "agent-1",
+            "every",
+            None,
+            r#"{"action":"ping"}"#,
+        )
+        .unwrap();
+        create_job(
+            &db,
+            "daily-report",
+            "agent-1",
+            "cron",
+            Some("0 9 * * *"),
+            r#"{"action":"report"}"#,
+        )
+        .unwrap();
+
+        let jobs = list_jobs(&db).unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].name, "daily-report");
+        assert_eq!(jobs[1].name, "heartbeat");
+    }
+
+    #[test]
+    fn lease_acquisition_and_release() {
+        let db = test_db();
+        let job_id = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
+
+        assert!(acquire_lease(&db, &job_id, "instance-1").unwrap());
+        // Second acquire by a different instance should fail (lease not expired)
+        assert!(!acquire_lease(&db, &job_id, "instance-2").unwrap());
+
+        release_lease(&db, &job_id).unwrap();
+        assert!(acquire_lease(&db, &job_id, "instance-2").unwrap());
+    }
+
+    #[test]
+    fn get_and_delete_job() {
+        let db = test_db();
+        let job_id = create_job(&db, "to-delete", "a1", "every", None, "{}").unwrap();
+
+        let job = get_job(&db, &job_id).unwrap().expect("job should exist");
+        assert_eq!(job.name, "to-delete");
+        assert_eq!(job.agent_id, "a1");
+
+        assert!(delete_job(&db, &job_id).unwrap());
+        assert!(get_job(&db, &job_id).unwrap().is_none());
+        assert!(!delete_job(&db, &job_id).unwrap());
+    }
+
+    #[test]
+    fn record_run_updates_job() {
+        let db = test_db();
+        let job_id = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
+
+        record_run(&db, &job_id, "success", Some(150), None).unwrap();
+        let jobs = list_jobs(&db).unwrap();
+        assert_eq!(jobs[0].last_status.as_deref(), Some("success"));
+        assert_eq!(jobs[0].consecutive_errors, 0);
+
+        record_run(&db, &job_id, "error", Some(50), Some("timeout")).unwrap();
+        let jobs = list_jobs(&db).unwrap();
+        assert_eq!(jobs[0].consecutive_errors, 1);
+        assert_eq!(jobs[0].last_error.as_deref(), Some("timeout"));
+    }
+}

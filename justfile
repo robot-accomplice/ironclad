@@ -1,0 +1,271 @@
+set dotenv-load
+
+default:
+    @just --list
+
+# ── Build ──────────────────────────────────────────────
+
+# Debug build (all crates)
+build:
+    cargo build
+
+# Release build (optimized single binary)
+release:
+    cargo build --release
+
+# Build a specific crate
+build-crate crate:
+    cargo build -p ironclad-{{crate}}
+
+# Check workspace without producing binaries
+check:
+    cargo check --workspace
+
+# ── Test ───────────────────────────────────────────────
+
+# Run full test suite (unit + integration)
+test:
+    cargo test --workspace
+
+# Run tests for a specific crate (core, db, llm, agent, wallet, channels, schedule, server, tests)
+test-crate crate:
+    cargo test -p ironclad-{{crate}}
+
+# Run only integration tests
+test-integration:
+    cargo test -p ironclad-tests
+
+# Run tests matching a name filter
+test-filter filter:
+    cargo test --workspace -- {{filter}}
+
+# Run tests with output shown
+test-verbose:
+    cargo test --workspace -- --nocapture
+
+# ── Quality ────────────────────────────────────────────
+
+# Format all code
+fmt:
+    cargo fmt --all
+
+# Check formatting without modifying
+fmt-check:
+    cargo fmt --all -- --check
+
+# Run clippy lints
+lint:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# Format + lint
+check-all: fmt-check lint
+    cargo test --workspace --no-run
+
+# ── Coverage ───────────────────────────────────────────
+
+# Run tests with coverage (requires cargo-llvm-cov)
+coverage:
+    cargo llvm-cov --workspace --html
+    @echo "Report: target/llvm-cov/html/index.html"
+
+# Print coverage summary to terminal
+coverage-summary:
+    cargo llvm-cov --workspace
+
+# Per-crate coverage
+coverage-crate crate:
+    cargo llvm-cov -p ironclad-{{crate}} --html
+    @echo "Report: target/llvm-cov/html/index.html"
+
+# Enforce minimum coverage threshold (80% required, 90% goal)
+coverage-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    output=$(cargo llvm-cov --workspace 2>&1 | grep '^TOTAL')
+    pct=$(echo "$output" | awk '{print $4}' | tr -d '%')
+    echo "Total line coverage: ${pct}%"
+    if (( $(echo "$pct < 80.0" | bc -l) )); then
+        echo "FAIL: Coverage ${pct}% is below the 80% minimum"
+        exit 1
+    elif (( $(echo "$pct < 90.0" | bc -l) )); then
+        echo "WARN: Coverage ${pct}% is below the 90% goal"
+    else
+        echo "PASS: Coverage ${pct}% meets the 90% goal"
+    fi
+
+# ── Run ────────────────────────────────────────────────
+
+# Run the server (debug build) with optional config path
+run config="":
+    {{ if config == "" { "cargo run --bin ironclad-server -- serve" } else { "cargo run --bin ironclad-server -- serve -c " + config } }}
+
+# Run the server (release build)
+run-release config="":
+    {{ if config == "" { "cargo run --release --bin ironclad-server -- serve" } else { "cargo run --release --bin ironclad-server -- serve -c " + config } }}
+
+# Initialize a new workspace in the given directory
+init dir=".":
+    cargo run --bin ironclad-server -- init {{dir}}
+
+# Validate a config file
+check-config config="ironclad.toml":
+    cargo run --bin ironclad-server -- check -c {{config}}
+
+# ── Management CLI ────────────────────────────────────
+
+# Show agent status overview
+status url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} status
+
+# List sessions
+sessions url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} sessions list
+
+# Show session details
+session id url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} sessions show {{id}}
+
+# List skills
+skills url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} skills list
+
+# Reload skills from disk
+skills-reload url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} skills reload
+
+# List cron jobs
+cron url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} cron
+
+# Show inference costs
+costs url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} metrics costs
+
+# Show cache stats
+cache-stats url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} metrics cache
+
+# Show wallet info
+wallet url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} wallet
+
+# Show running config
+show-config url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} config
+
+# Show circuit breaker status
+breaker url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} breaker
+
+# Browse memory (tier: working, episodic, semantic, search)
+memory tier url="http://127.0.0.1:18789":
+    cargo run --bin ironclad-server -- --url {{url}} memory {{tier}}
+
+# ── Docs ───────────────────────────────────────────────
+
+# Generate rustdoc for all crates
+doc:
+    cargo doc --workspace --no-deps --open
+
+# Generate docs without opening browser
+doc-build:
+    cargo doc --workspace --no-deps
+
+# ── Database ───────────────────────────────────────────
+
+# Open the SQLite database with the CLI
+db path="~/.ironclad/state.db":
+    sqlite3 {{path}}
+
+# Show all tables in the database
+db-tables path="~/.ironclad/state.db":
+    sqlite3 {{path}} ".tables"
+
+# Dump schema
+db-schema path="~/.ironclad/state.db":
+    sqlite3 {{path}} ".schema"
+
+# ── Dev Utilities ──────────────────────────────────────
+
+# Watch for changes and rebuild (requires cargo-watch)
+watch:
+    cargo watch -x check -x "test --workspace"
+
+# Watch a specific crate
+watch-crate crate:
+    cargo watch -x "test -p ironclad-{{crate}}"
+
+# Count lines of Rust source
+loc:
+    @find crates -name '*.rs' | xargs wc -l | tail -1
+
+# Count tests across the workspace
+test-count:
+    @cargo test --workspace 2>&1 | rg "test result:" | awk '{sum += $4} END {print sum " tests total"}'
+
+# List all crate names
+crates:
+    @ls crates | sed 's/ironclad-//'
+
+# Tree view of the workspace (depth 2)
+tree:
+    @tree crates -L 2 -I target
+
+# Show binary size (release)
+size: release
+    @ls -lh target/release/ironclad-server | awk '{print $5 " " $9}'
+
+# ── Clean ──────────────────────────────────────────────
+
+# Remove build artifacts
+clean:
+    cargo clean
+
+# ── Dependencies ───────────────────────────────────────
+
+# Check for outdated dependencies (requires cargo-outdated)
+outdated:
+    cargo outdated --workspace
+
+# Audit dependencies for security vulnerabilities (requires cargo-audit)
+audit:
+    cargo audit
+
+# Dependency tree
+deps:
+    cargo tree --workspace --depth 1
+
+# ── Install Dev Tools ──────────────────────────────────
+
+# Install recommended cargo tools + gosh scripting engine
+install-tools: install-gosh
+    cargo install cargo-watch cargo-llvm-cov cargo-outdated cargo-audit
+
+# Check for Go toolchain (prerequisite for gosh)
+check-go:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v go &>/dev/null; then
+        echo "✔ Go $(go version | awk '{print $3}') found at $(which go)"
+    else
+        echo "✘ Go not found. Install from https://go.dev/dl/"
+        echo "  macOS:  brew install go"
+        echo "  Linux:  See https://go.dev/doc/install"
+        exit 1
+    fi
+
+# Install gosh cross-platform shell (preferred plugin scripting engine)
+install-gosh: check-go
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v gosh &>/dev/null; then
+        echo "✔ gosh already installed at $(which gosh)"
+    else
+        echo "Installing gosh..."
+        go install github.com/drewwalton19216801/gosh@latest
+        if command -v gosh &>/dev/null; then
+            echo "✔ gosh installed at $(which gosh)"
+        else
+            echo "✔ gosh built. Ensure \$GOPATH/bin (or \$HOME/go/bin) is in your PATH."
+        fi
+    fi

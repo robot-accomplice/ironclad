@@ -1,0 +1,142 @@
+# Ironclad CLI Design System
+
+All CLI output in Ironclad must follow these conventions. This applies to every file that writes to stdout or stderr with formatting: `main.rs`, `cli.rs`, and any future CLI modules.
+
+## Color Palette
+
+Seven semantic colors. Use the `Theme` struct from `ironclad_core::style` -- never raw ANSI codes.
+
+| Semantic Name | ANSI Code          | Hex Approx | Usage |
+|---------------|--------------------|------------|-------|
+| `accent`      | `\x1b[38;5;105m`   | #6366f1    | Brand purple. Success steps (gear icon), headings, primary status, "done/created/set" confirmations. The signature Ironclad color. |
+| `dim`         | `\x1b[38;5;243m`   | #767676    | Muted gray. Step counters, metadata labels, secondary info, "skipped" messages, timestamps. |
+| `mono`        | `\x1b[38;5;147m`   | #a5a0e4    | Light purple. Monospace values: IDs, file paths, code snippets, config keys. |
+| `success`     | `\x1b[32m`         | #22c55e    | Green. Explicit "all passed" summaries, enabled/active states. Prefer `accent` for individual step completion. |
+| `warn`        | `\x1b[33m`         | #eab308    | Yellow. Warnings, fallback states, skipped optional items, "WARN" labels. |
+| `error`       | `\x1b[31m`         | #ef4444    | Red. Errors, failures, "FAIL" labels, disabled states, broken chain icon. |
+| `info`        | `\x1b[36m`         | #06b6d4    | Cyan. Auto-fix actions, debug info, provider/model names in discovery. |
+
+**Typography modifiers** (combine with colors):
+
+| Modifier | Code         | Usage |
+|----------|--------------|-------|
+| `bold`   | `\x1b[1m`   | Section titles, command names, emphasis. Never use for body text. |
+| `reset`  | `\x1b[0m`   | After every color/style span. No exceptions. |
+
+## Symbol System
+
+Consistent with the Ironclad robot motif. Symbols must convey meaning without color (accessibility).
+
+| Context          | Symbol | Unicode    | Color   | Notes |
+|------------------|--------|------------|---------|-------|
+| Success step     | `⚙`    | U+2699     | accent  | Gear = task completed. Primary success indicator. |
+| Warning          | `⚠`    | U+26A0     | warn    | Universal warning. Keep as-is. |
+| Error/failure    | `⛓`    | U+26D3     | error   | Broken chain = failure in the iron motif. |
+| Detail pointer   | `▸`    | U+25B8     | dim     | Indented detail lines beneath a step. |
+| Mechanic heading | `🔧`   | U+1F527    | info    | Wrench for mechanic/diagnostic output. |
+| Section divider  | `───`  | Box-drawing| dim     | Horizontal rule between major sections. |
+| Ready/done       | `⚙`    | U+2699     | accent  | Same gear for completion banners. |
+
+## Layout Conventions
+
+### Step Format (boot sequence, check output)
+```
+  ⚙ [01/12] Database initialized
+       ▸ path: ~/.ironclad/state.db
+       ▸ mode: WAL (persistent)
+```
+- 2-space indent before symbol
+- Step counter in dim: `[nn/total]`
+- Message in bold
+- Details indented 7 spaces with dim triangle pointer
+
+### Section Headers
+```
+  ── Sessions ──────────────────────
+```
+- 2-space indent, box-drawing rules, title in bold
+
+### Status Lines
+```
+  ⚙ Ready in 142ms
+  ⚙ Setup complete! Run ironclad serve to start.
+```
+- Same 2-space indent + accent gear
+
+### Error Output
+```
+  ⛓ Configuration validation failed: missing [models] section
+```
+- 2-space indent + error-colored chain
+
+### Table Output
+- Use the existing `print_table_row` / `print_table_header` pattern
+- Column widths calculated from content
+- Headers in dim, data rows in default color
+- Accent or mono for key values
+
+## Banner Rules
+
+The Roboticus ASCII banner (`print_banner()`) displays on:
+- `ironclad serve` (server startup)
+- `ironclad init` (first-time setup)
+
+Suppress the banner on all single-shot commands (status, config, check, mechanic, etc.). These should be fast and quiet.
+
+## Color Control
+
+### NO_COLOR Standard
+Respect the `NO_COLOR` environment variable (no-color.org). When set to any non-empty value, suppress all ANSI color and style codes. Symbols and text must still be readable.
+
+### TTY Detection
+When stderr is not a terminal (piped or redirected), default to no color. This prevents ANSI codes from polluting log files and pipe chains.
+
+### --color Flag
+Global CLI flag: `--color=auto|always|never`
+- `auto` (default): color if TTY, no color if piped, respect `NO_COLOR`
+- `always`: force color regardless of TTY or `NO_COLOR`
+- `never`: no color
+
+Precedence: `--color` flag > `NO_COLOR` env var > TTY auto-detection.
+
+### Implementation
+Use `ironclad_core::style::Theme`:
+```rust
+let theme = Theme::detect(); // checks NO_COLOR, TTY
+// or
+let theme = Theme::from_flag("auto"); // from --color flag value
+```
+
+All output functions accept `&Theme` or use a thread-local/global theme. Never call `\x1b[...` directly.
+
+## Accessibility
+
+- **Symbols carry meaning**: every symbol (gear, chain, warning) is distinguishable without color by shape alone.
+- **No blinking or animation** in CLI output. Spinning indicators belong in the web dashboard only.
+- **Text alternatives**: status is always conveyed in text alongside symbols (e.g., `⚙ PASS` not just `⚙`).
+- **Graceful degradation**: when color is disabled, output is still structured and readable.
+- **Screen readers**: avoid box-drawing for critical information. Use it only for decoration (dividers, tables) where the text content is independently understandable.
+
+## Future TUI Considerations
+
+Ratatui is not used today. The CLI is for bootstrapping and maintenance. The web dashboard serves rich UI needs.
+
+**When ratatui would be appropriate:**
+- An `ironclad chat` command with streaming responses, message history, and markdown rendering
+- A terminal dashboard with live-updating panels (as an alternative to the web dashboard)
+
+**Design constraints to maintain TUI compatibility:**
+- Keep business logic separate from output formatting
+- The `Theme` color palette maps directly to ratatui's `Style` system
+- Layout constants (indentation, widths) should be centralized, not hardcoded in format strings
+- Command handlers should return structured data, not write directly to stdout -- this enables both CLI text rendering and future TUI widget rendering from the same data
+
+## Code Organization
+
+All color and style logic lives in `ironclad_core::style`:
+- `Theme` struct with semantic accessors (`theme.accent()`, `theme.error()`, etc.)
+- `Theme::detect()` for automatic color mode detection
+- `Theme::from_flag(value)` for explicit `--color` flag handling
+- `Theme::plain()` for no-color output
+
+No other file should contain raw ANSI escape codes.

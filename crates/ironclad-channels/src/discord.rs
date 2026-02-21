@@ -1,0 +1,352 @@
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use chrono::Utc;
+use ironclad_core::{IroncladError, Result};
+use serde_json::{Value, json};
+use tracing::{debug, warn, error};
+use uuid::Uuid;
+
+use crate::{ChannelAdapter, InboundMessage, OutboundMessage};
+
+const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
+const MAX_MESSAGE_LEN: usize = 2000;
+
+pub struct DiscordAdapter {
+    pub token: String,
+    pub client: reqwest::Client,
+    pub allowed_guild_ids: Vec<String>,
+    message_buffer: Arc<Mutex<VecDeque<InboundMessage>>>,
+}
+
+impl DiscordAdapter {
+    pub fn new(token: String) -> Self {
+        Self {
+            token,
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
+            allowed_guild_ids: Vec::new(),
+            message_buffer: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    pub fn with_config(token: String, allowed_guild_ids: Vec<String>) -> Self {
+        Self {
+            allowed_guild_ids,
+            ..Self::new(token)
+        }
+    }
+
+    pub fn buffer_handle(&self) -> Arc<Mutex<VecDeque<InboundMessage>>> {
+        Arc::clone(&self.message_buffer)
+    }
+
+    fn is_guild_allowed(&self, guild_id: &str) -> bool {
+        self.allowed_guild_ids.is_empty()
+            || self.allowed_guild_ids.iter().any(|g| g == guild_id)
+    }
+
+    pub fn push_message(&self, msg: InboundMessage) {
+        let mut buf = self.message_buffer.lock().expect("mutex poisoned");
+        buf.push_back(msg);
+    }
+
+    pub fn parse_message_create(&self, data: &Value) -> Result<Option<InboundMessage>> {
+        let author = data.get("author")
+            .ok_or_else(|| IroncladError::Network("missing author in MESSAGE_CREATE".into()))?;
+
+        if author.get("bot").and_then(|b| b.as_bool()).unwrap_or(false) {
+            return Ok(None);
+        }
+
+        let content = data.get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if content.is_empty() {
+            return Ok(None);
+        }
+
+        if let Some(guild_id) = data.get("guild_id").and_then(|v| v.as_str()) {
+            if !self.is_guild_allowed(guild_id) {
+                debug!(guild_id, "ignoring message from disallowed guild");
+                return Ok(None);
+            }
+        }
+
+        let message_id = data.get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let sender_id = author.get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let channel_id = data.get("channel_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        Ok(Some(InboundMessage {
+            id: if message_id.is_empty() { Uuid::new_v4().to_string() } else { message_id },
+            platform: "discord".into(),
+            sender_id,
+            content,
+            timestamp: Utc::now(),
+            metadata: Some(json!({ "channel_id": channel_id })),
+        }))
+    }
+
+    pub async fn send_message(&self, channel_id: &str, content: &str) -> Result<Value> {
+        let url = format!("{}/channels/{}/messages", DISCORD_API_BASE, channel_id);
+        let body = json!({ "content": content });
+
+        let resp = self.client.post(&url)
+            .header("Authorization", format!("Bot {}", self.token))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("Discord send failed: {e}")))?;
+
+        self.handle_api_response(resp).await
+    }
+
+    pub async fn get_gateway_url(&self) -> Result<String> {
+        let url = format!("{}/gateway", DISCORD_API_BASE);
+        let resp = self.client.get(&url)
+            .header("Authorization", format!("Bot {}", self.token))
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("get gateway failed: {e}")))?;
+
+        let data = self.handle_api_response(resp).await?;
+        data.get("url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| IroncladError::Network("missing 'url' in gateway response".into()))
+    }
+
+    pub fn chunk_message(text: &str, max_len: usize) -> Vec<String> {
+        if text.len() <= max_len {
+            return vec![text.to_string()];
+        }
+
+        let mut chunks = Vec::new();
+        let mut remaining = text;
+
+        while !remaining.is_empty() {
+            if remaining.len() <= max_len {
+                chunks.push(remaining.to_string());
+                break;
+            }
+
+            let boundary = &remaining[..max_len];
+            let split_at = boundary.rfind('\n')
+                .or_else(|| boundary.rfind(|c: char| c.is_whitespace()))
+                .unwrap_or(max_len);
+
+            let (chunk, rest) = remaining.split_at(split_at);
+            chunks.push(chunk.to_string());
+            remaining = rest.trim_start_matches('\n').trim_start();
+        }
+
+        chunks
+    }
+
+    async fn handle_api_response(&self, resp: reqwest::Response) -> Result<Value> {
+        let status = resp.status();
+
+        if status.as_u16() == 429 {
+            let retry_after = resp.headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(5.0);
+            warn!(retry_after, "Discord rate limit hit");
+            return Err(IroncladError::Network(format!(
+                "rate limited, retry after {retry_after}s"
+            )));
+        }
+
+        let body: Value = resp.json().await
+            .map_err(|e| IroncladError::Network(format!("response parse error: {e}")))?;
+
+        if !status.is_success() {
+            let msg = body.get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            error!(status = %status, error = msg, "Discord API error");
+            return Err(IroncladError::Network(format!("Discord API {status}: {msg}")));
+        }
+
+        Ok(body)
+    }
+}
+
+#[async_trait]
+impl ChannelAdapter for DiscordAdapter {
+    fn platform_name(&self) -> &str {
+        "discord"
+    }
+
+    async fn recv(&self) -> Result<Option<InboundMessage>> {
+        let mut buf = self.message_buffer.lock().expect("mutex poisoned");
+        Ok(buf.pop_front())
+    }
+
+    async fn send(&self, msg: OutboundMessage) -> Result<()> {
+        let channel_id = &msg.recipient_id;
+        let chunks = Self::chunk_message(&msg.content, MAX_MESSAGE_LEN);
+
+        for chunk in chunks {
+            debug!(channel_id, len = chunk.len(), "sending Discord message");
+            self.send_message(channel_id, &chunk).await?;
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_adapter_defaults() {
+        let adapter = DiscordAdapter::new("test-token".into());
+        assert_eq!(adapter.token, "test-token");
+        assert!(adapter.allowed_guild_ids.is_empty());
+    }
+
+    #[test]
+    fn with_config_sets_guilds() {
+        let adapter = DiscordAdapter::with_config(
+            "tok".into(),
+            vec!["guild1".into(), "guild2".into()],
+        );
+        assert_eq!(adapter.allowed_guild_ids.len(), 2);
+    }
+
+    #[test]
+    fn guild_allowed_empty_means_all() {
+        let adapter = DiscordAdapter::new("tok".into());
+        assert!(adapter.is_guild_allowed("any_guild"));
+    }
+
+    #[test]
+    fn guild_allowed_filters() {
+        let adapter = DiscordAdapter::with_config("tok".into(), vec!["g1".into()]);
+        assert!(adapter.is_guild_allowed("g1"));
+        assert!(!adapter.is_guild_allowed("g2"));
+    }
+
+    #[test]
+    fn parse_message_create_valid() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let data = json!({
+            "id": "msg123",
+            "channel_id": "ch456",
+            "guild_id": "g789",
+            "author": { "id": "user1", "username": "testuser" },
+            "content": "hello discord"
+        });
+        let result = adapter.parse_message_create(&data).unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert_eq!(msg.platform, "discord");
+        assert_eq!(msg.id, "msg123");
+        assert_eq!(msg.sender_id, "user1");
+        assert_eq!(msg.content, "hello discord");
+    }
+
+    #[test]
+    fn parse_message_create_skips_bots() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let data = json!({
+            "id": "msg1",
+            "channel_id": "ch1",
+            "author": { "id": "bot1", "bot": true },
+            "content": "bot message"
+        });
+        let result = adapter.parse_message_create(&data).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_message_create_skips_empty() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let data = json!({
+            "id": "msg1",
+            "channel_id": "ch1",
+            "author": { "id": "user1" },
+            "content": ""
+        });
+        let result = adapter.parse_message_create(&data).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_message_create_filters_guild() {
+        let adapter = DiscordAdapter::with_config("tok".into(), vec!["allowed".into()]);
+        let data = json!({
+            "id": "msg1",
+            "channel_id": "ch1",
+            "guild_id": "not_allowed",
+            "author": { "id": "user1" },
+            "content": "filtered"
+        });
+        let result = adapter.parse_message_create(&data).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn push_and_recv_message() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let msg = InboundMessage {
+            id: "m1".into(),
+            platform: "discord".into(),
+            sender_id: "u1".into(),
+            content: "buffered".into(),
+            timestamp: Utc::now(),
+            metadata: None,
+        };
+        adapter.push_message(msg);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.recv()).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().content, "buffered");
+
+        let result2 = rt.block_on(adapter.recv()).unwrap();
+        assert!(result2.is_none());
+    }
+
+    #[test]
+    fn chunk_message_short() {
+        let chunks = DiscordAdapter::chunk_message("short", 2000);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "short");
+    }
+
+    #[test]
+    fn chunk_message_long() {
+        let text = "word ".repeat(500);
+        let chunks = DiscordAdapter::chunk_message(text.trim(), 100);
+        for chunk in &chunks {
+            assert!(chunk.len() <= 100);
+        }
+    }
+
+    #[test]
+    fn chunk_message_prefers_newline() {
+        let text = "line one\nline two which is a bit longer\nline three";
+        let chunks = DiscordAdapter::chunk_message(text, 25);
+        assert!(chunks[0].ends_with("one"));
+    }
+}

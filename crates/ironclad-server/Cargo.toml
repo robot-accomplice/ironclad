@@ -1,0 +1,35 @@
+[package]
+name = "ironclad-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ironclad-core.workspace = true
+ironclad-db.workspace = true
+ironclad-llm.workspace = true
+ironclad-agent.workspace = true
+ironclad-wallet.workspace = true
+ironclad-schedule.workspace = true
+ironclad-channels.workspace = true
+ironclad-plugin-sdk.workspace = true
+ironclad-browser.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid = { workspace = true }
+chrono = { workspace = true }
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tower-http = { version = "0.6", features = ["cors"] }
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+tokio-stream = "0.1"
+toml = "0.8"
+dialoguer = "0.11"
+tracing-appender = "0.2"
+futures-util = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

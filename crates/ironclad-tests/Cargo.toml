@@ -1,0 +1,29 @@
+[package]
+name = "ironclad-tests"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+ironclad-core.workspace = true
+ironclad-db.workspace = true
+ironclad-llm.workspace = true
+ironclad-agent = { path = "../ironclad-agent" }
+ironclad-wallet = { path = "../ironclad-wallet" }
+ironclad-schedule = { path = "../ironclad-schedule" }
+ironclad-channels = { path = "../ironclad-channels" }
+ironclad-server = { path = "../ironclad-server" }
+ironclad-plugin-sdk = { path = "../ironclad-plugin-sdk" }
+ironclad-browser = { path = "../ironclad-browser" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tempfile = "3"
+axum = "0.8"
+tower = "0.5"
+hyper = "1"
+
+[lib]
+name = "ironclad_tests"
+path = "src/lib.rs"
