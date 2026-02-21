@@ -1,0 +1,24 @@
+# Rust
+/target
+Cargo.lock
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment/Secrets
+.env
+*.key
+*.pem
+ironclad.db
+ironclad.db-wal
+ironclad.db-shm
+
+# Logs
+*.log
