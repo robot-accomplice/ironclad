@@ -69,23 +69,24 @@ impl EmbeddingClient {
         texts: &[&str],
     ) -> Result<Vec<Vec<f32>>> {
         let api_key = std::env::var(&cfg.api_key_env).unwrap_or_default();
-        let url = build_embedding_url(cfg);
+        let url = build_embedding_url(cfg, texts.len());
         let body = build_embedding_request(cfg, texts);
 
         let log_url = if url.contains('?') { url.split('?').next().unwrap_or(&url) } else { &url };
         debug!(url = %log_url, model = %cfg.model, count = texts.len(), "embedding request");
 
-        let auth_value = if cfg.auth_header.eq_ignore_ascii_case("authorization") {
-            format!("Bearer {api_key}")
-        } else {
-            api_key.clone()
-        };
+        let is_query_auth = cfg.auth_header.starts_with("query:");
 
-        let mut request = self
-            .http
-            .post(&url)
-            .header(&cfg.auth_header, &auth_value)
-            .header("Content-Type", "application/json");
+        let mut request = self.http.post(&url).header("Content-Type", "application/json");
+
+        if !is_query_auth {
+            let auth_value = if cfg.auth_header.eq_ignore_ascii_case("authorization") {
+                format!("Bearer {api_key}")
+            } else {
+                api_key.clone()
+            };
+            request = request.header(&cfg.auth_header, &auth_value);
+        }
 
         for (key, value) in &cfg.extra_headers {
             request = request.header(key.as_str(), value.as_str());
@@ -115,15 +116,28 @@ impl EmbeddingClient {
     }
 }
 
-fn build_embedding_url(cfg: &EmbeddingConfig) -> String {
-    let path = cfg.embedding_path.replace("{model}", &cfg.model);
+fn build_embedding_url(cfg: &EmbeddingConfig, count: usize) -> String {
+    let mut path = cfg.embedding_path.replace("{model}", &cfg.model);
+
+    if cfg.format == ApiFormat::GoogleGenerativeAi && count > 1 {
+        path = path.replace(":embedContent", ":batchEmbedContents");
+    }
+
+    let mut url = format!("{}{}", cfg.base_url, path);
 
     if cfg.format == ApiFormat::GoogleGenerativeAi && !cfg.api_key_env.is_empty() {
         let key = std::env::var(&cfg.api_key_env).unwrap_or_default();
-        format!("{}{}?key={}", cfg.base_url, path, key)
-    } else {
-        format!("{}{}", cfg.base_url, path)
+        url = format!("{url}?key={key}");
     }
+
+    if cfg.auth_header.starts_with("query:") {
+        let param = &cfg.auth_header["query:".len()..];
+        let key = std::env::var(&cfg.api_key_env).unwrap_or_default();
+        let sep = if url.contains('?') { '&' } else { '?' };
+        url = format!("{url}{sep}{param}={key}");
+    }
+
+    url
 }
 
 fn build_embedding_request(cfg: &EmbeddingConfig, texts: &[&str]) -> serde_json::Value {
@@ -184,8 +198,9 @@ fn parse_embedding_response(
                     return Ok(result);
                 }
             }
-            warn!("failed to parse Google embedding response, using n-gram fallback");
-            Ok(vec![fallback_ngram("", cfg.dimensions); expected_count])
+            Err(IroncladError::Llm(
+                "failed to parse Google embedding response".into(),
+            ))
         }
         _ => {
             // OpenAI-compatible: { "data": [{ "embedding": [...] }, ...] }
@@ -212,8 +227,9 @@ fn parse_embedding_response(
                     return Ok(result);
                 }
             }
-            warn!("failed to parse embedding response, using n-gram fallback");
-            Ok(vec![fallback_ngram("", cfg.dimensions); expected_count])
+            Err(IroncladError::Llm(
+                "failed to parse embedding response".into(),
+            ))
         }
     }
 }
@@ -390,7 +406,7 @@ mod tests {
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
         };
-        let url = build_embedding_url(&cfg);
+        let url = build_embedding_url(&cfg, 1);
         assert_eq!(url, "https://api.openai.com/v1/embeddings");
     }
 
@@ -407,10 +423,30 @@ mod tests {
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
         };
-        let url = build_embedding_url(&cfg);
+        let url = build_embedding_url(&cfg, 1);
         assert!(url.contains("text-embedding-004"));
         assert!(url.contains("key=fake-key"));
+        assert!(url.contains(":embedContent"));
         unsafe { std::env::remove_var("TEST_GOOGLE_KEY") };
+    }
+
+    #[test]
+    fn build_embedding_url_google_batch_uses_batch_endpoint() {
+        unsafe { std::env::set_var("TEST_GOOGLE_BATCH_KEY", "fake-key") };
+        let cfg = EmbeddingConfig {
+            base_url: "https://generativelanguage.googleapis.com".into(),
+            embedding_path: "/v1beta/models/{model}:embedContent".into(),
+            model: "text-embedding-004".into(),
+            dimensions: 768,
+            format: ApiFormat::GoogleGenerativeAi,
+            api_key_env: "TEST_GOOGLE_BATCH_KEY".into(),
+            auth_header: "Authorization".into(),
+            extra_headers: HashMap::new(),
+        };
+        let url = build_embedding_url(&cfg, 3);
+        assert!(url.contains(":batchEmbedContents"));
+        assert!(!url.contains(":embedContent"));
+        unsafe { std::env::remove_var("TEST_GOOGLE_BATCH_KEY") };
     }
 
     #[test]
@@ -503,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_unparseable_falls_back() {
+    fn parse_unparseable_returns_error() {
         let cfg = EmbeddingConfig {
             base_url: String::new(),
             embedding_path: String::new(),
@@ -515,9 +551,8 @@ mod tests {
             extra_headers: HashMap::new(),
         };
         let resp = json!({ "unexpected": "format" });
-        let result = parse_embedding_response(&cfg, &resp, 2).unwrap();
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].len(), 64);
+        let result = parse_embedding_response(&cfg, &resp, 2);
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -538,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_google_unparseable_falls_back() {
+    fn parse_google_unparseable_returns_error() {
         let cfg = EmbeddingConfig {
             base_url: String::new(),
             embedding_path: String::new(),
@@ -550,13 +585,12 @@ mod tests {
             extra_headers: HashMap::new(),
         };
         let resp = json!({ "unexpected": "garbage" });
-        let result = parse_embedding_response(&cfg, &resp, 3).unwrap();
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].len(), 64);
+        let result = parse_embedding_response(&cfg, &resp, 3);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn parse_google_mismatched_count_falls_back() {
+    fn parse_google_mismatched_count_returns_error() {
         let cfg = EmbeddingConfig {
             base_url: String::new(),
             embedding_path: String::new(),
@@ -572,10 +606,8 @@ mod tests {
                 { "values": [0.1, 0.2] }
             ]
         });
-        // Asked for 3 but only got 1 — should fall back
-        let result = parse_embedding_response(&cfg, &resp, 3).unwrap();
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].len(), 32);
+        let result = parse_embedding_response(&cfg, &resp, 3);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -590,8 +622,26 @@ mod tests {
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
         };
-        let url = build_embedding_url(&cfg);
+        let url = build_embedding_url(&cfg, 1);
         assert_eq!(url, "http://localhost:11434/api/embed");
+    }
+
+    #[test]
+    fn build_embedding_url_query_auth() {
+        unsafe { std::env::set_var("TEST_QUERY_KEY", "my-secret") };
+        let cfg = EmbeddingConfig {
+            base_url: "https://api.example.com".into(),
+            embedding_path: "/v1/embeddings".into(),
+            model: "test-model".into(),
+            dimensions: 768,
+            format: ApiFormat::OpenAiCompletions,
+            api_key_env: "TEST_QUERY_KEY".into(),
+            auth_header: "query:api_key".into(),
+            extra_headers: HashMap::new(),
+        };
+        let url = build_embedding_url(&cfg, 1);
+        assert!(url.contains("api_key=my-secret"));
+        unsafe { std::env::remove_var("TEST_QUERY_KEY") };
     }
 
     #[test]
@@ -607,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_openai_mismatched_count_falls_back() {
+    fn parse_openai_mismatched_count_returns_error() {
         let cfg = EmbeddingConfig {
             base_url: String::new(),
             embedding_path: String::new(),
@@ -623,9 +673,7 @@ mod tests {
                 { "embedding": [0.1, 0.2] }
             ]
         });
-        // Asked for 3 but only got 1
-        let result = parse_embedding_response(&cfg, &resp, 3).unwrap();
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].len(), 16);
+        let result = parse_embedding_response(&cfg, &resp, 3);
+        assert!(result.is_err());
     }
 }
