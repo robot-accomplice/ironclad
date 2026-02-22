@@ -15,7 +15,8 @@ flowchart TB
         PROMPT["prompt.rs<br/>System Prompt Builder"]
         CONTEXT["context.rs<br/>Context Assembly +<br/>Compression"]
         INJECTION["injection.rs<br/>Injection Defense<br/>(4 layers)"]
-        MEMORY["memory.rs<br/>Memory Retrieval +<br/>Ingestion"]
+        MEMORY["memory.rs<br/>Memory Budget +<br/>Ingestion"]
+        RETRIEVAL["retrieval.rs<br/>MemoryRetriever +<br/>Content Chunker"]
         SKILLS_MOD["skills.rs<br/>Skill Loader, Registry,<br/>Executor"]
         SCRIPT_RUN["script_runner.rs<br/>Sandboxed Script Execution"]
         APPROVALS["approvals.rs<br/>Approval flows"]
@@ -63,9 +64,13 @@ flowchart TB
     end
 
     subgraph MemoryDetail ["memory.rs"]
-        RETRIEVE["retrieve_memories():<br/>MemoryBudgetManager allocates<br/>tokens across 5 tiers,<br/>parallel retrieval,<br/>format into memory block"]
         INGEST["ingest_turn():<br/>classify turn type,<br/>extract episodic events,<br/>semantic facts, procedural<br/>outcomes, relationship updates"]
         BUDGET_MEM["MemoryBudgetManager:<br/>working 30%, episodic 25%,<br/>semantic 20%, procedural 15%,<br/>relationship 10%<br/>(unused budget rolls over)"]
+    end
+
+    subgraph RetrievalDetail ["retrieval.rs — RAG Pipeline"]
+        MEM_RETRIEVER["MemoryRetriever:<br/>orchestrates 5-tier retrieval<br/>with per-tier token budgets,<br/>hybrid search (FTS5 + vector),<br/>formats into [Active Memory] block"]
+        CHUNKER["chunk_text():<br/>split long content into<br/>overlapping chunks (512 tok,<br/>64 overlap) for embedding"]
     end
 
     subgraph SkillsModDetail ["skills.rs - Dual-Format Skill System"]
@@ -89,6 +94,7 @@ flowchart TB
     LOOP --> CONTEXT --> PROMPT
     LOOP --> INJECTION
     LOOP --> MEMORY
+    LOOP --> RETRIEVAL
 ```
 
 ## Module Interactions
@@ -100,6 +106,8 @@ sequenceDiagram
     participant Injection as injection.rs
     participant Context as context.rs
     participant Memory as memory.rs
+    participant Retrieval as retrieval.rs
+    participant Embedding as ironclad-llm/embedding.rs
     participant Prompt as prompt.rs
     participant LLM as ironclad-llm
     participant Policy as policy.rs
@@ -113,9 +121,13 @@ sequenceDiagram
     Injection-->>Loop: ThreatScore (pass/sanitize/block)
     Loop->>Skills: match_skills(turn_context)
     Skills-->>Loop: matched skills (structured + instruction)
-    Loop->>Memory: retrieve_memories(budget)
-    Memory-->>Loop: memory block
-    Loop->>Context: progressive_load(complexity)
+    Loop->>Embedding: embed_single(query)
+    Embedding-->>Loop: query embedding (provider or n-gram fallback)
+    Loop->>Retrieval: retrieve(session, query, embedding, complexity)
+    Retrieval->>DB: hybrid_search (FTS5 + vector cosine)
+    DB-->>Retrieval: memory entries
+    Retrieval-->>Loop: formatted memory block
+    Loop->>Context: build_context(system, memories, history)
     Context->>Prompt: build_system_prompt()
     Prompt->>Injection: Layer 2 HMAC boundaries
     Context-->>Loop: assembled context
@@ -127,7 +139,10 @@ sequenceDiagram
     Loop->>Tools: execute allowed tools
     Tools-->>Loop: tool results
     Loop->>DB: persist turn + tool_calls + policy_decisions
-    Loop->>Memory: ingest_turn()
+    Loop->>Memory: ingest_turn() (background)
+    Loop->>Embedding: embed_single(response)
+    Embedding-->>Loop: response embedding
+    Loop->>DB: store_embedding(BLOB)
     Loop->>Injection: Layer 4 adaptive refinement
     Loop-->>Channel: response
 ```

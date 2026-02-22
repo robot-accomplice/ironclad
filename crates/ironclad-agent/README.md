@@ -1,6 +1,6 @@
 # ironclad-agent
 
-Agent core with ReAct loop state machine, policy engine, 4-layer injection defense, HMAC trust boundaries, 5-tier memory system, and dual-format skill loader for the [Ironclad](https://github.com/robot-accomplice/ironclad) agent runtime.
+Agent core with ReAct loop state machine, policy engine, 4-layer injection defense, HMAC trust boundaries, 5-tier memory system, hybrid RAG retrieval (FTS5 + vector cosine), content chunking, and dual-format skill loader for the [Ironclad](https://github.com/robot-accomplice/ironclad) agent runtime.
 
 ## Usage
 

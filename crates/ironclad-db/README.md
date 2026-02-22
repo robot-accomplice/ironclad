@@ -1,6 +1,6 @@
 # ironclad-db
 
-SQLite persistence layer with 28 tables, FTS5 full-text search, WAL mode, and migration system for the [Ironclad](https://github.com/robot-accomplice/ironclad) agent runtime.
+SQLite persistence layer with 28 tables, FTS5 full-text search, WAL mode, migration system, BLOB-optimized embedding storage, HNSW ANN index (instant-distance), and semantic cache persistence for the [Ironclad](https://github.com/robot-accomplice/ironclad) agent runtime.
 
 ## Usage
 

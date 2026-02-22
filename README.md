@@ -4,14 +4,16 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/robot-accomplice/ironclad/ci.yml?branch=main&logo=github&label=CI)](https://github.com/robot-accomplice/ironclad/actions)
 [![Website](https://img.shields.io/badge/website-roboticus.ai-green?logo=google-chrome&logoColor=white)](https://roboticus.ai)
-[![Tests](https://img.shields.io/badge/tests-597-brightgreen?logo=checkmarx&logoColor=white)](#development)
+[![Tests](https://img.shields.io/badge/tests-1,271-brightgreen?logo=checkmarx&logoColor=white)](#development)
 [![crates.io](https://img.shields.io/crates/v/ironclad-server.svg)](https://crates.io/crates/ironclad-server)
 [![downloads](https://img.shields.io/crates/d/ironclad-server.svg)](https://crates.io/crates/ironclad-server)
 [![docs.rs](https://docs.rs/ironclad-server/badge.svg)](https://docs.rs/ironclad-server)
 [![SQLite Tables](https://img.shields.io/badge/SQLite_tables-28-informational?logo=sqlite)](#architecture)
 [![Lines of Code](https://img.shields.io/badge/lines_of_code-~32k-informational)](#architecture)
 
-Ironclad is an autonomous agent runtime built in Rust as a single optimized binary. It features ML-based model routing, 3-level semantic caching, zero-trust agent-to-agent communication, 4-layer prompt injection defense, a dual-format skill system, and built-in financial management with DeFi yield optimization. All eleven crates compile into one process with no IPC overhead — inter-component communication is direct async function calls on the tokio runtime, backed by a single SQLite database (28 tables including FTS5).
+**Ironclad has no cryptocurrency token. Any token using this name is unaffiliated with this project.**
+
+Ironclad is an autonomous agent runtime built in Rust as a single optimized binary. It features heuristic model routing, 3-level semantic caching with SQLite persistence, hybrid RAG retrieval (FTS5 keyword + vector cosine with optional HNSW ANN indexing), multi-provider embeddings (OpenAI/Ollama/Google with n-gram fallback), zero-trust agent-to-agent communication, 4-layer prompt injection defense, a dual-format skill system, and built-in financial management with DeFi yield optimization. All eleven crates compile into one process with no IPC overhead — inter-component communication is direct async function calls on the tokio runtime, backed by a single SQLite database (28 tables including FTS5).
 
 ## Installation
 
@@ -33,15 +35,15 @@ The workspace is organized as eleven crates with a strict dependency hierarchy:
 | Crate | Purpose |
 | ------- | --------- |
 | `ironclad-core` | Shared types (`SurvivalTier`, `ApiFormat`, `ModelTier`, `RiskLevel`, `SkillKind`), unified config parsing, personality system, error types |
-| `ironclad-db` | SQLite persistence via rusqlite — 28 tables (incl. FTS5), WAL mode, migration system, embedding storage |
-| `ironclad-llm` | LLM client pipeline — format translation (4 API formats), circuit breaker, in-flight dedup, ML model router (ONNX, ~11μs), 3-level semantic cache, tier-based prompt adaptation |
-| `ironclad-agent` | Agent core — ReAct loop state machine, tool system (trait-based), policy engine, 4-layer injection defense, HMAC trust boundaries, 5-tier memory system, dual-format skill loader, sandboxed script runner |
+| `ironclad-db` | SQLite persistence via rusqlite — 28 tables (incl. FTS5), WAL mode, migration system, embedding storage (BLOB + JSON), HNSW ANN index, semantic cache persistence |
+| `ironclad-llm` | LLM client pipeline — format translation (4 API formats), circuit breaker, in-flight dedup, heuristic model router, 3-level semantic cache (persistent), tier-based prompt adaptation, multi-provider embedding client |
+| `ironclad-agent` | Agent core — ReAct loop state machine, tool system (trait-based), policy engine, 4-layer injection defense, HMAC trust boundaries, 5-tier memory system, hybrid RAG retrieval, content chunking, dual-format skill loader, sandboxed script runner |
 | `ironclad-wallet` | Ethereum wallet (alloy-rs), x402 payment protocol (EIP-3009), treasury policy engine, DeFi yield engine (Aave/Compound on Base) |
 | `ironclad-schedule` | Unified cron/heartbeat scheduler — DB-backed with lease-based mutual exclusion, wake signaling via mpsc channels |
 | `ironclad-channels` | Chat adapters (Telegram Bot API, WhatsApp Cloud API, Discord, WebSocket) + zero-trust Agent-to-Agent protocol (ECDH session keys, AES-256-GCM) |
 | `ironclad-plugin-sdk` | Plugin trait, manifest parser, script runner, plugin registry with auto-discovery and hot-reload |
 | `ironclad-browser` | Headless browser automation via Chrome DevTools Protocol (CDP) — navigate, click, type, screenshot, evaluate |
-| `ironclad-server` | HTTP API (axum, 41 routes), embedded dashboard SPA, CLI (24 commands), WebSocket push, migration engine, 12-step bootstrap |
+| `ironclad-server` | HTTP API (axum, 48 routes), embedded dashboard SPA, CLI (24 commands), WebSocket push, migration engine, 12-step bootstrap |
 | `ironclad-tests` | Integration test suite covering cross-crate workflows |
 
 ### Dependency Graph
@@ -108,16 +110,16 @@ port = 18789
 primary = "ollama/qwen3:8b"
 ```
 
-Full configuration supports 14 sections: `[agent]`, `[server]`, `[database]`, `[models]`, `[providers.*]`, `[circuit_breaker]`, `[memory]`, `[cache]`, `[treasury]`, `[yield]`, `[wallet]`, `[a2a]`, `[skills]`, `[channels.*]`. See `docs/architecture/ironclad-design.md` §5 for all options.
+Full configuration supports 22 sections: `[agent]`, `[server]`, `[database]`, `[models]`, `[providers.*]`, `[circuit_breaker]`, `[memory]`, `[cache]`, `[treasury]`, `[yield]`, `[wallet]`, `[a2a]`, `[skills]`, `[channels.*]`. See `docs/architecture/ironclad-design.md` §5 for all options.
 
 Key configuration areas:
 
 | Section | Controls |
 | --------- | ---------- |
-| `[models]` | Primary model, fallback chain, routing mode (`ml` or `rule`), local-first preference |
-| `[providers.*]` | Per-provider URL, tier classification (T1–T4), API keys via env vars |
-| `[memory]` | Token budget allocation across 5 memory tiers (working, episodic, semantic, procedural, relationship) |
-| `[cache]` | Exact-match TTL, semantic similarity threshold (default 0.95), max cache entries |
+| `[models]` | Primary model, fallback chain, routing mode (`heuristic`, `primary`, `round-robin`), local-first preference |
+| `[providers.*]` | Per-provider URL, tier classification (T1–T4), API keys via env vars, embedding endpoint/model/dimensions |
+| `[memory]` | Token budget allocation across 5 memory tiers, embedding provider selection, hybrid search weight, ANN index toggle |
+| `[cache]` | Exact-match TTL, semantic similarity threshold (default 0.95), max cache entries (persisted to SQLite) |
 | `[treasury]` | Per-payment cap, hourly/daily transfer limits, minimum reserve, daily inference budget |
 | `[skills]` | Skills directory, script timeout, allowed interpreters, sandbox mode, hot-reload |
 | `[a2a]` | Max message size, rate limit per peer, session timeout, on-chain identity requirement |
@@ -214,10 +216,11 @@ Skills are loaded from `skills.skills_dir` at boot with SHA-256 change detection
 
 ## API Reference
 
-41 REST routes + WebSocket upgrade for real-time events:
+48 REST routes + WebSocket upgrade for real-time events:
 
 | Group | Method | Path | Description |
 | ------- | -------- | ------ | ------------- |
+| **Discovery** | GET | `/.well-known/agent.json` | A2A agent card (discovery endpoint) |
 | **Health** | GET | `/api/health` | Quick health check (status, uptime, version) |
 | **Config** | GET | `/api/config` | Current configuration |
 | | PUT | `/api/config` | Update configuration |
@@ -272,7 +275,7 @@ Detailed documentation in `docs/architecture/`:
 | Document | Contents |
 | ---------- | ---------- |
 | [ironclad-design.md](docs/architecture/ironclad-design.md) | Full blueprint — workspace layout, trait hierarchy, database schema (28 tables), complete config reference |
-| [ironclad-dataflow.md](docs/architecture/ironclad-dataflow.md) | 9 dataflow diagrams — request lifecycle, semantic cache, ML router, memory, A2A, injection defense, financial/yield, scheduling, skill execution |
+| [ironclad-dataflow.md](docs/architecture/ironclad-dataflow.md) | 9 dataflow diagrams — request lifecycle, semantic cache, heuristic router, memory, A2A, injection defense, financial/yield, scheduling, skill execution |
 | [ironclad-sequences.md](docs/architecture/ironclad-sequences.md) | 7 cross-crate sequence diagrams — end-to-end request, cache pipeline, x402 payment, bootstrap, injection attack, skill execution, cron leasing |
 | [ironclad-c4-system-context.md](docs/architecture/ironclad-c4-system-context.md) | C4 Level 1: System context |
 | [ironclad-c4-container.md](docs/architecture/ironclad-c4-container.md) | C4 Level 2: Container diagram + table ownership |
@@ -293,7 +296,7 @@ Additional docs in `docs/`:
 
 | Document | Contents |
 | ---------- | ---------- |
-| [IRONCLAD.md](docs/IRONCLAD.md) | Comprehensive feature summary, OpenClaw comparison, migration guide, cost analysis |
+| [IRONCLAD.md](docs/IRONCLAD.md) | Comprehensive feature summary, migration guide, cost analysis |
 | [ROADMAP.md](docs/ROADMAP.md) | Development roadmap — near-term wiring, new capabilities, frontier research |
 
 ## Development
@@ -325,26 +328,30 @@ cargo fmt --check
 cargo clippy -- -D warnings
 ```
 
-## Migration from OpenClaw
+## Data Migration
 
-Ironclad includes full bidirectional migration support for OpenClaw installations, covering 6 data areas: configuration, personality, skills, sessions, cron jobs, and channels.
+Ironclad includes a bidirectional migration engine covering 6 data areas: configuration, personality, skills, sessions, cron jobs, and channels.
 
 ```bash
-# Import from an existing OpenClaw workspace
-ironclad migrate import /path/to/openclaw-root --yes
+# Import from an external agent workspace
+ironclad migrate import /path/to/source-root --yes
 
-# Export back to OpenClaw format
+# Export to portable format
 ironclad migrate export /path/to/output
 
 # Standalone skill import with safety scanning
 ironclad skills import /path/to/skill-directory
 ```
 
-Skills pass through a safety scanner (50+ patterns across 5 categories) before import. Secrets are never stored in config files — API keys and tokens are converted to environment variable references. See [IRONCLAD.md](docs/IRONCLAD.md#migration-openclaw-interoperability) for full details.
+Skills pass through a safety scanner (50+ patterns across 5 categories) before import. Secrets are never stored in config files — API keys and tokens are converted to environment variable references. See [IRONCLAD.md](docs/IRONCLAD.md#data-migration) for full details.
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branching model, PR workflow, and quality requirements.
+
+## Disclaimer
+
+Ironclad is open-source software licensed under Apache 2.0. There is no Ironclad token, coin, or cryptocurrency of any kind. Any token deployed using the Ironclad name is **not affiliated** with this project, its maintainers, or [roboticus.ai](https://roboticus.ai). Do not purchase tokens claiming association with Ironclad.
 
 ## License
 
