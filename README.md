@@ -43,7 +43,7 @@ The workspace is organized as eleven crates with a strict dependency hierarchy:
 | `ironclad-channels` | Chat adapters (Telegram Bot API, WhatsApp Cloud API, Discord, WebSocket) + zero-trust Agent-to-Agent protocol (ECDH session keys, AES-256-GCM) |
 | `ironclad-plugin-sdk` | Plugin trait, manifest parser, script runner, plugin registry with auto-discovery and hot-reload |
 | `ironclad-browser` | Headless browser automation via Chrome DevTools Protocol (CDP) — navigate, click, type, screenshot, evaluate |
-| `ironclad-server` | HTTP API (axum, 48 routes), embedded dashboard SPA, CLI (24 commands), WebSocket push, migration engine, 12-step bootstrap |
+| `ironclad-server` | HTTP API (axum, 48 routes), embedded dashboard SPA, CLI (24 commands), WebSocket push, migration engine, 13-step bootstrap |
 | `ironclad-tests` | Integration test suite covering cross-crate workflows |
 
 ### Dependency Graph

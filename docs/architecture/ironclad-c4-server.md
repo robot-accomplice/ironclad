@@ -31,7 +31,7 @@ flowchart TB
         BOOT_11["11. Start axum HTTP server"]
         BOOT_12["12. Await shutdown signal<br/>(SIGTERM / SIGINT)"]
 
-        BOOT_1 --> BOOT_2 --> BOOT_3 --> BOOT_4 --> BOOT_5 --> BOOT_6 --> BOOT_7 --> BOOT_8 --> BOOT_9 --> BOOT_10 --> BOOT_11 --> BOOT_12
+        BOOT_1 --> BOOT_2 --> BOOT_3 --> BOOT_4 --> BOOT_5 --> BOOT_6 --> BOOT_6B --> BOOT_7 --> BOOT_8 --> BOOT_9 --> BOOT_10 --> BOOT_11 --> BOOT_12
     end
 
     subgraph ApiDetail ["api/routes/ - REST API (build_router)"]

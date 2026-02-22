@@ -203,7 +203,7 @@ ironclad skills export <output-dir>   [--ids skill-a,skill-b]
 | Area | Import | Export |
 | --- | --- | --- |
 | **Configuration** | External agent config -> `ironclad.toml` (agent identity, model, provider, temperature, max_tokens). API keys extracted to env vars for security. | `ironclad.toml` -> portable JSON config with deep-merge to preserve unknown fields. |
-| **Personality** | Markdown personality files -> `OS.toml` / `FIRMWARE.toml`. Sections parsed into TOML keys; full original stored as `prompt_text` for round-trip fidelity. | `OS.toml` -> `SOUL.md`, `FIRMWARE.toml` -> `AGENTS.md`. If `prompt_text` exists, the original markdown is restored byte-for-byte. |
+| **Personality** | Markdown personality files -> `OS.toml` / `FIRMWARE.toml`. Sections parsed into TOML keys; full original stored as `prompt_text` for round-trip fidelity. | `OS.toml` -> personality markdown, `FIRMWARE.toml` -> behavioral instructions markdown. If `prompt_text` exists, the original markdown is restored byte-for-byte. |
 | **Skills** | External skill directories (scripts, configs) copied to `~/.ironclad/skills/` after safety scanning. Critical findings block import; warnings prompt confirmation. | Skills exported to portable directory structure. |
 | **Sessions** | JSON/JSONL session files ingested into SQLite `sessions` + `session_messages` tables. | SQLite sessions exported to JSON with full message history per session. |
 | **Cron Jobs** | JSON job definitions imported to SQLite `cron_jobs` table with schedule expressions, payloads, and enabled state. | SQLite cron jobs exported to JSON with name, schedule, command, and enabled flag. |

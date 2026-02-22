@@ -62,17 +62,6 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.7 Memory-Augmented Agent Pipeline ✅
-
-**Status**: Implemented. The `agent_message` handler now:
-1. Generates a query embedding via `EmbeddingClient`
-2. Calls `MemoryRetriever::retrieve()` for 5-tier hybrid retrieval (FTS5 + vector cosine)
-3. Loads conversation history from `sessions::list_messages()`
-4. Assembles context via `build_context(level, system_prompt, memories, history)`
-5. After response: background `ingest_turn()` + embedding generation for the assistant response
-
----
-
 ### 1.6 Multimodal Message Handling
 
 **Current state**: WhatsApp adapter parses image/video/audio/document types but converts them to text placeholders (`[image:id] caption`). The LLM client has no vision or multimodal support. Voice messages are silently ignored.
@@ -82,6 +71,17 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 **Builds on**: WhatsApp media parsing, Telegram media API, `ironclad-llm/format.rs` (format translation already handles content arrays).
 
 **Scope**: Download media from channel APIs to a configurable `media_dir` with content-addressed filenames and automatic size-based cleanup policy. Construct multimodal content blocks (`image_url` for OpenAI, inline `image` for Anthropic). Gate behind a config flag (`models.multimodal = true`). Extend `UnifiedMessage` to carry binary content parts. Add Whisper-compatible speech-to-text for voice messages — prefer native Rust via `whisper-rs` for local-first transcription, with cloud STT API as an opt-in fallback. Store transcripts in session history alongside the original audio reference.
+
+---
+
+### 1.7 Memory-Augmented Agent Pipeline ✅
+
+**Status**: Implemented. The `agent_message` handler now:
+1. Generates a query embedding via `EmbeddingClient`
+2. Calls `MemoryRetriever::retrieve()` for 5-tier hybrid retrieval (FTS5 + vector cosine)
+3. Loads conversation history from `sessions::list_messages()`
+4. Assembles context via `build_context(level, system_prompt, memories, history)`
+5. After response: background `ingest_turn()` + embedding generation for the assistant response
 
 ---
 
