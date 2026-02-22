@@ -168,4 +168,102 @@ mod tests {
         drop(_rx);
         bus.publish("should not block".to_string());
     }
+
+    #[tokio::test]
+    async fn bus_clone_shares_channel() {
+        let bus1 = EventBus::new(16);
+        let bus2 = bus1.clone();
+        let mut rx = bus1.subscribe();
+
+        bus2.publish("from-clone".to_string());
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg, "from-clone");
+    }
+
+    #[tokio::test]
+    async fn subscriber_after_publish_misses_earlier_events() {
+        let bus = EventBus::new(16);
+        bus.publish("before-subscribe".to_string());
+
+        let mut rx = bus.subscribe();
+        bus.publish("after-subscribe".to_string());
+
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg, "after-subscribe");
+    }
+
+    #[test]
+    fn capacity_overflow_does_not_panic() {
+        let bus = EventBus::new(2);
+        let _rx = bus.subscribe();
+        for i in 0..10 {
+            bus.publish(format!("event-{i}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_json_event_roundtrip() {
+        let bus = EventBus::new(16);
+        let mut rx = bus.subscribe();
+        let event = serde_json::json!({"type": "inference", "model": "gpt-4", "tokens": 42});
+        bus.publish(event.to_string());
+        let msg = rx.recv().await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        assert_eq!(parsed["type"], "inference");
+        assert_eq!(parsed["tokens"], 42);
+    }
+
+    #[tokio::test]
+    async fn multiple_publishes_order_preserved() {
+        let bus = EventBus::new(64);
+        let mut rx = bus.subscribe();
+        for i in 0..50 {
+            bus.publish(format!("msg-{i}"));
+        }
+        for i in 0..50 {
+            let msg = rx.recv().await.unwrap();
+            assert_eq!(msg, format!("msg-{i}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_publishers() {
+        let bus = EventBus::new(256);
+        let mut rx = bus.subscribe();
+        let bus1 = bus.clone();
+        let bus2 = bus.clone();
+
+        let h1 = tokio::spawn(async move {
+            for i in 0..10 {
+                bus1.publish(format!("a-{i}"));
+            }
+        });
+        let h2 = tokio::spawn(async move {
+            for i in 0..10 {
+                bus2.publish(format!("b-{i}"));
+            }
+        });
+
+        h1.await.unwrap();
+        h2.await.unwrap();
+
+        let mut count = 0;
+        while let Ok(msg) = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            rx.recv(),
+        )
+        .await
+        {
+            msg.unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 20);
+    }
+
+    #[test]
+    fn ws_route_builds_without_panic() {
+        let bus = EventBus::new(4);
+        let router = axum::Router::new().route("/ws", super::ws_route(bus));
+        let _app = router.into_make_service();
+    }
 }

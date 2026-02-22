@@ -535,7 +535,7 @@ pub(crate) fn personality_toml_to_markdown(toml_str: &str, title: &str) -> Strin
     }
 }
 
-fn titlecase(key: &str) -> String {
+pub(crate) fn titlecase(key: &str) -> String {
     key.replace('_', " ")
         .split_whitespace()
         .map(|w| {
@@ -1271,7 +1271,7 @@ pub(crate) fn qt(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn qt_ml(s: &str) -> String {
+pub(crate) fn qt_ml(s: &str) -> String {
     format!("\"\"\"\n{}\n\"\"\"", s)
 }
 

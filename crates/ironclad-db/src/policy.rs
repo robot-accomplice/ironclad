@@ -113,4 +113,39 @@ mod tests {
         let decisions = get_decisions_for_turn(&db, "t1").unwrap();
         assert_eq!(decisions.len(), 2);
     }
+
+    #[test]
+    fn record_with_no_turn_id() {
+        let db = test_db();
+        let id = record_policy_decision(&db, None, "search", "allow", None, None).unwrap();
+        assert!(!id.is_empty());
+    }
+
+    #[test]
+    fn record_all_optional_none() {
+        let db = test_db();
+        let id = record_policy_decision(&db, None, "tool", "allow", None, None).unwrap();
+        assert!(!id.is_empty());
+    }
+
+    #[test]
+    fn decision_fields_populated() {
+        let db = test_db();
+        record_policy_decision(
+            &db,
+            Some("t2"),
+            "exec",
+            "escalate",
+            Some("human_review"),
+            Some("needs approval"),
+        )
+        .unwrap();
+        let decisions = get_decisions_for_turn(&db, "t2").unwrap();
+        assert_eq!(decisions[0].tool_name, "exec");
+        assert_eq!(decisions[0].decision, "escalate");
+        assert_eq!(decisions[0].rule_name.as_deref(), Some("human_review"));
+        assert_eq!(decisions[0].reason.as_deref(), Some("needs approval"));
+        assert!(!decisions[0].id.is_empty());
+        assert!(!decisions[0].created_at.is_empty());
+    }
 }

@@ -1,6 +1,6 @@
 # Ironclad: Architecture Design Document
 
-*Generated 2026-02-20. Complete blueprint for a Rust-native autonomous agent runtime.*
+*Complete blueprint for a Rust-native autonomous agent runtime.*
 
 ---
 

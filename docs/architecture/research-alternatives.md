@@ -1,6 +1,6 @@
 # Research: Bot Construction Approaches & Alternative Technologies
 
-*Generated 2026-02-20. Comprehensive survey of known and novel approaches to autonomous agent construction.*
+*Comprehensive survey of known and novel approaches to autonomous agent construction.*
 
 ---
 
@@ -11,12 +11,14 @@
 **Architecture**: Directed graphs where nodes are actions and edges define control flow. Supports both DAGs and cyclic graphs.
 
 **Strengths**:
+
 - Production standard for complex stateful workflows
 - Human-in-the-loop checkpointing
 - Built-in observability via LangSmith
 - Deterministic routing with error recovery
 
 **Weaknesses**:
+
 - Python-only (inherits Python's performance characteristics)
 - Heavy abstraction layer adds latency and debugging complexity
 - LangChain dependency chain is massive (hundreds of transitive dependencies)
@@ -29,11 +31,13 @@
 **Architecture**: Role-based multi-agent collaboration. Agents defined with roles, goals, and backstories organized into crews.
 
 **Strengths**:
+
 - Lowest learning curve
 - Intuitive team coordination
 - Good for straightforward multi-agent scenarios
 
 **Weaknesses**:
+
 - Limited to role-based patterns
 - No financial autonomy or self-sustaining capabilities
 - Python-only
@@ -46,12 +50,14 @@
 **Architecture**: Unified framework combining AutoGen's multi-agent orchestration with Semantic Kernel's enterprise runtime. Graph-based workflows with sequential, concurrent, handoff, and group chat patterns.
 
 **Strengths**:
+
 - Enterprise-ready: observability, approvals, security, durability
 - MCP and A2A protocol support built-in
 - .NET and Python support
 - Release Candidate status (stable API)
 
 **Weaknesses**:
+
 - .NET or Python only (no Rust, no single-binary deployment)
 - Enterprise-focused (heavy infrastructure assumptions)
 - No financial autonomy or crypto integration
@@ -64,11 +70,13 @@
 **Architecture**: Type-safe agent framework using Pydantic models for structured inputs/outputs.
 
 **Strengths**:
+
 - Strong type safety at runtime (via Pydantic validation)
 - Clean structured output handling
 - Production-oriented
 
 **Weaknesses**:
+
 - Python-only
 - Limited orchestration capabilities
 - No persistence or memory system
@@ -83,6 +91,7 @@
 ### 2.1 — AutoAgents (Rust)
 
 **Benchmarks** (2026 comprehensive benchmark):
+
 - Memory: 1,046 MB peak (vs 4,718 MB for GraphBit JS/TS) — 4.5x improvement
 - Latency: 5,714 ms average (vs 8,425 ms for GraphBit) — 1.5x improvement
 - Throughput: 4.97 req/s (vs 3.14 req/s for GraphBit) — 1.6x improvement
@@ -93,6 +102,7 @@
 ### 2.2 — AgentSDK (Rust)
 
 **Benchmarks**:
+
 - Idle memory: 12 MB (vs LangChain 218 MB) — 18x improvement
 - Cold start: 2.3 ms (vs LangChain 108 ms) — 47x improvement
 - Throughput: 8,400 req/s (vs LlamaIndex 920 req/s) — 9x improvement
@@ -104,6 +114,7 @@
 **Purpose**: Compile-time validated, zero-overhead async finite state machines for Tokio.
 
 **Key features**:
+
 - Declarative state machine definition via macros
 - Compile-time validation of state transitions (directed graph analysis)
 - Zero-cost: no runtime engine overhead, tight match loops
@@ -116,6 +127,7 @@
 **Purpose**: Elixir-inspired agent pattern for Tokio — manages state within a task.
 
 **Key features**:
+
 - `Handle` (async) and `BlockingHandle` (sync) for state interaction
 - Lock-free resource management
 - Compatible with blocking I/O (SQLite)
@@ -131,11 +143,13 @@
 **Concept**: Machine learning classifier that predicts whether a query needs a strong or weak model. Routes simple queries to cheap models, complex queries to expensive ones.
 
 **Performance**:
+
 - Router overhead: 11 microseconds per classification
 - Cost savings: ~60% with <5% quality degradation
 - If 70% of queries use GPT-5-mini ($0.25) instead of GPT-5.2 ($1.75): 60% input cost savings
 
 **Architecture**: Small classifier model trained on preference data. Can use:
+
 - Logistic regression on embeddings (fastest, ~11μs)
 - Small neural network (more accurate, ~1ms)
 - LLM-as-judge (most accurate, ~100ms)
@@ -173,6 +187,7 @@
 **Architecture**: Embedding-based cache with configurable similarity threshold.
 
 **How it works**:
+
 1. Compute embedding of incoming prompt
 2. Search cache for similar embeddings (cosine similarity > threshold)
 3. If hit: return cached response
@@ -191,6 +206,7 @@
 ### 4.3 — Hierarchical Caching
 
 **Levels**:
+
 1. **Exact match** (hash of full prompt) — O(1) lookup, 100% precision
 2. **Semantic match** (embedding similarity) — O(log n) lookup, ~95% precision
 3. **Tool result cache** (deterministic tools with TTL) — per-tool caching
@@ -210,6 +226,7 @@
 ### 5.2 — Structural Deduplication
 
 **Concept**: For agent systems, much of the system prompt is repeated across turns. Instead of sending the full prompt each time:
+
 1. Send full prompt on first turn (or after compaction)
 2. On subsequent turns, send a hash reference to the static prefix
 3. Only send dynamic sections (memory, recent history) in full
@@ -221,6 +238,7 @@
 **Concept**: Don't load all context upfront. Start with minimal context, expand only if the model requests more.
 
 **Levels**:
+
 1. **Level 0**: Core identity + current task only (~2K tokens)
 2. **Level 1**: Add relevant memories (~4K tokens)
 3. **Level 2**: Add full tool descriptions (~8K tokens)
@@ -245,11 +263,13 @@ Most simple queries can be answered at Level 0-1, saving 50-75% of input tokens.
 **The problem**: AI agents hold USDC as operational float earning 0% APY. McKinsey projects agentic commerce at $3-5 trillion by 2030. Idle balances could reach $10-30 billion — $500M to $2.4B in unrealized annual yield.
 
 **Solution**: Automated yield strategies for idle USDC:
+
 - **Aave on Base**: Deposit USDC into Aave lending pool. Current yield: 4-6% APY. Instant withdrawal.
 - **Compound on Base**: Similar to Aave. 3-5% APY.
 - **Circle Earn**: Institutional yield on USDC. 4.5% APY. Less composable.
 
 **Safety**: Only deposit excess above operational float. Example:
+
 - Operational float: $50 (enough for ~1 week of inference)
 - Any USDC above $50: deposit into Aave
 - When balance drops below $30: withdraw from Aave to replenish
@@ -260,7 +280,7 @@ Most simple queries can be answered at Level 0-1, saving 50-75% of input tokens.
 
 **Concept**: The agent can offer services (code review, content generation, research) and receive USDC payments directly. Combined with yield generation, this creates a self-sustaining economic loop:
 
-```
+```text
 Earn USDC (services) → Deposit excess (Aave) → Earn yield →
 Withdraw for compute → Buy inference → Deliver services → Repeat
 ```
@@ -282,6 +302,7 @@ Withdraw for compute → Buy inference → Deliver services → Repeat
 **Concept**: Use Rust's type system to enforce agent safety at compile time rather than runtime.
 
 **Examples**:
+
 - **State machine as type states**: The agent can only call `sleep()` from the `Running` state. Calling it from `Dead` is a compile error.
 - **Policy as phantom types**: A tool call wrapper that carries its policy evaluation result in the type system. You can't execute a tool without first evaluating policy — enforced by the compiler.
 - **Financial limits as const generics**: Treasury policy limits embedded as const generics, making it impossible to construct a payment above the cap.
@@ -293,6 +314,7 @@ Withdraw for compute → Buy inference → Deliver services → Repeat
 **Concept**: Instead of a fixed tool set, allow tools to be loaded as WebAssembly modules at runtime. Each tool runs in a sandboxed WASM environment with memory limits and capability restrictions.
 
 **Benefits**:
+
 - Tools can be written in any language that compiles to WASM
 - Sandboxed execution — a buggy tool can't crash the runtime
 - Memory-limited — prevents OOM from runaway tools
@@ -303,11 +325,13 @@ Withdraw for compute → Buy inference → Deliver services → Repeat
 ### 7.3 — Speculative Execution for Agent Loops
 
 **Concept**: While waiting for an LLM response, speculatively prepare for likely next actions:
+
 - Pre-fetch tool results the model is likely to request
 - Pre-compute context for likely follow-up questions
 - Pre-warm inference for fallback models
 
 **Implementation**:
+
 1. After sending an inference request, analyze the conversation to predict likely tool calls
 2. Execute those tool calls in parallel (read-only ones only)
 3. When the LLM response arrives, if it requests a pre-fetched tool, return immediately
@@ -317,7 +341,7 @@ Withdraw for compute → Buy inference → Deliver services → Repeat
 
 **Concept**: Instead of routing to a single model, use a pipeline:
 
-```
+```text
 Query → Local Small Model (qwen3:8b, ~100ms) → Confidence Check
     If confident (>0.9): return immediately
     If uncertain: escalate to cloud model (GPT-5.3, ~2s)
@@ -326,6 +350,7 @@ Query → Local Small Model (qwen3:8b, ~100ms) → Confidence Check
 **Performance**: 70% of queries answered by the local model in <200ms. Only 30% escalate to cloud, saving 70% of cloud API costs.
 
 **Relevance to Ironclad**: Combined with semantic caching, this creates a 3-layer response pipeline:
+
 1. Cache hit → 5ms
 2. Local model confident → 200ms
 3. Cloud model → 2000ms
@@ -334,10 +359,10 @@ Query → Local Small Model (qwen3:8b, ~100ms) → Confidence Check
 
 ## 8. Actual Technology Choices (Ironclad)
 
-What Ironclad uses in practice (as of this doc):
+What Ironclad uses in practice:
 
 | Choice | Implementation |
-|--------|-----------------|
+| -------- | ----------------- |
 | **Routing** | Heuristic classifier (message length, tool calls, depth). Default mode `"heuristic"`; `"ml"` is backward-compat alias. No ONNX. |
 | **Cache** | In-memory HashMap (`SemanticCache` in ironclad-llm). L1 exact hash, L3 tool TTL, L2 n-gram similarity. No SQLite cache, no Redis. |
 | **Database** | SQLite via **rusqlite** (not diesel). Single DB, WAL mode. |

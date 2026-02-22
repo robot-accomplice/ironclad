@@ -96,4 +96,24 @@ mod tests {
         assert!(!is_connection_error("404 Not Found"));
         assert!(!is_connection_error("timeout after 30s"));
     }
+
+    #[test]
+    fn detects_connect_error_lowercase() {
+        assert!(is_connection_error("connect error: tcp handshake failed"));
+    }
+
+    #[test]
+    fn detects_hyper_error() {
+        assert!(is_connection_error("hyper::Error somewhere in the chain"));
+    }
+
+    #[test]
+    fn empty_string_is_not_connection_error() {
+        assert!(!is_connection_error(""));
+    }
+
+    #[test]
+    fn detects_connection_refused_variant() {
+        assert!(is_connection_error("ConnectionRefused: host unreachable"));
+    }
 }

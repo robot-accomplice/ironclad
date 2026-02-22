@@ -1,8 +1,8 @@
 # Ironclad Dataflow Diagrams
 
-*Generated 2026-02-20. Describes data flows for the Ironclad architecture -- a single Rust binary autonomous agent runtime.*
+*Data flows for the Ironclad architecture -- a single Rust binary autonomous agent runtime.*
 
-**Convention**: every SQLite table name, config key, crate name, and Rust type referenced in these diagrams is cross-referenced against `ironclad-design.md` in the self-audit section at the end.
+**Convention**: every SQLite table name, config key, crate name, and Rust type referenced in these diagrams is cross-referenced against `ironclad-design.md` in the cross-reference section at the end.
 
 ---
 
@@ -12,68 +12,76 @@ End-to-end path from inbound user message to delivered response, entirely within
 
 ```mermaid
 flowchart TD
-    USER["User Message<br/>(Telegram / WhatsApp / WebSocket)"]
-    USER --> ADAPTER["ironclad-channels<br/>Channel Adapter<br/>(protocol-specific deserialization)"]
-    ADAPTER --> SESSION_LOOKUP["ironclad-db/sessions.rs<br/>Lookup or create session<br/>(sessions table, SQLite)"]
+    subgraph Intake["① Intake & Screening"]
+        USER["User Message<br/>(Telegram / WhatsApp / WebSocket)"]
+        USER --> ADAPTER["ironclad-channels · Channel Adapter"]
+        ADAPTER --> SESSION_LOOKUP["ironclad-db/sessions.rs<br/>Lookup or create session"]
+        SESSION_LOOKUP --> INJECTION_L1["ironclad-agent/injection.rs<br/>L1: Input Gatekeeping<br/>(regex, encoding, authority,<br/>financial, multi-lang)<br/>→ ThreatScore 0.0–1.0"]
+        INJECTION_L1 --> THREAT_CHECK{"ThreatScore?"}
+        THREAT_CHECK -->|"> 0.7"| BLOCK["Block + audit log<br/>(policy_decisions table)"]
+        THREAT_CHECK -->|"0.3–0.7"| SANITIZE["Sanitize + flag reduced authority"]
+        THREAT_CHECK -->|"< 0.3"| PASS["Pass clean"]
+    end
 
-    SESSION_LOOKUP --> INJECTION_L1["ironclad-agent/injection.rs<br/>Layer 1: Input Gatekeeping<br/>(regex, encoding, authority,<br/>financial, multi-lang checks)<br/>-> ThreatScore 0.0-1.0"]
+    SANITIZE & PASS --> CACHE_CHECK
 
-    INJECTION_L1 --> THREAT_CHECK{"ThreatScore?"}
-    THREAT_CHECK -->|"> 0.7"| BLOCK["Block + audit log<br/>(policy_decisions table)"]
-    THREAT_CHECK -->|"0.3-0.7"| SANITIZE["Sanitize input<br/>+ flag for reduced authority"]
-    THREAT_CHECK -->|"< 0.3"| PASS["Pass clean"]
-    SANITIZE --> CACHE_CHECK
-    PASS --> CACHE_CHECK
+    subgraph CachePhase["② Cache Lookup (in-memory HashMap)"]
+        CACHE_CHECK["ironclad-llm/cache.rs · 3-Level"]
+        CACHE_CHECK --> CACHE_L1{"L1: Exact hash?"}
+        CACHE_L1 -->|hit| CACHE_HIT["Cache hit"]
+        CACHE_L1 -->|miss| CACHE_L3{"L3: Tool TTL?"}
+        CACHE_L3 -->|hit| CACHE_HIT
+        CACHE_L3 -->|miss| CACHE_L2{"L2: Semantic n-gram cosine?"}
+        CACHE_L2 -->|hit| CACHE_HIT
+        CACHE_L2 -->|miss| CACHE_MISS["Cache miss"]
+    end
 
-    CACHE_CHECK["ironclad-llm/cache.rs<br/>In-Memory 3-Level (HashMap)"]
-    CACHE_CHECK --> CACHE_L1{"L1: Exact hash hit?"}
-    CACHE_L1 -->|hit| CACHE_HIT["Return cached response"]
-    CACHE_L1 -->|miss| CACHE_L3{"L3: Tool TTL lookup"}
-    CACHE_L3 -->|hit| CACHE_HIT
-    CACHE_L3 -->|miss| CACHE_L2{"L2: Semantic n-gram cosine"}
-    CACHE_L2 -->|hit| CACHE_HIT
-    CACHE_L2 -->|miss| CONTEXT_BUILD
+    CACHE_HIT --> DELIVER_CACHED["ironclad-channels · Deliver cached response to User"]
+    CACHE_MISS --> CONTEXT_BUILD
 
-    CONTEXT_BUILD["ironclad-agent/context.rs<br/>Context assembly"]
-    CONTEXT_BUILD --> HEURISTIC["ironclad-llm/router.rs<br/>Heuristic classify_complexity<br/>(no ONNX/ML)"]
+    subgraph ContextPhase["③ Context & Prompt Assembly"]
+        CONTEXT_BUILD["ironclad-agent/context.rs"]
+        CONTEXT_BUILD --> HEURISTIC["ironclad-llm/router.rs<br/>Heuristic classify_complexity"]
+        HEURISTIC --> MEMORY_RETRIEVE["ironclad-agent/memory.rs<br/>MemoryBudgetManager · 5-tier retrieval"]
+        MEMORY_RETRIEVE --> PROMPT_BUILD["ironclad-agent/prompt.rs<br/>Build system prompt + HMAC L2 boundaries"]
+    end
 
-    HEURISTIC --> MEMORY_RETRIEVE
+    PROMPT_BUILD --> MODEL_SELECT
 
-    MEMORY_RETRIEVE["ironclad-agent/memory.rs<br/>MemoryBudgetManager, 5-tier retrieval"]
-    MEMORY_RETRIEVE --> PROMPT_BUILD["ironclad-agent/prompt.rs<br/>Build System Prompt + HMAC L2"]
+    subgraph LlmPipeline["④ LLM Inference Pipeline"]
+        MODEL_SELECT["ironclad-llm/router.rs<br/>select_for_complexity"]
+        MODEL_SELECT --> FORMAT_XLATE["ironclad-llm/format.rs<br/>ApiFormat translation"]
+        FORMAT_XLATE --> CIRCUIT{"Circuit Breaker<br/>blocked?"}
+        CIRCUIT -->|"blocked → advance fallback"| MODEL_SELECT
+        CIRCUIT -->|open| DEDUP{"In-flight<br/>duplicate?"}
+        DEDUP -->|duplicate| DEDUP_REJECT["429 reject"]
+        DEDUP -->|unique| TIER_ADAPT["ironclad-llm/tier.rs<br/>T1: condense · T2: reorder<br/>T3/T4: passthrough + cache_control"]
+        TIER_ADAPT --> FORWARD["ironclad-llm/client.rs<br/>HTTP/2 forward (reqwest pool)"]
+        FORWARD --> UPSTREAM["LLM Provider<br/>(Anthropic / Google / Moonshot /<br/>OpenAI / Ollama)"]
+    end
 
-    PROMPT_BUILD --> MODEL_SELECT["ironclad-llm/router.rs<br/>select_for_complexity (heuristic/ml mode)"]
-    MODEL_SELECT --> FORMAT_XLATE["ironclad-llm/format.rs<br/>ApiFormat enum translation<br/>(From trait, compile-time safe)"]
-    FORMAT_XLATE --> CIRCUIT{"ironclad-llm/circuit.rs<br/>Circuit Breaker<br/>blocked?"}
-    CIRCUIT -->|blocked| FALLBACK["Advance fallback chain<br/>(models.fallbacks config)"]
-    FALLBACK --> MODEL_SELECT
-    CIRCUIT -->|open| DEDUP{"ironclad-llm/dedup.rs<br/>In-flight<br/>duplicate?"}
-    DEDUP -->|duplicate| DEDUP_REJECT["429 reject or warn<br/>(configurable)"]
-    DEDUP -->|unique| TIER_ADAPT["ironclad-llm/tier.rs<br/>Tier-based Prompt Adaptation<br/>T1: condensed + strip<br/>T2: preamble + reorder<br/>T3/T4: passthrough + cache_control"]
-    TIER_ADAPT --> FORWARD["ironclad-llm/client.rs<br/>Forward via persistent<br/>reqwest::Client pool<br/>(HTTP/2 where supported)"]
+    UPSTREAM --> RESP
 
-    FORWARD --> UPSTREAM["LLM Provider<br/>(Anthropic / Google / Moonshot /<br/>OpenAI / Ollama)"]
+    subgraph ResponsePhase["⑤ Response Processing"]
+        RESP["Response received"]
+        RESP --> BREAKER_UPDATE["Update circuit breaker"]
+        RESP --> COST_TRACK["Record inference_costs<br/>(model, provider, tokens, cost, tier)"]
+        RESP --> RESP_XLATE["Format back-translation"]
+        RESP_XLATE --> TOOL_EXEC{"Tool calls<br/>requested?"}
+        TOOL_EXEC -->|yes| POLICY_EVAL["Policy engine (6 rules)"]
+        POLICY_EVAL --> EXEC_TOOLS["Execute allowed tools"]
+        TOOL_EXEC -->|no| PERSIST
+        EXEC_TOOLS --> PERSIST
+    end
 
-    UPSTREAM --> RESP["ironclad-llm/client.rs<br/>Response Processing"]
-    RESP --> BREAKER_UPDATE["Update circuit breaker<br/>(record_success / record_429 /<br/>record_credit_error)"]
-    RESP --> RESP_XLATE["Format back-translation<br/>(if format mismatch)"]
-    RESP --> COST_TRACK["Record in inference_costs table<br/>(model, provider, tokens_in,<br/>tokens_out, cost, tier)"]
-
-    RESP_XLATE --> TOOL_EXEC{"Tool calls<br/>requested?"}
-    TOOL_EXEC -->|yes| POLICY_EVAL["Policy engine (6 rules)<br/>Authority, CommandSafety, Financial,<br/>PathProtection, RateLimit, Validation"]
-    POLICY_EVAL --> EXEC_TOOLS["Execute allowed tools<br/>(tool_calls table)"]
-    TOOL_EXEC -->|no| PERSIST
-    EXEC_TOOLS --> PERSIST
-
-    PERSIST["ironclad-db<br/>Atomic SQLite transaction:<br/>1. Append session_messages<br/>2. Record turn<br/>3. Record tool_calls<br/>4. Record policy_decisions"]
-
-    PERSIST --> INJECTION_L4["ironclad-agent/injection.rs L4<br/>scan_output: NFKC, decode, homoglyph, regex"]
-    INJECTION_L4 --> MEMORY_INGEST["ironclad-agent/memory.rs<br/>ingest_turn: classify_turn -> store"]
-    MEMORY_INGEST --> CACHE_STORE["ironclad-llm/cache.rs<br/>store() in HashMap"]
-    CACHE_STORE --> DELIVER["ironclad-channels<br/>Channel Adapter<br/>(format for platform + deliver)"]
-    DELIVER --> USER_RESP["Response to User"]
-
-    CACHE_HIT --> DELIVER
+    subgraph DeliverPhase["⑥ Persist & Deliver"]
+        PERSIST["ironclad-db · Atomic SQLite transaction:<br/>session_messages, turn, tool_calls,<br/>policy_decisions"]
+        PERSIST --> INJECTION_L4["L4 scan_output:<br/>NFKC, decode, homoglyph, regex"]
+        INJECTION_L4 --> MEMORY_INGEST["ingest_turn → classify → store"]
+        MEMORY_INGEST --> CACHE_STORE["Cache store (HashMap)"]
+        CACHE_STORE --> DELIVER["ironclad-channels · Deliver"]
+        DELIVER --> USER_RESP["Response to User"]
+    end
 ```
 
 ---
@@ -119,32 +127,34 @@ flowchart TD
     QUERY["Incoming query<br/>(post context assembly)"]
     QUERY --> MODE{"models.routing.mode?"}
 
-    MODE -->|"primary"| RULE_CHAIN["Always primary model"]
+    MODE -->|"primary"| DIRECT["Use primary model"]
 
-    MODE -->|"heuristic" or "ml"| FEATURES["extract_features():<br/>message len, tool_call count, depth"]
-    FEATURES --> HEURISTIC["HeuristicBackend::classify_complexity<br/>weighted sum -> score 0.0-1.0"]
-    HEURISTIC --> LOCAL_FIRST{"local_first && score <<br/>confidence_threshold?<br/>primary is_local from registry or heuristic"}
-    LOCAL_FIRST -->|yes| T1_ROUTE["Use primary (local)"]
-    LOCAL_FIRST -->|no| PRIMARY_ROUTE["select_for_complexity:<br/>high score -> fallback[0], else primary"]
+    MODE -->|"heuristic / ml"| FEATURES["extract_features():<br/>message len, tool_call count, depth"]
+    FEATURES --> HEURISTIC["HeuristicBackend::classify_complexity<br/>weighted sum → score 0.0–1.0"]
 
-    T1_ROUTE --> T1_RESP{"T1 response<br/>quality OK?<br/>(not truncated, not refusal,<br/>not nonsensical)"}
-    T1_RESP -->|yes| ACCEPT["Accept response"]
-    T1_RESP -->|no| ESCALATE["Escalate to next tier<br/>(advance fallback chain)"]
-
-    PRIMARY_ROUTE --> PROVIDER_OK{"Provider<br/>available?<br/>(circuit breaker open?)"}
-    PROVIDER_OK -->|yes| ACCEPT_PRIMARY["Accept provider, forward"]
-    PROVIDER_OK -->|no| ESCALATE
-
-    ESCALATE --> NEXT_FALLBACK{"More models in<br/>models.fallbacks?"}
-    NEXT_FALLBACK -->|yes| TRY_NEXT["Try next fallback model<br/>(check circuit breaker first)"]
-    TRY_NEXT --> PROVIDER_OK
-    NEXT_FALLBACK -->|no| EXHAUST["All providers exhausted<br/>return error to caller"]
-
-    RULE_CHAIN --> PROVIDER_OK
-
-    subgraph Recording["Decision Recording"]
-        ACCEPT & ACCEPT_PRIMARY --> RECORD["INSERT INTO inference_costs<br/>(model, provider, tier,<br/>tokens_in, tokens_out,<br/>cost, cached = 0)"]
+    subgraph ModelSelection["Model Selection"]
+        HEURISTIC --> LOCAL_FIRST{"local_first &&<br/>score < threshold?"}
+        LOCAL_FIRST -->|yes| T1_ROUTE["Use primary (local)"]
+        LOCAL_FIRST -->|no| PRIMARY_ROUTE["select_for_complexity:<br/>high score → fallback[0]<br/>else primary"]
     end
+
+    subgraph ProviderCheck["Provider Availability (with fallback chain)"]
+        DIRECT & T1_ROUTE & PRIMARY_ROUTE --> BREAKER{"Circuit breaker<br/>open?"}
+        BREAKER -->|open| ACCEPT["Accept provider · forward"]
+        BREAKER -->|blocked| FALLBACK{"Fallbacks<br/>remaining?"}
+        FALLBACK -->|yes| NEXT["Advance to next<br/>fallback model"]
+        NEXT --> BREAKER
+        FALLBACK -->|no| EXHAUST["All providers exhausted<br/>→ error to caller"]
+    end
+
+    subgraph QualityGate["Response Quality Gate (local models)"]
+        ACCEPT --> QUALITY{"Response<br/>quality OK?"}
+        QUALITY -->|yes| RECORD
+        QUALITY -->|"no (local only)"| ESCALATE["Escalate → re-enter<br/>with next fallback"]
+        ESCALATE --> BREAKER
+    end
+
+    RECORD["Record inference_costs<br/>(model, provider, tier,<br/>tokens_in/out, cost)"]
 ```
 
 ---
@@ -261,60 +271,61 @@ flowchart TD
 flowchart TD
     subgraph L1["Layer 1: Input Gatekeeping (injection.rs)"]
         INPUT["Raw input text<br/>(user, peer, or tool output)"]
-        INPUT --> CHECK_REGEX["Regex pattern detection:<br/>- instruction override (ignore previous,<br/>  you are now, system:)<br/>- ChatML delimiters<br/>- authority claims (I am the admin,<br/>  creator says, system override)"]
-        INPUT --> CHECK_ENCODING["Encoding evasion detection:<br/>- base64-encoded instructions<br/>- unicode homoglyphs<br/>- zero-width characters<br/>- HTML entity encoding"]
-        INPUT --> CHECK_FINANCIAL["Financial manipulation:<br/>- transfer/send/pay directives<br/>- treasury policy overrides<br/>- wallet key extraction attempts"]
-        INPUT --> CHECK_MULTILANG["Multi-language injection:<br/>- CJK instruction patterns<br/>- Cyrillic override phrases<br/>- Arabic command sequences"]
-
-        CHECK_REGEX & CHECK_ENCODING & CHECK_FINANCIAL & CHECK_MULTILANG --> SCORE["Aggregate ThreatScore<br/>(0.0 - 1.0)"]
-
-        SCORE --> DECISION{"Score threshold?"}
-        DECISION -->|"> 0.7"| BLOCK_INPUT["BLOCK: reject input<br/>INSERT INTO policy_decisions<br/>(decision = deny,<br/>rule_name = injection_defense,<br/>reason = threat score detail)"]
-        DECISION -->|"0.3 - 0.7"| SANITIZE_INPUT["SANITIZE: strip suspicious<br/>patterns, flag source as<br/>reduced_authority"]
-        DECISION -->|"< 0.3"| CLEAN["PASS: input is clean"]
+        INPUT --> CHECKS["Parallel checks:<br/>· Regex (instruction override, ChatML, authority)<br/>· Encoding evasion (base64, homoglyphs, zero-width)<br/>· Financial manipulation (transfer, policy override)<br/>· Multi-language (CJK, Cyrillic, Arabic)"]
+        CHECKS --> SCORE["Aggregate ThreatScore 0.0–1.0"]
+        SCORE --> DECISION{"Threshold?"}
+        DECISION -->|"> 0.7"| BLOCK_INPUT["BLOCK · log to policy_decisions"]
+        DECISION -->|"0.3–0.7"| SANITIZE_INPUT["SANITIZE · reduced_authority"]
+        DECISION -->|"< 0.3"| CLEAN["PASS"]
     end
 
-    subgraph L2["Layer 2: Structured Prompt Formatting (prompt.rs)"]
-        CLEAN & SANITIZE_INPUT --> BUILD_PROMPT["Build prompt with<br/>trust boundary markers"]
-        BUILD_PROMPT --> TRUSTED["Wrap system instructions in<br/>trusted_system markers +<br/>HMAC tag (session_secret +<br/>content_hash)"]
-        BUILD_PROMPT --> USER_WRAP["Wrap user input in<br/>user_input markers"]
-        BUILD_PROMPT --> TOOL_WRAP["Wrap tool outputs in<br/>tool_output markers"]
-        BUILD_PROMPT --> PEER_WRAP["Wrap peer messages in<br/>peer_agent_input trust_level=X<br/>markers (X from<br/>relationship_memory.trust_score)"]
+    CLEAN & SANITIZE_INPUT --> BUILD_PROMPT
 
-        TRUSTED & USER_WRAP & TOOL_WRAP & PEER_WRAP --> ASSEMBLED["Assembled prompt<br/>(HMAC-tagged boundaries<br/>unforgeable by injected content)"]
+    subgraph L2["Layer 2: Structured Prompt Formatting (prompt.rs)"]
+        BUILD_PROMPT["Build prompt with trust boundaries"]
+        BUILD_PROMPT --> WRAP["Wrap each section:<br/>· trusted_system + HMAC tag<br/>· user_input<br/>· tool_output<br/>· peer_agent_input trust_level=X"]
+        WRAP --> ASSEMBLED["Assembled HMAC-tagged prompt<br/>(unforgeable by injected content)"]
     end
 
     subgraph L3["Layer 3: Output Validation (policy.rs)"]
-        LLM_RESP["LLM response received<br/>(may contain tool calls)"]
-        LLM_RESP --> FOR_EACH_TOOL["For each requested tool call"]
-        FOR_EACH_TOOL --> AUTH_CHECK{"Input source?"}
+        LLM_RESP["LLM response with tool calls"]
 
-        AUTH_CHECK -->|creator| FULL_AUTH["Full authority<br/>(all risk levels allowed)"]
-        AUTH_CHECK -->|self| SELF_AUTH["Self authority<br/>(safe + caution + dangerous allowed,<br/>forbidden blocked)"]
-        AUTH_CHECK -->|peer| PEER_AUTH["Peer authority<br/>(safe + caution only,<br/>dangerous + forbidden blocked)"]
-        AUTH_CHECK -->|external| EXT_AUTH["External authority<br/>(safe only)"]
+        subgraph AuthGate["Authority Gate (per tool call)"]
+            AUTH_CHECK{"Input source?"}
+            AUTH_CHECK -->|creator| FULL_AUTH["All risk levels"]
+            AUTH_CHECK -->|self| SELF_AUTH["Safe + Caution + Dangerous"]
+            AUTH_CHECK -->|peer| PEER_AUTH["Safe + Caution only"]
+            AUTH_CHECK -->|external| EXT_AUTH["Safe only"]
+        end
 
-        PEER_AUTH --> FIN_CHECK{"Financial<br/>tool call?"}
-        FIN_CHECK -->|yes| STRICTER["Apply stricter limits<br/>(treasury.per_payment_cap / 10,<br/>treasury.hourly_transfer_limit / 5)"]
-        FIN_CHECK -->|no| ALLOW_PEER["Allow if risk_level <= caution"]
+        subgraph PeerFinancial["Peer Financial Guard"]
+            PEER_AUTH --> FIN_CHECK{"Financial call?"}
+            FIN_CHECK -->|yes| STRICTER["Stricter limits<br/>(cap/10, hourly/5)"]
+            FIN_CHECK -->|no| ALLOW_PEER["Allow"]
+        end
 
-        FOR_EACH_TOOL --> SELFMOD_CHECK{"Self-modification<br/>tool?"}
-        SELFMOD_CHECK -->|yes| CREATOR_ONLY{"Source =<br/>creator?"}
-        CREATOR_ONLY -->|yes| ALLOW_MOD["Allow self-modification"]
-        CREATOR_ONLY -->|no| DENY_MOD["DENY: self-mod requires<br/>creator authority<br/>(policy_decisions table)"]
+        subgraph SelfModGuard["Self-Modification Guard"]
+            SELFMOD_CHECK{"Self-mod tool?"}
+            SELFMOD_CHECK -->|no| SKIP_MOD["N/A"]
+            SELFMOD_CHECK -->|yes| CREATOR_ONLY{"Source = creator?"}
+            CREATOR_ONLY -->|yes| ALLOW_MOD["Allow"]
+            CREATOR_ONLY -->|no| DENY_MOD["DENY"]
+        end
 
+        LLM_RESP --> AUTH_CHECK
+        LLM_RESP --> SELFMOD_CHECK
         FULL_AUTH & SELF_AUTH & ALLOW_PEER & STRICTER & ALLOW_MOD --> EXECUTE["Execute tool call"]
     end
 
-    subgraph L4["Layer 4: Adaptive Response Refinement"]
-        RESPONSE["Final response text<br/>(before delivery to user)"]
-        RESPONSE --> SCAN_OUTPUT["Scan for injection patterns<br/>in LLM output itself<br/>(agent producing malicious text)"]
-        RESPONSE --> ANOMALY_CHECK["Behavioral anomaly detection:<br/>- Sudden tool pattern changes<br/>- Protected file read attempts<br/>- Repeated financial operations<br/>- Unusual session length"]
-        SCAN_OUTPUT --> OUTPUT_CLEAN{"Output clean?"}
-        OUTPUT_CLEAN -->|no| STRIP["Strip suspicious content<br/>+ alert via metric_snapshots"]
-        OUTPUT_CLEAN -->|yes| DELIVER_FINAL["Deliver response"]
-        ANOMALY_CHECK --> ANOMALY_FOUND{"Anomaly<br/>detected?"}
-        ANOMALY_FOUND -->|yes| ALERT["Record alert in<br/>metric_snapshots table<br/>+ optionally wake operator"]
+    subgraph L4["Layer 4: Adaptive Refinement"]
+        RESPONSE["Final response text"]
+        RESPONSE --> SCAN_OUTPUT["Scan output for<br/>injection patterns"]
+        SCAN_OUTPUT --> OUTPUT_CLEAN{"Clean?"}
+        OUTPUT_CLEAN -->|no| STRIP["Strip + alert"]
+        OUTPUT_CLEAN -->|yes| DELIVER_FINAL["Deliver"]
+        RESPONSE --> ANOMALY_CHECK["Behavioral anomaly check:<br/>tool pattern changes,<br/>protected file access,<br/>repeated financial ops"]
+        ANOMALY_CHECK --> ANOMALY_FOUND{"Anomaly?"}
+        ANOMALY_FOUND -->|yes| ALERT["Alert via metric_snapshots"]
         ANOMALY_FOUND -->|no| DELIVER_FINAL
     end
 ```
@@ -327,60 +338,59 @@ x402 credit purchases and Aave/Compound yield generation. Core logic in `ironcla
 
 ```mermaid
 flowchart TD
-    subgraph Monitoring["Survival Monitoring (heartbeat task)"]
+    subgraph Monitoring["① Survival Monitoring (heartbeat task)"]
         HB_TICK["Heartbeat tick<br/>(ironclad-schedule/heartbeat.rs)"]
-        HB_TICK --> FETCH_CREDITS["Fetch credit balance<br/>(Credits API)"]
-        HB_TICK --> FETCH_USDC["Fetch USDC balance<br/>(Base RPC via alloy-rs,<br/>wallet.rpc_url)"]
-
-        FETCH_CREDITS --> CALC_TIER["Calculate SurvivalTier<br/>(ironclad-core/types.rs)"]
+        HB_TICK --> FETCH_CREDITS["Fetch credit balance"]
+        HB_TICK --> FETCH_USDC["Fetch USDC balance<br/>(Base RPC via alloy-rs)"]
+        FETCH_CREDITS --> CALC_TIER["Calculate SurvivalTier"]
         CALC_TIER --> TIER_BRANCH{"SurvivalTier?"}
-        TIER_BRANCH -->|High| NORMAL["Normal operation"]
-        TIER_BRANCH -->|Normal| NORMAL
-        TIER_BRANCH -->|LowCompute| LOW["Low compute mode:<br/>downgrade to T1/T2 models,<br/>reduce heartbeat frequency"]
-        TIER_BRANCH -->|Critical| CRIT["Critical mode:<br/>distress signals,<br/>accept funding only"]
-        TIER_BRANCH -->|Dead| DEAD_STATE["Dead: wait for funding,<br/>heartbeat broadcasts distress"]
+        TIER_BRANCH -->|"High / Normal"| NORMAL["Normal operation"]
+        TIER_BRANCH -->|LowCompute| LOW["Downgrade to T1/T2 models"]
+        TIER_BRANCH -->|Critical| CRIT["Distress signals, accept funding only"]
+        TIER_BRANCH -->|Dead| DEAD_STATE["Wait for funding"]
     end
 
-    subgraph Topup["x402 Credit Topup (ironclad-wallet/x402.rs)"]
-        FETCH_USDC --> HAS_USDC{"USDC > 0?"}
-        HAS_USDC -->|yes| WAKE_AGENT["Signal agent wake<br/>(tokio mpsc channel)"]
-        HAS_USDC -->|no| NO_TOPUP["No action"]
+    FETCH_USDC --> HAS_USDC
+    CALC_TIER --> YIELD_CHECK
 
-        WAKE_AGENT --> TOPUP_TOOL["topup_credits tool invoked<br/>(select tier: $5-$2500)"]
-        TOPUP_TOOL --> X402_REQ["HTTP request to<br/>credits endpoint"]
-        X402_REQ --> X402_402["HTTP 402 response +<br/>payment requirements"]
-        X402_402 --> SIGN["Sign TransferWithAuthorization<br/>(EIP-3009, via alloy-rs,<br/>wallet.path private key)"]
+    subgraph Topup["② x402 Credit Topup (ironclad-wallet/x402.rs)"]
+        HAS_USDC{"USDC > 0?"}
+        HAS_USDC -->|no| NO_TOPUP["No action"]
+        HAS_USDC -->|yes| WAKE_AGENT["Signal agent wake (mpsc)"]
+        WAKE_AGENT --> TOPUP_TOOL["topup_credits tool<br/>(select tier: $5–$2500)"]
+        TOPUP_TOOL --> X402_REQ["POST to credits endpoint"]
+        X402_REQ --> X402_402["HTTP 402 + payment requirements"]
+        X402_402 --> SIGN["Sign TransferWithAuthorization<br/>(EIP-3009, alloy-rs)"]
         SIGN --> RETRY["Retry with X-Payment header"]
         RETRY --> CREDITS_OK["Credits added"]
-        CREDITS_OK --> TX_LOG_TOPUP["INSERT INTO transactions<br/>(tx_type = topup,<br/>amount, tx_hash)"]
+        CREDITS_OK --> TX_LOG_TOPUP["INSERT transactions<br/>(topup, amount, tx_hash)"]
     end
 
-    subgraph Yield["Yield Engine (ironclad-wallet/yield_engine.rs)"]
-        HB_TICK --> YIELD_CHECK{"yield.enabled<br/>= true?"}
-        YIELD_CHECK -->|no| SKIP_YIELD["Skip yield operations"]
-        YIELD_CHECK -->|yes| CALC_EXCESS["Calculate excess USDC:<br/>excess = balance -<br/>treasury.minimum_reserve -<br/>operational_buffer"]
-
-        CALC_EXCESS --> DEPOSIT_CHECK{"excess ><br/>yield.min_deposit?<br/>(default $50)"}
-        DEPOSIT_CHECK -->|yes| AAVE_DEPOSIT["Call Aave deposit on Base<br/>(via alloy-rs contract call,<br/>yield.protocol = aave)"]
-        AAVE_DEPOSIT --> TX_LOG_DEP["INSERT INTO transactions<br/>(tx_type = yield_deposit,<br/>amount, tx_hash)"]
-        DEPOSIT_CHECK -->|no| WITHDRAW_CHECK
-
-        WITHDRAW_CHECK{"USDC balance <<br/>yield.withdrawal_threshold?<br/>(default $30)"}
-        WITHDRAW_CHECK -->|yes| AAVE_WITHDRAW["Call Aave withdraw<br/>(restore to minimum_reserve)"]
-        AAVE_WITHDRAW --> TX_LOG_WD["INSERT INTO transactions<br/>(tx_type = yield_withdraw,<br/>amount, tx_hash)"]
-        WITHDRAW_CHECK -->|no| YIELD_DONE["No yield action needed"]
-
-        HB_TICK --> YIELD_TRACK["Periodic: check aToken balance<br/>delta = current - last_known<br/>if delta > 0: INSERT INTO transactions<br/>(tx_type = yield_earned, amount = delta)"]
+    subgraph Yield["③ Yield Engine (ironclad-wallet/yield_engine.rs)"]
+        YIELD_CHECK{"yield.enabled?"}
+        YIELD_CHECK -->|no| SKIP_YIELD["Skip"]
+        YIELD_CHECK -->|yes| CALC_EXCESS["excess = balance −<br/>minimum_reserve − buffer"]
+        CALC_EXCESS --> DEPOSIT_CHECK{"excess > min_deposit?"}
+        DEPOSIT_CHECK -->|yes| AAVE_DEPOSIT["Aave deposit on Base"]
+        AAVE_DEPOSIT --> TX_LOG_DEP["INSERT transactions<br/>(yield_deposit)"]
+        DEPOSIT_CHECK -->|no| WITHDRAW_CHECK{"balance <<br/>withdrawal_threshold?"}
+        WITHDRAW_CHECK -->|yes| AAVE_WITHDRAW["Aave withdraw<br/>(restore to min_reserve)"]
+        AAVE_WITHDRAW --> TX_LOG_WD["INSERT transactions<br/>(yield_withdraw)"]
+        WITHDRAW_CHECK -->|no| YIELD_DONE["No yield action"]
     end
 
-    subgraph SpendControl["Spending Controls (ironclad-wallet/treasury.rs)"]
+    subgraph YieldTracking["④ Yield Earnings (periodic)"]
+        HB_TICK2["Heartbeat tick"] --> YIELD_TRACK["Check aToken balance delta<br/>if delta > 0: INSERT transactions<br/>(yield_earned, delta)"]
+    end
+
+    subgraph SpendControl["⑤ Spending Controls (ironclad-wallet/treasury.rs)"]
         FIN_TOOL["Financial tool call<br/>(transfer_credits, x402_fetch,<br/>topup_credits, spawn_child)"]
-        FIN_TOOL --> POLICY_ENGINE["ironclad-agent/policy.rs<br/>Policy engine evaluation"]
-        POLICY_ENGINE --> TREASURY_CHECK["TreasuryPolicy check:<br/>- per_payment_cap ($100)<br/>- hourly_transfer_limit ($500)<br/>- daily_transfer_limit ($2000)<br/>- minimum_reserve ($5)<br/>- daily_inference_budget ($50)"]
-        TREASURY_CHECK --> SPEND_QUERY["Query transactions table<br/>(hourly + daily aggregates)"]
-        SPEND_QUERY --> ALLOWED{"Within all<br/>limits?"}
+        FIN_TOOL --> POLICY_ENGINE["Policy engine evaluation"]
+        POLICY_ENGINE --> TREASURY_CHECK["TreasuryPolicy checks:<br/>per_payment_cap · hourly_limit<br/>daily_limit · min_reserve<br/>daily_inference_budget"]
+        TREASURY_CHECK --> SPEND_QUERY["Query transactions<br/>(hourly + daily aggregates)"]
+        SPEND_QUERY --> ALLOWED{"Within limits?"}
         ALLOWED -->|yes| EXEC_FIN["Execute transaction"]
-        ALLOWED -->|no| DENY_FIN["Deny + INSERT INTO<br/>policy_decisions<br/>(decision = deny,<br/>rule_name = treasury_policy)"]
+        ALLOWED -->|no| DENY_FIN["Deny + log to<br/>policy_decisions"]
     end
 ```
 
@@ -392,61 +402,64 @@ Unified scheduling system in `ironclad-schedule/`.
 
 ```mermaid
 flowchart TD
-    subgraph TickLoop["Tick Loop (ironclad-schedule/heartbeat.rs)"]
-        TOKIO_INTERVAL["tokio::time::interval<br/>(configurable, default 60s)<br/>select! pattern (no overlap)"]
-        TOKIO_INTERVAL --> BUILD_CTX["Build TickContext:<br/>- Fetch credit balance (once)<br/>- Fetch USDC balance (once)<br/>- Calculate SurvivalTier<br/>- Current timestamp"]
+    subgraph TickLoop["① Tick Loop (heartbeat.rs)"]
+        TOKIO_INTERVAL["tokio::time::interval<br/>(default 60s, select! no overlap)"]
+        TOKIO_INTERVAL --> BUILD_CTX["Build TickContext:<br/>credit balance, USDC balance,<br/>SurvivalTier, timestamp"]
     end
 
-    subgraph Evaluate["Job Evaluation (ironclad-schedule/scheduler.rs)"]
-        BUILD_CTX --> QUERY_JOBS["SELECT FROM cron_jobs<br/>WHERE enabled = 1"]
+    BUILD_CTX --> QUERY_JOBS
+
+    subgraph Evaluate["② Job Evaluation (scheduler.rs)"]
+        QUERY_JOBS["SELECT cron_jobs WHERE enabled = 1"]
         QUERY_JOBS --> FOR_EACH["For each job"]
         FOR_EACH --> SCHED_TYPE{"schedule_kind?"}
-
-        SCHED_TYPE -->|cron| CRON_EVAL["Evaluate cron expression<br/>(schedule_expr + schedule_tz)"]
-        SCHED_TYPE -->|every| INTERVAL_EVAL["Elapsed since last_run_at<br/>>= schedule_every_ms?"]
-        SCHED_TYPE -->|at| AT_EVAL["now() >= schedule_expr<br/>(one-time fire)?"]
-
+        SCHED_TYPE -->|cron| CRON_EVAL["Evaluate cron expression"]
+        SCHED_TYPE -->|every| INTERVAL_EVAL["Elapsed ≥ schedule_every_ms?"]
+        SCHED_TYPE -->|at| AT_EVAL["now() ≥ schedule_expr?"]
         CRON_EVAL & INTERVAL_EVAL & AT_EVAL --> IS_DUE{"Due?"}
         IS_DUE -->|no| SKIP_JOB["Skip"]
-        IS_DUE -->|yes| LEASE{"Acquire DB lease<br/>(UPDATE cron_jobs SET<br/>lease_holder = instance_id<br/>WHERE lease_holder IS NULL<br/>OR lease_expired)"}
-        LEASE -->|acquired| EXECUTE_JOB["Execute job"]
+        IS_DUE -->|yes| LEASE{"Acquire DB lease?"}
         LEASE -->|contended| SKIP_JOB
+        LEASE -->|acquired| EXECUTE_JOB["Execute job"]
     end
 
-    subgraph Execution["Job Execution (ironclad-schedule/tasks.rs)"]
-        EXECUTE_JOB --> PAYLOAD_KIND{"payload_json.kind?"}
-        PAYLOAD_KIND -->|agentTurn| AGENT_WAKE["Inject message into agent loop<br/>(payload.message,<br/>optional payload.model,<br/>payload.thinking on/off)"]
-        PAYLOAD_KIND -->|systemEvent| SYS_EVENT["Process system event<br/>(payload.text)"]
+    EXECUTE_JOB --> PAYLOAD_KIND
 
+    subgraph Execution["③ Job Execution (tasks.rs)"]
+        PAYLOAD_KIND{"payload_json.kind?"}
+        PAYLOAD_KIND -->|agentTurn| AGENT_WAKE["Inject message into agent loop"]
+        PAYLOAD_KIND -->|systemEvent| SYS_EVENT["Process system event"]
         AGENT_WAKE --> SESSION_SELECT{"session_target?"}
-        SESSION_SELECT -->|main| MAIN["Use main session<br/>(sessions table)"]
-        SESSION_SELECT -->|isolated| ISO["Create isolated session<br/>(INSERT INTO sessions)"]
-
-        MAIN & ISO --> RUN_REACT["Run ReAct loop turn<br/>(ironclad-agent/loop.rs)"]
+        SESSION_SELECT -->|main| MAIN["Use main session"]
+        SESSION_SELECT -->|isolated| ISO["Create isolated session"]
+        MAIN & ISO --> RUN_REACT["Run ReAct loop turn"]
     end
 
-    subgraph Recording["State Recording"]
-        RUN_REACT & SYS_EVENT --> UPDATE_JOB["UPDATE cron_jobs SET<br/>last_run_at = now(),<br/>last_status = ok/error,<br/>last_duration_ms = elapsed,<br/>consecutive_errors = 0 or +1,<br/>next_run_at = calculated,<br/>last_error = null or message,<br/>lease_holder = NULL"]
-        UPDATE_JOB --> INSERT_RUN["INSERT INTO cron_runs<br/>(job_id, status,<br/>duration_ms, error)"]
-    end
-
-    subgraph Delivery["Result Delivery"]
-        RUN_REACT --> DELIVERY_MODE{"delivery_mode?"}
-        DELIVERY_MODE -->|none| SILENT["Silent"]
-        DELIVERY_MODE -->|announce| DELIVER_MSG["Send via channel adapter<br/>(delivery_channel: telegram/whatsapp)"]
-    end
-
-    subgraph WakeSignal["In-Process Wake Signal"]
-        RUN_REACT --> SHOULD_WAKE{"Task signals<br/>shouldWake?"}
-        SHOULD_WAKE -->|yes| MPSC_SEND["tokio::sync::mpsc::send<br/>(WakeEvent to agent loop)"]
-        SHOULD_WAKE -->|no| WAKE_DONE["No wake needed"]
-
-        subgraph AgentSleep["Agent Sleep Loop"]
-            SLEEP_SELECT["tokio::select!<br/>- mpsc::recv (wake event)<br/>- interval (30s poll fallback)"]
-            MPSC_SEND --> SLEEP_SELECT
-            SLEEP_SELECT --> AGENT_WAKES["Agent loop resumes"]
+    subgraph PostExecution["④ Post-Execution"]
+        direction LR
+        subgraph Recording["State Recording"]
+            UPDATE_JOB["UPDATE cron_jobs<br/>(last_run_at, status, duration,<br/>next_run_at, lease = NULL)"]
+            UPDATE_JOB --> INSERT_RUN["INSERT cron_runs"]
+        end
+        subgraph Delivery["Result Delivery"]
+            DELIVERY_MODE{"delivery_mode?"}
+            DELIVERY_MODE -->|none| SILENT["Silent"]
+            DELIVERY_MODE -->|announce| DELIVER_MSG["Send via channel adapter"]
         end
     end
+
+    RUN_REACT & SYS_EVENT --> UPDATE_JOB
+    RUN_REACT --> DELIVERY_MODE
+
+    subgraph WakeSignal["⑤ In-Process Wake Signal"]
+        SHOULD_WAKE{"Task signals shouldWake?"}
+        SHOULD_WAKE -->|no| WAKE_DONE["No wake"]
+        SHOULD_WAKE -->|yes| MPSC_SEND["mpsc::send(WakeEvent)"]
+        MPSC_SEND --> SLEEP_SELECT["Agent sleep loop:<br/>tokio::select! on<br/>mpsc::recv | 30s poll"]
+        SLEEP_SELECT --> AGENT_WAKES["Agent loop resumes"]
+    end
+
+    RUN_REACT --> SHOULD_WAKE
 ```
 
 ---
@@ -457,180 +470,141 @@ Dual-format extensibility system in `ironclad-agent/skills.rs` and `ironclad-age
 
 ```mermaid
 flowchart TD
-    subgraph Loading ["Skill Loading (boot + hot-reload)"]
-        SCAN["SkillLoader: scan skills_dir<br/>(skills.skills_dir config)"]
-        SCAN --> FIND_TOML["Find .toml files<br/>(structured skills)"]
-        SCAN --> FIND_MD["Find .md files<br/>(instruction skills)"]
-
-        FIND_TOML --> PARSE_TOML["Parse TOML manifest:<br/>name, description, triggers,<br/>tool_chain, policy_overrides,<br/>script_path, risk_level"]
-        FIND_MD --> PARSE_MD["Parse Markdown:<br/>YAML frontmatter (name,<br/>triggers, priority) +<br/>body (instructions)"]
-
-        PARSE_TOML & PARSE_MD --> HASH["Compute SHA-256<br/>content_hash"]
-        HASH --> CHANGED{"Hash changed<br/>since last_loaded_at?"}
-        CHANGED -->|yes| UPSERT["Upsert into skills table<br/>(ironclad-db/skills.rs)"]
-        CHANGED -->|no| SKIP["Skip (already loaded)"]
-        UPSERT --> INDEX["Update SkillRegistry<br/>in-memory trigger index"]
+    subgraph Loading["① Skill Loading (boot + hot-reload)"]
+        SCAN["SkillLoader: scan skills_dir"]
+        SCAN --> FIND_TOML["Find .toml (structured)"]
+        SCAN --> FIND_MD["Find .md (instruction)"]
+        FIND_TOML --> PARSE_TOML["Parse TOML manifest"]
+        FIND_MD --> PARSE_MD["Parse YAML frontmatter + body"]
+        PARSE_TOML & PARSE_MD --> HASH["SHA-256 content_hash"]
+        HASH --> CHANGED{"Hash changed?"}
+        CHANGED -->|yes| UPSERT["Upsert skills table"]
+        CHANGED -->|no| SKIP["Skip (unchanged)"]
+        UPSERT --> INDEX["Update SkillRegistry trigger index"]
     end
 
-    subgraph Matching ["Skill Trigger Matching (per-turn)"]
-        TURN_CTX["Turn context arrives<br/>(user message + active tools)"]
-        TURN_CTX --> EVAL_TRIGGERS["SkillRegistry.match_skills():<br/>evaluate keyword, tool-name,<br/>and regex triggers"]
-        EVAL_TRIGGERS --> MATCHED{"Skills matched?"}
-        MATCHED -->|none| NO_SKILL["Continue without<br/>skill augmentation"]
-        MATCHED -->|"1+"| SORT["Sort by priority<br/>(lower = higher priority)"]
+    subgraph Matching["② Trigger Matching (per-turn)"]
+        TURN_CTX["Turn context<br/>(user message + active tools)"]
+        TURN_CTX --> EVAL_TRIGGERS["SkillRegistry.match_skills():<br/>keyword, tool-name, regex"]
+        EVAL_TRIGGERS --> MATCHED{"Matched?"}
+        MATCHED -->|none| NO_SKILL["Continue without skills"]
+        MATCHED -->|"1+"| SORT["Sort by priority"]
     end
 
-    subgraph ExecStructured ["Structured Skill Execution"]
-        SORT -->|structured| CHAIN["StructuredSkillExecutor:<br/>iterate tool_chain steps"]
-        CHAIN --> POLICY_OVERRIDE{"policy_overrides<br/>defined?"}
-        POLICY_OVERRIDE -->|yes| APPLY_OVERRIDE["Temporarily apply<br/>policy adjustments"]
+    SORT -->|instruction| INJECT_BODY
+    SORT -->|structured| CHAIN
+
+    subgraph ExecInstruction["③a Instruction Skill"]
+        INJECT_BODY["Inject .md body into<br/>system prompt (prompt.rs)"]
+        INJECT_BODY --> LLM_HANDLES["LLM interprets instructions"]
+    end
+
+    subgraph ExecStructured["③b Structured Skill Execution"]
+        CHAIN["StructuredSkillExecutor:<br/>iterate tool_chain steps"]
+        CHAIN --> POLICY_OVERRIDE{"policy_overrides?"}
+        POLICY_OVERRIDE -->|yes| APPLY_OVERRIDE["Apply overrides"]
         POLICY_OVERRIDE -->|no| EXEC_CHAIN["Execute tool chain"]
         APPLY_OVERRIDE --> EXEC_CHAIN
-
-        EXEC_CHAIN --> HAS_SCRIPT{"script_path<br/>defined?"}
-        HAS_SCRIPT -->|yes| SCRIPT_EXEC["ScriptRunner.execute()"]
+        EXEC_CHAIN --> HAS_SCRIPT{"script_path?"}
         HAS_SCRIPT -->|no| TOOL_EXEC["Execute via ToolRegistry"]
+        HAS_SCRIPT -->|yes| POLICY_CHECK["Policy engine evaluates<br/>ScriptTool risk_level"]
     end
 
-    subgraph ExecInstruction ["Instruction Skill Execution"]
-        SORT -->|instruction| INJECT_BODY["Inject .md body into<br/>system prompt context<br/>(via prompt.rs)"]
-        INJECT_BODY --> LLM_HANDLES["LLM interprets<br/>natural-language instructions"]
-    end
-
-    subgraph ScriptSandbox ["Script Sandbox (script_runner.rs)"]
-        SCRIPT_EXEC --> INTERPRETER_CHECK{"Interpreter in<br/>skills.allowed_interpreters?<br/>(bash, python3, node)"}
-        INTERPRETER_CHECK -->|no| REJECT_SCRIPT["Reject: unlisted interpreter"]
-        INTERPRETER_CHECK -->|yes| SPAWN["tokio::process::Command<br/>working dir = skill parent dir"]
-
-        SPAWN --> ENV_CHECK{"skills.sandbox_env<br/>= true?"}
-        ENV_CHECK -->|yes| STRIP_ENV["Strip env, pass only:<br/>PATH, HOME,<br/>IRONCLAD_SESSION_ID,<br/>IRONCLAD_AGENT_ID"]
-        ENV_CHECK -->|no| FULL_ENV["Inherit full environment"]
-
-        STRIP_ENV & FULL_ENV --> TIMEOUT["tokio::time::timeout<br/>(skills.script_timeout_seconds)"]
-        TIMEOUT --> OUTPUT_CAP["Capture stdout/stderr<br/>truncate at<br/>skills.script_max_output_bytes"]
-        OUTPUT_CAP --> RESULT["ScriptResult:<br/>stdout, stderr,<br/>exit_code, duration"]
-    end
-
-    subgraph PolicyGate ["Policy Gate"]
-        SCRIPT_EXEC --> TOOL_RISK{"ScriptTool<br/>risk_level?"}
-        TOOL_RISK --> POLICY_EVAL["Policy engine evaluates<br/>(record in policy_decisions)"]
-        POLICY_EVAL --> ALLOWED{"Allowed?"}
-        ALLOWED -->|yes| SPAWN
-        ALLOWED -->|no| DENY["Deny script execution<br/>(audit log)"]
+    subgraph ScriptPipeline["④ Script Execution Pipeline"]
+        POLICY_CHECK --> ALLOWED{"Allowed?"}
+        ALLOWED -->|no| DENY["Deny (audit log)"]
+        ALLOWED -->|yes| INTERPRETER_CHECK{"Interpreter in<br/>whitelist?"}
+        INTERPRETER_CHECK -->|no| REJECT_SCRIPT["Reject: unlisted"]
+        INTERPRETER_CHECK -->|yes| SPAWN["Spawn process<br/>(skill parent dir)"]
+        SPAWN --> ENV_CHECK{"sandbox_env?"}
+        ENV_CHECK -->|yes| STRIP_ENV["Strip env → PATH, HOME,<br/>SESSION_ID, AGENT_ID only"]
+        ENV_CHECK -->|no| FULL_ENV["Inherit full env"]
+        STRIP_ENV & FULL_ENV --> TIMEOUT["Timeout enforcement"]
+        TIMEOUT --> OUTPUT_CAP["Capture + truncate output"]
+        OUTPUT_CAP --> RESULT["ScriptResult:<br/>stdout, stderr, exit_code"]
     end
 ```
 
 ---
 
-## Self-Audit Results
+## Cross-Reference Tables
 
-### Correctness: Table References
+### Table References
 
-| Diagram | Tables Referenced | All Exist in Schema? |
-|---------|-------------------|---------------------|
-| 1. Request | sessions, policy_decisions, semantic_cache, inference_costs, session_messages, turns, tool_calls | YES (all 7 in schema) |
-| 2. Cache | semantic_cache, inference_costs | YES |
-| 3. Router | inference_costs | YES |
-| 4. Memory | working_memory, episodic_memory, semantic_memory, procedural_memory, relationship_memory, memory_fts | YES (all 6 in schema) |
-| 5. A2A | relationship_memory, discovered_agents | YES -- `discovered_agents` table added to schema. **FIXED.** |
-| 6. Injection | policy_decisions, relationship_memory, metric_snapshots | YES |
-| 7. Financial | transactions, inference_costs | YES |
-| 8. Scheduling | cron_jobs, cron_runs, sessions | YES |
-| 9. Skills | skills, policy_decisions | YES |
+| Diagram | Tables Referenced |
+| --------- | ------------------- |
+| 1. Request | sessions, policy_decisions, semantic_cache, inference_costs, session_messages, turns, tool_calls |
+| 2. Cache | semantic_cache, inference_costs |
+| 3. Router | inference_costs |
+| 4. Memory | working_memory, episodic_memory, semantic_memory, procedural_memory, relationship_memory, memory_fts |
+| 5. A2A | relationship_memory, discovered_agents |
+| 6. Injection | policy_decisions, relationship_memory, metric_snapshots |
+| 7. Financial | transactions, inference_costs |
+| 8. Scheduling | cron_jobs, cron_runs, sessions |
+| 9. Skills | skills, policy_decisions |
 
-**Tables not referenced by any diagram**: `schema_version` (infrastructure-only), `tasks`, `proxy_stats`, `identity`, `soul_history`. These are referenced by other subsystems (task management, observability, identity bootstrap, soul evolution) that are not dataflow-diagrammed here because they are straightforward CRUD. **Acceptable -- no fix needed.**
+Tables not referenced by any diagram: `schema_version` (infrastructure-only), `tasks`, `proxy_stats`, `identity`, `soul_history` -- these are straightforward CRUD subsystems not requiring dataflow diagrams.
 
-### Correctness: Crate References
+### Crate References
 
-| Diagram | Crates Referenced | All Exist in Layout? |
-|---------|-------------------|---------------------|
-| 1. Request | ironclad-channels, ironclad-db, ironclad-agent, ironclad-llm | YES |
-| 2. Cache | ironclad-llm | YES |
-| 3. Router | ironclad-llm | YES |
-| 4. Memory | ironclad-agent, ironclad-db | YES |
-| 5. A2A | ironclad-channels, ironclad-wallet | YES -- `a2a.rs` added to ironclad-channels layout. **FIXED.** |
-| 6. Injection | ironclad-agent | YES |
-| 7. Financial | ironclad-wallet, ironclad-schedule, ironclad-agent, ironclad-core | YES |
-| 8. Scheduling | ironclad-schedule, ironclad-agent, ironclad-db | YES |
-| 9. Skills | ironclad-agent, ironclad-db | YES |
+| Diagram | Crates Referenced |
+| --------- | ------------------- |
+| 1. Request | ironclad-channels, ironclad-db, ironclad-agent, ironclad-llm |
+| 2. Cache | ironclad-llm |
+| 3. Router | ironclad-llm |
+| 4. Memory | ironclad-agent, ironclad-db |
+| 5. A2A | ironclad-channels, ironclad-wallet |
+| 6. Injection | ironclad-agent |
+| 7. Financial | ironclad-wallet, ironclad-schedule, ironclad-agent, ironclad-core |
+| 8. Scheduling | ironclad-schedule, ironclad-agent, ironclad-db |
+| 9. Skills | ironclad-agent, ironclad-db |
 
-**Crates not referenced**: `ironclad-server` (HTTP layer, dashboard, WS push). Not dataflow-diagrammed because it is the outer shell that dispatches to channel adapters and serves the dashboard. **Acceptable.**
+`ironclad-server` is not dataflow-diagrammed because it is the outer shell that dispatches to channel adapters and serves the dashboard.
 
-### Correctness: Config Key References
+### Config Key References
 
-| Diagram | Config Keys Referenced | All Exist in ironclad.toml? |
-|---------|----------------------|---------------------------|
-| 1. Request | (none directly -- uses crate-level config) | N/A |
-| 2. Cache | cache.semantic_threshold, cache.exact_match_ttl_seconds, cache.max_entries | YES |
-| 3. Router | models.routing.mode, models.routing.confidence_threshold, models.routing.local_first, models.primary, models.fallbacks | YES |
-| 4. Memory | memory.working_budget_pct, memory.episodic_budget_pct, memory.semantic_budget_pct, memory.procedural_budget_pct, memory.relationship_budget_pct | YES |
-| 5. A2A | wallet.chain_id, wallet.rpc_url, a2a.max_message_size, a2a.rate_limit_per_peer | YES -- `[a2a]` config section added. **FIXED.** |
-| 6. Injection | (none directly -- hardcoded thresholds, session_secret is runtime-generated) | N/A -- `hmac_session_secret` documented in `identity` table comments. **FIXED.** |
-| 7. Financial | yield.enabled, yield.min_deposit, yield.withdrawal_threshold, yield.protocol, treasury.minimum_reserve, treasury.per_payment_cap, treasury.hourly_transfer_limit, treasury.daily_transfer_limit, treasury.daily_inference_budget, wallet.rpc_url, wallet.path | YES |
-| 8. Scheduling | (cron_jobs in DB, not config) | N/A |
-| 9. Skills | skills.skills_dir, skills.script_timeout_seconds, skills.script_max_output_bytes, skills.allowed_interpreters, skills.sandbox_env | YES |
+| Diagram | Config Keys Referenced |
+| --------- | ---------------------- |
+| 1. Request | (crate-level config, not direct keys) |
+| 2. Cache | cache.semantic_threshold, cache.exact_match_ttl_seconds, cache.max_entries |
+| 3. Router | models.routing.mode, models.routing.confidence_threshold, models.routing.local_first, models.primary, models.fallbacks |
+| 4. Memory | memory.working_budget_pct, memory.episodic_budget_pct, memory.semantic_budget_pct, memory.procedural_budget_pct, memory.relationship_budget_pct |
+| 5. A2A | wallet.chain_id, wallet.rpc_url, a2a.max_message_size, a2a.rate_limit_per_peer |
+| 6. Injection | (hardcoded thresholds; `hmac_session_secret` stored in `identity` table) |
+| 7. Financial | yield.enabled, yield.min_deposit, yield.withdrawal_threshold, yield.protocol, treasury.minimum_reserve, treasury.per_payment_cap, treasury.hourly_transfer_limit, treasury.daily_transfer_limit, treasury.daily_inference_budget, wallet.rpc_url, wallet.path |
+| 8. Scheduling | (cron_jobs in DB, not config) |
+| 9. Skills | skills.skills_dir, skills.script_timeout_seconds, skills.script_max_output_bytes, skills.allowed_interpreters, skills.sandbox_env |
 
-### Completeness: Ironclad Differentiators
+### Differentiator Coverage
 
-| Differentiator | Diagrammed? |
-|---------------|-------------|
-| Semantic cache | Diagram 2 |
-| Heuristic model routing | Diagram 3 |
-| Yield engine | Diagram 7 |
-| Zero-trust A2A | Diagram 5 |
-| Multi-layer injection defense | Diagram 6 |
-| Unified SQLite DB | All diagrams reference SQLite tables |
-| In-process routing (no IPC) | Diagram 1 (no proxy boundary) |
-| Progressive context loading | Diagram 1 (Level 0-3) |
-| HMAC trust boundaries | Diagram 6 Layer 2 |
-| Connection pooling | Diagram 1 (reqwest::Client pool) |
-| Dual-format skill system | Diagram 9 |
-| Sandboxed script execution | Diagram 9 |
+| Differentiator | Diagram |
+| --------------- | --------- |
+| Semantic cache | 2 |
+| Heuristic model routing | 3 |
+| Yield engine | 7 |
+| Zero-trust A2A | 5 |
+| Multi-layer injection defense | 6 |
+| Unified SQLite DB | All |
+| In-process routing (no IPC) | 1 |
+| Progressive context loading | 1 |
+| HMAC trust boundaries | 6 (Layer 2) |
+| Connection pooling | 1 |
+| Dual-format skill system | 9 |
+| Sandboxed script execution | 9 |
 
-**All 12 differentiators represented. PASS.**
-
-### Completeness: Error/Failure Paths
+### Error/Failure Paths
 
 | Diagram | Error Paths Shown |
-|---------|-------------------|
+| --------- | ------------------- |
 | 1. Request | Injection block, cache miss, circuit breaker block, dedup reject, fallback exhaustion, policy deny |
 | 2. Cache | All 3 miss paths, eviction |
 | 3. Router | Provider unavailable, T1 quality failure, escalation, all providers exhausted |
-| 4. Memory | (no error paths -- CRUD is infallible against SQLite) -- **MINOR GAP**: should show DB write failure path |
-| 5. A2A | Stale timestamp reject (both sides), signature verification failure implied by reject |
+| 4. Memory | No error paths (CRUD against SQLite) |
+| 5. A2A | Stale timestamp reject (both sides), signature verification failure |
 | 6. Injection | Block, sanitize, deny paths for all 4 layers |
-| 7. Financial | Policy deny, insufficient balance (implicit in USDC check) |
+| 7. Financial | Policy deny, insufficient balance |
 | 8. Scheduling | Lease contention (skip), error status recording |
-| 9. Skills | Unlisted interpreter reject, policy deny for script execution, script timeout, no matching skills |
-
-### Consistency Check
-
-- `ApiFormat` enum name used consistently (Diagram 1 only, correct)
-- Table names match schema exactly in all diagrams (verified above)
-- Config key names match `ironclad.toml` exactly (all gaps resolved)
-- Crate boundaries match dependency graph (verified -- no diagram has a crate calling another crate not in its dependency list)
-
----
-
-## Fixes Applied (to ironclad-design.md and C4 docs)
-
-All 12 inconsistencies identified across two audit passes have been resolved:
-
-**Round 1 (A2A + scheduling fixes):**
-1. **Added `discovered_agents` table** to schema (for A2A agent card caching) -- DONE
-2. **Added `a2a.rs`** to `ironclad-channels` crate file listing -- DONE
-3. **Added `[a2a]` config section** to `ironclad.toml` (max_message_size, rate_limit_per_peer, session_timeout_seconds, require_on_chain_identity) -- DONE
-4. **Documented HMAC session secrets** in `identity` table comments (hmac_session_secret generated on first boot, a2a_identity_key derived from wallet) -- DONE
-5. **Added `lease_holder` and `lease_expires_at` columns** to `cron_jobs` table -- DONE
-6. **Added `yield_earned` to `transactions.tx_type` comment** -- DONE
-
-**Round 2 (skill system integration):**
-7. **Added `skills` table** to schema in ironclad-design.md (dual-format skill definitions with triggers, tool chains, script paths) -- DONE
-8. **Added `[skills]` config section** to ironclad.toml (skills_dir, script_timeout_seconds, allowed_interpreters, sandbox_env, hot_reload) -- DONE
-9. **Added `skills.rs` + `script_runner.rs`** to ironclad-agent crate layout + `skills.rs` to ironclad-db crate layout -- DONE
-10. **Added skill types** (`SkillKind`, `SkillTrigger`, `SkillManifest`, `InstructionSkill`) to types.rs in ironclad-design.md -- DONE
-11. **Updated all C4 docs**: ironclad-c4-core (SkillsConfig, skill types, Skill error variant), ironclad-c4-db (25 tables, skills.rs module), ironclad-c4-agent (skills.rs, script_runner.rs modules), ironclad-c4-server (12-step bootstrap, skills API routes), ironclad-c4-container (agent description, skills table) -- DONE
-12. **Added Diagram 9** (Skill Execution Dataflow) to this document with self-audit entries and test surface map -- DONE
+| 9. Skills | Unlisted interpreter reject, policy deny, script timeout, no matching skills |
 
 ---
 
@@ -639,7 +613,7 @@ All 12 inconsistencies identified across two audit passes have been resolved:
 ### Diagram 1 -- Primary Request
 
 | Crate | Module | Functions to Test | Mock Strategy |
-|-------|--------|-------------------|---------------|
+| ------- | -------- | ------------------- | --------------- |
 | ironclad-channels | telegram.rs, whatsapp.rs, web.rs | `parse_inbound()`, `format_outbound()` | Mock HTTP payloads |
 | ironclad-db | sessions.rs | `find_or_create()`, `append_message()` | In-memory SQLite |
 | ironclad-agent | context.rs | `build_context()`, `progressive_load()` | Fixture sessions |
@@ -660,13 +634,13 @@ All 12 inconsistencies identified across two audit passes have been resolved:
 ### Diagram 3 -- Heuristic Router
 
 | Module | Functions to Test | Mock Strategy |
-|--------|-------------------|---------------|
+| -------- | ------------------- | --------------- |
 | ironclad-llm/router.rs | `extract_features()`, `classify_complexity()`, `select_model()`, `select_for_complexity()`, `advance_fallback()`, `reset()` | HeuristicBackend (no mock; pure functions), mock ProviderRegistry |
 
 ### Diagram 4 -- Memory
 
 | Module | Functions to Test | Mock Strategy |
-|--------|-------------------|---------------|
+| -------- | ------------------- | --------------- |
 | ironclad-db/memory.rs | `store_working()`, `store_episodic()`, `store_semantic()`, `store_procedural()`, `store_relationship()`, `retrieve_*()` for all 5 tiers, `prune_*()`, `fts_search()` | In-memory SQLite |
 | ironclad-agent/memory.rs | `classify_turn()`, `extract_episodic()`, `extract_semantic()`, `extract_procedural()`, `allocate_budget()`, `format_memory_block()` | Fixture turns, mock DB |
 

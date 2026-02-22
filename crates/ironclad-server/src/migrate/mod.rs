@@ -478,4 +478,219 @@ mod tests {
         assert_eq!(transform::qt("hello"), "\"hello\"");
         assert_eq!(transform::qt("he\"llo"), "\"he\\\"llo\"");
     }
+
+    #[test]
+    fn migration_area_all_returns_six() {
+        assert_eq!(MigrationArea::all().len(), 6);
+    }
+
+    #[test]
+    fn direction_debug_and_eq() {
+        assert_eq!(Direction::Import, Direction::Import);
+        assert_ne!(Direction::Import, Direction::Export);
+        assert_eq!(format!("{:?}", Direction::Export), "Export");
+    }
+
+    #[test]
+    fn migration_area_from_str_all_variants() {
+        for s in &["config", "personality", "skills", "sessions", "cron", "channels"] {
+            assert!(MigrationArea::from_str(s).is_some(), "failed for: {s}");
+        }
+    }
+
+    #[test]
+    fn migration_area_from_str_case_insensitive() {
+        assert_eq!(
+            MigrationArea::from_str("Personality"),
+            Some(MigrationArea::Personality)
+        );
+        assert_eq!(
+            MigrationArea::from_str("SESSIONS"),
+            Some(MigrationArea::Sessions)
+        );
+        assert_eq!(
+            MigrationArea::from_str("CrOn"),
+            Some(MigrationArea::Cron)
+        );
+    }
+
+    #[test]
+    fn area_result_construction() {
+        let r = AreaResult {
+            area: MigrationArea::Config,
+            success: true,
+            items_processed: 5,
+            warnings: vec!["warn1".into()],
+            error: None,
+        };
+        assert!(r.success);
+        assert_eq!(r.items_processed, 5);
+        assert_eq!(r.warnings.len(), 1);
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn area_result_failure() {
+        let r = AreaResult {
+            area: MigrationArea::Skills,
+            success: false,
+            items_processed: 0,
+            warnings: vec![],
+            error: Some("something broke".into()),
+        };
+        assert!(!r.success);
+        assert_eq!(r.error.unwrap(), "something broke");
+    }
+
+    #[test]
+    fn default_ironclad_root_contains_ironclad() {
+        let root = default_ironclad_root();
+        assert!(root.to_string_lossy().contains(".ironclad"));
+    }
+
+    #[test]
+    fn copy_dir_recursive_empty_dir() {
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+        let target = dst.path().join("empty_copy");
+        copy_dir_recursive(src.path(), &target).unwrap();
+        assert!(target.exists());
+    }
+
+    #[test]
+    fn resolve_areas_all_invalid_returns_empty() {
+        let areas = resolve_areas(&["foo".into(), "bar".into()]);
+        assert!(areas.is_empty());
+    }
+
+    #[test]
+    fn migration_report_print_does_not_panic() {
+        let report = MigrationReport {
+            direction: Direction::Import,
+            source: PathBuf::from("/tmp/test"),
+            results: vec![
+                AreaResult {
+                    area: MigrationArea::Config,
+                    success: true,
+                    items_processed: 3,
+                    warnings: vec!["minor issue".into()],
+                    error: None,
+                },
+                AreaResult {
+                    area: MigrationArea::Skills,
+                    success: false,
+                    items_processed: 0,
+                    warnings: vec![],
+                    error: Some("failed".into()),
+                },
+            ],
+        };
+        report.print();
+    }
+
+    #[test]
+    fn qt_empty_string() {
+        assert_eq!(transform::qt(""), "\"\"");
+    }
+
+    #[test]
+    fn qt_backslash() {
+        let result = transform::qt("a\\b");
+        assert!(result.contains("\\\\"));
+    }
+
+    #[test]
+    fn qt_ml_wraps_in_triple_quotes() {
+        let result = transform::qt_ml("line1\nline2");
+        assert!(result.starts_with("\"\"\"\n"));
+        assert!(result.ends_with("\n\"\"\""));
+        assert!(result.contains("line1\nline2"));
+    }
+
+    #[test]
+    fn titlecase_single_word() {
+        assert_eq!(transform::titlecase("hello"), "Hello");
+    }
+
+    #[test]
+    fn titlecase_underscored() {
+        assert_eq!(transform::titlecase("hello_world"), "Hello World");
+    }
+
+    #[test]
+    fn titlecase_empty() {
+        assert_eq!(transform::titlecase(""), "");
+    }
+
+    #[test]
+    fn import_config_basic() {
+        let oc = TempDir::new().unwrap();
+        let ic = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "name": "TestBot",
+            "model": "gpt-4"
+        });
+        fs::write(
+            oc.path().join("openclaw.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let r = transform::import_config(oc.path(), ic.path());
+        assert!(r.success);
+        assert!(ic.path().join("ironclad.toml").exists());
+    }
+
+    #[test]
+    fn export_config_missing_toml_fails() {
+        let ic = TempDir::new().unwrap();
+        let oc = TempDir::new().unwrap();
+        let r = transform::export_config(ic.path(), oc.path());
+        assert!(!r.success);
+    }
+
+    #[test]
+    fn export_personality_missing_files_warns() {
+        let ic = TempDir::new().unwrap();
+        let oc = TempDir::new().unwrap();
+        fs::create_dir_all(ic.path().join("workspace")).unwrap();
+        let r = transform::export_personality(ic.path(), oc.path());
+        assert!(r.success);
+        assert_eq!(r.items_processed, 0);
+    }
+
+    #[test]
+    fn export_sessions_no_database() {
+        let ic = TempDir::new().unwrap();
+        let oc = TempDir::new().unwrap();
+        let r = transform::export_sessions(ic.path(), oc.path());
+        assert!(r.success);
+        assert_eq!(r.items_processed, 0);
+    }
+
+    #[test]
+    fn export_cron_no_database() {
+        let ic = TempDir::new().unwrap();
+        let oc = TempDir::new().unwrap();
+        let r = transform::export_cron(ic.path(), oc.path());
+        assert!(r.success);
+        assert_eq!(r.items_processed, 0);
+    }
+
+    #[test]
+    fn export_skills_no_skills_dir() {
+        let ic = TempDir::new().unwrap();
+        let oc = TempDir::new().unwrap();
+        let r = transform::export_skills(ic.path(), oc.path());
+        assert!(r.success);
+        assert_eq!(r.items_processed, 0);
+    }
+
+    #[test]
+    fn export_channels_no_config() {
+        let ic = TempDir::new().unwrap();
+        let oc = TempDir::new().unwrap();
+        let r = transform::export_channels(ic.path(), oc.path());
+        assert!(r.success);
+        assert_eq!(r.items_processed, 0);
+    }
 }

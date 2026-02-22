@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo ""
+echo "┌──────────────────────────────────────────────────┐"
+echo "│           Pre-Push Gate: Ironclad CI              │"
+echo "└──────────────────────────────────────────────────┘"
+echo ""
+
+# Coverage tooling is mandatory — ci-test silently skips coverage without it
+if ! command -v cargo-llvm-cov &>/dev/null; then
+    echo "ERROR: cargo-llvm-cov is not installed."
+    echo "       Both coverage gates (80% floor + no regression) are required for push."
+    echo "       Install: cargo install cargo-llvm-cov"
+    exit 1
+fi
+
+# Baseline file is mandatory — without it the regression gate is skipped
+if [ ! -f ".coverage-baseline" ]; then
+    echo "ERROR: .coverage-baseline file not found."
+    echo "       The no-regression coverage gate requires a baseline."
+    echo "       Create one: just coverage-update-baseline"
+    exit 1
+fi
+
+echo "Running: just ci-test"
+echo ""
+
+if just ci-test; then
+    echo ""
+    echo "✔ Pre-push gate passed — pushing."
+else
+    echo ""
+    echo "✘ Pre-push gate FAILED — push blocked."
+    echo "  Fix the failures above and try again."
+    echo "  To bypass (emergency only): git push --no-verify"
+    exit 1
+fi

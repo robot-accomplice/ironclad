@@ -180,4 +180,87 @@ mod tests {
         let result = remove_pid_file(Path::new("/nonexistent/pid"));
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn plist_path_is_under_launch_agents() {
+        let path = plist_path();
+        let path_str = path.to_string_lossy();
+        assert!(path_str.contains("LaunchAgents"));
+        assert!(path_str.ends_with("com.ironclad.agent.plist"));
+    }
+
+    #[test]
+    fn systemd_path_is_under_systemd_user() {
+        let path = systemd_path();
+        let path_str = path.to_string_lossy();
+        assert!(path_str.contains("systemd/user"));
+        assert!(path_str.ends_with("ironclad.service"));
+    }
+
+    #[test]
+    fn read_pid_file_with_invalid_content_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("bad.pid");
+        std::fs::write(&pid_path, "not-a-number").unwrap();
+        assert!(read_pid_file(&pid_path).is_err());
+    }
+
+    #[test]
+    fn read_pid_file_with_whitespace_trims() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("ws.pid");
+        std::fs::write(&pid_path, "  12345  \n").unwrap();
+        let result = read_pid_file(&pid_path).unwrap();
+        assert_eq!(result, Some(12345));
+    }
+
+    #[test]
+    fn launchd_plist_is_valid_xml() {
+        let plist = launchd_plist("/usr/bin/ironclad", "/etc/ironclad.toml", 9999);
+        assert!(plist.starts_with("<?xml"));
+        assert!(plist.contains("<plist version=\"1.0\">"));
+        assert!(plist.contains("</plist>"));
+        assert!(plist.contains("<string>9999</string>"));
+        assert!(plist.contains("<string>serve</string>"));
+    }
+
+    #[test]
+    fn systemd_unit_has_required_sections() {
+        let unit = systemd_unit("/usr/bin/ironclad", "/etc/ironclad.toml", 8080);
+        assert!(unit.contains("[Unit]"));
+        assert!(unit.contains("[Service]"));
+        assert!(unit.contains("[Install]"));
+        assert!(unit.contains("ExecStart=/usr/bin/ironclad serve -c /etc/ironclad.toml -p 8080"));
+        assert!(unit.contains("Type=simple"));
+    }
+
+    #[test]
+    fn install_daemon_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("ironclad");
+        std::fs::write(&bin, "").unwrap();
+        let cfg = dir.path().join("ironclad.toml");
+        std::fs::write(&cfg, "").unwrap();
+
+        let result = install_daemon(
+            bin.to_str().unwrap(),
+            cfg.to_str().unwrap(),
+            18789,
+        );
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn write_and_read_pid_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("test.pid");
+        write_pid_file(&pid_path).unwrap();
+        assert!(pid_path.exists());
+        let pid = read_pid_file(&pid_path).unwrap().unwrap();
+        assert_eq!(pid, std::process::id());
+        remove_pid_file(&pid_path).unwrap();
+        assert!(!pid_path.exists());
+    }
 }

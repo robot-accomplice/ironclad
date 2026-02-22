@@ -18,44 +18,72 @@ flowchart TB
 
     subgraph ConfigDetail ["config.rs internals"]
         TOML_PARSE["parse ironclad.toml<br/>(toml crate, serde)"]
-        AGENT_CFG["AgentConfig<br/>name, id, workspace, log_level"]
-        SERVER_CFG["ServerConfig<br/>port, bind"]
-        DB_CFG["DatabaseConfig<br/>path"]
-        MODELS_CFG["ModelsConfig<br/>primary, fallbacks,<br/>RoutingConfig (mode default 'heuristic',<br/>'ml' backward-compat alias)"]
-        PROVIDERS_CFG["ProvidersConfig<br/>HashMap of ProviderConfig<br/>(url, tier)"]
-        CB_CFG["CircuitBreakerConfig<br/>threshold, windows, cooldowns"]
-        MEMORY_CFG["MemoryConfig<br/>5x budget percentages"]
-        CACHE_CFG["CacheConfig<br/>enabled, TTL, threshold, max_entries"]
-        TREASURY_CFG["TreasuryConfig<br/>caps, limits, reserve, budget"]
-        YIELD_CFG["YieldConfig<br/>enabled, protocol, chain,<br/>min_deposit, withdrawal_threshold"]
-        WALLET_CFG["WalletConfig<br/>path, chain_id, rpc_url"]
-        A2A_CFG["A2aConfig<br/>enabled, max_message_size,<br/>rate_limit_per_peer,<br/>session_timeout_seconds,<br/>require_on_chain_identity"]
-        CHANNELS_CFG["ChannelsConfig<br/>telegram (enabled, token_env),<br/>whatsapp (enabled)"]
-        SKILLS_CFG["SkillsConfig<br/>skills_dir, script_timeout_seconds,<br/>script_max_output_bytes,<br/>allowed_interpreters,<br/>sandbox_env, hot_reload"]
+
+        subgraph CfgInfra["Infrastructure"]
+            direction LR
+            AGENT_CFG["AgentConfig<br/>name, id, workspace"]
+            SERVER_CFG["ServerConfig<br/>port, bind"]
+            DB_CFG["DatabaseConfig<br/>path"]
+            CHANNELS_CFG["ChannelsConfig<br/>telegram, whatsapp"]
+        end
+
+        subgraph CfgAI["AI Pipeline"]
+            direction LR
+            MODELS_CFG["ModelsConfig<br/>primary, fallbacks,<br/>RoutingConfig"]
+            PROVIDERS_CFG["ProvidersConfig<br/>HashMap of ProviderConfig"]
+            CB_CFG["CircuitBreakerConfig<br/>threshold, windows"]
+            MEMORY_CFG["MemoryConfig<br/>5× budget pct"]
+            CACHE_CFG["CacheConfig<br/>TTL, threshold, max"]
+        end
+
+        subgraph CfgFinancial["Financial"]
+            direction LR
+            TREASURY_CFG["TreasuryConfig<br/>caps, limits, reserve"]
+            YIELD_CFG["YieldConfig<br/>protocol, min_deposit"]
+            WALLET_CFG["WalletConfig<br/>path, chain_id, rpc_url"]
+        end
+
+        subgraph CfgExtensions["Extensions"]
+            direction LR
+            A2A_CFG["A2aConfig<br/>max_message_size,<br/>rate_limit_per_peer"]
+            SKILLS_CFG["SkillsConfig<br/>skills_dir, interpreters,<br/>sandbox, hot_reload"]
+        end
     end
 
     subgraph TypesDetail ["types.rs enums"]
-        SURVIVAL["SurvivalTier<br/>High, Normal, LowCompute,<br/>Critical, Dead"]
-        AGENT_STATE["AgentState<br/>Setup, Waking, Running,<br/>Sleeping, Dead"]
-        API_FMT["ApiFormat<br/>AnthropicMessages,<br/>OpenAiCompletions,<br/>OpenAiResponses,<br/>GoogleGenerativeAi"]
-        MODEL_TIER["ModelTier<br/>T1, T2, T3, T4"]
-        POLICY_DEC["PolicyDecision<br/>Allow,<br/>Deny (rule, reason)"]
-        RISK["RiskLevel<br/>Safe, Caution,<br/>Dangerous, Forbidden"]
-        SKILL_KIND["SkillKind<br/>Structured, Instruction"]
-        SKILL_TRIGGER["SkillTrigger<br/>keywords, tool_names,<br/>regex_patterns"]
-        SKILL_MANIFEST["SkillManifest<br/>name, description, kind,<br/>triggers, tool_chain,<br/>policy_overrides, script_path"]
-        INSTRUCTION_SKILL["InstructionSkill<br/>name, triggers, priority,<br/>body (markdown)"]
-        TOOL_CHAIN_STEP["ToolChainStep<br/>tool_name, params"]
-        INPUT_AUTH["InputAuthority<br/>Creator, SelfGenerated,<br/>Peer, External"]
+        subgraph CoreTypes["Core"]
+            direction LR
+            SURVIVAL["SurvivalTier"]
+            AGENT_STATE["AgentState"]
+            API_FMT["ApiFormat (4 variants)"]
+            MODEL_TIER["ModelTier T1–T4"]
+        end
+        subgraph PolicyTypes["Policy & Security"]
+            direction LR
+            POLICY_DEC["PolicyDecision"]
+            RISK["RiskLevel"]
+            INPUT_AUTH["InputAuthority"]
+        end
+        subgraph SkillTypes["Skills"]
+            direction LR
+            SKILL_KIND["SkillKind"]
+            SKILL_TRIGGER["SkillTrigger"]
+            SKILL_MANIFEST["SkillManifest"]
+            INSTRUCTION_SKILL["InstructionSkill"]
+            TOOL_CHAIN_STEP["ToolChainStep"]
+        end
         SCHED_KIND["ScheduleKind<br/>Cron, Every, At"]
     end
 
     subgraph ErrorDetail ["error.rs"]
-        IRONCLAD_ERR["IroncladError (thiserror)<br/>variants: Config, Channel, Database,<br/>Llm, Network, Policy, Tool,<br/>Wallet, Injection, Schedule,<br/>A2a, Io, Skill"]
+        IRONCLAD_ERR["IroncladError (thiserror)<br/>13 variants: Config, Channel,<br/>Database, Llm, Network, Policy,<br/>Tool, Wallet, Injection,<br/>Schedule, A2a, Io, Skill"]
     end
 
     CONFIG --> TOML_PARSE
-    TOML_PARSE --> AGENT_CFG & SERVER_CFG & DB_CFG & MODELS_CFG & PROVIDERS_CFG & CB_CFG & MEMORY_CFG & CACHE_CFG & TREASURY_CFG & YIELD_CFG & WALLET_CFG & A2A_CFG & CHANNELS_CFG & SKILLS_CFG
+    TOML_PARSE --> CfgInfra
+    TOML_PARSE --> CfgAI
+    TOML_PARSE --> CfgFinancial
+    TOML_PARSE --> CfgExtensions
 ```
 
 ## Module Responsibilities

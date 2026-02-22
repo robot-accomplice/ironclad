@@ -1066,4 +1066,73 @@ mod tests {
         assert_eq!(loaded.binary_version, "0.3.0");
         assert_eq!(loaded.registry_url, "https://example.com/manifest.json");
     }
+
+    #[test]
+    fn bytes_sha256_empty_input() {
+        let hash = bytes_sha256(b"");
+        assert_eq!(hash.len(), 64);
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn parse_semver_partial_version() {
+        assert_eq!(parse_semver("1"), (1, 0, 0));
+        assert_eq!(parse_semver("1.2"), (1, 2, 0));
+    }
+
+    #[test]
+    fn parse_semver_empty() {
+        assert_eq!(parse_semver(""), (0, 0, 0));
+    }
+
+    #[test]
+    fn parse_semver_with_v_prefix() {
+        assert_eq!(parse_semver("v1.2.3"), (1, 2, 3));
+    }
+
+    #[test]
+    fn is_newer_patch_bump() {
+        assert!(is_newer("1.0.1", "1.0.0"));
+        assert!(!is_newer("1.0.0", "1.0.1"));
+    }
+
+    #[test]
+    fn is_newer_same_version() {
+        assert!(!is_newer("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn diff_lines_both_empty() {
+        let result = diff_lines("", "");
+        assert!(result.is_empty() || result.iter().all(|l| matches!(l, DiffLine::Same(_))));
+    }
+
+    #[test]
+    fn diff_lines_content_to_empty() {
+        let result = diff_lines("a\nb", "");
+        assert!(result.iter().any(|l| matches!(l, DiffLine::Removed(_))));
+    }
+
+    #[test]
+    fn registry_base_url_no_slash() {
+        assert_eq!(registry_base_url("manifest.json"), "manifest.json");
+    }
+
+    #[test]
+    fn registry_base_url_nested() {
+        assert_eq!(
+            registry_base_url("https://cdn.example.com/v1/registry/manifest.json"),
+            "https://cdn.example.com/v1/registry"
+        );
+    }
+
+    #[test]
+    fn installed_content_default_is_empty() {
+        let ic = InstalledContent::default();
+        assert!(ic.skills.is_none());
+        assert!(ic.providers.is_none());
+    }
 }

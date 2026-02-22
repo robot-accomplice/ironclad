@@ -1851,4 +1851,625 @@ primary = "ollama/qwen3:8b"
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn get_config_returns_ok() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn wallet_address_returns_fields() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/wallet/address")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["address"].is_string());
+        assert!(body["chain_id"].is_number());
+    }
+
+    #[tokio::test]
+    async fn stats_costs_returns_ok() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/costs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["costs"].is_array());
+    }
+
+    #[tokio::test]
+    async fn wallet_balance_returns_fields() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/wallet/balance")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["balance"].is_string());
+        assert!(body["currency"].is_string());
+    }
+
+    #[tokio::test]
+    async fn put_config_valid_agent_section() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"agent":{"name":"TestBot"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["updated"], true);
+    }
+
+    // ── Mock-based tests: circuit breaker blocked path ────────────
+
+    #[tokio::test]
+    async fn agent_message_with_breaker_blocked_returns_provider_blocked() {
+        let state = test_state();
+        {
+            let mut llm = state.llm.write().await;
+            llm.breakers.record_credit_error("ollama");
+        }
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/agent/message")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"content":"hello breaker test"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert_eq!(body["provider_blocked"], true);
+        assert!(body["content"].as_str().unwrap().contains("circuit breaker"));
+        assert_eq!(body["cached"], false);
+    }
+
+    // ── Mock-based tests: cache hit path ──────────────────────────
+
+    #[tokio::test]
+    async fn agent_message_cache_hit_returns_cached_response() {
+        let state = test_state();
+        let test_content = "cached question for testing";
+        let cache_hash =
+            ironclad_llm::SemanticCache::compute_hash("", "", test_content);
+        {
+            let mut llm = state.llm.write().await;
+            let cached = ironclad_llm::CachedResponse {
+                content: "cached answer from mock".into(),
+                model: "mock-model".into(),
+                tokens_saved: 42,
+                created_at: std::time::Instant::now(),
+                expires_at: std::time::Instant::now() + std::time::Duration::from_secs(3600),
+                hits: 0,
+                involved_tools: false,
+                embedding: None,
+            };
+            llm.cache.store_with_embedding(&cache_hash, test_content, cached);
+        }
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/agent/message")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(r#"{{"content":"{test_content}"}}"#)))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert_eq!(body["cached"], true);
+        assert_eq!(body["content"], "cached answer from mock");
+        assert_eq!(body["model"], "mock-model");
+        assert_eq!(body["tokens_saved"], 42);
+    }
+
+    // ── Mock-based tests: agent message with explicit session_id ──
+
+    #[tokio::test]
+    async fn agent_message_with_explicit_session_id() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::find_or_create(&state.db, "test-agent").unwrap();
+
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/agent/message")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"content":"hello","session_id":"{sid}"}}"#
+            )))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert_eq!(body["session_id"], sid);
+    }
+
+    // ── Mock-based tests: agent status endpoint ───────────────────
+
+    #[tokio::test]
+    async fn agent_status_reflects_breaker_state() {
+        let state = test_state();
+        {
+            let mut llm = state.llm.write().await;
+            llm.breakers.record_credit_error("ollama");
+        }
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agent/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["primary_provider_state"], "open");
+    }
+
+    // ── Mock-based tests: check_tool_policy with deny ─────────────
+
+    #[test]
+    fn check_tool_policy_denies_external_authority() {
+        let mut engine = ironclad_agent::policy::PolicyEngine::new();
+        engine.add_rule(Box::new(ironclad_agent::policy::AuthorityRule));
+        let result = agent::check_tool_policy(
+            &engine,
+            "bash",
+            &serde_json::json!({"command": "rm -rf /"}),
+            ironclad_core::InputAuthority::External,
+            ironclad_core::SurvivalTier::Normal,
+        );
+        assert!(result.is_err());
+        let (status, msg) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(msg.contains("denied") || msg.contains("Policy"), "msg: {msg}");
+    }
+
+    #[test]
+    fn check_tool_policy_allows_safe_tool_from_creator() {
+        let mut engine = ironclad_agent::policy::PolicyEngine::new();
+        engine.add_rule(Box::new(ironclad_agent::policy::AuthorityRule));
+        engine.add_rule(Box::new(ironclad_agent::policy::CommandSafetyRule));
+        let result = agent::check_tool_policy(
+            &engine,
+            "read_file",
+            &serde_json::json!({"path": "/tmp/safe.txt"}),
+            ironclad_core::InputAuthority::Creator,
+            ironclad_core::SurvivalTier::Normal,
+        );
+        assert!(result.is_ok());
+    }
+
+    // ── Mock-based tests: sanitize_error_message ──────────────────
+
+    #[test]
+    fn sanitize_error_strips_database_wrapper() {
+        let msg = r#"Database("no such table: foobar")"#;
+        let cleaned = sanitize_error_message(msg);
+        assert_eq!(cleaned, "no such table: foobar");
+    }
+
+    #[test]
+    fn sanitize_error_strips_wallet_wrapper() {
+        let msg = r#"Wallet("insufficient balance")"#;
+        let cleaned = sanitize_error_message(msg);
+        assert_eq!(cleaned, "insufficient balance");
+    }
+
+    #[test]
+    fn sanitize_error_truncates_long_message() {
+        let long = "x".repeat(300);
+        let cleaned = sanitize_error_message(&long);
+        assert_eq!(cleaned.len(), 203); // 200 chars + "..."
+        assert!(cleaned.ends_with("..."));
+    }
+
+    #[test]
+    fn sanitize_error_multiline_takes_first_line() {
+        let msg = "first line\nsecond line\nthird line";
+        let cleaned = sanitize_error_message(msg);
+        assert_eq!(cleaned, "first line");
+    }
+
+    #[test]
+    fn sanitize_error_normal_message_unchanged() {
+        let msg = "something went wrong";
+        assert_eq!(sanitize_error_message(msg), msg);
+    }
+
+    // ── Mock-based tests: PersonalityState ────────────────────────
+
+    #[test]
+    fn personality_state_empty_defaults() {
+        let ps = PersonalityState::empty();
+        assert!(ps.soul_text.is_empty());
+        assert!(ps.firmware_text.is_empty());
+        assert!(ps.identity.name.is_empty());
+    }
+
+    #[test]
+    fn personality_state_from_nonexistent_workspace() {
+        let ps = PersonalityState::from_workspace(std::path::Path::new("/tmp/no-such-workspace"));
+        assert!(ps.soul_text.is_empty());
+    }
+
+    // ── Mock-based tests: read_log_entries with temp files ────────
+
+    #[test]
+    fn read_log_entries_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries = health::read_log_entries(dir.path(), 100, None).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn read_log_entries_parses_json_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("ironclad.log");
+        let log_content = r#"{"timestamp":"2025-01-01T00:00:00Z","level":"INFO","fields":{"message":"test message"},"target":"ironclad"}
+{"timestamp":"2025-01-01T00:00:01Z","level":"WARN","fields":{"message":"warning msg"},"target":"ironclad"}
+"#;
+        std::fs::write(&log_path, log_content).unwrap();
+
+        let entries = health::read_log_entries(dir.path(), 100, None).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].level, "info");
+        assert_eq!(entries[0].message, "test message");
+        assert_eq!(entries[1].level, "warn");
+    }
+
+    #[test]
+    fn read_log_entries_with_level_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("ironclad.log");
+        let log_content = r#"{"timestamp":"2025-01-01T00:00:00Z","level":"INFO","fields":{"message":"info msg"}}
+{"timestamp":"2025-01-01T00:00:01Z","level":"ERROR","fields":{"message":"error msg"}}
+{"timestamp":"2025-01-01T00:00:02Z","level":"INFO","fields":{"message":"info msg2"}}
+"#;
+        std::fs::write(&log_path, log_content).unwrap();
+
+        let entries = health::read_log_entries(dir.path(), 100, Some("error")).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message, "error msg");
+    }
+
+    #[test]
+    fn read_log_entries_respects_line_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("ironclad.log");
+        let mut lines = String::new();
+        for i in 0..20 {
+            lines.push_str(&format!(
+                r#"{{"timestamp":"t{i}","level":"INFO","fields":{{"message":"msg-{i}"}}}}"#
+            ));
+            lines.push('\n');
+        }
+        std::fs::write(&log_path, lines).unwrap();
+
+        let entries = health::read_log_entries(dir.path(), 5, None).unwrap();
+        assert_eq!(entries.len(), 5);
+    }
+
+    #[test]
+    fn read_log_entries_skips_non_json_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("ironclad.log");
+        let content = "not json\n{\"timestamp\":\"t\",\"level\":\"INFO\",\"fields\":{\"message\":\"ok\"}}\nalso not json\n";
+        std::fs::write(&log_path, content).unwrap();
+
+        let entries = health::read_log_entries(dir.path(), 100, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message, "ok");
+    }
+
+    #[test]
+    fn read_log_entries_missing_dir_returns_error() {
+        let result = health::read_log_entries(
+            std::path::Path::new("/tmp/nonexistent-ironclad-logs"),
+            10,
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    // ── Mock-based tests: WhatsApp webhook verify ─────────────────
+
+    #[tokio::test]
+    async fn webhook_whatsapp_verify_with_correct_token() {
+        let state = test_state_with_whatsapp_app_secret("test-secret");
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=verify-token&hub.challenge=challenge123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = text_body(resp).await;
+        assert_eq!(body, "challenge123");
+    }
+
+    #[tokio::test]
+    async fn webhook_whatsapp_verify_wrong_token_returns_forbidden() {
+        let state = test_state_with_whatsapp_app_secret("test-secret");
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=wrong-token&hub.challenge=c")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ── Mock-based tests: webhook without adapters ─────────────────
+
+    #[tokio::test]
+    async fn webhook_telegram_no_adapter_returns_503() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/webhooks/telegram")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn webhook_whatsapp_no_adapter_post_returns_503() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/webhooks/whatsapp")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ── Mock-based tests: plugin execution with mock plugin ───────
+
+    #[tokio::test]
+    async fn execute_plugin_tool_success_with_mock() {
+        struct TestPlugin;
+        #[async_trait::async_trait]
+        impl Plugin for TestPlugin {
+            fn name(&self) -> &str { "mock-success" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn tools(&self) -> Vec<ToolDef> {
+                vec![ToolDef {
+                    name: "greet".into(),
+                    description: "says hello".into(),
+                    parameters: serde_json::json!({}),
+                }]
+            }
+            async fn init(&mut self) -> ironclad_core::Result<()> { Ok(()) }
+            async fn execute_tool(
+                &self,
+                _name: &str,
+                params: &serde_json::Value,
+            ) -> ironclad_core::Result<ToolResult> {
+                Ok(ToolResult {
+                    success: true,
+                    output: format!("Hello, {}!", params["name"].as_str().unwrap_or("world")),
+                    metadata: None,
+                })
+            }
+            async fn shutdown(&mut self) -> ironclad_core::Result<()> { Ok(()) }
+        }
+
+        let mut state = test_state();
+        state.policy_engine = Arc::new(PolicyEngine::new());
+        let registry = PluginRegistry::new(vec![], vec![]);
+        registry.register(Box::new(TestPlugin)).await.unwrap();
+        registry.init_all().await;
+        state.plugins = Arc::new(registry);
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/plugins/mock-success/execute/greet")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"Jon"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let result = &body["result"];
+        assert_eq!(result["output"], "Hello, Jon!");
+        assert_eq!(result["success"], true);
+    }
+
+    // estimate_cost_from_provider is private — tested via agent.rs tests directly
+
+    // ── Mock-based tests: breaker interaction via routes ──────────
+
+    #[tokio::test]
+    async fn breaker_reset_after_credit_error_reopens() {
+        let state = test_state();
+        {
+            let mut llm = state.llm.write().await;
+            llm.breakers.record_credit_error("ollama");
+        }
+        let app = build_router(state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/breaker/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = json_body(resp).await;
+        assert_eq!(body["providers"]["ollama"]["state"], "open");
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/breaker/reset/ollama")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["state"], "closed");
+    }
+
+    // ── Mock-based tests: sessions with seeded data ───────────────
+
+    #[tokio::test]
+    async fn list_sessions_returns_seeded_sessions() {
+        let state = test_state();
+        ironclad_db::sessions::find_or_create(&state.db, "agent-a").unwrap();
+        ironclad_db::sessions::find_or_create(&state.db, "agent-b").unwrap();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sessions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let sessions = body["sessions"].as_array().unwrap();
+        assert!(sessions.len() >= 2);
+    }
+
+    // ── Mock-based tests: memory with seeded data ─────────────────
+
+    #[tokio::test]
+    async fn episodic_memory_returns_seeded_entry() {
+        let state = test_state();
+        ironclad_db::memory::store_episodic(
+            &state.db,
+            "tool_use",
+            "ran a shell command",
+            5,
+        )
+        .unwrap();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memory/episodic?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let entries = body["entries"].as_array().unwrap();
+        assert!(!entries.is_empty());
+        assert_eq!(entries[0]["classification"], "tool_use");
+    }
+
+    #[tokio::test]
+    async fn semantic_memory_returns_seeded_entry() {
+        let state = test_state();
+        ironclad_db::memory::store_semantic(
+            &state.db,
+            "preferences",
+            "color",
+            "blue",
+            0.9,
+        )
+        .unwrap();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memory/semantic/preferences")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let entries = body["entries"].as_array().unwrap();
+        assert!(!entries.is_empty());
+        assert_eq!(entries[0]["key"], "color");
+        assert_eq!(entries[0]["value"], "blue");
+    }
 }

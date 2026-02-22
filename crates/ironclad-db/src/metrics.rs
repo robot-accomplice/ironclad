@@ -144,4 +144,53 @@ mod tests {
         let txs = query_transactions(&db, 1).unwrap();
         assert!(txs.is_empty());
     }
+
+    #[test]
+    fn record_transaction_all_optional_none() {
+        let db = test_db();
+        let id = record_transaction(&db, "yield", 0.5, "USDC", None, None).unwrap();
+        assert!(!id.is_empty());
+        let txs = query_transactions(&db, 24).unwrap();
+        assert_eq!(txs.len(), 1);
+        assert!(txs[0].counterparty.is_none());
+        assert!(txs[0].tx_hash.is_none());
+    }
+
+    #[test]
+    fn record_inference_cost_cached() {
+        let db = test_db();
+        let id = record_inference_cost(
+            &db,
+            "gpt-4",
+            "openai",
+            100,
+            50,
+            0.005,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(!id.is_empty());
+    }
+
+    #[test]
+    fn transaction_record_fields_populated() {
+        let db = test_db();
+        record_transaction(&db, "payment", 10.0, "USDC", Some("vendor"), Some("0xhash")).unwrap();
+        let txs = query_transactions(&db, 24).unwrap();
+        assert_eq!(txs[0].tx_type, "payment");
+        assert!((txs[0].amount - 10.0).abs() < f64::EPSILON);
+        assert_eq!(txs[0].currency, "USDC");
+        assert_eq!(txs[0].counterparty.as_deref(), Some("vendor"));
+        assert_eq!(txs[0].tx_hash.as_deref(), Some("0xhash"));
+        assert!(!txs[0].created_at.is_empty());
+    }
+
+    #[test]
+    fn multiple_metric_snapshots() {
+        let db = test_db();
+        let id1 = record_metric_snapshot(&db, r#"{"cpu":0.1}"#).unwrap();
+        let id2 = record_metric_snapshot(&db, r#"{"cpu":0.9}"#).unwrap();
+        assert_ne!(id1, id2);
+    }
 }

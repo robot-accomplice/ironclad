@@ -77,7 +77,7 @@ C4Container
 
 The diagram includes `Rel(schedule, wallet, "In-process: heartbeat")`: ironclad-schedule uses ironclad-wallet for tick context (USDC balance, survival tier).
 
-## Key Corrections (No Drift)
+## Implementation Notes
 
 - **Routing**: Heuristic classifier in `ironclad-llm/src/router.rs` (weighted message length, tool calls, depth). No ONNX or ML models. Config `mode` default is `"heuristic"`; `"ml"` is a backward-compat alias for complexity-aware routing.
 - **Cache**: In-memory `SemanticCache` in `ironclad-llm/src/cache.rs` (HashMap, L1 exact / L2 semantic n-gram / L3 tool TTL). Not SQLite-backed at runtime.

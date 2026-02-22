@@ -380,4 +380,1107 @@ mod tests {
     fn which_binary_returns_none_for_nonsense() {
         assert!(which_binary("__ironclad_nonexistent_binary_98765__").is_none());
     }
+
+    #[test]
+    fn format_json_val_bool_true() {
+        let result = format_json_val(&serde_json::json!(true));
+        assert!(result.contains("true"));
+    }
+
+    #[test]
+    fn format_json_val_bool_false() {
+        let result = format_json_val(&serde_json::json!(false));
+        assert!(result.contains("false"));
+    }
+
+    #[test]
+    fn format_json_val_array_uses_to_string() {
+        let result = format_json_val(&serde_json::json!([1, 2, 3]));
+        assert!(result.contains("1"));
+    }
+
+    #[test]
+    fn strip_ansi_len_empty() {
+        assert_eq!(strip_ansi_len(""), 0);
+    }
+
+    #[test]
+    fn strip_ansi_len_only_ansi() {
+        assert_eq!(strip_ansi_len("\x1b[32m\x1b[0m"), 0);
+    }
+
+    #[test]
+    fn status_badge_sleeping() {
+        assert!(status_badge("sleeping").contains("sleeping"));
+    }
+
+    #[test]
+    fn status_badge_pending() {
+        assert!(status_badge("pending").contains("pending"));
+    }
+
+    #[test]
+    fn status_badge_running() {
+        assert!(status_badge("running").contains("running"));
+    }
+
+    #[test]
+    fn badge_contains_text_and_bullet() {
+        let b = badge("running", "\x1b[32m");
+        assert!(b.contains("running"));
+        assert!(b.contains("\u{25cf}"));
+    }
+
+    #[test]
+    fn truncate_id_exact_length() {
+        assert_eq!(truncate_id("abc", 3), "abc");
+    }
+
+    // ── wiremock-based CLI command tests ─────────────────────────
+
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::{method, path, path_regex, query_param};
+
+    async fn mock_get(server: &MockServer, p: &str, body: serde_json::Value) {
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    async fn mock_post(server: &MockServer, p: &str, body: serde_json::Value) {
+        Mock::given(method("POST"))
+            .and(path(p))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    // ── Skills ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_skills_list_with_skills() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/skills", serde_json::json!({
+            "skills": [
+                {"name": "greet", "kind": "builtin", "description": "Says hello", "enabled": true},
+                {"name": "calc", "kind": "gosh", "description": "Math stuff", "enabled": false}
+            ]
+        })).await;
+        super::cmd_skills_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_skills_list_empty() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/skills", serde_json::json!({"skills": []})).await;
+        super::cmd_skills_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_skills_list_null_skills() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/skills", serde_json::json!({})).await;
+        super::cmd_skills_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_skill_detail_enabled_with_triggers() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/skills/greet", serde_json::json!({
+            "id": "greet-001", "name": "greet", "kind": "builtin",
+            "description": "Says hello", "source_path": "/skills/greet.gosh",
+            "content_hash": "abc123", "enabled": true,
+            "triggers_json": "[\"on_start\"]", "script_path": "/scripts/greet.gosh"
+        })).await;
+        super::cmd_skill_detail(&s.uri(), "greet").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_skill_detail_disabled_no_triggers() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/skills/calc", serde_json::json!({
+            "id": "calc-001", "name": "calc", "kind": "gosh",
+            "description": "Math", "source_path": "", "content_hash": "",
+            "enabled": false, "triggers_json": "null", "script_path": "null"
+        })).await;
+        super::cmd_skill_detail(&s.uri(), "calc").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_skill_detail_enabled_as_int() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/skills/x", serde_json::json!({
+            "id": "x", "name": "x", "kind": "builtin",
+            "description": "", "source_path": "", "content_hash": "",
+            "enabled": 1
+        })).await;
+        super::cmd_skill_detail(&s.uri(), "x").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_skills_reload_ok() {
+        let s = MockServer::start().await;
+        mock_post(&s, "/api/skills/reload", serde_json::json!({"ok": true})).await;
+        super::cmd_skills_reload(&s.uri()).await.unwrap();
+    }
+
+    // ── Wallet ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_wallet_full() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/wallet/balance", serde_json::json!({
+            "balance": "42.50", "currency": "USDC", "note": "Testnet balance"
+        })).await;
+        mock_get(&s, "/api/wallet/address", serde_json::json!({
+            "address": "0xdeadbeef"
+        })).await;
+        super::cmd_wallet(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_wallet_no_note() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/wallet/balance", serde_json::json!({
+            "balance": "0.00", "currency": "USDC"
+        })).await;
+        mock_get(&s, "/api/wallet/address", serde_json::json!({
+            "address": "0xabc"
+        })).await;
+        super::cmd_wallet(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_wallet_address_ok() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/wallet/address", serde_json::json!({
+            "address": "0x1234"
+        })).await;
+        super::cmd_wallet_address(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_wallet_balance_ok() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/wallet/balance", serde_json::json!({
+            "balance": "100.00", "currency": "ETH"
+        })).await;
+        super::cmd_wallet_balance(&s.uri()).await.unwrap();
+    }
+
+    // ── Schedule ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_schedule_list_with_jobs() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/cron/jobs", serde_json::json!({
+            "jobs": [
+                {
+                    "name": "backup", "schedule_kind": "cron", "schedule_expr": "0 * * * *",
+                    "last_run_at": "2025-01-01T12:00:00.000Z", "last_status": "ok",
+                    "consecutive_errors": 0
+                },
+                {
+                    "name": "cleanup", "schedule_kind": "interval", "schedule_expr": "30m",
+                    "last_run_at": null, "last_status": "pending",
+                    "consecutive_errors": 3
+                }
+            ]
+        })).await;
+        super::cmd_schedule_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_schedule_list_empty() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/cron/jobs", serde_json::json!({"jobs": []})).await;
+        super::cmd_schedule_list(&s.uri()).await.unwrap();
+    }
+
+    // ── Memory ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_memory_working_with_entries() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/memory/working/sess-1", serde_json::json!({
+            "entries": [
+                {"id": "e1", "entry_type": "fact", "content": "The sky is blue", "importance": 5}
+            ]
+        })).await;
+        super::cmd_memory(&s.uri(), "working", Some("sess-1"), None, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_memory_working_empty() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/memory/working/sess-2", serde_json::json!({"entries": []})).await;
+        super::cmd_memory(&s.uri(), "working", Some("sess-2"), None, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_memory_working_no_session_errors() {
+        let result = super::cmd_memory("http://unused", "working", None, None, None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn cmd_memory_episodic_with_entries() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/memory/episodic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "entries": [
+                    {"id": "ep1", "classification": "conversation", "content": "User asked about weather", "importance": 3}
+                ]
+            })))
+            .mount(&s)
+            .await;
+        super::cmd_memory(&s.uri(), "episodic", None, None, Some(10)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_memory_episodic_empty() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/memory/episodic"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"entries": []})))
+            .mount(&s)
+            .await;
+        super::cmd_memory(&s.uri(), "episodic", None, None, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_memory_semantic_with_entries() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/memory/semantic/general", serde_json::json!({
+            "entries": [
+                {"key": "favorite_color", "value": "blue", "confidence": 0.95}
+            ]
+        })).await;
+        super::cmd_memory(&s.uri(), "semantic", None, None, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_memory_semantic_custom_category() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/memory/semantic/prefs", serde_json::json!({
+            "entries": []
+        })).await;
+        super::cmd_memory(&s.uri(), "semantic", Some("prefs"), None, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_memory_search_with_results() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/memory/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": ["result one", "result two"]
+            })))
+            .mount(&s)
+            .await;
+        super::cmd_memory(&s.uri(), "search", None, Some("hello"), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_memory_search_empty() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/memory/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"results": []})))
+            .mount(&s)
+            .await;
+        super::cmd_memory(&s.uri(), "search", None, Some("nope"), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_memory_search_no_query_errors() {
+        let result = super::cmd_memory("http://unused", "search", None, None, None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn cmd_memory_unknown_tier_errors() {
+        let result = super::cmd_memory("http://unused", "bogus", None, None, None).await;
+        assert!(result.is_err());
+    }
+
+    // ── Sessions ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_sessions_list_with_sessions() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/sessions", serde_json::json!({
+            "sessions": [
+                {"id": "s-001", "agent_id": "ironclad", "created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-01T01:00:00Z"},
+                {"id": "s-002", "agent_id": "duncan", "created_at": "2025-01-02T00:00:00Z", "updated_at": "2025-01-02T01:00:00Z"}
+            ]
+        })).await;
+        super::cmd_sessions_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_sessions_list_empty() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/sessions", serde_json::json!({"sessions": []})).await;
+        super::cmd_sessions_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_session_detail_with_messages() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/sessions/s-001", serde_json::json!({
+            "id": "s-001", "agent_id": "ironclad",
+            "created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-01T01:00:00Z"
+        })).await;
+        mock_get(&s, "/api/sessions/s-001/messages", serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "Hello!", "created_at": "2025-01-01T00:00:05.123Z"},
+                {"role": "assistant", "content": "Hi there!", "created_at": "2025-01-01T00:00:06.456Z"},
+                {"role": "system", "content": "Init", "created_at": "2025-01-01T00:00:00Z"},
+                {"role": "tool", "content": "Result", "created_at": "2025-01-01T00:00:07Z"}
+            ]
+        })).await;
+        super::cmd_session_detail(&s.uri(), "s-001").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_session_detail_no_messages() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/sessions/s-002", serde_json::json!({
+            "id": "s-002", "agent_id": "ironclad",
+            "created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-01T01:00:00Z"
+        })).await;
+        mock_get(&s, "/api/sessions/s-002/messages", serde_json::json!({"messages": []})).await;
+        super::cmd_session_detail(&s.uri(), "s-002").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_session_create_ok() {
+        let s = MockServer::start().await;
+        mock_post(&s, "/api/sessions", serde_json::json!({"session_id": "new-001"})).await;
+        super::cmd_session_create(&s.uri(), "ironclad").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_session_export_json() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/sessions/s-001", serde_json::json!({
+            "id": "s-001", "agent_id": "ironclad", "created_at": "2025-01-01T00:00:00Z"
+        })).await;
+        mock_get(&s, "/api/sessions/s-001/messages", serde_json::json!({
+            "messages": [{"role": "user", "content": "Hi", "created_at": "2025-01-01T00:00:01Z"}]
+        })).await;
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("export.json");
+        super::cmd_session_export(&s.uri(), "s-001", "json", Some(out.to_str().unwrap())).await.unwrap();
+        assert!(out.exists());
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(content.contains("s-001"));
+    }
+
+    #[tokio::test]
+    async fn cmd_session_export_markdown() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/sessions/s-001", serde_json::json!({
+            "id": "s-001", "agent_id": "ironclad", "created_at": "2025-01-01T00:00:00Z"
+        })).await;
+        mock_get(&s, "/api/sessions/s-001/messages", serde_json::json!({
+            "messages": [{"role": "user", "content": "Hi", "created_at": "2025-01-01T00:00:01Z"}]
+        })).await;
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("export.md");
+        super::cmd_session_export(&s.uri(), "s-001", "markdown", Some(out.to_str().unwrap())).await.unwrap();
+        assert!(out.exists());
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(content.contains("# Session"));
+    }
+
+    #[tokio::test]
+    async fn cmd_session_export_html() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/sessions/s-001", serde_json::json!({
+            "id": "s-001", "agent_id": "ironclad", "created_at": "2025-01-01T00:00:00Z"
+        })).await;
+        mock_get(&s, "/api/sessions/s-001/messages", serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "Hello <world> & \"friends\"", "created_at": "2025-01-01T00:00:01Z"},
+                {"role": "assistant", "content": "Hi", "created_at": "2025-01-01T00:00:02Z"},
+                {"role": "system", "content": "Sys", "created_at": "2025-01-01T00:00:00Z"},
+                {"role": "tool", "content": "Tool output", "created_at": "2025-01-01T00:00:03Z"}
+            ]
+        })).await;
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("export.html");
+        super::cmd_session_export(&s.uri(), "s-001", "html", Some(out.to_str().unwrap())).await.unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert!(content.contains("<!DOCTYPE html>"));
+        assert!(content.contains("&amp;"));
+        assert!(content.contains("&lt;"));
+    }
+
+    #[tokio::test]
+    async fn cmd_session_export_to_stdout() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/sessions/s-001", serde_json::json!({
+            "id": "s-001", "agent_id": "ironclad", "created_at": "2025-01-01T00:00:00Z"
+        })).await;
+        mock_get(&s, "/api/sessions/s-001/messages", serde_json::json!({"messages": []})).await;
+        super::cmd_session_export(&s.uri(), "s-001", "json", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_session_export_unknown_format() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/sessions/s-001", serde_json::json!({
+            "id": "s-001", "agent_id": "ironclad", "created_at": "2025-01-01T00:00:00Z"
+        })).await;
+        mock_get(&s, "/api/sessions/s-001/messages", serde_json::json!({"messages": []})).await;
+        super::cmd_session_export(&s.uri(), "s-001", "csv", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_session_export_not_found() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/sessions/missing"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&s)
+            .await;
+        super::cmd_session_export(&s.uri(), "missing", "json", None).await.unwrap();
+    }
+
+    // ── Circuit breaker ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_circuit_status_with_providers() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/breaker/status", serde_json::json!({
+            "providers": {
+                "ollama": {"state": "closed"},
+                "openai": {"state": "open"}
+            },
+            "note": "All good"
+        })).await;
+        super::cmd_circuit_status(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_circuit_status_empty_providers() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/breaker/status", serde_json::json!({"providers": {}})).await;
+        super::cmd_circuit_status(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_circuit_status_no_providers_key() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/breaker/status", serde_json::json!({})).await;
+        super::cmd_circuit_status(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_circuit_reset_success() {
+        let s = MockServer::start().await;
+        mock_post(&s, "/api/breaker/reset", serde_json::json!({"ok": true})).await;
+        super::cmd_circuit_reset(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_circuit_reset_server_error() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/breaker/reset"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&s)
+            .await;
+        super::cmd_circuit_reset(&s.uri()).await.unwrap();
+    }
+
+    // ── Agents ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_agents_list_with_agents() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/agents", serde_json::json!({
+            "agents": [
+                {"id": "ironclad", "name": "Ironclad", "state": "running", "model": "qwen3:8b"},
+                {"id": "duncan", "name": "Duncan", "state": "sleeping", "model": "gpt-4o"}
+            ]
+        })).await;
+        super::cmd_agents_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_agents_list_empty() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/agents", serde_json::json!({"agents": []})).await;
+        super::cmd_agents_list(&s.uri()).await.unwrap();
+    }
+
+    // ── Channels ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_channels_status_with_channels() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/channels/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"name": "telegram", "connected": true, "messages_received": 100, "messages_sent": 50},
+                {"name": "whatsapp", "connected": false, "messages_received": 0, "messages_sent": 0}
+            ])))
+            .mount(&s)
+            .await;
+        super::cmd_channels_status(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_channels_status_empty() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/channels/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&s)
+            .await;
+        super::cmd_channels_status(&s.uri()).await.unwrap();
+    }
+
+    // ── Plugins ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_plugins_list_with_plugins() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/plugins", serde_json::json!({
+            "plugins": [
+                {"name": "weather", "version": "1.0", "status": "active", "tools": [{"name": "get_weather"}]},
+                {"name": "empty", "version": "0.1", "status": "inactive", "tools": []}
+            ]
+        })).await;
+        super::cmd_plugins_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_plugins_list_empty() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/plugins", serde_json::json!({"plugins": []})).await;
+        super::cmd_plugins_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_plugin_info_found() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/plugins", serde_json::json!({
+            "plugins": [
+                {
+                    "name": "weather", "version": "1.0", "description": "Weather plugin",
+                    "enabled": true, "manifest_path": "/plugins/weather/plugin.toml",
+                    "tools": [{"name": "get_weather"}, {"name": "get_forecast"}]
+                }
+            ]
+        })).await;
+        super::cmd_plugin_info(&s.uri(), "weather").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_plugin_info_disabled() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/plugins", serde_json::json!({
+            "plugins": [{"name": "old", "version": "0.1", "enabled": false}]
+        })).await;
+        super::cmd_plugin_info(&s.uri(), "old").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_plugin_info_not_found() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/plugins", serde_json::json!({"plugins": []})).await;
+        super::cmd_plugin_info(&s.uri(), "nonexistent").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_plugin_toggle_enable() {
+        let s = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/plugins/weather/toggle"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&s)
+            .await;
+        super::cmd_plugin_toggle(&s.uri(), "weather", true).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_plugin_toggle_disable_fails() {
+        let s = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/api/plugins/weather/toggle"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&s)
+            .await;
+        super::cmd_plugin_toggle(&s.uri(), "weather", false).await.unwrap();
+    }
+
+    #[test]
+    fn cmd_plugin_install_missing_source() {
+        super::cmd_plugin_install("/tmp/ironclad_test_nonexistent_plugin_dir").unwrap();
+    }
+
+    #[test]
+    fn cmd_plugin_install_no_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        super::cmd_plugin_install(dir.path().to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn cmd_plugin_install_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("plugin.toml");
+        std::fs::write(&manifest, "name = \"test-plugin\"\nversion = \"0.1\"").unwrap();
+        std::fs::write(dir.path().join("main.gosh"), "print(\"hi\")").unwrap();
+
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("helper.gosh"), "// helper").unwrap();
+
+        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _ = super::cmd_plugin_install(dir.path().to_str().unwrap());
+        unsafe { std::env::remove_var("HOME") };
+    }
+
+    #[test]
+    fn cmd_plugin_uninstall_not_found() {
+        unsafe { std::env::set_var("HOME", "/tmp/ironclad_test_uninstall_home") };
+        super::cmd_plugin_uninstall("nonexistent").unwrap();
+        unsafe { std::env::remove_var("HOME") };
+    }
+
+    #[test]
+    fn cmd_plugin_uninstall_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins_dir = dir.path().join(".ironclad").join("plugins").join("myplugin");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        std::fs::write(plugins_dir.join("plugin.toml"), "name = \"myplugin\"").unwrap();
+        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        super::cmd_plugin_uninstall("myplugin").unwrap();
+        assert!(!plugins_dir.exists());
+        unsafe { std::env::remove_var("HOME") };
+    }
+
+    // ── Models ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_models_list_full_config() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/config", serde_json::json!({
+            "models": {
+                "primary": "qwen3:8b",
+                "fallbacks": ["gpt-4o", "claude-3"],
+                "routing": { "mode": "adaptive", "confidence_threshold": 0.85, "local_first": false }
+            }
+        })).await;
+        super::cmd_models_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_models_list_minimal_config() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/config", serde_json::json!({})).await;
+        super::cmd_models_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_models_scan_no_providers() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/config", serde_json::json!({"providers": {}})).await;
+        super::cmd_models_scan(&s.uri(), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_models_scan_with_local_provider() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/config", serde_json::json!({
+            "providers": {
+                "ollama": {"url": &format!("{}/ollama", s.uri())}
+            }
+        })).await;
+        Mock::given(method("GET"))
+            .and(path("/ollama/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "qwen3:8b"}, {"id": "llama3:70b"}]
+            })))
+            .mount(&s)
+            .await;
+        super::cmd_models_scan(&s.uri(), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_models_scan_local_ollama() {
+        let s = MockServer::start().await;
+        let ollama_url = format!("{}", s.uri()).replace("http://", "http://localhost:");
+        mock_get(&s, "/api/config", serde_json::json!({
+            "providers": {
+                "ollama": {"url": &s.uri()}
+            }
+        })).await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [{"name": "qwen3:8b"}, {"model": "llama3"}]
+            })))
+            .mount(&s)
+            .await;
+        super::cmd_models_scan(&s.uri(), Some("ollama")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_models_scan_provider_filter_skips_others() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/config", serde_json::json!({
+            "providers": {
+                "ollama": {"url": "http://localhost:11434"},
+                "openai": {"url": "https://api.openai.com"}
+            }
+        })).await;
+        super::cmd_models_scan(&s.uri(), Some("openai")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_models_scan_empty_url() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/config", serde_json::json!({
+            "providers": { "test": {"url": ""} }
+        })).await;
+        super::cmd_models_scan(&s.uri(), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_models_scan_error_response() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/config", serde_json::json!({
+            "providers": {
+                "bad": {"url": &s.uri()}
+            }
+        })).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&s)
+            .await;
+        super::cmd_models_scan(&s.uri(), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_models_scan_no_models_found() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/config", serde_json::json!({
+            "providers": {
+                "empty": {"url": &s.uri()}
+            }
+        })).await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&s)
+            .await;
+        super::cmd_models_scan(&s.uri(), None).await.unwrap();
+    }
+
+    // ── Metrics ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_metrics_costs_with_data() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/stats/costs", serde_json::json!({
+            "costs": [
+                {"model": "qwen3:8b", "provider": "ollama", "tokens_in": 100, "tokens_out": 50, "cost": 0.001, "cached": false},
+                {"model": "gpt-4o", "provider": "openai", "tokens_in": 200, "tokens_out": 100, "cost": 0.01, "cached": true}
+            ]
+        })).await;
+        super::cmd_metrics(&s.uri(), "costs", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_metrics_costs_empty() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/stats/costs", serde_json::json!({"costs": []})).await;
+        super::cmd_metrics(&s.uri(), "costs", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_metrics_transactions_with_data() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/stats/transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transactions": [
+                    {"id": "tx-001", "tx_type": "inference", "amount": 0.01, "currency": "USD",
+                     "counterparty": "openai", "created_at": "2025-01-01T12:00:00.000Z"},
+                    {"id": "tx-002", "tx_type": "transfer", "amount": 5.00, "currency": "USDC",
+                     "counterparty": "user", "created_at": "2025-01-01T13:00:00Z"}
+                ]
+            })))
+            .mount(&s)
+            .await;
+        super::cmd_metrics(&s.uri(), "transactions", Some(48)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_metrics_transactions_empty() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/stats/transactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"transactions": []})))
+            .mount(&s)
+            .await;
+        super::cmd_metrics(&s.uri(), "transactions", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_metrics_cache_stats() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/stats/cache", serde_json::json!({
+            "hits": 42, "misses": 8, "entries": 100, "hit_rate": 84.0
+        })).await;
+        super::cmd_metrics(&s.uri(), "cache", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_metrics_unknown_kind() {
+        let s = MockServer::start().await;
+        let result = super::cmd_metrics(&s.uri(), "bogus", None).await;
+        assert!(result.is_err());
+    }
+
+    // ── Completion ────────────────────────────────────────────
+
+    #[test]
+    fn cmd_completion_bash() {
+        super::cmd_completion("bash").unwrap();
+    }
+
+    #[test]
+    fn cmd_completion_zsh() {
+        super::cmd_completion("zsh").unwrap();
+    }
+
+    #[test]
+    fn cmd_completion_fish() {
+        super::cmd_completion("fish").unwrap();
+    }
+
+    #[test]
+    fn cmd_completion_unknown() {
+        super::cmd_completion("powershell").unwrap();
+    }
+
+    // ── Logs ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_logs_static_with_entries() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "entries": [
+                    {"timestamp": "2025-01-01T00:00:00Z", "level": "INFO", "message": "Started", "target": "ironclad"},
+                    {"timestamp": "2025-01-01T00:00:01Z", "level": "WARN", "message": "Low memory", "target": "system"},
+                    {"timestamp": "2025-01-01T00:00:02Z", "level": "ERROR", "message": "Failed", "target": "api"},
+                    {"timestamp": "2025-01-01T00:00:03Z", "level": "DEBUG", "message": "Trace", "target": "db"},
+                    {"timestamp": "2025-01-01T00:00:04Z", "level": "TRACE", "message": "Deep", "target": "core"}
+                ]
+            })))
+            .mount(&s)
+            .await;
+        super::cmd_logs(&s.uri(), 50, false, "info").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_logs_static_empty() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"entries": []})))
+            .mount(&s)
+            .await;
+        super::cmd_logs(&s.uri(), 10, false, "info").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_logs_static_no_entries_key() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&s)
+            .await;
+        super::cmd_logs(&s.uri(), 10, false, "info").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_logs_server_error_falls_back() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/logs"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&s)
+            .await;
+        super::cmd_logs(&s.uri(), 10, false, "info").await.unwrap();
+    }
+
+    // ── Security audit (filesystem) ──────────────────────────
+
+    #[test]
+    fn cmd_security_audit_missing_config() {
+        super::cmd_security_audit("/tmp/ironclad_test_nonexistent_config.toml").unwrap();
+    }
+
+    #[test]
+    fn cmd_security_audit_clean_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("ironclad.toml");
+        std::fs::write(&config, "[server]\nbind = \"127.0.0.1\"\nport = 18789\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn cmd_security_audit_plaintext_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("ironclad.toml");
+        std::fs::write(&config, "[providers.openai]\napi_key = \"sk-secret123\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn cmd_security_audit_env_var_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("ironclad.toml");
+        std::fs::write(&config, "[providers.openai]\napi_key = \"${OPENAI_KEY}\"\n").unwrap();
+        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn cmd_security_audit_wildcard_cors() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("ironclad.toml");
+        std::fs::write(&config, "[server]\nbind = \"0.0.0.0\"\n\n[cors]\norigins = \"*\"\n").unwrap();
+        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cmd_security_audit_loose_config_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("ironclad.toml");
+        std::fs::write(&config, "[server]\nport = 18789\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+    }
+
+    // ── Reset (with --yes to skip stdin) ─────────────────────
+
+    #[test]
+    fn cmd_reset_yes_no_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let ironclad_dir = dir.path().join(".ironclad");
+        std::fs::create_dir_all(&ironclad_dir).unwrap();
+        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        super::cmd_reset(true).unwrap();
+        unsafe { std::env::remove_var("HOME") };
+    }
+
+    #[test]
+    fn cmd_reset_yes_with_db_and_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let ironclad_dir = dir.path().join(".ironclad");
+        std::fs::create_dir_all(&ironclad_dir).unwrap();
+        std::fs::write(ironclad_dir.join("state.db"), "fake db").unwrap();
+        std::fs::write(ironclad_dir.join("state.db-wal"), "wal").unwrap();
+        std::fs::write(ironclad_dir.join("state.db-shm"), "shm").unwrap();
+        std::fs::write(ironclad_dir.join("ironclad.toml"), "[server]").unwrap();
+        std::fs::create_dir_all(ironclad_dir.join("logs")).unwrap();
+        std::fs::write(ironclad_dir.join("wallet.json"), "{}").unwrap();
+        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        super::cmd_reset(true).unwrap();
+        assert!(!ironclad_dir.join("state.db").exists());
+        assert!(!ironclad_dir.join("ironclad.toml").exists());
+        assert!(!ironclad_dir.join("logs").exists());
+        assert!(ironclad_dir.join("wallet.json").exists());
+        unsafe { std::env::remove_var("HOME") };
+    }
+
+    // ── Mechanic ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cmd_mechanic_gateway_up() {
+        let s = MockServer::start().await;
+        mock_get(&s, "/api/health", serde_json::json!({"status": "ok"})).await;
+        mock_get(&s, "/api/config", serde_json::json!({"models": {}})).await;
+        mock_get(&s, "/api/skills", serde_json::json!({"skills": [{"id": "s1"}]})).await;
+        mock_get(&s, "/api/wallet/balance", serde_json::json!({"balance": "1.00"})).await;
+        Mock::given(method("GET"))
+            .and(path("/api/channels/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"connected": true}, {"connected": false}
+            ])))
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let ironclad_dir = dir.path().join(".ironclad");
+        for sub in &["workspace", "skills", "plugins", "logs"] {
+            std::fs::create_dir_all(ironclad_dir.join(sub)).unwrap();
+        }
+        std::fs::write(ironclad_dir.join("ironclad.toml"), "[server]").unwrap();
+        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _ = super::cmd_mechanic(&s.uri(), false).await;
+        unsafe { std::env::remove_var("HOME") };
+    }
+
+    #[tokio::test]
+    async fn cmd_mechanic_gateway_down() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/health"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _ = super::cmd_mechanic(&s.uri(), false).await;
+        unsafe { std::env::remove_var("HOME") };
+    }
+
+    #[tokio::test]
+    async fn cmd_mechanic_repair_creates_dirs() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": "ok"})))
+            .mount(&s)
+            .await;
+        mock_get(&s, "/api/config", serde_json::json!({})).await;
+        mock_get(&s, "/api/skills", serde_json::json!({"skills": []})).await;
+        mock_get(&s, "/api/wallet/balance", serde_json::json!({})).await;
+        Mock::given(method("GET"))
+            .and(path("/api/channels/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _ = super::cmd_mechanic(&s.uri(), true).await;
+        assert!(dir.path().join(".ironclad").join("workspace").exists());
+        unsafe { std::env::remove_var("HOME") };
+    }
 }

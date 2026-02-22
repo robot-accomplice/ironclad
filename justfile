@@ -396,10 +396,18 @@ audit:
 deps:
     cargo tree --workspace --depth 1
 
+# ── Git Hooks ──────────────────────────────────────────
+
+# Install git hooks (pre-push runs full CI gate before push)
+install-hooks:
+    cp hooks/pre-push .git/hooks/pre-push
+    chmod +x .git/hooks/pre-push
+    @echo "✔ Installed pre-push hook (runs: just ci-test with mandatory coverage gates)"
+
 # ── Install Dev Tools ──────────────────────────────────
 
 # Install recommended cargo tools + gosh scripting engine
-install-tools: install-gosh
+install-tools: install-gosh install-hooks
     cargo install cargo-watch cargo-llvm-cov cargo-outdated cargo-audit
 
 # Check for Go toolchain (prerequisite for gosh)

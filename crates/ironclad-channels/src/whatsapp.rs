@@ -500,4 +500,183 @@ mod tests {
         assert_eq!(payload["type"], "image");
         assert_eq!(payload["to"], "555");
     }
+
+    #[test]
+    fn platform_name_is_whatsapp() {
+        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into());
+        assert_eq!(adapter.platform_name(), "whatsapp");
+    }
+
+    #[test]
+    fn api_url_formats_correctly() {
+        let adapter = WhatsAppAdapter::new("tok".into(), "PHONE123".into());
+        assert_eq!(
+            adapter.api_url("messages"),
+            "https://graph.facebook.com/v21.0/PHONE123/messages"
+        );
+    }
+
+    #[test]
+    fn with_config_app_secret() {
+        let adapter = WhatsAppAdapter::with_config(
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
+            vec![],
+            Some("appsecret123".into()),
+        );
+        assert_eq!(adapter.app_secret.unwrap(), "appsecret123");
+    }
+
+    #[test]
+    fn parse_video_message() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w3", "type": "video",
+                    "video": {"id": "vid456", "caption": "check this"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        assert!(msg.content.contains("video:vid456"));
+        assert!(msg.content.contains("check this"));
+    }
+
+    #[test]
+    fn parse_audio_message() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w4", "type": "audio",
+                    "audio": {"id": "aud789"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        assert!(msg.content.contains("audio:aud789"));
+    }
+
+    #[test]
+    fn parse_document_message() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w5", "type": "document",
+                    "document": {"id": "doc000", "caption": "receipt"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        assert!(msg.content.contains("document:doc000"));
+        assert!(msg.content.contains("receipt"));
+    }
+
+    #[test]
+    fn parse_unsupported_message_type() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w6", "type": "sticker"}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        assert!(msg.content.contains("unsupported message type: sticker"));
+    }
+
+    #[test]
+    fn parse_inbound_missing_entry() {
+        let webhook = json!({"object": "whatsapp_business_account"});
+        assert!(WhatsAppAdapter::parse_inbound(&webhook).is_err());
+    }
+
+    #[test]
+    fn parse_inbound_empty_entry_array() {
+        let webhook = json!({"entry": []});
+        assert!(WhatsAppAdapter::parse_inbound(&webhook).is_err());
+    }
+
+    #[test]
+    fn parse_inbound_missing_changes() {
+        let webhook = json!({"entry": [{"id": "123"}]});
+        assert!(WhatsAppAdapter::parse_inbound(&webhook).is_err());
+    }
+
+    #[test]
+    fn parse_inbound_missing_value() {
+        let webhook = json!({"entry": [{"changes": [{"field": "messages"}]}]});
+        assert!(WhatsAppAdapter::parse_inbound(&webhook).is_err());
+    }
+
+    #[test]
+    fn parse_inbound_missing_messages() {
+        let webhook = json!({"entry": [{"changes": [{"value": {}}]}]});
+        assert!(WhatsAppAdapter::parse_inbound(&webhook).is_err());
+    }
+
+    #[test]
+    fn parse_inbound_missing_from_defaults_unknown() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"id": "w7", "type": "text", "text": {"body": "hi"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        assert_eq!(msg.sender_id, "unknown");
+    }
+
+    #[test]
+    fn parse_inbound_missing_id_generates_uuid() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "type": "text", "text": {"body": "hi"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        assert!(!msg.id.is_empty());
+        assert!(msg.id.len() > 10);
+    }
+
+    #[test]
+    fn parse_inbound_text_no_body_defaults_empty() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w8", "type": "text", "text": {}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        assert_eq!(msg.content, "");
+    }
+
+    #[test]
+    fn format_media_outbound_without_caption() {
+        let payload = WhatsAppAdapter::format_media_outbound(
+            "555",
+            "image",
+            "https://example.com/img.png",
+            None,
+        );
+        assert_eq!(payload["messaging_product"], "whatsapp");
+        assert_eq!(payload["type"], "image");
+        assert_eq!(payload["image"]["link"], "https://example.com/img.png");
+        assert!(payload["image"].get("caption").is_none());
+    }
+
+    #[test]
+    fn format_media_outbound_video_with_caption() {
+        let payload = WhatsAppAdapter::format_media_outbound(
+            "555",
+            "video",
+            "https://example.com/vid.mp4",
+            Some("watch this"),
+        );
+        assert_eq!(payload["type"], "video");
+        assert_eq!(payload["video"]["link"], "https://example.com/vid.mp4");
+        assert_eq!(payload["video"]["caption"], "watch this");
+    }
+
+    #[test]
+    fn parse_image_message_no_caption() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w10", "type": "image",
+                    "image": {"id": "img999"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        assert!(msg.content.contains("image:img999"));
+    }
 }

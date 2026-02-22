@@ -9,74 +9,76 @@
 ```mermaid
 flowchart TB
     subgraph IroncladLlm ["ironclad-llm"]
-        CLIENT["client.rs<br/>HTTP Client Pool"]
-        FORMAT["format.rs<br/>API Format Translation"]
-        PROVIDER["provider.rs<br/>Provider Definitions"]
+        CACHE["cache.rs<br/>In-Memory SemanticCache<br/>(HashMap)"]
+        ROUTER["router.rs<br/>Heuristic Model Router"]
         CIRCUIT["circuit.rs<br/>Circuit Breaker"]
         DEDUP["dedup.rs<br/>In-Flight Dedup"]
-        TIER["tier.rs<br/>Tier Classification +<br/>Prompt Adaptation"]
-        ROUTER["router.rs<br/>Heuristic Model Router"]
-        CACHE["cache.rs<br/>In-Memory SemanticCache<br/>(HashMap)"]
+        FORMAT["format.rs<br/>API Format Translation"]
+        TIER["tier.rs<br/>Tier Adaptation"]
+        CLIENT["client.rs<br/>HTTP Client Pool"]
+        PROVIDER["provider.rs<br/>Provider Definitions"]
     end
 
-    subgraph ClientDetail ["client.rs"]
-        POOL["Persistent reqwest::Client<br/>HTTP/2 where supported<br/>Connection reuse across requests"]
-        FORWARD["forward_request()<br/>Send to provider, stream response"]
-        RESP_PROC["process_response()<br/>Breaker update, format<br/>back-translation, cost tracking"]
-    end
-
-    subgraph FormatDetail ["format.rs"]
-        FMT_ENUM["ApiFormat enum<br/>(4 variants, From trait impls)"]
-        DETECT_REQ["detect_request_format()"]
-        DETECT_RESP["detect_response_format()"]
-        XLATE_REQ["translate_request()<br/>12+ translator pairs"]
-        XLATE_RESP["translate_response()<br/>7+ translator pairs"]
+    subgraph CacheDetail ["cache.rs — In-Memory Only (HashMap)"]
+        direction LR
+        L1["L1: Exact hash<br/>SHA-256(system|msgs|user)"]
+        L2["L2: Semantic n-gram<br/>cosine > threshold"]
+        L3["L3: Tool TTL<br/>shorter TTL for tools"]
+        STORE["store() / store_with_embedding()"]
+        EVICT["evict_expired() · evict_lfu()"]
     end
 
     subgraph RouterDetail ["router.rs"]
-        HEURISTIC["Heuristic classifier (RouterBackend):<br/>HeuristicBackend weights message length,<br/>tool_call count, conversation depth<br/>-> complexity score 0.0-1.0"]
-        MODES["Routing modes: primary, round-robin,<br/>heuristic/ml (default 'heuristic';<br/>'ml' is backward-compat alias)"]
-        FEATURES["extract_features(): msg len, tool_calls, depth<br/>classify_complexity(features) -> f64"]
-        SELECT["select_for_complexity(): local_first +<br/>confidence_threshold -> primary or fallback"]
-        FALLBACK["advance_fallback(), reset()<br/>on 429/5xx/timeout"]
-    end
-
-    subgraph CacheDetail ["cache.rs - In-Memory Only"]
-        L1["L1: lookup_exact(prompt_hash)<br/>HashMap key = SHA-256(system|msgs|user_msg)"]
-        L2["L2: lookup_semantic(prompt)<br/>char n-gram embedding, cosine > threshold"]
-        L3["L3: lookup_tool_ttl(prompt_hash)<br/>shorter TTL for tool-involved entries"]
-        STORE["store() / store_with_embedding()<br/>evict_lfu() at max_entries"]
-        EVICT["evict_expired() by Instant"]
+        FEATURES["extract_features()<br/>msg len, tool_calls, depth"]
+        HEURISTIC["HeuristicBackend<br/>classify_complexity → 0.0–1.0"]
+        SELECT["select_for_complexity()<br/>local_first + confidence_threshold"]
+        FALLBACK["advance_fallback() / reset()"]
+        FEATURES --> HEURISTIC --> SELECT
     end
 
     subgraph CircuitDetail ["circuit.rs"]
-        BREAKER_STATE["Per-provider state:<br/>Closed, Open, HalfOpen"]
-        RATE_TRIP["Rate trip:<br/>threshold hits in window_seconds"]
-        CREDIT_TRIP["Credit trip:<br/>immediate on 401/402/403"]
-        BACKOFF["Exponential backoff:<br/>cooldown -> 2x -> max_cooldown"]
-        RECOVER["Recovery:<br/>HalfOpen allows 1 request,<br/>success -> Closed"]
+        direction LR
+        BREAKER_STATE["Per-provider:<br/>Closed / Open / HalfOpen"]
+        RATE_TRIP["Rate trip: threshold in window"]
+        CREDIT_TRIP["Credit trip: 401/402/403"]
+        BACKOFF["Exponential backoff"]
+    end
+
+    subgraph FormatDetail ["format.rs"]
+        direction LR
+        FMT_ENUM["ApiFormat (4 variants)"]
+        XLATE_REQ["translate_request()"]
+        XLATE_RESP["translate_response()"]
+    end
+
+    subgraph ClientDetail ["client.rs"]
+        POOL["Persistent reqwest::Client<br/>HTTP/2, connection reuse"]
+        FORWARD["forward_request()"]
+        RESP_PROC["process_response()<br/>breaker update + cost tracking"]
+        POOL --> FORWARD --> RESP_PROC
     end
 
     subgraph DedupDetail ["dedup.rs"]
-        FINGERPRINT["fingerprint():<br/>SHA-256 of provider + model +<br/>msg_count + system[:200] +<br/>user[:500]"]
-        TRACK["check_and_track():<br/>if fingerprint in-flight,<br/>reject (configurable: warn/block)"]
-        RELEASE["release():<br/>remove fingerprint after response"]
-        TTL_EVICT["TTL eviction: 120s"]
+        direction LR
+        FINGERPRINT["fingerprint(): SHA-256"]
+        TRACK["check_and_track()"]
+        RELEASE["release() + TTL eviction"]
     end
 
     subgraph TierDetail ["tier.rs"]
-        CLASSIFY["classify(model_name) -> ModelTier"]
-        ADAPT_T1["adapt_t1(): condensed prompt,<br/>strip non-essential sections"]
-        ADAPT_T2["adapt_t2(): add preamble,<br/>reorder sections for context"]
-        ADAPT_T3T4["adapt_t3t4(): passthrough,<br/>inject cache_control headers"]
+        direction LR
+        ADAPT_T1["T1: condense + strip"]
+        ADAPT_T2["T2: preamble + reorder"]
+        ADAPT_T3T4["T3/T4: passthrough"]
     end
 
+    CACHE -.->|"hit"| CLIENT
+    CACHE -.->|"miss"| ROUTER
     ROUTER --> CIRCUIT
-    ROUTER --> CLIENT
-    CLIENT --> DEDUP
-    CLIENT --> FORWARD
-    FORWARD --> RESP_PROC
-    CACHE --> L1 --> L2 --> L3
+    CIRCUIT --> DEDUP
+    DEDUP --> FORMAT
+    FORMAT --> TIER
+    TIER --> CLIENT
 ```
 
 ## Request Pipeline (in order)

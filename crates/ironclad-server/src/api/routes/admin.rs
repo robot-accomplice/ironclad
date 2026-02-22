@@ -521,6 +521,80 @@ pub async fn agent_card(State(state): State<AppState>) -> impl IntoResponse {
     axum::Json(card)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_json_flat_replacement() {
+        let mut base = json!({"a": 1, "b": 2});
+        merge_json(&mut base, &json!({"b": 99}));
+        assert_eq!(base["a"], 1);
+        assert_eq!(base["b"], 99);
+    }
+
+    #[test]
+    fn merge_json_adds_new_keys() {
+        let mut base = json!({"a": 1});
+        merge_json(&mut base, &json!({"b": 2, "c": 3}));
+        assert_eq!(base["a"], 1);
+        assert_eq!(base["b"], 2);
+        assert_eq!(base["c"], 3);
+    }
+
+    #[test]
+    fn merge_json_deep_nested() {
+        let mut base = json!({"outer": {"inner": 1, "keep": true}});
+        merge_json(&mut base, &json!({"outer": {"inner": 99, "new": "added"}}));
+        assert_eq!(base["outer"]["inner"], 99);
+        assert_eq!(base["outer"]["keep"], true);
+        assert_eq!(base["outer"]["new"], "added");
+    }
+
+    #[test]
+    fn merge_json_array_replaces() {
+        let mut base = json!({"list": [1, 2, 3]});
+        merge_json(&mut base, &json!({"list": [4, 5]}));
+        assert_eq!(base["list"], json!([4, 5]));
+    }
+
+    #[test]
+    fn merge_json_null_replacement() {
+        let mut base = json!({"a": 1});
+        merge_json(&mut base, &json!({"a": null}));
+        assert!(base["a"].is_null());
+    }
+
+    #[test]
+    fn merge_json_empty_patch_is_noop() {
+        let mut base = json!({"a": 1, "b": 2});
+        merge_json(&mut base, &json!({}));
+        assert_eq!(base, json!({"a": 1, "b": 2}));
+    }
+
+    #[test]
+    fn merge_json_scalar_to_object() {
+        let mut base = json!({"a": "string"});
+        merge_json(&mut base, &json!({"a": {"nested": true}}));
+        assert_eq!(base["a"]["nested"], true);
+    }
+
+    #[test]
+    fn merge_json_object_to_scalar() {
+        let mut base = json!({"a": {"nested": true}});
+        merge_json(&mut base, &json!({"a": 42}));
+        assert_eq!(base["a"], 42);
+    }
+
+    #[test]
+    fn merge_json_three_levels() {
+        let mut base = json!({"l1": {"l2": {"l3": "old"}}});
+        merge_json(&mut base, &json!({"l1": {"l2": {"l3": "new", "extra": true}}}));
+        assert_eq!(base["l1"]["l2"]["l3"], "new");
+        assert_eq!(base["l1"]["l2"]["extra"], true);
+    }
+}
+
 pub async fn a2a_hello(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<A2aHelloRequest>,

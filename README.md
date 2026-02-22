@@ -34,25 +34,32 @@ The workspace is organized as eleven crates with a strict dependency hierarchy:
 ```mermaid
 flowchart BT
     CORE["ironclad-core<br/>(types, config, errors)"]
+
     DB["ironclad-db<br/>(SQLite, migrations)"]
     LLM["ironclad-llm<br/>(client, format, routing)"]
-    AGENT["ironclad-agent<br/>(loop, tools, policy)"]
-    SCHED["ironclad-schedule<br/>(heartbeat, cron)"]
-    WALLET["ironclad-wallet<br/>(ethereum, x402, yield)"]
     CHANNELS["ironclad-channels<br/>(telegram, whatsapp, web)"]
     PLUGIN_SDK["ironclad-plugin-sdk<br/>(plugin registry)"]
     BROWSER["ironclad-browser<br/>(CDP automation)"]
+
+    WALLET["ironclad-wallet<br/>(ethereum, x402, yield)"]
+    AGENT["ironclad-agent<br/>(loop, tools, policy)"]
+
+    SCHED["ironclad-schedule<br/>(heartbeat, cron)"]
+
     SERVER["ironclad-server<br/>(HTTP, dashboard, WS)"]
     TESTS["ironclad-tests<br/>(integration tests)"]
 
     DB --> CORE
     LLM --> CORE
-    AGENT --> CORE & DB & LLM
-    SCHED --> CORE & DB & AGENT & WALLET
-    WALLET --> CORE & DB
     CHANNELS --> CORE
     PLUGIN_SDK --> CORE
     BROWSER --> CORE
+
+    WALLET --> CORE & DB
+    AGENT --> CORE & DB & LLM
+
+    SCHED --> CORE & DB & AGENT & WALLET
+
     SERVER --> CORE & DB & LLM & AGENT & SCHED & WALLET & CHANNELS & PLUGIN_SDK & BROWSER
     TESTS --> CORE & DB & LLM & AGENT
 ```
@@ -272,8 +279,7 @@ Additional docs in `docs/`:
 | Document | Contents |
 | ---------- | ---------- |
 | [IRONCLAD.md](docs/IRONCLAD.md) | Comprehensive feature summary, OpenClaw comparison, migration guide, cost analysis |
-| [SECURITY-AUDIT-REPORT.md](docs/SECURITY-AUDIT-REPORT.md) | Full security audit — 23 findings across injection, auth, crypto, wallet, policy |
-| [audit-code-quality-completeness.md](docs/audit-code-quality-completeness.md) | Code quality assessment — panics, coverage, completeness |
+| [ROADMAP.md](docs/ROADMAP.md) | Development roadmap — near-term wiring, new capabilities, frontier research |
 
 ## Development
 

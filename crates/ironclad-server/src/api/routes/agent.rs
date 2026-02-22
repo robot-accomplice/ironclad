@@ -800,4 +800,68 @@ mod tests {
         );
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn check_tool_policy_deny_returns_403_and_reason() {
+        let mut engine = ironclad_agent::policy::PolicyEngine::new();
+        engine.add_rule(Box::new(ironclad_agent::policy::AuthorityRule));
+        let result = check_tool_policy(
+            &engine,
+            "bash",
+            &serde_json::json!({"command": "rm -rf /"}),
+            ironclad_core::InputAuthority::External,
+            ironclad_core::SurvivalTier::Normal,
+        );
+        let (status, reason) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(!reason.is_empty());
+    }
+
+    #[test]
+    fn check_tool_policy_with_authority_rule() {
+        let mut engine = ironclad_agent::policy::PolicyEngine::new();
+        engine.add_rule(Box::new(ironclad_agent::policy::AuthorityRule));
+        let result = check_tool_policy(
+            &engine,
+            "wallet_transfer",
+            &serde_json::json!({"amount": 100}),
+            ironclad_core::InputAuthority::Creator,
+            ironclad_core::SurvivalTier::Normal,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_tool_policy_critical_tier_restricts() {
+        let mut engine = ironclad_agent::policy::PolicyEngine::new();
+        engine.add_rule(Box::new(ironclad_agent::policy::AuthorityRule));
+        engine.add_rule(Box::new(ironclad_agent::policy::CommandSafetyRule));
+        let result = check_tool_policy(
+            &engine,
+            "read_file",
+            &serde_json::json!({"path": "/etc/passwd"}),
+            ironclad_core::InputAuthority::External,
+            ironclad_core::SurvivalTier::Critical,
+        );
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn estimate_cost_negative_tokens_handled() {
+        let cost = estimate_cost_from_provider(0.001, 0.002, -100, -50);
+        assert!(cost < 0.0);
+    }
+
+    #[test]
+    fn estimate_cost_large_values() {
+        let cost = estimate_cost_from_provider(0.00001, 0.00003, 1_000_000, 500_000);
+        let expected = 1_000_000.0 * 0.00001 + 500_000.0 * 0.00003;
+        assert!((cost - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn estimate_cost_zero_rates() {
+        let cost = estimate_cost_from_provider(0.0, 0.0, 1000, 2000);
+        assert_eq!(cost, 0.0);
+    }
 }

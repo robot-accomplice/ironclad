@@ -1,6 +1,6 @@
 # Ironclad Cross-Crate Sequence Diagrams
 
-*Generated 2026-02-20. Companion to the dataflow diagrams ([ironclad-dataflow.md](ironclad-dataflow.md)). These show temporal ordering of interactions between crates during key operations.*
+*Companion to the dataflow diagrams ([ironclad-dataflow.md](ironclad-dataflow.md)). These show temporal ordering of interactions between crates during key operations.*
 
 **Note**: Four additional sequence diagrams exist embedded in C4 component docs (agent module interactions, A2A handshake, financial/yield flow, wake signal flow). This document focuses exclusively on **cross-crate** sequences that span multiple crates and cannot be captured in a single component diagram.
 

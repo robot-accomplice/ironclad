@@ -331,4 +331,36 @@ primary = "ollama/qwen3:8b"
             result.err()
         );
     }
+
+    #[test]
+    fn cleanup_old_logs_no_panic_on_missing_dir() {
+        let dir = std::path::Path::new("/tmp/ironclad-test-nonexistent-dir-cleanup");
+        cleanup_old_logs(dir, 30);
+    }
+
+    #[test]
+    fn cleanup_old_logs_keeps_recent_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let recent = dir.path().join("recent.log");
+        std::fs::write(&recent, "fresh log").unwrap();
+
+        cleanup_old_logs(dir.path(), 30);
+        assert!(recent.exists(), "recent logs should remain");
+    }
+
+    #[test]
+    fn cleanup_old_logs_ignores_non_log_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("data.txt");
+        std::fs::write(&txt, "keep me").unwrap();
+
+        cleanup_old_logs(dir.path(), 0);
+        assert!(txt.exists(), "non-log files should not be deleted");
+    }
+
+    #[test]
+    fn cleanup_old_logs_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        cleanup_old_logs(dir.path(), 1);
+    }
 }

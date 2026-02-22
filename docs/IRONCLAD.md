@@ -6,7 +6,7 @@ A single-binary autonomous agent runtime written in Rust, designed for maximum e
 
 ## Architecture
 
-Ironclad compiles to a single static binary that replaces the multi-process, multi-language stack of its predecessor (OpenClaw). Every subsystem -- LLM routing, agent loop, memory, scheduling, wallet, channels, dashboard -- runs in one OS process on one async runtime (tokio), sharing one SQLite database.
+Ironclad compiles to a single static binary. Every subsystem -- LLM routing, agent loop, memory, scheduling, wallet, channels, dashboard -- runs in one OS process on one async runtime (tokio), sharing one SQLite database.
 
 | Metric | Value |
 | --- | --- |

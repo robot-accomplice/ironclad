@@ -557,4 +557,105 @@ mod tests {
         let engine = YieldEngine::new(&cfg);
         assert!(!engine.a_token_address.is_empty());
     }
+
+    #[test]
+    fn amount_to_raw_negative_clamps_to_zero() {
+        assert_eq!(amount_to_raw(-100.0), U256::from(0u64));
+    }
+
+    #[test]
+    fn parse_address_valid_with_prefix() {
+        let addr = parse_address("0x0000000000000000000000000000000000000001");
+        assert!(addr.is_ok());
+    }
+
+    #[test]
+    fn parse_address_empty() {
+        assert!(parse_address("").is_err());
+    }
+
+    #[test]
+    fn parse_address_too_long() {
+        assert!(parse_address("0x00000000000000000000000000000000000000000001").is_err());
+    }
+
+    #[test]
+    fn calculate_excess_zero_balance_zero_reserve() {
+        let engine = YieldEngine::new(&enabled_config());
+        let excess = engine.calculate_excess(0.0, 0.0);
+        assert!((excess - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn should_deposit_zero_excess() {
+        let engine = YieldEngine::new(&enabled_config());
+        assert!(!engine.should_deposit(0.0));
+    }
+
+    #[test]
+    fn should_withdraw_just_below_threshold() {
+        let engine = YieldEngine::new(&enabled_config());
+        assert!(engine.should_withdraw(29.99));
+    }
+
+    #[test]
+    fn new_engine_copies_all_config_fields() {
+        let cfg = enabled_config();
+        let engine = YieldEngine::new(&cfg);
+        assert!(engine.enabled);
+        assert_eq!(engine.protocol, "aave");
+        assert_eq!(engine.chain, "base");
+        assert!((engine.min_deposit - 50.0).abs() < f64::EPSILON);
+        assert!((engine.withdrawal_threshold - 30.0).abs() < f64::EPSILON);
+        assert!(engine.chain_rpc_url.is_none());
+        assert!(!engine.pool_address.is_empty());
+        assert!(!engine.usdc_address.is_empty());
+        assert!(!engine.a_token_address.is_empty());
+    }
+
+    #[test]
+    fn amount_to_raw_rounding() {
+        let raw = amount_to_raw(0.000001);
+        assert_eq!(raw, U256::from(1u64));
+    }
+
+    #[tokio::test]
+    async fn deposit_rpc_set_both_missing() {
+        let engine = YieldEngine::new(&rpc_config());
+        let result = engine.deposit(10.0, None, None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn withdraw_rpc_set_both_missing() {
+        let engine = YieldEngine::new(&rpc_config());
+        let result = engine.withdraw(10.0, None, None).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_supply_call_params_zero_amount() {
+        let engine = YieldEngine::new(&enabled_config());
+        let (_, amount, _, _) = engine
+            .build_supply_call_params(0.0, "0x0000000000000000000000000000000000000001")
+            .unwrap();
+        assert_eq!(amount, U256::from(0u64));
+    }
+
+    #[test]
+    fn build_withdraw_call_params_zero_amount() {
+        let engine = YieldEngine::new(&enabled_config());
+        let (_, amount, _) = engine
+            .build_withdraw_call_params(0.0, "0x0000000000000000000000000000000000000001")
+            .unwrap();
+        assert_eq!(amount, U256::from(0u64));
+    }
+
+    #[test]
+    fn calculate_excess_fractional() {
+        let engine = YieldEngine::new(&enabled_config());
+        let excess = engine.calculate_excess(150.5, 100.0);
+        let expected = 150.5 - 100.0 - 10.0;
+        assert!((excess - expected).abs() < 1e-10);
+    }
 }
