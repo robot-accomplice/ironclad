@@ -282,7 +282,7 @@ sequenceDiagram
 
 ---
 
-## 4. 12-Step Bootstrap Sequence
+## 4. 13-Step Bootstrap Sequence
 
 Server `main()` initializing all crates in dependency order with error handling at each step.
 
@@ -327,6 +327,12 @@ sequenceDiagram
     LLM->>LLM: ModelRouter with HeuristicBackend (no ONNX)
     LLM->>LLM: reqwest Client, ProviderRegistry
     LLM-->>Main: LlmService
+
+    Note over Main,LLM: Step 6b: Load persisted semantic cache
+    Main->>DB: SELECT * FROM semantic_cache
+    DB-->>Main: cached entries
+    Main->>LLM: cache.load_persisted(entries)
+    LLM->>LLM: populate in-memory HashMap from SQLite rows
 
     Note over Main,Agent: Step 7: Initialize agent
     Main->>Agent: AgentLoop::new(config.agent, db, llm_service)
@@ -590,7 +596,7 @@ sequenceDiagram
 | 1. End-to-End Request | Diagram 1 (Primary Request), Diagram 4 (Memory), Diagram 6 (Injection) | ironclad-c4-agent, ironclad-c4-llm, ironclad-c4-channels, ironclad-c4-db | sessions, session_messages, turns, tool_calls, policy_decisions, inference_costs, semantic_cache, embeddings |
 | 2. Cache-Augmented Inference | Diagram 2 (Semantic Cache), Diagram 3 (Heuristic Router) | ironclad-c4-llm, ironclad-c4-db | semantic_cache, inference_costs |
 | 3. x402 Payment-Gated Inference | Diagram 7 (Financial + Yield) | ironclad-c4-wallet, ironclad-c4-llm | transactions, inference_costs, policy_decisions |
-| 4. 12-Step Bootstrap | All diagrams (covers full system init) | ironclad-c4-server (bootstrap sequence) | identity, skills, cron_jobs |
+| 4. 13-Step Bootstrap | All diagrams (covers full system init) | ironclad-c4-server (bootstrap sequence) | identity, skills, cron_jobs, semantic_cache |
 | 5. Injection Attack Blocked | Diagram 6 (Multi-Layer Injection Defense) | ironclad-c4-agent | policy_decisions, metric_snapshots |
 | 6. Skill-Triggered Script | Diagram 9 (Skill Execution) | ironclad-c4-agent, ironclad-c4-db | skills, policy_decisions |
 | 7. Cron Lease + Execution | Diagram 8 (Cron + Heartbeat Scheduling) | ironclad-c4-schedule, ironclad-c4-db | cron_jobs, cron_runs, working_memory, episodic_memory, memory_fts |
