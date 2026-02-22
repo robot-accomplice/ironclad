@@ -110,7 +110,7 @@ port = 18789
 primary = "ollama/qwen3:8b"
 ```
 
-Full configuration supports 22 sections: `[agent]`, `[server]`, `[database]`, `[models]`, `[providers.*]`, `[circuit_breaker]`, `[memory]`, `[cache]`, `[treasury]`, `[yield]`, `[wallet]`, `[a2a]`, `[skills]`, `[channels.*]`. See `docs/architecture/ironclad-design.md` §5 for all options.
+Full configuration supports 22 sections: `[agent]`, `[server]`, `[database]`, `[models]`, `[providers.*]`, `[circuit_breaker]`, `[memory]`, `[cache]`, `[treasury]`, `[yield]`, `[wallet]`, `[a2a]`, `[skills]`, `[channels.*]`, `[context]`, `[approvals]`, `[plugins]`, `[browser]`, `[daemon]`, `[update]`, `[tier_adapt]`, `[personality]`. See `docs/architecture/ironclad-design.md` §5 for all options.
 
 Key configuration areas:
 

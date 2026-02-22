@@ -12,7 +12,7 @@ Ironclad compiles to a single static binary. Every subsystem -- LLM routing, age
 | --- | --- |
 | Language | Rust (edition 2024) |
 | Workspace crates | 11 |
-| Source files | 108 |
+| Source files | 117 |
 | Lines of code | ~32,000 |
 | Test count | ~1,271 unit + integration |
 | SQLite tables | 28 |
