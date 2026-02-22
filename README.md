@@ -342,6 +342,10 @@ ironclad skills import /path/to/skill-directory
 
 Skills pass through a safety scanner (50+ patterns across 5 categories) before import. Secrets are never stored in config files — API keys and tokens are converted to environment variable references. See [IRONCLAD.md](docs/IRONCLAD.md#migration-openclaw-interoperability) for full details.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for branching model, PR workflow, and quality requirements.
+
 ## License
 
 Apache License, Version 2.0 -- see [LICENSE](LICENSE) and [NOTICE](NOTICE).
