@@ -28,10 +28,29 @@ pub(crate) struct OpenClawConfig {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub channels: Option<OpenClawChannels>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_cron")]
     pub cron: Option<Vec<OpenClawCronJob>>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// OpenClaw's `cron` field can be either a list of jobs or an object like
+/// `{"enabled": true}`. Accept both without failing deserialization.
+fn deserialize_cron<'de, D>(deserializer: D) -> Result<Option<Vec<OpenClawCronJob>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(serde_json::Value::Array(arr)) => {
+            let jobs: Vec<OpenClawCronJob> =
+                serde_json::from_value(serde_json::Value::Array(arr)).unwrap_or_default();
+            Ok(Some(jobs))
+        }
+        Some(serde_json::Value::Object(_)) => Ok(None),
+        _ => Ok(None),
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -46,32 +65,49 @@ pub(crate) struct OpenClawChannels {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct OpenClawTelegramChannel {
-    #[serde(default)]
+    #[serde(default, alias = "botToken")]
     pub token: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct OpenClawWhatsappChannel {
     #[serde(default)]
     pub token: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "phoneNumberId")]
     pub phone_id: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct OpenClawCronJob {
     #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub schedule: Option<String>,
+    pub schedule: Option<serde_json::Value>,
     #[serde(default)]
     pub command: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// Wrapper for `~/.openclaw/cron/jobs.json` which uses `{"version": N, "jobs": [...]}`
+#[derive(Debug, Deserialize)]
+pub(crate) struct OpenClawJobsFile {
+    #[serde(default)]
+    pub jobs: Vec<OpenClawCronJob>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -94,6 +130,63 @@ pub(crate) struct OpenClawMessage {
     pub content: Option<String>,
     #[serde(default)]
     pub timestamp: Option<String>,
+}
+
+/// Real OpenClaw JSONL line wrapper: `{"type":"message","message":{...}}`
+#[derive(Debug, Deserialize)]
+struct OpenClawJSONLLine {
+    #[serde(default, rename = "type")]
+    line_type: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    timestamp: Option<String>,
+    #[serde(default)]
+    message: Option<OpenClawJSONLMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenClawJSONLMessage {
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    content: Option<serde_json::Value>,
+    #[serde(default)]
+    timestamp: Option<serde_json::Value>,
+}
+
+impl OpenClawJSONLMessage {
+    fn into_message(self, line_ts: Option<&str>) -> Option<OpenClawMessage> {
+        let role = self.role?;
+        let content = match self.content? {
+            serde_json::Value::String(s) => s,
+            serde_json::Value::Array(arr) => arr
+                .iter()
+                .filter_map(|v| v.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => return None,
+        };
+        if content.is_empty() {
+            return None;
+        }
+        let ts = self
+            .timestamp
+            .and_then(|v| match v {
+                serde_json::Value::String(s) => Some(s),
+                serde_json::Value::Number(n) => {
+                    Some(chrono::DateTime::from_timestamp_millis(n.as_i64()?)?.to_rfc3339())
+                }
+                _ => None,
+            })
+            .or_else(|| line_ts.map(String::from));
+        Some(OpenClawMessage {
+            role: Some(role),
+            content: Some(content),
+            timestamp: ts,
+        })
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -131,9 +224,43 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
     let mut warnings = Vec::new();
     let mut toml = Vec::new();
 
+    // Convenience accessors into the `extra` flattened fields
+    let agents_defaults = oc_cfg.extra.get("agents").and_then(|a| a.get("defaults"));
+    let gateway = oc_cfg.extra.get("gateway");
+
     // [agent]
     toml.push("[agent]".into());
-    let name = oc_cfg.name.as_deref().unwrap_or("Migrated Agent");
+
+    // Prefer explicit JSON name, then agent name from SOUL.md, then "Migrated Agent"
+    let soul_name = {
+        let soul_path = oc_root.join("workspace").join("SOUL.md");
+        if soul_path.exists() {
+            fs::read_to_string(&soul_path).ok().and_then(|s| {
+                // Look for "I am <Name>" in the Identity section
+                s.lines().find_map(|l| {
+                    let trimmed = l.trim();
+                    if let Some(rest) = trimmed.strip_prefix("I am ") {
+                        let name = rest
+                            .split(|c: char| c == ',' || c == '.' || c == '—' || c == '-')
+                            .next()
+                            .unwrap_or(rest)
+                            .trim();
+                        if !name.is_empty() {
+                            return Some(name.to_string());
+                        }
+                    }
+                    None
+                })
+            })
+        } else {
+            None
+        }
+    };
+    let name = oc_cfg
+        .name
+        .as_deref()
+        .or(soul_name.as_deref())
+        .unwrap_or("Migrated Agent");
     let id = name.to_lowercase().replace(' ', "-");
     toml.push(format!("name = {}", qt(name)));
     toml.push(format!("id = {}", qt(&id)));
@@ -145,27 +272,131 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
 
     // [server]
     toml.push("[server]".into());
-    toml.push("host = \"127.0.0.1\"".into());
-    toml.push("port = 18789".into());
+    let bind = gateway
+        .and_then(|g| g.get("bind"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("loopback");
+    let host = if bind == "loopback" {
+        "127.0.0.1"
+    } else {
+        "0.0.0.0"
+    };
+    let port = gateway
+        .and_then(|g| g.get("port"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(18789);
+    toml.push(format!("host = {}", qt(host)));
+    toml.push(format!("port = {port}"));
+
+    // Migrate gateway auth token → keystore
+    if let Some(token) = gateway
+        .and_then(|g| g.get("auth"))
+        .and_then(|a| a.get("token"))
+        .and_then(|v| v.as_str())
+    {
+        if !token.is_empty() {
+            match store_in_keystore("gateway_auth_token", token) {
+                Ok(()) => {
+                    toml.push(format!(
+                        "api_key_ref = {}",
+                        qt("keystore:gateway_auth_token")
+                    ));
+                    warnings.push(
+                        "Gateway auth token stored in keystore as \"gateway_auth_token\"".into(),
+                    );
+                }
+                Err(e) => {
+                    toml.push(format!("api_key_env = {}", qt("IRONCLAD_API_KEY")));
+                    warnings.push(format!(
+                        "Keystore unavailable ({e}); set IRONCLAD_API_KEY to your gateway token"
+                    ));
+                }
+            }
+        }
+    }
     toml.push(String::new());
 
     // [database]
     toml.push("[database]".into());
     toml.push(format!(
         "path = {}",
-        qt(&ic_root.join("ironclad.db").to_string_lossy())
+        qt(&ic_root.join("state.db").to_string_lossy())
     ));
     toml.push(String::new());
 
-    // [models]
+    // Parse the rich `models.providers` structure from openclaw.json.
+    let oc_providers: Vec<(String, serde_json::Value)> = oc_cfg
+        .extra
+        .get("models")
+        .and_then(|m| m.get("providers"))
+        .and_then(|p| p.as_object())
+        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+
+    // [models] — prefer agents.defaults.model.{primary, fallbacks} if present
     toml.push("[models]".into());
-    if let Some(model) = &oc_cfg.model {
+
+    let agent_primary = agents_defaults
+        .and_then(|d| d.get("model"))
+        .and_then(|m| m.get("primary"))
+        .and_then(|v| v.as_str());
+    let agent_fallbacks: Vec<String> = agents_defaults
+        .and_then(|d| d.get("model"))
+        .and_then(|m| m.get("fallbacks"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if let Some(primary) = agent_primary {
+        toml.push(format!("primary = {}", qt(primary)));
+        if !agent_fallbacks.is_empty() {
+            let refs: Vec<String> = agent_fallbacks.iter().map(|r| qt(r)).collect();
+            toml.push(format!("fallbacks = [{}]", refs.join(", ")));
+        }
+    } else if !oc_providers.is_empty() {
+        // Fall back to first model from first provider
+        let mut all_model_refs: Vec<String> = Vec::new();
+        let mut primary_set = false;
+
+        for (prov_name, prov) in &oc_providers {
+            if let Some(models) = prov.get("models").and_then(|m| m.as_array()) {
+                for model in models {
+                    if let Some(id) = model.get("id").and_then(|v| v.as_str()) {
+                        let model_ref = format!("{prov_name}/{id}");
+                        if !primary_set {
+                            toml.push(format!("primary = {}", qt(&model_ref)));
+                            primary_set = true;
+                        } else {
+                            all_model_refs.push(model_ref);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !primary_set {
+            if let Some(model) = &oc_cfg.model {
+                toml.push(format!("primary = {}", qt(model)));
+            } else {
+                toml.push("primary = \"gpt-4\"".into());
+                warnings.push("No model specified in OpenClaw config, defaulting to gpt-4".into());
+            }
+        }
+
+        if !all_model_refs.is_empty() {
+            let refs: Vec<String> = all_model_refs.iter().map(|r| qt(r)).collect();
+            toml.push(format!("fallbacks = [{}]", refs.join(", ")));
+        }
+    } else if let Some(model) = &oc_cfg.model {
         toml.push(format!("primary = {}", qt(model)));
     } else {
         toml.push("primary = \"gpt-4\"".into());
         warnings.push("No model specified in OpenClaw config, defaulting to gpt-4".into());
     }
-    toml.push("fallback = \"gpt-3.5-turbo\"".into());
     if let Some(temp) = oc_cfg.temperature {
         toml.push(format!("temperature = {temp}"));
     }
@@ -174,19 +405,141 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
     }
     toml.push(String::new());
 
-    // [providers.*]
-    if let Some(provider) = &oc_cfg.provider {
+    // [providers.*] — from models.providers (rich format)
+    if !oc_providers.is_empty() {
+        for (prov_name, prov) in &oc_providers {
+            toml.push(format!("[providers.{prov_name}]"));
+
+            if let Some(url) = prov.get("baseUrl").and_then(|v| v.as_str()) {
+                toml.push(format!("url = {}", qt(url)));
+            }
+
+            // Map OpenClaw API format to Ironclad format
+            let oc_api = prov
+                .get("api")
+                .and_then(|v| v.as_str())
+                .unwrap_or("openai-completions");
+            let (format_str, chat_path, auth_header) = match oc_api {
+                "anthropic-messages" => ("anthropic", "/v1/messages", "x-api-key"),
+                "google-generative-ai" => (
+                    "google",
+                    "/models/gemini-2.0-flash:generateContent",
+                    "query:key",
+                ),
+                _ => ("openai", "/v1/chat/completions", "Authorization"),
+            };
+            toml.push(format!("chat_path = {}", qt(chat_path)));
+            toml.push(format!("format = {}", qt(format_str)));
+            toml.push(format!("auth_header = {}", qt(auth_header)));
+
+            // Determine tier from provider name and cost
+            let is_local = prov_name.starts_with("ollama");
+            let first_cost = prov
+                .get("models")
+                .and_then(|m| m.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|m| m.get("cost"))
+                .and_then(|c| c.get("input"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+
+            let tier = if is_local {
+                "T1"
+            } else if first_cost == 0.0 {
+                "T2"
+            } else if first_cost <= 1.0 {
+                "T2"
+            } else {
+                "T3"
+            };
+            toml.push(format!("tier = {}", qt(tier)));
+
+            if is_local {
+                toml.push("is_local = true".into());
+            }
+
+            // Costs (per-million in OpenClaw → per-token in Ironclad)
+            let cost_in = prov
+                .get("models")
+                .and_then(|m| m.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|m| m.get("cost"))
+                .and_then(|c| c.get("input"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let cost_out = prov
+                .get("models")
+                .and_then(|m| m.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|m| m.get("cost"))
+                .and_then(|c| c.get("output"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            toml.push(format!("cost_per_input_token = {}", cost_in / 1_000_000.0));
+            toml.push(format!(
+                "cost_per_output_token = {}",
+                cost_out / 1_000_000.0
+            ));
+
+            // API key → keystore
+            if let Some(api_key) = prov.get("apiKey").and_then(|v| v.as_str()) {
+                if !api_key.is_empty()
+                    && api_key != "ollama"
+                    && api_key != "ollama-local"
+                    && api_key != "not-needed"
+                {
+                    let ks_name = format!("{prov_name}_api_key");
+                    match store_in_keystore(&ks_name, api_key) {
+                        Ok(()) => {
+                            toml.push(format!(
+                                "api_key_ref = {}",
+                                qt(&format!("keystore:{ks_name}"))
+                            ));
+                            warnings.push(format!(
+                                "{prov_name} API key stored in encrypted keystore as \"{ks_name}\""
+                            ));
+                        }
+                        Err(e) => {
+                            let env_name =
+                                format!("{}_API_KEY", prov_name.to_uppercase().replace('-', "_"));
+                            toml.push(format!("api_key_env = {}", qt(&env_name)));
+                            warnings.push(format!(
+                                "Keystore unavailable ({e}); set env var {env_name}=<your-key>"
+                            ));
+                        }
+                    }
+                }
+            }
+
+            toml.push(String::new());
+        }
+    } else if let Some(provider) = &oc_cfg.provider {
+        // Flat fallback: single top-level provider/api_key/api_url
         let key = provider.to_lowercase();
         toml.push(format!("[providers.{key}]"));
         if let Some(url) = &oc_cfg.api_url {
-            toml.push(format!("base_url = {}", qt(url)));
+            toml.push(format!("url = {}", qt(url)));
         }
         if let Some(api_key) = &oc_cfg.api_key {
-            let env_name = format!("{}_API_KEY", provider.to_uppercase());
-            toml.push(format!("api_key_env = {}", qt(&env_name)));
-            warnings.push(format!(
-                "API key found. Set env var {env_name}={api_key} (key NOT stored in config for security)"
-            ));
+            let ks_name = format!("{}_api_key", key);
+            match store_in_keystore(&ks_name, api_key) {
+                Ok(()) => {
+                    toml.push(format!(
+                        "api_key_ref = {}",
+                        qt(&format!("keystore:{ks_name}"))
+                    ));
+                    warnings.push(format!(
+                        "API key stored in encrypted keystore as \"{ks_name}\""
+                    ));
+                }
+                Err(e) => {
+                    let env_name = format!("{}_API_KEY", provider.to_uppercase());
+                    toml.push(format!("api_key_env = {}", qt(&env_name)));
+                    warnings.push(format!(
+                        "Keystore unavailable ({e}); set env var {env_name}=<your-key>"
+                    ));
+                }
+            }
         }
         toml.push(String::new());
     }
@@ -265,11 +618,26 @@ pub(crate) fn export_config(ic_root: &Path, oc_root: &Path) -> AreaResult {
         if let Some(url) = prov.get("base_url").and_then(|v| v.as_str()) {
             oc.insert("api_url".into(), serde_json::Value::String(url.into()));
         }
-        if let Some(key_env) = prov.get("api_key_env").and_then(|v| v.as_str()) {
-            if let Ok(val) = std::env::var(key_env) {
-                oc.insert("api_key".into(), serde_json::Value::String(val));
-            } else {
-                warnings.push(format!("Env var {key_env} not set; api_key omitted"));
+        let mut key_resolved = false;
+        if let Some(key_ref) = prov.get("api_key_ref").and_then(|v| v.as_str()) {
+            if let Some(ks_name) = key_ref.strip_prefix("keystore:") {
+                if let Some(val) = read_from_keystore(ks_name) {
+                    oc.insert("api_key".into(), serde_json::Value::String(val));
+                    key_resolved = true;
+                } else {
+                    warnings.push(format!(
+                        "Keystore key \"{ks_name}\" not found; api_key omitted"
+                    ));
+                }
+            }
+        }
+        if !key_resolved {
+            if let Some(key_env) = prov.get("api_key_env").and_then(|v| v.as_str()) {
+                if let Ok(val) = std::env::var(key_env) {
+                    oc.insert("api_key".into(), serde_json::Value::String(val));
+                } else {
+                    warnings.push(format!("Env var {key_env} not set; api_key omitted"));
+                }
             }
         }
     }
@@ -553,7 +921,7 @@ pub(crate) fn titlecase(key: &str) -> String {
 // 3. Skills transformer
 // ═══════════════════════════════════════════════════════════════════════
 
-pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path) -> AreaResult {
+pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path, no_safety_check: bool) -> AreaResult {
     let skills_dir = oc_root.join("workspace").join("skills");
     if !skills_dir.exists() {
         return AreaResult {
@@ -573,27 +941,60 @@ pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path) -> AreaResult {
         );
     }
 
-    let report = scan_directory_safety(&skills_dir);
     let mut warnings = Vec::new();
 
-    if let SafetyVerdict::Critical(n) = report.verdict {
-        return AreaResult {
-            area: MigrationArea::Skills, success: false, items_processed: 0,
-            warnings: vec![format!("{n} critical safety finding(s); import blocked")],
-            error: Some("Skills blocked by safety check. Use standalone skill import with --no-safety-check to override.".into()),
-        };
-    }
-    if let SafetyVerdict::Warnings(n) = report.verdict {
-        warnings.push(format!(
-            "{n} warning(s) found in skill scripts; review recommended"
-        ));
+    if !no_safety_check {
+        let report = scan_directory_safety(&skills_dir);
+
+        if let SafetyVerdict::Critical(n) = report.verdict {
+            return AreaResult {
+                area: MigrationArea::Skills,
+                success: false,
+                items_processed: 0,
+                warnings: vec![format!("{n} critical safety finding(s); import blocked")],
+                error: Some(
+                    "Skills blocked by safety check. Use --no-safety-check to override.".into(),
+                ),
+            };
+        }
+        if let SafetyVerdict::Warnings(n) = report.verdict {
+            warnings.push(format!(
+                "{n} warning(s) found in skill scripts; review recommended"
+            ));
+        }
+    } else {
+        warnings.push("Safety checks skipped (--no-safety-check)".into());
     }
 
+    // Read skills.entries from openclaw.json for enabled/disabled state
+    let skill_entries: HashMap<String, bool> = fs::read_to_string(oc_root.join("openclaw.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            v.get("skills")?.get("entries")?.as_object().map(|obj| {
+                obj.iter()
+                    .map(|(k, v)| {
+                        let enabled = v.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true);
+                        (k.clone(), enabled)
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+
     let mut items = 0;
+    let mut skill_names: Vec<(String, bool)> = Vec::new();
+
     if let Ok(entries) = fs::read_dir(&skills_dir) {
         for entry in entries.flatten() {
             let src = entry.path();
             let dest = out_dir.join(entry.file_name());
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            if name.starts_with('.') || name == "gateway.log" {
+                continue;
+            }
+
             if src.is_file() {
                 if let Err(e) = fs::copy(&src, &dest) {
                     warnings.push(format!("Failed to copy {}: {e}", src.display()));
@@ -604,10 +1005,89 @@ pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path) -> AreaResult {
                 if let Err(e) = copy_dir_recursive(&src, &dest) {
                     warnings.push(format!("Failed to copy dir {}: {e}", src.display()));
                 } else {
+                    // Skills not listed in entries are implicitly enabled
+                    let enabled = skill_entries.get(&name).copied().unwrap_or(true);
+                    skill_names.push((name, enabled));
                     items += 1;
                 }
             }
         }
+    }
+
+    // Register skills in the Ironclad database
+    let db_path = ic_root.join("state.db");
+    if db_path.exists() && !skill_names.is_empty() {
+        match ironclad_db::Database::new(db_path.to_string_lossy().as_ref()) {
+            Ok(db) => {
+                let mut registered = 0u32;
+                let mut disabled_count = 0u32;
+
+                for (name, enabled) in &skill_names {
+                    // Parse SKILL.md frontmatter for description if available
+                    let skill_md = out_dir.join(name).join("SKILL.md");
+                    let description = fs::read_to_string(&skill_md)
+                        .ok()
+                        .and_then(|content| parse_skill_description(&content));
+
+                    let source_path = out_dir.join(name).to_string_lossy().to_string();
+                    let content_hash = format!("migrated-{}", chrono::Utc::now().timestamp());
+
+                    // Determine kind from directory contents
+                    let kind = if out_dir.join(name).join("SKILL.md").exists() {
+                        "instruction"
+                    } else {
+                        "scripted"
+                    };
+
+                    match ironclad_db::skills::register_skill(
+                        &db,
+                        name,
+                        kind,
+                        description.as_deref(),
+                        &source_path,
+                        &content_hash,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ) {
+                        Ok(id) => {
+                            registered += 1;
+                            if !enabled {
+                                let conn = db.conn();
+                                let _ = conn.execute(
+                                    "UPDATE skills SET enabled = 0 WHERE id = ?1",
+                                    rusqlite::params![id],
+                                );
+                                disabled_count += 1;
+                            }
+                        }
+                        Err(e) => {
+                            warnings.push(format!("Failed to register skill {name}: {e}"));
+                        }
+                    }
+                }
+
+                if registered > 0 {
+                    warnings.push(format!(
+                        "{registered} skill(s) registered in database ({} enabled, {disabled_count} disabled)",
+                        registered - disabled_count
+                    ));
+                }
+            }
+            Err(e) => {
+                warnings.push(format!(
+                    "Could not open database to register skills: {e}. \
+                     Run `ironclad skills reload` after migration to register them."
+                ));
+            }
+        }
+    } else if !skill_names.is_empty() {
+        warnings.push(
+            "Database not found; skills copied but not registered. \
+             Run `ironclad skills reload` after starting the server."
+                .into(),
+        );
     }
 
     AreaResult {
@@ -617,6 +1097,27 @@ pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path) -> AreaResult {
         warnings,
         error: None,
     }
+}
+
+/// Parse the `description` field from SKILL.md YAML frontmatter.
+fn parse_skill_description(content: &str) -> Option<String> {
+    let content = content.trim();
+    if !content.starts_with("---") {
+        return None;
+    }
+    let rest = &content[3..];
+    let end = rest.find("---")?;
+    let frontmatter = &rest[..end];
+    for line in frontmatter.lines() {
+        let line = line.trim();
+        if let Some(desc) = line.strip_prefix("description:") {
+            let desc = desc.trim().trim_matches('"').trim_matches('\'');
+            if !desc.is_empty() {
+                return Some(desc.to_string());
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn export_skills(ic_root: &Path, oc_root: &Path) -> AreaResult {
@@ -706,23 +1207,47 @@ pub(crate) fn import_sessions(oc_root: &Path, ic_root: &Path) -> AreaResult {
                     match path.extension().and_then(|e| e.to_str()) {
                         Some("jsonl") => {
                             if let Ok(content) = fs::read_to_string(&path) {
-                                let msgs: Vec<OpenClawMessage> = content
-                                    .lines()
-                                    .filter_map(|l| serde_json::from_str(l).ok())
-                                    .collect();
-                                all_sessions.push(OpenClawSession {
-                                    id: Some(
-                                        path.file_stem()
-                                            .unwrap_or_default()
-                                            .to_string_lossy()
-                                            .into(),
-                                    ),
-                                    agent_id: Some(
-                                        agent_entry.file_name().to_string_lossy().into(),
-                                    ),
-                                    created_at: None,
-                                    messages: Some(msgs),
-                                });
+                                let mut created_at: Option<String> = None;
+                                let mut msgs: Vec<OpenClawMessage> = Vec::new();
+                                for line in content.lines() {
+                                    // Try new wrapper format first (must have an explicit "type" field)
+                                    if let Ok(wrapper) =
+                                        serde_json::from_str::<OpenClawJSONLLine>(line)
+                                    {
+                                        if let Some(lt) = wrapper.line_type.as_deref() {
+                                            if lt == "session" {
+                                                created_at = wrapper.timestamp.clone();
+                                            }
+                                            if lt == "message" {
+                                                if let Some(msg) = wrapper.message.and_then(|m| {
+                                                    m.into_message(wrapper.timestamp.as_deref())
+                                                }) {
+                                                    msgs.push(msg);
+                                                }
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                    // Fallback: simple `{"role":"...","content":"..."}` format
+                                    if let Ok(msg) = serde_json::from_str::<OpenClawMessage>(line) {
+                                        msgs.push(msg);
+                                    }
+                                }
+                                if !msgs.is_empty() {
+                                    all_sessions.push(OpenClawSession {
+                                        id: Some(
+                                            path.file_stem()
+                                                .unwrap_or_default()
+                                                .to_string_lossy()
+                                                .into(),
+                                        ),
+                                        agent_id: Some(
+                                            agent_entry.file_name().to_string_lossy().into(),
+                                        ),
+                                        created_at,
+                                        messages: Some(msgs),
+                                    });
+                                }
                             }
                         }
                         Some("json") => {
@@ -749,7 +1274,7 @@ pub(crate) fn import_sessions(oc_root: &Path, ic_root: &Path) -> AreaResult {
         };
     }
 
-    let db_path = ic_root.join("ironclad.db");
+    let db_path = ic_root.join("state.db");
     let db = match ironclad_db::Database::new(&db_path.to_string_lossy()) {
         Ok(d) => d,
         Err(e) => {
@@ -802,7 +1327,7 @@ pub(crate) fn import_sessions(oc_root: &Path, ic_root: &Path) -> AreaResult {
 }
 
 pub(crate) fn export_sessions(ic_root: &Path, oc_root: &Path) -> AreaResult {
-    let db_path = ic_root.join("ironclad.db");
+    let db_path = ic_root.join("state.db");
     if !db_path.exists() {
         return AreaResult {
             area: MigrationArea::Sessions,
@@ -909,14 +1434,23 @@ pub(crate) fn import_cron(oc_root: &Path, ic_root: &Path) -> AreaResult {
     let mut jobs = Vec::new();
     let mut warnings = Vec::new();
 
-    let jobs_json = oc_root.join("jobs.json");
-    if jobs_json.exists() {
-        match fs::read_to_string(&jobs_json) {
-            Ok(c) => match serde_json::from_str::<Vec<OpenClawCronJob>>(&c) {
-                Ok(parsed) => jobs.extend(parsed),
-                Err(e) => warnings.push(format!("Failed to parse jobs.json: {e}")),
-            },
-            Err(e) => warnings.push(format!("Failed to read jobs.json: {e}")),
+    // Try both `jobs.json` (flat) and `cron/jobs.json` (subdirectory)
+    for candidate in [oc_root.join("jobs.json"), oc_root.join("cron/jobs.json")] {
+        if !candidate.exists() {
+            continue;
+        }
+        match fs::read_to_string(&candidate) {
+            Ok(c) => {
+                // First try the wrapped format `{"version": N, "jobs": [...]}`
+                if let Ok(wrapper) = serde_json::from_str::<OpenClawJobsFile>(&c) {
+                    jobs.extend(wrapper.jobs);
+                } else if let Ok(parsed) = serde_json::from_str::<Vec<OpenClawCronJob>>(&c) {
+                    jobs.extend(parsed);
+                } else {
+                    warnings.push(format!("Failed to parse {}", candidate.display()));
+                }
+            }
+            Err(e) => warnings.push(format!("Failed to read {}: {e}", candidate.display())),
         }
     }
 
@@ -939,7 +1473,7 @@ pub(crate) fn import_cron(oc_root: &Path, ic_root: &Path) -> AreaResult {
         };
     }
 
-    let db_path = ic_root.join("ironclad.db");
+    let db_path = ic_root.join("state.db");
     let db = match ironclad_db::Database::new(&db_path.to_string_lossy()) {
         Ok(d) => d,
         Err(e) => return err(MigrationArea::Cron, format!("Failed to open database: {e}")),
@@ -947,17 +1481,62 @@ pub(crate) fn import_cron(oc_root: &Path, ic_root: &Path) -> AreaResult {
 
     let conn = db.conn();
     let mut items = 0;
+    let mut seen_names = std::collections::HashSet::new();
+
     for job in &jobs {
-        let id = uuid_v4();
         let name = job.name.as_deref().unwrap_or("unnamed");
-        let schedule = job.schedule.as_deref().unwrap_or("0 * * * *");
-        let command = job.command.as_deref().unwrap_or("");
+
+        // Skip duplicates within the same import (keep the first/most recent)
+        if !seen_names.insert(name.to_string()) {
+            warnings.push(format!("Skipping duplicate cron job: {name}"));
+            continue;
+        }
+
+        let id = job.id.clone().unwrap_or_else(uuid_v4);
+        let (schedule_kind, schedule_expr) = match &job.schedule {
+            Some(serde_json::Value::String(s)) => ("cron".to_string(), s.clone()),
+            Some(serde_json::Value::Object(m)) => {
+                let kind = m
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("cron")
+                    .to_string();
+                let expr = if kind == "cron" {
+                    m.get("expr")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("0 * * * *")
+                        .to_string()
+                } else {
+                    m.get("everyMs")
+                        .and_then(|v| v.as_u64())
+                        .map(|ms| format!("every {}s", ms / 1000))
+                        .unwrap_or_else(|| "0 * * * *".into())
+                };
+                (kind, expr)
+            }
+            _ => ("cron".to_string(), "0 * * * *".to_string()),
+        };
         let enabled = job.enabled.unwrap_or(true);
-        let payload = serde_json::json!({ "command": command }).to_string();
+        let payload = job
+            .payload
+            .as_ref()
+            .map(|p| p.to_string())
+            .or_else(|| {
+                job.command
+                    .as_ref()
+                    .map(|c| serde_json::json!({"command": c}).to_string())
+            })
+            .unwrap_or_else(|| "{}".to_string());
+
+        // Delete any existing job with the same name to avoid duplicates on re-import
+        let _ = conn.execute(
+            "DELETE FROM cron_jobs WHERE name = ?1",
+            rusqlite::params![name],
+        );
 
         match conn.execute(
-            "INSERT OR IGNORE INTO cron_jobs (id, name, enabled, schedule_kind, schedule_expr, agent_id, payload_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![id, name, enabled, "cron", schedule, "default", payload],
+            "INSERT INTO cron_jobs (id, name, enabled, schedule_kind, schedule_expr, agent_id, payload_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![id, name, enabled, schedule_kind, schedule_expr, "default", payload],
         ) {
             Ok(_) => items += 1,
             Err(e) => warnings.push(format!("Failed to insert cron job '{name}': {e}")),
@@ -974,7 +1553,7 @@ pub(crate) fn import_cron(oc_root: &Path, ic_root: &Path) -> AreaResult {
 }
 
 pub(crate) fn export_cron(ic_root: &Path, oc_root: &Path) -> AreaResult {
-    let db_path = ic_root.join("ironclad.db");
+    let db_path = ic_root.join("state.db");
     if !db_path.exists() {
         return AreaResult {
             area: MigrationArea::Cron,
@@ -1091,10 +1670,21 @@ pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
             lines.push("[channels.telegram]".into());
             lines.push(format!("enabled = {}", tg.enabled.unwrap_or(false)));
             if let Some(token) = &tg.token {
-                lines.push("token_env = \"TELEGRAM_BOT_TOKEN\"".into());
-                warnings.push(format!(
-                    "Set env var TELEGRAM_BOT_TOKEN={token} (token NOT stored in config)"
-                ));
+                match store_in_keystore("telegram_bot_token", token) {
+                    Ok(()) => {
+                        lines.push("token_ref = \"keystore:telegram_bot_token\"".into());
+                        warnings.push(
+                            "Telegram token stored in encrypted keystore as \"telegram_bot_token\""
+                                .into(),
+                        );
+                    }
+                    Err(e) => {
+                        lines.push("token_env = \"TELEGRAM_BOT_TOKEN\"".into());
+                        warnings.push(format!(
+                            "Keystore unavailable ({e}); set env var TELEGRAM_BOT_TOKEN=<token>"
+                        ));
+                    }
+                }
             }
             items += 1;
         }
@@ -1103,10 +1693,21 @@ pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
             lines.push("[channels.whatsapp]".into());
             lines.push(format!("enabled = {}", wa.enabled.unwrap_or(false)));
             if let Some(token) = &wa.token {
-                lines.push("token_env = \"WHATSAPP_TOKEN\"".into());
-                warnings.push(format!(
-                    "Set env var WHATSAPP_TOKEN={token} (token NOT stored in config)"
-                ));
+                match store_in_keystore("whatsapp_token", token) {
+                    Ok(()) => {
+                        lines.push("token_ref = \"keystore:whatsapp_token\"".into());
+                        warnings.push(
+                            "WhatsApp token stored in encrypted keystore as \"whatsapp_token\""
+                                .into(),
+                        );
+                    }
+                    Err(e) => {
+                        lines.push("token_env = \"WHATSAPP_TOKEN\"".into());
+                        warnings.push(format!(
+                            "Keystore unavailable ({e}); set env var WHATSAPP_TOKEN=<token>"
+                        ));
+                    }
+                }
             }
             if let Some(phone) = &wa.phone_id {
                 lines.push(format!("phone_id = {}", qt(phone)));
@@ -1188,12 +1789,8 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
             if let Some(e) = tg.get("enabled").and_then(|v| v.as_bool()) {
                 obj.insert("enabled".into(), serde_json::Value::Bool(e));
             }
-            if let Some(env) = tg.get("token_env").and_then(|v| v.as_str()) {
-                if let Ok(tok) = std::env::var(env) {
-                    obj.insert("token".into(), serde_json::Value::String(tok));
-                } else {
-                    warnings.push(format!("Env var {env} not set; telegram token omitted"));
-                }
+            if !resolve_channel_token_for_export(tg, &mut obj, &mut warnings, "telegram") {
+                // no token resolved
             }
             oc_channels.insert("telegram".into(), serde_json::Value::Object(obj));
             items += 1;
@@ -1203,12 +1800,8 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
             if let Some(e) = wa.get("enabled").and_then(|v| v.as_bool()) {
                 obj.insert("enabled".into(), serde_json::Value::Bool(e));
             }
-            if let Some(env) = wa.get("token_env").and_then(|v| v.as_str()) {
-                if let Ok(tok) = std::env::var(env) {
-                    obj.insert("token".into(), serde_json::Value::String(tok));
-                } else {
-                    warnings.push(format!("Env var {env} not set; whatsapp token omitted"));
-                }
+            if !resolve_channel_token_for_export(wa, &mut obj, &mut warnings, "whatsapp") {
+                // no token resolved
             }
             if let Some(phone) = wa.get("phone_id").and_then(|v| v.as_str()) {
                 obj.insert("phone_id".into(), serde_json::Value::String(phone.into()));
@@ -1265,6 +1858,187 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// 7. Sub-agents transformer
+// ═══════════════════════════════════════════════════════════════════════
+
+const SKIP_AGENT_DIRS: &[&str] = &["duncan", "main"];
+
+fn is_model_wrapper(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.starts_with("anthropic-")
+        || lower.starts_with("google-")
+        || lower.starts_with("moonshot-")
+        || lower.starts_with("ollama-")
+        || lower.starts_with("openai-")
+}
+
+fn agent_display_name(name: &str) -> String {
+    name.split('-')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().to_string() + c.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn detect_agent_model(agent_dir: &Path) -> String {
+    let models_path = agent_dir.join("agent").join("models.json");
+    if let Ok(content) = fs::read_to_string(&models_path) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+            // Try top-level "primary" field
+            if let Some(p) = val.get("primary").and_then(|v| v.as_str()) {
+                if !p.is_empty() {
+                    return p.to_string();
+                }
+            }
+            // Try first model from first provider
+            if let Some(providers) = val.get("providers").and_then(|v| v.as_object()) {
+                for (prov_name, prov) in providers {
+                    if let Some(models) = prov.get("models").and_then(|v| v.as_array()) {
+                        if let Some(first) = models.first() {
+                            if let Some(id) = first.get("id").and_then(|v| v.as_str()) {
+                                return format!("{prov_name}/{id}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+pub(crate) fn import_agents(oc_root: &Path, ic_root: &Path) -> AreaResult {
+    let agents_dir = oc_root.join("agents");
+    if !agents_dir.exists() {
+        return AreaResult {
+            area: MigrationArea::Agents,
+            success: true,
+            items_processed: 0,
+            warnings: vec!["No agents directory found in OpenClaw root".into()],
+            error: None,
+        };
+    }
+
+    let db_path = ic_root.join("state.db");
+    let db = match ironclad_db::Database::new(&db_path.to_string_lossy()) {
+        Ok(d) => d,
+        Err(e) => {
+            return err(
+                MigrationArea::Agents,
+                format!("Failed to open database: {e}"),
+            );
+        }
+    };
+
+    let mut items = 0;
+    let mut warnings = Vec::new();
+
+    let entries = match fs::read_dir(&agents_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            return err(
+                MigrationArea::Agents,
+                format!("Failed to read agents directory: {e}"),
+            );
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = match entry.file_name().to_str() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        if SKIP_AGENT_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+
+        let role = if is_model_wrapper(&name) {
+            "model-proxy"
+        } else {
+            "specialist"
+        };
+
+        let model = detect_agent_model(&path);
+
+        let session_count = path
+            .join("sessions")
+            .read_dir()
+            .map(|rd| rd.count() as i64)
+            .unwrap_or(0);
+
+        let display_name = agent_display_name(&name);
+
+        let agent = ironclad_db::agents::SubAgentRow {
+            id: uuid_v4(),
+            name: name.clone(),
+            display_name: Some(display_name),
+            model,
+            role: role.to_string(),
+            description: None,
+            skills_json: None,
+            enabled: role == "specialist",
+            session_count,
+        };
+
+        match ironclad_db::agents::upsert_sub_agent(&db, &agent) {
+            Ok(()) => items += 1,
+            Err(e) => warnings.push(format!("Failed to import agent '{name}': {e}")),
+        }
+    }
+
+    AreaResult {
+        area: MigrationArea::Agents,
+        success: true,
+        items_processed: items,
+        warnings,
+        error: None,
+    }
+}
+
+pub(crate) fn export_agents(ic_root: &Path, _oc_root: &Path) -> AreaResult {
+    let db_path = ic_root.join("state.db");
+    if !db_path.exists() {
+        return AreaResult {
+            area: MigrationArea::Agents,
+            success: true,
+            items_processed: 0,
+            warnings: vec!["No database found".into()],
+            error: None,
+        };
+    }
+
+    let db = match ironclad_db::Database::new(&db_path.to_string_lossy()) {
+        Ok(d) => d,
+        Err(e) => {
+            return err(
+                MigrationArea::Agents,
+                format!("Failed to open database: {e}"),
+            );
+        }
+    };
+
+    let agents = ironclad_db::agents::list_sub_agents(&db).unwrap_or_default();
+
+    AreaResult {
+        area: MigrationArea::Agents,
+        success: true,
+        items_processed: agents.len(),
+        warnings: vec![],
+        error: None,
+    }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 pub(crate) fn qt(s: &str) -> String {
@@ -1290,6 +2064,56 @@ fn err(area: MigrationArea, msg: String) -> AreaResult {
         warnings: vec![],
         error: Some(msg),
     }
+}
+
+/// Store a credential in the encrypted keystore during migration.
+/// Creates and auto-unlocks the keystore if it doesn't exist yet.
+fn store_in_keystore(key: &str, value: &str) -> Result<(), String> {
+    let ks =
+        ironclad_core::keystore::Keystore::new(ironclad_core::keystore::Keystore::default_path());
+    ks.unlock_machine().map_err(|e| e.to_string())?;
+    ks.set(key, value).map_err(|e| e.to_string())
+}
+
+/// Read a credential from the keystore (for export back to OpenClaw format).
+fn read_from_keystore(key: &str) -> Option<String> {
+    let ks =
+        ironclad_core::keystore::Keystore::new(ironclad_core::keystore::Keystore::default_path());
+    if ks.unlock_machine().is_err() {
+        return None;
+    }
+    ks.get(key)
+}
+
+/// Resolve a channel token for export: try `token_ref` (keystore) first, then `token_env`.
+/// Inserts the resolved value as `"token"` into `obj`. Returns true if a value was inserted.
+fn resolve_channel_token_for_export(
+    channel_table: &toml::map::Map<String, toml::Value>,
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    warnings: &mut Vec<String>,
+    channel_name: &str,
+) -> bool {
+    if let Some(token_ref) = channel_table.get("token_ref").and_then(|v| v.as_str()) {
+        if let Some(ks_name) = token_ref.strip_prefix("keystore:") {
+            if let Some(val) = read_from_keystore(ks_name) {
+                obj.insert("token".into(), serde_json::Value::String(val));
+                return true;
+            }
+            warnings.push(format!(
+                "Keystore key \"{ks_name}\" not found; {channel_name} token omitted"
+            ));
+        }
+    }
+    if let Some(env) = channel_table.get("token_env").and_then(|v| v.as_str()) {
+        if let Ok(tok) = std::env::var(env) {
+            obj.insert("token".into(), serde_json::Value::String(tok));
+            return true;
+        }
+        warnings.push(format!(
+            "Env var {env} not set; {channel_name} token omitted"
+        ));
+    }
+    false
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1318,7 +2142,7 @@ mod tests {
                 "whatsapp": { "enabled": false, "token": "wa-token", "phone_id": "12345" }
             },
             "cron": [
-                { "name": "heartbeat", "schedule": "*/5 * * * *", "command": "ping", "enabled": true },
+                { "name": "heartbeat", "schedule": {"kind": "cron", "expr": "*/5 * * * *"}, "command": "ping", "enabled": true },
                 { "name": "cleanup", "schedule": "0 3 * * *", "command": "cleanup", "enabled": false }
             ]
         });
@@ -1503,7 +2327,7 @@ mod tests {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
         setup_openclaw(oc.path());
-        let r = import_skills(oc.path(), ic.path());
+        let r = import_skills(oc.path(), ic.path(), true);
         assert!(r.success);
         assert_eq!(r.items_processed, 2);
         assert!(ic.path().join("skills/greet.sh").exists());
@@ -1511,7 +2335,7 @@ mod tests {
 
     #[test]
     fn import_skills_no_dir() {
-        let r = import_skills(Path::new("/nonexistent"), Path::new("/tmp"));
+        let r = import_skills(Path::new("/nonexistent"), Path::new("/tmp"), true);
         assert!(r.success);
         assert_eq!(r.items_processed, 0);
     }
@@ -1536,7 +2360,7 @@ mod tests {
         let r = import_sessions(oc.path(), ic.path());
         assert!(r.success);
         assert!(r.items_processed >= 1);
-        assert!(ic.path().join("ironclad.db").exists());
+        assert!(ic.path().join("state.db").exists());
     }
 
     #[test]

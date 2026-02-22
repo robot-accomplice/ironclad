@@ -42,6 +42,32 @@ pub async fn get_working_memory(
     }
 }
 
+pub async fn get_working_memory_all(
+    State(state): State<AppState>,
+    Query(params): Query<LimitQuery>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(100);
+    match ironclad_db::memory::retrieve_working_all(&state.db, limit) {
+        Ok(entries) => {
+            let items: Vec<Value> = entries
+                .into_iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "id": e.id,
+                        "session_id": e.session_id,
+                        "entry_type": e.entry_type,
+                        "content": e.content,
+                        "importance": e.importance,
+                        "created_at": e.created_at,
+                    })
+                })
+                .collect();
+            Ok(axum::Json(serde_json::json!({ "entries": items })))
+        }
+        Err(e) => Err(internal_err(&e)),
+    }
+}
+
 pub async fn get_episodic_memory(
     State(state): State<AppState>,
     Query(params): Query<LimitQuery>,
@@ -72,6 +98,48 @@ pub async fn get_semantic_memory(
     Path(category): Path<String>,
 ) -> impl IntoResponse {
     match ironclad_db::memory::retrieve_semantic(&state.db, &category) {
+        Ok(entries) => {
+            let items: Vec<Value> = entries
+                .into_iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "id": e.id,
+                        "category": e.category,
+                        "key": e.key,
+                        "value": e.value,
+                        "confidence": e.confidence,
+                        "created_at": e.created_at,
+                        "updated_at": e.updated_at,
+                    })
+                })
+                .collect();
+            Ok(axum::Json(serde_json::json!({ "entries": items })))
+        }
+        Err(e) => Err(internal_err(&e)),
+    }
+}
+
+pub async fn get_semantic_categories(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    match ironclad_db::memory::list_semantic_categories(&state.db) {
+        Ok(cats) => {
+            let items: Vec<Value> = cats
+                .into_iter()
+                .map(|(cat, count)| serde_json::json!({ "category": cat, "count": count }))
+                .collect();
+            Ok(axum::Json(serde_json::json!({ "categories": items })))
+        }
+        Err(e) => Err(internal_err(&e)),
+    }
+}
+
+pub async fn get_semantic_memory_all(
+    State(state): State<AppState>,
+    Query(params): Query<LimitQuery>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(100);
+    match ironclad_db::memory::retrieve_semantic_all(&state.db, limit) {
         Ok(entries) => {
             let items: Vec<Value> = entries
                 .into_iter()

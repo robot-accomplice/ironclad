@@ -12,18 +12,18 @@ pub async fn cmd_sessions_list(url: &str) -> Result<(), Box<dyn std::error::Erro
     let sessions = data["sessions"].as_array();
     match sessions {
         Some(arr) if !arr.is_empty() => {
-            let widths = [14, 18, 22, 22];
-            table_header(&["ID", "Agent", "Created", "Updated"], &widths);
+            let widths = [14, 18, 28, 22];
+            table_header(&["ID", "Agent", "Nickname", "Updated"], &widths);
             for s in arr {
                 let id = truncate_id(s["id"].as_str().unwrap_or(""), 11);
                 let agent = s["agent_id"].as_str().unwrap_or("").to_string();
-                let created = s["created_at"].as_str().unwrap_or("").to_string();
+                let nickname = s["nickname"].as_str().unwrap_or("\u{2014}").to_string();
                 let updated = s["updated_at"].as_str().unwrap_or("").to_string();
                 table_row(
                     &[
                         format!("{MONO}{id}{RESET}"),
                         agent,
-                        format!("{DIM}{created}{RESET}"),
+                        nickname,
                         format!("{DIM}{updated}{RESET}"),
                     ],
                     &widths,
@@ -47,8 +47,10 @@ pub async fn cmd_session_detail(url: &str, id: &str) -> Result<(), Box<dyn std::
         e
     })?;
     let messages = c.get(&format!("/api/sessions/{id}/messages")).await?;
+    let nickname = session["nickname"].as_str().unwrap_or("\u{2014}");
     heading(&format!("Session {}", truncate_id(id, 12)));
     kv_mono("ID", id);
+    kv("Nickname", nickname);
     kv("Agent", session["agent_id"].as_str().unwrap_or(""));
     kv("Created", session["created_at"].as_str().unwrap_or(""));
     kv("Updated", session["updated_at"].as_str().unwrap_or(""));
@@ -201,5 +203,23 @@ pub async fn cmd_session_export(
         }
         None => print!("{content}"),
     }
+    Ok(())
+}
+
+pub async fn cmd_sessions_backfill_nicknames(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
+    let (OK, ACTION, WARN, DETAIL, ERR) = icons();
+    let c = IroncladClient::new(url)?;
+    let result = c
+        .post("/api/sessions/backfill-nicknames", serde_json::json!({}))
+        .await
+        .map_err(|e| {
+            IroncladClient::check_connectivity_hint(&*e);
+            e
+        })?;
+    let count = result["backfilled"].as_u64().unwrap_or(0);
+    eprintln!();
+    eprintln!("  {OK} Backfilled nicknames for {ACCENT}{count}{RESET} session(s)");
+    eprintln!();
     Ok(())
 }

@@ -28,6 +28,7 @@ pub enum MigrationArea {
     Sessions,
     Cron,
     Channels,
+    Agents,
 }
 
 impl MigrationArea {
@@ -39,6 +40,7 @@ impl MigrationArea {
             Self::Sessions,
             Self::Cron,
             Self::Channels,
+            Self::Agents,
         ]
     }
 
@@ -50,6 +52,7 @@ impl MigrationArea {
             "sessions" => Some(Self::Sessions),
             "cron" => Some(Self::Cron),
             "channels" => Some(Self::Channels),
+            "agents" => Some(Self::Agents),
             _ => None,
         }
     }
@@ -62,6 +65,7 @@ impl MigrationArea {
             Self::Sessions => "Sessions",
             Self::Cron => "Cron Jobs",
             Self::Channels => "Channels",
+            Self::Agents => "Sub-Agents",
         }
     }
 }
@@ -135,6 +139,7 @@ pub fn cmd_migrate_import(
     source: &str,
     areas: &[String],
     yes: bool,
+    no_safety_check: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let source_path = PathBuf::from(source);
     if !source_path.exists() {
@@ -180,10 +185,11 @@ pub fn cmd_migrate_import(
         let result = match area {
             MigrationArea::Config => import_config(&source_path, &ironclad_root),
             MigrationArea::Personality => import_personality(&source_path, &ironclad_root),
-            MigrationArea::Skills => import_skills(&source_path, &ironclad_root),
+            MigrationArea::Skills => import_skills(&source_path, &ironclad_root, no_safety_check),
             MigrationArea::Sessions => import_sessions(&source_path, &ironclad_root),
             MigrationArea::Cron => import_cron(&source_path, &ironclad_root),
             MigrationArea::Channels => import_channels(&source_path, &ironclad_root),
+            MigrationArea::Agents => import_agents(&source_path, &ironclad_root),
         };
         if result.success {
             eprintln!("\u{2714} ({} items)", result.items_processed);
@@ -243,6 +249,7 @@ pub fn cmd_migrate_export(
             MigrationArea::Sessions => export_sessions(&ironclad_root, &target_path),
             MigrationArea::Cron => export_cron(&ironclad_root, &target_path),
             MigrationArea::Channels => export_channels(&ironclad_root, &target_path),
+            MigrationArea::Agents => export_agents(&ironclad_root, &target_path),
         };
         if result.success {
             eprintln!("\u{2714} ({} items)", result.items_processed);
@@ -411,7 +418,7 @@ mod tests {
 
     #[test]
     fn resolve_areas_empty_returns_all() {
-        assert_eq!(resolve_areas(&[]).len(), 6);
+        assert_eq!(resolve_areas(&[]).len(), 7);
     }
 
     #[test]
@@ -438,6 +445,7 @@ mod tests {
         assert_eq!(MigrationArea::Sessions.label(), "Sessions");
         assert_eq!(MigrationArea::Cron.label(), "Cron Jobs");
         assert_eq!(MigrationArea::Channels.label(), "Channels");
+        assert_eq!(MigrationArea::Agents.label(), "Sub-Agents");
     }
 
     #[test]
@@ -480,8 +488,8 @@ mod tests {
     }
 
     #[test]
-    fn migration_area_all_returns_six() {
-        assert_eq!(MigrationArea::all().len(), 6);
+    fn migration_area_all_returns_seven() {
+        assert_eq!(MigrationArea::all().len(), 7);
     }
 
     #[test]
@@ -500,6 +508,7 @@ mod tests {
             "sessions",
             "cron",
             "channels",
+            "agents",
         ] {
             assert!(MigrationArea::from_str(s).is_some(), "failed for: {s}");
         }

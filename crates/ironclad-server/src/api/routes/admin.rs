@@ -14,6 +14,90 @@ use ironclad_core::{InputAuthority, IroncladConfig, PolicyDecision, RiskLevel, S
 
 use super::{AppState, internal_err};
 
+// ── Approval management routes ───────────────────────────────
+
+pub async fn list_approvals(State(state): State<AppState>) -> impl IntoResponse {
+    state.approvals.expire_timed_out();
+    let pending = state.approvals.list_pending();
+    let all = state.approvals.list_all();
+    Json(json!({
+        "pending": pending,
+        "total": all.len(),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ApprovalDecisionRequest {
+    #[serde(default = "default_decided_by")]
+    pub decided_by: String,
+}
+fn default_decided_by() -> String {
+    "api".into()
+}
+
+pub async fn approve_request(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    axum::Json(body): axum::Json<ApprovalDecisionRequest>,
+) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+    match state.approvals.approve(&id, &body.decided_by) {
+        Ok(req) => Ok(Json(json!(req))),
+        Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
+    }
+}
+
+pub async fn deny_request(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    axum::Json(body): axum::Json<ApprovalDecisionRequest>,
+) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+    match state.approvals.deny(&id, &body.decided_by) {
+        Ok(req) => Ok(Json(json!(req))),
+        Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
+    }
+}
+
+// ── Audit trail routes ───────────────────────────────────────
+
+pub async fn get_policy_audit(
+    State(state): State<AppState>,
+    Path(turn_id): Path<String>,
+) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+    let decisions = ironclad_db::policy::get_decisions_for_turn(&state.db, &turn_id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({
+        "turn_id": turn_id,
+        "decisions": decisions.iter().map(|d| json!({
+            "id": d.id,
+            "tool_name": d.tool_name,
+            "decision": d.decision,
+            "rule_name": d.rule_name,
+            "reason": d.reason,
+            "created_at": d.created_at,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+pub async fn get_tool_audit(
+    State(state): State<AppState>,
+    Path(turn_id): Path<String>,
+) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+    let calls = ironclad_db::tools::get_tool_calls_for_turn(&state.db, &turn_id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({
+        "turn_id": turn_id,
+        "tool_calls": calls.iter().map(|c| json!({
+            "id": c.id,
+            "tool_name": c.tool_name,
+            "input": c.input,
+            "output": c.output,
+            "status": c.status,
+            "duration_ms": c.duration_ms,
+            "created_at": c.created_at,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
 #[derive(Deserialize)]
 pub struct UpdateConfigRequest {
     #[serde(flatten)]
@@ -234,16 +318,41 @@ pub async fn breaker_reset(
 }
 
 pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse {
-    let balance = state.wallet.wallet.get_usdc_balance().await.unwrap_or(0.0);
+    let balances = state.wallet.wallet.get_all_balances().await;
     let address = state.wallet.wallet.address();
     let chain_id = state.wallet.wallet.chain_id();
+    let network = state.wallet.wallet.network_name();
     let config = state.config.read().await;
 
+    // Backward compat: "balance" field is still the USDC balance
+    let usdc_balance = balances
+        .iter()
+        .find(|b| b.symbol == "USDC")
+        .map(|b| b.balance)
+        .unwrap_or(0.0);
+
+    let tokens: Vec<serde_json::Value> = balances
+        .iter()
+        .map(|b| {
+            json!({
+                "symbol": b.symbol,
+                "name": b.name,
+                "balance": b.balance,
+                "formatted": format_balance(b.balance, &b.symbol),
+                "contract": b.contract,
+                "decimals": b.decimals,
+                "is_native": b.is_native,
+            })
+        })
+        .collect();
+
     axum::Json(json!({
-        "balance": format!("{balance:.2}"),
+        "balance": format!("{usdc_balance:.2}"),
         "currency": "USDC",
         "address": address,
         "chain_id": chain_id,
+        "network": network,
+        "tokens": tokens,
         "treasury": {
             "per_payment_cap": config.treasury.per_payment_cap,
             "daily_inference_budget": config.treasury.daily_inference_budget,
@@ -252,13 +361,24 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
     }))
 }
 
+fn format_balance(balance: f64, symbol: &str) -> String {
+    match symbol {
+        "USDC" | "USDT" | "DAI" => format!("{balance:.2}"),
+        "ETH" | "WETH" | "MATIC" => format!("{balance:.6}"),
+        "WBTC" | "cbBTC" => format!("{balance:.8}"),
+        _ => format!("{balance:.4}"),
+    }
+}
+
 pub async fn wallet_address(State(state): State<AppState>) -> impl IntoResponse {
     let address = state.wallet.wallet.address().to_string();
     let chain_id = state.wallet.wallet.chain_id();
+    let network = state.wallet.wallet.network_name();
 
     axum::Json(json!({
         "address": address,
         "chain_id": chain_id,
+        "network": network,
     }))
 }
 
@@ -444,40 +564,38 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
     let agents = state.registry.list_agents().await;
     let config = state.config.read().await;
 
+    let systems: Vec<Value> = vec![
+        json!({ "id": "llm",        "name": "LLM Inference",   "kind": "Inference",   "x": 0.18, "y": 0.22 }),
+        json!({ "id": "memory",     "name": "Memory",          "kind": "Storage",     "x": 0.82, "y": 0.22 }),
+        json!({ "id": "exec",       "name": "Code Execution",  "kind": "Execution",   "x": 0.18, "y": 0.78 }),
+        json!({ "id": "blockchain", "name": "Blockchain",      "kind": "Blockchain",  "x": 0.82, "y": 0.78 }),
+        json!({ "id": "web",        "name": "Web / APIs",      "kind": "Tool",        "x": 0.50, "y": 0.12 }),
+        json!({ "id": "files",      "name": "File System",     "kind": "Tool",        "x": 0.50, "y": 0.88 }),
+    ];
+
     let skills = ironclad_db::skills::list_skills(&state.db).unwrap_or_default();
-    let workstations: Vec<Value> = skills
+    let enabled_skills: Vec<String> = skills
         .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let count = skills.len().max(1) as f64;
-            let angle = (i as f64 / count) * std::f64::consts::TAU;
-            let x = 0.5 + 0.35 * angle.cos();
-            let y = 0.5 + 0.35 * angle.sin();
-            json!({
-                "id": s.id,
-                "name": s.name,
-                "kind": s.kind,
-                "x": (x * 1000.0).round() / 1000.0,
-                "y": (y * 1000.0).round() / 1000.0,
-            })
-        })
+        .filter(|s| s.enabled)
+        .map(|s| s.name.clone())
         .collect();
 
     let agent_list: Vec<Value> = agents
         .iter()
         .enumerate()
         .map(|(i, a)| {
-            let color = WORKSPACE_PALETTE[i % WORKSPACE_PALETTE.len()];
+            let color = WORKSPACE_PALETTE[(i + 1) % WORKSPACE_PALETTE.len()];
             json!({
                 "id": a.id,
                 "name": a.name,
-                "role": if i == 0 { "agent" } else { "specialist" },
+                "role": "specialist",
                 "state": a.state,
                 "color": color,
                 "model": a.model,
                 "current_workstation": null,
+                "active_skill": null,
                 "subordinates": [],
-                "supervisor": if i > 0 { agents.first().map(|a| &a.id) } else { None::<&String> },
+                "supervisor": config.agent.id,
             })
         })
         .collect();
@@ -490,6 +608,8 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
         "color": WORKSPACE_PALETTE[0],
         "model": config.models.primary,
         "current_workstation": null,
+        "active_skill": null,
+        "skills": enabled_skills,
         "subordinates": agent_list.iter()
             .filter(|a| a["role"] == "specialist")
             .map(|a| a["id"].clone())
@@ -502,9 +622,171 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
 
     Json(json!({
         "agents": all_agents,
-        "workstations": workstations,
+        "systems": systems,
         "interactions": [],
     }))
+}
+
+pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
+    let config = state.config.read().await;
+    let agents_in_registry = state.registry.list_agents().await;
+
+    let workspace = std::path::Path::new(&config.agent.workspace);
+    let os = ironclad_core::personality::load_os(workspace);
+    let firmware = ironclad_core::personality::load_firmware(workspace);
+    let directives = ironclad_core::personality::load_directives(workspace);
+
+    let skills = ironclad_db::skills::list_skills(&state.db).unwrap_or_default();
+    let enabled_skills: Vec<&str> = skills.iter().filter(|s| s.enabled).map(|s| s.name.as_str()).collect();
+    let skill_kinds: std::collections::HashMap<&str, Vec<&str>> = {
+        let mut map: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+        for s in &skills {
+            if s.enabled {
+                map.entry(s.kind.as_str()).or_default().push(s.name.as_str());
+            }
+        }
+        map
+    };
+
+    let voice = os.as_ref().map(|o| {
+        json!({
+            "formality": o.voice.formality,
+            "proactiveness": o.voice.proactiveness,
+            "verbosity": o.voice.verbosity,
+            "humor": o.voice.humor,
+            "domain": o.voice.domain,
+        })
+    });
+
+    let missions: Vec<Value> = directives.as_ref().map(|d| {
+        d.missions.iter().map(|m| json!({
+            "name": m.name,
+            "timeframe": m.timeframe,
+            "priority": m.priority,
+            "description": m.description,
+        })).collect()
+    }).unwrap_or_default();
+
+    let firmware_rules: Vec<Value> = firmware.as_ref().map(|f| {
+        f.rules.iter().map(|r| json!({
+            "type": r.rule_type,
+            "rule": r.rule,
+        })).collect()
+    }).unwrap_or_default();
+
+    let running_count = agents_in_registry.iter()
+        .filter(|a| a.state == ironclad_agent::subagents::AgentRunState::Running)
+        .count();
+    let stats = json!({
+        "subordinate_count": agents_in_registry.len(),
+        "running_subordinates": running_count,
+        "total_skills": skills.len(),
+        "enabled_skills": enabled_skills.len(),
+    });
+
+    let main_agent = json!({
+        "id": config.agent.id,
+        "name": config.agent.name,
+        "display_name": config.agent.name,
+        "role": "commander",
+        "model": config.models.primary,
+        "enabled": true,
+        "color": WORKSPACE_PALETTE[0],
+        "session_count": null,
+        "description": os.as_ref().and_then(|o| {
+            let first_line = o.prompt_text.lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("Autonomous agent");
+            Some(first_line.to_string())
+        }),
+        "voice": voice,
+        "missions": missions,
+        "firmware_rules": firmware_rules,
+        "skills": enabled_skills,
+        "skill_breakdown": skill_kinds,
+        "subordinates": agents_in_registry.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+        "stats": stats,
+    });
+
+    let sub_agents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let specialist_cards: Vec<Value> = sub_agents.iter().enumerate().map(|(i, sa)| {
+        let runtime = agents_in_registry.iter().find(|a| a.id == sa.name);
+        let state_str = runtime.map(|r| format!("{:?}", r.state)).unwrap_or_else(|| {
+            if sa.enabled { "Idle".into() } else { "Disabled".into() }
+        });
+        let color = WORKSPACE_PALETTE[(i + 1) % WORKSPACE_PALETTE.len()];
+        json!({
+            "id": sa.id,
+            "name": sa.name,
+            "display_name": sa.display_name,
+            "role": sa.role,
+            "model": sa.model,
+            "enabled": sa.enabled,
+            "color": color,
+            "state": state_str,
+            "session_count": sa.session_count,
+            "description": sa.description,
+            "skills": sa.skills_json.as_ref().and_then(|s| serde_json::from_str::<Vec<String>>(s).ok()).unwrap_or_default(),
+            "supervisor": config.agent.id,
+        })
+    }).collect();
+
+    let mut roster = vec![main_agent];
+    roster.extend(specialist_cards);
+
+    Json(json!({ "roster": roster, "count": roster.len() }))
+}
+
+#[derive(Deserialize)]
+pub struct ChangeModelRequest {
+    pub model: String,
+}
+
+pub async fn change_agent_model(
+    State(state): State<AppState>,
+    Path(agent_name): Path<String>,
+    axum::Json(body): axum::Json<ChangeModelRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let model = body.model.trim().to_string();
+    if model.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "model cannot be empty".into()));
+    }
+
+    let config = state.config.read().await;
+    let is_commander = agent_name == config.agent.name || agent_name == config.agent.id;
+    let old_model;
+    drop(config);
+
+    if is_commander {
+        let mut config = state.config.write().await;
+        old_model = config.models.primary.clone();
+        config.models.primary = model.clone();
+        Ok(axum::Json(json!({
+            "updated": true,
+            "agent": agent_name,
+            "old_model": old_model,
+            "new_model": model,
+            "scope": "commander (runtime only, not persisted to disk)",
+        })))
+    } else {
+        let agents = ironclad_db::agents::list_sub_agents(&state.db)
+            .map_err(|e| internal_err(&e))?;
+        let existing = agents.iter().find(|a| a.name == agent_name).ok_or_else(|| {
+            (StatusCode::NOT_FOUND, format!("agent '{agent_name}' not found"))
+        })?;
+        old_model = existing.model.clone();
+        let mut updated = existing.clone();
+        updated.model = model.clone();
+        ironclad_db::agents::upsert_sub_agent(&state.db, &updated)
+            .map_err(|e| internal_err(&e))?;
+        Ok(axum::Json(json!({
+            "updated": true,
+            "agent": agent_name,
+            "old_model": old_model,
+            "new_model": model,
+            "scope": "specialist (persisted to database)",
+        })))
+    }
 }
 
 pub async fn agent_card(State(state): State<AppState>) -> impl IntoResponse {

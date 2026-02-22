@@ -331,6 +331,18 @@ CREATE TABLE IF NOT EXISTS sub_agents (
     session_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS context_checkpoints (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    system_prompt_hash TEXT NOT NULL,
+    memory_summary TEXT NOT NULL,
+    active_tasks TEXT,
+    conversation_digest TEXT,
+    turn_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON context_checkpoints(session_id, created_at DESC);
 "#;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
@@ -347,9 +359,9 @@ pub fn initialize_db(db: &Database) -> Result<()> {
             .map_err(|e| IroncladError::Database(e.to_string()))?;
 
         if !version_exists {
-            // The embedded schema already incorporates all migrations through v5,
-            // so seed the version to 5 so run_migrations() won't re-apply them.
-            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [5])
+            // The embedded schema already incorporates all migrations through v6,
+            // so seed the version to 6 so run_migrations() won't re-apply them.
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [6])
                 .map_err(|e| IroncladError::Database(e.to_string()))?;
         }
     }
@@ -447,8 +459,8 @@ mod tests {
     fn schema_creates_all_tables() {
         let db = Database::new(":memory:").unwrap();
         let count = table_count(&db).unwrap();
-        // 28 regular tables + 1 FTS5 virtual table = 29 user-defined tables
-        assert_eq!(count, 29, "expected 29 user-defined tables, got {count}");
+        // 28 regular tables + 1 FTS5 virtual table + 1 context_checkpoints = 30
+        assert_eq!(count, 30, "expected 30 user-defined tables, got {count}");
     }
 
     #[test]
@@ -457,7 +469,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 29);
+        assert_eq!(count, 30);
     }
 
     #[test]

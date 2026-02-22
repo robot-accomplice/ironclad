@@ -11,6 +11,8 @@ mod memory_integration;
 #[cfg(test)]
 mod personality_integration;
 #[cfg(test)]
+mod rag_pipeline;
+#[cfg(test)]
 mod round_trip;
 #[cfg(test)]
 mod server_api;

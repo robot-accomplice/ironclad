@@ -2,11 +2,13 @@
 pub mod agent_loop;
 pub mod approvals;
 pub mod context;
+pub mod digest;
 pub mod injection;
 pub mod interview;
 pub mod memory;
 pub mod policy;
 pub mod prompt;
+pub mod retrieval;
 pub mod script_runner;
 pub mod skills;
 pub mod subagents;

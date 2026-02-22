@@ -1,11 +1,117 @@
 //! Agent message, channel processing, and Telegram poll.
 
+use std::sync::Arc;
+
 use axum::{extract::State, http::StatusCode, response::IntoResponse};
+use ironclad_agent::agent_loop::{AgentLoop, ReactAction, ReactState};
+use ironclad_agent::tools::ToolContext;
 use ironclad_channels::ChannelAdapter;
+use ironclad_core::InputAuthority;
 use serde::Deserialize;
 use serde_json::json;
 
 use super::AppState;
+
+/// Try to extract a tool call from the LLM's text response.
+/// Looks for `{"tool_call": {"name": "...", "params": {...}}}` in the response.
+fn parse_tool_call(response: &str) -> Option<(String, serde_json::Value)> {
+    let start = response.find(r#""tool_call""#)?;
+    let brace_start = response[..start].rfind('{')?;
+    let mut depth = 0;
+    let mut end = brace_start;
+    for (i, ch) in response[brace_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = brace_start + i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let json_str = &response[brace_start..end];
+    let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let tool_call = parsed.get("tool_call")?;
+    let name = tool_call.get("name")?.as_str()?.to_string();
+    let params = tool_call.get("params").cloned().unwrap_or(json!({}));
+    Some((name, params))
+}
+
+/// Execute a tool call through the ToolRegistry, enforcing policy and recording audit trails.
+async fn execute_tool_call(
+    state: &AppState,
+    tool_name: &str,
+    params: &serde_json::Value,
+    turn_id: &str,
+    authority: InputAuthority,
+) -> Result<String, String> {
+    let balance = state.wallet.wallet.get_usdc_balance().await.unwrap_or(0.0);
+    let tier = ironclad_core::SurvivalTier::from_balance(balance, 0.0);
+
+    let policy_result = check_tool_policy(&state.policy_engine, tool_name, params, authority, tier);
+
+    let (decision_str, rule_name, reason) = match &policy_result {
+        Ok(()) => ("allow".to_string(), None, None),
+        Err((_status, msg)) => (
+            "deny".to_string(),
+            Some("policy_engine"),
+            Some(msg.as_str()),
+        ),
+    };
+
+    ironclad_db::policy::record_policy_decision(
+        &state.db,
+        Some(turn_id),
+        tool_name,
+        &decision_str,
+        rule_name,
+        reason,
+    )
+    .inspect_err(|e| tracing::warn!(error = %e, "failed to record policy decision"))
+    .ok();
+
+    if let Err((_status, msg)) = policy_result {
+        return Err(format!("Policy denied: {msg}"));
+    }
+
+    let tool = match state.tools.get(tool_name) {
+        Some(t) => t,
+        None => return Err(format!("Unknown tool: {tool_name}")),
+    };
+
+    let ctx = ToolContext {
+        session_id: turn_id.to_string(),
+        agent_id: "ironclad".to_string(),
+        authority,
+    };
+
+    let start = std::time::Instant::now();
+    let result = tool.execute(params.clone(), &ctx).await;
+    let duration_ms = start.elapsed().as_millis() as i64;
+
+    let (output, status) = match &result {
+        Ok(r) => (r.output.clone(), "success"),
+        Err(e) => (e.message.clone(), "error"),
+    };
+
+    ironclad_db::tools::record_tool_call(
+        &state.db,
+        turn_id,
+        tool_name,
+        &params.to_string(),
+        Some(&output),
+        status,
+        Some(duration_ms),
+    )
+    .inspect_err(|e| tracing::warn!(error = %e, "failed to record tool call"))
+    .ok();
+
+    result.map(|r| r.output).map_err(|e| e.message)
+}
 
 pub async fn agent_status(State(state): State<AppState>) -> impl IntoResponse {
     let config = state.config.read().await;
@@ -42,8 +148,9 @@ pub async fn agent_message(
 ) -> impl IntoResponse {
     let config = state.config.read().await;
 
-    // Injection defense
+    // Injection defense: block (>0.7), sanitize (0.3-0.7), or pass (<0.3)
     let threat = ironclad_agent::injection::check_injection(&body.content);
+    let reduced_authority = threat.is_caution();
     if threat.is_blocked() {
         return Err((
             StatusCode::FORBIDDEN,
@@ -53,6 +160,33 @@ pub async fn agent_message(
                 "threat_score": threat.value(),
             })),
         ));
+    }
+    let user_content = if reduced_authority {
+        tracing::info!(score = threat.value(), "Sanitizing caution-level input");
+        ironclad_agent::injection::sanitize(&body.content)
+    } else {
+        body.content.clone()
+    };
+
+    // In-flight deduplication
+    let dedup_fp = ironclad_llm::DedupTracker::fingerprint(
+        "",
+        &[ironclad_llm::format::UnifiedMessage {
+            role: "user".into(),
+            content: user_content.clone(),
+        }],
+    );
+    {
+        let mut llm = state.llm.write().await;
+        if !llm.dedup.check_and_track(&dedup_fp) {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                axum::Json(json!({
+                    "error": "duplicate_request",
+                    "reason": "identical request already in flight",
+                })),
+            ));
+        }
     }
 
     // Find or create session
@@ -67,6 +201,17 @@ pub async fn agent_message(
         })?,
     };
 
+    // Set nickname on first message in a session
+    let session_nickname = match ironclad_db::sessions::get_session(&state.db, &session_id) {
+        Ok(Some(s)) if s.nickname.is_none() => {
+            let nick = ironclad_db::sessions::derive_nickname(&body.content);
+            ironclad_db::sessions::update_nickname(&state.db, &session_id, &nick).ok();
+            Some(nick)
+        }
+        Ok(Some(s)) => s.nickname,
+        _ => None,
+    };
+
     // Store user message
     let user_msg_id =
         ironclad_db::sessions::append_message(&state.db, &session_id, "user", &body.content)
@@ -78,7 +223,7 @@ pub async fn agent_message(
             })?;
 
     // Use the ModelRouter to select a model based on complexity
-    let features = ironclad_llm::extract_features(&body.content, 0, 1);
+    let features = ironclad_llm::extract_features(&user_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
 
     let llm_read = state.llm.read().await;
@@ -91,7 +236,11 @@ pub async fn agent_message(
     let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
     let tier_adapt = config.tier_adapt.clone();
     let agent_name = config.agent.name.clone();
-    let soul_text = state.personality.read().await.soul_text.clone();
+    let primary_model = config.models.primary.clone();
+    let personality = state.personality.read().await;
+    let soul_text = personality.soul_text.clone();
+    let firmware_text = personality.firmware_text.clone();
+    drop(personality);
     drop(config);
 
     // Check circuit breaker
@@ -114,8 +263,13 @@ pub async fn agent_message(
                     axum::Json(json!({"error": e.to_string()})),
                 )
             })?;
+            {
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+            }
             return Ok(axum::Json(json!({
                 "session_id": session_id,
+                "nickname": session_nickname,
                 "user_message_id": user_msg_id,
                 "assistant_message_id": asst_id,
                 "content": assistant_content,
@@ -124,50 +278,6 @@ pub async fn agent_message(
                 "provider_blocked": true,
             })));
         }
-    }
-
-    // Check cache
-    let cache_hash = ironclad_llm::SemanticCache::compute_hash("", "", &body.content);
-    let cached_response = {
-        let mut llm = state.llm.write().await;
-        llm.cache.lookup_exact(&cache_hash)
-    };
-
-    if let Some(cached) = cached_response {
-        let asst_id = ironclad_db::sessions::append_message(
-            &state.db,
-            &session_id,
-            "assistant",
-            &cached.content,
-        )
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": e.to_string()})),
-            )
-        })?;
-
-        ironclad_db::metrics::record_inference_cost(
-            &state.db,
-            &cached.model,
-            &provider_prefix,
-            0,
-            0,
-            0.0,
-            Some("cached"),
-            true,
-        )
-        .ok();
-
-        return Ok(axum::Json(json!({
-            "session_id": session_id,
-            "user_message_id": user_msg_id,
-            "assistant_message_id": asst_id,
-            "content": cached.content,
-            "model": cached.model,
-            "cached": true,
-            "tokens_saved": cached.tokens_saved,
-        })));
     }
 
     // Resolve provider from registry (config-driven, format-agnostic)
@@ -185,7 +295,21 @@ pub async fn agent_message(
         match llm.providers.get_by_model(&model) {
             Some(provider) => {
                 let url = format!("{}{}", provider.url, provider.chat_path);
-                let key = std::env::var(&provider.api_key_env).unwrap_or_default();
+                let key = if provider.auth_mode == "oauth" {
+                    state
+                        .oauth
+                        .resolve_token(&provider.name)
+                        .await
+                        .unwrap_or_default()
+                } else if let Some(ref key_ref) = provider.api_key_ref {
+                    if let Some(name) = key_ref.strip_prefix("keystore:") {
+                        state.keystore.get(name).unwrap_or_default()
+                    } else {
+                        std::env::var(&provider.api_key_env).unwrap_or_default()
+                    }
+                } else {
+                    std::env::var(&provider.api_key_env).unwrap_or_default()
+                };
                 (
                     Some(url),
                     key,
@@ -214,7 +338,98 @@ pub async fn agent_message(
         }
     };
 
-    // Build UnifiedRequest with tier-appropriate adaptations
+    // Generate query embedding for RAG retrieval and cache L2 lookup
+    let query_embedding = {
+        let llm = state.llm.read().await;
+        llm.embedding.embed_single(&user_content).await.ok()
+    };
+
+    // Check cache (full L1 -> L3 -> L2 cascade, using real embedding when available)
+    let cache_hash = ironclad_llm::SemanticCache::compute_hash("", "", &user_content);
+    let cached_response = {
+        let mut llm = state.llm.write().await;
+        if let Some(ref emb) = query_embedding {
+            llm.cache.lookup_with_embedding(&cache_hash, emb)
+        } else {
+            llm.cache.lookup(&cache_hash, &user_content)
+        }
+    };
+
+    if let Some(cached) = cached_response {
+        let asst_id = ironclad_db::sessions::append_message(
+            &state.db,
+            &session_id,
+            "assistant",
+            &cached.content,
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": e.to_string()})),
+            )
+        })?;
+
+        ironclad_db::metrics::record_inference_cost(
+            &state.db,
+            &cached.model,
+            &provider_prefix,
+            0,
+            0,
+            0.0,
+            Some("cached"),
+            true,
+        )
+        .inspect_err(|e| tracing::warn!(error = %e, "failed to record cached inference cost"))
+        .ok();
+
+        {
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+        }
+
+        return Ok(axum::Json(json!({
+            "session_id": session_id,
+            "nickname": session_nickname,
+            "user_message_id": user_msg_id,
+            "assistant_message_id": asst_id,
+            "content": cached.content,
+            "model": cached.model,
+            "cached": true,
+            "tokens_saved": cached.tokens_saved,
+        })));
+    }
+
+    // Retrieve memories from all tiers (using ANN index when available)
+    let complexity_level = ironclad_agent::context::determine_level(complexity);
+    let ann_ref = if state.ann_index.is_built() {
+        Some(&state.ann_index)
+    } else {
+        None
+    };
+    let memories = state.retriever.retrieve_with_ann(
+        &state.db,
+        &session_id,
+        &user_content,
+        query_embedding.as_deref(),
+        complexity_level,
+        ann_ref,
+    );
+
+    // Load conversation history
+    let history_messages =
+        ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).unwrap_or_default();
+    let history: Vec<ironclad_llm::format::UnifiedMessage> = history_messages
+        .iter()
+        .rev()
+        .skip(1) // skip the user message we just appended
+        .rev()
+        .map(|m| ironclad_llm::format::UnifiedMessage {
+            role: m.role.clone(),
+            content: m.content.clone(),
+        })
+        .collect();
+
+    // Build context-aware prompt with memory and history
     let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
     let system_prompt = if soul_text.is_empty() {
         format!(
@@ -225,24 +440,46 @@ pub async fn agent_message(
             id = agent_id,
         )
     } else {
-        soul_text
+        let mut prompt = soul_text;
+        if !firmware_text.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&firmware_text);
+        }
+        prompt
     };
+    let system_prompt = format!(
+        "{system_prompt}{}",
+        ironclad_agent::prompt::runtime_metadata_block(
+            env!("CARGO_PKG_VERSION"),
+            &primary_model,
+            &model,
+        )
+    );
     let system_prompt =
         ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
-    assert!(
-        ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()),
-        "HMAC boundary verification failed immediately after injection"
+    if !ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()) {
+        tracing::error!("HMAC boundary verification failed immediately after injection");
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": "internal HMAC verification failure"})),
+        ));
+    }
+    let mut messages = ironclad_agent::context::build_context(
+        complexity_level,
+        &system_prompt,
+        &memories,
+        &history,
     );
-    let mut messages = vec![
-        ironclad_llm::format::UnifiedMessage {
-            role: "system".into(),
-            content: system_prompt,
-        },
-        ironclad_llm::format::UnifiedMessage {
+    // Ensure the current user message is always present at the end
+    if messages.last().is_none_or(|m| m.content != user_content) {
+        messages.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
-            content: body.content.clone(),
-        },
-    ];
+            content: user_content.clone(),
+        });
+    }
     ironclad_llm::tier::adapt_for_tier(tier, &mut messages, &tier_adapt);
 
     let unified_req = ironclad_llm::format::UnifiedRequest {
@@ -254,7 +491,7 @@ pub async fn agent_message(
     };
 
     let (assistant_content, tokens_in, tokens_out, cost) = match provider_url {
-        Some(url) => {
+        Some(ref url) => {
             let llm_body = ironclad_llm::format::translate_request(&unified_req, format)
                 .unwrap_or_else(|_| serde_json::json!({}));
 
@@ -302,15 +539,17 @@ pub async fn agent_message(
         }
     };
 
-    // Check for HMAC boundary tampering in model output
+    // Check for HMAC boundary tampering in model output — strip forged boundaries
     let assistant_content = if assistant_content.contains("<<<TRUST_BOUNDARY:") {
         if !ironclad_agent::prompt::verify_hmac_boundary(
             &assistant_content,
             state.hmac_secret.as_ref(),
         ) {
-            tracing::warn!("HMAC boundary tampered in model output");
+            tracing::warn!("HMAC boundary tampered in model output, stripping");
+            ironclad_agent::prompt::strip_hmac_boundaries(&assistant_content)
+        } else {
+            assistant_content
         }
-        assistant_content
     } else {
         assistant_content
     };
@@ -322,6 +561,156 @@ pub async fn agent_message(
     } else {
         assistant_content
     };
+
+    // Create a turn ID for audit trail tracking
+    let turn_id = uuid::Uuid::new_v4().to_string();
+
+    // ReAct loop: if the LLM response contains a tool call, execute it and loop
+    let authority = if reduced_authority {
+        InputAuthority::External
+    } else {
+        InputAuthority::Creator
+    };
+    let mut react_loop = AgentLoop::new(10);
+    let mut final_content = assistant_content.clone();
+    let mut total_tokens_in = tokens_in;
+    let mut total_tokens_out = tokens_out;
+    let mut total_cost = cost;
+
+    if let Some((tool_name, tool_params)) = parse_tool_call(&assistant_content) {
+        react_loop.transition(ReactAction::Think);
+        let mut react_messages = unified_req.messages.clone();
+
+        react_messages.push(ironclad_llm::format::UnifiedMessage {
+            role: "assistant".into(),
+            content: assistant_content.clone(),
+        });
+
+        let mut current_tool = Some((tool_name, tool_params));
+
+        while let Some((ref tool_name, ref tool_params)) = current_tool {
+            if react_loop.is_looping(tool_name, &tool_params.to_string()) {
+                tracing::warn!(tool = %tool_name, "ReAct loop detected, breaking");
+                break;
+            }
+
+            react_loop.transition(ReactAction::Act {
+                tool_name: tool_name.clone(),
+                params: tool_params.to_string(),
+            });
+
+            let tool_result =
+                execute_tool_call(&state, tool_name, tool_params, &turn_id, authority).await;
+
+            let observation = match tool_result {
+                Ok(output) => format!("[Tool {tool_name} succeeded]: {output}"),
+                Err(err) => format!("[Tool {tool_name} failed]: {err}"),
+            };
+
+            react_loop.transition(ReactAction::Observe);
+
+            react_messages.push(ironclad_llm::format::UnifiedMessage {
+                role: "user".into(),
+                content: observation,
+            });
+
+            if react_loop.state == ReactState::Done {
+                break;
+            }
+
+            let follow_req = ironclad_llm::format::UnifiedRequest {
+                model: unified_req.model.clone(),
+                messages: react_messages.clone(),
+                max_tokens: Some(2048),
+                temperature: None,
+                system: None,
+            };
+
+            let follow_content = match &provider_url {
+                Some(url) => {
+                    let follow_body = ironclad_llm::format::translate_request(&follow_req, format)
+                        .unwrap_or_else(|_| serde_json::json!({}));
+
+                    let llm = state.llm.read().await;
+                    match llm
+                        .client
+                        .forward_with_provider(
+                            url,
+                            &api_key,
+                            follow_body,
+                            &auth_header,
+                            &extra_headers,
+                        )
+                        .await
+                    {
+                        Ok(resp) => {
+                            let unified_resp =
+                                ironclad_llm::format::translate_response(&resp, format)
+                                    .unwrap_or_else(|_| ironclad_llm::format::UnifiedResponse {
+                                        content: "(no response)".into(),
+                                        model: model.clone(),
+                                        tokens_in: 0,
+                                        tokens_out: 0,
+                                        finish_reason: None,
+                                    });
+                            total_tokens_in += unified_resp.tokens_in as i64;
+                            total_tokens_out += unified_resp.tokens_out as i64;
+                            total_cost += estimate_cost_from_provider(
+                                cost_in_rate,
+                                cost_out_rate,
+                                unified_resp.tokens_in as i64,
+                                unified_resp.tokens_out as i64,
+                            );
+                            drop(llm);
+                            let mut llm = state.llm.write().await;
+                            llm.breakers.record_success(&provider_prefix);
+                            unified_resp.content
+                        }
+                        Err(e) => {
+                            drop(llm);
+                            let mut llm = state.llm.write().await;
+                            llm.breakers.record_failure(&provider_prefix);
+                            format!("LLM follow-up error: {e}")
+                        }
+                    }
+                }
+                None => break,
+            };
+
+            react_messages.push(ironclad_llm::format::UnifiedMessage {
+                role: "assistant".into(),
+                content: follow_content.clone(),
+            });
+
+            let follow_content = if follow_content.contains("<<<TRUST_BOUNDARY:") {
+                if !ironclad_agent::prompt::verify_hmac_boundary(
+                    &follow_content,
+                    state.hmac_secret.as_ref(),
+                ) {
+                    tracing::warn!("HMAC boundary tampered in ReAct follow-up, stripping");
+                    ironclad_agent::prompt::strip_hmac_boundaries(&follow_content)
+                } else {
+                    follow_content
+                }
+            } else {
+                follow_content
+            };
+            let follow_content = if ironclad_agent::injection::scan_output(&follow_content) {
+                tracing::warn!("L4 output scan flagged ReAct follow-up response, blocking");
+                "[Response blocked by output safety filter]".to_string()
+            } else {
+                follow_content
+            };
+
+            current_tool = parse_tool_call(&follow_content);
+            if current_tool.is_none() {
+                react_loop.transition(ReactAction::Finish);
+                final_content = follow_content;
+            }
+        }
+    }
+
+    let assistant_content = final_content;
 
     // Store assistant response
     let asst_id = ironclad_db::sessions::append_message(
@@ -341,13 +730,54 @@ pub async fn agent_message(
         &state.db,
         &model,
         &provider_prefix,
-        tokens_in,
-        tokens_out,
-        cost,
+        total_tokens_in,
+        total_tokens_out,
+        total_cost,
         None,
         false,
     )
+    .inspect_err(|e| tracing::warn!(error = %e, "failed to record inference cost"))
     .ok();
+
+    // Post-turn memory ingestion + embedding generation with chunking (background)
+    {
+        let ingest_db = state.db.clone();
+        let ingest_session = session_id.clone();
+        let ingest_user = user_content.clone();
+        let ingest_assistant = assistant_content.clone();
+        let ingest_llm = Arc::clone(&state.llm);
+        tokio::spawn(async move {
+            ironclad_agent::memory::ingest_turn(
+                &ingest_db,
+                &ingest_session,
+                &ingest_user,
+                &ingest_assistant,
+                &[],
+            );
+
+            let llm = ingest_llm.read().await;
+
+            // Chunk long responses before embedding (512-token threshold)
+            let chunk_config = ironclad_agent::retrieval::ChunkConfig::default();
+            let chunks = ironclad_agent::retrieval::chunk_text(&ingest_assistant, &chunk_config);
+
+            for chunk in &chunks {
+                if let Ok(embedding) = llm.embedding.embed_single(&chunk.text).await {
+                    let embed_id = uuid::Uuid::new_v4().to_string();
+                    ironclad_db::embeddings::store_embedding(
+                        &ingest_db,
+                        &embed_id,
+                        "turn",
+                        &ingest_session,
+                        &chunk.text[..chunk.text.len().min(200)],
+                        &embedding,
+                    )
+                    .inspect_err(|e| tracing::warn!(error = %e, chunk_idx = chunk.index, "failed to store chunk embedding"))
+                    .ok();
+                }
+            }
+        });
+    }
 
     if tokens_out > 0 {
         let cached_entry = ironclad_llm::CachedResponse {
@@ -362,21 +792,140 @@ pub async fn agent_message(
         };
         let mut llm = state.llm.write().await;
         llm.cache
-            .store_with_embedding(&cache_hash, &body.content, cached_entry);
+            .store_with_embedding(&cache_hash, &user_content, cached_entry);
+    }
+
+    // Release dedup tracking so subsequent identical requests are allowed
+    {
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+    }
+
+    // Background nickname refinement after 4+ messages
+    if let Ok(count) = ironclad_db::sessions::message_count(&state.db, &session_id) {
+        if count >= 4 {
+            let refine_db = state.db.clone();
+            let refine_llm = Arc::clone(&state.llm);
+            let refine_sid = session_id.clone();
+            let refine_oauth = state.oauth.clone();
+            let refine_keystore = state.keystore.clone();
+            tokio::spawn(async move {
+                if let Err(e) = refine_session_nickname(
+                    &refine_db,
+                    &refine_llm,
+                    &refine_sid,
+                    &refine_oauth,
+                    &refine_keystore,
+                )
+                .await
+                {
+                    tracing::debug!(error = %e, session = %refine_sid, "nickname refinement skipped");
+                }
+            });
+        }
     }
 
     Ok(axum::Json(json!({
         "session_id": session_id,
+        "nickname": session_nickname,
         "user_message_id": user_msg_id,
         "assistant_message_id": asst_id,
         "content": assistant_content,
         "model": model,
         "cached": false,
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "cost": cost,
+        "tokens_in": total_tokens_in,
+        "tokens_out": total_tokens_out,
+        "cost": total_cost,
         "threat_score": threat.value(),
+        "reduced_authority": reduced_authority,
+        "react_turns": react_loop.turn_count,
     })))
+}
+
+/// Refine a session's nickname using the LLM to summarize conversation topics.
+async fn refine_session_nickname(
+    db: &ironclad_db::Database,
+    llm: &Arc<tokio::sync::RwLock<ironclad_llm::LlmService>>,
+    session_id: &str,
+    oauth: &ironclad_llm::oauth::OAuthManager,
+    keystore: &ironclad_core::keystore::Keystore,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let messages = ironclad_db::sessions::list_messages(db, session_id, Some(8))?;
+    if messages.len() < 4 {
+        return Ok(());
+    }
+
+    let mut conversation = String::with_capacity(1024);
+    for m in &messages {
+        let prefix = if m.role == "user" { "User" } else { "Assistant" };
+        let snippet: String = m.content.chars().take(200).collect();
+        conversation.push_str(&format!("{prefix}: {snippet}\n"));
+    }
+
+    let prompt = format!(
+        "Summarize this conversation topic in 3-6 words as a short title. \
+         Only output the title, nothing else.\n\n{conversation}"
+    );
+
+    let llm_read = llm.read().await;
+    let model_id = llm_read.router.select_model().to_string();
+    let model_for_api = model_id.split('/').nth(1).unwrap_or(&model_id).to_string();
+
+    let provider = llm_read.providers.get_by_model(&model_id);
+    let (url, api_key, auth_header, format, extra_headers) = match provider {
+        Some(p) => {
+            let key = if p.auth_mode == "oauth" {
+                oauth.resolve_token(&p.name).await.unwrap_or_default()
+            } else if let Some(ref key_ref) = p.api_key_ref {
+                if let Some(name) = key_ref.strip_prefix("keystore:") {
+                    keystore.get(name).unwrap_or_default()
+                } else {
+                    std::env::var(&p.api_key_env).unwrap_or_default()
+                }
+            } else {
+                std::env::var(&p.api_key_env).unwrap_or_default()
+            };
+            (
+                format!("{}{}", p.url, p.chat_path),
+                key,
+                p.auth_header.clone(),
+                p.format,
+                p.extra_headers.clone(),
+            )
+        }
+        None => return Ok(()),
+    };
+
+    let req = ironclad_llm::format::UnifiedRequest {
+        model: model_for_api,
+        messages: vec![ironclad_llm::format::UnifiedMessage {
+            role: "user".into(),
+            content: prompt,
+        }],
+        max_tokens: Some(30),
+        temperature: Some(0.3),
+        system: None,
+    };
+
+    let body = ironclad_llm::format::translate_request(&req, format)?;
+    let resp = llm_read
+        .client
+        .forward_with_provider(&url, &api_key, body, &auth_header, &extra_headers)
+        .await?;
+    drop(llm_read);
+
+    let unified = ironclad_llm::format::translate_response(&resp, format)?;
+    let nickname = unified.content.trim().trim_matches('"').to_string();
+
+    if !nickname.is_empty() && nickname.len() <= 60 {
+        ironclad_db::sessions::update_nickname(db, session_id, &nickname)?;
+        tracing::info!(
+            session = %session_id,
+            nickname = %nickname,
+            "Refined session nickname via LLM"
+        );
+    }
+    Ok(())
 }
 
 fn estimate_cost_from_provider(
@@ -390,7 +939,6 @@ fn estimate_cost_from_provider(
 
 /// Checks whether a tool call is allowed by the policy engine.
 /// Returns Ok(()) if allowed, or an error tuple for HTTP responses.
-#[allow(dead_code)]
 pub fn check_tool_policy(
     engine: &ironclad_agent::policy::PolicyEngine,
     tool_name: &str,
@@ -520,10 +1068,12 @@ pub async fn process_channel_message(
             .channel_router
             .send_reply(&platform, &chat_id, reply)
             .await
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to send bot command reply"))
             .ok();
         return Ok(());
     }
 
+    // Injection defense: block (>0.7), sanitize (0.3-0.7), or pass (<0.3)
     let threat = ironclad_agent::injection::check_injection(&inbound.content);
     if threat.is_blocked() {
         state
@@ -534,8 +1084,31 @@ pub async fn process_channel_message(
                 "I can't process that message — it was flagged by my safety filters.".into(),
             )
             .await
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to send injection block reply"))
             .ok();
         return Ok(());
+    }
+    let user_content = if threat.is_caution() {
+        tracing::info!(score = threat.value(), platform = %platform, "Sanitizing caution-level channel input");
+        ironclad_agent::injection::sanitize(&inbound.content)
+    } else {
+        inbound.content.clone()
+    };
+
+    // In-flight deduplication for channel messages
+    let dedup_fp = ironclad_llm::DedupTracker::fingerprint(
+        &platform,
+        &[ironclad_llm::format::UnifiedMessage {
+            role: "user".into(),
+            content: user_content.clone(),
+        }],
+    );
+    {
+        let mut llm = state.llm.write().await;
+        if !llm.dedup.check_and_track(&dedup_fp) {
+            tracing::debug!("dropping duplicate channel message");
+            return Ok(());
+        }
     }
 
     let session_key = format!("{}:{}", platform, inbound.sender_id);
@@ -545,7 +1118,7 @@ pub async fn process_channel_message(
         .map_err(|e| e.to_string())?;
 
     let config = state.config.read().await;
-    let features = ironclad_llm::extract_features(&inbound.content, 0, 1);
+    let features = ironclad_llm::extract_features(&user_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
     let llm_read = state.llm.read().await;
     let model = llm_read
@@ -556,7 +1129,13 @@ pub async fn process_channel_message(
 
     let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
     let tier_adapt = config.tier_adapt.clone();
-    let soul_text = state.personality.read().await.soul_text.clone();
+    let agent_name = config.agent.name.clone();
+    let agent_id = config.agent.id.clone();
+    let primary_model = config.models.primary.clone();
+    let personality = state.personality.read().await;
+    let soul_text = personality.soul_text.clone();
+    let firmware_text = personality.firmware_text.clone();
+    drop(personality);
     drop(config);
 
     {
@@ -567,12 +1146,20 @@ pub async fn process_channel_message(
                 "I'm temporarily unable to reach the {} provider. Please try again shortly.",
                 provider_prefix
             );
-            ironclad_db::sessions::append_message(&state.db, &session_id, "assistant", &reply).ok();
+            ironclad_db::sessions::append_message(&state.db, &session_id, "assistant", &reply)
+                .inspect_err(
+                    |e| tracing::warn!(error = %e, "failed to store circuit-breaker reply"),
+                )
+                .ok();
             state
                 .channel_router
                 .send_reply(&platform, &chat_id, reply)
                 .await
+                .inspect_err(|e| tracing::warn!(error = %e, "failed to send circuit-breaker reply"))
                 .ok();
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
             return Ok(());
         }
     }
@@ -591,7 +1178,21 @@ pub async fn process_channel_message(
         match llm.providers.get_by_model(&model) {
             Some(provider) => {
                 let url = format!("{}{}", provider.url, provider.chat_path);
-                let key = std::env::var(&provider.api_key_env).unwrap_or_default();
+                let key = if provider.auth_mode == "oauth" {
+                    state
+                        .oauth
+                        .resolve_token(&provider.name)
+                        .await
+                        .unwrap_or_default()
+                } else if let Some(ref key_ref) = provider.api_key_ref {
+                    if let Some(name) = key_ref.strip_prefix("keystore:") {
+                        state.keystore.get(name).unwrap_or_default()
+                    } else {
+                        std::env::var(&provider.api_key_env).unwrap_or_default()
+                    }
+                } else {
+                    std::env::var(&provider.api_key_env).unwrap_or_default()
+                };
                 (
                     Some(url),
                     key,
@@ -620,30 +1221,104 @@ pub async fn process_channel_message(
         }
     };
 
-    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
-    let system_prompt = if soul_text.is_empty() {
-        "You are Ironclad, an autonomous agent runtime.".to_string()
-    } else {
-        soul_text.to_string()
+    // Generate query embedding for RAG retrieval
+    let query_embedding = {
+        let llm = state.llm.read().await;
+        llm.embedding.embed_single(&user_content).await.ok()
     };
-    let system_prompt =
-        ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
-    assert!(
-        ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()),
-        "HMAC boundary verification failed immediately after injection"
+
+    // Retrieve memories from all tiers (using ANN index when available)
+    let complexity_level = ironclad_agent::context::determine_level(complexity);
+    let ann_ref = if state.ann_index.is_built() {
+        Some(&state.ann_index)
+    } else {
+        None
+    };
+    let memories = state.retriever.retrieve_with_ann(
+        &state.db,
+        &session_id,
+        &user_content,
+        query_embedding.as_deref(),
+        complexity_level,
+        ann_ref,
     );
 
-    let mut messages = vec![
-        ironclad_llm::format::UnifiedMessage {
-            role: "system".into(),
-            content: system_prompt,
-        },
-        ironclad_llm::format::UnifiedMessage {
+    // Load conversation history
+    let history_messages =
+        ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).unwrap_or_default();
+    let history: Vec<ironclad_llm::format::UnifiedMessage> = history_messages
+        .iter()
+        .rev()
+        .skip(1)
+        .rev()
+        .map(|m| ironclad_llm::format::UnifiedMessage {
+            role: m.role.clone(),
+            content: m.content.clone(),
+        })
+        .collect();
+
+    // Build context-aware prompt with memory and history
+    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let system_prompt = if soul_text.is_empty() {
+        format!(
+            "You are {name}, an autonomous AI agent (id: {id}). \
+             When asked who you are, always identify as {name}.",
+            name = agent_name,
+            id = agent_id,
+        )
+    } else {
+        let mut prompt = soul_text.to_string();
+        if !firmware_text.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&firmware_text);
+        }
+        prompt
+    };
+    let system_prompt = format!(
+        "{system_prompt}{}",
+        ironclad_agent::prompt::runtime_metadata_block(
+            env!("CARGO_PKG_VERSION"),
+            &primary_model,
+            &model,
+        )
+    );
+    let system_prompt =
+        ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
+    if !ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()) {
+        tracing::error!("HMAC boundary verification failed in channel handler");
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
+        return Err("internal HMAC verification failure".into());
+    }
+
+    let mut messages = ironclad_agent::context::build_context(
+        complexity_level,
+        &system_prompt,
+        &memories,
+        &history,
+    );
+    if messages.last().is_none_or(|m| m.content != user_content) {
+        messages.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
-            content: inbound.content.clone(),
-        },
-    ];
+            content: user_content.clone(),
+        });
+    }
     ironclad_llm::tier::adapt_for_tier(tier, &mut messages, &tier_adapt);
+
+    // Check HMAC tamper in model output
+    let check_hmac = |content: String, hmac_secret: &[u8]| -> String {
+        if content.contains("<<<TRUST_BOUNDARY:") {
+            if !ironclad_agent::prompt::verify_hmac_boundary(&content, hmac_secret) {
+                tracing::warn!("HMAC boundary tampered in channel model output");
+                ironclad_agent::prompt::strip_hmac_boundaries(&content)
+            } else {
+                content
+            }
+        } else {
+            content
+        }
+    };
 
     let unified_req = ironclad_llm::format::UnifiedRequest {
         model: model_for_api,
@@ -654,7 +1329,7 @@ pub async fn process_channel_message(
     };
 
     let response_content = match provider_url {
-        Some(url) => {
+        Some(ref url) => {
             let llm_body = ironclad_llm::format::translate_request(&unified_req, format)
                 .unwrap_or_else(|_| serde_json::json!({}));
 
@@ -691,9 +1366,12 @@ pub async fn process_channel_message(
                         None,
                         false,
                     )
+                    .inspect_err(
+                        |e| tracing::warn!(error = %e, "failed to record channel inference cost"),
+                    )
                     .ok();
 
-                    unified_resp.content
+                    check_hmac(unified_resp.content, state.hmac_secret.as_ref())
                 }
                 Err(e) => {
                     drop(llm);
@@ -721,14 +1399,166 @@ pub async fn process_channel_message(
         response_content
     };
 
+    // ReAct loop for channel messages: execute tool calls if detected
+    let channel_turn_id = uuid::Uuid::new_v4().to_string();
+    let channel_authority = if threat.is_caution() {
+        InputAuthority::External
+    } else {
+        InputAuthority::Creator
+    };
+    let mut channel_react = AgentLoop::new(10);
+    let response_content = if let Some((tool_name, tool_params)) =
+        parse_tool_call(&response_content)
+    {
+        channel_react.transition(ReactAction::Think);
+        let mut react_msgs = unified_req.messages.clone();
+        react_msgs.push(ironclad_llm::format::UnifiedMessage {
+            role: "assistant".into(),
+            content: response_content.clone(),
+        });
+
+        let mut current_tool = Some((tool_name, tool_params));
+        let mut final_response = response_content;
+
+        while let Some((ref tn, ref tp)) = current_tool {
+            if channel_react.is_looping(tn, &tp.to_string()) {
+                break;
+            }
+            channel_react.transition(ReactAction::Act {
+                tool_name: tn.clone(),
+                params: tp.to_string(),
+            });
+            let tool_result =
+                execute_tool_call(state, tn, tp, &channel_turn_id, channel_authority).await;
+            let obs = match tool_result {
+                Ok(out) => format!("[Tool {tn} succeeded]: {out}"),
+                Err(err) => format!("[Tool {tn} failed]: {err}"),
+            };
+            channel_react.transition(ReactAction::Observe);
+            react_msgs.push(ironclad_llm::format::UnifiedMessage {
+                role: "user".into(),
+                content: obs,
+            });
+
+            if channel_react.state == ReactState::Done {
+                break;
+            }
+
+            if let Some(ref url) = provider_url {
+                let follow_req = ironclad_llm::format::UnifiedRequest {
+                    model: unified_req.model.clone(),
+                    messages: react_msgs.clone(),
+                    max_tokens: Some(2048),
+                    temperature: None,
+                    system: None,
+                };
+                let follow_body = ironclad_llm::format::translate_request(&follow_req, format)
+                    .unwrap_or_else(|_| serde_json::json!({}));
+                let llm = state.llm.read().await;
+                match llm
+                    .client
+                    .forward_with_provider(url, &api_key, follow_body, &auth_header, &extra_headers)
+                    .await
+                {
+                    Ok(resp) => {
+                        let ur = ironclad_llm::format::translate_response(&resp, format)
+                            .unwrap_or_else(|_| ironclad_llm::format::UnifiedResponse {
+                                content: "(no response)".into(),
+                                model: model.clone(),
+                                tokens_in: 0,
+                                tokens_out: 0,
+                                finish_reason: None,
+                            });
+                        drop(llm);
+                        let mut llm = state.llm.write().await;
+                        llm.breakers.record_success(&provider_prefix);
+                        drop(llm);
+                        let content = check_hmac(ur.content, state.hmac_secret.as_ref());
+                        let content = if ironclad_agent::injection::scan_output(&content) {
+                            tracing::warn!("L4 output scan flagged channel ReAct follow-up, blocking");
+                            "[Response blocked by output safety filter]".to_string()
+                        } else {
+                            content
+                        };
+                        react_msgs.push(ironclad_llm::format::UnifiedMessage {
+                            role: "assistant".into(),
+                            content: content.clone(),
+                        });
+                        current_tool = parse_tool_call(&content);
+                        if current_tool.is_none() {
+                            channel_react.transition(ReactAction::Finish);
+                            final_response = content;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            } else {
+                break;
+            }
+        }
+        final_response
+    } else {
+        response_content
+    };
+
     ironclad_db::sessions::append_message(&state.db, &session_id, "assistant", &response_content)
+        .inspect_err(|e| tracing::warn!(error = %e, "failed to store channel assistant message"))
         .ok();
 
-    state
+    if let Err(e) = state
         .channel_router
-        .send_reply(&platform, &chat_id, response_content)
+        .send_reply(&platform, &chat_id, response_content.clone())
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
+        return Err(e.to_string());
+    }
+
+    // Post-turn memory ingestion + embedding generation with chunking (background)
+    {
+        let ingest_db = state.db.clone();
+        let ingest_session = session_id.clone();
+        let ingest_user = user_content.clone();
+        let ingest_assistant = response_content;
+        let ingest_llm = Arc::clone(&state.llm);
+        tokio::spawn(async move {
+            ironclad_agent::memory::ingest_turn(
+                &ingest_db,
+                &ingest_session,
+                &ingest_user,
+                &ingest_assistant,
+                &[],
+            );
+
+            let llm = ingest_llm.read().await;
+            let chunk_config = ironclad_agent::retrieval::ChunkConfig::default();
+            let chunks = ironclad_agent::retrieval::chunk_text(&ingest_assistant, &chunk_config);
+
+            for chunk in &chunks {
+                if let Ok(embedding) = llm.embedding.embed_single(&chunk.text).await {
+                    let embed_id = uuid::Uuid::new_v4().to_string();
+                    ironclad_db::embeddings::store_embedding(
+                        &ingest_db,
+                        &embed_id,
+                        "turn",
+                        &ingest_session,
+                        &chunk.text[..chunk.text.len().min(200)],
+                        &embedding,
+                    )
+                    .inspect_err(|e| tracing::warn!(error = %e, chunk_idx = chunk.index, "failed to store channel chunk embedding"))
+                    .ok();
+                }
+            }
+        });
+    }
+
+    // Release dedup tracking
+    {
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+    }
 
     Ok(())
 }
@@ -763,6 +1593,56 @@ pub async fn telegram_poll_loop(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_tool_call_valid() {
+        let input = r#"Let me check that. {"tool_call": {"name": "read_file", "params": {"path": "/tmp/test.txt"}}}"#;
+        let result = parse_tool_call(input);
+        assert!(result.is_some());
+        let (name, params) = result.unwrap();
+        assert_eq!(name, "read_file");
+        assert_eq!(params["path"], "/tmp/test.txt");
+    }
+
+    #[test]
+    fn parse_tool_call_no_params() {
+        let input = r#"{"tool_call": {"name": "status"}}"#;
+        let result = parse_tool_call(input);
+        assert!(result.is_some());
+        let (name, params) = result.unwrap();
+        assert_eq!(name, "status");
+        assert!(params.is_object());
+    }
+
+    #[test]
+    fn parse_tool_call_none_for_no_tool() {
+        assert!(parse_tool_call("Hello, how are you?").is_none());
+        assert!(parse_tool_call("").is_none());
+    }
+
+    #[test]
+    fn parse_tool_call_nested_braces() {
+        let input = r#"{"tool_call": {"name": "bash", "params": {"command": "echo '{hello}'"}}}"#;
+        let result = parse_tool_call(input);
+        assert!(result.is_some());
+        let (name, _params) = result.unwrap();
+        assert_eq!(name, "bash");
+    }
+
+    #[test]
+    fn parse_tool_call_malformed_json() {
+        assert!(parse_tool_call(r#"{"tool_call": {"name": broken}}"#).is_none());
+    }
+
+    #[test]
+    fn parse_tool_call_surrounded_by_text() {
+        let input = r#"I'll read the file now. {"tool_call": {"name": "read_file", "params": {"path": "test.rs"}}} Let me analyze the output."#;
+        let result = parse_tool_call(input);
+        assert!(result.is_some());
+        let (name, params) = result.unwrap();
+        assert_eq!(name, "read_file");
+        assert_eq!(params["path"], "test.rs");
+    }
 
     #[test]
     fn estimate_cost_zero_tokens() {

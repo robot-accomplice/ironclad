@@ -398,6 +398,8 @@
         <a href="#sessions" data-page="sessions"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M2 1h12a1 1 0 011 1v8a1 1 0 01-1 1H5.5L2 14V2a1 1 0 010-1z" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="9" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span class="nav-label">Sessions</span></a>
         <a href="#memory" data-page="memory"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="3" y="2" width="10" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="1" y1="5" x2="3" y2="5" stroke="currentColor" stroke-width="1.2"/><line x1="1" y1="8" x2="3" y2="8" stroke="currentColor" stroke-width="1.2"/><line x1="1" y1="11" x2="3" y2="11" stroke="currentColor" stroke-width="1.2"/><line x1="13" y1="5" x2="15" y2="5" stroke="currentColor" stroke-width="1.2"/><line x1="13" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.2"/><line x1="13" y1="11" x2="15" y2="11" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg><span class="nav-label">Memory</span></a>
         <a href="#skills" data-page="skills"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M8 1l1.8 3.6L14 5.3l-3 2.9.7 4.1L8 10.5l-3.7 1.8.7-4.1-3-2.9 4.2-.7z" fill="currentColor"/></svg><span class="nav-label">Skills</span></a>
+        <a href="#roster" data-page="roster"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1" y="1" width="6" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="1" width="6" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="4" cy="4" r="1.5" fill="currentColor"/><circle cx="12" cy="4" r="1.5" fill="currentColor"/><line x1="2.5" y1="7" x2="5.5" y2="7" stroke="currentColor" stroke-width="1"/><line x1="10.5" y1="7" x2="13.5" y2="7" stroke="currentColor" stroke-width="1"/><rect x="5" y="10" width="6" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="12.5" r="1.5" fill="currentColor"/></svg><span class="nav-label">Roster</span></a>
+        <a href="#agents" data-page="agents"><svg class="nav-icon" viewBox="0 0 16 16"><circle cx="8" cy="4" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="13" cy="6" r="2" fill="currentColor" opacity=".5"/><circle cx="3" cy="6" r="2" fill="currentColor" opacity=".5"/></svg><span class="nav-label">Agents</span></a>
         <a href="#scheduler" data-page="scheduler"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="1.5" y1="6" x2="14.5" y2="6" stroke="currentColor" stroke-width="1.5"/><line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="11" y1="1" x2="11" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="4" y="8.5" width="2" height="2" rx=".5" fill="currentColor"/><rect x="7" y="8.5" width="2" height="2" rx=".5" fill="currentColor"/><rect x="10" y="8.5" width="2" height="2" rx=".5" fill="currentColor"/><rect x="4" y="11.5" width="2" height="1.5" rx=".5" fill="currentColor"/></svg><span class="nav-label">Scheduler</span></a>
         <a href="#metrics" data-page="metrics"><svg class="nav-icon" viewBox="0 0 16 16"><polyline points="1,12 4,7 7,9 10,3 14,6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><line x1="1" y1="14.5" x2="15" y2="14.5" stroke="currentColor" stroke-width="1.2"/></svg><span class="nav-label">Metrics</span></a>
         <a href="#wallet" data-page="wallet"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1" y="3" width="14" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M1 3V2.5A1.5 1.5 0 012.5 1h9L14 3" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="10" y="7" width="5" height="3" rx="1" fill="currentColor"/><circle cx="12.5" cy="8.5" r=".8" fill="var(--bg)"/></svg><span class="nav-label">Wallet</span></a>
@@ -440,6 +442,8 @@
     <a href="#sessions" data-page="sessions">Sessions</a>
     <a href="#memory" data-page="memory">Memory</a>
     <a href="#skills" data-page="skills">Skills</a>
+    <a href="#roster" data-page="roster">Roster</a>
+    <a href="#agents" data-page="agents">Agents</a>
     <a href="#scheduler" data-page="scheduler">Scheduler</a>
     <a href="#metrics" data-page="metrics">Metrics</a>
     <a href="#wallet" data-page="wallet">Wallet</a>
@@ -450,8 +454,8 @@
 (function() {
   var setHtml = function(el, html) { if (el) el["inner" + "HTML"] = html; };
   var BASE = '';
-  var pages = ['overview','sessions','memory','skills','scheduler','metrics','wallet','settings','workspace'];
-  var titles = { overview: 'Overview', sessions: 'Sessions', memory: 'Memory', skills: 'Skills', scheduler: 'Scheduler', metrics: 'Metrics', wallet: 'Wallet', settings: 'Settings', workspace: 'Workspace' };
+  var pages = ['overview','sessions','memory','skills','roster','agents','scheduler','metrics','wallet','settings','workspace'];
+  var titles = { overview: 'Overview', sessions: 'Sessions', memory: 'Memory', skills: 'Skills', roster: 'Roster', agents: 'Agents', scheduler: 'Scheduler', metrics: 'Metrics', wallet: 'Wallet', settings: 'Settings', workspace: 'Workspace' };
 
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   function truncate(s, n) { return (s && s.length > n) ? s.slice(0, n) + '\u2026' : (s || ''); }
@@ -461,14 +465,32 @@
     c.appendChild(el); setTimeout(function() { el.remove(); }, 4000);
   }
 
+  var AUTH_CHECKED = false;
+  var AUTH_REQUIRED = false;
+
   function authHeaders(extra) {
-    if (!API_KEY) {
-      API_KEY = prompt('Enter API key (leave blank if none):');
-      if (API_KEY === '') API_KEY = null;
-    }
     var h = extra || { 'Accept': 'application/json' };
-    if (typeof API_KEY !== 'undefined' && API_KEY) h['Authorization'] = 'Bearer ' + API_KEY;
+    if (API_KEY) h['Authorization'] = 'Bearer ' + API_KEY;
     return h;
+  }
+
+  function ensureAuth() {
+    if (AUTH_CHECKED) return Promise.resolve();
+    return fetch(BASE + '/api/health', { headers: { 'Accept': 'application/json' } })
+      .then(function() {
+        AUTH_CHECKED = true;
+        AUTH_REQUIRED = false;
+        return fetch(BASE + '/api/config', { headers: { 'Accept': 'application/json' } });
+      })
+      .then(function(r) {
+        if (r.status === 401) {
+          AUTH_REQUIRED = true;
+          API_KEY = prompt('Enter API key:');
+          if (API_KEY === '' || API_KEY === null) API_KEY = null;
+        }
+        AUTH_CHECKED = true;
+      })
+      .catch(function() { AUTH_CHECKED = true; });
   }
 
   function api(path, opts) {
@@ -771,25 +793,103 @@
       });
     },
 
+    _memoryCategory: '',
     renderMemory: function() {
       var tab = this._memoryTab;
       var sessionId = this._memorySessionId || '';
-      var p;
-      if (tab === 'search') p = Promise.resolve({ results: [] });
-      else if (tab === 'working') p = sessionId ? api('/api/memory/working/' + encodeURIComponent(sessionId)).catch(function() { return { entries: [] }; }) : Promise.resolve({ entries: [] });
-      else if (tab === 'semantic') p = api('/api/memory/semantic/general').catch(function() { return { entries: [] }; });
-      else p = api('/api/memory/episodic').catch(function() { return { entries: [] }; });
-      return p.then(function(data) {
+      var cat = this._memoryCategory || '';
+      var promises;
+      if (tab === 'search') {
+        promises = Promise.resolve({ entries: [], _mode: 'search' });
+      } else if (tab === 'working') {
+        promises = api('/api/memory/working' + (sessionId ? '/' + encodeURIComponent(sessionId) : ''))
+          .catch(function() { return { entries: [] }; })
+          .then(function(d) { d._mode = 'working'; return d; });
+      } else if (tab === 'semantic') {
+        var catPromise = api('/api/memory/semantic/categories').catch(function() { return { categories: [] }; });
+        var entriesUrl = cat ? '/api/memory/semantic/' + encodeURIComponent(cat) : '/api/memory/semantic?limit=100';
+        var dataPromise = api(entriesUrl).catch(function() { return { entries: [] }; });
+        promises = Promise.all([catPromise, dataPromise]).then(function(r) {
+          return { categories: r[0].categories || [], entries: r[1].entries || [], _mode: 'semantic' };
+        });
+      } else {
+        promises = api('/api/memory/episodic').catch(function() { return { entries: [] }; })
+          .then(function(d) { d._mode = 'episodic'; return d; });
+      }
+      var self = this;
+      return promises.then(function(data) {
         var entries = data.entries || data.results || [];
+        var mode = data._mode || tab;
+
+        var tabButtons = '<div class="tabs">'
+          + '<button class="' + (tab === 'working' ? 'active' : '') + '" data-tab="working">Working</button>'
+          + '<button class="' + (tab === 'episodic' ? 'active' : '') + '" data-tab="episodic">Episodic</button>'
+          + '<button class="' + (tab === 'semantic' ? 'active' : '') + '" data-tab="semantic">Semantic</button>'
+          + '<button class="' + (tab === 'search' ? 'active' : '') + '" data-tab="search">Search</button>'
+          + '</div>';
+
+        var filterHtml = '';
+        if (mode === 'semantic' && data.categories && data.categories.length > 0) {
+          var cats = data.categories;
+          var totalEntries = cats.reduce(function(s, c) { return s + c.count; }, 0);
+          filterHtml = '<div style="margin-bottom:1rem;display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center">'
+            + '<button class="badge ' + (!cat ? 'active' : 'muted') + '" data-mem-cat="" style="cursor:pointer">All (' + totalEntries + ')</button>';
+          cats.forEach(function(c) {
+            filterHtml += '<button class="badge ' + (cat === c.category ? 'active' : 'muted') + '" data-mem-cat="' + esc(c.category) + '" style="cursor:pointer">' + esc(c.category) + ' (' + c.count + ')</button>';
+          });
+          filterHtml += '</div>';
+        }
+
+        if (mode === 'semantic') {
+          var list = entries.map(function(e) {
+            return '<div class="card" style="margin-bottom:0.5rem">'
+              + '<div style="display:flex;justify-content:space-between;align-items:baseline">'
+              + '<strong style="color:var(--text);font-size:0.875rem">' + esc(e.key || '') + '</strong>'
+              + '<span class="badge muted" style="font-size:0.7rem">' + esc(e.category || '') + '</span>'
+              + '</div>'
+              + '<div class="card-mono" style="margin-top:4px;font-size:0.8125rem">' + esc(e.value || e.content || '') + '</div>'
+              + '<div style="margin-top:6px"><span class="badge">conf: ' + esc(String(e.confidence != null ? e.confidence : '—')) + '</span></div>'
+              + '</div>';
+          }).join('') || '<p style="color:var(--muted)">No entries' + (cat ? ' in "' + esc(cat) + '"' : '') + '</p>';
+          return tabButtons + filterHtml + '<div id="memory-list">' + list + '</div>';
+        }
+
+        if (mode === 'working') {
+          var sessionIds = [];
+          entries.forEach(function(e) { if (e.session_id && sessionIds.indexOf(e.session_id) === -1) sessionIds.push(e.session_id); });
+          if (sessionIds.length > 1 || (sessionIds.length === 1 && !sessionId)) {
+            filterHtml = '<div style="margin-bottom:1rem;display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center">'
+              + '<button class="badge ' + (!sessionId ? 'active' : 'muted') + '" data-mem-session="" style="cursor:pointer">All sessions</button>';
+            sessionIds.forEach(function(sid) {
+              var short = sid.substring(0, 8);
+              filterHtml += '<button class="badge ' + (sessionId === sid ? 'active' : 'muted') + '" data-mem-session="' + esc(sid) + '" style="cursor:pointer">' + esc(short) + '\u2026</button>';
+            });
+            filterHtml += '</div>';
+          }
+          var list = entries.map(function(e) {
+            return '<div class="card" style="margin-bottom:0.5rem">'
+              + '<div class="card-mono">' + esc(e.content || '') + '</div>'
+              + '<div style="margin-top:6px">'
+              + '<span class="badge muted">' + esc(e.entry_type || '—') + '</span> '
+              + '<span class="badge">imp: ' + esc(String(e.importance != null ? e.importance : '—')) + '</span> '
+              + '<span style="font-size:0.7rem;color:var(--muted)">' + esc((e.session_id || '').substring(0, 8)) + '</span>'
+              + '</div></div>';
+          }).join('') || '<p style="color:var(--muted)">No working memory entries</p>';
+          return tabButtons + filterHtml + '<div id="memory-list">' + list + '</div>';
+        }
+
+        if (mode === 'search') {
+          var searchHtml = '<div style="margin-bottom:1rem"><input type="text" id="memory-search-q" placeholder="Search across all memory\u2026" style="padding:0.5rem 1rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);width:100%;max-width:400px;font-family:var(--font)"><button class="btn" style="margin-left:8px" id="memory-search-btn">Search</button></div>';
+          return tabButtons + searchHtml + '<div id="memory-search-results"><p style="color:var(--muted)">Enter a query and click Search</p></div>';
+        }
+
         var list = entries.map(function(e) {
           var type = e.entry_type || e.classification || e.category || '\u2014';
           var imp = e.importance != null ? e.importance : (e.confidence != null ? e.confidence : '\u2014');
           var content = e.content || e.value || JSON.stringify(e);
-          return '<div class="card" style="margin-bottom:0.5rem"><div class="card-mono">' + esc(content) + '</div><div style="margin-top:6px"><span class="badge muted">' + esc(type) + '</span> <span class="badge">' + esc(String(imp)) + '</span></div></div>';
+          return '<div class="card" style="margin-bottom:0.5rem"><div class="card-mono">' + esc(content) + '</div><div style="margin-top:6px"><span class="badge muted">' + esc(type) + '</span> <span class="badge">imp: ' + esc(String(imp)) + '</span></div></div>';
         }).join('') || '<p style="color:var(--muted)">No entries</p>';
-        var tabButtons = '<div class="tabs"><button class="' + (tab === 'working' ? 'active' : '') + '" data-tab="working">Working</button><button class="' + (tab === 'episodic' ? 'active' : '') + '" data-tab="episodic">Episodic</button><button class="' + (tab === 'semantic' ? 'active' : '') + '" data-tab="semantic">Semantic</button><button class="' + (tab === 'search' ? 'active' : '') + '" data-tab="search">Search</button></div>';
-        var searchHtml = '<div style="margin-bottom:1rem"><input type="text" id="memory-search-q" placeholder="Search memory\u2026" style="padding:0.5rem 1rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);width:100%;max-width:400px;font-family:var(--font)"><button class="btn" style="margin-left:8px" id="memory-search-btn">Search</button></div>';
-        return tabButtons + (tab === 'search' ? searchHtml + '<div id="memory-search-results"><p style="color:var(--muted)">Enter a query and click Search</p></div>' : '<div id="memory-list">' + list + '</div>');
+        return tabButtons + '<div id="memory-list">' + list + '</div>';
       });
     },
 
@@ -1017,26 +1117,77 @@
     },
 
     _walletEditing: false,
+    _TOKEN_ICONS: { ETH: '\u039e', MATIC: '\u25c6', USDC: '\u0024', USDT: '\u0024', DAI: '\u25c7', WETH: '\u039e', WBTC: '\u20bf', cbBTC: '\u20bf' },
     renderWallet: function() {
       var self = this;
       return Promise.all([
-        api('/api/wallet/balance').catch(function() { return { balance: '0', currency: 'ETH' }; }),
-        api('/api/wallet/address').catch(function() { return { address: '', chain_id: 1 }; }),
+        api('/api/wallet/balance').catch(function() { return { balance: '0', currency: 'ETH', tokens: [], network: 'Unknown' }; }),
+        api('/api/wallet/address').catch(function() { return { address: '', chain_id: 1, network: 'Unknown' }; }),
         api('/api/stats/transactions?hours=168').catch(function() { return { transactions: [] }; })
       ]).then(function(arr) {
         var bal = arr[0], addr = arr[1], txs = (arr[2].transactions || []);
         var addrStr = (addr.address != null && addr.address !== '') ? addr.address : (addr.note || '\u2014');
-        var txRows = txs.map(function(t) { return '<tr><td>' + esc(t.tx_type || '') + '</td><td>' + esc((t.amount || '') + ' ' + (t.currency || '')) + '</td><td>' + esc(t.created_at || '') + '</td></tr>'; }).join('');
+        var network = bal.network || addr.network || 'Unknown';
+        var chainId = addr.chain_id || bal.chain_id || 1;
+        var tokens = bal.tokens || [];
+
+        txs = txs.filter(function(t) { return t.amount && t.amount !== 0; });
+        var txRows = txs.map(function(t) {
+          var meta = {};
+          try { if (t.metadata_json) meta = JSON.parse(t.metadata_json); } catch(e) {}
+          var label = t.tx_type || '';
+          if (meta.category) label += ' \u00b7 ' + meta.category;
+          var amtStr = (typeof t.amount === 'number' ? t.amount.toFixed(2) : t.amount) + ' ' + (t.currency || '');
+          var dateStr = t.created_at || '';
+          if (dateStr.length > 19) dateStr = dateStr.substring(0, 19).replace('T', ' ');
+          return '<tr><td>' + esc(label) + '</td><td style="font-family:var(--mono)">' + esc(amtStr) + '</td><td style="color:var(--muted)">' + esc(dateStr) + '</td></tr>';
+        }).join('');
+
+        // Network & address card
+        var networkBadge = '<span class="badge success" style="font-size:0.625rem;vertical-align:middle">' + esc(network) + '</span>';
         var addrSection;
         if (self._walletEditing) {
-          addrSection = '<div class="card" style="margin-bottom:1rem"><div class="card-title">Address</div><input class="settings-input" type="text" id="wallet-addr-input" value="' + esc(addrStr) + '" placeholder="Enter wallet address (0x\u2026)" style="margin-bottom:0.5rem;font-family:var(--font-mono)"><div style="display:flex;gap:0.5rem"><button class="btn" id="wallet-addr-save" style="font-size:0.75rem;padding:0.3rem 0.75rem">Save</button><button class="btn secondary" id="wallet-addr-cancel" style="font-size:0.75rem;padding:0.3rem 0.75rem">Cancel</button></div><p style="font-size:0.6875rem;color:var(--muted);margin-top:0.5rem">The address was auto-generated during initialization. You can replace it with your own.</p></div>';
+          addrSection = '<div class="card" style="margin-bottom:1rem"><div class="card-title">Wallet ' + networkBadge + '</div><div style="font-size:0.6875rem;color:var(--muted);margin-bottom:0.5rem">Chain ID: ' + chainId + '</div><input class="settings-input" type="text" id="wallet-addr-input" value="' + esc(addrStr) + '" placeholder="Enter wallet address (0x\u2026)" style="margin-bottom:0.5rem;font-family:var(--font-mono)"><div style="display:flex;gap:0.5rem"><button class="btn" id="wallet-addr-save" style="font-size:0.75rem;padding:0.3rem 0.75rem">Save</button><button class="btn secondary" id="wallet-addr-cancel" style="font-size:0.75rem;padding:0.3rem 0.75rem">Cancel</button></div><p style="font-size:0.6875rem;color:var(--muted);margin-top:0.5rem">The address was auto-generated during initialization. You can replace it with your own.</p></div>';
         } else {
-          addrSection = '<div class="card" style="margin-bottom:1rem"><div class="card-title">Address</div><div class="card-mono" style="word-break:break-all" id="wallet-addr">' + esc(addrStr) + '</div><div style="display:flex;gap:0.5rem;margin-top:8px"><button class="btn secondary" id="copy-address" style="font-size:0.75rem;padding:0.3rem 0.75rem">Copy</button><button class="btn secondary" id="edit-address" style="font-size:0.75rem;padding:0.3rem 0.75rem">Replace</button></div></div>';
+          addrSection = '<div class="card" style="margin-bottom:1rem"><div class="card-title">Wallet ' + networkBadge + '</div><div style="font-size:0.6875rem;color:var(--muted);margin-bottom:0.5rem">Chain ID: ' + chainId + '</div><div class="card-mono" style="word-break:break-all" id="wallet-addr">' + esc(addrStr) + '</div><div style="display:flex;gap:0.5rem;margin-top:8px"><button class="btn secondary" id="copy-address" style="font-size:0.75rem;padding:0.3rem 0.75rem">Copy</button><button class="btn secondary" id="edit-address" style="font-size:0.75rem;padding:0.3rem 0.75rem">Replace</button></div></div>';
         }
-        return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Balance</div><div class="card-value">' + esc(bal.balance || '0') + ' ' + esc(bal.currency || '') + '</div><div style="font-size:0.75rem;color:var(--muted);margin-top:0.25rem">Chain ID: ' + esc(String(addr.chain_id || 1)) + '</div></div>' +
-          addrSection +
+
+        // Token balances card
+        var tokenRows = '';
+        if (tokens.length > 0) {
+          tokens.forEach(function(t) {
+            var icon = self._TOKEN_ICONS[t.symbol] || '\u25cb';
+            var bal = t.balance || 0;
+            var formatted = t.formatted || (bal === 0 ? '0' : String(bal));
+            var nativeBadge = t.is_native ? ' <span class="badge" style="font-size:0.5rem;padding:1px 4px;opacity:0.6">gas</span>' : '';
+            var contractLink = '';
+            if (t.contract) {
+              var explorerUrl = self._explorerUrl(chainId, t.contract);
+              contractLink = ' <a href="' + explorerUrl + '" target="_blank" rel="noopener" style="font-size:0.5625rem;color:var(--accent);text-decoration:none" title="' + esc(t.contract) + '">\u2197</a>';
+            }
+            var dimClass = bal === 0 ? ' style="opacity:0.4"' : '';
+            tokenRows += '<div class="settings-row"' + dimClass + '><div style="display:flex;align-items:center;gap:0.5rem;min-width:120px"><span style="font-size:1.1rem;width:1.5rem;text-align:center">' + icon + '</span><div><div style="font-weight:600;font-size:0.8125rem">' + esc(t.symbol) + nativeBadge + contractLink + '</div><div style="font-size:0.625rem;color:var(--muted)">' + esc(t.name) + '</div></div></div><div style="text-align:right;font-family:var(--font-mono);font-size:0.875rem;font-weight:500">' + esc(formatted) + '</div></div>';
+          });
+        } else {
+          tokenRows = '<div style="color:var(--muted);font-size:0.75rem;padding:0.5rem 0">No token data available</div>';
+        }
+        var balancesCard = '<div class="card" style="margin-bottom:1rem"><div class="card-title">Balances</div>' + tokenRows + '</div>';
+
+        // Treasury card
+        var treasury = bal.treasury || {};
+        var treasuryCard = '<div class="card" style="margin-bottom:1rem"><div class="card-title">Treasury Policy</div>' +
+          '<div class="settings-row"><div class="settings-label">Per-payment cap</div><div style="font-family:var(--font-mono)">$' + (treasury.per_payment_cap || 0).toFixed(2) + '</div></div>' +
+          '<div class="settings-row"><div class="settings-label">Daily inference budget</div><div style="font-family:var(--font-mono)">$' + (treasury.daily_inference_budget || 0).toFixed(2) + '</div></div>' +
+          '<div class="settings-row"><div class="settings-label">Minimum reserve</div><div style="font-family:var(--font-mono)">$' + (treasury.minimum_reserve || 0).toFixed(2) + '</div></div>' +
+          '</div>';
+
+        return addrSection + balancesCard + treasuryCard +
           '<div class="card-title">Transaction history</div><div class="table-wrap"><table><thead><tr><th>Type</th><th>Amount</th><th>Date</th></tr></thead><tbody>' + txRows + '</tbody></table></div>';
       });
+    },
+    _explorerUrl: function(chainId, contract) {
+      var base = { 1: 'https://etherscan.io', 8453: 'https://basescan.org', 42161: 'https://arbiscan.io', 10: 'https://optimistic.etherscan.io', 137: 'https://polygonscan.com' };
+      return (base[chainId] || 'https://basescan.org') + '/token/' + contract;
     },
 
     _settingsMode: 'form',
@@ -1057,6 +1208,228 @@
       'Base': { chain_id: 8453, rpc_url: 'https://mainnet.base.org' },
       'Solana': { chain_id: 0, rpc_url: 'https://api.mainnet-beta.solana.com' }
     },
+    renderRoster: function() {
+      return api('/api/roster').then(function(data) {
+        var roster = data.roster || [];
+        if (roster.length === 0) return '<p style="color:var(--muted)">No agents found.</p>';
+
+        var grid = roster.map(function(agent) {
+          var isCmd = agent.role === 'commander';
+          var borderColor = agent.color || 'var(--accent)';
+          var stateColor = agent.state === 'Running' ? '#22c55e' : (agent.state === 'Error' ? '#ef4444' : (agent.state === 'Disabled' ? '#71717a' : '#eab308'));
+          var stateDot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + stateColor + ';margin-right:6px"></span>';
+          var displayName = agent.display_name || agent.name;
+          var model = agent.model || '—';
+          var modelShort = model.length > 28 ? model.substring(model.lastIndexOf('/') + 1) : model;
+          var skillCount = (agent.skills || []).length;
+          var sessionCount = agent.session_count != null ? agent.session_count : '—';
+
+          var roleLabel = isCmd ? 'COMMANDER' : (agent.role === 'model-proxy' ? 'MODEL PROXY' : 'SPECIALIST');
+          var roleBg = isCmd ? 'rgba(234,179,8,0.15)' : (agent.role === 'model-proxy' ? 'rgba(113,113,122,0.15)' : 'rgba(99,102,241,0.15)');
+          var roleColor = isCmd ? '#eab308' : (agent.role === 'model-proxy' ? '#71717a' : borderColor);
+
+          var card = '<div class="card roster-card" data-roster-id="' + esc(agent.name || agent.id) + '" style="cursor:pointer;border-left:3px solid ' + borderColor + ';padding:1rem;transition:transform 0.15s,box-shadow 0.15s' + (!agent.enabled ? ';opacity:0.5' : '') + '">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">'
+            + '<div style="display:flex;align-items:center;gap:0.5rem">'
+            + stateDot
+            + '<span style="font-weight:700;font-size:1rem;color:var(--text)">' + esc(displayName) + '</span>'
+            + '</div>'
+            + '<span style="font-size:0.65rem;font-weight:600;letter-spacing:0.05em;padding:2px 8px;border-radius:3px;background:' + roleBg + ';color:' + roleColor + '">' + roleLabel + '</span>'
+            + '</div>'
+            + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.4rem;font-family:var(--mono)">' + esc(modelShort) + '</div>'
+            + '<div style="display:flex;gap:1rem;font-size:0.75rem;color:var(--muted)">'
+            + '<span>' + skillCount + ' skills</span>'
+            + '<span>' + sessionCount + ' sessions</span>'
+            + '</div>'
+            + '</div>';
+          return card;
+        }).join('');
+
+        var cmdCount = roster.filter(function(a) { return a.role === 'commander'; }).length;
+        var specCount = roster.filter(function(a) { return a.role === 'specialist'; }).length;
+        var proxyCount = roster.filter(function(a) { return a.role === 'model-proxy'; }).length;
+        var header = '<div style="display:flex;align-items:baseline;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">'
+          + '<span style="font-size:0.8125rem;color:var(--muted)">' + roster.length + ' agents total</span>'
+          + '<span class="badge">' + cmdCount + ' commander</span>'
+          + '<span class="badge">' + specCount + ' specialists</span>'
+          + '<span class="badge muted">' + proxyCount + ' proxies</span>'
+          + '</div>';
+
+        return header
+          + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:0.75rem">' + grid + '</div>'
+          + '<div id="roster-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);padding:2rem;overflow-y:auto"></div>';
+      });
+    },
+    _rosterCache: null,
+    renderAgents: function() {
+      var self = this;
+      return api('/api/subagents').then(function(data) {
+        var agents = data.agents || [];
+        var specialists = agents.filter(function(a) { return a.role === 'specialist'; });
+        var proxies = agents.filter(function(a) { return a.role !== 'specialist'; });
+        var enabledCount = agents.filter(function(a) { return a.enabled; }).length;
+
+        var html = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem"><div>';
+        html += '<span style="font-size:1.5rem;font-weight:700;color:var(--text)">' + agents.length + ' Sub-Agents</span>';
+        html += '<span style="margin-left:0.75rem;font-size:0.8125rem;color:var(--muted)">' + enabledCount + ' enabled</span>';
+        html += '</div>';
+        html += '<button class="btn" id="sa-add-btn" style="font-size:0.75rem;padding:0.4rem 1rem">+ Add Agent</button>';
+        html += '</div>';
+
+        function agentCard(a) {
+          var c = '';
+          var statusBadge = a.enabled
+            ? '<span class="badge success">enabled</span>'
+            : '<span class="badge" style="background:var(--surface);color:var(--muted)">disabled</span>';
+          var roleBadge = '<span class="badge" style="background:rgba(99,102,241,0.15);color:#818cf8;margin-left:0.25rem">' + esc(a.role) + '</span>';
+          c += '<div class="card" style="margin-bottom:0.75rem;opacity:' + (a.enabled ? '1' : '0.6') + '">';
+          c += '<div style="display:flex;align-items:center;justify-content:space-between">';
+          c += '<div style="display:flex;align-items:center;gap:0.5rem">';
+          c += '<span style="font-size:1.25rem">\uD83E\uDD16</span>';
+          c += '<div>';
+          c += '<div style="font-weight:600;color:var(--text)">' + esc(a.display_name || a.name) + '</div>';
+          c += '<div style="font-size:0.6875rem;color:var(--muted);font-family:var(--font-mono)">' + esc(a.name) + '</div>';
+          c += '</div>';
+          c += '</div>';
+          c += '<div style="display:flex;align-items:center;gap:0.5rem">' + statusBadge + roleBadge + '</div>';
+          c += '</div>';
+
+          c += '<div style="display:flex;gap:1rem;margin-top:0.75rem;font-size:0.75rem;color:var(--muted)">';
+          if (a.model) c += '<div><span style="color:var(--text-dim)">Model:</span> ' + esc(a.model) + '</div>';
+          if (a.session_count > 0) c += '<div><span style="color:var(--text-dim)">Sessions:</span> ' + a.session_count + '</div>';
+          if (a.description) c += '<div style="flex:1">' + esc(a.description) + '</div>';
+          c += '</div>';
+
+          c += '<div style="display:flex;gap:0.5rem;margin-top:0.75rem;border-top:1px solid var(--border);padding-top:0.6rem">';
+          c += '<button class="btn secondary sa-toggle" data-name="' + esc(a.name) + '" style="font-size:0.6875rem;padding:0.25rem 0.6rem">' + (a.enabled ? 'Disable' : 'Enable') + '</button>';
+          c += '<button class="btn secondary sa-edit" data-name="' + esc(a.name) + '" data-display="' + esc(a.display_name || '') + '" data-model="' + esc(a.model || '') + '" data-role="' + esc(a.role) + '" data-desc="' + esc(a.description || '') + '" style="font-size:0.6875rem;padding:0.25rem 0.6rem">Edit</button>';
+          c += '<button class="btn secondary sa-delete" data-name="' + esc(a.name) + '" style="font-size:0.6875rem;padding:0.25rem 0.6rem;color:var(--error)">Delete</button>';
+          c += '</div>';
+          c += '</div>';
+          return c;
+        }
+
+        if (specialists.length > 0) {
+          html += '<div style="font-size:0.8125rem;font-weight:600;color:var(--text);margin-bottom:0.5rem;text-transform:uppercase;letter-spacing:0.05em">Specialists</div>';
+          specialists.forEach(function(a) { html += agentCard(a); });
+        }
+
+        if (proxies.length > 0) {
+          html += '<div style="font-size:0.8125rem;font-weight:600;color:var(--text);margin:1rem 0 0.5rem;text-transform:uppercase;letter-spacing:0.05em">Model Proxies</div>';
+          proxies.forEach(function(a) { html += agentCard(a); });
+        }
+
+        if (agents.length === 0) {
+          html += '<div class="card" style="text-align:center;padding:3rem"><div style="font-size:2rem;margin-bottom:0.5rem">\uD83E\uDD16</div>';
+          html += '<div style="color:var(--muted)">No sub-agents configured</div>';
+          html += '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Run <code style="background:var(--surface);padding:0.1rem 0.4rem;border-radius:4px">ironclad migrate import ~/.openclaw --areas agents</code> or add one below</div>';
+          html += '</div>';
+        }
+
+        html += '<div id="sa-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;display:none;align-items:center;justify-content:center">';
+        html += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem;width:min(440px,90vw)">';
+        html += '<div style="font-weight:600;font-size:1rem;margin-bottom:1rem" id="sa-modal-title">Add Sub-Agent</div>';
+        html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Name (kebab-case)</label>';
+        html += '<input class="settings-input" id="sa-m-name" placeholder="e.g. data-analyst" style="margin-bottom:0.75rem;font-family:var(--font-mono)">';
+        html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Display Name</label>';
+        html += '<input class="settings-input" id="sa-m-display" placeholder="e.g. Data Analyst" style="margin-bottom:0.75rem">';
+        html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Model</label>';
+        html += '<input class="settings-input" id="sa-m-model" placeholder="e.g. anthropic/claude-sonnet-4-6" style="margin-bottom:0.75rem;font-family:var(--font-mono)">';
+        html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Role</label>';
+        html += '<select class="settings-input" id="sa-m-role" style="margin-bottom:0.75rem"><option value="specialist">specialist</option><option value="model-proxy">model-proxy</option></select>';
+        html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Description</label>';
+        html += '<textarea class="settings-input" id="sa-m-desc" rows="2" placeholder="What does this agent do?" style="margin-bottom:1rem;resize:vertical"></textarea>';
+        html += '<div style="display:flex;gap:0.5rem;justify-content:flex-end">';
+        html += '<button class="btn secondary" id="sa-m-cancel" style="font-size:0.75rem;padding:0.35rem 1rem">Cancel</button>';
+        html += '<button class="btn" id="sa-m-save" style="font-size:0.75rem;padding:0.35rem 1rem">Save</button>';
+        html += '</div></div></div>';
+
+        setTimeout(function() {
+          var modal = document.getElementById('sa-modal');
+          var editingName = null;
+
+          function openModal(title, vals) {
+            if (!modal) return;
+            modal.style.display = 'flex';
+            var t = document.getElementById('sa-modal-title'); if (t) t.textContent = title;
+            var nameInp = document.getElementById('sa-m-name');
+            if (nameInp) { nameInp.value = vals.name || ''; nameInp.disabled = !!vals.editing; }
+            var d = document.getElementById('sa-m-display'); if (d) d.value = vals.display || '';
+            var m = document.getElementById('sa-m-model'); if (m) m.value = vals.model || '';
+            var r = document.getElementById('sa-m-role'); if (r) r.value = vals.role || 'specialist';
+            var desc = document.getElementById('sa-m-desc'); if (desc) desc.value = vals.desc || '';
+            editingName = vals.editing || null;
+          }
+
+          function closeModal() { if (modal) modal.style.display = 'none'; editingName = null; }
+
+          var addBtn = document.getElementById('sa-add-btn');
+          if (addBtn) addBtn.onclick = function() { openModal('Add Sub-Agent', {}); };
+
+          var cancelBtn = document.getElementById('sa-m-cancel');
+          if (cancelBtn) cancelBtn.onclick = closeModal;
+
+          if (modal) modal.onclick = function(e) { if (e.target === modal) closeModal(); };
+
+          var saveBtn = document.getElementById('sa-m-save');
+          if (saveBtn) saveBtn.onclick = function() {
+            var nameVal = (document.getElementById('sa-m-name') || {}).value || '';
+            var displayVal = (document.getElementById('sa-m-display') || {}).value || '';
+            var modelVal = (document.getElementById('sa-m-model') || {}).value || '';
+            var roleVal = (document.getElementById('sa-m-role') || {}).value || 'specialist';
+            var descVal = (document.getElementById('sa-m-desc') || {}).value || '';
+            if (!nameVal && !editingName) { toast('Name is required'); return; }
+
+            if (editingName) {
+              api('/api/subagents/' + encodeURIComponent(editingName), {
+                method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+                body: JSON.stringify({ display_name: displayVal || null, model: modelVal || null, role: roleVal, description: descVal || null })
+              }).then(function() { toast('Agent updated'); closeModal(); self.navigate('agents'); });
+            } else {
+              api('/api/subagents', {
+                method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json', 'Accept': 'application/json' }),
+                body: JSON.stringify({ name: nameVal, display_name: displayVal || null, model: modelVal, role: roleVal, description: descVal || null })
+              }).then(function() { toast('Agent created'); closeModal(); self.navigate('agents'); });
+            }
+          };
+
+          document.querySelectorAll('.sa-toggle').forEach(function(btn) {
+            btn.onclick = function() {
+              var n = this.getAttribute('data-name');
+              api('/api/subagents/' + encodeURIComponent(n) + '/toggle', {
+                method: 'PUT', headers: authHeaders({ 'Accept': 'application/json' })
+              }).then(function() { toast('Agent toggled'); self.navigate('agents'); });
+            };
+          });
+
+          document.querySelectorAll('.sa-edit').forEach(function(btn) {
+            btn.onclick = function() {
+              var n = this.getAttribute('data-name');
+              openModal('Edit: ' + n, {
+                name: n, editing: n,
+                display: this.getAttribute('data-display'),
+                model: this.getAttribute('data-model'),
+                role: this.getAttribute('data-role'),
+                desc: this.getAttribute('data-desc')
+              });
+            };
+          });
+
+          document.querySelectorAll('.sa-delete').forEach(function(btn) {
+            btn.onclick = function() {
+              var n = this.getAttribute('data-name');
+              if (!confirm('Delete sub-agent "' + n + '"? This cannot be undone.')) return;
+              api('/api/subagents/' + encodeURIComponent(n), {
+                method: 'DELETE', headers: authHeaders({ 'Accept': 'application/json' })
+              }).then(function() { toast('Agent deleted'); self.navigate('agents'); });
+            };
+          });
+        }, 0);
+
+        return html;
+      });
+    },
+
     renderSettings: function() {
       var self = this;
       return api('/api/config').then(function(cfg) {
@@ -1199,7 +1572,7 @@
   function onHash() {
     var hash = (window.location.hash || '#overview').slice(1) || 'overview';
     if (pages.indexOf(hash) === -1) hash = 'overview';
-    App.navigate(hash);
+    ensureAuth().then(function() { App.navigate(hash); });
   }
 
   document.querySelectorAll('.sidebar-nav a, .mobile-nav a').forEach(function(a) {
@@ -1312,6 +1685,217 @@
         });
       return;
     }
+    var rosterCard = e.target.closest('.roster-card[data-roster-id]');
+    if (rosterCard) {
+      var agentId = rosterCard.getAttribute('data-roster-id');
+      api('/api/roster').then(function(data) {
+        var agent = (data.roster || []).find(function(a) { return (a.name || a.id) === agentId; });
+        if (!agent) return;
+        var modal = document.getElementById('roster-modal');
+        if (!modal) return;
+        var isCmd = agent.role === 'commander';
+        var color = agent.color || 'var(--accent)';
+        var displayName = agent.display_name || agent.name;
+        var stateColor = agent.state === 'Running' ? '#22c55e' : (agent.state === 'Error' ? '#ef4444' : (agent.state === 'Disabled' ? '#71717a' : '#eab308'));
+        var roleLabel = isCmd ? 'COMMANDER' : (agent.role === 'model-proxy' ? 'MODEL PROXY' : 'SPECIALIST');
+
+        var voice = agent.voice || {};
+        var voiceHtml = '';
+        if (voice.formality || voice.proactiveness) {
+          var attrs = [
+            { label: 'Formality', val: voice.formality },
+            { label: 'Proactive', val: voice.proactiveness },
+            { label: 'Verbosity', val: voice.verbosity },
+            { label: 'Humor', val: voice.humor },
+            { label: 'Domain', val: voice.domain }
+          ];
+          voiceHtml = '<div style="margin-top:1rem"><div style="font-size:0.75rem;font-weight:600;color:var(--muted);letter-spacing:0.05em;margin-bottom:0.5rem">VOICE PROFILE</div>';
+          attrs.forEach(function(a) {
+            if (!a.val) return;
+            var barVal = { balanced: 50, formal: 85, casual: 20, concise: 30, verbose: 80, suggest: 50, wait: 15, initiative: 90, dry: 25, robotic: 40, witty: 75 };
+            var pct = barVal[a.val] || 50;
+            voiceHtml += '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:4px;font-size:0.75rem">'
+              + '<span style="width:75px;color:var(--muted)">' + a.label + '</span>'
+              + '<div style="flex:1;height:6px;background:var(--surface);border-radius:3px;overflow:hidden"><div style="width:' + pct + '%;height:100%;background:' + color + ';border-radius:3px"></div></div>'
+              + '<span style="width:60px;text-align:right;color:var(--text)">' + esc(a.val) + '</span></div>';
+          });
+          voiceHtml += '</div>';
+        }
+
+        var missionsHtml = '';
+        if (agent.missions && agent.missions.length > 0) {
+          missionsHtml = '<div style="margin-top:1rem"><div style="font-size:0.75rem;font-weight:600;color:var(--muted);letter-spacing:0.05em;margin-bottom:0.5rem">MISSIONS</div>';
+          agent.missions.forEach(function(m) {
+            var prioColor = m.priority === 'high' ? '#ef4444' : (m.priority === 'medium' ? '#eab308' : '#22c55e');
+            missionsHtml += '<div style="display:flex;align-items:baseline;gap:0.5rem;margin-bottom:0.4rem;font-size:0.8125rem">'
+              + '<span style="width:6px;height:6px;border-radius:50%;background:' + prioColor + ';flex-shrink:0;margin-top:4px"></span>'
+              + '<div><strong style="color:var(--text)">' + esc(m.name) + '</strong>'
+              + (m.timeframe ? ' <span style="color:var(--muted);font-size:0.7rem">(' + esc(m.timeframe) + ')</span>' : '')
+              + '<div style="color:var(--muted);font-size:0.75rem">' + esc(m.description || '') + '</div></div></div>';
+          });
+          missionsHtml += '</div>';
+        }
+
+        var skillsHtml = '';
+        var skills = agent.skills || [];
+        if (skills.length > 0) {
+          var breakdown = agent.skill_breakdown || {};
+          skillsHtml = '<div style="margin-top:1rem"><div style="font-size:0.75rem;font-weight:600;color:var(--muted);letter-spacing:0.05em;margin-bottom:0.5rem">SKILLS (' + skills.length + ')</div>';
+          var kindColors = { tool: 'var(--accent)', cognitive: '#22c55e', format: '#06b6d4', multimodal: '#f59e0b', agent: '#8b5cf6' };
+          Object.keys(breakdown).forEach(function(kind) {
+            var items = breakdown[kind];
+            var kc = kindColors[kind] || 'var(--muted)';
+            skillsHtml += '<div style="margin-bottom:0.5rem"><span style="font-size:0.7rem;font-weight:600;color:' + kc + ';letter-spacing:0.03em">' + esc(kind.toUpperCase()) + '</span>'
+              + '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:3px">';
+            items.forEach(function(s) {
+              skillsHtml += '<span style="font-size:0.7rem;padding:1px 6px;border-radius:3px;background:rgba(255,255,255,0.05);color:var(--text);border:1px solid rgba(255,255,255,0.08)">' + esc(s) + '</span>';
+            });
+            skillsHtml += '</div></div>';
+          });
+          skillsHtml += '</div>';
+        }
+
+        var rulesHtml = '';
+        if (agent.firmware_rules && agent.firmware_rules.length > 0) {
+          rulesHtml = '<div style="margin-top:1rem"><div style="font-size:0.75rem;font-weight:600;color:var(--muted);letter-spacing:0.05em;margin-bottom:0.5rem">FIRMWARE RULES</div>';
+          agent.firmware_rules.forEach(function(r) {
+            var rColor = r.type === 'must' ? '#22c55e' : '#ef4444';
+            var rLabel = r.type === 'must' ? 'MUST' : 'MUST NOT';
+            rulesHtml += '<div style="display:flex;gap:0.5rem;margin-bottom:0.3rem;font-size:0.75rem;align-items:baseline">'
+              + '<span style="font-weight:700;color:' + rColor + ';font-size:0.65rem;flex-shrink:0">' + rLabel + '</span>'
+              + '<span style="color:var(--text)">' + esc(r.rule) + '</span></div>';
+          });
+          rulesHtml += '</div>';
+        }
+
+        var statsHtml = '';
+        if (agent.stats) {
+          var s = agent.stats;
+          statsHtml = '<div style="margin-top:1rem;display:grid;grid-template-columns:repeat(2,1fr);gap:0.5rem">';
+          var statItems = [
+            { label: 'Subordinates', val: s.subordinate_count },
+            { label: 'Running', val: s.running_subordinates },
+            { label: 'Total Skills', val: s.total_skills },
+            { label: 'Enabled Skills', val: s.enabled_skills }
+          ];
+          statItems.forEach(function(si) {
+            if (si.val == null) return;
+            statsHtml += '<div style="text-align:center;padding:0.5rem;background:var(--surface);border-radius:var(--radius)">'
+              + '<div style="font-size:1.25rem;font-weight:700;color:' + color + '">' + si.val + '</div>'
+              + '<div style="font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">' + si.label + '</div></div>';
+          });
+          statsHtml += '</div>';
+        }
+        if (agent.session_count != null && !agent.stats) {
+          statsHtml = '<div style="margin-top:1rem;display:flex;gap:1rem">'
+            + '<div style="text-align:center;padding:0.5rem;background:var(--surface);border-radius:var(--radius);flex:1">'
+            + '<div style="font-size:1.25rem;font-weight:700;color:' + color + '">' + agent.session_count + '</div>'
+            + '<div style="font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Sessions</div></div></div>';
+        }
+
+        var subordinates = agent.subordinates || [];
+        var subsHtml = '';
+        if (subordinates.length > 0) {
+          subsHtml = '<div style="margin-top:1rem"><div style="font-size:0.75rem;font-weight:600;color:var(--muted);letter-spacing:0.05em;margin-bottom:0.5rem">SUBORDINATES (' + subordinates.length + ')</div>'
+            + '<div style="display:flex;flex-wrap:wrap;gap:4px">';
+          subordinates.forEach(function(sid) {
+            subsHtml += '<span class="badge" style="cursor:pointer" data-roster-sub="' + esc(sid) + '">' + esc(sid) + '</span>';
+          });
+          subsHtml += '</div></div>';
+        }
+
+        var html = '<div style="max-width:520px;margin:auto;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">'
+          + '<div style="background:linear-gradient(135deg,' + color + '22,' + color + '08);padding:1.5rem;border-bottom:1px solid var(--border);position:relative">'
+          + '<button id="roster-modal-close" style="position:absolute;top:12px;right:12px;background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.2rem">\u2715</button>'
+          + '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem">'
+          + '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + stateColor + '"></span>'
+          + '<span style="font-size:0.65rem;font-weight:600;letter-spacing:0.05em;color:' + color + '">' + roleLabel + '</span>'
+          + '</div>'
+          + '<div style="font-size:1.5rem;font-weight:800;color:var(--text);margin-bottom:0.25rem">' + esc(displayName) + '</div>'
+          + '<div style="font-family:var(--mono);font-size:0.75rem;color:var(--muted)">' + esc(agent.name || '') + '</div>'
+          + '<div id="roster-model-display" style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem">'
+          + '<span style="font-family:var(--mono);font-size:0.75rem;color:' + color + '">' + esc(agent.model || '—') + '</span>'
+          + '<button id="roster-change-model-btn" style="font-size:0.6rem;padding:1px 6px;border-radius:3px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:var(--muted);cursor:pointer" title="Change model">change</button>'
+          + '</div>'
+          + '<div id="roster-model-editor" style="display:none;margin-top:0.5rem">'
+          + (function() {
+            var allModels = {};
+            (data.roster || []).forEach(function(a) { if (a.model) allModels[a.model] = true; });
+            ['anthropic/claude-sonnet-4-20250514','anthropic/claude-sonnet-4-6','anthropic/claude-opus-4','openai/gpt-4o','openai/gpt-4o-mini','google/gemini-2.0-flash','google/gemini-2.5-pro','ollama/phi4-mini','ollama/qwen3:8b','ollama/llama3.1:8b'].forEach(function(m) { allModels[m] = true; });
+            var sorted = Object.keys(allModels).sort();
+            var opts = sorted.map(function(m) {
+              var sel = m === (agent.model || '') ? ' selected' : '';
+              return '<option value="' + esc(m) + '"' + sel + '>' + esc(m) + '</option>';
+            }).join('');
+            return '<div style="display:flex;gap:0.4rem;align-items:center">'
+              + '<select id="roster-model-select" style="flex:1;font-size:0.75rem;font-family:var(--mono);padding:4px 6px;border-radius:4px;background:var(--surface);color:var(--text);border:1px solid var(--border)">'
+              + '<option value="">-- select model --</option>' + opts + '</select>'
+              + '</div>'
+              + '<div style="display:flex;gap:0.4rem;align-items:center;margin-top:4px">'
+              + '<input id="roster-model-custom" type="text" placeholder="or type provider/model" style="flex:1;font-size:0.75rem;font-family:var(--mono);padding:4px 6px;border-radius:4px;background:var(--surface);color:var(--text);border:1px solid var(--border)">'
+              + '</div>'
+              + '<div style="display:flex;gap:0.4rem;margin-top:6px">'
+              + '<button id="roster-model-save" class="btn" style="font-size:0.7rem;padding:3px 10px">Apply</button>'
+              + '<button id="roster-model-cancel" class="btn secondary" style="font-size:0.7rem;padding:3px 10px">Cancel</button>'
+              + '</div>';
+          })()
+          + '</div>'
+          + (agent.description ? '<div style="font-size:0.8125rem;color:var(--text);margin-top:0.75rem;line-height:1.4;max-height:4.5em;overflow:hidden;text-overflow:ellipsis">' + esc(agent.description) + '</div>' : '')
+          + '</div>'
+          + '<div style="padding:1.25rem">'
+          + voiceHtml + missionsHtml + skillsHtml + rulesHtml + statsHtml + subsHtml
+          + (agent.supervisor ? '<div style="margin-top:1rem;font-size:0.75rem;color:var(--muted)">Reports to: <strong style="color:var(--text)">' + esc(agent.supervisor) + '</strong></div>' : '')
+          + '</div></div>';
+
+        modal.style.display = 'flex';
+        modal.style.alignItems = 'flex-start';
+        modal.style.justifyContent = 'center';
+        setHtml(modal, html);
+        modal.onclick = function(ev) {
+          if (ev.target === modal || ev.target.closest('#roster-modal-close')) {
+            modal.style.display = 'none';
+          }
+          var subLink = ev.target.closest('[data-roster-sub]');
+          if (subLink) {
+            var subId = subLink.getAttribute('data-roster-sub');
+            modal.style.display = 'none';
+            var subCard = document.querySelector('.roster-card[data-roster-id="' + subId + '"]');
+            if (subCard) subCard.click();
+          }
+          if (ev.target.closest('#roster-change-model-btn')) {
+            var disp = document.getElementById('roster-model-display');
+            var ed = document.getElementById('roster-model-editor');
+            if (disp) disp.style.display = 'none';
+            if (ed) ed.style.display = 'block';
+          }
+          if (ev.target.closest('#roster-model-cancel')) {
+            var disp2 = document.getElementById('roster-model-display');
+            var ed2 = document.getElementById('roster-model-editor');
+            if (disp2) disp2.style.display = 'flex';
+            if (ed2) ed2.style.display = 'none';
+          }
+          if (ev.target.closest('#roster-model-save')) {
+            var sel = document.getElementById('roster-model-select');
+            var custom = document.getElementById('roster-model-custom');
+            var newModel = (custom && custom.value.trim()) || (sel && sel.value) || '';
+            if (!newModel) { toast('Select or enter a model'); return; }
+            var agentKey = agent.name || agent.id;
+            api('/api/roster/' + encodeURIComponent(agentKey) + '/model', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model: newModel })
+            }).then(function(resp) {
+              toast('Model changed: ' + (resp.old_model || '?') + ' \u2192 ' + resp.new_model);
+              modal.style.display = 'none';
+              App.navigate('roster');
+            }).catch(function(err) {
+              toast(err.message || 'Failed to change model');
+            });
+          }
+        };
+      });
+      return;
+    }
     if (e.target.closest('#btn-reload-skills')) {
       api('/api/skills/reload', { method: 'POST' }).then(function() { toast('Skills reloaded'); App.navigate('skills'); }).catch(function(err) { toast(err.message || 'Failed'); });
       return;
@@ -1354,7 +1938,11 @@
       return;
     }
     var tabBtn = e.target.closest('.tabs button[data-tab]');
-    if (tabBtn) { App._memoryTab = tabBtn.getAttribute('data-tab'); App.navigate('memory'); return; }
+    if (tabBtn) { App._memoryTab = tabBtn.getAttribute('data-tab'); App._memoryCategory = ''; App._memorySessionId = ''; App.navigate('memory'); return; }
+    var memCatBtn = e.target.closest('[data-mem-cat]');
+    if (memCatBtn) { App._memoryCategory = memCatBtn.getAttribute('data-mem-cat'); App.navigate('memory'); return; }
+    var memSessBtn = e.target.closest('[data-mem-session]');
+    if (memSessBtn) { App._memorySessionId = memSessBtn.getAttribute('data-mem-session'); App.navigate('memory'); return; }
 
     var settingsMode = e.target.closest('[data-settings-mode]');
     if (settingsMode) {
@@ -1424,7 +2012,7 @@
     var delBtn = e.target.closest('[data-cal-delete]');
     if (delBtn) {
       var idx = Number(delBtn.getAttribute('data-cal-delete')); var j = _cachedCronJobs[idx];
-      if (j) { api('/api/cron/jobs/' + encodeURIComponent(j.name), { method: 'DELETE' }).then(function() { toast('Deleted "' + j.name + '"'); App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Delete failed'); App.navigate('scheduler'); }); }
+      if (j) { api('/api/cron/jobs/' + encodeURIComponent(j.id), { method: 'DELETE' }).then(function() { toast('Deleted "' + j.name + '"'); App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Delete failed'); App.navigate('scheduler'); }); }
       return;
     }
     if (e.target.closest('[data-cal-modal-close]') || (e.target.closest('[data-cal-overlay]') && e.target.hasAttribute('data-cal-overlay'))) { App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); return; }
@@ -1439,7 +2027,13 @@
       var jobData = { name: name, schedule_kind: cron.kind, schedule_expr: cron.expr };
       if (App._calModalMode === 'add') {
         api('/api/cron/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jobData) }).then(function() { toast('Added "' + name + '"'); App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Add failed'); });
-      } else { toast('Updated "' + name + '"'); App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); }
+      } else {
+        var editIdx = App._calEditJob && App._calEditJob._idx;
+        var editJob = editIdx != null ? _cachedCronJobs[editIdx] : null;
+        if (editJob && editJob.id) {
+          api('/api/cron/jobs/' + encodeURIComponent(editJob.id), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jobData) }).then(function() { toast('Updated "' + name + '"'); App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Update failed'); });
+        } else { toast('Cannot update: job ID missing'); }
+      }
       return;
     }
     var evtChip = e.target.closest('[data-evt-job]');
@@ -1520,17 +2114,488 @@
 
   var workspace = null;
   function startWorkspaceEngine(data) { if (workspace) { workspace.stop(); workspace = null; } var canvas = document.getElementById('ws-canvas'); if (!canvas) return; workspace = new WorkspaceEngine(canvas, data); workspace.start(); }
-  function WorkspaceEngine(canvas, data) { this.canvas = canvas; this.ctx = canvas.getContext('2d'); this.running = false; this.animId = 0; this.time = 0; this.bots = []; this.stations = []; this.tethers = []; this.interactions = []; this.dpr = window.devicePixelRatio || 1; var self = this; this._resizeObs = new ResizeObserver(function() { self.resize(); }); this._resizeObs.observe(canvas.parentElement); this.initData(data); }
-  WorkspaceEngine.prototype.initData = function(data) { var agents = data.agents || []; var stations = data.workstations || []; this.stations = stations.map(function(s) { return { id: s.id, name: s.name, kind: s.kind, x: s.x, y: s.y }; }); if (this.stations.length === 0) { this.stations = [{ id: 'llm', name: 'LLM', kind: 'Inference', x: 0.2, y: 0.3 },{ id: 'memory', name: 'Memory', kind: 'Storage', x: 0.8, y: 0.3 },{ id: 'exec', name: 'Execute', kind: 'Code', x: 0.5, y: 0.8 }]; } var self = this; this.bots = agents.map(function(a) { var station = a.current_workstation ? self.stations.find(function(s) { return s.id === a.current_workstation; }) : null; var startX = station ? station.x : 0.5 + (Math.random() - 0.5) * 0.2; var startY = station ? station.y : 0.5 + (Math.random() - 0.5) * 0.2; return { id: a.id, name: a.name, role: a.role || 'specialist', state: (a.state || 'Idle').toString(), color: a.color || '#6366f1', subordinates: a.subordinates || [], supervisor: a.supervisor || null, x: startX, y: startY, targetX: startX, targetY: startY, vx: 0, vy: 0, animState: 'idle', animFrame: 0, animTimer: Math.random() * 6, headAngle: 0, headTarget: 0, headTimer: Math.random() * 4, lights: [1, 0.5, 0.2], lightTimer: Math.random() * 2, blinkTimer: 3 + Math.random() * 5, blinking: false, workTimer: 0, talkBubble: 0, currentStation: a.current_workstation || null }; }); this.tethers = []; for (var i = 0; i < this.bots.length; i++) { var bot = this.bots[i]; if (bot.subordinates && bot.subordinates.length > 0) { for (var j = 0; j < bot.subordinates.length; j++) { var sub = this.bots.find(function(b) { return b.id === bot.subordinates[j]; }); if (sub) this.tethers.push({ from: bot, to: sub, color: bot.color }); } } } this.assignIdleBehaviors(); };
-  WorkspaceEngine.prototype.assignIdleBehaviors = function() { var self = this; this.bots.forEach(function(bot, i) { if (self.stations.length > 0) { var s = self.stations[i % self.stations.length]; bot.targetX = s.x + (Math.random() - 0.5) * 0.05; bot.targetY = s.y + 0.08; bot.currentStation = s.id; } }); };
-  WorkspaceEngine.prototype.resize = function() { var parent = this.canvas.parentElement; if (!parent) return; var w = parent.clientWidth, h = parent.clientHeight; if (w < 1 || h < 1) return; this.canvas.width = w * this.dpr; this.canvas.height = h * this.dpr; this.canvas.style.width = w + 'px'; this.canvas.style.height = h + 'px'; this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); this.W = w; this.H = h; };
-  WorkspaceEngine.prototype.start = function() { this.running = true; this.resize(); this.lastTime = performance.now(); var self = this; (function loop(ts) { if (!self.running) return; var dt = Math.min((ts - self.lastTime) / 1000, 0.05); self.lastTime = ts; self.time += dt; self.update(dt); self.render(); self.animId = requestAnimationFrame(loop); })(performance.now()); };
-  WorkspaceEngine.prototype.stop = function() { this.running = false; cancelAnimationFrame(this.animId); if (this._resizeObs) this._resizeObs.disconnect(); };
-  WorkspaceEngine.prototype.update = function(dt) { var self = this; this.bots.forEach(function(bot) { var dx = bot.targetX - bot.x, dy = bot.targetY - bot.y, dist = Math.sqrt(dx * dx + dy * dy); if (dist > 0.005) { var step = Math.min(0.4 * dt, dist); bot.x += (dx / dist) * step; bot.y += (dy / dist) * step; bot.animState = 'walking'; } else { bot.x = bot.targetX; bot.y = bot.targetY; if (bot.animState === 'walking') bot.animState = 'idle'; } bot.headTimer -= dt; if (bot.headTimer <= 0) { bot.headTarget = (Math.random() - 0.5) * 0.6; bot.headTimer = 2 + Math.random() * 4; } bot.headAngle += (bot.headTarget - bot.headAngle) * 2 * dt; bot.lightTimer -= dt; if (bot.lightTimer <= 0) { bot.lights = [Math.random(), Math.random(), Math.random()]; bot.lightTimer = 0.3 + Math.random() * 0.8; } bot.blinkTimer -= dt; if (bot.blinkTimer <= 0) { bot.blinking = !bot.blinking; bot.blinkTimer = bot.blinking ? 0.12 : (2.5 + Math.random() * 4); } bot.animTimer += dt; if (bot.animTimer > 0.18) { bot.animFrame = (bot.animFrame + 1) % 4; bot.animTimer = 0; } if (bot.animState === 'working') { bot.workTimer += dt; if (bot.workTimer > 4) { bot.animState = 'idle'; bot.workTimer = 0; } } if (bot.animState === 'idle' && Math.random() < 0.003) { var s = self.stations[Math.floor(Math.random() * self.stations.length)]; if (s) { bot.targetX = s.x + (Math.random() - 0.5) * 0.04; bot.targetY = s.y + 0.08 + (Math.random() - 0.5) * 0.02; bot.currentStation = s.id; } } if (bot.animState === 'idle' && dist < 0.01 && Math.random() < 0.008) { bot.animState = 'working'; bot.workTimer = 0; } }); if (this.bots.length > 1 && this.interactions.length === 0 && Math.random() < 0.001) { var a = Math.floor(Math.random() * this.bots.length); var b = (a + 1 + Math.floor(Math.random() * (this.bots.length - 1))) % this.bots.length; var botA = this.bots[a], botB = this.bots[b]; var meetX = 0.5 + (Math.random() - 0.5) * 0.15, meetY = 0.5 + (Math.random() - 0.5) * 0.15; botA._savedTarget = { x: botA.targetX, y: botA.targetY }; botB._savedTarget = { x: botB.targetX, y: botB.targetY }; botA.targetX = meetX - 0.04; botA.targetY = meetY; botB.targetX = meetX + 0.04; botB.targetY = meetY; botA.animState = 'talking'; botB.animState = 'talking'; this.interactions.push({ botA: botA, botB: botB, timer: 4 + Math.random() * 3 }); } for (var i = this.interactions.length - 1; i >= 0; i--) { var ix = this.interactions[i]; ix.timer -= dt; if (ix.timer <= 0) { if (ix.botA._savedTarget) { ix.botA.targetX = ix.botA._savedTarget.x; ix.botA.targetY = ix.botA._savedTarget.y; delete ix.botA._savedTarget; } if (ix.botB._savedTarget) { ix.botB.targetX = ix.botB._savedTarget.x; ix.botB.targetY = ix.botB._savedTarget.y; delete ix.botB._savedTarget; } ix.botA.animState = 'idle'; ix.botB.animState = 'idle'; this.interactions.splice(i, 1); } } };
-  function parseThemeColors() { var cs = getComputedStyle(document.documentElement); var bg = cs.getPropertyValue('--bg').trim() || '#0a0b0f'; var surface = cs.getPropertyValue('--surface').trim() || '#1e2030'; var accent = cs.getPropertyValue('--accent').trim() || '#6366f1'; var muted = cs.getPropertyValue('--muted').trim() || '#71717a'; var el = document.createElement('canvas'); el.width = el.height = 1; var c2 = el.getContext('2d'); c2.fillStyle = accent; c2.fillRect(0, 0, 1, 1); var d = c2.getImageData(0, 0, 1, 1).data; var text = cs.getPropertyValue('--text').trim() || '#e4e4e7'; return { bg: bg, surface: surface, accent: accent, muted: muted, text: text, aR: d[0], aG: d[1], aB: d[2] }; }
-  WorkspaceEngine.prototype.render = function() { var ctx = this.ctx, W = this.W, H = this.H; if (!W || !H) return; var tc = parseThemeColors(); var aR = tc.aR, aG = tc.aG, aB = tc.aB; this._themeColors = tc; ctx.clearRect(0, 0, W, H); ctx.fillStyle = tc.bg; ctx.fillRect(0, 0, W, H); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.06)'; for (var gx = 30; gx < W; gx += 40) for (var gy = 30; gy < H; gy += 40) { ctx.beginPath(); ctx.arc(gx, gy, 1, 0, Math.PI * 2); ctx.fill(); } var self = this; this.stations.forEach(function(s) { var sx = s.x * W, sy = s.y * H; ctx.save(); ctx.translate(sx, sy); var pulse = 0.6 + 0.4 * Math.sin(self.time * 1.5 + sx * 0.01); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.04)'; ctx.beginPath(); ctx.arc(0, 8, 38, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.12 + 0.05 * pulse) + ')'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 8, 38, 0, Math.PI * 2); ctx.stroke(); var kind = (s.kind || '').toLowerCase(); if (kind === 'inference') { ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.3)'; ctx.lineWidth = 1; var nodes = [[-12,-18],[12,-18],[0,-6],[-18,-4],[18,-4],[-8,6],[8,6],[0,16]]; var edges = [[0,2],[1,2],[0,3],[1,4],[2,5],[2,6],[3,5],[4,6],[5,7],[6,7]]; edges.forEach(function(e) { ctx.beginPath(); ctx.moveTo(nodes[e[0]][0], nodes[e[0]][1]); ctx.lineTo(nodes[e[1]][0], nodes[e[1]][1]); ctx.stroke(); }); nodes.forEach(function(n, i) { var r = i === 2 || i === 7 ? 4.5 : 3.5; ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.arc(n[0], n[1], r, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.5 + 0.3 * pulse) + ')'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.3 + 0.4 * ((Math.sin(self.time * 3 + i * 1.2) + 1) / 2)) + ')'; ctx.beginPath(); ctx.arc(n[0], n[1], r - 1, 0, Math.PI * 2); ctx.fill(); }); } else if (kind === 'storage') { for (var ci = 0; ci < 3; ci++) { var cy = -14 + ci * 11; ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.ellipse(0, cy + 8, 18, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(-18, cy, 36, 8); ctx.beginPath(); ctx.ellipse(0, cy, 18, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.3 + 0.1 * ci) + ')'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.ellipse(0, cy, 18, 4, 0, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-18, cy); ctx.lineTo(-18, cy + 8); ctx.stroke(); ctx.beginPath(); ctx.moveTo(18, cy); ctx.lineTo(18, cy + 8); ctx.stroke(); ctx.beginPath(); ctx.ellipse(0, cy + 8, 18, 4, 0, Math.PI, Math.PI * 2); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.08 + 0.06 * Math.sin(self.time * 2 + ci)) + ')'; ctx.fillRect(-16, cy + 1, 32, 6); } } else if (kind === 'execution') { ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-22, -18, 44, 34, 4); ctx.fill(); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.12)'; ctx.fillRect(-22, -18, 44, 8); ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(-16, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#eab308'; ctx.beginPath(); ctx.arc(-10, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(-4, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.6)'; ctx.font = 'bold 8px monospace'; ctx.textAlign = 'left'; ctx.fillText('$_', -17, -2); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.25)'; ctx.fillRect(-8, -6, 20 * pulse, 2); ctx.fillRect(-17, 3, 26, 1.5); ctx.fillRect(-17, 8, 18, 1.5); if (Math.sin(self.time * 4) > 0) { ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.8)'; ctx.fillRect(-10, -6, 6, 8); } } else if (kind === 'blockchain') { ctx.save(); var hexR = 16; ctx.beginPath(); for (var hi = 0; hi < 6; hi++) { var angle = Math.PI / 6 + hi * Math.PI / 3; var hx = Math.cos(angle) * hexR, hy = Math.sin(angle) * hexR; if (hi === 0) ctx.moveTo(hx, hy); else ctx.lineTo(hx, hy); } ctx.closePath(); ctx.fillStyle = tc.surface; ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.35 + 0.15 * pulse) + ')'; ctx.lineWidth = 1.5; ctx.stroke(); var innerR = 10; ctx.beginPath(); for (var hi = 0; hi < 6; hi++) { var angle = Math.PI / 6 + hi * Math.PI / 3; ctx.lineTo(Math.cos(angle) * innerR, Math.sin(angle) * innerR); } ctx.closePath(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.2)'; ctx.lineWidth = 1; ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.5 + 0.3 * pulse) + ')'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('\u25c8', 0, 0); ctx.restore(); } else if (kind === 'tool') { ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-22, -18, 44, 34, 4); ctx.fill(); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.1)'; ctx.fillRect(-22, -18, 44, 9); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.25)'; ctx.beginPath(); ctx.arc(-17, -13.5, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(-12, -13.5, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.roundRect(-8, -16, 26, 5, 2); ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.3 + 0.15 * pulse) + ')'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 3, 9, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.ellipse(0, 3, 4, 9, 0, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-9, 3); ctx.lineTo(9, 3); ctx.stroke(); } else { ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.3)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-20, -16, 40, 30, 4); ctx.fill(); ctx.stroke(); } ctx.fillStyle = tc.muted; ctx.font = '10px ' + getComputedStyle(document.body).fontFamily; ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(s.name, 0, 30); ctx.restore(); }); this.tethers.forEach(function(t) { ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = t.color + '40'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(t.from.x * W, t.from.y * H); ctx.lineTo(t.to.x * W, t.to.y * H); ctx.stroke(); ctx.setLineDash([]); ctx.restore(); }); this.interactions.forEach(function(ix) { var midX = (ix.botA.x + ix.botB.x) / 2 * W, midY = (ix.botA.y + ix.botB.y) / 2 * H - 50; var pulse = Math.sin(self.time * 5) * 0.5 + 0.5; ctx.save(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.2 + 0.1 * pulse) + ')'; ctx.beginPath(); ctx.arc(midX - 8, midY, 3, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(midX, midY - 2, 4, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(midX + 10, midY - 1, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.restore(); }); var sortedBots = this.bots.slice().sort(function(a, b) { return a.y - b.y; }); sortedBots.forEach(function(bot) { self.drawBot(ctx, bot, W, H); }); };
-  WorkspaceEngine.prototype.drawBot = function(ctx, bot, W, H) { var tc = this._themeColors || { surface: '#1e2030', muted: '#71717a', text: '#e4e4e7', aR: 99, aG: 102, aB: 241 }; var px = bot.x * W, py = bot.y * H, t = this.time, frame = bot.animFrame; var isAgent = (bot.role === 'agent'); var scale = isAgent ? 1.0 : 0.7; var bodyW = isAgent ? 20 : 14, bodyH = isAgent ? 24 : 18; var walkBob = (bot.animState === 'walking') ? Math.sin(t * 12) * 2 : 0; ctx.save(); ctx.translate(px, py + walkBob); ctx.scale(scale, scale); ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(0, bodyH + 4, bodyW * 0.6, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = bot.color; ctx.strokeStyle = bot.color + 'cc'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-bodyW, -bodyH * 0.3, bodyW * 2, bodyH, isAgent ? 4 : 8); ctx.fill(); ctx.stroke(); ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.fillRect(-bodyW + 3, -bodyH * 0.3 + 3, bodyW * 2 - 6, bodyH * 0.35); var lightColors = ['#22c55e', '#eab308', '#ef4444']; for (var li = 0; li < 3; li++) { var lx = -bodyW + 6 + li * 7, ly = -bodyH * 0.3 + 7; ctx.fillStyle = lightColors[li]; ctx.globalAlpha = 0.3 + 0.7 * bot.lights[li]; ctx.beginPath(); ctx.arc(lx, ly, 2, 0, Math.PI * 2); ctx.fill(); } ctx.globalAlpha = 1; if (isAgent) { var legOffset = (bot.animState === 'walking') ? Math.sin(t * 10) * 4 : 0; ctx.fillStyle = bot.color + 'bb'; ctx.fillRect(-bodyW + 4, bodyH * 0.7 - 2, 7, 10 + (legOffset > 0 ? legOffset : 0)); ctx.fillRect(bodyW - 11, bodyH * 0.7 - 2, 7, 10 + (legOffset < 0 ? -legOffset : 0)); ctx.fillStyle = tc.surface; ctx.fillRect(-bodyW + 2, bodyH * 0.7 + 7 + Math.max(0, legOffset), 11, 4); ctx.fillRect(bodyW - 13, bodyH * 0.7 + 7 + Math.max(0, -legOffset), 11, 4); } else { var treadOffset = (bot.animState === 'walking') ? (frame * 3) % 12 : 0; ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.roundRect(-bodyW - 2, bodyH * 0.5, bodyW * 2 + 4, 8, 4); ctx.fill(); ctx.strokeStyle = bot.color + '88'; ctx.lineWidth = 1; ctx.stroke(); ctx.strokeStyle = bot.color + '44'; for (var ti = 0; ti < 5; ti++) { var tx = -bodyW + 2 + (ti * 9 + treadOffset) % (bodyW * 2); ctx.beginPath(); ctx.moveTo(tx, bodyH * 0.5 + 1); ctx.lineTo(tx, bodyH * 0.5 + 7); ctx.stroke(); } } if (bot.animState === 'working') { var armAngle = Math.sin(t * 4) * 0.3; ctx.save(); ctx.translate(bodyW + 2, 0); ctx.rotate(-0.5 + armAngle); ctx.fillStyle = bot.color + 'cc'; ctx.fillRect(0, -2, 14, 4); ctx.fillStyle = '#eab308'; ctx.beginPath(); ctx.arc(14, 0, 3, 0, Math.PI * 2); ctx.fill(); if (frame % 2 === 0) { ctx.fillStyle = '#eab308'; ctx.globalAlpha = 0.7; for (var si = 0; si < 3; si++) { var sa = Math.random() * Math.PI * 2; ctx.beginPath(); ctx.arc(14 + Math.cos(sa) * 5, Math.sin(sa) * 5, 1.5, 0, Math.PI * 2); ctx.fill(); } ctx.globalAlpha = 1; } ctx.restore(); } ctx.save(); ctx.translate(0, -bodyH * 0.3); ctx.rotate(bot.headAngle); var headW = isAgent ? 18 : 14, headH = isAgent ? 16 : 12; ctx.fillStyle = bot.color + 'aa'; ctx.fillRect(-3, -4, 6, 5); ctx.fillStyle = bot.color; ctx.strokeStyle = bot.color + 'cc'; ctx.lineWidth = 1.5; ctx.beginPath(); if (isAgent) { ctx.roundRect(-headW, -headH - 4, headW * 2, headH, 5); } else { ctx.arc(0, -headH * 0.5 - 2, headW * 0.85, 0, Math.PI * 2); } ctx.fill(); ctx.stroke(); if (isAgent) { ctx.strokeStyle = bot.color + 'cc'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, -headH - 4); ctx.lineTo(0, -headH - 14); ctx.stroke(); var antGlow = 0.5 + 0.5 * Math.sin(t * 3); ctx.fillStyle = bot.color; ctx.globalAlpha = 0.5 + 0.5 * antGlow; ctx.beginPath(); ctx.arc(0, -headH - 15, 3, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1; } if (isAgent) { var eyeY = -headH * 0.5 - 2; if (bot.blinking) { ctx.fillStyle = tc.surface; ctx.fillRect(-headW + 4, eyeY - 1, headW - 6, 2); ctx.fillRect(3, eyeY - 1, headW - 6, 2); } else { ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.arc(-headW * 0.4, eyeY, 4, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(headW * 0.4, eyeY, 4, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = tc.text; ctx.beginPath(); ctx.arc(-headW * 0.4 + bot.headAngle * 3, eyeY, 2, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(headW * 0.4 + bot.headAngle * 3, eyeY, 2, 0, Math.PI * 2); ctx.fill(); } } else { var visorY = -headH * 0.5 - 2; var visorGlow = 0.6 + 0.4 * Math.sin(t * 2.5 + px * 0.01); ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.roundRect(-headW * 0.6, visorY - 3, headW * 1.2, 6, 3); ctx.fill(); ctx.fillStyle = bot.color; ctx.globalAlpha = visorGlow; ctx.beginPath(); ctx.roundRect(-headW * 0.5, visorY - 2, headW, 4, 2); ctx.fill(); ctx.globalAlpha = 1; var scanX = Math.sin(t * 3 + px * 0.01) * headW * 0.35; ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.arc(scanX, visorY, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1; } ctx.restore(); if (isAgent && bot.subordinates && bot.subordinates.length > 0) { ctx.save(); ctx.translate(0, -bodyH * 0.3 - (isAgent ? 24 : 18)); ctx.strokeStyle = bot.color; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-6, -18); ctx.lineTo(0, -22); ctx.lineTo(6, -18); ctx.stroke(); ctx.restore(); } ctx.save(); var tagY = -bodyH * 0.3 - (isAgent ? 30 : 20) - (isAgent && bot.subordinates && bot.subordinates.length > 0 ? 10 : 0); ctx.font = 'bold 10px ' + getComputedStyle(document.body).fontFamily; ctx.textAlign = 'center'; var nameW = ctx.measureText(bot.name).width + 12; ctx.globalAlpha = 0.88; ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.roundRect(-nameW / 2, tagY - 7, nameW, 14, 7); ctx.fill(); ctx.globalAlpha = 1; ctx.strokeStyle = bot.color + '66'; ctx.lineWidth = 1; ctx.stroke(); ctx.fillStyle = tc.text; ctx.fillText(bot.name, 0, tagY + 3); var dotColor = bot.state === 'Running' ? '#22c55e' : (bot.state === 'Error' ? '#ef4444' : '#eab308'); ctx.fillStyle = dotColor; ctx.beginPath(); ctx.arc(nameW / 2 - 4, tagY, 3, 0, Math.PI * 2); ctx.fill(); ctx.restore(); ctx.restore(); };
-  WorkspaceEngine.prototype.handleEvent = function(ev) { if (!ev || !ev.type) return; var self = this; if (ev.type === 'agent_started' || ev.type === 'agent_stopped' || ev.type === 'agent_error') { var bot = this.bots.find(function(b) { return b.id === ev.agent_id; }); if (bot) { if (ev.type === 'agent_started') bot.state = 'Running'; else if (ev.type === 'agent_stopped') bot.state = 'Stopped'; else bot.state = 'Error'; } } if (ev.type === 'agent_moved') { var bot = this.bots.find(function(b) { return b.id === ev.agent_id; }); var station = this.stations.find(function(s) { return s.id === ev.workstation; }); if (bot && station) { bot.targetX = station.x + (Math.random() - 0.5) * 0.04; bot.targetY = station.y + 0.08; bot.currentStation = station.id; } } if (ev.type === 'agent_working') { var bot = this.bots.find(function(b) { return b.id === ev.agent_id; }); if (bot) { bot.animState = 'working'; bot.workTimer = 0; } } if (ev.type === 'a2a_interaction') { var botA = this.bots.find(function(b) { return b.id === ev.agent_a; }); var botB = this.bots.find(function(b) { return b.id === ev.agent_b; }); if (botA && botB) { var meetX = 0.5 + (Math.random() - 0.5) * 0.15, meetY = 0.5 + (Math.random() - 0.5) * 0.15; botA._savedTarget = { x: botA.targetX, y: botA.targetY }; botB._savedTarget = { x: botB.targetX, y: botB.targetY }; botA.targetX = meetX - 0.04; botA.targetY = meetY; botB.targetX = meetX + 0.04; botB.targetY = meetY; botA.animState = 'talking'; botB.animState = 'talking'; self.interactions.push({ botA: botA, botB: botB, timer: ev.duration || 4 }); } } if (ev.type === 'skill_reloaded') { api('/api/workspace/state').then(function(data) { self.stations = (data.workstations || []).map(function(s) { return { id: s.id, name: s.name, kind: s.kind, x: s.x, y: s.y }; }); }); } };
+
+  function WorkspaceEngine(canvas, data) {
+    this.canvas = canvas; this.ctx = canvas.getContext('2d');
+    this.running = false; this.animId = 0; this.time = 0;
+    this.bots = []; this.stations = []; this.tethers = []; this.interactions = []; this.dataStreams = [];
+    this.dpr = window.devicePixelRatio || 1;
+    var self = this;
+    this._resizeObs = new ResizeObserver(function() { self.resize(); });
+    this._resizeObs.observe(canvas.parentElement);
+    this.initData(data);
+  }
+
+  WorkspaceEngine.prototype.initData = function(data) {
+    var agents = data.agents || [];
+    var systems = data.systems || data.workstations || [];
+    this.stations = systems.map(function(s) { return { id: s.id, name: s.name, kind: s.kind, x: s.x, y: s.y }; });
+    if (this.stations.length === 0) {
+      this.stations = [
+        { id: 'llm', name: 'LLM Inference', kind: 'Inference', x: 0.18, y: 0.22 },
+        { id: 'memory', name: 'Memory', kind: 'Storage', x: 0.82, y: 0.22 },
+        { id: 'exec', name: 'Code Execution', kind: 'Execution', x: 0.18, y: 0.78 },
+        { id: 'blockchain', name: 'Blockchain', kind: 'Blockchain', x: 0.82, y: 0.78 },
+        { id: 'web', name: 'Web / APIs', kind: 'Tool', x: 0.50, y: 0.12 },
+        { id: 'files', name: 'File System', kind: 'Tool', x: 0.50, y: 0.88 }
+      ];
+    }
+    var self = this;
+    var _skillPool = [
+      'conway-security','self-funding','ethereum-funding','audit-service','postgres-memory',
+      'context-continuity','model-management','local-subagents','cost-monitoring','web-search',
+      'morning-briefing','lead-hunter','revenue-tracker','geopolitical-monitor'
+    ];
+    this.bots = agents.map(function(a, idx) {
+      var cx = 0.5, cy = 0.5;
+      if (agents.length > 1) {
+        var angle = (idx / agents.length) * Math.PI * 2 - Math.PI / 2;
+        var radius = Math.min(0.22, 0.08 + agents.length * 0.012);
+        cx = 0.5 + Math.cos(angle) * radius;
+        cy = 0.5 + Math.sin(angle) * radius;
+      }
+      return {
+        id: a.id, name: a.name, role: a.role || 'specialist',
+        model: a.model || '', state: (a.state || 'Idle').toString(), color: a.color || '#6366f1',
+        subordinates: a.subordinates || [], supervisor: a.supervisor || null,
+        skills: a.skills || [], activeSkill: null, skillFade: 0,
+        x: cx + (Math.random() - 0.5) * 0.04, y: cy + (Math.random() - 0.5) * 0.04,
+        targetX: cx, targetY: cy, vx: 0, vy: 0,
+        animState: 'idle', animFrame: 0, animTimer: Math.random() * 6,
+        headAngle: 0, headTarget: 0, headTimer: Math.random() * 4,
+        lights: [1, 0.5, 0.2], lightTimer: Math.random() * 2,
+        blinkTimer: 3 + Math.random() * 5, blinking: false,
+        workTimer: 0, currentStation: null,
+        _skillPool: _skillPool.slice().sort(function() { return Math.random() - 0.5; }),
+        _skillIdx: 0
+      };
+    });
+    this.tethers = [];
+    for (var i = 0; i < this.bots.length; i++) {
+      var bot = this.bots[i];
+      if (bot.subordinates && bot.subordinates.length > 0) {
+        for (var j = 0; j < bot.subordinates.length; j++) {
+          var sub = this.bots.find(function(b) { return b.id === bot.subordinates[j]; });
+          if (sub) this.tethers.push({ from: bot, to: sub, color: bot.color });
+        }
+      }
+    }
+  };
+
+  WorkspaceEngine.prototype.resize = function() {
+    var parent = this.canvas.parentElement; if (!parent) return;
+    var w = parent.clientWidth, h = parent.clientHeight; if (w < 1 || h < 1) return;
+    this.canvas.width = w * this.dpr; this.canvas.height = h * this.dpr;
+    this.canvas.style.width = w + 'px'; this.canvas.style.height = h + 'px';
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this.W = w; this.H = h;
+  };
+
+  WorkspaceEngine.prototype.start = function() {
+    this.running = true; this.resize(); this.lastTime = performance.now();
+    var self = this;
+    (function loop(ts) {
+      if (!self.running) return;
+      var dt = Math.min((ts - self.lastTime) / 1000, 0.05);
+      self.lastTime = ts; self.time += dt;
+      self.update(dt); self.render();
+      self.animId = requestAnimationFrame(loop);
+    })(performance.now());
+  };
+
+  WorkspaceEngine.prototype.stop = function() {
+    this.running = false; cancelAnimationFrame(this.animId);
+    if (this._resizeObs) this._resizeObs.disconnect();
+  };
+
+  WorkspaceEngine.prototype.update = function(dt) {
+    var self = this;
+    this.bots.forEach(function(bot) {
+      var dx = bot.targetX - bot.x, dy = bot.targetY - bot.y;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0.005) {
+        var step = Math.min(0.35 * dt, dist);
+        bot.x += (dx / dist) * step; bot.y += (dy / dist) * step;
+        bot.animState = 'walking';
+      } else {
+        bot.x = bot.targetX; bot.y = bot.targetY;
+        if (bot.animState === 'walking') bot.animState = 'idle';
+      }
+      bot.headTimer -= dt;
+      if (bot.headTimer <= 0) { bot.headTarget = (Math.random() - 0.5) * 0.6; bot.headTimer = 2 + Math.random() * 4; }
+      bot.headAngle += (bot.headTarget - bot.headAngle) * 2 * dt;
+      bot.lightTimer -= dt;
+      if (bot.lightTimer <= 0) { bot.lights = [Math.random(), Math.random(), Math.random()]; bot.lightTimer = 0.3 + Math.random() * 0.8; }
+      bot.blinkTimer -= dt;
+      if (bot.blinkTimer <= 0) { bot.blinking = !bot.blinking; bot.blinkTimer = bot.blinking ? 0.12 : (2.5 + Math.random() * 4); }
+      bot.animTimer += dt;
+      if (bot.animTimer > 0.18) { bot.animFrame = (bot.animFrame + 1) % 4; bot.animTimer = 0; }
+
+      if (bot.activeSkill) { bot.skillFade = Math.min(1, bot.skillFade + dt * 3); }
+      else { bot.skillFade = Math.max(0, bot.skillFade - dt * 2); }
+
+      if (bot.animState === 'working') {
+        bot.workTimer += dt;
+        if (bot.workTimer > 5) {
+          bot.animState = 'idle'; bot.workTimer = 0; bot.activeSkill = null;
+        }
+      }
+
+      if (bot.animState === 'idle' && Math.random() < 0.004) {
+        var s = self.stations[Math.floor(Math.random() * self.stations.length)];
+        if (s) {
+          bot.targetX = s.x + (Math.random() - 0.5) * 0.06;
+          bot.targetY = s.y + 0.10 + (Math.random() - 0.5) * 0.03;
+          bot.currentStation = s.id;
+        }
+      }
+
+      if (bot.animState === 'idle' && dist < 0.01 && Math.random() < 0.006) {
+        bot.animState = 'working'; bot.workTimer = 0;
+        var pool = bot._skillPool || [];
+        if (pool.length > 0) {
+          bot.activeSkill = pool[bot._skillIdx % pool.length];
+          bot._skillIdx = (bot._skillIdx + 1) % pool.length;
+        }
+        if (bot.currentStation) {
+          var tgt = self.stations.find(function(st) { return st.id === bot.currentStation; });
+          var streamLabel = '';
+          if (bot.currentStation === 'llm' && bot.model) {
+            streamLabel = bot.model;
+          }
+          self.dataStreams.push({
+            fromX: bot.x, fromY: bot.y, toX: tgt.x, toY: tgt.y,
+            color: bot.color, timer: 1.8, progress: 0, label: streamLabel
+          });
+        }
+      }
+    });
+
+    for (var i = this.dataStreams.length - 1; i >= 0; i--) {
+      var ds = this.dataStreams[i];
+      ds.progress += dt * 1.5;
+      ds.timer -= dt;
+      if (ds.timer <= 0) this.dataStreams.splice(i, 1);
+    }
+
+    if (this.bots.length > 1 && this.interactions.length === 0 && Math.random() < 0.0015) {
+      var a = Math.floor(Math.random() * this.bots.length);
+      var b = (a + 1 + Math.floor(Math.random() * (this.bots.length - 1))) % this.bots.length;
+      var botA = this.bots[a], botB = this.bots[b];
+      var meetX = (botA.x + botB.x) / 2 + (Math.random() - 0.5) * 0.05;
+      var meetY = (botA.y + botB.y) / 2 + (Math.random() - 0.5) * 0.05;
+      meetX = Math.max(0.1, Math.min(0.9, meetX)); meetY = Math.max(0.15, Math.min(0.85, meetY));
+      botA._savedTarget = { x: botA.targetX, y: botA.targetY };
+      botB._savedTarget = { x: botB.targetX, y: botB.targetY };
+      botA.targetX = meetX - 0.03; botA.targetY = meetY;
+      botB.targetX = meetX + 0.03; botB.targetY = meetY;
+      botA.animState = 'talking'; botB.animState = 'talking';
+      this.interactions.push({ botA: botA, botB: botB, timer: 3.5 + Math.random() * 3, phase: 0, bubbleTimer: 0 });
+    }
+
+    for (var i = this.interactions.length - 1; i >= 0; i--) {
+      var ix = this.interactions[i];
+      ix.timer -= dt; ix.phase += dt;
+      ix.bubbleTimer += dt;
+      if (ix.timer <= 0) {
+        if (ix.botA._savedTarget) { ix.botA.targetX = ix.botA._savedTarget.x; ix.botA.targetY = ix.botA._savedTarget.y; delete ix.botA._savedTarget; }
+        if (ix.botB._savedTarget) { ix.botB.targetX = ix.botB._savedTarget.x; ix.botB.targetY = ix.botB._savedTarget.y; delete ix.botB._savedTarget; }
+        ix.botA.animState = 'idle'; ix.botB.animState = 'idle';
+        this.interactions.splice(i, 1);
+      }
+    }
+  };
+
+  function parseThemeColors() {
+    var cs = getComputedStyle(document.documentElement);
+    var bg = cs.getPropertyValue('--bg').trim() || '#0a0b0f';
+    var surface = cs.getPropertyValue('--surface').trim() || '#1e2030';
+    var accent = cs.getPropertyValue('--accent').trim() || '#6366f1';
+    var muted = cs.getPropertyValue('--muted').trim() || '#71717a';
+    var el = document.createElement('canvas'); el.width = el.height = 1;
+    var c2 = el.getContext('2d'); c2.fillStyle = accent; c2.fillRect(0, 0, 1, 1);
+    var d = c2.getImageData(0, 0, 1, 1).data;
+    var text = cs.getPropertyValue('--text').trim() || '#e4e4e7';
+    return { bg: bg, surface: surface, accent: accent, muted: muted, text: text, aR: d[0], aG: d[1], aB: d[2] };
+  }
+
+  WorkspaceEngine.prototype.render = function() {
+    var ctx = this.ctx, W = this.W, H = this.H;
+    if (!W || !H) return;
+    var tc = parseThemeColors(); var aR = tc.aR, aG = tc.aG, aB = tc.aB;
+    this._themeColors = tc;
+    ctx.clearRect(0, 0, W, H); ctx.fillStyle = tc.bg; ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.04)';
+    for (var gx = 30; gx < W; gx += 40) for (var gy = 30; gy < H; gy += 40) {
+      ctx.beginPath(); ctx.arc(gx, gy, 0.8, 0, Math.PI * 2); ctx.fill();
+    }
+
+    var self = this;
+    this.stations.forEach(function(s) {
+      var sx = s.x * W, sy = s.y * H;
+      ctx.save(); ctx.translate(sx, sy);
+      var pulse = 0.6 + 0.4 * Math.sin(self.time * 1.5 + sx * 0.01);
+      var nearBot = self.bots.some(function(b) { return b.currentStation === s.id && (b.animState === 'working' || b.animState === 'walking'); });
+      var glowAlpha = nearBot ? 0.08 : 0.03;
+      var ringAlpha = nearBot ? (0.2 + 0.1 * pulse) : (0.08 + 0.04 * pulse);
+
+      ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + glowAlpha + ')';
+      ctx.beginPath(); ctx.arc(0, 8, 42, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + ringAlpha + ')';
+      ctx.lineWidth = nearBot ? 1.5 : 0.8;
+      ctx.beginPath(); ctx.arc(0, 8, 42, 0, Math.PI * 2); ctx.stroke();
+
+      var kind = (s.kind || '').toLowerCase();
+      if (kind === 'inference') {
+        ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.3)'; ctx.lineWidth = 1;
+        var nodes = [[-12,-18],[12,-18],[0,-6],[-18,-4],[18,-4],[-8,6],[8,6],[0,16]];
+        var edges = [[0,2],[1,2],[0,3],[1,4],[2,5],[2,6],[3,5],[4,6],[5,7],[6,7]];
+        edges.forEach(function(e) { ctx.beginPath(); ctx.moveTo(nodes[e[0]][0], nodes[e[0]][1]); ctx.lineTo(nodes[e[1]][0], nodes[e[1]][1]); ctx.stroke(); });
+        nodes.forEach(function(n, i) { var r = i === 2 || i === 7 ? 4.5 : 3.5; ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.arc(n[0], n[1], r, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.5 + 0.3 * pulse) + ')'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.3 + 0.4 * ((Math.sin(self.time * 3 + i * 1.2) + 1) / 2)) + ')'; ctx.beginPath(); ctx.arc(n[0], n[1], r - 1, 0, Math.PI * 2); ctx.fill(); });
+      } else if (kind === 'storage') {
+        for (var ci = 0; ci < 3; ci++) { var cy = -14 + ci * 11; ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.ellipse(0, cy + 8, 18, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(-18, cy, 36, 8); ctx.beginPath(); ctx.ellipse(0, cy, 18, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.3 + 0.1 * ci) + ')'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.ellipse(0, cy, 18, 4, 0, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-18, cy); ctx.lineTo(-18, cy + 8); ctx.stroke(); ctx.beginPath(); ctx.moveTo(18, cy); ctx.lineTo(18, cy + 8); ctx.stroke(); ctx.beginPath(); ctx.ellipse(0, cy + 8, 18, 4, 0, Math.PI, Math.PI * 2); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.08 + 0.06 * Math.sin(self.time * 2 + ci)) + ')'; ctx.fillRect(-16, cy + 1, 32, 6); }
+      } else if (kind === 'execution') {
+        ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-22, -18, 44, 34, 4); ctx.fill(); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.12)'; ctx.fillRect(-22, -18, 44, 8); ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(-16, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#eab308'; ctx.beginPath(); ctx.arc(-10, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(-4, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.6)'; ctx.font = 'bold 8px monospace'; ctx.textAlign = 'left'; ctx.fillText('$_', -17, -2); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.25)'; ctx.fillRect(-8, -6, 20 * pulse, 2); ctx.fillRect(-17, 3, 26, 1.5); ctx.fillRect(-17, 8, 18, 1.5); if (Math.sin(self.time * 4) > 0) { ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.8)'; ctx.fillRect(-10, -6, 6, 8); }
+      } else if (kind === 'blockchain') {
+        ctx.save(); var hexR = 16; ctx.beginPath(); for (var hi = 0; hi < 6; hi++) { var angle = Math.PI / 6 + hi * Math.PI / 3; var hx = Math.cos(angle) * hexR, hy = Math.sin(angle) * hexR; if (hi === 0) ctx.moveTo(hx, hy); else ctx.lineTo(hx, hy); } ctx.closePath(); ctx.fillStyle = tc.surface; ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.35 + 0.15 * pulse) + ')'; ctx.lineWidth = 1.5; ctx.stroke(); var innerR = 10; ctx.beginPath(); for (var hi = 0; hi < 6; hi++) { var angle = Math.PI / 6 + hi * Math.PI / 3; ctx.lineTo(Math.cos(angle) * innerR, Math.sin(angle) * innerR); } ctx.closePath(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.2)'; ctx.lineWidth = 1; ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.5 + 0.3 * pulse) + ')'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('\u25c8', 0, 0); ctx.restore();
+      } else {
+        ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.3)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-22, -18, 44, 34, 4); ctx.fill(); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.1)'; ctx.fillRect(-22, -18, 44, 9); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.25)'; ctx.beginPath(); ctx.arc(-17, -13.5, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(-12, -13.5, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.3 + 0.15 * pulse) + ')'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 3, 9, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.ellipse(0, 3, 4, 9, 0, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-9, 3); ctx.lineTo(9, 3); ctx.stroke();
+      }
+      ctx.fillStyle = tc.muted; ctx.font = '10px ' + getComputedStyle(document.body).fontFamily;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(s.name, 0, 32);
+
+      if (s.kind === 'Inference') {
+        var activeModels = [];
+        self.bots.forEach(function(b) {
+          if (b.currentStation === s.id && b.animState === 'working' && b.model) {
+            if (activeModels.indexOf(b.model) === -1) activeModels.push(b.model);
+          }
+        });
+        if (activeModels.length > 0) {
+          ctx.font = '8px ' + getComputedStyle(document.body).fontFamily;
+          activeModels.forEach(function(m, mi) {
+            var my = 44 + mi * 12;
+            var mw = ctx.measureText(m).width + 8;
+            ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.1)';
+            ctx.beginPath(); ctx.roundRect(-mw / 2, my - 5, mw, 11, 3); ctx.fill();
+            ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.2)'; ctx.lineWidth = 0.5;
+            ctx.beginPath(); ctx.roundRect(-mw / 2, my - 5, mw, 11, 3); ctx.stroke();
+            ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.7)';
+            ctx.fillText(m, 0, my + 3);
+          });
+        }
+      }
+      ctx.restore();
+    });
+
+    this.dataStreams.forEach(function(ds) {
+      var p = Math.min(1, ds.progress);
+      var x1 = ds.fromX * W, y1 = ds.fromY * H, x2 = ds.toX * W, y2 = ds.toY * H;
+      var cx = x1 + (x2 - x1) * p, cy = y1 + (y2 - y1) * p;
+      var alpha = ds.timer > 0.3 ? 0.6 : ds.timer / 0.3 * 0.6;
+      ctx.save();
+      ctx.setLineDash([3, 6]); ctx.lineDashOffset = -self.time * 40;
+      ctx.strokeStyle = ds.color + '30'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = ds.color; ctx.globalAlpha = alpha;
+      ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+      ctx.fillStyle = ds.color + '20'; ctx.fill();
+      if (ds.label) {
+        var midX = (x1 + x2) / 2, midY = (y1 + y2) / 2 - 10;
+        ctx.globalAlpha = alpha * 0.95;
+        ctx.font = 'bold 8px ' + getComputedStyle(document.body).fontFamily;
+        ctx.textAlign = 'center';
+        var lw = ctx.measureText(ds.label).width + 8;
+        ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.roundRect(midX - lw / 2, midY - 6, lw, 12, 4); ctx.fill();
+        ctx.strokeStyle = ds.color + '55'; ctx.lineWidth = 0.5; ctx.stroke();
+        ctx.fillStyle = ds.color; ctx.fillText(ds.label, midX, midY + 2.5);
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    });
+
+    this.tethers.forEach(function(t) {
+      ctx.save(); ctx.setLineDash([4, 6]); ctx.lineDashOffset = -self.time * 15;
+      ctx.strokeStyle = t.color + '25'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(t.from.x * W, t.from.y * H); ctx.lineTo(t.to.x * W, t.to.y * H); ctx.stroke();
+      ctx.setLineDash([]); ctx.restore();
+    });
+
+    this.interactions.forEach(function(ix) {
+      var ax = ix.botA.x * W, ay = ix.botA.y * H;
+      var bx = ix.botB.x * W, by = ix.botB.y * H;
+      var midX = (ax + bx) / 2, midY = (ay + by) / 2;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.2)';
+      ctx.lineWidth = 2; ctx.setLineDash([2, 4]); ctx.lineDashOffset = -self.time * 30;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.setLineDash([]);
+      var speakerA = Math.sin(ix.phase * 2.5) > 0;
+      var spkX = speakerA ? ax : bx, spkY = (speakerA ? ay : by) - 45;
+      var bubW = 28, bubH = 16;
+      ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.12)';
+      ctx.beginPath(); ctx.roundRect(spkX - bubW / 2, spkY - bubH / 2, bubW, bubH, 6); ctx.fill();
+      ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.25)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.roundRect(spkX - bubW / 2, spkY - bubH / 2, bubW, bubH, 6); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(spkX - 3, spkY + bubH / 2);
+      ctx.lineTo(spkX, spkY + bubH / 2 + 5); ctx.lineTo(spkX + 3, spkY + bubH / 2);
+      ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.12)'; ctx.fill();
+      var dotPhase = ix.bubbleTimer * 4;
+      for (var di = 0; di < 3; di++) {
+        var dotA = 0.3 + 0.7 * Math.max(0, Math.sin(dotPhase - di * 0.8));
+        ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + dotA + ')';
+        ctx.beginPath(); ctx.arc(spkX - 6 + di * 6, spkY, 2, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    });
+
+    var sortedBots = this.bots.slice().sort(function(a, b) { return a.y - b.y; });
+    sortedBots.forEach(function(bot) { self.drawBot(ctx, bot, W, H); });
+  };
+
+  WorkspaceEngine.prototype.drawBot = function(ctx, bot, W, H) {
+    var tc = this._themeColors || { surface: '#1e2030', muted: '#71717a', text: '#e4e4e7', aR: 99, aG: 102, aB: 241 };
+    var px = bot.x * W, py = bot.y * H, t = this.time, frame = bot.animFrame;
+    var isAgent = (bot.role === 'agent');
+    var scale = isAgent ? 1.0 : 0.7;
+    var bodyW = isAgent ? 20 : 14, bodyH = isAgent ? 24 : 18;
+    var walkBob = (bot.animState === 'walking') ? Math.sin(t * 12) * 2 : 0;
+    ctx.save(); ctx.translate(px, py + walkBob); ctx.scale(scale, scale);
+
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath(); ctx.ellipse(0, bodyH + 4, bodyW * 0.6, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = bot.color; ctx.strokeStyle = bot.color + 'cc'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.roundRect(-bodyW, -bodyH * 0.3, bodyW * 2, bodyH, isAgent ? 4 : 8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.fillRect(-bodyW + 3, -bodyH * 0.3 + 3, bodyW * 2 - 6, bodyH * 0.35);
+    var lightColors = ['#22c55e', '#eab308', '#ef4444'];
+    for (var li = 0; li < 3; li++) { var lx = -bodyW + 6 + li * 7, ly = -bodyH * 0.3 + 7; ctx.fillStyle = lightColors[li]; ctx.globalAlpha = 0.3 + 0.7 * bot.lights[li]; ctx.beginPath(); ctx.arc(lx, ly, 2, 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+
+    if (isAgent) {
+      var legOffset = (bot.animState === 'walking') ? Math.sin(t * 10) * 4 : 0;
+      ctx.fillStyle = bot.color + 'bb';
+      ctx.fillRect(-bodyW + 4, bodyH * 0.7 - 2, 7, 10 + (legOffset > 0 ? legOffset : 0));
+      ctx.fillRect(bodyW - 11, bodyH * 0.7 - 2, 7, 10 + (legOffset < 0 ? -legOffset : 0));
+      ctx.fillStyle = tc.surface;
+      ctx.fillRect(-bodyW + 2, bodyH * 0.7 + 7 + Math.max(0, legOffset), 11, 4);
+      ctx.fillRect(bodyW - 13, bodyH * 0.7 + 7 + Math.max(0, -legOffset), 11, 4);
+    } else {
+      var treadOffset = (bot.animState === 'walking') ? (frame * 3) % 12 : 0;
+      ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.roundRect(-bodyW - 2, bodyH * 0.5, bodyW * 2 + 4, 8, 4); ctx.fill();
+      ctx.strokeStyle = bot.color + '88'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.strokeStyle = bot.color + '44';
+      for (var ti = 0; ti < 5; ti++) { var tx = -bodyW + 2 + (ti * 9 + treadOffset) % (bodyW * 2); ctx.beginPath(); ctx.moveTo(tx, bodyH * 0.5 + 1); ctx.lineTo(tx, bodyH * 0.5 + 7); ctx.stroke(); }
+    }
+
+    if (bot.animState === 'working') {
+      var armAngle = Math.sin(t * 4) * 0.3;
+      ctx.save(); ctx.translate(bodyW + 2, 0); ctx.rotate(-0.5 + armAngle);
+      ctx.fillStyle = bot.color + 'cc'; ctx.fillRect(0, -2, 14, 4);
+      ctx.fillStyle = '#eab308'; ctx.beginPath(); ctx.arc(14, 0, 3, 0, Math.PI * 2); ctx.fill();
+      if (frame % 2 === 0) { ctx.fillStyle = '#eab308'; ctx.globalAlpha = 0.7; for (var si = 0; si < 3; si++) { var sa = Math.random() * Math.PI * 2; ctx.beginPath(); ctx.arc(14 + Math.cos(sa) * 5, Math.sin(sa) * 5, 1.5, 0, Math.PI * 2); ctx.fill(); } ctx.globalAlpha = 1; }
+      ctx.restore();
+    }
+
+    ctx.save(); ctx.translate(0, -bodyH * 0.3); ctx.rotate(bot.headAngle);
+    var headW = isAgent ? 18 : 14, headH = isAgent ? 16 : 12;
+    ctx.fillStyle = bot.color + 'aa'; ctx.fillRect(-3, -4, 6, 5);
+    ctx.fillStyle = bot.color; ctx.strokeStyle = bot.color + 'cc'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (isAgent) { ctx.roundRect(-headW, -headH - 4, headW * 2, headH, 5); }
+    else { ctx.arc(0, -headH * 0.5 - 2, headW * 0.85, 0, Math.PI * 2); }
+    ctx.fill(); ctx.stroke();
+
+    if (isAgent) {
+      ctx.strokeStyle = bot.color + 'cc'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(0, -headH - 4); ctx.lineTo(0, -headH - 14); ctx.stroke();
+      var antGlow = 0.5 + 0.5 * Math.sin(t * 3);
+      ctx.fillStyle = bot.color; ctx.globalAlpha = 0.5 + 0.5 * antGlow;
+      ctx.beginPath(); ctx.arc(0, -headH - 15, 3, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+      var eyeY = -headH * 0.5 - 2;
+      if (bot.blinking) { ctx.fillStyle = tc.surface; ctx.fillRect(-headW + 4, eyeY - 1, headW - 6, 2); ctx.fillRect(3, eyeY - 1, headW - 6, 2); }
+      else { ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.arc(-headW * 0.4, eyeY, 4, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(headW * 0.4, eyeY, 4, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = tc.text; ctx.beginPath(); ctx.arc(-headW * 0.4 + bot.headAngle * 3, eyeY, 2, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(headW * 0.4 + bot.headAngle * 3, eyeY, 2, 0, Math.PI * 2); ctx.fill(); }
+    } else {
+      var visorY = -headH * 0.5 - 2, visorGlow = 0.6 + 0.4 * Math.sin(t * 2.5 + px * 0.01);
+      ctx.fillStyle = tc.surface; ctx.beginPath(); ctx.roundRect(-headW * 0.6, visorY - 3, headW * 1.2, 6, 3); ctx.fill();
+      ctx.fillStyle = bot.color; ctx.globalAlpha = visorGlow; ctx.beginPath(); ctx.roundRect(-headW * 0.5, visorY - 2, headW, 4, 2); ctx.fill(); ctx.globalAlpha = 1;
+      var scanX = Math.sin(t * 3 + px * 0.01) * headW * 0.35;
+      ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.arc(scanX, visorY, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+
+    if (isAgent && bot.subordinates && bot.subordinates.length > 0) {
+      ctx.save(); ctx.translate(0, -bodyH * 0.3 - (isAgent ? 24 : 18));
+      ctx.strokeStyle = bot.color; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(-6, -18); ctx.lineTo(0, -22); ctx.lineTo(6, -18); ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.save();
+    var tagY = -bodyH * 0.3 - (isAgent ? 30 : 20) - (isAgent && bot.subordinates && bot.subordinates.length > 0 ? 10 : 0);
+    ctx.font = 'bold 10px ' + getComputedStyle(document.body).fontFamily; ctx.textAlign = 'center';
+    var nameW = ctx.measureText(bot.name).width + 12;
+    ctx.globalAlpha = 0.88; ctx.fillStyle = tc.surface;
+    ctx.beginPath(); ctx.roundRect(-nameW / 2, tagY - 7, nameW, 14, 7); ctx.fill();
+    ctx.globalAlpha = 1; ctx.strokeStyle = bot.color + '66'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = tc.text; ctx.fillText(bot.name, 0, tagY + 3);
+    var dotColor = bot.state === 'Running' ? '#22c55e' : (bot.state === 'Error' ? '#ef4444' : '#eab308');
+    ctx.fillStyle = dotColor; ctx.beginPath(); ctx.arc(nameW / 2 - 4, tagY, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    if (bot.activeSkill && bot.skillFade > 0) {
+      ctx.save();
+      var skillY = bodyH + (isAgent ? 16 : 12);
+      ctx.globalAlpha = bot.skillFade * 0.85;
+      ctx.font = '8px ' + getComputedStyle(document.body).fontFamily; ctx.textAlign = 'center';
+      var sw = ctx.measureText(bot.activeSkill).width + 10;
+      ctx.fillStyle = bot.color + '20';
+      ctx.beginPath(); ctx.roundRect(-sw / 2, skillY - 5, sw, 12, 4); ctx.fill();
+      ctx.strokeStyle = bot.color + '50'; ctx.lineWidth = 0.5; ctx.stroke();
+      ctx.fillStyle = bot.color; ctx.globalAlpha = bot.skillFade * 0.9;
+      ctx.fillText(bot.activeSkill, 0, skillY + 3);
+      ctx.globalAlpha = 1; ctx.restore();
+    }
+
+    ctx.restore();
+  };
+
+  WorkspaceEngine.prototype.handleEvent = function(ev) {
+    if (!ev || !ev.type) return;
+    var self = this;
+    if (ev.type === 'agent_started' || ev.type === 'agent_stopped' || ev.type === 'agent_error') {
+      var bot = this.bots.find(function(b) { return b.id === ev.agent_id; });
+      if (bot) { bot.state = ev.type === 'agent_started' ? 'Running' : (ev.type === 'agent_stopped' ? 'Stopped' : 'Error'); }
+    }
+    if (ev.type === 'agent_moved') {
+      var bot = this.bots.find(function(b) { return b.id === ev.agent_id; });
+      var station = this.stations.find(function(s) { return s.id === ev.workstation; });
+      if (bot && station) { bot.targetX = station.x + (Math.random() - 0.5) * 0.04; bot.targetY = station.y + 0.10; bot.currentStation = station.id; }
+    }
+    if (ev.type === 'agent_working') {
+      var bot = this.bots.find(function(b) { return b.id === ev.agent_id; });
+      if (bot) { bot.animState = 'working'; bot.workTimer = 0; if (ev.skill) bot.activeSkill = ev.skill; }
+    }
+    if (ev.type === 'skill_activated') {
+      var bot = this.bots.find(function(b) { return b.id === ev.agent_id; });
+      if (bot) { bot.activeSkill = ev.skill_name; bot.animState = 'working'; bot.workTimer = 0; }
+    }
+    if (ev.type === 'a2a_interaction') {
+      var botA = this.bots.find(function(b) { return b.id === ev.agent_a; });
+      var botB = this.bots.find(function(b) { return b.id === ev.agent_b; });
+      if (botA && botB) {
+        var meetX = (botA.x + botB.x) / 2, meetY = (botA.y + botB.y) / 2;
+        botA._savedTarget = { x: botA.targetX, y: botA.targetY };
+        botB._savedTarget = { x: botB.targetX, y: botB.targetY };
+        botA.targetX = meetX - 0.03; botA.targetY = meetY;
+        botB.targetX = meetX + 0.03; botB.targetY = meetY;
+        botA.animState = 'talking'; botB.animState = 'talking';
+        self.interactions.push({ botA: botA, botB: botB, timer: ev.duration || 4, phase: 0, bubbleTimer: 0 });
+      }
+    }
+  };
 
   try {
     var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
