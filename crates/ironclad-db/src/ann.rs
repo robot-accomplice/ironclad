@@ -1,9 +1,17 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use instant_distance::{Builder, HnswMap, Search};
 
 use crate::Database;
 use crate::embeddings::{blob_to_embedding, cosine_similarity};
+
+fn read_or_recover<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|e| e.into_inner())
+}
+
+fn write_or_recover<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|e| e.into_inner())
+}
 
 /// A point wrapper for the instant-distance HNSW index.
 #[derive(Clone)]
@@ -121,12 +129,12 @@ impl AnnIndex {
 
         let count = points.len();
         if count < self.min_entries_for_index {
-            *self.inner.write().unwrap() = None;
+            *write_or_recover(&self.inner) = None;
             return Ok(count);
         }
 
         let hnsw = Builder::default().build(points, values);
-        *self.inner.write().unwrap() = Some(IndexState { hnsw, entries });
+        *write_or_recover(&self.inner) = Some(IndexState { hnsw, entries });
 
         Ok(count)
     }
@@ -134,7 +142,7 @@ impl AnnIndex {
     /// Search for the k nearest neighbors of `query_embedding`.
     /// Returns None if the index is not built, signaling the caller to fall back.
     pub fn search(&self, query_embedding: &[f32], k: usize) -> Option<Vec<AnnSearchResult>> {
-        let guard = self.inner.read().unwrap();
+        let guard = read_or_recover(&self.inner);
         let state = guard.as_ref()?;
 
         let query = EmbeddingPoint(query_embedding.to_vec());
@@ -161,13 +169,11 @@ impl AnnIndex {
     }
 
     pub fn is_built(&self) -> bool {
-        self.inner.read().unwrap().is_some()
+        read_or_recover(&self.inner).is_some()
     }
 
     pub fn entry_count(&self) -> usize {
-        self.inner
-            .read()
-            .unwrap()
+        read_or_recover(&self.inner)
             .as_ref()
             .map(|s| s.entries.len())
             .unwrap_or(0)

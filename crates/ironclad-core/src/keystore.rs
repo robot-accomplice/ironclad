@@ -14,6 +14,11 @@ use crate::error::{IroncladError, Result};
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 
+/// Acquire a std::sync::Mutex, recovering from poison.
+fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct KeystoreData {
     entries: HashMap<String, String>,
@@ -42,8 +47,8 @@ impl Keystore {
 
     pub fn unlock(&self, passphrase: &str) -> Result<()> {
         if !self.path.exists() {
-            *self.entries.lock().unwrap() = Some(HashMap::new());
-            *self.passphrase.lock().unwrap() = Some(Zeroizing::new(passphrase.to_string()));
+            *lock_or_recover(&self.entries) = Some(HashMap::new());
+            *lock_or_recover(&self.passphrase) = Some(Zeroizing::new(passphrase.to_string()));
             self.save()?;
             return Ok(());
         }
@@ -69,8 +74,8 @@ impl Keystore {
         let store: KeystoreData = serde_json::from_slice(&plaintext)
             .map_err(|e| IroncladError::Keystore(format!("corrupt keystore data: {e}")))?;
 
-        *self.entries.lock().unwrap() = Some(store.entries);
-        *self.passphrase.lock().unwrap() = Some(Zeroizing::new(passphrase.to_string()));
+        *lock_or_recover(&self.entries) = Some(store.entries);
+        *lock_or_recover(&self.passphrase) = Some(Zeroizing::new(passphrase.to_string()));
         Ok(())
     }
 
@@ -85,20 +90,18 @@ impl Keystore {
     }
 
     pub fn is_unlocked(&self) -> bool {
-        self.entries.lock().unwrap().is_some()
+        lock_or_recover(&self.entries).is_some()
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
-        self.entries
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.entries)
             .as_ref()
             .and_then(|m| m.get(key).cloned())
     }
 
     pub fn set(&self, key: &str, value: &str) -> Result<()> {
         {
-            let mut guard = self.entries.lock().unwrap();
+            let mut guard = lock_or_recover(&self.entries);
             let entries = guard
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
@@ -109,7 +112,7 @@ impl Keystore {
 
     pub fn remove(&self, key: &str) -> Result<bool> {
         let existed = {
-            let mut guard = self.entries.lock().unwrap();
+            let mut guard = lock_or_recover(&self.entries);
             let entries = guard
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
@@ -122,9 +125,7 @@ impl Keystore {
     }
 
     pub fn list_keys(&self) -> Vec<String> {
-        self.entries
-            .lock()
-            .unwrap()
+        lock_or_recover(&self.entries)
             .as_ref()
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default()
@@ -133,7 +134,7 @@ impl Keystore {
     pub fn import(&self, new_entries: HashMap<String, String>) -> Result<usize> {
         let count = new_entries.len();
         {
-            let mut guard = self.entries.lock().unwrap();
+            let mut guard = lock_or_recover(&self.entries);
             let entries = guard
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
@@ -144,8 +145,8 @@ impl Keystore {
     }
 
     pub fn lock(&self) {
-        *self.entries.lock().unwrap() = None;
-        *self.passphrase.lock().unwrap() = None;
+        *lock_or_recover(&self.entries) = None;
+        *lock_or_recover(&self.passphrase) = None;
     }
 
     /// Re-encrypt with a new passphrase. Must already be unlocked.
@@ -153,17 +154,17 @@ impl Keystore {
         if !self.is_unlocked() {
             return Err(IroncladError::Keystore("keystore is locked".into()));
         }
-        *self.passphrase.lock().unwrap() = Some(Zeroizing::new(new_passphrase.to_string()));
+        *lock_or_recover(&self.passphrase) = Some(Zeroizing::new(new_passphrase.to_string()));
         self.save()
     }
 
     fn save(&self) -> Result<()> {
-        let guard = self.entries.lock().unwrap();
+        let guard = lock_or_recover(&self.entries);
         let entries = guard
             .as_ref()
             .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
 
-        let pp_guard = self.passphrase.lock().unwrap();
+        let pp_guard = lock_or_recover(&self.passphrase);
         let passphrase = pp_guard
             .as_ref()
             .ok_or_else(|| IroncladError::Keystore("no passphrase available".into()))?;

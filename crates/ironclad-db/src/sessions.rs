@@ -179,6 +179,18 @@ pub fn update_nickname(db: &Database, session_id: &str, nickname: &str) -> Resul
     Ok(())
 }
 
+/// Find the largest byte index <= `max_bytes` that is a valid char boundary.
+fn char_boundary(s: &str, max_bytes: usize) -> usize {
+    if max_bytes >= s.len() {
+        return s.len();
+    }
+    s.char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= max_bytes)
+        .last()
+        .unwrap_or(0)
+}
+
 /// Derive a short nickname from the first user message using heuristics.
 pub fn derive_nickname(first_message: &str) -> String {
     let trimmed = first_message.trim();
@@ -217,19 +229,20 @@ pub fn derive_nickname(first_message: &str) -> String {
         return "Untitled".into();
     }
 
-    let end = text
+    let sentence_end = text
         .find(['.', '?', '!', '\n'])
-        .unwrap_or(text.len())
-        .min(60);
+        .unwrap_or(text.len());
+    let end = char_boundary(text, sentence_end.min(60));
 
     let mut nickname: String = text[..end].trim().to_string();
 
     if nickname.len() > 50 {
-        if let Some(break_pos) = nickname[..50].rfind(' ') {
+        let boundary = char_boundary(&nickname, 50);
+        if let Some(break_pos) = nickname[..boundary].rfind(' ') {
             nickname.truncate(break_pos);
             nickname.push_str("...");
         } else {
-            nickname.truncate(50);
+            nickname.truncate(boundary);
             nickname.push_str("...");
         }
     }
@@ -567,6 +580,21 @@ mod tests {
         let nick = derive_nickname("日本語のテスト");
         assert!(!nick.is_empty());
         assert_ne!(nick, "Untitled");
+    }
+
+    #[test]
+    fn derive_nickname_multibyte_at_boundary() {
+        let msg = "日".repeat(30);
+        let nick = derive_nickname(&msg);
+        assert!(!nick.is_empty());
+        assert!(nick.len() <= 55, "nickname too long: {}", nick.len());
+    }
+
+    #[test]
+    fn derive_nickname_emoji_boundary() {
+        let msg = format!("{}problem", "🔥".repeat(20));
+        let nick = derive_nickname(&msg);
+        assert!(!nick.is_empty());
     }
 
     // ── update_nickname tests ────────────────────────────────

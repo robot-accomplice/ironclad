@@ -100,11 +100,10 @@ impl EmbeddingClient {
         let status = response.status();
         if !status.is_success() {
             let error_body = response.text().await.unwrap_or_default();
-            warn!(%status, %error_body, "embedding provider error, falling back to n-gram");
-            return Ok(texts
-                .iter()
-                .map(|t| fallback_ngram(t, cfg.dimensions))
-                .collect());
+            warn!(%status, %error_body, "embedding provider error");
+            return Err(IroncladError::Llm(format!(
+                "embedding provider returned {status}: {error_body}"
+            )));
         }
 
         let resp_json: serde_json::Value = response

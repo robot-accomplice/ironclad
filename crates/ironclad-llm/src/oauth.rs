@@ -19,6 +19,8 @@ pub struct StoredTokens {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +93,7 @@ impl OAuthManager {
                     "no refresh token for '{provider_name}', re-run `ironclad auth login`"
                 ))
             })?;
-            (rt, None::<String>)
+            (rt, stored.client_id.clone())
         };
 
         debug!(provider = provider_name, "refreshing OAuth token");
@@ -139,6 +141,7 @@ impl OAuthManager {
             access_token: token_resp.access_token.clone(),
             refresh_token: token_resp.refresh_token.or(old_refresh),
             expires_at,
+            client_id,
         };
 
         {
@@ -197,17 +200,21 @@ impl OAuthManager {
         }
         match serde_json::to_string_pretty(&file) {
             Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    warn!(error = %e, "failed to persist OAuth tokens");
-                } else {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(
-                            &path,
-                            std::fs::Permissions::from_mode(0o600),
-                        );
-                    }
+                let tmp = path.with_extension("tmp");
+                if let Err(e) = std::fs::write(&tmp, &json) {
+                    warn!(error = %e, "failed to write OAuth token temp file");
+                    return;
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &tmp,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
+                }
+                if let Err(e) = std::fs::rename(&tmp, &path) {
+                    warn!(error = %e, "failed to rename OAuth token file into place");
                 }
             }
             Err(e) => warn!(error = %e, "failed to serialize OAuth tokens"),
@@ -383,6 +390,7 @@ mod tests {
                 access_token: "at-123".into(),
                 refresh_token: Some("rt-456".into()),
                 expires_at: Some(1700000000),
+                client_id: Some("my-client".into()),
             }],
         };
         let json = serde_json::to_string(&file).unwrap();
@@ -392,6 +400,14 @@ mod tests {
         assert_eq!(parsed.tokens[0].access_token, "at-123");
         assert_eq!(parsed.tokens[0].refresh_token.as_deref(), Some("rt-456"));
         assert_eq!(parsed.tokens[0].expires_at, Some(1700000000));
+        assert_eq!(parsed.tokens[0].client_id.as_deref(), Some("my-client"));
+    }
+
+    #[test]
+    fn token_file_backward_compat_no_client_id() {
+        let json = r#"{"tokens":[{"provider":"anthropic","access_token":"at","refresh_token":null,"expires_at":null}]}"#;
+        let parsed: TokenFile = serde_json::from_str(json).unwrap();
+        assert!(parsed.tokens[0].client_id.is_none());
     }
 
     #[tokio::test]
@@ -413,6 +429,7 @@ mod tests {
             access_token: "test-access-token".into(),
             refresh_token: Some("test-refresh".into()),
             expires_at: Some(far_future),
+            client_id: None,
         })
         .await;
 
@@ -442,6 +459,7 @@ mod tests {
             access_token: "old-token".into(),
             refresh_token: None,
             expires_at: Some(past),
+            client_id: None,
         })
         .await;
 
