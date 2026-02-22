@@ -113,7 +113,7 @@ coverage-check:
 
 # Run the server (debug build) with optional config path
 run config="":
-    {{ if config == "" { "cargo run --bin ironclad-server -- serve" } else { "cargo run --bin ironclad-server -- serve -c " + config } }}
+    {{ if config == "" { "cargo run --bin ironclad -- serve" } else { "cargo run --bin ironclad -- serve -c " + config } }}
 
 # Run the server (release build)
 run-release config="":
@@ -121,61 +121,61 @@ run-release config="":
 
 # Initialize a new workspace in the given directory
 init dir=".":
-    cargo run --bin ironclad-server -- init {{dir}}
+    cargo run --bin ironclad -- init {{dir}}
 
 # Validate a config file
 check-config config="ironclad.toml":
-    cargo run --bin ironclad-server -- check -c {{config}}
+    cargo run --bin ironclad -- check -c {{config}}
 
 # ── Management CLI ────────────────────────────────────
 
 # Show agent status overview
 status url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} status
+    cargo run --bin ironclad -- --url {{url}} status
 
 # List sessions
 sessions url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} sessions list
+    cargo run --bin ironclad -- --url {{url}} sessions list
 
 # Show session details
 session id url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} sessions show {{id}}
+    cargo run --bin ironclad -- --url {{url}} sessions show {{id}}
 
 # List skills
 skills url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} skills list
+    cargo run --bin ironclad -- --url {{url}} skills list
 
 # Reload skills from disk
 skills-reload url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} skills reload
+    cargo run --bin ironclad -- --url {{url}} skills reload
 
 # List cron jobs
 cron url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} cron
+    cargo run --bin ironclad -- --url {{url}} cron
 
 # Show inference costs
 costs url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} metrics costs
+    cargo run --bin ironclad -- --url {{url}} metrics costs
 
 # Show cache stats
 cache-stats url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} metrics cache
+    cargo run --bin ironclad -- --url {{url}} metrics cache
 
 # Show wallet info
 wallet url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} wallet
+    cargo run --bin ironclad -- --url {{url}} wallet
 
 # Show running config
 show-config url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} config
+    cargo run --bin ironclad -- --url {{url}} config
 
 # Show circuit breaker status
 breaker url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} breaker
+    cargo run --bin ironclad -- --url {{url}} breaker
 
 # Browse memory (tier: working, episodic, semantic, search)
 memory tier url="http://127.0.0.1:18789":
-    cargo run --bin ironclad-server -- --url {{url}} memory {{tier}}
+    cargo run --bin ironclad -- --url {{url}} memory {{tier}}
 
 # ── Docs ───────────────────────────────────────────────
 
@@ -229,7 +229,7 @@ tree:
 
 # Show binary size (release)
 size: release
-    @ls -lh target/release/ironclad-server | awk '{print $5 " " $9}'
+    @ls -lh target/release/ironclad | awk '{print $5 " " $9}'
 
 # ── CI ────────────────────────────────────────────────
 
@@ -332,10 +332,10 @@ ci-test:
     fi
 
     # Stage 5: Build (debug)
-    run_stage "Build (debug)" cargo build --bin ironclad-server
+    run_stage "Build (debug)" cargo build --bin ironclad
 
     # Stage 6: Build (release)
-    run_stage "Build (release)" cargo build --release --bin ironclad-server
+    run_stage "Build (release)" cargo build --release --bin ironclad
 
     # Stage 7: Security Audit
     if command -v cargo-audit &>/dev/null; then
