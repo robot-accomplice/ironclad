@@ -16,6 +16,14 @@ pub struct CreateCronJobRequest {
     pub payload_json: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct UpdateCronJobRequest {
+    pub name: Option<String>,
+    pub schedule_kind: Option<String>,
+    pub schedule_expr: Option<String>,
+    pub enabled: Option<bool>,
+}
+
 pub async fn list_cron_jobs(State(state): State<AppState>) -> impl IntoResponse {
     match ironclad_db::cron::list_jobs(&state.db) {
         Ok(jobs) => {
@@ -88,6 +96,28 @@ pub async fn get_cron_job(
             "last_error": job.last_error,
         }))),
         Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("cron job {id} not found"),
+        )),
+        Err(e) => Err(internal_err(&e)),
+    }
+}
+
+pub async fn update_cron_job(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    axum::Json(body): axum::Json<UpdateCronJobRequest>,
+) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+    match ironclad_db::cron::update_job(
+        &state.db,
+        &id,
+        body.name.as_deref(),
+        body.schedule_kind.as_deref(),
+        body.schedule_expr.as_deref(),
+        body.enabled,
+    ) {
+        Ok(true) => Ok(axum::Json(serde_json::json!({ "updated": true, "id": id }))),
+        Ok(false) => Err((
             axum::http::StatusCode::NOT_FOUND,
             format!("cron job {id} not found"),
         )),

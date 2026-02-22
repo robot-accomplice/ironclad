@@ -22,7 +22,7 @@ pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     let conn = state.db.conn();
     let mut stmt = conn
         .prepare(
-            "SELECT id, agent_id, model, created_at, updated_at, metadata \
+            "SELECT id, agent_id, model, nickname, created_at, updated_at, metadata \
              FROM sessions ORDER BY created_at DESC",
         )
         .map_err(|e| internal_err(&e))?;
@@ -33,9 +33,10 @@ pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
                 "id": row.get::<_, String>(0)?,
                 "agent_id": row.get::<_, String>(1)?,
                 "model": row.get::<_, Option<String>>(2)?,
-                "created_at": row.get::<_, String>(3)?,
-                "updated_at": row.get::<_, String>(4)?,
-                "metadata": row.get::<_, Option<String>>(5)?,
+                "nickname": row.get::<_, Option<String>>(3)?,
+                "created_at": row.get::<_, String>(4)?,
+                "updated_at": row.get::<_, String>(5)?,
+                "metadata": row.get::<_, Option<String>>(6)?,
             }))
         })
         .map_err(|e| internal_err(&e))?;
@@ -66,6 +67,7 @@ pub async fn get_session(
             "id": s.id,
             "agent_id": s.agent_id,
             "model": s.model,
+            "nickname": s.nickname,
             "created_at": s.created_at,
             "updated_at": s.updated_at,
             "metadata": s.metadata,
@@ -111,6 +113,13 @@ pub async fn post_message(
 ) -> impl IntoResponse {
     match ironclad_db::sessions::append_message(&state.db, &id, &body.role, &body.content) {
         Ok(msg_id) => Ok(axum::Json(serde_json::json!({ "message_id": msg_id }))),
+        Err(e) => Err(internal_err(&e)),
+    }
+}
+
+pub async fn backfill_nicknames(State(state): State<AppState>) -> impl IntoResponse {
+    match ironclad_db::sessions::backfill_nicknames(&state.db) {
+        Ok(count) => Ok(axum::Json(serde_json::json!({ "backfilled": count }))),
         Err(e) => Err(internal_err(&e)),
     }
 }

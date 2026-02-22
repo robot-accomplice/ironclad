@@ -7,6 +7,7 @@ pub mod interview;
 pub mod memory;
 pub mod policy;
 pub mod prompt;
+pub mod retrieval;
 pub mod script_runner;
 pub mod skills;
 pub mod subagents;

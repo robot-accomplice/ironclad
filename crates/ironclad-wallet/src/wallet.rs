@@ -97,6 +97,23 @@ struct WalletFile {
     private_key_hex: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenBalance {
+    pub symbol: String,
+    pub name: String,
+    pub balance: f64,
+    pub contract: Option<String>,
+    pub decimals: u32,
+    pub is_native: bool,
+}
+
+struct KnownToken {
+    symbol: &'static str,
+    name: &'static str,
+    contract: &'static str,
+    decimals: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct Wallet {
     address: String,
@@ -256,7 +273,50 @@ impl Wallet {
     /// Query the USDC ERC-20 balance via eth_call to the configured RPC endpoint.
     /// Returns the balance in USDC (6 decimals, converted to f64).
     pub async fn get_usdc_balance(&self) -> Result<f64> {
-        const USDC_BASE: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+        self.get_erc20_balance(Self::usdc_address_for_chain(self.chain_id), 6)
+            .await
+    }
+
+    /// Query the native gas token balance (ETH on Ethereum/Base/etc).
+    pub async fn get_native_balance(&self) -> Result<f64> {
+        let rpc_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getBalance",
+            "params": [&self.address, "latest"],
+            "id": 1,
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&self.rpc_url)
+            .json(&rpc_body)
+            .send()
+            .await
+            .map_err(|e| IroncladError::Wallet(format!("RPC request failed: {e}")))?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| IroncladError::Wallet(format!("RPC response parse failed: {e}")))?;
+
+        if let Some(err) = body.get("error") {
+            return Err(IroncladError::Wallet(format!("RPC error: {err}")));
+        }
+
+        let hex = body["result"]
+            .as_str()
+            .ok_or_else(|| IroncladError::Wallet("missing result in RPC response".into()))?
+            .trim_start_matches("0x");
+
+        let raw = u128::from_str_radix(hex, 16)
+            .map_err(|e| IroncladError::Wallet(format!("failed to parse balance hex: {e}")))?;
+
+        // 18 decimals for native ETH
+        Ok(raw as f64 / 1e18)
+    }
+
+    /// Generic ERC-20 balance query. `decimals` is the token's decimal count.
+    pub async fn get_erc20_balance(&self, contract: &str, decimals: u8) -> Result<f64> {
         const BALANCE_OF_SELECTOR: &str = "70a08231";
 
         let padded_addr = format!("{:0>64}", &self.address[2..]);
@@ -266,7 +326,7 @@ impl Wallet {
             "jsonrpc": "2.0",
             "method": "eth_call",
             "params": [{
-                "to": USDC_BASE,
+                "to": contract,
                 "data": call_data,
             }, "latest"],
             "id": 1,
@@ -289,15 +349,188 @@ impl Wallet {
             return Err(IroncladError::Wallet(format!("RPC error: {err}")));
         }
 
-        let result_hex = body["result"]
+        let hex = body["result"]
             .as_str()
-            .ok_or_else(|| IroncladError::Wallet("missing result in RPC response".into()))?;
+            .ok_or_else(|| IroncladError::Wallet("missing result in RPC response".into()))?
+            .trim_start_matches("0x");
 
-        let hex_str = result_hex.trim_start_matches("0x");
-        let raw_balance = u128::from_str_radix(hex_str, 16)
+        let raw = u128::from_str_radix(hex, 16)
             .map_err(|e| IroncladError::Wallet(format!("failed to parse balance hex: {e}")))?;
 
-        Ok(raw_balance as f64 / 1_000_000.0)
+        let divisor = 10f64.powi(decimals as i32);
+        Ok(raw as f64 / divisor)
+    }
+
+    /// Fetch all relevant token balances for the current chain.
+    /// Returns (symbol, balance, contract_or_"native") tuples.
+    pub async fn get_all_balances(&self) -> Vec<TokenBalance> {
+        let mut balances = Vec::new();
+
+        let native = self.native_symbol();
+        match self.get_native_balance().await {
+            Ok(b) => balances.push(TokenBalance {
+                symbol: native.to_string(),
+                name: self.native_name().to_string(),
+                balance: b,
+                contract: None,
+                decimals: 18,
+                is_native: true,
+            }),
+            Err(e) => tracing::warn!(error = %e, "failed to fetch native balance"),
+        }
+
+        for token in self.known_tokens() {
+            match self.get_erc20_balance(token.contract, token.decimals).await {
+                Ok(b) => balances.push(TokenBalance {
+                    symbol: token.symbol.to_string(),
+                    name: token.name.to_string(),
+                    balance: b,
+                    contract: Some(token.contract.to_string()),
+                    decimals: token.decimals as u32,
+                    is_native: false,
+                }),
+                Err(e) => tracing::warn!(
+                    error = %e, token = token.symbol,
+                    "failed to fetch token balance"
+                ),
+            }
+        }
+
+        balances
+    }
+
+    pub fn network_name(&self) -> &'static str {
+        match self.chain_id {
+            1 => "Ethereum Mainnet",
+            10 => "Optimism",
+            137 => "Polygon",
+            8453 => "Base",
+            42161 => "Arbitrum One",
+            84532 => "Base Sepolia",
+            11155111 => "Sepolia",
+            _ => "Unknown Network",
+        }
+    }
+
+    fn native_symbol(&self) -> &'static str {
+        match self.chain_id {
+            137 => "MATIC",
+            _ => "ETH",
+        }
+    }
+
+    fn native_name(&self) -> &'static str {
+        match self.chain_id {
+            137 => "Polygon MATIC",
+            _ => "Ether",
+        }
+    }
+
+    fn usdc_address_for_chain(chain_id: u64) -> &'static str {
+        match chain_id {
+            1 => "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", // Ethereum
+            10 => "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", // Optimism
+            137 => "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", // Polygon
+            8453 => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // Base
+            42161 => "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // Arbitrum
+            84532 => "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // Base Sepolia
+            _ => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // fallback: Base
+        }
+    }
+
+    fn known_tokens(&self) -> Vec<KnownToken> {
+        match self.chain_id {
+            8453 => vec![
+                KnownToken {
+                    symbol: "USDC",
+                    name: "USD Coin",
+                    contract: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                    decimals: 6,
+                },
+                KnownToken {
+                    symbol: "USDT",
+                    name: "Tether USD",
+                    contract: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
+                    decimals: 6,
+                },
+                KnownToken {
+                    symbol: "DAI",
+                    name: "Dai Stablecoin",
+                    contract: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+                    decimals: 18,
+                },
+                KnownToken {
+                    symbol: "WETH",
+                    name: "Wrapped Ether",
+                    contract: "0x4200000000000000000000000000000000000006",
+                    decimals: 18,
+                },
+                KnownToken {
+                    symbol: "cbBTC",
+                    name: "Coinbase Wrapped BTC",
+                    contract: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+                    decimals: 8,
+                },
+            ],
+            1 => vec![
+                KnownToken {
+                    symbol: "USDC",
+                    name: "USD Coin",
+                    contract: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                    decimals: 6,
+                },
+                KnownToken {
+                    symbol: "USDT",
+                    name: "Tether USD",
+                    contract: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+                    decimals: 6,
+                },
+                KnownToken {
+                    symbol: "DAI",
+                    name: "Dai Stablecoin",
+                    contract: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+                    decimals: 18,
+                },
+                KnownToken {
+                    symbol: "WETH",
+                    name: "Wrapped Ether",
+                    contract: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                    decimals: 18,
+                },
+                KnownToken {
+                    symbol: "WBTC",
+                    name: "Wrapped Bitcoin",
+                    contract: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+                    decimals: 8,
+                },
+            ],
+            42161 => vec![
+                KnownToken {
+                    symbol: "USDC",
+                    name: "USD Coin",
+                    contract: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+                    decimals: 6,
+                },
+                KnownToken {
+                    symbol: "USDT",
+                    name: "Tether USD",
+                    contract: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+                    decimals: 6,
+                },
+                KnownToken {
+                    symbol: "WETH",
+                    name: "Wrapped Ether",
+                    contract: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+                    decimals: 18,
+                },
+            ],
+            _ => vec![KnownToken {
+                symbol: "USDC",
+                name: "USD Coin",
+                contract: Self::usdc_address_for_chain(self.chain_id),
+                decimals: 6,
+            }],
+        }
     }
 
     pub fn test_mock() -> Self {

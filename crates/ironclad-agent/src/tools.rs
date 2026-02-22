@@ -120,6 +120,91 @@ impl Tool for EchoTool {
     }
 }
 
+/// Tool wrapper around `ScriptRunner` for executing skill scripts via the ToolRegistry.
+pub struct ScriptRunnerTool {
+    runner: crate::script_runner::ScriptRunner,
+}
+
+impl ScriptRunnerTool {
+    pub fn new(config: ironclad_core::config::SkillsConfig) -> Self {
+        Self {
+            runner: crate::script_runner::ScriptRunner::new(config),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for ScriptRunnerTool {
+    fn name(&self) -> &str {
+        "run_script"
+    }
+
+    fn description(&self) -> &str {
+        "Execute a whitelisted skill script with sandboxed environment"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Caution
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Path to the script file" },
+                "args": { "type": "array", "items": { "type": "string" }, "description": "Arguments to pass" }
+            },
+            "required": ["path"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        _ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let path = params
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'path' parameter".into(),
+            })?;
+
+        let args: Vec<String> = params
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let script_path = std::path::Path::new(path);
+
+        match self.runner.execute(script_path, &arg_refs).await {
+            Ok(result) => {
+                let output = if result.exit_code == 0 {
+                    result.stdout
+                } else {
+                    format!("exit code {}: {}", result.exit_code, result.stderr)
+                };
+                Ok(ToolResult {
+                    output,
+                    metadata: Some(serde_json::json!({
+                        "exit_code": result.exit_code,
+                        "duration_ms": result.duration_ms,
+                    })),
+                })
+            }
+            Err(e) => Err(ToolError {
+                message: e.to_string(),
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

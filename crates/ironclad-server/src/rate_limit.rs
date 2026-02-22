@@ -27,7 +27,7 @@ struct RateLimitState {
 }
 
 impl GlobalRateLimitLayer {
-    /// Allow at most `capacity` requests per `window` globally, and 30 per IP.
+    /// Allow at most `capacity` requests per `window` globally, and `per_ip` per IP.
     pub fn new(capacity: u64, window: Duration) -> Self {
         Self {
             state: Arc::new(Mutex::new(RateLimitState {
@@ -36,7 +36,7 @@ impl GlobalRateLimitLayer {
                 per_ip: HashMap::new(),
             })),
             capacity,
-            per_ip_capacity: 30,
+            per_ip_capacity: 300,
             window,
         }
     }
@@ -196,9 +196,9 @@ mod tests {
 
     #[tokio::test]
     async fn per_ip_limits_enforced() {
-        let layer = GlobalRateLimitLayer::new(100, Duration::from_secs(60));
+        let layer = GlobalRateLimitLayer::new(1000, Duration::from_secs(60));
         let mut svc = layer.layer(dummy_service().into_service());
-        for _ in 0..30 {
+        for _ in 0..300 {
             let req = Request::builder()
                 .uri("/")
                 .header("x-forwarded-for", "1.2.3.4")

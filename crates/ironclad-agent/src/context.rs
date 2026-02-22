@@ -22,10 +22,10 @@ pub fn determine_level(complexity_score: f64) -> ComplexityLevel {
 
 pub fn token_budget(level: ComplexityLevel) -> usize {
     match level {
-        ComplexityLevel::L0 => 2_000,
-        ComplexityLevel::L1 => 4_000,
-        ComplexityLevel::L2 => 8_000,
-        ComplexityLevel::L3 => 16_000,
+        ComplexityLevel::L0 => 4_000,
+        ComplexityLevel::L1 => 8_000,
+        ComplexityLevel::L2 => 16_000,
+        ComplexityLevel::L3 => 32_000,
     }
 }
 
@@ -45,14 +45,14 @@ pub fn build_context(
     let mut used = 0usize;
     let mut messages = Vec::new();
 
+    // System prompt is always included — it defines the agent's identity.
+    // History and memories get trimmed if the budget is tight.
     let sys_tokens = estimate_tokens(system_prompt);
-    if sys_tokens <= budget {
-        messages.push(UnifiedMessage {
-            role: "system".into(),
-            content: system_prompt.to_string(),
-        });
-        used += sys_tokens;
-    }
+    messages.push(UnifiedMessage {
+        role: "system".into(),
+        content: system_prompt.to_string(),
+    });
+    used += sys_tokens;
 
     if !memories.is_empty() {
         let mem_tokens = estimate_tokens(memories);
@@ -240,10 +240,10 @@ mod tests {
 
     #[test]
     fn budget_values() {
-        assert_eq!(token_budget(ComplexityLevel::L0), 2_000);
-        assert_eq!(token_budget(ComplexityLevel::L1), 4_000);
-        assert_eq!(token_budget(ComplexityLevel::L2), 8_000);
-        assert_eq!(token_budget(ComplexityLevel::L3), 16_000);
+        assert_eq!(token_budget(ComplexityLevel::L0), 4_000);
+        assert_eq!(token_budget(ComplexityLevel::L1), 8_000);
+        assert_eq!(token_budget(ComplexityLevel::L2), 16_000);
+        assert_eq!(token_budget(ComplexityLevel::L3), 32_000);
     }
 
     #[test]

@@ -3,9 +3,11 @@ mod agent;
 mod channels;
 mod cron;
 mod health;
+mod interview;
 mod memory;
 mod sessions;
 mod skills;
+mod subagents;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,7 +15,7 @@ use std::sync::Arc;
 use axum::extract::DefaultBodyLimit;
 use axum::{
     Router,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use tokio::sync::RwLock;
 
@@ -28,8 +30,13 @@ use ironclad_core::IroncladConfig;
 use ironclad_core::personality::{self, OsIdentity, OsVoice};
 use ironclad_db::Database;
 use ironclad_llm::LlmService;
+use ironclad_llm::OAuthManager;
 use ironclad_plugin_sdk::registry::PluginRegistry;
 use ironclad_wallet::WalletService;
+
+use ironclad_agent::approvals::ApprovalManager;
+use ironclad_agent::tools::ToolRegistry;
+use ironclad_channels::discord::DiscordAdapter;
 
 use crate::ws::EventBus;
 
@@ -162,6 +169,13 @@ pub struct AppState {
     pub channel_router: Arc<ChannelRouter>,
     pub telegram: Option<Arc<TelegramAdapter>>,
     pub whatsapp: Option<Arc<WhatsAppAdapter>>,
+    pub retriever: Arc<ironclad_agent::retrieval::MemoryRetriever>,
+    pub ann_index: ironclad_db::ann::AnnIndex,
+    pub tools: Arc<ToolRegistry>,
+    pub approvals: Arc<ApprovalManager>,
+    pub discord: Option<Arc<DiscordAdapter>>,
+    pub oauth: Arc<OAuthManager>,
+    pub keystore: Arc<ironclad_core::keystore::Keystore>,
     pub started_at: std::time::Instant,
 }
 
@@ -186,19 +200,28 @@ impl AppState {
 pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, agent_card, breaker_reset, breaker_status, browser_action, browser_start,
-        browser_status, browser_stop, execute_plugin_tool, get_agents, get_cache_stats, get_config,
-        get_costs, get_plugins, get_transactions, start_agent, stop_agent, toggle_plugin,
-        update_config, wallet_address, wallet_balance, workspace_state,
+        browser_status, browser_stop, change_agent_model, execute_plugin_tool, get_agents,
+        get_cache_stats, get_config, get_costs, get_plugins, get_transactions, roster,
+        start_agent, stop_agent, toggle_plugin, update_config, wallet_address, wallet_balance,
+        workspace_state,
     };
     use agent::{agent_message, agent_status};
     use channels::{
         get_channels_status, webhook_telegram, webhook_whatsapp, webhook_whatsapp_verify,
     };
-    use cron::{create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs};
+    use cron::{create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs, update_cron_job};
     use health::{get_logs, health};
-    use memory::{get_episodic_memory, get_semantic_memory, get_working_memory, memory_search};
-    use sessions::{create_session, get_session, list_messages, list_sessions, post_message};
+    use memory::{
+        get_episodic_memory, get_semantic_categories, get_semantic_memory,
+        get_semantic_memory_all, get_working_memory, get_working_memory_all, memory_search,
+    };
+    use sessions::{
+        backfill_nicknames, create_session, get_session, list_messages, list_sessions, post_message,
+    };
     use skills::{get_skill, list_skills, reload_skills, toggle_skill};
+    use subagents::{
+        create_sub_agent, delete_sub_agent, list_sub_agents, toggle_sub_agent, update_sub_agent,
+    };
 
     Router::new()
         .route("/", get(crate::dashboard::dashboard_handler))
@@ -207,19 +230,25 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/logs", get(get_logs))
         .route("/api/sessions", get(list_sessions).post(create_session))
+        .route("/api/sessions/backfill-nicknames", post(backfill_nicknames))
         .route("/api/sessions/{id}", get(get_session))
         .route(
             "/api/sessions/{id}/messages",
             get(list_messages).post(post_message),
         )
+        .route("/api/memory/working", get(get_working_memory_all))
         .route("/api/memory/working/{session_id}", get(get_working_memory))
         .route("/api/memory/episodic", get(get_episodic_memory))
+        .route("/api/memory/semantic", get(get_semantic_memory_all))
+        .route("/api/memory/semantic/categories", get(get_semantic_categories))
         .route("/api/memory/semantic/{category}", get(get_semantic_memory))
         .route("/api/memory/search", get(memory_search))
         .route("/api/cron/jobs", get(list_cron_jobs).post(create_cron_job))
         .route(
             "/api/cron/jobs/{id}",
-            get(get_cron_job).delete(delete_cron_job),
+            get(get_cron_job)
+                .put(update_cron_job)
+                .delete(delete_cron_job),
         )
         .route("/api/stats/costs", get(get_costs))
         .route("/api/stats/transactions", get(get_transactions))
@@ -247,7 +276,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/agents", get(get_agents))
         .route("/api/agents/{id}/start", post(start_agent))
         .route("/api/agents/{id}/stop", post(stop_agent))
+        .route(
+            "/api/subagents",
+            get(list_sub_agents).post(create_sub_agent),
+        )
+        .route(
+            "/api/subagents/{name}",
+            put(update_sub_agent).delete(delete_sub_agent),
+        )
+        .route("/api/subagents/{name}/toggle", put(toggle_sub_agent))
         .route("/api/workspace/state", get(workspace_state))
+        .route("/api/roster", get(roster))
+        .route("/api/roster/{name}/model", put(change_agent_model))
         .route("/api/a2a/hello", post(a2a_hello))
         .route("/api/webhooks/telegram", post(webhook_telegram))
         .route(
@@ -255,6 +295,14 @@ pub fn build_router(state: AppState) -> Router {
             get(webhook_whatsapp_verify).post(webhook_whatsapp),
         )
         .route("/api/channels/status", get(get_channels_status))
+        .route("/api/approvals", get(admin::list_approvals))
+        .route("/api/approvals/{id}/approve", post(admin::approve_request))
+        .route("/api/approvals/{id}/deny", post(admin::deny_request))
+        .route("/api/interview/start", post(interview::start_interview))
+        .route("/api/interview/turn", post(interview::interview_turn))
+        .route("/api/interview/finish", post(interview::finish_interview))
+        .route("/api/audit/policy/{turn_id}", get(admin::get_policy_audit))
+        .route("/api/audit/tools/{turn_id}", get(admin::get_tool_audit))
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB
         .with_state(state)
 }
@@ -281,9 +329,13 @@ mod tests {
     use ironclad_channels::whatsapp::WhatsAppAdapter;
     use ironclad_db::Database;
     use ironclad_llm::LlmService;
+    use ironclad_llm::OAuthManager;
     use ironclad_plugin_sdk::registry::PluginRegistry;
     use ironclad_plugin_sdk::{Plugin, ToolDef, ToolResult};
     use tower::ServiceExt;
+
+    use ironclad_agent::approvals::ApprovalManager;
+    use ironclad_agent::tools::ToolRegistry;
 
     use super::*;
 
@@ -328,6 +380,9 @@ primary = "ollama/qwen3:8b"
         let registry = Arc::new(SubagentRegistry::new(4, vec![]));
         let event_bus = EventBus::new(16);
         let channel_router = Arc::new(ChannelRouter::new());
+        let retriever = Arc::new(ironclad_agent::retrieval::MemoryRetriever::new(
+            config.memory.clone(),
+        ));
         AppState {
             db,
             config: Arc::new(RwLock::new(config)),
@@ -345,6 +400,17 @@ primary = "ollama/qwen3:8b"
             channel_router,
             telegram: None,
             whatsapp: None,
+            retriever,
+            ann_index: ironclad_db::ann::AnnIndex::new(false),
+            tools: Arc::new(ToolRegistry::new()),
+            approvals: Arc::new(ApprovalManager::new(
+                ironclad_core::config::ApprovalsConfig::default(),
+            )),
+            discord: None,
+            oauth: Arc::new(OAuthManager::new().unwrap()),
+            keystore: Arc::new(ironclad_core::keystore::Keystore::new(
+                std::env::temp_dir().join(format!("ironclad-test-ks-{}.enc", uuid::Uuid::new_v4())),
+            )),
             started_at: std::time::Instant::now(),
         }
     }
@@ -1521,6 +1587,86 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn roster_returns_agents() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/roster")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["roster"].is_array());
+        let roster = body["roster"].as_array().unwrap();
+        assert!(!roster.is_empty(), "roster should include the main agent");
+        assert_eq!(roster[0]["role"], "commander");
+        assert!(roster[0]["skills"].is_array());
+    }
+
+    #[tokio::test]
+    async fn change_commander_model() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/roster/TestBot/model")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"anthropic/claude-opus-4"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["updated"], true);
+        assert_eq!(body["old_model"], "ollama/qwen3:8b");
+        assert_eq!(body["new_model"], "anthropic/claude-opus-4");
+    }
+
+    #[tokio::test]
+    async fn change_model_empty_rejected() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/roster/TestBot/model")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"  "}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn change_model_unknown_agent_404() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/roster/nonexistent/model")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"foo/bar"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn get_plugins_returns_array() {
         let state = test_state();
         let app = build_router(state);
@@ -2467,5 +2613,81 @@ primary = "ollama/qwen3:8b"
         assert!(!entries.is_empty());
         assert_eq!(entries[0]["key"], "color");
         assert_eq!(entries[0]["value"], "blue");
+    }
+
+    #[tokio::test]
+    async fn list_subagents_returns_array() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/subagents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["agents"].is_array());
+        assert!(body["count"].is_number());
+    }
+
+    #[tokio::test]
+    async fn create_and_list_subagent() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/subagents")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"test-specialist","model":"test/model","role":"specialist"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["created"], true);
+        assert_eq!(body["name"], "test-specialist");
+    }
+
+    #[tokio::test]
+    async fn toggle_nonexistent_subagent_returns_404() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/subagents/nonexistent/toggle")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_nonexistent_subagent_returns_404() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/subagents/nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
