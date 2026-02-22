@@ -928,7 +928,35 @@ async fn cmd_serve(
     eprintln!();
 
     info!("Ironclad listening on http://{bind_addr}");
-    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            let (w, r) = (t.icon_warn(), t.reset());
+            eprintln!("  {w} Port {bind_addr} in use, shutting down previous instance...{r}");
+
+            if let Ok(pids) = find_listeners(config.server.port) {
+                let own_pid = std::process::id();
+                for pid in &pids {
+                    if *pid != own_pid {
+                        unsafe { libc::kill(*pid as i32, libc::SIGTERM); }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                for pid in &pids {
+                    if *pid != own_pid {
+                        unsafe { libc::kill(*pid as i32, libc::SIGKILL); }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+
+            tokio::net::TcpListener::bind(&bind_addr).await.map_err(|e2| {
+                format!("port {bind_addr} still in use after killing previous instance: {e2}")
+            })?
+        }
+        Err(e) => return Err(e.into()),
+    };
     axum::serve(listener, app).await?;
 
     Ok(())
@@ -1079,6 +1107,20 @@ fn cmd_web(config_path: Option<&str>, cli_url: &str) -> Result<(), Box<dyn std::
     eprintln!("  Opening {url}");
     open::that(&url)?;
     Ok(())
+}
+
+/// Find PIDs of processes listening on the given port using `lsof`.
+fn find_listeners(port: u16) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+    let output = std::process::Command::new("lsof")
+        .args(["-ti", &format!(":{port}")])
+        .output()?;
+
+    let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .collect();
+
+    Ok(pids)
 }
 
 const FALLBACK_CONFIG: &str = r#"

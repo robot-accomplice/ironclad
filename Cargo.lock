@@ -2554,6 +2554,7 @@ dependencies = [
  "ironclad-plugin-sdk",
  "ironclad-schedule",
  "ironclad-wallet",
+ "libc",
  "open",
  "predicates",
  "rand 0.8.5",
