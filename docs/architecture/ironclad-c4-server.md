@@ -10,9 +10,10 @@
 flowchart TB
     subgraph IroncladServer ["ironclad-server"]
         MAIN["main.rs<br/>Entry Point + Bootstrap"]
-        API["api.rs<br/>REST API Routes"]
+        API["api/routes/<br/>REST API (build_router)"]
         DASHBOARD["dashboard.rs<br/>Dashboard Serving"]
         WS["ws.rs<br/>WebSocket Push"]
+        CLI["cli/<br/>CLI Commands"]
     end
 
     subgraph MainDetail ["main.rs - Bootstrap Sequence"]
@@ -20,10 +21,10 @@ flowchart TB
         BOOT_2["2. Load ironclad.toml (ironclad-core)"]
         BOOT_3["3. Initialize SQLite DB +<br/>run migrations (ironclad-db)"]
         BOOT_4["4. Load/generate wallet (ironclad-wallet)"]
-        BOOT_5["5. Bootstrap identity table<br/>(ethereum_address, did,<br/>hmac_session_secret)"]
-        BOOT_6["6. Initialize LLM client pool +<br/>ML router (ironclad-llm)"]
+        BOOT_5["5. Generate cryptographic HMAC secret<br/>(OsRng, 32 bytes)"]
+        BOOT_6["6. Initialize LLM client pool +<br/>heuristic router (ironclad-llm)"]
         BOOT_7["7. Initialize agent loop +<br/>tool registry (ironclad-agent)"]
-        BOOT_8["8. Load skills from disk +<br/>register script tools<br/>(ironclad-agent/skills.rs)"]
+        BOOT_8["8. Skills loaded on demand<br/>via POST /api/skills/reload"]
         BOOT_9["9. Start heartbeat daemon +<br/>cron scheduler (ironclad-schedule)"]
         BOOT_10["10. Start channel adapters<br/>(ironclad-channels)"]
         BOOT_11["11. Start axum HTTP server"]
@@ -32,25 +33,32 @@ flowchart TB
         BOOT_1 --> BOOT_2 --> BOOT_3 --> BOOT_4 --> BOOT_5 --> BOOT_6 --> BOOT_7 --> BOOT_8 --> BOOT_9 --> BOOT_10 --> BOOT_11 --> BOOT_12
     end
 
-    subgraph ApiDetail ["api.rs - REST API"]
+    subgraph ApiDetail ["api/routes/ - REST API (build_router)"]
         direction TB
-        SESSIONS_API["GET /api/sessions<br/>GET /api/sessions/:id/messages<br/>POST /api/sessions/:id/inject"]
-        MEMORY_API["GET /api/memory/:tier<br/>GET /api/memory/search?q="]
-        CRON_API["GET /api/cron/jobs<br/>PUT /api/cron/jobs/:id<br/>POST /api/cron/jobs/:id/trigger"]
-        STATS_API["GET /api/stats<br/>GET /api/stats/costs<br/>GET /api/stats/cache"]
-        BREAKER_API["GET /api/breaker/status<br/>POST /api/breaker/reset/:provider"]
-        HEALTH_API["GET /api/health<br/>GET /api/health/deep"]
-        AGENT_API["POST /api/agent/wake<br/>POST /api/agent/sleep<br/>GET /api/agent/state"]
-        WALLET_API["GET /api/wallet/balance<br/>GET /api/wallet/transactions<br/>GET /api/wallet/yield"]
-        CONFIG_API["GET /api/config<br/>PUT /api/config/models"]
-        A2A_API["POST /a2a/hello<br/>POST /a2a/message"]
-        SKILLS_API["GET /api/skills<br/>GET /api/skills/:id<br/>POST /api/skills/reload<br/>PUT /api/skills/:id/toggle"]
+        SESSIONS_API["GET /api/sessions<br/>POST /api/sessions<br/>GET /api/sessions/{id}<br/>GET /api/sessions/{id}/messages<br/>POST /api/sessions/{id}/messages"]
+        MEMORY_API["GET /api/memory/working/{session_id}<br/>GET /api/memory/episodic<br/>GET /api/memory/semantic/{category}<br/>GET /api/memory/search?q="]
+        CRON_API["GET /api/cron/jobs<br/>POST /api/cron/jobs<br/>GET /api/cron/jobs/{id}<br/>DELETE /api/cron/jobs/{id}"]
+        STATS_API["GET /api/stats/costs<br/>GET /api/stats/transactions<br/>GET /api/stats/cache"]
+        BREAKER_API["GET /api/breaker/status<br/>POST /api/breaker/reset/{provider}"]
+        HEALTH_API["GET /api/health"]
+        AGENT_API["GET /api/agent/status<br/>POST /api/agent/message"]
+        LOGS_API["GET /api/logs"]
+        PLUGINS_API["GET /api/plugins<br/>PUT /api/plugins/{name}/toggle<br/>POST /api/plugins/{name}/execute/{tool}"]
+        BROWSER_API["GET /api/browser/status<br/>POST /api/browser/start<br/>POST /api/browser/stop<br/>POST /api/browser/action"]
+        AGENTS_API["GET /api/agents<br/>POST /api/agents/{id}/start<br/>POST /api/agents/{id}/stop"]
+        WALLET_API["GET /api/wallet/balance<br/>GET /api/wallet/address"]
+        CONFIG_API["GET /api/config<br/>PUT /api/config"]
+        A2A_API["POST /api/a2a/hello"]
+        SKILLS_API["GET /api/skills<br/>GET /api/skills/{id}<br/>POST /api/skills/reload<br/>PUT /api/skills/{id}/toggle"]
+        WEBHOOKS_API["POST /api/webhooks/telegram<br/>GET /api/webhooks/whatsapp (verify)<br/>POST /api/webhooks/whatsapp"]
+        CHANNELS_API["GET /api/channels/status"]
+        WORKSPACE_API["GET /api/workspace/state"]
     end
 
     subgraph DashboardDetail ["dashboard.rs"]
         STATIC_SERVE["Serve static assets from<br/>embedded static/ directory<br/>(include_dir! at compile time<br/>or filesystem fallback)"]
         SPA_FALLBACK["SPA fallback: all non-API<br/>routes serve index.html"]
-        PAGES["Dashboard pages:<br/>- Overview (stats, health)<br/>- Sessions (browse, inject)<br/>- Memory (5-tier browser)<br/>- Scheduler (cron jobs, runs)<br/>- Financial (balance, transactions, yield)<br/>- Agents (A2A peers, trust scores)<br/>- Settings (config, breaker)"]
+        PAGES["Dashboard pages:<br/>- Overview (stats, health)<br/>- Sessions (browse, messages)<br/>- Memory (5-tier browser)<br/>- Scheduler (cron jobs, runs)<br/>- Financial (balance, transactions)<br/>- Agents (A2A peers, trust scores)<br/>- Settings (config, breaker)"]
     end
 
     subgraph WsDetail ["ws.rs - WebSocket Push"]
@@ -59,47 +67,102 @@ flowchart TB
         EVENT_BUS["Event bus:<br/>tokio::broadcast channel<br/>All components publish events<br/>ws.rs subscribes and pushes"]
     end
 
-    MAIN --> API & DASHBOARD & WS
+    MAIN --> API & DASHBOARD & WS & CLI
 ```
 
 ## API Route Map
 
+*Derived from `crates/ironclad-server/src/api/routes/mod.rs` `build_router()`.*
+
 | Method | Path | Handler | Crate |
 |--------|------|---------|-------|
+| GET | `/` | Dashboard | `ironclad-server` |
 | GET | `/api/health` | Quick health check | `ironclad-server` |
-| GET | `/api/health/deep` | DB + provider connectivity | `ironclad-server`, `ironclad-db`, `ironclad-llm` |
+| GET | `/api/config` | Current configuration | `ironclad-core` |
+| PUT | `/api/config` | Update config | `ironclad-core` |
+| GET | `/api/logs` | Recent log entries (lines, level filter) | `ironclad-server` |
 | GET | `/api/sessions` | List sessions | `ironclad-db` |
-| GET | `/api/sessions/:id/messages` | Session message history | `ironclad-db` |
-| POST | `/api/sessions/:id/inject` | Inject message into session | `ironclad-agent` |
-| GET | `/api/memory/:tier` | Browse memory tier | `ironclad-db` |
+| POST | `/api/sessions` | Create session | `ironclad-db` |
+| GET | `/api/sessions/{id}` | Get session | `ironclad-db` |
+| GET | `/api/sessions/{id}/messages` | Session message history | `ironclad-db` |
+| POST | `/api/sessions/{id}/messages` | Post message to session | `ironclad-agent` |
+| GET | `/api/memory/working/{session_id}` | Working memory | `ironclad-db` |
+| GET | `/api/memory/episodic` | Episodic memory | `ironclad-db` |
+| GET | `/api/memory/semantic/{category}` | Semantic memory by category | `ironclad-db` |
 | GET | `/api/memory/search` | Full-text memory search | `ironclad-db` |
 | GET | `/api/cron/jobs` | List cron jobs | `ironclad-db` |
-| PUT | `/api/cron/jobs/:id` | Update cron job | `ironclad-db` |
-| POST | `/api/cron/jobs/:id/trigger` | Manually trigger job | `ironclad-schedule` |
-| GET | `/api/stats` | Current statistics | `ironclad-db` |
+| POST | `/api/cron/jobs` | Create cron job | `ironclad-db` |
+| GET | `/api/cron/jobs/{id}` | Get cron job | `ironclad-db` |
+| DELETE | `/api/cron/jobs/{id}` | Delete cron job | `ironclad-db` |
 | GET | `/api/stats/costs` | Inference cost history | `ironclad-db` |
+| GET | `/api/stats/transactions` | Transaction history | `ironclad-db` |
 | GET | `/api/stats/cache` | Cache hit/miss stats | `ironclad-llm` |
 | GET | `/api/breaker/status` | Circuit breaker states | `ironclad-llm` |
-| POST | `/api/breaker/reset/:provider` | Reset provider breaker | `ironclad-llm` |
-| POST | `/api/agent/wake` | Wake agent from sleep | `ironclad-agent` |
-| POST | `/api/agent/sleep` | Put agent to sleep | `ironclad-agent` |
-| GET | `/api/agent/state` | Current agent state | `ironclad-agent` |
+| POST | `/api/breaker/reset/{provider}` | Reset provider breaker | `ironclad-llm` |
+| GET | `/api/agent/status` | Agent status | `ironclad-agent` |
+| POST | `/api/agent/message` | Send message to agent | `ironclad-agent` |
 | GET | `/api/wallet/balance` | USDC + credit balance | `ironclad-wallet` |
-| GET | `/api/wallet/transactions` | Transaction history | `ironclad-db` |
-| GET | `/api/wallet/yield` | Yield status + earnings | `ironclad-wallet` |
-| GET | `/api/config` | Current configuration | `ironclad-core` |
-| PUT | `/api/config/models` | Update model config | `ironclad-core`, `ironclad-llm` |
-| POST | `/a2a/hello` | A2A handshake initiation | `ironclad-channels` |
-| POST | `/a2a/message` | A2A encrypted message | `ironclad-channels` |
+| GET | `/api/wallet/address` | Wallet address | `ironclad-wallet` |
 | GET | `/api/skills` | List all registered skills | `ironclad-db` |
-| GET | `/api/skills/:id` | Skill detail + content | `ironclad-db` |
-| POST | `/api/skills/reload` | Trigger hot-reload from disk | `ironclad-agent` |
-| PUT | `/api/skills/:id/toggle` | Enable/disable a skill | `ironclad-db` |
+| GET | `/api/skills/{id}` | Skill detail + content | `ironclad-db` |
+| POST | `/api/skills/reload` | Reload skills from disk | `ironclad-agent` |
+| PUT | `/api/skills/{id}/toggle` | Enable/disable a skill | `ironclad-db` |
+| GET | `/api/plugins` | List registered plugins and tools | `ironclad-plugin-sdk` |
+| PUT | `/api/plugins/{name}/toggle` | Enable/disable a plugin | `ironclad-plugin-sdk` |
+| POST | `/api/plugins/{name}/execute/{tool}` | Execute a plugin tool | `ironclad-plugin-sdk` |
+| GET | `/api/browser/status` | Browser running state | `ironclad-browser` |
+| POST | `/api/browser/start` | Start Chrome/Chromium with CDP | `ironclad-browser` |
+| POST | `/api/browser/stop` | Stop browser process | `ironclad-browser` |
+| POST | `/api/browser/action` | Run browser action | `ironclad-browser` |
+| GET | `/api/agents` | List configured/known agents | `ironclad-server` |
+| POST | `/api/agents/{id}/start` | Start agent by id | `ironclad-server` |
+| POST | `/api/agents/{id}/stop` | Stop agent by id | `ironclad-server` |
+| GET | `/api/workspace/state` | Workspace state | `ironclad-server` |
+| POST | `/api/a2a/hello` | A2A handshake initiation | `ironclad-channels` |
+| POST | `/api/webhooks/telegram` | Telegram webhook | `ironclad-channels` |
+| GET | `/api/webhooks/whatsapp` | WhatsApp webhook verify | `ironclad-channels` |
+| POST | `/api/webhooks/whatsapp` | WhatsApp webhook | `ironclad-channels` |
+| GET | `/api/channels/status` | Channel adapters status | `ironclad-channels` |
+
+## Server Module Layout
+
+| Path | Responsibility |
+|------|----------------|
+| `main.rs` | CLI (clap), bootstrap, serve loop |
+| `lib.rs` | Bootstrap app (config, db, wallet, llm, agent, router, dashboard, ws) |
+| `api/mod.rs` | API mount, shared state |
+| `api/routes/mod.rs` | `build_router()`, AppState, route table |
+| `api/routes/admin.rs` | Config, wallet, browser, agents, workspace, a2a, plugins |
+| `api/routes/agent.rs` | Agent status, message |
+| `api/routes/channels.rs` | Channels status, webhooks (telegram, whatsapp) |
+| `api/routes/cron.rs` | Cron jobs CRUD |
+| `api/routes/health.rs` | Health, logs |
+| `api/routes/memory.rs` | Memory endpoints |
+| `api/routes/sessions.rs` | Sessions CRUD, messages |
+| `api/routes/skills.rs` | Skills list, get, reload, toggle |
+| `cli/mod.rs` | Theme, CLI helpers |
+| `cli/*.rs` | admin, wallet, schedule, memory, sessions, status, etc. |
+| `dashboard.rs` | Dashboard handler, static/SPA |
+| `ws.rs` | WebSocket, event bus |
+| `auth.rs` | API key layer |
+| `rate_limit.rs` | Global + per-IP rate limiting middleware |
+| `daemon.rs` | Daemon install/status/uninstall |
+| `migrate/*.rs` | Migration, skill import/export |
+| `plugins.rs` | Plugin loading |
+
+## CLI Commands (main.rs)
+
+*Lifecycle*: `serve` (start), `init`, `setup`, `check`, `version`, `update`  
+*Operations*: `status`, `mechanic`, `logs`, `circuit` (status/reset)  
+*Data*: `sessions` (list/show/create/export), `memory` (list/search), `skills` (list/show/reload/import/export), `schedule` (list), `metrics` (costs/transactions/cache), `wallet` (show/address/balance)  
+*Configuration*: `config` (show/get/set/unset), `models` (list/scan), `plugins` (list/info/install/uninstall/enable/disable), `agents` (list/start/stop), `channels` (list), `security` (audit)  
+*Migration*: `migrate` (import/export)  
+*System*: `daemon` (install/status/uninstall), `web`, `reset`, `uninstall`, `completion`
 
 ## Dependencies
 
-**External crates**: `axum` (HTTP framework), `tower` (middleware), `tokio` (async runtime)
+**External crates**: `axum` (HTTP framework), `tower` (middleware), `tokio` (async runtime), `clap` (CLI)
 
-**Internal crates**: All 7 other crates (this is the top-level assembly point)
+**Internal crates**: All workspace crates (core, db, llm, agent, wallet, schedule, channels, plugin-sdk, browser); this is the top-level assembly point.
 
 **Depended on by**: None (binary crate, top of dependency graph)

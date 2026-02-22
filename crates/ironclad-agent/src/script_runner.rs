@@ -105,13 +105,13 @@ fn truncate_str(s: &str, max_bytes: usize) -> String {
 /// Determines the interpreter for a script by reading its shebang line
 /// or inferring from the file extension, then checks against the whitelist.
 pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<String> {
-    if let Ok(content) = std::fs::read_to_string(script_path) {
-        if let Some(first_line) = content.lines().next() {
-            if first_line.starts_with("#!") {
+    if let Ok(content) = std::fs::read_to_string(script_path)
+        && let Some(first_line) = content.lines().next()
+            && first_line.starts_with("#!") {
                 let shebang = first_line[2..].trim();
                 let interpreter = shebang
                     .split('/')
-                    .last()
+                    .next_back()
                     .unwrap_or(shebang)
                     .split_whitespace()
                     .next()
@@ -132,8 +132,6 @@ pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<Strin
                     });
                 }
             }
-        }
-    }
 
     let ext = script_path
         .extension()

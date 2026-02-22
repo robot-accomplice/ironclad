@@ -22,12 +22,22 @@ pub fn store_working(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.execute(
         "INSERT INTO working_memory (id, session_id, entry_type, content, importance) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![id, session_id, entry_type, content, importance],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.execute(
+        "INSERT INTO memory_fts (content, category, source_table, source_id) VALUES (?1, ?2, 'working', ?3)",
+        rusqlite::params![content, entry_type, id],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.commit()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
 }
 
@@ -82,6 +92,9 @@ pub fn store_episodic(
         rusqlite::params![id, classification, content, importance],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    // FTS insert handled by episodic_ai trigger
+
     Ok(id)
 }
 
@@ -132,7 +145,10 @@ pub fn store_semantic(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.execute(
         "INSERT INTO semantic_memory (id, category, key, value, confidence) \
          VALUES (?1, ?2, ?3, ?4, ?5) \
          ON CONFLICT(category, key) DO UPDATE SET value = excluded.value, \
@@ -140,7 +156,24 @@ pub fn store_semantic(
         rusqlite::params![id, category, key, value, confidence],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
-    Ok(id)
+
+    let actual_id: String = tx
+        .query_row(
+            "SELECT id FROM semantic_memory WHERE category = ?1 AND key = ?2",
+            rusqlite::params![category, key],
+            |row| row.get(0),
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    tx.execute(
+        "INSERT INTO memory_fts (content, category, source_table, source_id) VALUES (?1, ?2, 'semantic', ?3)",
+        rusqlite::params![value, category, actual_id],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.commit()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    Ok(actual_id)
 }
 
 pub fn retrieve_semantic(db: &Database, category: &str) -> Result<Vec<SemanticEntry>> {
@@ -217,6 +250,26 @@ pub fn retrieve_procedural(db: &Database, name: &str) -> Result<Option<Procedura
     .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
+pub fn record_procedural_success(db: &Database, name: &str) -> Result<()> {
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE procedural_memory SET success_count = success_count + 1, updated_at = datetime('now') WHERE name = ?1",
+        [name],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(())
+}
+
+pub fn record_procedural_failure(db: &Database, name: &str) -> Result<()> {
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE procedural_memory SET failure_count = failure_count + 1, updated_at = datetime('now') WHERE name = ?1",
+        [name],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(())
+}
+
 // ── Relationship memory ─────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -277,38 +330,74 @@ pub fn retrieve_relationship(db: &Database, entity_id: &str) -> Result<Option<Re
 
 // ── Full-text search across memory tiers ────────────────────────
 
-/// Simple LIKE-based search across all memory content columns.
+/// Sanitize user input for FTS5: keep only alphanumeric and whitespace, wrap in double quotes
+/// (phrase query), and escape any remaining double quotes so FTS5 operators (AND, OR, NOT, etc.)
+/// cannot be injected.
+pub(crate) fn sanitize_fts_query(query: &str) -> String {
+    let stripped: String = query
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect();
+    format!("\"{}\"", stripped.replace('"', "\"\""))
+}
+
+/// Search memory: FTS5 MATCH on memory_fts (working, episodic, semantic), LIKE fallback for others.
 /// Returns matching content strings up to `limit`.
 pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<String>> {
     let conn = db.conn();
-    let pattern = format!("%{query}%");
     let mut results = Vec::new();
 
+    // FTS5 MATCH on memory_fts (populated from working_memory, episodic_memory, semantic_memory)
+    let fts_query = sanitize_fts_query(query);
+    match conn.prepare(
+        "SELECT content FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2",
+    ) {
+        Ok(mut stmt) => {
+            match stmt.query_map(rusqlite::params![fts_query, limit], |row| {
+                row.get::<_, String>(0)
+            }) {
+                Ok(rows) => {
+                    for row in rows.flatten() {
+                        results.push(row);
+                        if results.len() as i64 >= limit {
+                            return Ok(results);
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "FTS5 query_map failed"),
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "FTS5 query preparation failed"),
+    }
+
+    // LIKE fallback for tables not in FTS: procedural_memory.steps, relationship_memory.interaction_summary.
+    // Escape % and _ so they are literal, and use ESCAPE '\\'.
+    let escaped_query = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let pattern = format!("%{escaped_query}%");
     let tables_and_cols: &[(&str, &str)] = &[
-        ("working_memory", "content"),
-        ("episodic_memory", "content"),
-        ("semantic_memory", "value"),
         ("procedural_memory", "steps"),
         ("relationship_memory", "interaction_summary"),
     ];
 
     for &(table, col) in tables_and_cols {
-        let sql = format!("SELECT {col} FROM {table} WHERE {col} LIKE ?1 LIMIT ?2");
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
-
-        let rows = stmt
-            .query_map(rusqlite::params![pattern, limit], |row| {
-                row.get::<_, String>(0)
-            })
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
-
-        for row in rows {
-            results.push(row.map_err(|e| IroncladError::Database(e.to_string()))?);
-            if results.len() as i64 >= limit {
-                return Ok(results);
+        let sql = format!("SELECT {col} FROM {table} WHERE {col} LIKE ?1 ESCAPE '\\' LIMIT ?2");
+        match conn.prepare(&sql) {
+            Ok(mut stmt) => {
+                match stmt.query_map(rusqlite::params![pattern, limit], |row| {
+                    row.get::<_, String>(0)
+                }) {
+                    Ok(rows) => {
+                        for row in rows.flatten() {
+                            results.push(row);
+                            if results.len() as i64 >= limit {
+                                return Ok(results);
+                            }
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, table, col, "LIKE fallback query_map failed"),
+                }
             }
+            Err(e) => tracing::warn!(error = %e, table, col, "LIKE fallback query preparation failed"),
         }
     }
 
@@ -396,5 +485,73 @@ mod tests {
 
         let hits = fts_search(&db, "quick", 10).unwrap();
         assert_eq!(hits.len(), 2, "should match working + semantic");
+    }
+
+    #[test]
+    fn fts_search_finds_episodic_via_trigger() {
+        let db = test_db();
+        store_episodic(&db, "discovery", "the quantum engine hummed", 9).unwrap();
+
+        let hits = fts_search(&db, "quantum", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].contains("quantum"));
+    }
+
+    #[test]
+    fn fts_respects_limit() {
+        let db = test_db();
+        for i in 0..5 {
+            store_working(&db, "s1", "note", &format!("alpha item {i}"), 1).unwrap();
+        }
+        let hits = fts_search(&db, "alpha", 3).unwrap();
+        assert_eq!(hits.len(), 3);
+    }
+
+    #[test]
+    fn semantic_upsert_returns_existing_id() {
+        let db = test_db();
+        let id1 = store_semantic(&db, "prefs", "color", "blue", 0.9).unwrap();
+        let id2 = store_semantic(&db, "prefs", "color", "red", 0.8).unwrap();
+        assert_eq!(id1, id2, "upsert should return the original row id");
+    }
+
+    #[test]
+    fn procedural_failure_tracking() {
+        let db = test_db();
+        store_procedural(&db, "deploy", r#"["build","push"]"#).unwrap();
+        let entry = retrieve_procedural(&db, "deploy").unwrap().unwrap();
+        assert_eq!(entry.failure_count, 0);
+
+        record_procedural_failure(&db, "deploy").unwrap();
+        record_procedural_failure(&db, "deploy").unwrap();
+        let entry = retrieve_procedural(&db, "deploy").unwrap().unwrap();
+        assert_eq!(entry.failure_count, 2);
+    }
+
+    #[test]
+    fn store_working_writes_both_tables() {
+        let db = test_db();
+        let id = store_working(&db, "sess-1", "fact", "the sky is blue", 5).unwrap();
+
+        // Verify in working_memory
+        let conn = db.conn();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM working_memory WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Verify in memory_fts
+        let fts_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_fts WHERE source_id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_count, 1);
     }
 }

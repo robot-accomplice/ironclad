@@ -72,7 +72,7 @@ impl CdpSession {
         trace!(id, method, "sending CDP command");
 
         let mut ws = self.ws.lock().await;
-        ws.send(Message::Text(text.into()))
+        ws.send(Message::Text(text))
             .await
             .map_err(|e| IroncladError::Network(format!("CDP send failed: {e}")))?;
 

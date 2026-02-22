@@ -1,6 +1,6 @@
 # C4 Level 3: Component Diagram -- ironclad-db
 
-*Database layer providing typed CRUD operations over a single unified SQLite database. All 25 tables, indexes, and FTS5 virtual tables are managed here.*
+*Database layer providing typed CRUD operations over a single unified SQLite database (rusqlite). All tables, indexes, FTS5 virtual table `memory_fts`, and triggers are defined in `schema.rs`; migrations run from `migrations/` in version order.*
 
 ---
 
@@ -17,6 +17,7 @@ flowchart TB
         METRICS["metrics.rs<br/>Metrics + Cost Tracking"]
         CRON["cron.rs<br/>Cron Job State"]
         SKILLS["skills.rs<br/>Skill Definition CRUD"]
+        EMBEDDINGS["embeddings.rs<br/>Embedding storage / lookup"]
         MIGRATIONS["migrations/<br/>Versioned SQL files"]
     end
 
@@ -40,7 +41,7 @@ flowchart TB
         M_SEMANTIC["SemanticMemory CRUD<br/>upsert (category+key unique),<br/>retrieve_by_category,<br/>retrieve_by_confidence"]
         M_PROCEDURAL["ProceduralMemory CRUD<br/>upsert, record_success,<br/>record_failure, retrieve_relevant"]
         M_RELATIONSHIP["RelationshipMemory CRUD<br/>upsert, update_trust_score,<br/>increment_interaction,<br/>retrieve_active_entities"]
-        M_FTS["FTS Operations<br/>sync_fts, search_fts(query)"]
+        M_FTS["memory_fts (FTS5):<br/>standalone FTS5 table + triggers<br/>syncing episodic/working/semantic inserts"]
     end
 
     subgraph MetricsDetail ["metrics.rs"]
@@ -95,18 +96,22 @@ flowchart TB
 | `semantic_memory` | `memory.rs` | Hundreds |
 | `procedural_memory` | `memory.rs` | Dozens |
 | `relationship_memory` | `memory.rs` | Dozens |
-| `memory_fts` | `memory.rs` | Mirrors episodic_memory |
-| `tasks` | `cron.rs` | Hundreds |
-| `cron_jobs` | `cron.rs` | Dozens |
-| `cron_runs` | `cron.rs` | Thousands (pruned) |
-| `transactions` | `metrics.rs` | Hundreds |
-| `inference_costs` | `metrics.rs` | Thousands |
-| `proxy_stats` | `metrics.rs` | Thousands (pruned) |
-| `semantic_cache` | `metrics.rs` | Up to `cache.max_entries` |
-| `identity` | direct | Dozen key-value pairs |
-| `soul_history` | direct | Dozens |
-| `metric_snapshots` | `metrics.rs` | Thousands (pruned) |
-| `discovered_agents` | direct | Dozens |
+| `memory_fts` | `memory.rs` | FTS5 virtual table: `content`, `category`, `source_table`, `source_id`. Populated by triggers on `episodic_memory` (episodic_ai, episodic_ad) and explicit INSERT from `store_working`. |
+| `tasks` | (schema) | Pending/running/done tasks |
+| `cron_jobs` | `cron.rs` | Dozens; lease_holder, lease_expires_at for single-instance execution |
+| `cron_runs` | `cron.rs` | History per job |
+| `transactions` | (schema) | Financial and yield tx log |
+| `inference_costs` | (schema) | Per-request cost tracking |
+| `proxy_stats` | (schema) | Snapshot JSON |
+| `semantic_cache` | (schema) | **Not used at runtime** — LLM cache is in-memory HashMap in `ironclad-llm/cache.rs` |
+| `identity` | direct | Key-value (ethereum_address, did, hmac_session_secret, a2a_identity_key, etc.) |
+| `soul_history` | direct | Soul content history |
+| `metric_snapshots` | (schema) | Alerts and metrics JSON |
+| `discovered_agents` | direct | A2A agent card cache (DID, endpoint, trust_score) |
+| `delivery_queue` | (schema) | Outbound channel delivery (status, attempts, next_retry_at) |
+| `approval_requests` | (schema) | Gated tool approvals (pending/approved/denied, timeout_at) |
+| `plugins` | (schema) | Plugin manifests and permissions |
+| `embeddings` | `embeddings.rs` | source_table, source_id, embedding_json for semantic search |
 | `skills` | `skills.rs` | Dozens |
 
 ## Dependencies

@@ -17,7 +17,10 @@ ironclad/
 │   │       ├── lib.rs
 │   │       ├── config.rs       # Unified configuration
 │   │       ├── error.rs        # Error types (thiserror)
-│   │       └── types.rs        # Shared domain types
+│   │       ├── types.rs        # Shared domain types
+│   │       ├── personality.rs  # Personality system
+│   │       ├── style.rs        # Style formatting
+│   │       └── bundled_providers.toml  # Bundled provider configs
 │   │
 │   ├── ironclad-db/            # Database layer (SQLite via rusqlite)
 │   │   ├── Cargo.toml
@@ -30,7 +33,8 @@ ironclad/
 │   │       ├── policy.rs       # Policy decision records
 │   │       ├── metrics.rs      # Metrics + cost tracking
 │   │       ├── cron.rs         # Cron job state
-│   │       ├── skills.rs      # Skill definition CRUD
+│   │       ├── skills.rs       # Skill definition CRUD
+│   │       ├── embeddings.rs   # Embedding storage / lookup
 │   │       └── migrations/     # SQL migration files
 │   │
 │   ├── ironclad-llm/           # LLM client + format translation
@@ -43,7 +47,7 @@ ironclad/
 │   │       ├── circuit.rs      # Circuit breaker
 │   │       ├── dedup.rs        # In-flight dedup tracker
 │   │       ├── tier.rs         # Tier classification + adaptation
-│   │       ├── router.rs       # ML model router (ONNX)
+│   │       ├── router.rs       # Heuristic model router
 │   │       └── cache.rs        # Semantic cache
 │   │
 │   ├── ironclad-agent/         # Agent loop + tools + policy
@@ -57,8 +61,11 @@ ironclad/
 │   │       ├── context.rs      # Context assembly + compression
 │   │       ├── injection.rs    # Injection defense
 │   │       ├── memory.rs       # Memory retrieval + ingestion
-│   │       ├── skills.rs      # Skill loader, registry, executor
-│   │       └── script_runner.rs # Sandboxed external script execution
+│   │       ├── skills.rs       # Skill loader, registry, executor
+│   │       ├── script_runner.rs # Sandboxed external script execution
+│   │       ├── approvals.rs    # Approval flows
+│   │       ├── interview.rs    # Personality interview
+│   │       └── subagents.rs    # Subagent registry
 │   │
 │   ├── ironclad-schedule/      # Heartbeat + cron
 │   │   ├── Cargo.toml
@@ -75,32 +82,56 @@ ironclad/
 │   │       ├── wallet.rs       # Ethereum wallet (alloy-rs)
 │   │       ├── x402.rs         # x402 payment protocol
 │   │       ├── treasury.rs     # Treasury policy
-│   │       └── yield_engine.rs # DeFi yield (Aave/Compound)
+│   │       ├── yield_engine.rs # DeFi yield (Aave/Compound)
+│   │       └── money.rs        # Money/currency types
 │   │
 │   ├── ironclad-channels/      # Channel adapters
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
+│   │       ├── router.rs       # ChannelRouter
 │   │       ├── telegram.rs     # Telegram Bot API
 │   │       ├── whatsapp.rs     # WhatsApp Cloud API
 │   │       ├── web.rs          # WebSocket interface
-│   │       └── a2a.rs          # Agent-to-Agent protocol (zero-trust)
+│   │       ├── a2a.rs          # Agent-to-Agent protocol (zero-trust)
+│   │       ├── delivery.rs     # Delivery / notification
+│   │       └── discord.rs      # Discord adapter
 │   │
-│   └── ironclad-server/        # HTTP server + dashboard
-│       ├── Cargo.toml
-│       ├── src/
-│       │   ├── lib.rs
-│       │   ├── main.rs         # Entry point
-│       │   ├── api.rs          # REST API routes
-│       │   ├── dashboard.rs    # Dashboard serving
-│       │   └── ws.rs           # WebSocket push
-│       └── static/             # Dashboard static assets
-│
+│   ├── ironclad-plugin-sdk/    # Plugin registry, tool discovery
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │
+│   ├── ironclad-browser/       # Browser automation (CDP)
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │
+│   ├── ironclad-server/        # HTTP server + dashboard
+│   │   ├── Cargo.toml
+│   │   ├── src/
+│   │   │   ├── lib.rs
+│   │   │   ├── main.rs         # Entry point + CLI
+│   │   │   ├── api/
+│   │   │   │   ├── mod.rs
+│   │   │   │   └── routes/     # build_router(), admin, agent, channels, cron, health, memory, sessions, skills
+│   │   │   ├── cli/            # CLI commands (admin, wallet, schedule, memory, sessions, status, ...)
+│   │   │   ├── auth.rs          # Token-based API authentication
+│   │   │   ├── daemon.rs        # System daemon management
+│   │   │   ├── rate_limit.rs    # Rate limiting middleware
+│   │   │   ├── dashboard.rs     # Dashboard serving
+│   │   │   ├── dashboard_spa.html # Embedded SPA template
+│   │   │   ├── plugins.rs       # Plugin management
+│   │   │   └── ws.rs            # WebSocket push
+│   │   └── static/             # Dashboard static assets
+│   │
+│   ├── ironclad-tests/         # Integration tests
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │
+│   └── ...
 ├── docs/
 │   └── architecture/           # This documentation
 │
-└── tests/
-    └── integration/            # End-to-end tests
+└── crates/ironclad-tests/      # End-to-end tests (not tests/integration/)
 ```
 
 ## 2. Crate Dependency Graph
@@ -114,15 +145,21 @@ flowchart BT
     SCHED["ironclad-schedule<br/>(heartbeat, cron)"]
     WALLET["ironclad-wallet<br/>(ethereum, x402, yield)"]
     CHANNELS["ironclad-channels<br/>(telegram, whatsapp, web)"]
+    PLUGIN_SDK["ironclad-plugin-sdk<br/>(plugin registry)"]
+    BROWSER["ironclad-browser<br/>(CDP automation)"]
     SERVER["ironclad-server<br/>(HTTP, dashboard, WS)"]
+    TESTS["ironclad-tests<br/>(integration tests)"]
 
     DB --> CORE
     LLM --> CORE
     AGENT --> CORE & DB & LLM
-    SCHED --> CORE & DB & AGENT
+    SCHED --> CORE & DB & AGENT & WALLET
     WALLET --> CORE & DB
     CHANNELS --> CORE
-    SERVER --> CORE & DB & LLM & AGENT & SCHED & WALLET & CHANNELS
+    PLUGIN_SDK --> CORE
+    BROWSER --> CORE
+    SERVER --> CORE & DB & LLM & AGENT & SCHED & WALLET & CHANNELS & PLUGIN_SDK & BROWSER
+    TESTS --> CORE & DB & LLM & AGENT
 ```
 
 ## 3. Core Trait Hierarchy
@@ -231,6 +268,10 @@ pub trait Tool: Send + Sync {
         ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError>;
 }
+```
+
+```rust
+// ironclad-agent/src/policy.rs
 
 /// Policy rules implement this trait
 pub trait PolicyRule: Send + Sync {
@@ -373,11 +414,11 @@ CREATE TABLE relationship_memory (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Full-text search on memories (replaces PostgreSQL tsvector)
+-- Full-text search on memories: standalone FTS5 table + triggers
+-- (triggers sync episodic/working/semantic inserts into memory_fts)
 CREATE VIRTUAL TABLE memory_fts USING fts5(
     content,
     category,
-    content=episodic_memory,
     content_rowid=rowid
 );
 

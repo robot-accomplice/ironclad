@@ -1,0 +1,25 @@
+[agent]
+name = "Roboticus"
+id = "roboticus-dev"
+
+[server]
+port = 19789
+bind = "127.0.0.1"
+
+[database]
+path = "ironclad.db"
+mode = "file"
+
+[models]
+primary = "ollama-gpu/qwen3:14b-q8"
+fallbacks = ["google/gemini-3-flash-preview"]
+
+[providers.ollama-gpu]
+url = "http://192.168.50.253:11434"
+format = "openai"
+chat_path = "/v1/chat/completions"
+tier = "T1"
+
+[providers.google]
+url = "https://generativelanguage.googleapis.com/v1beta"
+tier = "T2"

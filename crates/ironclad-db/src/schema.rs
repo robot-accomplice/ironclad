@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::Database;
 use ironclad_core::{IroncladError, Result};
 
@@ -114,8 +116,20 @@ CREATE TABLE IF NOT EXISTS relationship_memory (
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     content,
-    category
+    category,
+    source_table,
+    source_id
 );
+
+-- Keep FTS in sync with episodic_memory
+CREATE TRIGGER IF NOT EXISTS episodic_ai AFTER INSERT ON episodic_memory BEGIN
+    INSERT INTO memory_fts(content, category, source_table, source_id)
+    VALUES (new.content, new.classification, 'episodic', new.id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS episodic_ad AFTER DELETE ON episodic_memory BEGIN
+    DELETE FROM memory_fts WHERE source_table = 'episodic' AND source_id = old.id;
+END;
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -304,23 +318,90 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_source ON embeddings(source_table, sou
 "#;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
-    let conn = db.conn();
-    conn.execute_batch(SCHEMA_SQL)
-        .map_err(|e| IroncladError::Database(format!("schema init failed: {e}")))?;
+    {
+        let conn = db.conn();
+        conn.execute_batch(SCHEMA_SQL)
+            .map_err(|e| IroncladError::Database(format!("schema init failed: {e}")))?;
 
-    let version_exists: bool = conn
-        .query_row("SELECT COUNT(*) FROM schema_version", [], |row| {
-            row.get::<_, i64>(0)
+        let version_exists: bool = conn
+            .query_row("SELECT COUNT(*) FROM schema_version", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(|c| c > 0)
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+        if !version_exists {
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [1])
+                .map_err(|e| IroncladError::Database(e.to_string()))?;
+        }
+    }
+
+    run_migrations(db)?;
+    Ok(())
+}
+
+/// Discover migrations directory: current_dir()/migrations or CARGO_MANIFEST_DIR/migrations.
+fn migrations_dir() -> Option<std::path::PathBuf> {
+    std::env::current_dir()
+        .ok()
+        .map(|p| p.join("migrations"))
+        .filter(|p| p.is_dir())
+        .or_else(|| {
+            let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+            if p.is_dir() { Some(p) } else { None }
         })
-        .map(|c| c > 0)
+}
+
+/// Apply SQL files from migrations/ in order by version number. Forward-only.
+/// If no migrations directory exists, skip gracefully.
+pub fn run_migrations(db: &Database) -> Result<()> {
+    let dir = match migrations_dir() {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .map_err(|e| IroncladError::Database(format!("read migrations dir: {e}")))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("sql"))
+        .collect();
+
+    entries.sort_by(|a, b| {
+        let va = version_from_name(a.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+        let vb = version_from_name(b.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+        va.cmp(&vb)
+    });
+
+    let conn = db.conn();
+    let max_version: i64 = conn
+        .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |row| row.get(0))
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
-    if !version_exists {
-        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [1])
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+    for path in entries {
+        let version = version_from_name(path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+        if version <= max_version {
+            continue;
+        }
+        let sql = std::fs::read_to_string(&path)
+            .map_err(|e| IroncladError::Database(format!("read migration {:?}: {e}", path)))?;
+        conn.execute_batch(sql.trim())
+            .map_err(|e| IroncladError::Database(format!("migration {}: {e}", version)))?;
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            [version],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
     }
 
     Ok(())
+}
+
+/// Parse version number from migration filename, e.g. 001_initial.sql -> 1, 002_add_indexes.sql -> 2.
+fn version_from_name(name: &str) -> i64 {
+    name.find('_')
+        .and_then(|i| name.get(..i))
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0)
 }
 
 pub fn table_count(db: &Database) -> Result<usize> {
@@ -379,5 +460,33 @@ mod tests {
             .unwrap();
         // in-memory databases use "memory" mode, but the PRAGMA was executed
         assert!(mode == "wal" || mode == "memory");
+    }
+
+    #[test]
+    fn version_from_name_parses_correctly() {
+        assert_eq!(super::version_from_name("001_initial.sql"), 1);
+        assert_eq!(super::version_from_name("002_add_indexes.sql"), 2);
+        assert_eq!(super::version_from_name("010_foo.sql"), 10);
+        assert_eq!(super::version_from_name("no_underscore.sql"), 0);
+    }
+
+    #[test]
+    fn run_migrations_applies_in_order() {
+        let db = Database::new(":memory:").unwrap();
+        let conn = db.conn();
+        let versions: Vec<i64> = conn
+            .prepare("SELECT version FROM schema_version ORDER BY version")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        // Base schema inserts 1; run_migrations (called from initialize_db) applies any migration with version > 1.
+        // If migrations/ exists (e.g. workspace root), we get at least [1] and possibly [1, 2].
+        assert!(!versions.is_empty(), "schema_version should have at least version 1");
+        assert_eq!(versions[0], 1);
+        for w in versions.windows(2) {
+            assert!(w[1] > w[0], "versions must be strictly increasing");
+        }
     }
 }

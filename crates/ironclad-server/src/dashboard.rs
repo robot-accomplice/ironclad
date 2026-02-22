@@ -9,21 +9,12 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> Html<String> {
     Html(build_dashboard_html(key))
 }
 
-pub fn build_dashboard_html(api_key: Option<&str>) -> String {
+pub fn build_dashboard_html(_api_key: Option<&str>) -> String {
     let html = include_str!("dashboard_spa.html");
-    match api_key {
-        Some(key) => {
-            let escaped = key.replace('\\', "\\\\").replace('\'', "\\'");
-            html.replace(
-                "var BASE = '';",
-                &format!("var BASE = ''; var API_KEY = '{}';", escaped),
-            )
-        }
-        None => html.replace(
-            "var BASE = '';",
-            "var BASE = ''; var API_KEY = null;",
-        ),
-    }
+    html.replace(
+        "var BASE = '';",
+        "var BASE = ''; var API_KEY = null;",
+    )
 }
 
 #[cfg(test)]
@@ -59,13 +50,13 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_injects_api_key() {
+    fn dashboard_never_injects_api_key() {
         let html = build_dashboard_html(Some("my-secret-key"));
-        assert!(html.contains("API_KEY = 'my-secret-key'"));
+        assert!(html.contains("API_KEY = null"), "API key must never be embedded");
     }
 
     #[test]
-    fn dashboard_null_api_key_when_none() {
+    fn dashboard_null_api_key_always() {
         let html = build_dashboard_html(None);
         assert!(html.contains("API_KEY = null"));
     }

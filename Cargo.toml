@@ -18,7 +18,9 @@ members = [
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-license = "MIT"
+license = "Apache-2.0"
+homepage = "https://roboticus.ai"
+repository = "https://github.com/robot-accomplice/ironclad"
 
 [workspace.dependencies]
 ironclad-core = { path = "crates/ironclad-core" }
@@ -38,3 +40,6 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+subtle = "2"
+proptest = "1"

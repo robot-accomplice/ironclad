@@ -15,6 +15,7 @@ pub struct TelegramAdapter {
     pub last_update_id: Arc<Mutex<i64>>,
     pub poll_timeout: u64,
     pub allowed_chat_ids: Vec<i64>,
+    pub webhook_secret: Option<String>,
 }
 
 impl TelegramAdapter {
@@ -28,13 +29,20 @@ impl TelegramAdapter {
             last_update_id: Arc::new(Mutex::new(0)),
             poll_timeout: 30,
             allowed_chat_ids: Vec::new(),
+            webhook_secret: None,
         }
     }
 
-    pub fn with_config(token: String, poll_timeout: u64, allowed_chat_ids: Vec<i64>) -> Self {
+    pub fn with_config(
+        token: String,
+        poll_timeout: u64,
+        allowed_chat_ids: Vec<i64>,
+        webhook_secret: Option<String>,
+    ) -> Self {
         Self {
             poll_timeout,
             allowed_chat_ids,
+            webhook_secret,
             ..Self::new(token)
         }
     }
@@ -147,7 +155,7 @@ impl TelegramAdapter {
 
     pub fn process_webhook_update(&self, body: &Value) -> Result<Option<InboundMessage>> {
         if let Some(update_id) = body.get("update_id").and_then(|v| v.as_i64()) {
-            let mut last = self.last_update_id.lock().expect("mutex poisoned");
+            let mut last = self.last_update_id.lock().unwrap_or_else(|e| e.into_inner());
             if update_id > *last {
                 *last = update_id;
             }
@@ -157,12 +165,11 @@ impl TelegramAdapter {
             return Ok(None);
         }
 
-        if let Some(chat_id) = body.pointer("/message/chat/id").and_then(|v| v.as_i64()) {
-            if !self.is_chat_allowed(chat_id) {
+        if let Some(chat_id) = body.pointer("/message/chat/id").and_then(|v| v.as_i64())
+            && !self.is_chat_allowed(chat_id) {
                 debug!(chat_id, "ignoring message from disallowed chat");
                 return Ok(None);
             }
-        }
 
         Self::parse_inbound(body).map(Some)
     }
@@ -206,7 +213,7 @@ impl ChannelAdapter for TelegramAdapter {
 
     async fn recv(&self) -> Result<Option<InboundMessage>> {
         let offset = {
-            let last = self.last_update_id.lock().expect("mutex poisoned");
+            let last = self.last_update_id.lock().unwrap_or_else(|e| e.into_inner());
             *last + 1
         };
 
@@ -235,16 +242,15 @@ impl ChannelAdapter for TelegramAdapter {
 
         let update = &updates[0];
         if let Some(uid) = update.get("update_id").and_then(|v| v.as_i64()) {
-            let mut last = self.last_update_id.lock().expect("mutex poisoned");
+            let mut last = self.last_update_id.lock().unwrap_or_else(|e| e.into_inner());
             *last = uid;
         }
 
-        if let Some(chat_id) = update.pointer("/message/chat/id").and_then(|v| v.as_i64()) {
-            if !self.is_chat_allowed(chat_id) {
+        if let Some(chat_id) = update.pointer("/message/chat/id").and_then(|v| v.as_i64())
+            && !self.is_chat_allowed(chat_id) {
                 debug!(chat_id, "ignoring message from disallowed chat");
                 return Ok(None);
             }
-        }
 
         if update.get("message").is_none() {
             return Ok(None);
@@ -337,13 +343,15 @@ mod tests {
         assert_eq!(adapter.token, "test-token");
         assert_eq!(adapter.poll_timeout, 30);
         assert!(adapter.allowed_chat_ids.is_empty());
+        assert!(adapter.webhook_secret.is_none());
     }
 
     #[test]
     fn with_config_sets_fields() {
-        let adapter = TelegramAdapter::with_config("tok".into(), 60, vec![111, 222]);
+        let adapter = TelegramAdapter::with_config("tok".into(), 60, vec![111, 222], None);
         assert_eq!(adapter.poll_timeout, 60);
         assert_eq!(adapter.allowed_chat_ids, vec![111, 222]);
+        assert!(adapter.webhook_secret.is_none());
     }
 
     #[test]
@@ -354,7 +362,7 @@ mod tests {
 
     #[test]
     fn chat_allowed_filters() {
-        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![100, 200]);
+        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![100, 200], None);
         assert!(adapter.is_chat_allowed(100));
         assert!(adapter.is_chat_allowed(200));
         assert!(!adapter.is_chat_allowed(300));
@@ -387,7 +395,7 @@ mod tests {
 
     #[test]
     fn process_webhook_update_disallowed_chat() {
-        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![100]);
+        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![100], None);
         let update = json!({
             "update_id": 101,
             "message": {

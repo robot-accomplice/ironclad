@@ -3,27 +3,32 @@ pub mod auth;
 pub mod cli;
 pub mod daemon;
 pub mod dashboard;
+pub mod migrate;
 pub mod plugins;
+pub mod rate_limit;
 pub mod ws;
 
-pub use api::{build_router, AppState};
+pub use api::{build_router, AppState, PersonalityState};
 pub use dashboard::{build_dashboard_html, dashboard_handler};
 pub use ws::{EventBus, ws_route};
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 
 use auth::ApiKeyLayer;
+use rate_limit::GlobalRateLimitLayer;
+use ironclad_agent::policy::{AuthorityRule, CommandSafetyRule, PolicyEngine};
 use ironclad_agent::subagents::SubagentRegistry;
 use ironclad_browser::Browser;
 use ironclad_channels::ChannelAdapter;
 use ironclad_channels::a2a::A2aProtocol;
 use ironclad_channels::router::ChannelRouter;
 use ironclad_channels::telegram::TelegramAdapter;
+use ironclad_channels::whatsapp::WhatsAppAdapter;
 use ironclad_core::IroncladConfig;
-use ironclad_core::personality;
 use ironclad_db::Database;
 use ironclad_llm::LlmService;
 use ironclad_wallet::WalletService;
@@ -84,13 +89,11 @@ fn cleanup_old_logs(log_dir: &std::path::Path, max_days: u32) {
         if path.extension().and_then(|e| e.to_str()) != Some("log") {
             continue;
         }
-        if let Ok(meta) = entry.metadata() {
-            if let Ok(modified) = meta.modified() {
-                if modified < cutoff {
+        if let Ok(meta) = entry.metadata()
+            && let Ok(modified) = meta.modified()
+                && modified < cutoff {
                     let _ = std::fs::remove_file(&path);
                 }
-            }
-        }
     }
 }
 
@@ -98,22 +101,12 @@ fn cleanup_old_logs(log_dir: &std::path::Path, max_days: u32) {
 pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn std::error::Error>> {
     init_logging(&config);
 
-    let workspace = &config.agent.workspace;
-    let os = personality::load_os(workspace);
-    let fw = personality::load_firmware(workspace);
-    let operator = personality::load_operator(workspace);
-    let directives = personality::load_directives(workspace);
+    let personality_state = api::PersonalityState::from_workspace(&config.agent.workspace);
 
-    let soul_text = personality::compose_soul(
-        os.as_ref(),
-        fw.as_ref(),
-        operator.as_ref(),
-        directives.as_ref(),
-    );
-
-    if !soul_text.is_empty() {
+    if !personality_state.soul_text.is_empty() {
         tracing::info!(
-            personality = os.as_ref().map(|o| o.identity.name.as_str()).unwrap_or("none"),
+            personality = %personality_state.identity.name,
+            generated_by = %personality_state.identity.generated_by,
             "Loaded personality files from workspace"
         );
     } else {
@@ -122,10 +115,14 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
 
     let db_path = config.database.path.to_string_lossy().to_string();
     let db = Database::new(&db_path)?;
-    let llm = LlmService::new(&config);
+    let llm = LlmService::new(&config)?;
     let wallet = WalletService::new(&config).await?;
     let a2a = A2aProtocol::new(config.a2a.clone());
     let plugin_registry = plugins::init_plugin_registry(&config.plugins).await;
+    let mut policy_engine = PolicyEngine::new();
+    policy_engine.add_rule(Box::new(AuthorityRule));
+    policy_engine.add_rule(Box::new(CommandSafetyRule));
+    let policy_engine = Arc::new(policy_engine);
     let browser = Arc::new(Browser::new(config.browser.clone()));
     let registry = Arc::new(SubagentRegistry::new(4, vec![]));
     let event_bus = EventBus::new(256);
@@ -140,11 +137,15 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
                         token,
                         tg_config.poll_timeout_seconds,
                         tg_config.allowed_chat_ids.clone(),
+                        tg_config.webhook_secret.clone(),
                     ));
                     channel_router
                         .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
                         .await;
                     tracing::info!("Telegram adapter registered");
+                    if tg_config.webhook_secret.is_none() {
+                        tracing::warn!("Telegram webhook_secret not set; webhook endpoint will reject with 503");
+                    }
                     Some(adapter)
                 } else {
                     tracing::warn!(
@@ -160,20 +161,86 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
             None
         };
 
+    let whatsapp: Option<Arc<WhatsAppAdapter>> =
+        if let Some(ref wa_config) = config.channels.whatsapp {
+            if wa_config.enabled {
+                let token = std::env::var(&wa_config.token_env).unwrap_or_default();
+                if !token.is_empty() && !wa_config.phone_number_id.is_empty() {
+                    let adapter = Arc::new(WhatsAppAdapter::with_config(
+                        token,
+                        wa_config.phone_number_id.clone(),
+                        wa_config.verify_token.clone(),
+                        wa_config.allowed_numbers.clone(),
+                        wa_config.app_secret.clone(),
+                    ));
+                    channel_router
+                        .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
+                        .await;
+                    tracing::info!("WhatsApp adapter registered");
+                    if wa_config.app_secret.is_none() {
+                        tracing::warn!("WhatsApp app_secret not set; webhook endpoint will reject with 503");
+                    }
+                    Some(adapter)
+                } else {
+                    tracing::warn!(
+                        "WhatsApp enabled but token env or phone_number_id is empty"
+                    );
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+    let hmac_secret = {
+        use rand::RngCore;
+        let mut buf = vec![0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut buf);
+        buf
+    };
+
     let state = AppState {
         db,
         config: Arc::new(RwLock::new(config.clone())),
         llm: Arc::new(RwLock::new(llm)),
         wallet: Arc::new(wallet),
         a2a: Arc::new(RwLock::new(a2a)),
-        soul_text: Arc::new(soul_text),
+        personality: Arc::new(RwLock::new(personality_state)),
+        hmac_secret: Arc::new(hmac_secret),
+        interviews: Arc::new(RwLock::new(std::collections::HashMap::new())),
         plugins: plugin_registry,
+        policy_engine,
         browser,
         registry,
         event_bus: event_bus.clone(),
         channel_router,
         telegram,
+        whatsapp,
+        started_at: std::time::Instant::now(),
     };
+
+    // Start heartbeat daemon
+    {
+        let hb_wallet = Arc::clone(&state.wallet);
+        let hb_db = state.db.clone();
+        let daemon = ironclad_schedule::HeartbeatDaemon::new(60_000);
+        tokio::spawn(async move {
+            ironclad_schedule::run_heartbeat(daemon, hb_wallet, hb_db).await;
+        });
+        tracing::info!("Heartbeat daemon spawned (60s interval)");
+    }
+
+    // Start cron worker
+    {
+        let cron_db = state.db.clone();
+        let instance_id = config.agent.id.clone();
+        tokio::spawn(async move {
+            ironclad_schedule::run_cron_worker(cron_db, instance_id).await;
+        });
+        tracing::info!("Cron worker spawned");
+    }
 
     if state.telegram.is_some() {
         let use_polling = config
@@ -199,18 +266,37 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
                     .parse::<axum::http::HeaderValue>()
                     .unwrap_or_else(|_| axum::http::HeaderValue::from_static("*")),
             )
-            .allow_methods(Any)
-            .allow_headers(Any)
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::HeaderName::from_static("x-api-key"),
+            ])
     } else {
         CorsLayer::new()
             .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any)
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::HeaderName::from_static("x-api-key"),
+            ])
     };
     let app = build_router(state)
         .route("/ws", ws_route(event_bus.clone()))
         .layer(auth_layer)
-        .layer(cors);
+        .layer(cors)
+        .layer(GlobalRateLimitLayer::new(100, Duration::from_secs(60)));
     Ok(app)
 }
 

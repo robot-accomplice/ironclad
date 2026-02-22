@@ -1,6 +1,6 @@
 # C4 Level 3: Component Diagram -- ironclad-schedule
 
-*Unified scheduling system merging cron job execution and heartbeat daemon into a single tokio-based tick loop with DB-backed job state and lease-based concurrency control.*
+*Heartbeat daemon (SurvivalTier-based interval adjustment) and durable cron worker. **run_heartbeat** and **run_cron_worker** in lib.rs; HeartbeatDaemon + TickContext in heartbeat.rs; DurableScheduler (cron/interval/at evaluation) in scheduler.rs; default_tasks() and HeartbeatTask enum in tasks.rs.*
 
 ---
 
@@ -15,9 +15,9 @@ flowchart TB
     end
 
     subgraph HeartbeatDetail ["heartbeat.rs"]
-        TICK_LOOP["Tick loop:<br/>tokio::time::interval<br/>(configurable, default 60s)<br/>select! pattern (no overlap)"]
-        TICK_CTX["Build TickContext:<br/>- credit balance<br/>- USDC balance<br/>- SurvivalTier<br/>- current timestamp<br/>(all fetched once per tick)"]
-        SLEEP_LOOP["Sleep loop:<br/>tokio::select!<br/>- mpsc::recv (wake event)<br/>- interval (30s poll fallback)"]
+        TICK_CTX["TickContext: credit_balance, usdc_balance,<br/>survival_tier, timestamp<br/>build_tick_context() -> SurvivalTier::from_balance()"]
+        TICK_LOOP["run(): interval tick, build_tick_context(),<br/>execute_task() for each default_tasks()"]
+        ADJUST["should_adjust_interval(tier):<br/>LowCompute 2x, Critical 2x, Dead 10x<br/>cap: 5min non-dead, 1hr dead"]
     end
 
     subgraph SchedulerDetail ["scheduler.rs"]
@@ -31,7 +31,8 @@ flowchart TB
     end
 
     subgraph TasksDetail ["tasks.rs"]
-        SURVIVAL_CHECK["SurvivalCheck:<br/>monitor credit balance,<br/>compute SurvivalTier,<br/>adjust behavior tier"]
+        TASK_ENUM["HeartbeatTask enum (6 default tasks):<br/>SurvivalCheck, UsdcMonitor, YieldTask,<br/>MemoryPrune, CacheEvict, MetricSnapshot;<br/>AgentCardRefresh in enum but not in default_tasks()"]
+        SURVIVAL_CHECK["execute_task(task, ctx):<br/>SurvivalCheck -> should_wake if Critical/Dead"]
         USDC_MONITOR["UsdcMonitor:<br/>check on-chain USDC balance,<br/>signal wake if funds available"]
         YIELD_TASK["YieldTask:<br/>evaluate deposit/withdraw<br/>thresholds, execute via<br/>ironclad-wallet"]
         MEMORY_PRUNE["MemoryPrune:<br/>evict low-importance entries<br/>from episodic/working memory"]
@@ -90,8 +91,8 @@ sequenceDiagram
 
 ## Dependencies
 
-**External crates**: `tokio` (timers, mpsc, select!), `cron` (cron expression parsing)
+**External crates**: `tokio`, `chrono` (cron/interval/at time parsing). No separate cron crate — DurableScheduler uses chrono for expression evaluation.
 
-**Internal crates**: `ironclad-core`, `ironclad-db`, `ironclad-agent`
+**Internal crates**: `ironclad-core`, `ironclad-db`, `ironclad-agent`, `ironclad-wallet`
 
 **Depended on by**: `ironclad-server`

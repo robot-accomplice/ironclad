@@ -1,6 +1,6 @@
 # C4 Level 3: Component Diagram -- ironclad-llm
 
-*LLM client layer handling all inference requests: connection pooling, format translation, ML-based model routing, semantic caching, circuit breaking, deduplication, and tier-based prompt adaptation.*
+*LLM client layer: HTTP client (reqwest), provider translation (UnifiedRequest/UnifiedResponse), **heuristic** complexity classification and model routing, **in-memory** semantic cache (HashMap), circuit breaker, and deduplication. No ONNX or ML models.*
 
 ---
 
@@ -15,8 +15,8 @@ flowchart TB
         CIRCUIT["circuit.rs<br/>Circuit Breaker"]
         DEDUP["dedup.rs<br/>In-Flight Dedup"]
         TIER["tier.rs<br/>Tier Classification +<br/>Prompt Adaptation"]
-        ROUTER["router.rs<br/>ML Model Router"]
-        CACHE["cache.rs<br/>Semantic Cache"]
+        ROUTER["router.rs<br/>Heuristic Model Router"]
+        CACHE["cache.rs<br/>In-Memory SemanticCache<br/>(HashMap)"]
     end
 
     subgraph ClientDetail ["client.rs"]
@@ -34,19 +34,19 @@ flowchart TB
     end
 
     subgraph RouterDetail ["router.rs"]
-        RULE_MODE["Rule mode:<br/>static fallback chain<br/>(models.primary, models.fallbacks)"]
-        ML_MODE["ML mode:<br/>extract features -> ONNX<br/>classifier (~11us) -><br/>complexity score 0.0-1.0"]
-        FEATURES["Feature extraction:<br/>message length, tool_call count,<br/>conversation depth, keyword signals"]
-        CONFIDENCE["Confidence check:<br/>if T1 response quality poor,<br/>escalate to next tier"]
-        FALLBACK["Fallback chain:<br/>on 429/5xx/timeout,<br/>advance to next model"]
+        HEURISTIC["Heuristic classifier (RouterBackend):<br/>HeuristicBackend weights message length,<br/>tool_call count, conversation depth<br/>-> complexity score 0.0-1.0"]
+        MODES["Routing modes: primary, round-robin,<br/>heuristic/ml (default 'heuristic';<br/>'ml' is backward-compat alias)"]
+        FEATURES["extract_features(): msg len, tool_calls, depth<br/>classify_complexity(features) -> f64"]
+        SELECT["select_for_complexity(): local_first +<br/>confidence_threshold -> primary or fallback"]
+        FALLBACK["advance_fallback(), reset()<br/>on 429/5xx/timeout"]
     end
 
-    subgraph CacheDetail ["cache.rs"]
-        L1["Level 1: Exact hash lookup<br/>(SHA-256 of system + conv + msg)"]
-        L2["Level 2: Semantic embedding<br/>(ONNX all-MiniLM-L6-v2, ~5ms)<br/>cosine > cache.semantic_threshold"]
-        L3["Level 3: Deterministic tool<br/>result TTL cache"]
-        STORE["Store: prompt_hash + embedding<br/>+ response + expires_at"]
-        EVICT["Eviction: expire by TTL,<br/>LRU by hit_count when<br/>count > cache.max_entries"]
+    subgraph CacheDetail ["cache.rs - In-Memory Only"]
+        L1["L1: lookup_exact(prompt_hash)<br/>HashMap key = SHA-256(system|msgs|user_msg)"]
+        L2["L2: lookup_semantic(prompt)<br/>char n-gram embedding, cosine > threshold"]
+        L3["L3: lookup_tool_ttl(prompt_hash)<br/>shorter TTL for tool-involved entries"]
+        STORE["store() / store_with_embedding()<br/>evict_lfu() at max_entries"]
+        EVICT["evict_expired() by Instant"]
     end
 
     subgraph CircuitDetail ["circuit.rs"]
@@ -81,19 +81,19 @@ flowchart TB
 
 ## Request Pipeline (in order)
 
-1. **Cache check** (`cache.rs`) -- 3-level lookup, return on hit
-2. **ML routing** (`router.rs`) -- classify complexity, select model + provider
-3. **Circuit breaker** (`circuit.rs`) -- check provider availability
-4. **Dedup** (`dedup.rs`) -- reject duplicate in-flight requests
-5. **Format translation** (`format.rs`) -- translate request to provider's API format
-6. **Tier adaptation** (`tier.rs`) -- adapt prompt for model tier
-7. **Forward** (`client.rs`) -- send via persistent connection pool
-8. **Response processing** (`client.rs`) -- back-translate format, update breaker, record cost
-9. **Cache store** (`cache.rs`) -- store response for future hits
+1. **Cache check** (`cache.rs`) — in-memory 3-level lookup (exact hash → tool TTL → semantic n-gram), return on hit
+2. **Routing** (`router.rs`) — heuristic `classify_complexity(features)`; `select_for_complexity()` with optional `ProviderRegistry` for `is_local`
+3. **Circuit breaker** (`circuit.rs`) — per-provider state (Closed/Open/HalfOpen), configurable threshold/window/cooldown
+4. **Dedup** (`dedup.rs`) — in-flight duplicate detection
+5. **Format translation** (`format.rs`) — `translate_request(UnifiedRequest, ApiFormat)`, `translate_response(Value, ApiFormat)` → `UnifiedResponse`
+6. **Tier adaptation** (`tier.rs`) — tier-based prompt adaptation (T1 strip/condense, T2 preamble, T3/T4 passthrough)
+7. **Forward** (`client.rs`) — `forward_request` / `forward_with_provider` (reqwest POST, auth + extra headers)
+8. **Response** — back-translate, update breaker, record cost
+9. **Cache store** (`cache.rs`) — `store` or `store_with_embedding` in HashMap
 
 ## Dependencies
 
-**External crates**: `reqwest` (HTTP client), `ort` (ONNX runtime for ML router + embeddings), `sha2` (hashing)
+**External crates**: `reqwest` (HTTP client), `sha2` (hashing). **No ONNX or ML runtime.**
 
 **Internal crates**: `ironclad-core` (types, config, errors)
 

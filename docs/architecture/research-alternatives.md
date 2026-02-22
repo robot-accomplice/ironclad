@@ -140,7 +140,7 @@
 - Small neural network (more accurate, ~1ms)
 - LLM-as-judge (most accurate, ~100ms)
 
-**Relevance to Ironclad**: The logistic regression approach is perfect — embed as an ONNX model in the Rust binary for zero-latency routing.
+**Relevance to Ironclad**: Research informed routing design; **actual implementation uses a heuristic classifier** (weighted message length, tool calls, depth) — no ONNX or ML runtime.
 
 ### 3.2 — PROTEUS (2026)
 
@@ -186,7 +186,7 @@
 
 **Latency**: <5ms for embedding computation locally.
 
-**Relevance to Ironclad**: Embed the ONNX model in the binary. Cache layer sits between the agent loop and the inference pipeline. Zero external dependency for caching.
+**Relevance to Ironclad**: **Actual implementation**: in-memory HashMap (`SemanticCache`) with exact hash, tool TTL, and n-gram semantic similarity — no ONNX, no SQLite cache at runtime.
 
 ### 4.3 — Hierarchical Caching
 
@@ -332,19 +332,19 @@ Query → Local Small Model (qwen3:8b, ~100ms) → Confidence Check
 
 ---
 
-## 8. Recommended Strategy for Ironclad
+## 8. Actual Technology Choices (Ironclad)
 
-Based on this research, the recommended approach combines:
+What Ironclad uses in practice (as of this doc):
 
-| Technique | Source | Expected Impact |
-|-----------|--------|-----------------|
-| Single Rust binary | AutoAgents/AgentSDK benchmarks | 10x memory, 25x latency |
-| Tokio-FSM state machines | tokio-fsm crate | Compile-time safety |
-| ML model routing (ONNX) | RouteLLM + PROTEUS | 60-85% cost reduction |
-| 3-level semantic caching | GPTCache + local embeddings | 15-30% cache hit rate |
-| Progressive context loading | Novel | 50-75% input token savings |
-| WASM plugin system | wasmtime | Extensibility + safety |
-| Yield engine | Aave on Base | 4-8% APY on idle treasury |
-| Typed format translation | Rust enums + From traits | Zero runtime format errors |
-| Single SQLite database | Proven agent DB pattern | Eliminate PostgreSQL |
-| Speculative tool execution | Novel | 30-50% latency reduction |
+| Choice | Implementation |
+|--------|-----------------|
+| **Routing** | Heuristic classifier (message length, tool calls, depth). Default mode `"heuristic"`; `"ml"` is backward-compat alias. No ONNX. |
+| **Cache** | In-memory HashMap (`SemanticCache` in ironclad-llm). L1 exact hash, L3 tool TTL, L2 n-gram similarity. No SQLite cache, no Redis. |
+| **Database** | SQLite via **rusqlite** (not diesel). Single DB, WAL mode. |
+| **Server** | **Axum** (not Actix). |
+| **Ethereum** | **alloy-rs** for chain and contracts. |
+| **Policy rules** | 6 rules: AuthorityRule, CommandSafetyRule, FinancialRule, PathProtectionRule, RateLimitRule, ValidationRule. |
+| **Money type** | Treasury uses **Money(i64 cents)** internally; API surface is f64 (dollars). |
+| **FTS** | `memory_fts` (FTS5) with triggers on `episodic_memory`; working_memory inserts explicitly. |
+| **Yield** | Aave V3 on Base Sepolia (yield_engine.rs). |
+| **A2A crypto** | x25519-dalek ECDH, AES-256-GCM, HKDF. |

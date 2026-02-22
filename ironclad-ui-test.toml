@@ -1,0 +1,13 @@
+[agent]
+name = "Roboticus"
+id = "roboticus-ui-test"
+
+[server]
+port = 19789
+bind = "127.0.0.1"
+
+[database]
+path = ":memory:"
+
+[models]
+primary = "ollama/qwen3:8b"

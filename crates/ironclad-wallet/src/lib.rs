@@ -1,8 +1,10 @@
+pub mod money;
 pub mod treasury;
 pub mod wallet;
 pub mod x402;
 pub mod yield_engine;
 
+pub use money::Money;
 pub use treasury::TreasuryPolicy;
 pub use wallet::Wallet;
 pub use x402::{PaymentRequirements, X402Handler};

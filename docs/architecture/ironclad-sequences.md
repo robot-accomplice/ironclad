@@ -61,7 +61,7 @@ sequenceDiagram
     Memory-->>Loop: formatted memory block
 
     Loop->>Context: progressive_load(complexity)
-    Context->>Router: classify complexity (ONNX, ~11us)
+    Context->>Router: classify_complexity(features) [heuristic, no ONNX]
     Router-->>Context: complexity score 0.0-1.0
     Context-->>Loop: assembled context (L0-L3)
 
@@ -74,11 +74,10 @@ sequenceDiagram
 
     Prompt-->>Loop: HMAC-tagged prompt
 
-    Loop->>Cache: lookup(prompt_hash, embedding)
+    Loop->>Cache: lookup(prompt_hash, prompt_text) [in-memory HashMap]
 
     alt cache hit (L1/L2/L3)
         Cache-->>Loop: cached response
-        Cache->>DB: INSERT inference_costs (cached=1)
     else cache miss
         Cache-->>Loop: miss
 
@@ -109,8 +108,8 @@ sequenceDiagram
             Provider-->>Client: response
             Client->>Breaker: record_success() or record_error()
             Client->>Format: back-translate response
-            Client->>DB: INSERT inference_costs (model, tokens, cost)
-            Client-->>Loop: translated response
+            Client-->>Loop: response + usage metadata
+            Note over Loop: Agent records inference_costs via ironclad-db
         end
     end
 
@@ -126,15 +125,13 @@ sequenceDiagram
 
     Loop->>DB: atomic persist (session_messages, turns, tool_calls)
 
-    Loop->>Injection: Layer 4 adaptive refinement
-    Injection->>Injection: scan output + anomaly detection
+    Loop->>Injection: L4 scan_output (NFKC, decode, homoglyph, regex)
     Injection-->>Loop: clean or stripped response
 
-    Loop->>Memory: ingest_turn(classify, extract, store)
-    Memory->>DB: store across 5 tiers + FTS sync
+    Loop->>Memory: ingest_turn(classify_turn -> store)
+    Memory->>DB: store working/episodic/semantic + FTS
 
-    Loop->>Cache: store(prompt_hash, embedding, response)
-    Cache->>DB: INSERT semantic_cache
+    Loop->>Cache: store(prompt_hash, response) [HashMap]
 
     Loop->>Channel: OutboundMessage
     Channel->>Channel: format_outbound()
@@ -151,8 +148,6 @@ Detailed temporal flow through the 3-level semantic cache, showing L1 hit, L2 hi
 sequenceDiagram
     participant Agent as ironclad-agent/loop.rs
     participant CacheMod as ironclad-llm/cache.rs
-    participant DB as ironclad-db (semantic_cache)
-    participant ONNX as ONNX Embedding Model
     participant Router as ironclad-llm/router.rs
     participant Breaker as ironclad-llm/circuit.rs
     participant DedupMod as ironclad-llm/dedup.rs
@@ -163,37 +158,20 @@ sequenceDiagram
 
     Agent->>CacheMod: lookup(prompt)
 
-    Note over CacheMod: Level 1: Exact Hash
-    CacheMod->>CacheMod: SHA-256(system_prompt + conversation + user_message)
-    CacheMod->>DB: SELECT WHERE prompt_hash = ? AND expires_at > now()
+    Note over CacheMod: L1: Exact hash (HashMap)
+    CacheMod->>CacheMod: compute_hash(system, messages, user_msg)
+    CacheMod->>CacheMod: lookup_exact(prompt_hash)
 
     alt L1 exact hit
-        DB-->>CacheMod: cached response
-        CacheMod->>DB: UPDATE hit_count = hit_count + 1
-        CacheMod->>CostDB: INSERT inference_costs (cached=1, cost=0.0)
         CacheMod-->>Agent: cached response
     else L1 miss
-        DB-->>CacheMod: no match
+        Note over CacheMod: L3 tool TTL, then L2 semantic (n-gram)
+        CacheMod->>CacheMod: lookup_tool_ttl, then lookup_semantic
 
-        Note over CacheMod: Level 2: Semantic Similarity
-        CacheMod->>ONNX: compute embedding (all-MiniLM-L6-v2, ~5ms)
-        ONNX-->>CacheMod: embedding vector
-        CacheMod->>DB: approximate nearest neighbor search
-        CacheMod->>CacheMod: cosine similarity > cache.semantic_threshold (0.95)?
-
-        alt L2 semantic hit
-            DB-->>CacheMod: nearest match response
-            CacheMod->>DB: UPDATE hit_count = hit_count + 1
-            CacheMod->>CostDB: INSERT inference_costs (cached=1, cost=0.0)
+        alt L2/L3 hit
             CacheMod-->>Agent: cached response
-        else L2 miss
-            Note over CacheMod: Level 3: Deterministic Tool TTL
-            CacheMod->>CacheMod: request involves deterministic tool?
-
-            alt L3 tool cache hit
-                CacheMod-->>Agent: cached tool result
-            else L3 miss or not applicable
-                CacheMod-->>Agent: cache miss
+        else miss
+            CacheMod-->>Agent: cache miss
 
                 Agent->>Router: select_model(complexity_score)
                 Router-->>Agent: model + provider
@@ -210,11 +188,11 @@ sequenceDiagram
                 ClientMod->>Breaker: record_success()
                 ClientMod->>FormatMod: back-translate
                 FormatMod-->>ClientMod: normalized response
-                ClientMod->>CostDB: INSERT inference_costs (cached=0)
+                Note over Agent: Agent records inference_costs via ironclad-db
                 ClientMod-->>Agent: response
 
-                Agent->>CacheMod: store(prompt_hash, embedding, response)
-                CacheMod->>DB: INSERT semantic_cache (prompt_hash, embedding, response, expires_at)
+                Agent->>CacheMod: store(prompt_hash, response)
+                CacheMod->>CacheMod: entries.insert (in-memory)
             end
         end
     end
@@ -315,7 +293,7 @@ sequenceDiagram
     Note over Main,DB: Step 3: Initialize database
     Main->>DB: Database::new(config.database.path)
     DB->>DB: open SQLite, enable WAL mode
-    DB->>DB: run_migrations() (25 tables + indexes + FTS5)
+    DB->>DB: run_migrations() (28 tables incl. indexes + FTS5)
     DB-->>Main: Database (Arc<Mutex<Connection>>)
 
     Note over Main,Wallet: Step 4: Load wallet
@@ -323,23 +301,14 @@ sequenceDiagram
     Wallet->>Wallet: load keystore or generate new keypair
     Wallet-->>Main: Wallet (Ethereum signer)
 
-    Note over Main,DB: Step 5: Bootstrap identity
-    Main->>DB: check identity table for hmac_session_secret
-    alt first boot
-        Main->>Main: generate hmac_session_secret (32 random bytes)
-        Main->>DB: INSERT identity (hmac_session_secret)
-        Main->>Wallet: derive a2a_identity_key
-        Main->>DB: INSERT identity (ethereum_address, did, a2a_identity_key)
-    else existing
-        DB-->>Main: load existing identity keys
-    end
+    Note over Main: Step 5: Generate HMAC secret
+    Main->>Main: generate cryptographic HMAC secret (OsRng, 32 bytes)
 
     Note over Main,LLM: Step 6: Initialize LLM pipeline
-    Main->>LLM: LlmService::new(config.models, config.providers, config.cache)
-    LLM->>LLM: create reqwest::Client pool (HTTP/2)
-    LLM->>LLM: load ONNX classifier (~2MB, query complexity)
-    LLM->>LLM: load ONNX embedder (~22MB, all-MiniLM-L6-v2)
-    LLM->>LLM: init circuit breakers per provider
+    Main->>LLM: LlmService::new(config)
+    LLM->>LLM: SemanticCache (HashMap), CircuitBreakerRegistry
+    LLM->>LLM: ModelRouter with HeuristicBackend (no ONNX)
+    LLM->>LLM: reqwest Client, ProviderRegistry
     LLM-->>Main: LlmService
 
     Note over Main,Agent: Step 7: Initialize agent
@@ -349,19 +318,14 @@ sequenceDiagram
     Agent->>Agent: init injection defense (L1-L4)
     Agent-->>Main: AgentLoop
 
-    Note over Main,SkillSys: Step 8: Load skills
-    Main->>SkillSys: SkillLoader::load_all(config.skills.skills_dir)
-    SkillSys->>SkillSys: scan for .toml + .md files
-    SkillSys->>SkillSys: parse manifests, compute SHA-256 hashes
-    SkillSys->>DB: upsert into skills table
-    SkillSys->>Agent: register ScriptTool for each structured skill with script_path
-    SkillSys->>SkillSys: build in-memory SkillRegistry trigger index
-    SkillSys-->>Main: SkillRegistry
+    Note over Main,SkillSys: Step 8: Skills on demand
+    Main->>Main: Skills loaded on demand via POST /api/skills/reload
+    Note over Main: (no SkillLoader::load_all at startup)
 
     Note over Main,Schedule: Step 9: Start scheduler
     Main->>Schedule: DurableScheduler::start(config, db, agent)
     Schedule->>Schedule: start heartbeat tick loop (tokio::time::interval)
-    Schedule->>Schedule: register 7 built-in tasks
+    Schedule->>Schedule: register 6 default tasks
     Schedule-->>Main: scheduler handle (JoinHandle)
 
     Note over Main,Channels: Step 10: Start channels
@@ -376,7 +340,7 @@ sequenceDiagram
 
     Note over Main,HTTP: Step 11: Bind HTTP server
     Main->>HTTP: axum::serve(router, config.server.bind:port)
-    HTTP->>HTTP: mount 29 REST API routes + dashboard SPA + WebSocket upgrade
+    HTTP->>HTTP: mount 42 REST API routes + dashboard SPA + WebSocket upgrade
     HTTP-->>Main: server handle
 
     Note over Main: Step 12: Await shutdown
@@ -607,7 +571,7 @@ sequenceDiagram
 | Sequence | Related Dataflow Diagrams | Related C4 Docs | Key Tables |
 |----------|--------------------------|-----------------|------------|
 | 1. End-to-End Request | Diagram 1 (Primary Request), Diagram 6 (Injection) | ironclad-c4-agent, ironclad-c4-llm, ironclad-c4-channels | sessions, session_messages, turns, tool_calls, policy_decisions, inference_costs, semantic_cache |
-| 2. Cache-Augmented Inference | Diagram 2 (Semantic Cache), Diagram 3 (ML Router) | ironclad-c4-llm | semantic_cache, inference_costs |
+| 2. Cache-Augmented Inference | Diagram 2 (Semantic Cache), Diagram 3 (Heuristic Router) | ironclad-c4-llm | semantic_cache, inference_costs |
 | 3. x402 Payment-Gated Inference | Diagram 7 (Financial + Yield) | ironclad-c4-wallet, ironclad-c4-llm | transactions, inference_costs, policy_decisions |
 | 4. 12-Step Bootstrap | All diagrams (covers full system init) | ironclad-c4-server (bootstrap sequence) | identity, skills, cron_jobs |
 | 5. Injection Attack Blocked | Diagram 6 (Multi-Layer Injection Defense) | ironclad-c4-agent | policy_decisions, metric_snapshots |

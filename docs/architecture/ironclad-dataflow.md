@@ -25,29 +25,24 @@ flowchart TD
     SANITIZE --> CACHE_CHECK
     PASS --> CACHE_CHECK
 
-    CACHE_CHECK["ironclad-llm/cache.rs<br/>3-Level Cache Check"]
-    CACHE_CHECK --> CACHE_L1{"Level 1:<br/>Exact hash hit?<br/>(semantic_cache table,<br/>prompt_hash index)"}
-    CACHE_L1 -->|hit| CACHE_HIT["Return cached response<br/>increment hit_count<br/>record in inference_costs<br/>with cached=1"]
-    CACHE_L1 -->|miss| CACHE_L2{"Level 2:<br/>Semantic embedding<br/>cosine > 0.95?<br/>(cache.semantic_threshold)"}
-    CACHE_L2 -->|hit| CACHE_HIT
-    CACHE_L2 -->|miss| CACHE_L3{"Level 3:<br/>Deterministic tool<br/>result TTL cache?"}
+    CACHE_CHECK["ironclad-llm/cache.rs<br/>In-Memory 3-Level (HashMap)"]
+    CACHE_CHECK --> CACHE_L1{"L1: Exact hash hit?"}
+    CACHE_L1 -->|hit| CACHE_HIT["Return cached response"]
+    CACHE_L1 -->|miss| CACHE_L3{"L3: Tool TTL lookup"}
     CACHE_L3 -->|hit| CACHE_HIT
-    CACHE_L3 -->|miss| CONTEXT_BUILD
+    CACHE_L3 -->|miss| CACHE_L2{"L2: Semantic n-gram cosine"}
+    CACHE_L2 -->|hit| CACHE_HIT
+    CACHE_L2 -->|miss| CONTEXT_BUILD
 
-    CONTEXT_BUILD["ironclad-agent/context.rs<br/>Progressive Context Loading"]
-    CONTEXT_BUILD --> ML_CLASSIFY["ironclad-llm/router.rs<br/>ML Router: classify complexity<br/>(ONNX, ~11us)"]
-    ML_CLASSIFY --> CTX_LEVEL{"Complexity<br/>score?"}
-    CTX_LEVEL -->|"< 0.3 (simple)"| CTX_L0["Level 0: identity + task only<br/>(~2K tokens)"]
-    CTX_LEVEL -->|"0.3-0.6"| CTX_L1["Level 1: + relevant memories<br/>(~4K tokens)"]
-    CTX_LEVEL -->|"0.6-0.9"| CTX_L2["Level 2: + full tool descriptions<br/>(~8K tokens)"]
-    CTX_LEVEL -->|"> 0.9 (complex)"| CTX_L3["Level 3: + full history window<br/>(~16K tokens)"]
+    CONTEXT_BUILD["ironclad-agent/context.rs<br/>Context assembly"]
+    CONTEXT_BUILD --> HEURISTIC["ironclad-llm/router.rs<br/>Heuristic classify_complexity<br/>(no ONNX/ML)"]
 
-    CTX_L0 & CTX_L1 & CTX_L2 & CTX_L3 --> MEMORY_RETRIEVE
+    HEURISTIC --> MEMORY_RETRIEVE
 
-    MEMORY_RETRIEVE["ironclad-agent/memory.rs<br/>5-Tier Memory Retrieval<br/>(within token budget from<br/>memory.* config percentages)"]
-    MEMORY_RETRIEVE --> PROMPT_BUILD["ironclad-agent/prompt.rs<br/>Build System Prompt<br/>+ Layer 2: HMAC trust boundaries"]
+    MEMORY_RETRIEVE["ironclad-agent/memory.rs<br/>MemoryBudgetManager, 5-tier retrieval"]
+    MEMORY_RETRIEVE --> PROMPT_BUILD["ironclad-agent/prompt.rs<br/>Build System Prompt + HMAC L2"]
 
-    PROMPT_BUILD --> MODEL_SELECT["ironclad-llm/router.rs<br/>Select Model<br/>(ML score -> tier -> provider)"]
+    PROMPT_BUILD --> MODEL_SELECT["ironclad-llm/router.rs<br/>select_for_complexity (heuristic/ml mode)"]
     MODEL_SELECT --> FORMAT_XLATE["ironclad-llm/format.rs<br/>ApiFormat enum translation<br/>(From trait, compile-time safe)"]
     FORMAT_XLATE --> CIRCUIT{"ironclad-llm/circuit.rs<br/>Circuit Breaker<br/>blocked?"}
     CIRCUIT -->|blocked| FALLBACK["Advance fallback chain<br/>(models.fallbacks config)"]
@@ -64,18 +59,17 @@ flowchart TD
     RESP --> RESP_XLATE["Format back-translation<br/>(if format mismatch)"]
     RESP --> COST_TRACK["Record in inference_costs table<br/>(model, provider, tokens_in,<br/>tokens_out, cost, tier)"]
 
-    RESP_XLATE --> INJECTION_L3["ironclad-agent/policy.rs<br/>Layer 3: Output Validation<br/>(authority rules on tool calls,<br/>financial guards, self-mod guards)"]
-    INJECTION_L3 --> TOOL_EXEC{"Tool calls<br/>requested?"}
-    TOOL_EXEC -->|yes| POLICY_EVAL["Policy engine evaluates<br/>each tool call<br/>(policy_decisions table)"]
+    RESP_XLATE --> TOOL_EXEC{"Tool calls<br/>requested?"}
+    TOOL_EXEC -->|yes| POLICY_EVAL["Policy engine (6 rules)<br/>Authority, CommandSafety, Financial,<br/>PathProtection, RateLimit, Validation"]
     POLICY_EVAL --> EXEC_TOOLS["Execute allowed tools<br/>(tool_calls table)"]
     TOOL_EXEC -->|no| PERSIST
     EXEC_TOOLS --> PERSIST
 
     PERSIST["ironclad-db<br/>Atomic SQLite transaction:<br/>1. Append session_messages<br/>2. Record turn<br/>3. Record tool_calls<br/>4. Record policy_decisions"]
 
-    PERSIST --> INJECTION_L4["Layer 4: Adaptive Refinement<br/>(scan response for injection<br/>patterns before delivery,<br/>anomaly detection)"]
-    INJECTION_L4 --> MEMORY_INGEST["ironclad-agent/memory.rs<br/>Post-turn Memory Ingestion<br/>(classify -> extract -> store)"]
-    MEMORY_INGEST --> CACHE_STORE["ironclad-llm/cache.rs<br/>Store in semantic_cache<br/>(prompt_hash + embedding +<br/>response + expires_at)"]
+    PERSIST --> INJECTION_L4["ironclad-agent/injection.rs L4<br/>scan_output: NFKC, decode, homoglyph, regex"]
+    INJECTION_L4 --> MEMORY_INGEST["ironclad-agent/memory.rs<br/>ingest_turn: classify_turn -> store"]
+    MEMORY_INGEST --> CACHE_STORE["ironclad-llm/cache.rs<br/>store() in HashMap"]
     CACHE_STORE --> DELIVER["ironclad-channels<br/>Channel Adapter<br/>(format for platform + deliver)"]
     DELIVER --> USER_RESP["Response to User"]
 
@@ -86,61 +80,52 @@ flowchart TD
 
 ## 2. Semantic Cache Dataflow
 
-All operations within `ironclad-llm/cache.rs`, data in `semantic_cache` table.
+All operations within `ironclad-llm/cache.rs`. **In-memory only** (HashMap `SemanticCache.entries`). No SQLite; the `semantic_cache` table in the DB schema is not used by the runtime cache.
 
 ```mermaid
 flowchart TD
     subgraph Lookup["Cache Lookup (per-request)"]
-        PROMPT_IN["Incoming prompt<br/>(system + conversation + user message)"]
-        PROMPT_IN --> HASH["SHA-256 hash<br/>(system_prompt_hash +<br/>conversation_hash +<br/>user_message)"]
-        HASH --> EXACT{"Exact match?<br/>SELECT FROM semantic_cache<br/>WHERE prompt_hash = ?<br/>AND expires_at > now()"}
-        EXACT -->|hit| HIT_EXACT["Return cached response<br/>UPDATE hit_count = hit_count + 1"]
-        EXACT -->|miss| EMBED["Compute embedding<br/>(local ONNX model,<br/>all-MiniLM-L6-v2, ~5ms)"]
-        EMBED --> ANN{"Approximate nearest<br/>neighbor search<br/>cosine > cache.semantic_threshold<br/>(default 0.95)"}
-        ANN -->|hit| HIT_SEMANTIC["Return cached response<br/>UPDATE hit_count = hit_count + 1"]
-        ANN -->|miss| TOOL_CHECK{"Request involves<br/>deterministic tool?<br/>(check_credits, git_status,<br/>system_synopsis)"}
-        TOOL_CHECK -->|yes| TTL_CACHE{"Per-tool TTL<br/>cache hit?"}
-        TTL_CACHE -->|hit| HIT_TOOL["Return cached tool result"]
-        TTL_CACHE -->|miss| MISS["Cache miss<br/>-> forward to LLM pipeline"]
-        TOOL_CHECK -->|no| MISS
+        PROMPT_IN["Incoming prompt"]
+        PROMPT_IN --> HASH["SemanticCache::compute_hash<br/>(system | messages | user_msg)"]
+        HASH --> EXACT{"lookup_exact(prompt_hash)<br/>HashMap get, check expires_at"}
+        EXACT -->|hit| HIT_EXACT["Return CachedResponse<br/>hits++"]
+        EXACT -->|miss| L3{"lookup_tool_ttl(prompt_hash)"}
+        L3 -->|hit| HIT_TOOL["Return cached (shorter TTL if tools)"]
+        L3 -->|miss| EMBED["lookup_semantic(prompt)<br/>char n-gram embedding, cosine"]
+        EMBED --> ANN{"cosine >= similarity_threshold (0.85)"}
+        ANN -->|hit| HIT_SEMANTIC["Return best match"]
+        ANN -->|miss| MISS["Cache miss -> LLM pipeline"]
     end
 
     subgraph Store["Cache Store (post-response)"]
         RESP_OK["Successful LLM response"]
-        RESP_OK --> STORE_ENTRY["INSERT INTO semantic_cache<br/>(id, prompt_hash, embedding,<br/>response, model, tokens_saved,<br/>expires_at = now() +<br/>cache.exact_match_ttl_seconds)"]
+        RESP_OK --> STORE_ENTRY["store() or store_with_embedding()<br/>entries.insert(prompt_hash, entry)<br/>evict_lfu() if len >= max_entries"]
     end
 
-    subgraph CostRecord["Cost Recording"]
-        HIT_EXACT & HIT_SEMANTIC & HIT_TOOL --> RECORD_HIT["INSERT INTO inference_costs<br/>(cached = 1, tokens_saved =<br/>estimated tokens of cached response,<br/>cost = 0.0)"]
-    end
-
-    subgraph Eviction["Background Eviction (heartbeat task)"]
-        EVICT_TIMER["Heartbeat tick"]
-        EVICT_TIMER --> EXPIRE["DELETE FROM semantic_cache<br/>WHERE expires_at < now()"]
-        EVICT_TIMER --> COUNT{"Row count ><br/>cache.max_entries?<br/>(default 10000)"}
-        COUNT -->|yes| LRU["DELETE lowest hit_count rows<br/>until count <= max_entries"]
-        COUNT -->|no| DONE_EVICT["No action"]
+    subgraph Eviction["Eviction"]
+        EVICT_EXPIRE["evict_expired(): retain where expires_at > now()"]
+        EVICT_LFU["evict_lfu(): remove min hits when at capacity"]
     end
 ```
 
 ---
 
-## 3. ML Model Router Dataflow
+## 3. Heuristic Model Router Dataflow
 
-Implemented in `ironclad-llm/router.rs`.
+Implemented in `ironclad-llm/router.rs`. **No ONNX or ML** — heuristic classifier only.
 
 ```mermaid
 flowchart TD
     QUERY["Incoming query<br/>(post context assembly)"]
     QUERY --> MODE{"models.routing.mode?"}
 
-    MODE -->|"rule"| RULE_CHAIN["Static fallback chain<br/>(models.primary, then<br/>models.fallbacks in order)"]
+    MODE -->|"primary"| RULE_CHAIN["Always primary model"]
 
-    MODE -->|"ml"| FEATURES["Extract features:<br/>- message char length<br/>- tool_call count in history<br/>- conversation depth (turns)<br/>- keyword signals (code, math,<br/>  analyze, summarize, etc.)"]
-    FEATURES --> ONNX["ONNX classifier<br/>(~11us, embedded in binary)<br/>output: complexity score 0.0-1.0"]
-    ONNX --> LOCAL_FIRST{"models.routing.local_first<br/>= true AND score <<br/>models.routing.confidence_threshold?<br/>(default 0.9)"}
-    LOCAL_FIRST -->|yes| T1_ROUTE["Route to T1<br/>(first available Ollama model)"]
-    LOCAL_FIRST -->|no| PRIMARY_ROUTE["Route to models.primary<br/>(e.g., openai-codex/gpt-5.3-codex)"]
+    MODE -->|"heuristic" or "ml"| FEATURES["extract_features():<br/>message len, tool_call count, depth"]
+    FEATURES --> HEURISTIC["HeuristicBackend::classify_complexity<br/>weighted sum -> score 0.0-1.0"]
+    HEURISTIC --> LOCAL_FIRST{"local_first && score <<br/>confidence_threshold?<br/>primary is_local from registry or heuristic"}
+    LOCAL_FIRST -->|yes| T1_ROUTE["Use primary (local)"]
+    LOCAL_FIRST -->|no| PRIMARY_ROUTE["select_for_complexity:<br/>high score -> fallback[0], else primary"]
 
     T1_ROUTE --> T1_RESP{"T1 response<br/>quality OK?<br/>(not truncated, not refusal,<br/>not nonsensical)"}
     T1_RESP -->|yes| ACCEPT["Accept response"]
@@ -590,7 +575,7 @@ flowchart TD
 | Differentiator | Diagrammed? |
 |---------------|-------------|
 | Semantic cache | Diagram 2 |
-| ML model routing | Diagram 3 |
+| Heuristic model routing | Diagram 3 |
 | Yield engine | Diagram 7 |
 | Zero-trust A2A | Diagram 5 |
 | Multi-layer injection defense | Diagram 6 |
@@ -670,13 +655,13 @@ All 12 inconsistencies identified across two audit passes have been resolved:
 
 | Module | Functions to Test | Mock Strategy |
 |--------|-------------------|---------------|
-| ironclad-llm/cache.rs | `exact_lookup()`, `semantic_lookup()`, `tool_cache_lookup()`, `store()`, `evict_expired()`, `evict_lru()`, `compute_hash()` | In-memory SQLite, mock ONNX embedding (return fixed vectors) |
+| ironclad-llm/cache.rs | `lookup_exact()`, `lookup_semantic()`, `lookup_tool_ttl()`, `lookup()`, `store()`, `store_with_embedding()`, `evict_expired()`, `evict_lfu()`, `compute_hash()` | In-memory HashMap, fixed n-gram vectors for tests |
 
-### Diagram 3 -- ML Router
+### Diagram 3 -- Heuristic Router
 
 | Module | Functions to Test | Mock Strategy |
 |--------|-------------------|---------------|
-| ironclad-llm/router.rs | `extract_features()`, `classify_complexity()`, `select_model()`, `fallback_next()`, `check_t1_quality()` | Mock ONNX runtime (return fixed scores), mock circuit breaker state |
+| ironclad-llm/router.rs | `extract_features()`, `classify_complexity()`, `select_model()`, `select_for_complexity()`, `advance_fallback()`, `reset()` | HeuristicBackend (no mock; pure functions), mock ProviderRegistry |
 
 ### Diagram 4 -- Memory
 

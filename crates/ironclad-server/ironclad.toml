@@ -1,0 +1,59 @@
+# Ironclad Configuration
+# See: https://roboticus.ai/docs/configuration
+
+[agent]
+name = "MyAgent"
+id = "my-agent"
+workspace = "~/.ironclad/workspace"
+log_level = "info"
+
+[server]
+port = 18789
+bind = "127.0.0.1"
+
+[database]
+path = "~/.ironclad/state.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+fallbacks = []
+
+[models.routing]
+mode = "rule"
+confidence_threshold = 0.9
+local_first = true
+
+[memory]
+working_budget_pct = 30.0
+episodic_budget_pct = 25.0
+semantic_budget_pct = 20.0
+procedural_budget_pct = 15.0
+relationship_budget_pct = 10.0
+
+[cache]
+enabled = true
+exact_match_ttl_seconds = 3600
+semantic_threshold = 0.95
+max_entries = 10000
+
+[treasury]
+per_payment_cap = 100.0
+hourly_transfer_limit = 500.0
+daily_transfer_limit = 2000.0
+minimum_reserve = 5.0
+daily_inference_budget = 50.0
+
+[skills]
+skills_dir = "~/.ironclad/skills"
+script_timeout_seconds = 30
+script_max_output_bytes = 1048576
+allowed_interpreters = ["bash", "python3", "node"]
+sandbox_env = true
+hot_reload = true
+
+[a2a]
+enabled = true
+max_message_size = 65536
+rate_limit_per_peer = 10
+session_timeout_seconds = 3600
+require_on_chain_identity = true

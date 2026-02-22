@@ -1,15 +1,23 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
+use aes_gcm::{
+    aead::{Aead, AeadCore, KeyInit},
+    Aes256Gcm,
+};
 use chrono::{DateTime, Utc};
+use hkdf::Hkdf;
 use ironclad_core::{IroncladError, Result, config::A2aConfig};
 use serde_json::{Value, json};
+use sha2::Sha256;
 use std::fmt::Write as _;
 use tracing::debug;
+use x25519_dalek::{EphemeralSecret, PublicKey};
 
 pub struct A2aSession {
     pub peer_did: String,
-    pub session_key: Vec<u8>,
+    /// ECDH-derived session key for AES-256-GCM; set after key agreement.
+    pub session_key: Option<[u8; 32]>,
     pub established_at: DateTime<Utc>,
     pub last_activity: DateTime<Utc>,
 }
@@ -127,6 +135,66 @@ impl A2aProtocol {
 
         Ok(did.to_string())
     }
+
+    /// Generate an ephemeral X25519 keypair for ECDH.
+    pub fn generate_keypair() -> (EphemeralSecret, PublicKey) {
+        let secret = EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+        let public = PublicKey::from(&secret);
+        (secret, public)
+    }
+
+    /// Derive a 32-byte session key from X25519 ECDH shared secret using HKDF-SHA256.
+    pub fn derive_session_key(
+        our_secret: EphemeralSecret,
+        their_public: &PublicKey,
+    ) -> [u8; 32] {
+        let shared = our_secret.diffie_hellman(their_public);
+        let h = Hkdf::<Sha256>::new(None, shared.as_bytes());
+        let mut key = [0u8; 32];
+        // SAFETY: HKDF-SHA256 expand to 32 bytes cannot fail per RFC 5869
+        h.expand(b"ironclad-a2a-session", &mut key)
+            .expect("HKDF expand to 32 bytes");
+        key
+    }
+
+    /// Encrypt plaintext with AES-256-GCM; returns 12-byte nonce || ciphertext (including tag).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ironclad_channels::a2a::A2aProtocol;
+    ///
+    /// let key = [0x42u8; 32];
+    /// let plaintext = b"secret data";
+    /// let ciphertext = A2aProtocol::encrypt_message(&key, plaintext).unwrap();
+    /// let decrypted = A2aProtocol::decrypt_message(&key, &ciphertext).unwrap();
+    /// assert_eq!(decrypted, plaintext);
+    /// ```
+    pub fn encrypt_message(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
+        let cipher = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| IroncladError::A2a(format!("AES-GCM key init: {e}")))?;
+        let nonce = Aes256Gcm::generate_nonce(rand::rngs::OsRng);
+        let ciphertext = cipher
+            .encrypt(&nonce, plaintext)
+            .map_err(|e| IroncladError::A2a(format!("AES-GCM encrypt: {e}")))?;
+        let mut out = nonce.to_vec();
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+
+    /// Decrypt ciphertext (format: 12-byte nonce || ciphertext); returns plaintext.
+    pub fn decrypt_message(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>> {
+        if ciphertext.len() < 12 {
+            return Err(IroncladError::A2a("ciphertext too short for nonce".into()));
+        }
+        let (nonce_bytes, ct) = ciphertext.split_at(12);
+        let cipher = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| IroncladError::A2a(format!("AES-GCM key init: {e}")))?;
+        let nonce = aes_gcm::Nonce::from_slice(nonce_bytes);
+        cipher
+            .decrypt(nonce, ct)
+            .map_err(|e| IroncladError::A2a(format!("AES-GCM decrypt: {e}")))
+    }
 }
 
 #[cfg(test)]
@@ -225,5 +293,42 @@ mod tests {
         for _ in 0..100 {
             assert!(proto.check_rate_limit("peer-1").is_ok());
         }
+    }
+
+    #[test]
+    fn key_agreement_produces_matching_session_keys() {
+        let (secret_a, public_a) = A2aProtocol::generate_keypair();
+        let (secret_b, public_b) = A2aProtocol::generate_keypair();
+
+        let key_a = A2aProtocol::derive_session_key(secret_a, &public_b);
+        let key_b = A2aProtocol::derive_session_key(secret_b, &public_a);
+
+        assert_eq!(key_a, key_b, "ECDH session keys must match");
+    }
+
+    #[test]
+    fn aes256gcm_encrypt_decrypt_roundtrip() {
+        let key = [0u8; 32];
+        let plaintext = b"hello a2a";
+        let ciphertext =
+            A2aProtocol::encrypt_message(&key, plaintext).expect("encrypt");
+        assert!(ciphertext.len() > plaintext.len());
+        let decrypted =
+            A2aProtocol::decrypt_message(&key, &ciphertext).expect("decrypt");
+        assert_eq!(decrypted.as_slice(), plaintext);
+    }
+
+    #[test]
+    fn tampered_ciphertext_fails_decryption() {
+        let key = [0u8; 32];
+        let plaintext = b"secret";
+        let mut ciphertext =
+            A2aProtocol::encrypt_message(&key, plaintext).expect("encrypt");
+        // Tamper with the ciphertext (after the 12-byte nonce).
+        if ciphertext.len() > 20 {
+            ciphertext[20] = ciphertext[20].wrapping_add(1);
+        }
+        let err = A2aProtocol::decrypt_message(&key, &ciphertext).unwrap_err();
+        assert!(err.to_string().contains("decrypt"));
     }
 }

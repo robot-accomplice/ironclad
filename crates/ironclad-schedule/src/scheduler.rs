@@ -107,7 +107,7 @@ fn match_field(actual: u32, pattern: &str) -> bool {
     if pattern == "*" {
         return true;
     }
-    pattern.parse::<u32>().map_or(false, |v| v == actual)
+    pattern.parse::<u32>() == Ok(actual)
 }
 
 #[cfg(test)]

@@ -48,13 +48,12 @@ impl SemanticCache {
             return None;
         }
 
-        if let Some(entry) = self.entries.get_mut(prompt_hash) {
-            if Instant::now() < entry.expires_at {
+        if let Some(entry) = self.entries.get_mut(prompt_hash)
+            && Instant::now() < entry.expires_at {
                 entry.hits += 1;
                 self.hit_count += 1;
                 return Some(entry.clone());
             }
-        }
 
         self.miss_count += 1;
         None
@@ -79,11 +78,10 @@ impl SemanticCache {
             }
             if let Some(ref emb) = entry.embedding {
                 let sim = cosine_similarity(&query_emb, emb);
-                if sim >= self.similarity_threshold {
-                    if best_match.is_none() || sim > best_match.unwrap().1 {
+                if sim >= self.similarity_threshold
+                    && best_match.as_ref().is_none_or(|(_, best_sim)| sim > *best_sim) {
                         best_match = Some((key, sim));
                     }
-                }
             }
         }
 
@@ -142,7 +140,7 @@ impl SemanticCache {
         }
 
         if self.entries.len() >= self.max_entries {
-            self.evict_lru();
+            self.evict_lfu();
         }
 
         let now = Instant::now();
@@ -181,8 +179,8 @@ impl SemanticCache {
         self.entries.retain(|_, v| v.expires_at > now);
     }
 
-    /// Remove the entry with the fewest hits to stay within `max_entries`.
-    pub fn evict_lru(&mut self) {
+    /// Remove the entry with the fewest hits (LFU) to stay within `max_entries`.
+    pub fn evict_lfu(&mut self) {
         if let Some(key) = self
             .entries
             .iter()
@@ -247,6 +245,15 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn cosine_self_similarity_is_one(v in proptest::collection::vec(-1.0f32..1.0, 8..32)) {
+            let sim = cosine_similarity(&v, &v);
+            prop_assert!((sim - 1.0).abs() < 0.001);
+        }
+    }
 
     fn make_response(content: &str) -> CachedResponse {
         let now = Instant::now();
@@ -301,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn lru_eviction_at_capacity() {
+    fn lfu_eviction_at_capacity() {
         let mut cache = SemanticCache::new(true, 3600, 2);
 
         let h1 = "hash_1".to_string();
@@ -396,5 +403,29 @@ mod tests {
 
         let c = vec![0.0, 1.0, 0.0];
         assert!(cosine_similarity(&a, &c).abs() < f64::EPSILON as f32);
+    }
+
+    // 9C: Edge cases — 0 capacity, duplicate keys
+    #[test]
+    fn cache_zero_capacity_still_stores_one() {
+        let mut cache = SemanticCache::new(true, 3600, 0);
+        let hash = SemanticCache::compute_hash("", "", "q");
+        cache.store(&hash, make_response("a"));
+        assert_eq!(cache.size(), 1);
+        let hit = cache.lookup_exact(&hash);
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().content, "a");
+    }
+
+    #[test]
+    fn cache_duplicate_key_overwrites() {
+        let mut cache = SemanticCache::new(true, 3600, 10);
+        let hash = "dup_key".to_string();
+        cache.store(&hash, make_response("first"));
+        cache.store(&hash, make_response("second"));
+        assert_eq!(cache.size(), 1);
+        let hit = cache.lookup_exact(&hash);
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().content, "second");
     }
 }

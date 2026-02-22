@@ -14,8 +14,9 @@ pub use dedup::DedupTracker;
 pub use provider::{Provider, ProviderRegistry};
 pub use router::{ModelRouter, classify_complexity, extract_features};
 
-use ironclad_core::IroncladConfig;
 use ironclad_core::config::RoutingConfig;
+use ironclad_core::{IroncladConfig, Result};
+use router::HeuristicBackend;
 
 pub struct LlmService {
     pub cache: SemanticCache,
@@ -27,7 +28,7 @@ pub struct LlmService {
 }
 
 impl LlmService {
-    pub fn new(config: &IroncladConfig) -> Self {
+    pub fn new(config: &IroncladConfig) -> Result<Self> {
         let cache = SemanticCache::new(
             config.cache.enabled,
             config.cache.exact_match_ttl_seconds,
@@ -48,20 +49,21 @@ impl LlmService {
             config.models.primary.clone(),
             config.models.fallbacks.clone(),
             routing_config,
+            Box::new(HeuristicBackend),
         );
 
-        let client = LlmClient::new();
+        let client = LlmClient::new()?;
 
         let providers = ProviderRegistry::from_config(&config.providers);
 
-        Self {
+        Ok(Self {
             cache,
             breakers,
             dedup,
             router,
             client,
             providers,
-        }
+        })
     }
 }
 
@@ -95,7 +97,7 @@ url = "https://api.openai.com"
 tier = "T3"
 "#;
         let config = IroncladConfig::from_str(toml).unwrap();
-        let service = LlmService::new(&config);
+        let service = LlmService::new(&config).unwrap();
 
         assert_eq!(service.router.select_model(), "ollama/qwen3:8b");
         assert_eq!(service.cache.size(), 0);

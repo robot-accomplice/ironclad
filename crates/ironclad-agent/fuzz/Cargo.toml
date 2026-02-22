@@ -1,0 +1,22 @@
+[package]
+name = "ironclad-agent-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ironclad-agent = { path = ".." }
+
+[[bin]]
+name = "fuzz_check_injection"
+path = "fuzz_targets/fuzz_check_injection.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_scan_output"
+path = "fuzz_targets/fuzz_scan_output.rs"
+doc = false

@@ -188,4 +188,35 @@ mod tests {
         assert!(!result.success);
         assert!(result.error.as_deref().unwrap().contains("not started"));
     }
+
+    #[tokio::test]
+    async fn navigate_without_browser_returns_error_not_panic() {
+        let browser = Browser::new(BrowserConfig::default());
+        let action = actions::BrowserAction::Navigate {
+            url: "https://example.com".into(),
+        };
+        let result = browser.execute_action(&action).await;
+        assert!(!result.success, "navigate should fail when browser isn't started");
+        assert!(result.error.is_some());
+        assert!(result.data.is_none());
+    }
+
+    #[tokio::test]
+    async fn all_actions_return_error_without_session() {
+        let browser = Browser::new(BrowserConfig::default());
+        let cases = vec![
+            actions::BrowserAction::Navigate { url: "https://example.com".into() },
+            actions::BrowserAction::Click { selector: "#btn".into() },
+            actions::BrowserAction::Type { selector: "input".into(), text: "hello".into() },
+            actions::BrowserAction::Screenshot,
+            actions::BrowserAction::Evaluate { expression: "1+1".into() },
+            actions::BrowserAction::ReadPage,
+            actions::BrowserAction::Reload,
+        ];
+        for action in &cases {
+            let result = browser.execute_action(action).await;
+            assert!(!result.success, "action {:?} should fail without session", action);
+            assert!(result.error.is_some());
+        }
+    }
 }

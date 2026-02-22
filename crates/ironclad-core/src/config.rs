@@ -63,8 +63,44 @@ impl IroncladConfig {
         Self::from_str(&contents)
     }
 
+    /// Parse configuration from a TOML string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ironclad_core::config::IroncladConfig;
+    ///
+    /// let toml = r#"
+    /// [agent]
+    /// name = "Test"
+    /// id = "test-1"
+    /// workspace = "/tmp"
+    /// log_level = "info"
+    ///
+    /// [server]
+    /// host = "127.0.0.1"
+    /// port = 3001
+    ///
+    /// [database]
+    /// path = "/tmp/test.db"
+    ///
+    /// [models]
+    /// primary = "ollama/qwen3:8b"
+    /// "#;
+    /// let config = IroncladConfig::from_str(toml).unwrap();
+    /// assert_eq!(config.server.port, 3001);
+    /// ```
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(toml_str: &str) -> Result<Self> {
         let mut config: Self = toml::from_str(toml_str)?;
+        config.database.path = expand_tilde(&config.database.path);
+        config.agent.workspace = expand_tilde(&config.agent.workspace);
+        config.server.log_dir = expand_tilde(&config.server.log_dir);
+        config.skills.skills_dir = expand_tilde(&config.skills.skills_dir);
+        config.wallet.path = expand_tilde(&config.wallet.path);
+        config.plugins.dir = expand_tilde(&config.plugins.dir);
+        config.browser.profile_dir = expand_tilde(&config.browser.profile_dir);
+        config.daemon.pid_file = expand_tilde(&config.daemon.pid_file);
         config.merge_bundled_providers();
         config.validate()?;
         Ok(config)
@@ -146,6 +182,15 @@ fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp"))
+}
+
+/// Expands a leading `~` in `path` to the user's home directory; otherwise returns the path unchanged.
+fn expand_tilde(path: &Path) -> PathBuf {
+    if let Ok(stripped) = path.strip_prefix("~") {
+        home_dir().join(stripped)
+    } else {
+        path.to_path_buf()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,7 +277,7 @@ impl Default for RoutingConfig {
 }
 
 fn default_routing_mode() -> String {
-    "ml".into()
+    "heuristic".into()
 }
 
 fn default_confidence_threshold() -> f64 {
@@ -503,6 +548,19 @@ pub struct YieldConfig {
     pub min_deposit: f64,
     #[serde(default = "default_withdrawal_threshold")]
     pub withdrawal_threshold: f64,
+    /// RPC URL for yield chain (e.g. Base Sepolia). If unset, deposit/withdraw use mock behavior.
+    #[serde(default)]
+    pub chain_rpc_url: Option<String>,
+    /// Aave V3 Pool address. Default: Base Sepolia.
+    #[serde(default = "default_yield_pool_address")]
+    pub pool_address: String,
+    /// Underlying asset (e.g. USDC) address for supply/withdraw. Default: Base Sepolia USDC.
+    #[serde(default = "default_yield_usdc_address")]
+    pub usdc_address: String,
+    /// aToken address for balance checks (e.g. aBase Sepolia USDC).
+    /// When `None`, falls back to the Base Sepolia aUSDC default.
+    #[serde(default)]
+    pub atoken_address: Option<String>,
 }
 
 impl Default for YieldConfig {
@@ -513,6 +571,10 @@ impl Default for YieldConfig {
             chain: default_yield_chain(),
             min_deposit: default_min_deposit(),
             withdrawal_threshold: default_withdrawal_threshold(),
+            chain_rpc_url: None,
+            pool_address: default_yield_pool_address(),
+            usdc_address: default_yield_usdc_address(),
+            atoken_address: None,
         }
     }
 }
@@ -530,6 +592,14 @@ fn default_withdrawal_threshold() -> f64 {
     30.0
 }
 
+/// Aave V3 Pool on Base Sepolia
+fn default_yield_pool_address() -> String {
+    "0x07eA79F68B2B3df564D0A34F8e19D9B1e339814b".into()
+}
+/// USDC on Base Sepolia
+fn default_yield_usdc_address() -> String {
+    "0x036CbD53842c5426634e7929541eC2318f3dCF7e".into()
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletConfig {
     #[serde(default = "default_wallet_path")]
@@ -664,6 +734,8 @@ pub struct TelegramConfig {
     pub webhook_mode: bool,
     #[serde(default)]
     pub webhook_path: Option<String>,
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -678,6 +750,9 @@ pub struct WhatsAppConfig {
     pub verify_token: String,
     #[serde(default)]
     pub allowed_numbers: Vec<String>,
+    /// App secret for webhook X-Hub-Signature-256 verification (HMAC-SHA256).
+    #[serde(default)]
+    pub app_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -882,6 +957,32 @@ fn default_firmware_file() -> String { "FIRMWARE.toml".into() }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn config_toml_roundtrip_preserves_values(port in 1024u16..=65535u16) {
+            let toml_str = format!(r#"
+[agent]
+name = "TestBot"
+id = "test"
+workspace = "/tmp/test"
+log_level = "debug"
+
+[server]
+host = "127.0.0.1"
+port = {port}
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+"#);
+            let config = IroncladConfig::from_str(&toml_str).unwrap();
+            assert_eq!(config.server.port, port);
+        }
+    }
 
     fn minimal_toml() -> &'static str {
         r#"
@@ -1202,5 +1303,27 @@ cost_per_output_token = 0.00015
         let toml_str = IroncladConfig::bundled_providers_toml();
         let parsed: BundledProviders = toml::from_str(toml_str).expect("bundled TOML must parse");
         assert!(!parsed.providers.is_empty());
+    }
+
+    #[test]
+    fn tilde_expansion_in_database_path() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let expected = std::path::PathBuf::from(&home).join(".ironclad").join("state.db");
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "~/.ironclad/state.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+"#;
+        let cfg = IroncladConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.database.path, expected, "~/.ironclad/state.db should expand to $HOME/.ironclad/state.db");
     }
 }

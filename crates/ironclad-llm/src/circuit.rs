@@ -37,11 +37,10 @@ impl CircuitBreaker {
     fn effective_state(&self) -> CircuitState {
         match self.state {
             CircuitState::Open => {
-                if let Some(last) = self.last_failure_at {
-                    if last.elapsed() >= self.cooldown {
+                if let Some(last) = self.last_failure_at
+                    && last.elapsed() >= self.cooldown {
                         return CircuitState::HalfOpen;
                     }
-                }
                 CircuitState::Open
             }
             other => other,
@@ -112,11 +111,10 @@ impl CircuitBreakerRegistry {
             }
             CircuitState::Closed => {
                 let now = Instant::now();
-                if let Some(last) = cb.last_failure_at {
-                    if now.duration_since(last) > cb.window {
+                if let Some(last) = cb.last_failure_at
+                    && now.duration_since(last) > cb.window {
                         cb.failure_count = 0;
                     }
-                }
                 cb.failure_count += 1;
                 cb.last_failure_at = Some(now);
                 if cb.failure_count >= cb.threshold {

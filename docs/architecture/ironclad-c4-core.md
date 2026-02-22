@@ -12,6 +12,8 @@ flowchart TB
         CONFIG["config.rs<br/>Unified Configuration"]
         ERROR["error.rs<br/>Error Types (thiserror)"]
         TYPES["types.rs<br/>Shared Domain Types"]
+        PERSONALITY["personality.rs<br/>OS/Soul/Firmware"]
+        STYLE["style.rs<br/>Theme, CRT, Typewriter"]
     end
 
     subgraph ConfigDetail ["config.rs internals"]
@@ -19,7 +21,7 @@ flowchart TB
         AGENT_CFG["AgentConfig<br/>name, id, workspace, log_level"]
         SERVER_CFG["ServerConfig<br/>port, bind"]
         DB_CFG["DatabaseConfig<br/>path"]
-        MODELS_CFG["ModelsConfig<br/>primary, fallbacks,<br/>RoutingConfig (mode, threshold, local_first)"]
+        MODELS_CFG["ModelsConfig<br/>primary, fallbacks,<br/>RoutingConfig (mode default 'heuristic',<br/>'ml' backward-compat alias)"]
         PROVIDERS_CFG["ProvidersConfig<br/>HashMap of ProviderConfig<br/>(url, tier)"]
         CB_CFG["CircuitBreakerConfig<br/>threshold, windows, cooldowns"]
         MEMORY_CFG["MemoryConfig<br/>5x budget percentages"]
@@ -43,10 +45,13 @@ flowchart TB
         SKILL_TRIGGER["SkillTrigger<br/>keywords, tool_names,<br/>regex_patterns"]
         SKILL_MANIFEST["SkillManifest<br/>name, description, kind,<br/>triggers, tool_chain,<br/>policy_overrides, script_path"]
         INSTRUCTION_SKILL["InstructionSkill<br/>name, triggers, priority,<br/>body (markdown)"]
+        TOOL_CHAIN_STEP["ToolChainStep<br/>tool_name, params"]
+        INPUT_AUTH["InputAuthority<br/>Creator, SelfGenerated,<br/>Peer, External"]
+        SCHED_KIND["ScheduleKind<br/>Cron, Every, At"]
     end
 
     subgraph ErrorDetail ["error.rs"]
-        IRONCLAD_ERR["IroncladError (thiserror)<br/>variants: Config, Database,<br/>Llm, Network, Policy, Tool,<br/>Wallet, Injection, Schedule,<br/>A2a, Io, Skill"]
+        IRONCLAD_ERR["IroncladError (thiserror)<br/>variants: Config, Channel, Database,<br/>Llm, Network, Policy, Tool,<br/>Wallet, Injection, Schedule,<br/>A2a, Io, Skill"]
     end
 
     CONFIG --> TOML_PARSE
@@ -57,9 +62,11 @@ flowchart TB
 
 | Module | Responsibility | Key Types |
 |--------|---------------|-----------|
-| `config.rs` | Parse `ironclad.toml` into strongly-typed config structs. Validates at load time (e.g., budget percentages sum to 100, chain_id is valid). | `IroncladConfig`, `AgentConfig`, `ModelsConfig`, `TreasuryConfig`, `A2aConfig`, `SkillsConfig`, etc. |
-| `types.rs` | Domain enums and structs shared across crates. All enums are exhaustive -- adding a variant is a compile-time breaking change that forces all consumers to handle it. | `SurvivalTier`, `AgentState`, `ApiFormat`, `ModelTier`, `PolicyDecision`, `RiskLevel`, `SkillKind`, `SkillTrigger`, `SkillManifest`, `InstructionSkill` |
+| `config.rs` | Parse `ironclad.toml` into strongly-typed config structs. **Tilde expansion** applied to `database.path`, `agent.workspace`, `server.log_dir`, `skills.skills_dir`, `wallet.path`, `plugins.dir`, `browser.profile_dir`, `daemon.pid_file`. Validates at load (e.g., memory budget percentages sum to 100, `treasury.per_payment_cap` > 0). | `IroncladConfig`, `AgentConfig`, `ModelsConfig`, `RoutingConfig` (default `mode = "heuristic"`), `TreasuryConfig`, `A2aConfig`, `SkillsConfig`, etc. |
+| `types.rs` | Domain enums and structs shared across crates. All enums are exhaustive — adding a variant is a compile-time breaking change. `SurvivalTier::from_balance(usd, hours_below_zero)` derives tier from balance. | `SurvivalTier`, `AgentState`, `ApiFormat`, `ModelTier`, `PolicyDecision`, `RiskLevel`, `SkillKind`, `SkillTrigger`, `SkillManifest`, `ToolChainStep`, `InstructionSkill`, `InputAuthority`, `ScheduleKind` |
 | `error.rs` | Unified error type with `thiserror` derive. Each variant wraps crate-specific errors so the top-level binary can handle them uniformly. | `IroncladError` |
+| `personality.rs` | Load OS/soul/firmware/operator/directives from workspace; compose identity and firmware text. | `load_os`, `load_firmware`, `compose_identity_text` |
+| `style.rs` | Theme (CRT green/orange, terminal), typewriter effect, icons. | `Theme`, `sleep_ms`, `typewrite` |
 
 ## Dependencies
 
@@ -67,4 +74,4 @@ flowchart TB
 
 **Internal crates**: None (leaf node in dependency graph)
 
-**Depended on by**: All 7 other crates
+**Depended on by**: All 10 other crates

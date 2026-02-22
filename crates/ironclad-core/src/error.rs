@@ -5,6 +5,9 @@ pub enum IroncladError {
     #[error("config error: {0}")]
     Config(String),
 
+    #[error("channel error: {0}")]
+    Channel(String),
+
     #[error("database error: {0}")]
     Database(String),
 
@@ -63,6 +66,10 @@ mod tests {
             (
                 IroncladError::Config("bad toml".into()),
                 "config error: bad toml",
+            ),
+            (
+                IroncladError::Channel("serialize failed".into()),
+                "channel error: serialize failed",
             ),
             (
                 IroncladError::Database("locked".into()),

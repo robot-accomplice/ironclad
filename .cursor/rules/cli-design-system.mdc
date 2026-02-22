@@ -2,22 +2,37 @@
 
 All CLI output in Ironclad must follow these conventions. This applies to every file that writes to stdout or stderr with formatting: `main.rs`, `cli.rs`, and any future CLI modules.
 
+## Theme Variants
+
+Three selectable palettes via `--theme` flag (default: `crt-green`). Set via `IRONCLAD_THEME` env var or `--theme=<name>`.
+
+| Variant      | Flag value    | Aesthetic |
+|--------------|---------------|-----------|
+| CRT Green    | `crt-green`   | Phosphor green CRT monitor. Body text tinted green. |
+| CRT Orange   | `crt-orange`  | Amber CRT monitor. Body text tinted warm orange. |
+| Terminal     | `terminal`    | No foreground tint. Uses the terminal's native colors. |
+
 ## Color Palette
 
-Two text levels + standard semantics. CRT phosphor green aesthetic. Use the `Theme` struct from `ironclad_core::style` -- never raw ANSI codes.
+Two text levels + standard semantics per variant. Use the `Theme` struct from `ironclad_core::style` -- never raw ANSI codes.
 
-**Text should never be gray.** Only two text levels exist:
+**Text should never be gray.** Each variant has two text levels (accent and body) plus shared semantic colors:
 
-| Semantic Name | ANSI Code          | Hex Approx | Usage |
-|---------------|--------------------|------------|-------|
-| `accent`      | `\x1b[38;5;46m`    | #00ff00    | Bright phosphor green. Headings, values, emphasis, highlighted text. |
-| `dim`         | `\x1b[38;5;40m`    | #00d700    | Body-text phosphor green. Step counters, metadata, secondary text. Same as body text. |
-| `mono`        | `\x1b[38;5;46m`    | #00ff00    | Bright phosphor green. Monospace values: IDs, file paths, code snippets. Same as accent. |
-| `success`     | `\x1b[92m`         | #00ff00    | Bright green. Explicit "all passed" summaries. |
-| `warn`        | `\x1b[93m`         | #ffff00    | Yellow. Warning labels. Used sparingly -- emojis carry warning color. |
-| `error`       | `\x1b[91m`         | #ff0000    | Red. Error labels only. |
-| `info`        | `\x1b[96m`         | #00ffff    | Cyan. Debug info, provider/model names. |
-| `reset`       | `\x1b[0m\x1b[38;5;40m` | #00d700 | Reset then return to body-text green. |
+| Semantic Name | CRT Green          | CRT Orange         | Terminal           | Usage |
+|---------------|--------------------|--------------------|--------------------| ------|
+| `accent`      | 256-color 46       | 256-color 208      | bold (no fg)       | Emphasis, headings, highlighted values. |
+| `dim`         | 256-color 40       | 256-color 172      | (empty)            | Body text. Step counters, metadata, secondary text. |
+| `mono`        | 256-color 46       | 256-color 208      | bold (no fg)       | Monospace values: IDs, paths, code. |
+| `reset`       | clear + tint 40    | clear + tint 172   | plain `\x1b[0m`    | After every styled span. CRT variants re-tint; Terminal does not. |
+
+Shared semantic colors (same across all variants):
+
+| Name      | Code       | Usage |
+|-----------|------------|-------|
+| `success` | `\x1b[92m` | "All passed" summaries. |
+| `warn`    | `\x1b[93m` | Warning labels. |
+| `error`   | `\x1b[91m` | Error labels. |
+| `info`    | `\x1b[96m` | Debug info, provider names. |
 
 Use **accent for emphasis** and **reset for body text**, side by side.
 
@@ -26,20 +41,22 @@ Use **accent for emphasis** and **reset for body text**, side by side.
 | Modifier | Code         | Usage |
 |----------|--------------|-------|
 | `bold`   | `\x1b[1m`   | Section titles, command names, emphasis. Never use for body text. |
-| `reset`  | `\x1b[0m\x1b[38;5;40m` | After every color/style span. Returns to body-text green. |
 | `hard_reset` | `\x1b[0m` | Full terminal reset. Used only at program exit. |
 
-## Emoji Icon System
+## Icon System
 
-Icons are **actual emojis** that carry their own color -- no ANSI color codes on icons.
+Icons are accessed via `theme().icon_ok()`, `theme().icon_action()`, etc. -- never hardcoded emoji literals. In default mode they render as emojis with inherent color; in nerdmode they render as ASCII bracket sequences.
 
-| Context          | Emoji | Unicode        | Meaning |
-|------------------|-------|----------------|---------|
-| Status/pass/OK   | ✅    | U+2705         | Exists, loaded, accessible, PASS, done. |
-| Action/created   | ⚡    | U+26A1         | Created, fixed, installed, ready, power on. |
-| Warning          | ⚠️    | U+26A0 U+FE0F  | Warning, missing, caution, WARN, SKIP. |
-| Detail pointer   | ▸     | U+25B8         | Indented detail lines beneath a step. No color. |
-| Section divider  | ───   | Box-drawing    | Horizontal rule between major sections. |
+| Accessor         | Emoji | ASCII (nerdmode) | Meaning |
+|------------------|-------|------------------|---------|
+| `icon_ok()`      | ✅    | `[OK]`           | Exists, loaded, accessible, PASS, done. |
+| `icon_action()`  | ⚡    | `[>>]`           | Created, fixed, installed, ready, power on. |
+| `icon_warn()`    | ⚠️    | `[!!]`           | Warning, missing, caution, WARN, SKIP. |
+| `icon_detail()`  | ▸     | `>`              | Indented detail lines beneath a step. No color. |
+| `icon_error()`   | ⛓     | `[XX]`           | Error, failure, FAIL. |
+| Section divider  | ───   | ───              | Horizontal rule between major sections. (Box-drawing, unchanged in nerdmode.) |
+
+In `cli.rs`, destructure via `let (OK, ACTION, WARN, DETAIL, ERR) = icons();` alongside the `colors()` tuple. In `main.rs`, call `t.icon_ok()` etc. directly on the theme reference.
 
 ## Layout Conventions
 
@@ -104,12 +121,51 @@ Global CLI flag: `--color=auto|always|never`
 
 Precedence: `--color` flag > `NO_COLOR` env var > TTY auto-detection.
 
+### --theme Flag
+Global CLI flag: `--theme=crt-green|crt-orange|terminal`
+- `crt-green` (default): phosphor green CRT aesthetic
+- `crt-orange`: amber CRT aesthetic
+- `terminal`: no foreground override, uses terminal's native colors
+
+Also settable via `IRONCLAD_THEME` env var.
+
+### --nerdmode Flag
+Global CLI flag: `--nerdmode` (also `IRONCLAD_NERDMODE=1` env var).
+
+A composite retro mode that activates three behaviors simultaneously:
+
+1. **CRT tint override** -- Forces CRT Green palette. If `--theme=crt-orange` was explicitly set, orange is preserved. Only `terminal` gets overridden to green.
+2. **ASCII icons** -- All emojis are replaced with ASCII bracket sequences at render time.
+3. **Typewriter draw forced on** -- Overrides `--no-draw`; text always renders character-by-character.
+
+Effectively: `--nerdmode` = CRT green (unless orange) + ASCII symbols + typewriter on.
+
+#### ASCII Symbol Mapping (nerdmode)
+
+| Normal Emoji | ASCII    | Meaning |
+|-------------|----------|---------|
+| ✅           | `[OK]`   | Status pass, exists, done |
+| ⚡           | `[>>]`   | Action, created, ready |
+| ⚠️           | `[!!]`   | Warning, caution |
+| ▸            | `>`      | Detail pointer |
+| ⛓            | `[XX]`   | Error, failure |
+
+#### Flag Interaction
+
+| Flags combined               | Result |
+|------------------------------|--------|
+| `--nerdmode`                  | CRT Green + ASCII + draw ON |
+| `--nerdmode --theme=crt-orange` | CRT Orange + ASCII + draw ON |
+| `--nerdmode --theme=terminal` | CRT Green + ASCII + draw ON (terminal overridden) |
+| `--nerdmode --no-draw`        | CRT Green + ASCII + draw ON (--no-draw overridden) |
+| `--nerdmode --color=never`    | No color + ASCII + draw OFF (color=never wins) |
+
 ### Implementation
 Use `ironclad_core::style::Theme`:
 ```rust
-let theme = Theme::detect(); // checks NO_COLOR, TTY
+let theme = Theme::detect(); // defaults: NO_COLOR check, TTY, CrtGreen
 // or
-let theme = Theme::from_flag("auto"); // from --color flag value
+let theme = Theme::from_flags("auto", "crt-green"); // from --color and --theme flags
 ```
 
 All output functions accept `&Theme` or use a thread-local/global theme. Never call `\x1b[...` directly.
@@ -117,10 +173,11 @@ All output functions accept `&Theme` or use a thread-local/global theme. Never c
 ## Accessibility
 
 - **Emojis carry meaning and color**: ✅ ⚡ ⚠️ are distinguishable without ANSI codes. Color is inherent.
-- **Text is never gray**: only bright accent and body-text green. Two levels, no murky mid-tones.
-- **CRT typewriter draw**: text renders character-by-character. Disable with `--no-draw`.
-- **Text alternatives**: status is always conveyed in text alongside emojis (e.g., `✅ PASS` not just `✅`).
-- **Graceful degradation**: when color is disabled, emojis still carry meaning. Output remains structured.
+- **Nerdmode ASCII fallback**: `--nerdmode` replaces emojis with ASCII bracket sequences (`[OK]`, `[>>]`, `[!!]`, `>`, `[XX]`) for terminals that don't render emoji well or for the retro aesthetic.
+- **Text is never gray**: only bright accent and body text. Two levels per variant, no murky mid-tones.
+- **CRT typewriter draw**: text renders character-by-character. Disable with `--no-draw` (nerdmode overrides this).
+- **Text alternatives**: status is always conveyed in text alongside icons (e.g., `✅ PASS` not just `✅`).
+- **Graceful degradation**: when color is disabled, icons still carry meaning. Output remains structured.
 - **Screen readers**: avoid box-drawing for critical information. Use it only for decoration.
 
 ## Future TUI Considerations
@@ -137,12 +194,89 @@ Ratatui is not used today. The CLI is for bootstrapping and maintenance. The web
 - Layout constants (indentation, widths) should be centralized, not hardcoded in format strings
 - Command handlers should return structured data, not write directly to stdout -- this enables both CLI text rendering and future TUI widget rendering from the same data
 
+## Command Hierarchy
+
+### Design Principles
+
+1. **Standard names, themed descriptions.** Command names follow established CLI conventions (`serve`, `status`, `config`). Thematic personality lives in help text and doc strings, not in command names.
+2. **Subcommands for resources, flat for actions.** Any command that operates on a resource with multiple operations uses a subcommand enum (`memory list`, `memory search`). Single-action commands stay flat (`version`, `status`).
+3. **Aliases preserve backward compatibility.** Renamed commands keep their old name as an alias (`cron` -> `schedule`, `onboard` -> `setup`, `breaker` -> `circuit`). Common alternatives are also aliased (`serve` accepts `start` and `run`, `mechanic` accepts `doctor`).
+4. **No-arg shows help.** Running `ironclad` with no subcommand prints the help page instead of implicitly starting the server. Explicit is better than implicit.
+
+### Command Categories
+
+Commands are organized into five logical groups. The order in the `Commands` enum determines help output order.
+
+| Category      | Commands |
+|---------------|----------|
+| Lifecycle     | `serve`, `init`, `setup`, `check`, `version`, `update` |
+| Operations    | `status`, `mechanic`, `logs`, `circuit` |
+| Data          | `sessions`, `memory`, `skills`, `schedule`, `metrics`, `wallet` |
+| Configuration | `config`, `models`, `plugins`, `agents`, `channels`, `security` |
+| System        | `daemon`, `web`, `reset`, `uninstall`, `completion` |
+
+### Naming Rules
+
+- **Nouns for resources** (`sessions`, `memory`, `wallet`, `plugins`) -- these take subcommands.
+- **Verbs for actions** (`serve`, `check`, `reset`, `update`) -- these are flat.
+- **No jargon** -- prefer `schedule` over `cron`, `circuit` over `breaker`.
+- **Mechanical/robot tone in descriptions** -- "Boot the Ironclad runtime" not "Start the server"; "Run diagnostics and self-repair" not "Run health checks"; "Report firmware version" not "Print version info".
+
+### Subcommand Consistency
+
+Every resource command must follow the pattern:
+
+```rust
+#[command(subcommand)]
+ResourceName(ResourceNameCmd),
+```
+
+With a corresponding enum:
+
+```rust
+#[derive(Subcommand)]
+enum ResourceNameCmd {
+    List,      // always present
+    Show { id: String },
+    // ... additional operations
+}
+```
+
+### Global Flags
+
+All global flags are defined on the `Cli` struct and propagated via `#[arg(global = true)]`:
+
+| Flag | Short | Env Var | Purpose |
+|------|-------|---------|---------|
+| `--url` | | `IRONCLAD_URL` | Gateway URL for management commands |
+| `--profile` | | `IRONCLAD_PROFILE` | Profile name for state isolation |
+| `--config` | `-c` | `IRONCLAD_CONFIG` | Path to configuration file |
+| `--color` | | | Color output: auto, always, never |
+| `--theme` | | `IRONCLAD_THEME` | Color theme: crt-green, crt-orange, terminal |
+| `--no-draw` | | | Disable CRT typewriter draw effect |
+| `--nerdmode` | | `IRONCLAD_NERDMODE` | Composite retro mode |
+| `--quiet` | `-q` | | Suppress informational output |
+| `--json` | | | Output structured JSON |
+
+### Function Naming in cli.rs
+
+CLI handler functions follow the pattern `cmd_<command>_<subcommand>`:
+- `cmd_status` -- flat command
+- `cmd_sessions_list` -- subcommand
+- `cmd_circuit_status` -- renamed subcommand
+- `cmd_schedule_list` -- renamed + promoted subcommand
+
+When a command is renamed, the function name must match the new name (`cmd_schedule_list`, not `cmd_cron_list`).
+
 ## Code Organization
 
 All color and style logic lives in `ironclad_core::style`:
+- `ThemeVariant` enum (`CrtGreen`, `CrtOrange`, `Terminal`) for palette selection
 - `Theme` struct with semantic accessors (`theme.accent()`, `theme.error()`, etc.)
-- `Theme::detect()` for automatic color mode detection
-- `Theme::from_flag(value)` for explicit `--color` flag handling
+- `Theme::detect()` for automatic color mode detection (defaults to CrtGreen)
+- `Theme::from_flags(color, theme)` for explicit `--color` and `--theme` flag handling
+- `Theme::with_nerdmode(true)` for nerdmode composite behavior (ASCII icons, forced draw, variant override)
 - `Theme::plain()` for no-color output
+- Icon accessors: `icon_ok()`, `icon_action()`, `icon_warn()`, `icon_detail()`, `icon_error()` -- return emoji or ASCII depending on nerdmode
 
-No other file should contain raw ANSI escape codes.
+No other file should contain raw ANSI escape codes or hardcoded emoji literals.

@@ -125,7 +125,7 @@ impl PluginRegistry {
 
     pub async fn list_plugins(&self) -> Vec<PluginInfo> {
         let plugins = self.plugins.lock().await;
-        plugins.iter().map(|(_, entry)| PluginInfo {
+        plugins.values().map(|entry| PluginInfo {
             name: entry.plugin.name().to_string(),
             version: entry.plugin.version().to_string(),
             status: entry.status,

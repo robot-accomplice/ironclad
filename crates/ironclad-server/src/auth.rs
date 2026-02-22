@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use subtle::ConstantTimeEq;
+
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
 use futures_util::future::BoxFuture;
@@ -38,22 +40,32 @@ pub struct ApiKeyMiddleware<S> {
 
 fn is_exempt(path: &str) -> bool {
     path == "/"
-        || path == "/ws"
         || path == "/api/health"
-        || path.starts_with("/api/webhooks/")
+        || path == "/api/webhooks/telegram"
+        || path == "/api/webhooks/whatsapp"
+        || path == "/.well-known/agent.json"
 }
 
-fn extract_api_key(req: &Request<Body>) -> Option<&str> {
-    if let Some(val) = req.headers().get("x-api-key") {
-        return val.to_str().ok();
-    }
-    if let Some(val) = req.headers().get("authorization") {
-        if let Ok(s) = val.to_str() {
-            if let Some(token) = s.strip_prefix("Bearer ") {
-                return Some(token);
+fn extract_api_key(req: &Request<Body>) -> Option<String> {
+    if let Some(val) = req.headers().get("x-api-key")
+        && let Ok(s) = val.to_str() {
+            return Some(s.to_string());
+        }
+    if let Some(val) = req.headers().get("authorization")
+        && let Ok(s) = val.to_str()
+            && let Some(token) = s.strip_prefix("Bearer ") {
+                return Some(token.to_string());
+            }
+    // Only allow query-string token for WebSocket upgrade path
+    if req.uri().path() == "/ws"
+        && let Some(query) = req.uri().query() {
+            for pair in query.split('&') {
+                if let Some((k, v)) = pair.split_once('=')
+                    && k == "token" && !v.is_empty() {
+                        return Some(v.to_string());
+                    }
             }
         }
-    }
     None
 }
 
@@ -88,7 +100,7 @@ where
                 let path = req.uri().path();
                 if !is_exempt(path) {
                     match extract_api_key(&req) {
-                        Some(provided) if provided == expected.as_ref() => {}
+                        Some(provided) if bool::from(provided.as_bytes().ct_eq(expected.as_bytes())) => {}
                         _ => return Ok(unauthorized_response()),
                     }
                 }
@@ -105,7 +117,7 @@ mod tests {
     #[test]
     fn exempt_paths() {
         assert!(is_exempt("/"));
-        assert!(is_exempt("/ws"));
+        assert!(!is_exempt("/ws"));
         assert!(is_exempt("/api/health"));
         assert!(is_exempt("/api/webhooks/telegram"));
         assert!(is_exempt("/api/webhooks/whatsapp"));
@@ -120,7 +132,7 @@ mod tests {
             .header("authorization", "Bearer test-key-123")
             .body(Body::empty())
             .unwrap();
-        assert_eq!(extract_api_key(&req), Some("test-key-123"));
+        assert_eq!(extract_api_key(&req).as_deref(), Some("test-key-123"));
     }
 
     #[test]
@@ -129,7 +141,16 @@ mod tests {
             .header("x-api-key", "my-secret")
             .body(Body::empty())
             .unwrap();
-        assert_eq!(extract_api_key(&req), Some("my-secret"));
+        assert_eq!(extract_api_key(&req).as_deref(), Some("my-secret"));
+    }
+
+    #[test]
+    fn extract_token_from_query() {
+        let req = Request::builder()
+            .uri("/ws?token=query-key-456")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_api_key(&req).as_deref(), Some("query-key-456"));
     }
 
     #[test]
@@ -145,7 +166,13 @@ mod tests {
             .header("authorization", "Bearer bearer-key")
             .body(Body::empty())
             .unwrap();
-        assert_eq!(extract_api_key(&req), Some("header-key"));
+        assert_eq!(extract_api_key(&req).as_deref(), Some("header-key"));
+    }
+
+    #[test]
+    fn unknown_webhook_not_exempt() {
+        assert!(!is_exempt("/api/webhooks/unknown"));
+        assert!(!is_exempt("/api/webhooks/"));
     }
 
     #[test]

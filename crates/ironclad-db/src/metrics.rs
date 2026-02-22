@@ -13,6 +13,7 @@ pub struct TransactionRecord {
     pub created_at: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn record_inference_cost(
     db: &Database,
     model: &str,

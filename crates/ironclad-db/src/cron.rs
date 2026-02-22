@@ -177,8 +177,12 @@ pub fn record_run(
     error: Option<&str>,
 ) -> Result<String> {
     let conn = db.conn();
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
     let id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
+    tx.execute(
         "INSERT INTO cron_runs (id, job_id, status, duration_ms, error) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![id, job_id, status, duration_ms, error],
@@ -186,14 +190,14 @@ pub fn record_run(
     .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     if status == "success" {
-        conn.execute(
+        tx.execute(
             "UPDATE cron_jobs SET last_run_at = datetime('now'), last_status = ?1, \
              last_duration_ms = ?2, consecutive_errors = 0, last_error = NULL WHERE id = ?3",
             rusqlite::params![status, duration_ms, job_id],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     } else {
-        conn.execute(
+        tx.execute(
             "UPDATE cron_jobs SET last_run_at = datetime('now'), last_status = ?1, \
              last_duration_ms = ?2, consecutive_errors = consecutive_errors + 1, \
              last_error = ?3 WHERE id = ?4",
@@ -202,6 +206,8 @@ pub fn record_run(
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     }
 
+    tx.commit()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
 }
 

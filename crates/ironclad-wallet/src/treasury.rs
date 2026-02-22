@@ -2,6 +2,8 @@ use ironclad_core::config::TreasuryConfig;
 use ironclad_core::{IroncladError, Result};
 use tracing::warn;
 
+use crate::money::Money;
+
 #[derive(Debug, Clone)]
 pub struct TreasuryPolicy {
     pub per_payment_cap: f64,
@@ -22,8 +24,28 @@ impl TreasuryPolicy {
         }
     }
 
+    /// Ensures a single payment amount is within the per-payment cap.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ironclad_wallet::treasury::TreasuryPolicy;
+    /// use ironclad_core::config::TreasuryConfig;
+    ///
+    /// let config = TreasuryConfig::default();
+    /// let policy = TreasuryPolicy::new(&config);
+    /// assert!(policy.check_per_payment(5.0).is_ok());
+    /// ```
     pub fn check_per_payment(&self, amount: f64) -> Result<()> {
-        if amount > self.per_payment_cap {
+        let amt = Money::from_dollars(amount);
+        let cap = Money::from_dollars(self.per_payment_cap);
+        if amt <= Money::zero() {
+            return Err(IroncladError::Policy {
+                rule: "non_positive_amount".into(),
+                reason: format!("payment amount must be positive, got {amount}"),
+            });
+        }
+        if amt > cap {
             warn!(
                 amount,
                 cap = self.per_payment_cap,
@@ -41,17 +63,26 @@ impl TreasuryPolicy {
     }
 
     pub fn check_hourly_limit(&self, recent_hourly_total: f64, new_amount: f64) -> Result<()> {
-        let projected = recent_hourly_total + new_amount;
-        if projected > self.hourly_transfer_limit {
+        let new_amt = Money::from_dollars(new_amount);
+        let limit = Money::from_dollars(self.hourly_transfer_limit);
+        if new_amt <= Money::zero() {
+            return Err(IroncladError::Policy {
+                rule: "non_positive_amount".into(),
+                reason: format!("payment amount must be positive, got {new_amount}"),
+            });
+        }
+        let projected = Money::from_dollars(recent_hourly_total) + new_amt;
+        if projected > limit {
             warn!(
-                projected,
+                projected = projected.dollars(),
                 limit = self.hourly_transfer_limit,
                 "hourly limit exceeded"
             );
             return Err(IroncladError::Policy {
                 rule: "hourly_transfer_limit".into(),
                 reason: format!(
-                    "projected hourly total {projected} exceeds limit {}",
+                    "projected hourly total {} exceeds limit {}",
+                    projected.dollars(),
                     self.hourly_transfer_limit
                 ),
             });
@@ -60,17 +91,26 @@ impl TreasuryPolicy {
     }
 
     pub fn check_daily_limit(&self, recent_daily_total: f64, new_amount: f64) -> Result<()> {
-        let projected = recent_daily_total + new_amount;
-        if projected > self.daily_transfer_limit {
+        let new_amt = Money::from_dollars(new_amount);
+        let limit = Money::from_dollars(self.daily_transfer_limit);
+        if new_amt <= Money::zero() {
+            return Err(IroncladError::Policy {
+                rule: "non_positive_amount".into(),
+                reason: format!("payment amount must be positive, got {new_amount}"),
+            });
+        }
+        let projected = Money::from_dollars(recent_daily_total) + new_amt;
+        if projected > limit {
             warn!(
-                projected,
+                projected = projected.dollars(),
                 limit = self.daily_transfer_limit,
                 "daily limit exceeded"
             );
             return Err(IroncladError::Policy {
                 rule: "daily_transfer_limit".into(),
                 reason: format!(
-                    "projected daily total {projected} exceeds limit {}",
+                    "projected daily total {} exceeds limit {}",
+                    projected.dollars(),
                     self.daily_transfer_limit
                 ),
             });
@@ -79,17 +119,19 @@ impl TreasuryPolicy {
     }
 
     pub fn check_minimum_reserve(&self, current_balance: f64, amount: f64) -> Result<()> {
-        let remaining = current_balance - amount;
-        if remaining < self.minimum_reserve {
+        let remaining = Money::from_dollars(current_balance) - Money::from_dollars(amount);
+        let reserve = Money::from_dollars(self.minimum_reserve);
+        if remaining < reserve {
             warn!(
-                remaining,
+                remaining = remaining.dollars(),
                 reserve = self.minimum_reserve,
                 "minimum reserve violated"
             );
             return Err(IroncladError::Policy {
                 rule: "minimum_reserve".into(),
                 reason: format!(
-                    "remaining balance {remaining} would fall below minimum reserve {}",
+                    "remaining balance {} would fall below minimum reserve {}",
+                    remaining.dollars(),
                     self.minimum_reserve
                 ),
             });
@@ -98,17 +140,20 @@ impl TreasuryPolicy {
     }
 
     pub fn check_inference_budget(&self, daily_inference_total: f64, new_cost: f64) -> Result<()> {
-        let projected = daily_inference_total + new_cost;
-        if projected > self.daily_inference_budget {
+        let projected =
+            Money::from_dollars(daily_inference_total) + Money::from_dollars(new_cost);
+        let budget = Money::from_dollars(self.daily_inference_budget);
+        if projected > budget {
             warn!(
-                projected,
+                projected = projected.dollars(),
                 budget = self.daily_inference_budget,
                 "inference budget exceeded"
             );
             return Err(IroncladError::Policy {
                 rule: "daily_inference_budget".into(),
                 reason: format!(
-                    "projected inference spend {projected} exceeds daily budget {}",
+                    "projected inference spend {} exceeds daily budget {}",
+                    projected.dollars(),
                     self.daily_inference_budget
                 ),
             });
@@ -251,5 +296,60 @@ mod tests {
         let policy = TreasuryPolicy::new(&config);
         assert!((policy.per_payment_cap - 100.0).abs() < f64::EPSILON);
         assert!((policy.minimum_reserve - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn negative_amount_rejected() {
+        let policy = default_policy();
+        let err = policy.check_per_payment(-1.0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("non_positive_amount") || msg.contains("positive"));
+        assert!(msg.contains("-1"));
+    }
+
+    #[test]
+    fn zero_amount_rejected() {
+        let policy = default_policy();
+        let err = policy.check_per_payment(0.0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("non_positive_amount") || msg.contains("positive"));
+    }
+
+    #[test]
+    fn positive_amount_passes() {
+        let policy = default_policy();
+        assert!(policy.check_per_payment(0.01).is_ok());
+        assert!(policy.check_per_payment(1.0).is_ok());
+        assert!(policy.check_per_payment(99.0).is_ok());
+    }
+
+    #[test]
+    fn negative_amount_minimum_reserve_rejected() {
+        let policy = default_policy();
+        assert!(policy.check_minimum_reserve(10.0, 15.0).is_err());
+    }
+
+    #[test]
+    fn treasury_policy_from_default_config_no_panic() {
+        let config = TreasuryConfig::default();
+        let policy = TreasuryPolicy::new(&config);
+        assert!(policy.check_per_payment(1.0).is_ok());
+    }
+
+    // Phase 4K: Treasury with all caps at zero rejects everything
+    #[test]
+    fn treasury_all_caps_zero_rejects_everything() {
+        let policy = TreasuryPolicy {
+            per_payment_cap: 0.0,
+            hourly_transfer_limit: 0.0,
+            daily_transfer_limit: 0.0,
+            minimum_reserve: 0.0,
+            daily_inference_budget: 0.0,
+        };
+        assert!(policy.check_per_payment(0.01).is_err());
+        assert!(policy.check_per_payment(1.0).is_err());
+        assert!(policy.check_hourly_limit(0.0, 0.01).is_err());
+        assert!(policy.check_daily_limit(0.0, 0.01).is_err());
+        assert!(policy.check_inference_budget(0.0, 0.01).is_err());
     }
 }

@@ -1,6 +1,6 @@
 # C4 Level 3: Component Diagram -- ironclad-wallet
 
-*Financial subsystem handling Ethereum wallet operations, x402 credit purchases, treasury policy enforcement, and DeFi yield generation on idle USDC.*
+*Ethereum wallet (key management, 0600 file perms), Treasury (TreasuryPolicy; **Money(i64 cents)** internally, f64 API surface), yield engine (Aave V3 on Base Sepolia), x402.*
 
 ---
 
@@ -16,7 +16,8 @@ flowchart TB
     end
 
     subgraph WalletDetail ["wallet.rs"]
-        LOAD["load_or_generate():<br/>Load wallet from wallet.path<br/>or generate new keypair"]
+        MONEY["money.rs: Money(i64 cents)<br/>from_dollars(), dollars(), cents()<br/>Add/Sub impls"]
+        LOAD["load_or_generate():<br/>Load wallet from wallet.path<br/>or generate; set file perms 0o600"]
         SIGN_MSG["sign_message():<br/>EIP-191 personal sign"]
         SIGN_TX["sign_transaction():<br/>EIP-1559 transaction signing"]
         PUB_ADDR["public_address():<br/>Ethereum address derived<br/>from private key"]
@@ -30,8 +31,8 @@ flowchart TB
     end
 
     subgraph TreasuryDetail ["treasury.rs"]
-        POLICY_STRUCT["TreasuryPolicy struct:<br/>per_payment_cap ($100)<br/>hourly_transfer_limit ($500)<br/>daily_transfer_limit ($2000)<br/>minimum_reserve ($5)<br/>daily_inference_budget ($50)"]
-        CHECK_PAYMENT["check_per_payment(amount)"]
+        POLICY_STRUCT["TreasuryPolicy from TreasuryConfig<br/>Uses Money(i64) internally;<br/>API takes f64 (dollars)"]
+        CHECK_PAYMENT["check_per_payment(amount_f64)<br/>check_hourly_limit(), check_daily_limit()"]
         CHECK_HOURLY["check_hourly_limit():<br/>query transactions table<br/>(1h window aggregate)"]
         CHECK_DAILY["check_daily_limit():<br/>query transactions table<br/>(24h window aggregate)"]
         CHECK_RESERVE["check_minimum_reserve():<br/>ensure balance stays above<br/>minimum_reserve after tx"]
@@ -39,11 +40,12 @@ flowchart TB
     end
 
     subgraph YieldDetail ["yield_engine.rs"]
-        CALC_EXCESS["calculate_excess():<br/>excess = USDC balance -<br/>minimum_reserve - operational_buffer"]
-        SHOULD_DEPOSIT["should_deposit():<br/>excess > yield.min_deposit ($50)"]
-        SHOULD_WITHDRAW["should_withdraw():<br/>USDC < yield.withdrawal_threshold ($30)"]
-        AAVE_DEPOSIT["deposit():<br/>Aave/Compound deposit on Base<br/>via alloy-rs contract call"]
-        AAVE_WITHDRAW["withdraw():<br/>Aave/Compound withdraw<br/>to restore minimum_reserve"]
+        AAVE_V3["Aave V3 on Base Sepolia<br/>pool_address, usdc_address, a_token_address"]
+        CALC_EXCESS["calculate_excess():<br/>balance - minimum_reserve - 10% buffer"]
+        SHOULD_DEPOSIT["should_deposit(): excess > min_deposit"]
+        SHOULD_WITHDRAW["should_withdraw(): balance < withdrawal_threshold"]
+        AAVE_DEPOSIT["deposit(): supply() when chain_rpc_url set;<br/>else mock tx hash"]
+        AAVE_WITHDRAW["withdraw(): withdraw() to restore reserve"]
         TRACK_EARNINGS["track_earnings():<br/>periodic aToken balance check,<br/>delta recorded as yield_earned<br/>transaction"]
     end
 
@@ -95,4 +97,4 @@ sequenceDiagram
 
 **Internal crates**: `ironclad-core`, `ironclad-db`
 
-**Depended on by**: `ironclad-server`
+**Depended on by**: `ironclad-schedule`, `ironclad-server`

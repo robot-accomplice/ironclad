@@ -9,10 +9,13 @@
 ```mermaid
 flowchart TB
     subgraph IroncladChannels ["ironclad-channels"]
+        ROUTER["router.rs<br/>ChannelRouter"]
         TELEGRAM["telegram.rs<br/>Telegram Bot API"]
         WHATSAPP["whatsapp.rs<br/>WhatsApp Cloud API"]
         WEB["web.rs<br/>WebSocket Interface"]
-        A2A["a2a.rs<br/>Agent-to-Agent Protocol"]
+        A2A["a2a.rs<br/>A2A Protocol (ECDH crypto)"]
+        DELIVERY["delivery.rs<br/>Delivery / notification"]
+        DISCORD["discord.rs<br/>Discord adapter"]
     end
 
     subgraph TelegramDetail ["telegram.rs"]
@@ -41,7 +44,7 @@ flowchart TB
         DISCOVERY["Agent Discovery:<br/>query ERC-8004 registry<br/>on Base, cache agent cards<br/>in discovered_agents table"]
         HELLO["Handshake: POST /a2a/hello<br/>DID + nonce (32 bytes) +<br/>timestamp + signature"]
         VERIFY["Mutual Authentication:<br/>verify signature against<br/>on-chain public key<br/>(ERC-8004 registry lookup)"]
-        SESSION_KEY["Session Key Derivation:<br/>ECDH (ephemeral keypairs)<br/>-> AES-256-GCM session key<br/>for forward secrecy"]
+        SESSION_KEY["Session Key Derivation:<br/>x25519-dalek EphemeralSecret/PublicKey,<br/>HKDF -> AES-256-GCM session key"]
         ENCRYPT["Message Encryption:<br/>AES-256-GCM per-message<br/>nonce + HMAC auth tag"]
         VALIDATE["Message Validation:<br/>- timestamp freshness (< 60s)<br/>- size < a2a.max_message_size<br/>- rate limit < a2a.rate_limit_per_peer<br/>- injection defense screening"]
         TRUST_TAG["Trust Tagging:<br/>wrap in peer_agent_input<br/>trust_level=X from<br/>relationship_memory"]
@@ -92,7 +95,7 @@ sequenceDiagram
 
 ## Dependencies
 
-**External crates**: `reqwest` (HTTP for Telegram/WhatsApp APIs), `tokio-tungstenite` (WebSocket), `alloy-rs` (ERC-8004 registry queries), `aes-gcm` (A2A encryption), `x25519-dalek` or `alloy` (ECDH)
+**External crates**: `reqwest`, WebSocket (platform), `x25519-dalek` (ECDH), `aes-gcm`, `hkdf`, `sha2` (A2A handshake and encryption)
 
 **Internal crates**: `ironclad-core` (types, config)
 

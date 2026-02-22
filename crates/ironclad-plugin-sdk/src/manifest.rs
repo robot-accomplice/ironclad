@@ -32,6 +32,7 @@ impl PluginManifest {
         Self::from_str(&contents)
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(toml_str: &str) -> Result<Self> {
         let manifest: Self = toml::from_str(toml_str)
             .map_err(|e| IroncladError::Config(format!("plugin manifest parse error: {e}")))?;

@@ -1,0 +1,22 @@
+{
+  "version": "0.1.0",
+  "packs": {
+    "providers": {
+      "sha256": "9404884a09ea9822d3487f246b504503412bcdfcabbf54097caa7f29ba05043d",
+      "path": "registry/providers.toml"
+    },
+    "skills": {
+      "sha256": null,
+      "path": "registry/skills/",
+      "files": {
+        "hello.md": "1c9e6f0fb1d0beb9451a716b631a6bf3ad1decd882ba304db062ba4a3585539d",
+        "summarize.md": "cd11b2ecb572628bc2c2cb5b84f8f2e2f4c31babb72247cdb27cf12e0be0bda1",
+        "explain.md": "553ab8bbc74f61de8dda7a5504dda11049290a23acefc0f9ea79e63348ea7c85",
+        "draft.md": "2ed65d61f5e2c3b59a7c6e81a079ca9d24d9ab595124dfdac5dc6be0c4459ec7",
+        "review.md": "95ab99ec746de9547f974645b411835f55320308d79f60f46363b780d8c63c98",
+        "plan.md": "8b844c0d4dd9015f371624e81c0bd4d19354f30a00930d10404c2ea310019da5",
+        "search.md": "c59739e28247ca63f7cb41ea486e15ddd94f9f0013972a3691da6a80c19b864a"
+      }
+    }
+  }
+}

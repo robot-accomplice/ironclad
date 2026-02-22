@@ -17,7 +17,24 @@ impl ColorMode {
     }
 }
 
-/// CRT-style CLI theme with phosphor green palette and WarGames typewriter effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeVariant {
+    CrtGreen,
+    CrtOrange,
+    Terminal,
+}
+
+impl ThemeVariant {
+    pub fn from_flag(s: &str) -> Self {
+        match s {
+            "crt-orange" => Self::CrtOrange,
+            "terminal" => Self::Terminal,
+            _ => Self::CrtGreen,
+        }
+    }
+}
+
+/// CLI theme with selectable color palettes and optional typewriter effects.
 ///
 /// Precedence: `--color` flag > `NO_COLOR` env var > TTY auto-detection.
 /// Draw (typewriter) is enabled by default on interactive TTY, disabled with `--no-draw`.
@@ -25,18 +42,20 @@ impl ColorMode {
 pub struct Theme {
     enabled: bool,
     draw: bool,
+    variant: ThemeVariant,
+    nerdmode: bool,
 }
 
 impl Theme {
     pub fn detect() -> Self {
-        Self::resolve(ColorMode::Auto)
+        Self::resolve(ColorMode::Auto, ThemeVariant::CrtGreen)
     }
 
-    pub fn from_flag(flag: &str) -> Self {
-        Self::resolve(ColorMode::from_flag(flag))
+    pub fn from_flags(color_flag: &str, theme_flag: &str) -> Self {
+        Self::resolve(ColorMode::from_flag(color_flag), ThemeVariant::from_flag(theme_flag))
     }
 
-    pub fn resolve(mode: ColorMode) -> Self {
+    pub fn resolve(mode: ColorMode, variant: ThemeVariant) -> Self {
         let enabled = match mode {
             ColorMode::Always => true,
             ColorMode::Never => false,
@@ -51,15 +70,26 @@ impl Theme {
                 }
             }
         };
-        Self { enabled, draw: enabled }
+        Self { enabled, draw: enabled, variant, nerdmode: false }
     }
 
     pub fn plain() -> Self {
-        Self { enabled: false, draw: false }
+        Self { enabled: false, draw: false, variant: ThemeVariant::CrtGreen, nerdmode: false }
     }
 
     pub fn with_draw(mut self, draw: bool) -> Self {
         self.draw = draw;
+        self
+    }
+
+    pub fn with_nerdmode(mut self, nerd: bool) -> Self {
+        if nerd {
+            self.nerdmode = true;
+            self.draw = true;
+            if self.variant == ThemeVariant::Terminal {
+                self.variant = ThemeVariant::CrtGreen;
+            }
+        }
         self
     }
 
@@ -71,21 +101,67 @@ impl Theme {
         self.draw
     }
 
-    // ── CRT Phosphor Green Palette ───────────────────────────────
+    pub fn variant(&self) -> ThemeVariant {
+        self.variant
+    }
 
-    /// Bright phosphor green (256-color 46). Banner, headings, emphasis.
+    pub fn nerdmode(&self) -> bool {
+        self.nerdmode
+    }
+
+    // ── Icon Accessors ───────────────────────────────────────────
+    // Return emoji by default; ASCII when nerdmode is active.
+
+    pub fn icon_ok(&self) -> &'static str {
+        if self.nerdmode { "[OK]" } else { "\u{2705}" }
+    }
+
+    pub fn icon_action(&self) -> &'static str {
+        if self.nerdmode { "[>>]" } else { "\u{26a1}" }
+    }
+
+    pub fn icon_warn(&self) -> &'static str {
+        if self.nerdmode { "[!!]" } else { "\u{26a0}\u{fe0f}" }
+    }
+
+    pub fn icon_detail(&self) -> &'static str {
+        if self.nerdmode { ">" } else { "\u{25b8}" }
+    }
+
+    pub fn icon_error(&self) -> &'static str {
+        if self.nerdmode { "[XX]" } else { "\u{26d3}" }
+    }
+
+    // ── Color Palette ────────────────────────────────────────────
+
+    /// Emphasis/highlight color. Bright green, bright orange, or bold depending on variant.
     pub fn accent(&self) -> &'static str {
-        if self.enabled { "\x1b[38;5;46m" } else { "" }
+        if !self.enabled { return ""; }
+        match self.variant {
+            ThemeVariant::CrtGreen  => "\x1b[38;5;46m",
+            ThemeVariant::CrtOrange => "\x1b[38;5;208m",
+            ThemeVariant::Terminal  => "\x1b[1m",
+        }
     }
 
-    /// Body-text phosphor green (256-color 40). Metadata, step counters, secondary text.
+    /// Body-text color. Matches the variant's base tone; empty for Terminal.
     pub fn dim(&self) -> &'static str {
-        if self.enabled { "\x1b[38;5;40m" } else { "" }
+        if !self.enabled { return ""; }
+        match self.variant {
+            ThemeVariant::CrtGreen  => "\x1b[38;5;40m",
+            ThemeVariant::CrtOrange => "\x1b[38;5;172m",
+            ThemeVariant::Terminal  => "",
+        }
     }
 
-    /// Bright phosphor green (256-color 46). IDs, paths, code values.
+    /// Monospace-value color. Same as accent for CRT variants; bold for Terminal.
     pub fn mono(&self) -> &'static str {
-        if self.enabled { "\x1b[38;5;46m" } else { "" }
+        if !self.enabled { return ""; }
+        match self.variant {
+            ThemeVariant::CrtGreen  => "\x1b[38;5;46m",
+            ThemeVariant::CrtOrange => "\x1b[38;5;208m",
+            ThemeVariant::Terminal  => "\x1b[1m",
+        }
     }
 
     /// Bright green. Explicit "all passed" summaries, enabled/active states.
@@ -108,16 +184,21 @@ impl Theme {
         if self.enabled { "\x1b[96m" } else { "" }
     }
 
-
     // ── Typography modifiers ─────────────────────────────────────
 
     pub fn bold(&self) -> &'static str {
         if self.enabled { "\x1b[1m" } else { "" }
     }
 
-    /// Soft reset: clears styles, sets CRT green body text color.
+    /// Soft reset: clears styles and re-tints to the variant's body color.
+    /// For Terminal variant, this is a plain reset (no tint).
     pub fn reset(&self) -> &'static str {
-        if self.enabled { "\x1b[0m\x1b[38;5;40m" } else { "" }
+        if !self.enabled { return ""; }
+        match self.variant {
+            ThemeVariant::CrtGreen  => "\x1b[0m\x1b[38;5;40m",
+            ThemeVariant::CrtOrange => "\x1b[0m\x1b[38;5;172m",
+            ThemeVariant::Terminal  => "\x1b[0m",
+        }
     }
 
     /// Hard reset: returns terminal to default colors. Use at program exit.
@@ -125,7 +206,7 @@ impl Theme {
         if self.enabled { "\x1b[0m" } else { "" }
     }
 
-    // ── CRT Typewriter Effects ───────────────────────────────────
+    // ── Typewriter Effects ───────────────────────────────────────
 
     /// Typewrite to stderr, character-by-character. ANSI sequences emitted instantly.
     /// Skips delay when draw is disabled (instant print).
@@ -260,7 +341,7 @@ mod tests {
 
     #[test]
     fn always_mode_forces_color_and_draw() {
-        let t = Theme::resolve(ColorMode::Always);
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
         assert!(t.colors_enabled());
         assert!(t.draw_enabled());
         assert!(!t.accent().is_empty());
@@ -269,28 +350,44 @@ mod tests {
 
     #[test]
     fn with_draw_false_disables_draw() {
-        let t = Theme::resolve(ColorMode::Always).with_draw(false);
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen).with_draw(false);
         assert!(t.colors_enabled());
         assert!(!t.draw_enabled());
     }
 
     #[test]
-    fn reset_includes_crt_green() {
-        let t = Theme::resolve(ColorMode::Always);
+    fn crt_green_reset_includes_green_tint() {
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
         let r = t.reset();
         assert!(r.contains("\x1b[0m"), "reset should clear styles");
-        assert!(r.contains("\x1b[38;5;40m"), "reset should set CRT green");
+        assert!(r.contains("\x1b[38;5;40m"), "CrtGreen reset should tint green");
+    }
+
+    #[test]
+    fn crt_orange_palette() {
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtOrange);
+        assert!(t.accent().contains("208"), "CrtOrange accent should be 208");
+        assert!(t.dim().contains("172"), "CrtOrange dim should be 172");
+        assert!(t.reset().contains("172"), "CrtOrange reset should tint orange");
+    }
+
+    #[test]
+    fn terminal_variant_no_tint() {
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::Terminal);
+        assert_eq!(t.reset(), "\x1b[0m", "Terminal reset should be plain");
+        assert_eq!(t.dim(), "", "Terminal dim should be empty");
+        assert_eq!(t.accent(), "\x1b[1m", "Terminal accent should be bold");
     }
 
     #[test]
     fn hard_reset_is_plain() {
-        let t = Theme::resolve(ColorMode::Always);
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
         assert_eq!(t.hard_reset(), "\x1b[0m");
     }
 
     #[test]
     fn never_mode_disables_everything() {
-        let t = Theme::resolve(ColorMode::Never);
+        let t = Theme::resolve(ColorMode::Never, ThemeVariant::CrtGreen);
         assert!(!t.colors_enabled());
         assert!(!t.draw_enabled());
         assert_eq!(t.accent(), "");
@@ -302,5 +399,69 @@ mod tests {
         assert_eq!(ColorMode::from_flag("never"), ColorMode::Never);
         assert_eq!(ColorMode::from_flag("auto"), ColorMode::Auto);
         assert_eq!(ColorMode::from_flag("garbage"), ColorMode::Auto);
+    }
+
+    #[test]
+    fn theme_variant_from_flag() {
+        assert_eq!(ThemeVariant::from_flag("crt-green"), ThemeVariant::CrtGreen);
+        assert_eq!(ThemeVariant::from_flag("crt-orange"), ThemeVariant::CrtOrange);
+        assert_eq!(ThemeVariant::from_flag("terminal"), ThemeVariant::Terminal);
+        assert_eq!(ThemeVariant::from_flag("garbage"), ThemeVariant::CrtGreen);
+    }
+
+    #[test]
+    fn semantic_colors_same_across_variants() {
+        let green = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
+        let orange = Theme::resolve(ColorMode::Always, ThemeVariant::CrtOrange);
+        let term = Theme::resolve(ColorMode::Always, ThemeVariant::Terminal);
+
+        assert_eq!(green.success(), orange.success());
+        assert_eq!(green.success(), term.success());
+        assert_eq!(green.warn(), orange.warn());
+        assert_eq!(green.error(), orange.error());
+        assert_eq!(green.info(), orange.info());
+    }
+
+    #[test]
+    fn nerdmode_forces_ascii_icons() {
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen).with_nerdmode(true);
+        assert_eq!(t.icon_ok(), "[OK]");
+        assert_eq!(t.icon_action(), "[>>]");
+        assert_eq!(t.icon_warn(), "[!!]");
+        assert_eq!(t.icon_detail(), ">");
+        assert_eq!(t.icon_error(), "[XX]");
+    }
+
+    #[test]
+    fn nerdmode_overrides_terminal_to_green() {
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::Terminal).with_nerdmode(true);
+        assert_eq!(t.variant(), ThemeVariant::CrtGreen);
+        assert!(t.reset().contains("\x1b[38;5;40m"));
+    }
+
+    #[test]
+    fn nerdmode_respects_orange() {
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtOrange).with_nerdmode(true);
+        assert_eq!(t.variant(), ThemeVariant::CrtOrange);
+        assert!(t.accent().contains("208"));
+    }
+
+    #[test]
+    fn nerdmode_forces_draw() {
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen)
+            .with_draw(false)
+            .with_nerdmode(true);
+        assert!(t.draw_enabled());
+    }
+
+    #[test]
+    fn default_icons_are_emoji() {
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
+        assert!(!t.nerdmode());
+        assert_eq!(t.icon_ok(), "\u{2705}");
+        assert_eq!(t.icon_action(), "\u{26a1}");
+        assert_eq!(t.icon_warn(), "\u{26a0}\u{fe0f}");
+        assert_eq!(t.icon_detail(), "\u{25b8}");
+        assert_eq!(t.icon_error(), "\u{26d3}");
     }
 }

@@ -3,7 +3,6 @@
 /// When the user sends `/interview` to a running agent, the agent uses this
 /// template to conduct a deep, batched-question conversation. At the end it
 /// generates OS.toml, FIRMWARE.toml, OPERATOR.toml, and DIRECTIVES.toml.
-
 pub const INTERVIEW_SYSTEM_PROMPT: &str = r#"You are conducting an Ironclad personality interview. Your job is to deeply understand your operator so you can generate four configuration files that define how their agent behaves.
 
 ## How This Works

@@ -31,7 +31,7 @@ pub fn token_budget(level: ComplexityLevel) -> usize {
 
 /// Rough estimate: ~4 characters per token.
 fn estimate_tokens(text: &str) -> usize {
-    (text.len() + 3) / 4
+    text.len().div_ceil(4)
 }
 
 /// Assembles context messages within the token budget for the given complexity level.

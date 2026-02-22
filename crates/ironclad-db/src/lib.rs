@@ -20,6 +20,16 @@ pub struct Database {
 }
 
 impl Database {
+    /// Opens a new database at the given path (or in-memory if `":memory:"`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ironclad_db::Database;
+    ///
+    /// let db = Database::new(":memory:").unwrap();
+    /// // database is now ready for use
+    /// ```
     pub fn new(path: &str) -> Result<Self> {
         let conn = if path == ":memory:" {
             Connection::open_in_memory()
@@ -39,7 +49,7 @@ impl Database {
     }
 
     pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().expect("database mutex poisoned")
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

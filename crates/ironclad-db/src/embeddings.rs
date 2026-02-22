@@ -124,11 +124,12 @@ pub fn hybrid_search(
 
     {
         let conn = db.conn();
+        let safe_query = crate::memory::sanitize_fts_query(query_text);
         let mut stmt = conn.prepare(
             "SELECT content, category FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2"
         ).map_err(|e| IroncladError::Database(e.to_string()))?;
 
-        let rows = stmt.query_map(rusqlite::params![query_text, limit * 2], |row| {
+        let rows = stmt.query_map(rusqlite::params![safe_query, limit * 2], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,

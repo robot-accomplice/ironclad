@@ -3,22 +3,49 @@ use ironclad_core::{IroncladError, Result};
 
 use crate::provider::ProviderRegistry;
 
+/// Backend for complexity classification (heuristic or future ML).
+pub trait RouterBackend: Send + Sync + std::fmt::Debug {
+    fn classify_complexity(&self, features: &[f32]) -> f64;
+}
+
+/// Heuristic complexity scoring: weighted sum of message length, tool calls, depth.
+#[derive(Debug, Default)]
+pub struct HeuristicBackend;
+
+impl RouterBackend for HeuristicBackend {
+    fn classify_complexity(&self, features: &[f32]) -> f64 {
+        heuristic_classify_complexity(features)
+    }
+}
+
 #[derive(Debug)]
 pub struct ModelRouter {
     primary: String,
     fallbacks: Vec<String>,
     current_index: usize,
     config: RoutingConfig,
+    backend: Box<dyn RouterBackend>,
 }
 
 impl ModelRouter {
-    pub fn new(primary: String, fallbacks: Vec<String>, config: RoutingConfig) -> Self {
+    pub fn new(
+        primary: String,
+        fallbacks: Vec<String>,
+        config: RoutingConfig,
+        backend: Box<dyn RouterBackend>,
+    ) -> Self {
         Self {
             primary,
             fallbacks,
             current_index: 0,
             config,
+            backend,
         }
+    }
+
+    /// Classify complexity from a feature vector using the configured backend.
+    pub fn classify_complexity(&self, features: &[f32]) -> f64 {
+        self.backend.classify_complexity(features)
     }
 
     pub fn select_model(&self) -> &str {
@@ -51,15 +78,14 @@ impl ModelRouter {
         }
 
         let primary_is_local = match registry {
-            Some(reg) => reg.get_by_model(&self.primary).map_or(false, |p| p.is_local),
+            Some(reg) => reg.get_by_model(&self.primary).is_some_and(|p| p.is_local),
             None => is_local_model_heuristic(&self.primary),
         };
 
-        if self.config.local_first && primary_is_local {
-            if complexity < self.config.confidence_threshold {
+        if self.config.local_first && primary_is_local
+            && complexity < self.config.confidence_threshold {
                 return &self.primary;
             }
-        }
 
         if complexity >= self.config.confidence_threshold && !self.fallbacks.is_empty() {
             return &self.fallbacks[0];
@@ -110,7 +136,12 @@ pub fn extract_features(
 
 /// Simple heuristic complexity score in [0.0, 1.0].
 /// Weighted sum: msg_len/1000 * 0.3 + tool_calls/5 * 0.3 + depth/10 * 0.4
+/// Kept for backward compatibility; delegates to HeuristicBackend.
 pub fn classify_complexity(features: &[f32]) -> f64 {
+    HeuristicBackend.classify_complexity(features)
+}
+
+fn heuristic_classify_complexity(features: &[f32]) -> f64 {
     if features.len() < 3 {
         return 0.0;
     }
@@ -134,6 +165,7 @@ mod tests {
             "ollama/qwen3:8b".into(),
             vec!["openai/gpt-4o".into()],
             test_config(),
+            Box::new(HeuristicBackend),
         );
         assert_eq!(router.select_model(), "ollama/qwen3:8b");
         assert_eq!(router.current_index(), 0);
@@ -145,6 +177,7 @@ mod tests {
             "primary".into(),
             vec!["fallback1".into(), "fallback2".into()],
             test_config(),
+            Box::new(HeuristicBackend),
         );
 
         let first = router.advance_fallback().unwrap();
@@ -158,8 +191,12 @@ mod tests {
 
     #[test]
     fn exhaustion_error() {
-        let mut router =
-            ModelRouter::new("primary".into(), vec!["fallback1".into()], test_config());
+        let mut router = ModelRouter::new(
+            "primary".into(),
+            vec!["fallback1".into()],
+            test_config(),
+            Box::new(HeuristicBackend),
+        );
 
         router.advance_fallback().unwrap();
         let err = router.advance_fallback().unwrap_err();
@@ -196,6 +233,15 @@ mod tests {
         );
     }
 
+    // 9C: Edge case — empty features array
+    #[test]
+    fn classify_complexity_empty_features_returns_zero() {
+        let score = classify_complexity(&[]);
+        assert!((score - 0.0).abs() < f64::EPSILON);
+        let score_short = classify_complexity(&[1.0]);
+        assert!((score_short - 0.0).abs() < f64::EPSILON);
+    }
+
     #[test]
     fn primary_mode_always_selects_primary() {
         let config = RoutingConfig {
@@ -206,6 +252,7 @@ mod tests {
             "ollama/qwen3:8b".into(),
             vec!["openai/gpt-4o".into()],
             config,
+            Box::new(HeuristicBackend),
         );
         assert_eq!(router.select_model(), "ollama/qwen3:8b");
         assert_eq!(router.select_for_complexity(0.99, None), "ollama/qwen3:8b");
@@ -221,6 +268,7 @@ mod tests {
             "primary".into(),
             vec!["fb1".into(), "fb2".into()],
             config,
+            Box::new(HeuristicBackend),
         );
 
         assert_eq!(router.select_model(), "primary");
@@ -243,6 +291,7 @@ mod tests {
             "ollama/qwen3:8b".into(),
             vec!["openai/gpt-4o".into()],
             config,
+            Box::new(HeuristicBackend),
         );
 
         assert_eq!(
@@ -269,6 +318,7 @@ mod tests {
             "ollama/local-model".into(),
             vec!["cloud/expensive".into()],
             config,
+            Box::new(HeuristicBackend),
         );
 
         assert_eq!(
@@ -292,6 +342,7 @@ mod tests {
             "custom/model".into(),
             vec!["cloud/fallback".into()],
             config,
+            Box::new(HeuristicBackend),
         );
 
         // Without registry, "custom/model" is not local by heuristic
@@ -326,7 +377,7 @@ mod tests {
             confidence_threshold: 0.85,
             local_first: false,
         };
-        let router = ModelRouter::new("p".into(), vec![], config);
+        let router = ModelRouter::new("p".into(), vec![], config, Box::new(HeuristicBackend));
         assert_eq!(router.config().mode, "ml");
         assert!((router.config().confidence_threshold - 0.85).abs() < f64::EPSILON);
         assert!(!router.config().local_first);

@@ -15,15 +15,14 @@ pub struct LlmClient {
 }
 
 impl LlmClient {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self> {
         let http = Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
             .pool_max_idle_per_host(4)
             .build()
-            .expect("failed to build HTTP client");
-
-        Self { http }
+            .map_err(|e| IroncladError::Network(e.to_string()))?;
+        Ok(Self { http })
     }
 
     /// Legacy method using default Bearer auth.
@@ -94,12 +93,6 @@ impl LlmClient {
     }
 }
 
-impl Default for LlmClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,15 +100,9 @@ mod tests {
 
     #[test]
     fn client_construction() {
-        let client = LlmClient::new();
+        let client = LlmClient::new().unwrap();
         // Verify we can clone (proves the inner Client is Clone-compatible)
         let _clone = client.clone();
-    }
-
-    #[test]
-    fn default_impl_constructs_client() {
-        let client = LlmClient::default();
-        let _ = client.clone();
     }
 
     #[test]
@@ -133,7 +120,7 @@ mod tests {
 
     #[tokio::test]
     async fn forward_request_connection_refused_maps_to_network_error() {
-        let client = LlmClient::new();
+        let client = LlmClient::new().unwrap();
         let url = "http://127.0.0.1:1/v1/chat/completions";
         let body = serde_json::json!({ "model": "test", "messages": [] });
         let err = client
@@ -148,7 +135,7 @@ mod tests {
 
     #[tokio::test]
     async fn forward_with_provider_custom_auth_connection_refused() {
-        let client = LlmClient::new();
+        let client = LlmClient::new().unwrap();
         let url = "http://127.0.0.1:1/v1/messages";
         let body = serde_json::json!({ "model": "test", "messages": [] });
         let mut extra = std::collections::HashMap::new();

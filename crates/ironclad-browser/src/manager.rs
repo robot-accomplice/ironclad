@@ -21,11 +21,10 @@ impl BrowserManager {
     }
 
     fn find_chrome_executable(&self) -> Option<String> {
-        if let Some(ref path) = self.config.executable_path {
-            if Path::new(path).exists() {
+        if let Some(ref path) = self.config.executable_path
+            && Path::new(path).exists() {
                 return Some(path.clone());
             }
-        }
 
         let candidates = [
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",

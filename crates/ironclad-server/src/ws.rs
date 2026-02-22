@@ -40,7 +40,10 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
         "version": env!("CARGO_PKG_VERSION"),
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
-    let _ = socket.send(Message::Text(welcome.to_string().into())).await;
+    if let Err(e) = socket.send(Message::Text(welcome.to_string().into())).await {
+        tracing::debug!(error = %e, "WebSocket welcome send failed");
+        return;
+    }
 
     // Forward events from the bus to the WebSocket client
     loop {
@@ -64,10 +67,16 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
                             "type": "ack",
                             "received": received,
                         });
-                        let _ = socket.send(Message::Text(resp.to_string().into())).await;
+                        if let Err(e) = socket.send(Message::Text(resp.to_string().into())).await {
+                            tracing::debug!(error = %e, "WebSocket ack send failed");
+                            break;
+                        }
                     }
                     Some(Ok(Message::Ping(data))) => {
-                        let _ = socket.send(Message::Pong(data)).await;
+                        if let Err(e) = socket.send(Message::Pong(data)).await {
+                            tracing::debug!(error = %e, "WebSocket pong send failed");
+                            break;
+                        }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
@@ -131,6 +140,32 @@ mod tests {
     fn ws_route_returns_method_router() {
         let bus = EventBus::new(256);
         let _router = super::ws_route(bus);
-        // MethodRouter is constructed and can be used with .route("/ws", router)
+    }
+
+    #[tokio::test]
+    async fn event_bus_publish_subscribe() {
+        let bus = EventBus::new(16);
+        let mut rx = bus.subscribe();
+        bus.publish("hello".to_string());
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg, "hello");
+    }
+
+    #[tokio::test]
+    async fn event_bus_multiple_subscribers() {
+        let bus = EventBus::new(16);
+        let mut rx1 = bus.subscribe();
+        let mut rx2 = bus.subscribe();
+        bus.publish("event1".to_string());
+        assert_eq!(rx1.recv().await.unwrap(), "event1");
+        assert_eq!(rx2.recv().await.unwrap(), "event1");
+    }
+
+    #[test]
+    fn event_bus_dropped_subscriber_does_not_block() {
+        let bus = EventBus::new(16);
+        let _rx = bus.subscribe();
+        drop(_rx);
+        bus.publish("should not block".to_string());
     }
 }

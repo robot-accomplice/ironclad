@@ -18,6 +18,9 @@ flowchart TB
         MEMORY["memory.rs<br/>Memory Retrieval +<br/>Ingestion"]
         SKILLS_MOD["skills.rs<br/>Skill Loader, Registry,<br/>Executor"]
         SCRIPT_RUN["script_runner.rs<br/>Sandboxed Script Execution"]
+        APPROVALS["approvals.rs<br/>Approval flows"]
+        INTERVIEW["interview.rs<br/>Personality interview"]
+        SUBAGENTS["subagents.rs<br/>Subagent registry"]
     end
 
     subgraph LoopDetail ["loop.rs - ReAct State Machine"]
@@ -42,11 +45,9 @@ flowchart TB
         EVAL["evaluate_all():<br/>sorted by priority,<br/>first Deny wins,<br/>all decisions persisted"]
     end
 
-    subgraph InjectionDetail ["injection.rs - 4-Layer Defense"]
-        L1["Layer 1: Input Gatekeeping<br/>- Regex patterns (instruction override,<br/>  ChatML delimiters, authority claims)<br/>- Encoding evasion (base64, homoglyphs,<br/>  zero-width chars)<br/>- Financial manipulation detection<br/>- Multi-language injection (CJK, Cyrillic, Arabic)<br/>-> ThreatScore 0.0-1.0"]
-        L2["Layer 2: Structured Prompt Formatting<br/>- XML-like trust boundary markers<br/>- HMAC tags per boundary<br/>  (session_secret + content_hash)<br/>- peer_agent_input trust_level=X"]
-        L3["Layer 3: Output Validation<br/>- Authority-based tool call filtering<br/>- Reduced authority for external/peer input<br/>- Stricter financial limits for peer-triggered calls<br/>- Self-mod requires creator authority"]
-        L4["Layer 4: Adaptive Refinement<br/>- Scan LLM output for injection patterns<br/>- Behavioral anomaly detection<br/>- Alert engine (metric_snapshots)"]
+    subgraph InjectionDetail ["injection.rs - L1 + L4 in this crate"]
+        L1["L1: check_injection(input) -> ThreatScore<br/>NFKC normalize, homoglyph_fold(), regex sets<br/>(instruction, encoding, authority, financial)<br/>Block >0.7, sanitize 0.3-0.7, pass <0.3"]
+        L4["L4: scan_output(output) -> bool<br/>NFKC, decode_common_encodings (HTML entities,<br/>hex escapes), homoglyph_fold, regex match<br/>Detects injection patterns in model output"]
     end
 
     subgraph PromptDetail ["prompt.rs"]

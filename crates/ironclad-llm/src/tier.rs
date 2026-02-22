@@ -67,8 +67,8 @@ fn adapt_t1(messages: &mut Vec<UnifiedMessage>, config: &TierAdaptConfig) {
 
 fn adapt_t2(messages: &mut Vec<UnifiedMessage>, config: &TierAdaptConfig) {
     let has_system = messages.iter().any(|m| m.role == "system");
-    if !has_system {
-        if let Some(ref preamble) = config.t2_default_preamble {
+    if !has_system
+        && let Some(ref preamble) = config.t2_default_preamble {
             messages.insert(
                 0,
                 UnifiedMessage {
@@ -77,7 +77,6 @@ fn adapt_t2(messages: &mut Vec<UnifiedMessage>, config: &TierAdaptConfig) {
                 },
             );
         }
-    }
 }
 
 #[cfg(test)]

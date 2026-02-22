@@ -18,6 +18,7 @@ pub struct SkillRecord {
     pub created_at: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn register_skill(
     db: &Database,
     name: &str,

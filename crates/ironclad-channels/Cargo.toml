@@ -13,6 +13,11 @@ chrono.workspace = true
 tracing.workspace = true
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 async-trait = "0.1"
+x25519-dalek = "2"
+aes-gcm = "0.10"
+rand = "0.8"
+hkdf = "0.12"
+sha2 = "0.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

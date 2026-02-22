@@ -14,6 +14,8 @@ pub struct WhatsAppAdapter {
     pub client: reqwest::Client,
     pub allowed_numbers: Vec<String>,
     pub api_version: String,
+    /// App secret for webhook X-Hub-Signature-256 verification (HMAC-SHA256).
+    pub app_secret: Option<String>,
 }
 
 impl WhatsAppAdapter {
@@ -28,6 +30,7 @@ impl WhatsAppAdapter {
                 .unwrap_or_default(),
             allowed_numbers: Vec::new(),
             api_version: "v21.0".into(),
+            app_secret: None,
         }
     }
 
@@ -36,10 +39,12 @@ impl WhatsAppAdapter {
         phone_number_id: String,
         verify_token: String,
         allowed_numbers: Vec<String>,
+        app_secret: Option<String>,
     ) -> Self {
         Self {
             verify_token,
             allowed_numbers,
+            app_secret,
             ..Self::new(token, phone_number_id)
         }
     }
@@ -328,6 +333,7 @@ mod tests {
             "phone".into(),
             "verify_secret".into(),
             vec!["15551234567".into()],
+            None,
         );
         assert_eq!(adapter.verify_token, "verify_secret");
         assert_eq!(adapter.allowed_numbers, vec!["15551234567"]);
@@ -336,7 +342,7 @@ mod tests {
     #[test]
     fn verify_webhook_challenge_success() {
         let adapter = WhatsAppAdapter::with_config(
-            "tok".into(), "ph".into(), "my_verify".into(), vec![],
+            "tok".into(), "ph".into(), "my_verify".into(), vec![], None,
         );
         let result = adapter.verify_webhook_challenge("subscribe", "my_verify", "challenge123");
         assert_eq!(result.unwrap(), "challenge123");
@@ -345,7 +351,7 @@ mod tests {
     #[test]
     fn verify_webhook_challenge_wrong_mode() {
         let adapter = WhatsAppAdapter::with_config(
-            "tok".into(), "ph".into(), "my_verify".into(), vec![],
+            "tok".into(), "ph".into(), "my_verify".into(), vec![], None,
         );
         let result = adapter.verify_webhook_challenge("unsubscribe", "my_verify", "c");
         assert!(result.is_err());
@@ -354,7 +360,7 @@ mod tests {
     #[test]
     fn verify_webhook_challenge_wrong_token() {
         let adapter = WhatsAppAdapter::with_config(
-            "tok".into(), "ph".into(), "my_verify".into(), vec![],
+            "tok".into(), "ph".into(), "my_verify".into(), vec![], None,
         );
         let result = adapter.verify_webhook_challenge("subscribe", "wrong", "c");
         assert!(result.is_err());
@@ -371,6 +377,7 @@ mod tests {
         let adapter = WhatsAppAdapter::with_config(
             "tok".into(), "ph".into(), "v".into(),
             vec!["111".into(), "222".into()],
+            None,
         );
         assert!(adapter.is_sender_allowed("111"));
         assert!(!adapter.is_sender_allowed("333"));
@@ -410,6 +417,7 @@ mod tests {
         let adapter = WhatsAppAdapter::with_config(
             "tok".into(), "ph".into(), "v".into(),
             vec!["allowed_only".into()],
+            None,
         );
         let webhook = json!({
             "entry": [{

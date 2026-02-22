@@ -50,7 +50,7 @@ impl DiscordAdapter {
     }
 
     pub fn push_message(&self, msg: InboundMessage) {
-        let mut buf = self.message_buffer.lock().expect("mutex poisoned");
+        let mut buf = self.message_buffer.lock().unwrap_or_else(|e| e.into_inner());
         buf.push_back(msg);
     }
 
@@ -71,12 +71,11 @@ impl DiscordAdapter {
             return Ok(None);
         }
 
-        if let Some(guild_id) = data.get("guild_id").and_then(|v| v.as_str()) {
-            if !self.is_guild_allowed(guild_id) {
+        if let Some(guild_id) = data.get("guild_id").and_then(|v| v.as_str())
+            && !self.is_guild_allowed(guild_id) {
                 debug!(guild_id, "ignoring message from disallowed guild");
                 return Ok(None);
             }
-        }
 
         let message_id = data.get("id")
             .and_then(|v| v.as_str())
@@ -196,7 +195,7 @@ impl ChannelAdapter for DiscordAdapter {
     }
 
     async fn recv(&self) -> Result<Option<InboundMessage>> {
-        let mut buf = self.message_buffer.lock().expect("mutex poisoned");
+        let mut buf = self.message_buffer.lock().unwrap_or_else(|e| e.into_inner());
         Ok(buf.pop_front())
     }
 
