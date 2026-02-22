@@ -742,7 +742,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     result
 }
 
-const BANNER: &str = include_str!("../../../banner.txt");
+const BANNER: &str = include_str!("../banner.txt");
 
 fn print_banner(t: &Theme) {
     use ironclad_core::style::sleep_ms;
