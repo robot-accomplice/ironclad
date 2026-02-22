@@ -2,6 +2,13 @@
 name = "ironclad-llm"
 version.workspace = true
 edition.workspace = true
+description = "LLM client pipeline with circuit breaker, ML model router, semantic cache, and multi-format translation"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
 
 [dependencies]
 ironclad-core.workspace = true

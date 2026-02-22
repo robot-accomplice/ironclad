@@ -3,7 +3,7 @@ set -euo pipefail
 
 VERSION="${IRONCLAD_VERSION:-latest}"
 INSTALL_DIR="${IRONCLAD_INSTALL_DIR:-$HOME/.ironclad/bin}"
-REPO="ironclad/ironclad"
+REPO="robot-accomplice/ironclad"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

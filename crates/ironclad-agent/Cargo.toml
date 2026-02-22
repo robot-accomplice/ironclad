@@ -2,6 +2,13 @@
 name = "ironclad-agent"
 version.workspace = true
 edition.workspace = true
+description = "Agent core with ReAct loop, policy engine, injection defense, memory system, and skill loader"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
 
 [dependencies]
 ironclad-core.workspace = true

@@ -2,6 +2,13 @@
 name = "ironclad-schedule"
 version.workspace = true
 edition.workspace = true
+description = "Cron/heartbeat scheduler with DB-backed leases and wake signaling"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
 
 [dependencies]
 ironclad-core.workspace = true

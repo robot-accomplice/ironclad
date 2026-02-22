@@ -2,6 +2,13 @@
 name = "ironclad-db"
 version.workspace = true
 edition.workspace = true
+description = "SQLite persistence layer with 28 tables, FTS5 search, WAL mode, and migration system"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
 
 [dependencies]
 ironclad-core = { workspace = true }

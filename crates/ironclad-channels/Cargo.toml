@@ -2,6 +2,13 @@
 name = "ironclad-channels"
 version.workspace = true
 edition.workspace = true
+description = "Chat adapters for Telegram, WhatsApp, Discord, WebSocket, and A2A protocol"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
 
 [dependencies]
 ironclad-core.workspace = true

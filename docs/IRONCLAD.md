@@ -283,8 +283,11 @@ Verdicts: **Clean** (safe to import), **Warnings** (review recommended, user con
 ## Quick Start
 
 ```bash
-# Install
-cargo install --path crates/ironclad-server
+# Install from crates.io
+cargo install ironclad-server
+
+# Or install from source
+# cargo install --path crates/ironclad-server
 
 # Initialize workspace
 ironclad init

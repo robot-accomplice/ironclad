@@ -2,6 +2,13 @@
 name = "ironclad-plugin-sdk"
 version.workspace = true
 edition.workspace = true
+description = "Plugin trait, manifest parser, script runner, and registry with hot-reload"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
 
 [dependencies]
 ironclad-core.workspace = true

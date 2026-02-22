@@ -2,6 +2,13 @@
 name = "ironclad-core"
 version.workspace = true
 edition.workspace = true
+description = "Shared types, config parsing, personality system, and error types for the Ironclad agent runtime"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
 
 [dependencies]
 serde = { workspace = true }

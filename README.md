@@ -5,11 +5,26 @@
 [![Build Status](https://img.shields.io/github/actions/workflow/status/robot-accomplice/ironclad/ci.yml?branch=main&logo=github&label=CI)](https://github.com/robot-accomplice/ironclad/actions)
 [![Website](https://img.shields.io/badge/website-roboticus.ai-green?logo=google-chrome&logoColor=white)](https://roboticus.ai)
 [![Tests](https://img.shields.io/badge/tests-597-brightgreen?logo=checkmarx&logoColor=white)](#development)
-[![Crates](https://img.shields.io/badge/workspace_crates-11-informational?logo=rust)](#architecture)
+[![crates.io](https://img.shields.io/crates/v/ironclad-server.svg)](https://crates.io/crates/ironclad-server)
+[![downloads](https://img.shields.io/crates/d/ironclad-server.svg)](https://crates.io/crates/ironclad-server)
+[![docs.rs](https://docs.rs/ironclad-server/badge.svg)](https://docs.rs/ironclad-server)
 [![SQLite Tables](https://img.shields.io/badge/SQLite_tables-28-informational?logo=sqlite)](#architecture)
 [![Lines of Code](https://img.shields.io/badge/lines_of_code-~32k-informational)](#architecture)
 
 Ironclad is an autonomous agent runtime built in Rust as a single optimized binary. It features ML-based model routing, 3-level semantic caching, zero-trust agent-to-agent communication, 4-layer prompt injection defense, a dual-format skill system, and built-in financial management with DeFi yield optimization. All eleven crates compile into one process with no IPC overhead — inter-component communication is direct async function calls on the tokio runtime, backed by a single SQLite database (28 tables including FTS5).
+
+## Installation
+
+```bash
+cargo install ironclad-server
+```
+
+Then initialize and start:
+
+```bash
+ironclad init
+ironclad serve
+```
 
 ## Architecture
 
