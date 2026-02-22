@@ -1,6 +1,6 @@
 [package]
 name = "ironclad-server"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 description = "Autonomous agent runtime — HTTP API, CLI, WebSocket push, and migration engine"
 license.workspace = true
@@ -9,6 +9,10 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
+
+[[bin]]
+name = "ironclad"
+path = "src/main.rs"
 
 [dependencies]
 ironclad-core.workspace = true
