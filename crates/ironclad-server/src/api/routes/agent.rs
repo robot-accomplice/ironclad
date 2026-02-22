@@ -49,9 +49,8 @@ async fn execute_tool_call(
     turn_id: &str,
     authority: InputAuthority,
 ) -> Result<String, String> {
-    let config = state.config.read().await;
-    let tier = ironclad_core::SurvivalTier::from_balance(0.0, 0.0);
-    drop(config);
+    let balance = state.wallet.wallet.get_usdc_balance().await.unwrap_or(0.0);
+    let tier = ironclad_core::SurvivalTier::from_balance(balance, 0.0);
 
     let policy_result = check_tool_policy(&state.policy_engine, tool_name, params, authority, tier);
 
@@ -460,6 +459,9 @@ pub async fn agent_message(
         ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
     if !ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()) {
         tracing::error!("HMAC boundary verification failed immediately after injection");
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(json!({"error": "internal HMAC verification failure"})),
@@ -805,8 +807,17 @@ pub async fn agent_message(
             let refine_db = state.db.clone();
             let refine_llm = Arc::clone(&state.llm);
             let refine_sid = session_id.clone();
+            let refine_oauth = state.oauth.clone();
+            let refine_keystore = state.keystore.clone();
             tokio::spawn(async move {
-                if let Err(e) = refine_session_nickname(&refine_db, &refine_llm, &refine_sid).await
+                if let Err(e) = refine_session_nickname(
+                    &refine_db,
+                    &refine_llm,
+                    &refine_sid,
+                    &refine_oauth,
+                    &refine_keystore,
+                )
+                .await
                 {
                     tracing::debug!(error = %e, session = %refine_sid, "nickname refinement skipped");
                 }
@@ -836,6 +847,8 @@ async fn refine_session_nickname(
     db: &ironclad_db::Database,
     llm: &Arc<tokio::sync::RwLock<ironclad_llm::LlmService>>,
     session_id: &str,
+    oauth: &ironclad_llm::oauth::OAuthManager,
+    keystore: &ironclad_core::keystore::Keystore,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let messages = ironclad_db::sessions::list_messages(db, session_id, Some(8))?;
     if messages.len() < 4 {
@@ -861,7 +874,17 @@ async fn refine_session_nickname(
     let provider = llm_read.providers.get_by_model(&model_id);
     let (url, api_key, auth_header, format, extra_headers) = match provider {
         Some(p) => {
-            let key = std::env::var(&p.api_key_env).unwrap_or_default();
+            let key = if p.auth_mode == "oauth" {
+                oauth.resolve_token(&p.name).await.unwrap_or_default()
+            } else if let Some(ref key_ref) = p.api_key_ref {
+                if let Some(name) = key_ref.strip_prefix("keystore:") {
+                    keystore.get(name).unwrap_or_default()
+                } else {
+                    std::env::var(&p.api_key_env).unwrap_or_default()
+                }
+            } else {
+                std::env::var(&p.api_key_env).unwrap_or_default()
+            };
             (
                 format!("{}{}", p.url, p.chat_path),
                 key,
@@ -1134,6 +1157,9 @@ pub async fn process_channel_message(
                 .await
                 .inspect_err(|e| tracing::warn!(error = %e, "failed to send circuit-breaker reply"))
                 .ok();
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
             return Ok(());
         }
     }
@@ -1260,6 +1286,9 @@ pub async fn process_channel_message(
         ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
     if !ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()) {
         tracing::error!("HMAC boundary verification failed in channel handler");
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
         return Err("internal HMAC verification failure".into());
     }
 
@@ -1445,6 +1474,12 @@ pub async fn process_channel_message(
                         llm.breakers.record_success(&provider_prefix);
                         drop(llm);
                         let content = check_hmac(ur.content, state.hmac_secret.as_ref());
+                        let content = if ironclad_agent::injection::scan_output(&content) {
+                            tracing::warn!("L4 output scan flagged channel ReAct follow-up, blocking");
+                            "[Response blocked by output safety filter]".to_string()
+                        } else {
+                            content
+                        };
                         react_msgs.push(ironclad_llm::format::UnifiedMessage {
                             role: "assistant".into(),
                             content: content.clone(),
@@ -1553,6 +1588,56 @@ pub async fn telegram_poll_loop(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_tool_call_valid() {
+        let input = r#"Let me check that. {"tool_call": {"name": "read_file", "params": {"path": "/tmp/test.txt"}}}"#;
+        let result = parse_tool_call(input);
+        assert!(result.is_some());
+        let (name, params) = result.unwrap();
+        assert_eq!(name, "read_file");
+        assert_eq!(params["path"], "/tmp/test.txt");
+    }
+
+    #[test]
+    fn parse_tool_call_no_params() {
+        let input = r#"{"tool_call": {"name": "status"}}"#;
+        let result = parse_tool_call(input);
+        assert!(result.is_some());
+        let (name, params) = result.unwrap();
+        assert_eq!(name, "status");
+        assert!(params.is_object());
+    }
+
+    #[test]
+    fn parse_tool_call_none_for_no_tool() {
+        assert!(parse_tool_call("Hello, how are you?").is_none());
+        assert!(parse_tool_call("").is_none());
+    }
+
+    #[test]
+    fn parse_tool_call_nested_braces() {
+        let input = r#"{"tool_call": {"name": "bash", "params": {"command": "echo '{hello}'"}}}"#;
+        let result = parse_tool_call(input);
+        assert!(result.is_some());
+        let (name, _params) = result.unwrap();
+        assert_eq!(name, "bash");
+    }
+
+    #[test]
+    fn parse_tool_call_malformed_json() {
+        assert!(parse_tool_call(r#"{"tool_call": {"name": broken}}"#).is_none());
+    }
+
+    #[test]
+    fn parse_tool_call_surrounded_by_text() {
+        let input = r#"I'll read the file now. {"tool_call": {"name": "read_file", "params": {"path": "test.rs"}}} Let me analyze the output."#;
+        let result = parse_tool_call(input);
+        assert!(result.is_some());
+        let (name, params) = result.unwrap();
+        assert_eq!(name, "read_file");
+        assert_eq!(params["path"], "test.rs");
+    }
 
     #[test]
     fn estimate_cost_zero_tokens() {

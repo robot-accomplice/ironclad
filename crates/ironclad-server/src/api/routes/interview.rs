@@ -46,23 +46,27 @@ pub async fn interview_turn(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<InterviewTurnRequest>,
 ) -> impl IntoResponse {
-    let mut interviews = state.interviews.write().await;
-    let session = match interviews.get_mut(&body.session_key) {
-        Some(s) => s,
-        None => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                axum::Json(
-                    json!({"error": "no interview session found", "session_key": body.session_key}),
-                ),
-            ));
-        }
-    };
+    // Acquire write lock, push user message, clone history, then release
+    let history = {
+        let mut interviews = state.interviews.write().await;
+        let session = match interviews.get_mut(&body.session_key) {
+            Some(s) => s,
+            None => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    axum::Json(
+                        json!({"error": "no interview session found", "session_key": body.session_key}),
+                    ),
+                ));
+            }
+        };
 
-    session.history.push(ironclad_llm::format::UnifiedMessage {
-        role: "user".into(),
-        content: body.content,
-    });
+        session.history.push(ironclad_llm::format::UnifiedMessage {
+            role: "user".into(),
+            content: body.content,
+        });
+        session.history.clone()
+    }; // write lock dropped — LLM call below won't serialize other interview traffic
 
     let config = state.config.read().await;
     let model = config.models.primary.clone();
@@ -71,7 +75,7 @@ pub async fn interview_turn(
     let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
     let req = ironclad_llm::format::UnifiedRequest {
         model: model_for_api,
-        messages: session.history.clone(),
+        messages: history,
         max_tokens: Some(4096),
         temperature: None,
         system: None,
@@ -84,6 +88,12 @@ pub async fn interview_turn(
             let url = format!("{}{}", p.url, p.chat_path);
             let key = if p.auth_mode == "oauth" {
                 state.oauth.resolve_token(&p.name).await.unwrap_or_default()
+            } else if let Some(ref key_ref) = p.api_key_ref {
+                if let Some(name) = key_ref.strip_prefix("keystore:") {
+                    state.keystore.get(name).unwrap_or_default()
+                } else {
+                    std::env::var(&p.api_key_env).unwrap_or_default()
+                }
             } else {
                 std::env::var(&p.api_key_env).unwrap_or_default()
             };
@@ -147,11 +157,15 @@ pub async fn interview_turn(
                     content: unified.content.clone(),
                 });
             }
+            let turn_count = interviews
+                .get(&body.session_key)
+                .map(|s| s.history.len())
+                .unwrap_or(0);
 
             Ok(axum::Json(json!({
                 "session_key": body.session_key,
                 "content": unified.content,
-                "turn": session.history.len(),
+                "turn": turn_count,
             })))
         }
         Err(e) => Err((
