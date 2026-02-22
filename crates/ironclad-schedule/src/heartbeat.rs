@@ -139,7 +139,17 @@ pub async fn run(
                 }
                 last_atoken_balance = Some(current);
             }
-            // Record task run in cron_runs for observability
+            if *task == HeartbeatTask::MetricSnapshot && result.success {
+                let snapshot = serde_json::json!({
+                    "survival_tier": format!("{:?}", ctx.survival_tier),
+                    "usdc_balance": ctx.usdc_balance,
+                    "credit_balance": ctx.credit_balance,
+                    "timestamp": ctx.timestamp.to_rfc3339(),
+                });
+                ironclad_db::metrics::record_metric_snapshot(&db, &snapshot.to_string())
+                    .inspect_err(|e| tracing::warn!(error = %e, "failed to record metric snapshot"))
+                    .ok();
+            }
             ironclad_db::cron::record_run(
                 &db,
                 &format!("heartbeat_{:?}", task).to_lowercase(),
@@ -164,7 +174,10 @@ pub async fn run(
                 "Adjusting heartbeat interval"
             );
             daemon.interval_ms = new_interval;
-            interval = tokio::time::interval(Duration::from_millis(new_interval));
+            let period = Duration::from_millis(new_interval);
+            interval = tokio::time::interval(period);
+            // Consume the immediate first tick so the new period takes effect
+            interval.tick().await;
         }
     }
 }

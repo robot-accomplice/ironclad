@@ -126,6 +126,9 @@ mod tests {
             api_key_env: "K".into(),
             format: ApiFormat::OpenAiCompletions,
             chat_path: "/v1/chat/completions".into(),
+            embedding_path: None,
+            embedding_model: None,
+            embedding_dimensions: None,
             is_local: true,
             cost_per_input_token: 0.0,
             cost_per_output_token: 0.0,
@@ -133,6 +136,9 @@ mod tests {
             extra_headers: StdHashMap::new(),
             tpm_limit: None,
             rpm_limit: None,
+            auth_mode: "api_key".into(),
+            oauth_client_id: None,
+            api_key_ref: None,
         });
         reg.register(Provider {
             name: "mid".into(),
@@ -141,6 +147,9 @@ mod tests {
             api_key_env: "K".into(),
             format: ApiFormat::OpenAiCompletions,
             chat_path: "/v1/chat/completions".into(),
+            embedding_path: None,
+            embedding_model: None,
+            embedding_dimensions: None,
             is_local: false,
             cost_per_input_token: 0.00005,
             cost_per_output_token: 0.00015,
@@ -148,6 +157,9 @@ mod tests {
             extra_headers: StdHashMap::new(),
             tpm_limit: None,
             rpm_limit: None,
+            auth_mode: "api_key".into(),
+            oauth_client_id: None,
+            api_key_ref: None,
         });
         reg.register(Provider {
             name: "premium".into(),
@@ -156,6 +168,9 @@ mod tests {
             api_key_env: "K".into(),
             format: ApiFormat::OpenAiCompletions,
             chat_path: "/v1/chat/completions".into(),
+            embedding_path: None,
+            embedding_model: None,
+            embedding_dimensions: None,
             is_local: false,
             cost_per_input_token: 0.001,
             cost_per_output_token: 0.003,
@@ -163,6 +178,9 @@ mod tests {
             extra_headers: StdHashMap::new(),
             tpm_limit: None,
             rpm_limit: None,
+            auth_mode: "api_key".into(),
+            oauth_client_id: None,
+            api_key_ref: None,
         });
         reg
     }

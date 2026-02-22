@@ -156,6 +156,7 @@ mod tests {
             embedding_provider: None,
             embedding_model: None,
             hybrid_weight: 0.5,
+            ann_index: false,
         }
     }
 

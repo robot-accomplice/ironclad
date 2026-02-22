@@ -11,6 +11,9 @@ pub struct Provider {
     pub api_key_env: String,
     pub format: ApiFormat,
     pub chat_path: String,
+    pub embedding_path: Option<String>,
+    pub embedding_model: Option<String>,
+    pub embedding_dimensions: Option<usize>,
     pub is_local: bool,
     pub cost_per_input_token: f64,
     pub cost_per_output_token: f64,
@@ -18,6 +21,9 @@ pub struct Provider {
     pub extra_headers: HashMap<String, String>,
     pub tpm_limit: Option<u64>,
     pub rpm_limit: Option<u64>,
+    pub auth_mode: String,
+    pub oauth_client_id: Option<String>,
+    pub api_key_ref: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +87,8 @@ impl ProviderRegistry {
 
             let extra_headers = cfg.extra_headers.clone().unwrap_or_default();
 
+            let auth_mode = cfg.auth_mode.clone().unwrap_or_else(|| "api_key".into());
+
             registry.register(Provider {
                 name: name.clone(),
                 url: cfg.url.clone(),
@@ -88,6 +96,9 @@ impl ProviderRegistry {
                 api_key_env,
                 format,
                 chat_path,
+                embedding_path: cfg.embedding_path.clone(),
+                embedding_model: cfg.embedding_model.clone(),
+                embedding_dimensions: cfg.embedding_dimensions,
                 is_local,
                 cost_per_input_token: cfg.cost_per_input_token.unwrap_or(0.0),
                 cost_per_output_token: cfg.cost_per_output_token.unwrap_or(0.0),
@@ -95,6 +106,9 @@ impl ProviderRegistry {
                 extra_headers,
                 tpm_limit: cfg.tpm_limit,
                 rpm_limit: cfg.rpm_limit,
+                auth_mode,
+                oauth_client_id: cfg.oauth_client_id.clone(),
+                api_key_ref: cfg.api_key_ref.clone(),
             });
         }
 
@@ -166,6 +180,9 @@ mod tests {
             api_key_env: format!("{}_API_KEY", name.to_uppercase()),
             format,
             chat_path: default_chat_path(format),
+            embedding_path: None,
+            embedding_model: None,
+            embedding_dimensions: None,
             is_local: infer_is_local(name),
             cost_per_input_token: 0.0,
             cost_per_output_token: 0.0,
@@ -173,6 +190,9 @@ mod tests {
             extra_headers: HashMap::new(),
             tpm_limit: None,
             rpm_limit: None,
+            auth_mode: "api_key".into(),
+            oauth_client_id: None,
+            api_key_ref: None,
         }
     }
 

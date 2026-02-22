@@ -15,6 +15,7 @@ pub mod memory;
 pub mod orchestration;
 pub mod policy;
 pub mod prompt;
+pub mod retrieval;
 pub mod script_runner;
 pub mod services;
 pub mod skills;

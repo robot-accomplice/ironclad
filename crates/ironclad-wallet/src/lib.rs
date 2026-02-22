@@ -6,7 +6,7 @@ pub mod yield_engine;
 
 pub use money::Money;
 pub use treasury::TreasuryPolicy;
-pub use wallet::Wallet;
+pub use wallet::{TokenBalance, Wallet};
 pub use x402::{PaymentRequirements, X402Handler};
 pub use yield_engine::YieldEngine;
 

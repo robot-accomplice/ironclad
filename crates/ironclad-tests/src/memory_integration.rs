@@ -54,6 +54,7 @@ fn budget_allocation_matches_config() {
         embedding_provider: None,
         embedding_model: None,
         hybrid_weight: 0.5,
+        ann_index: false,
     };
 
     let manager = MemoryBudgetManager::new(config);
@@ -84,6 +85,7 @@ fn budget_rollover_assigned_to_working() {
         embedding_provider: None,
         embedding_model: None,
         hybrid_weight: 0.5,
+        ann_index: false,
     };
 
     let manager = MemoryBudgetManager::new(config);

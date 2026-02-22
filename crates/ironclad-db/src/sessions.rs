@@ -28,6 +28,7 @@ pub struct Session {
     pub scope_key: Option<String>,
     pub status: String,
     pub model: Option<String>,
+    pub nickname: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub metadata: Option<String>,
@@ -95,7 +96,8 @@ pub fn find_or_create(
 pub fn get_session(db: &Database, id: &str) -> Result<Option<Session>> {
     let conn = db.conn();
     conn.query_row(
-        "SELECT id, agent_id, scope_key, status, model, created_at, updated_at, metadata FROM sessions WHERE id = ?1",
+        "SELECT id, agent_id, scope_key, status, model, nickname, created_at, updated_at, metadata \
+         FROM sessions WHERE id = ?1",
         [id],
         |row| {
             Ok(Session {
@@ -104,9 +106,10 @@ pub fn get_session(db: &Database, id: &str) -> Result<Option<Session>> {
                 scope_key: row.get(2)?,
                 status: row.get(3)?,
                 model: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                metadata: row.get(7)?,
+                nickname: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                metadata: row.get(8)?,
             })
         },
     )
@@ -222,6 +225,23 @@ pub fn archive_session(db: &Database, session_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Update the nickname for a session.
+pub fn update_nickname(db: &Database, session_id: &str, nickname: &str) -> Result<()> {
+    let conn = db.conn();
+    let changed = conn
+        .execute(
+            "UPDATE sessions SET nickname = ?1, updated_at = datetime('now') WHERE id = ?2",
+            rusqlite::params![nickname, session_id],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    if changed == 0 {
+        return Err(IroncladError::Database(format!(
+            "session not found: {session_id}"
+        )));
+    }
+    Ok(())
+}
+
 /// Expire active sessions older than `max_age_seconds`.
 pub fn expire_stale_sessions(db: &Database, max_age_seconds: u64) -> Result<usize> {
     let conn = db.conn();
@@ -244,7 +264,7 @@ pub fn list_active_sessions(db: &Database, agent_id: Option<&str>) -> Result<Vec
     if let Some(aid) = agent_id {
         let mut stmt = conn
             .prepare(
-                "SELECT id, agent_id, scope_key, status, model, created_at, updated_at, metadata \
+                "SELECT id, agent_id, scope_key, status, model, nickname, created_at, updated_at, metadata \
                  FROM sessions WHERE agent_id = ?1 AND status = 'active' ORDER BY created_at DESC",
             )
             .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -256,9 +276,10 @@ pub fn list_active_sessions(db: &Database, agent_id: Option<&str>) -> Result<Vec
                     scope_key: row.get(2)?,
                     status: row.get(3)?,
                     model: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                    metadata: row.get(7)?,
+                    nickname: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                    metadata: row.get(8)?,
                 })
             })
             .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -268,7 +289,7 @@ pub fn list_active_sessions(db: &Database, agent_id: Option<&str>) -> Result<Vec
     } else {
         let mut stmt = conn
             .prepare(
-                "SELECT id, agent_id, scope_key, status, model, created_at, updated_at, metadata \
+                "SELECT id, agent_id, scope_key, status, model, nickname, created_at, updated_at, metadata \
                  FROM sessions WHERE status = 'active' ORDER BY created_at DESC",
             )
             .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -280,9 +301,10 @@ pub fn list_active_sessions(db: &Database, agent_id: Option<&str>) -> Result<Vec
                     scope_key: row.get(2)?,
                     status: row.get(3)?,
                     model: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                    metadata: row.get(7)?,
+                    nickname: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                    metadata: row.get(8)?,
                 })
             })
             .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -292,6 +314,129 @@ pub fn list_active_sessions(db: &Database, agent_id: Option<&str>) -> Result<Vec
     }
 
     Ok(sessions)
+}
+
+/// Find the largest byte index <= `max_bytes` that is a valid char boundary.
+fn char_boundary(s: &str, max_bytes: usize) -> usize {
+    if max_bytes >= s.len() {
+        return s.len();
+    }
+    s.char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= max_bytes)
+        .last()
+        .unwrap_or(0)
+}
+
+/// Derive a short nickname from the first user message using heuristics.
+pub fn derive_nickname(first_message: &str) -> String {
+    let trimmed = first_message.trim();
+    if trimmed.is_empty() {
+        return "Untitled".into();
+    }
+
+    let greeting_prefixes: &[&str] = &[
+        "hey ",
+        "hi ",
+        "hello ",
+        "yo ",
+        "can you ",
+        "could you ",
+        "please ",
+        "i need ",
+        "i want ",
+        "help me ",
+        "hey, ",
+        "hi, ",
+        "hello, ",
+        "yo, ",
+    ];
+
+    let mut text = trimmed;
+    let lower = text.to_lowercase();
+    for prefix in greeting_prefixes {
+        if lower.starts_with(prefix) {
+            text = &text[prefix.len()..];
+            break;
+        }
+    }
+
+    let text = text.trim_start();
+    if text.is_empty() {
+        return "Untitled".into();
+    }
+
+    let sentence_end = text.find(['.', '?', '!', '\n']).unwrap_or(text.len());
+    let end = char_boundary(text, sentence_end.min(60));
+
+    let mut nickname: String = text[..end].trim().to_string();
+
+    if nickname.len() > 50 {
+        let boundary = char_boundary(&nickname, 50);
+        if let Some(break_pos) = nickname[..boundary].rfind(' ') {
+            nickname.truncate(break_pos);
+            nickname.push_str("...");
+        } else {
+            nickname.truncate(boundary);
+            nickname.push_str("...");
+        }
+    }
+
+    if nickname.is_empty() {
+        return "Untitled".into();
+    }
+
+    let mut chars = nickname.chars();
+    let first = chars.next().unwrap().to_uppercase().to_string();
+    format!("{first}{}", chars.as_str())
+}
+
+/// Backfill nicknames for all sessions that don't have one yet.
+/// Returns the number of sessions updated.
+pub fn backfill_nicknames(db: &Database) -> Result<usize> {
+    let conn = db.conn();
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.id, \
+                (SELECT content FROM session_messages \
+                 WHERE session_id = s.id AND role = 'user' \
+                 ORDER BY created_at ASC LIMIT 1) \
+             FROM sessions s WHERE s.nickname IS NULL",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let rows: Vec<(String, Option<String>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let count = rows.len();
+    for (session_id, first_msg) in &rows {
+        let nick = match first_msg {
+            Some(msg) => derive_nickname(msg),
+            None => "Untitled".into(),
+        };
+        conn.execute(
+            "UPDATE sessions SET nickname = ?1 WHERE id = ?2",
+            rusqlite::params![nick, session_id],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+
+    Ok(count)
+}
+
+/// Count messages in a session.
+pub fn message_count(db: &Database, session_id: &str) -> Result<i64> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1",
+        [session_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
 trait Optional<T> {
@@ -418,8 +563,6 @@ mod tests {
         let result = update_metadata(&db, "nonexistent", "{}");
         assert!(result.is_err());
     }
-
-    // 9C: Edge case tests
 
     #[test]
     fn update_metadata_accepts_malformed_json() {
@@ -626,5 +769,186 @@ mod tests {
         let json = serde_json::to_string(&scope).unwrap();
         let back: SessionScope = serde_json::from_str(&json).unwrap();
         assert_eq!(scope, back);
+    }
+
+    // ── derive_nickname tests ────────────────────────────────
+
+    #[test]
+    fn derive_nickname_strips_greeting() {
+        assert_eq!(
+            derive_nickname("Hey can you help me with Rust?"),
+            "Can you help me with Rust"
+        );
+    }
+
+    #[test]
+    fn derive_nickname_strips_hello() {
+        assert_eq!(
+            derive_nickname("Hello, I need a database schema"),
+            "I need a database schema"
+        );
+    }
+
+    #[test]
+    fn derive_nickname_takes_first_sentence() {
+        assert_eq!(
+            derive_nickname("Fix the build. Also update deps."),
+            "Fix the build"
+        );
+    }
+
+    #[test]
+    fn derive_nickname_truncates_long() {
+        let long = "a ".repeat(50);
+        let nick = derive_nickname(&long);
+        assert!(nick.len() <= 55, "nickname too long: {} chars", nick.len());
+        assert!(nick.ends_with("..."));
+    }
+
+    #[test]
+    fn derive_nickname_empty_returns_untitled() {
+        assert_eq!(derive_nickname(""), "Untitled");
+        assert_eq!(derive_nickname("   "), "Untitled");
+    }
+
+    #[test]
+    fn derive_nickname_greeting_only() {
+        assert_eq!(derive_nickname("hey"), "Hey");
+    }
+
+    #[test]
+    fn derive_nickname_capitalizes() {
+        assert_eq!(
+            derive_nickname("refactor the auth module"),
+            "Refactor the auth module"
+        );
+    }
+
+    #[test]
+    fn derive_nickname_question_mark() {
+        assert_eq!(
+            derive_nickname("what is the meaning of life?"),
+            "What is the meaning of life"
+        );
+    }
+
+    #[test]
+    fn derive_nickname_unicode() {
+        let nick = derive_nickname("日本語のテスト");
+        assert!(!nick.is_empty());
+        assert_ne!(nick, "Untitled");
+    }
+
+    #[test]
+    fn derive_nickname_multibyte_at_boundary() {
+        let msg = "日".repeat(30);
+        let nick = derive_nickname(&msg);
+        assert!(!nick.is_empty());
+        assert!(nick.len() <= 55, "nickname too long: {}", nick.len());
+    }
+
+    #[test]
+    fn derive_nickname_emoji_boundary() {
+        let msg = format!("{}problem", "🔥".repeat(20));
+        let nick = derive_nickname(&msg);
+        assert!(!nick.is_empty());
+    }
+
+    // ── update_nickname tests ────────────────────────────────
+
+    #[test]
+    fn update_nickname_roundtrip() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-nick", None).unwrap();
+        assert!(get_session(&db, &sid).unwrap().unwrap().nickname.is_none());
+
+        update_nickname(&db, &sid, "My Cool Session").unwrap();
+
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.nickname.as_deref(), Some("My Cool Session"));
+    }
+
+    #[test]
+    fn update_nickname_missing_session() {
+        let db = test_db();
+        let result = update_nickname(&db, "nonexistent", "test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_nickname_overwrite() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-overwrite", None).unwrap();
+        update_nickname(&db, &sid, "First").unwrap();
+        update_nickname(&db, &sid, "Second").unwrap();
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.nickname.as_deref(), Some("Second"));
+    }
+
+    // ── backfill_nicknames tests ─────────────────────────────
+
+    #[test]
+    fn backfill_nicknames_sets_from_first_message() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-bf", None).unwrap();
+        append_message(&db, &sid, "user", "Help me debug this crash").unwrap();
+
+        let count = backfill_nicknames(&db).unwrap();
+        assert_eq!(count, 1);
+
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.nickname.as_deref(), Some("Debug this crash"));
+    }
+
+    #[test]
+    fn backfill_nicknames_untitled_for_empty_session() {
+        let db = test_db();
+        find_or_create(&db, "agent-empty-bf", None).unwrap();
+
+        let count = backfill_nicknames(&db).unwrap();
+        assert_eq!(count, 1);
+
+        let conn = db.conn();
+        let nick: String = conn
+            .query_row(
+                "SELECT nickname FROM sessions WHERE agent_id = 'agent-empty-bf'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(nick, "Untitled");
+    }
+
+    #[test]
+    fn backfill_nicknames_skips_already_set() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-skip-bf", None).unwrap();
+        update_nickname(&db, &sid, "Already Set").unwrap();
+        append_message(&db, &sid, "user", "something else").unwrap();
+
+        let count = backfill_nicknames(&db).unwrap();
+        assert_eq!(count, 0);
+
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.nickname.as_deref(), Some("Already Set"));
+    }
+
+    // ── message_count tests ─────────────────────────────────
+
+    #[test]
+    fn message_count_empty() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-count", None).unwrap();
+        assert_eq!(message_count(&db, &sid).unwrap(), 0);
+    }
+
+    #[test]
+    fn message_count_after_append() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-count2", None).unwrap();
+        append_message(&db, &sid, "user", "a").unwrap();
+        append_message(&db, &sid, "assistant", "b").unwrap();
+        append_message(&db, &sid, "user", "c").unwrap();
+        assert_eq!(message_count(&db, &sid).unwrap(), 3);
     }
 }

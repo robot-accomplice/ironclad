@@ -474,6 +474,9 @@ mod tests {
             api_key_env: "CUSTOM_API_KEY".into(),
             format: ApiFormat::OpenAiCompletions,
             chat_path: "/v1/chat/completions".into(),
+            embedding_path: None,
+            embedding_model: None,
+            embedding_dimensions: None,
             is_local: true,
             cost_per_input_token: 0.0,
             cost_per_output_token: 0.0,
@@ -481,6 +484,9 @@ mod tests {
             extra_headers: HashMap::new(),
             tpm_limit: None,
             rpm_limit: None,
+            auth_mode: "api_key".into(),
+            oauth_client_id: None,
+            api_key_ref: None,
         });
         assert_eq!(
             router.select_for_complexity(0.3, Some(&reg), None),
@@ -523,6 +529,9 @@ mod tests {
             api_key_env: "CHEAP_KEY".into(),
             format: ApiFormat::OpenAiCompletions,
             chat_path: "/v1/chat/completions".into(),
+            embedding_path: None,
+            embedding_model: None,
+            embedding_dimensions: None,
             is_local: false,
             cost_per_input_token: 0.00001,
             cost_per_output_token: 0.00002,
@@ -530,6 +539,9 @@ mod tests {
             extra_headers: HashMap::new(),
             tpm_limit: None,
             rpm_limit: None,
+            auth_mode: "api_key".into(),
+            oauth_client_id: None,
+            api_key_ref: None,
         });
         reg.register(Provider {
             name: "expensive".into(),
@@ -538,6 +550,9 @@ mod tests {
             api_key_env: "EXPENSIVE_KEY".into(),
             format: ApiFormat::OpenAiCompletions,
             chat_path: "/v1/chat/completions".into(),
+            embedding_path: None,
+            embedding_model: None,
+            embedding_dimensions: None,
             is_local: false,
             cost_per_input_token: 0.001,
             cost_per_output_token: 0.002,
@@ -545,6 +560,9 @@ mod tests {
             extra_headers: HashMap::new(),
             tpm_limit: Some(100_000),
             rpm_limit: Some(60),
+            auth_mode: "api_key".into(),
+            oauth_client_id: None,
+            api_key_ref: None,
         });
         reg.register(Provider {
             name: "ollama".into(),
@@ -553,6 +571,9 @@ mod tests {
             api_key_env: "OLLAMA_KEY".into(),
             format: ApiFormat::OpenAiCompletions,
             chat_path: "/v1/chat/completions".into(),
+            embedding_path: None,
+            embedding_model: None,
+            embedding_dimensions: None,
             is_local: true,
             cost_per_input_token: 0.0,
             cost_per_output_token: 0.0,
@@ -560,6 +581,9 @@ mod tests {
             extra_headers: HashMap::new(),
             tpm_limit: None,
             rpm_limit: None,
+            auth_mode: "api_key".into(),
+            oauth_client_id: None,
+            api_key_ref: None,
         });
         reg
     }

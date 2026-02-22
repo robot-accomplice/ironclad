@@ -3,6 +3,7 @@ use ironclad_db::Database;
 use ironclad_db::sessions::{self, Session};
 use tracing::{debug, info};
 
+/// A generated summary of a session's key events and outcomes.
 #[derive(Debug, Clone)]
 pub struct EpisodicDigest {
     pub session_id: String,
@@ -14,6 +15,7 @@ pub struct EpisodicDigest {
 }
 
 impl EpisodicDigest {
+    /// Generate a digest from a session's message history.
     pub fn from_session(db: &Database, session: &Session) -> Option<Self> {
         let messages = sessions::list_messages(db, &session.id, None).ok()?;
         if messages.is_empty() {
@@ -56,6 +58,7 @@ impl EpisodicDigest {
         })
     }
 
+    /// Store this digest in episodic memory.
     pub fn persist(&self, db: &Database) -> ironclad_core::Result<String> {
         let content = format!(
             "[Session Digest] {}\nTopics: {}\nTurns: {}",
@@ -67,6 +70,7 @@ impl EpisodicDigest {
     }
 }
 
+/// Calculate importance based on session engagement.
 fn calculate_importance(turn_count: i64, topic_count: usize) -> i32 {
     let base = 5i32;
     let turn_bonus = (turn_count as i32 / 5).min(3);
@@ -74,6 +78,7 @@ fn calculate_importance(turn_count: i64, topic_count: usize) -> i32 {
     (base + turn_bonus + topic_bonus).min(10)
 }
 
+/// Apply exponential decay to a digest's importance based on age.
 pub fn decay_importance(original_importance: i32, age_days: f64, half_life_days: f64) -> i32 {
     if half_life_days <= 0.0 {
         return original_importance;
@@ -97,6 +102,7 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
+/// Generate and persist a digest for a session that is being archived/expired.
 pub fn digest_on_close(db: &Database, config: &DigestConfig, session: &Session) {
     if !config.enabled {
         debug!(session_id = %session.id, "digest generation disabled");

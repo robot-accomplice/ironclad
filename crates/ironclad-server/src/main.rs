@@ -156,6 +156,12 @@ enum Commands {
     #[command(subcommand)]
     Wallet(WalletCmd),
 
+    // ── Authentication ──────────────────────────────────────
+    /// Manage OAuth authentication for providers
+    #[command(next_help_heading = "Authentication")]
+    #[command(subcommand)]
+    Auth(AuthCmd),
+
     // ── Configuration ───────────────────────────────────────
     /// Read and write configuration
     #[command(next_help_heading = "Configuration")]
@@ -181,6 +187,12 @@ enum Commands {
     #[command(next_help_heading = "Configuration")]
     #[command(subcommand)]
     Security(SecurityCmd),
+
+    // ── Credentials ──────────────────────────────────────
+    /// Manage encrypted credential store
+    #[command(next_help_heading = "Credentials")]
+    #[command(subcommand)]
+    Keystore(KeystoreCmd),
 
     // ── Migration ────────────────────────────────────────
     /// Migrate between OpenClaw and Ironclad
@@ -221,6 +233,27 @@ enum Commands {
 // ── Subcommand enums ────────────────────────────────────────
 
 #[derive(Subcommand)]
+enum AuthCmd {
+    /// Log in to a provider via OAuth
+    Login {
+        /// Provider name (e.g., anthropic)
+        #[arg(long)]
+        provider: String,
+        /// OAuth client ID (overrides config)
+        #[arg(long)]
+        client_id: Option<String>,
+    },
+    /// Show OAuth token status
+    Status,
+    /// Remove stored OAuth tokens for a provider
+    Logout {
+        /// Provider name (e.g., anthropic)
+        #[arg(long)]
+        provider: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum SessionsCmd {
     /// List all sessions
     List,
@@ -239,6 +272,8 @@ enum SessionsCmd {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Backfill nicknames for all sessions missing one
+    BackfillNicknames,
 }
 
 #[derive(Subcommand)]
@@ -410,6 +445,9 @@ enum MigrateCmd {
         /// Skip confirmation prompts
         #[arg(long)]
         yes: bool,
+        /// Skip safety checks on skill scripts
+        #[arg(long)]
+        no_safety_check: bool,
     },
     /// Export Ironclad data to OpenClaw format
     Export {
@@ -435,6 +473,56 @@ enum PluginsCmd {
     Enable { name: String },
     /// Disable a plugin
     Disable { name: String },
+}
+
+#[derive(Subcommand)]
+enum KeystoreCmd {
+    /// Store a secret in the keystore
+    Set {
+        /// Secret name
+        key: String,
+        /// Secret value (omit for interactive prompt)
+        value: Option<String>,
+        /// Custom passphrase (default: machine-derived key)
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Retrieve a secret
+    Get {
+        /// Secret name
+        key: String,
+        /// Custom passphrase (default: machine-derived key)
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// List all stored secret names
+    List {
+        /// Custom passphrase (default: machine-derived key)
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Remove a secret
+    Remove {
+        /// Secret name
+        key: String,
+        /// Custom passphrase (default: machine-derived key)
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Import secrets from a JSON file
+    Import {
+        /// Path to JSON file with {"key": "value", ...} format
+        path: String,
+        /// Custom passphrase (default: machine-derived key)
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Change the keystore passphrase
+    Rekey {
+        /// Current passphrase (default: machine-derived key)
+        #[arg(long)]
+        password: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -600,6 +688,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SessionsCmd::Export { id, format, output } => {
                 cli::cmd_session_export(url, &id, &format, output.as_deref()).await
             }
+            SessionsCmd::BackfillNicknames => cli::cmd_sessions_backfill_nicknames(url).await,
         },
         Some(Commands::Memory(sub)) => match sub {
             MemoryCmd::List {
@@ -642,6 +731,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             WalletCmd::Show => cli::cmd_wallet(url).await,
             WalletCmd::Address => cli::cmd_wallet_address(url).await,
             WalletCmd::Balance => cli::cmd_wallet_balance(url).await,
+        },
+
+        // ── Authentication ──────────────────────────────────
+        Some(Commands::Auth(sub)) => match sub {
+            AuthCmd::Login {
+                provider,
+                client_id,
+            } => cmd_auth_login(&provider, client_id.as_deref()).await,
+            AuthCmd::Status => cmd_auth_status().await,
+            AuthCmd::Logout { provider } => cmd_auth_logout(&provider).await,
         },
 
         // ── Configuration ───────────────────────────────────
@@ -691,10 +790,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SecurityCmd::Audit { config } => cli::cmd_security_audit(&config),
         },
 
+        // ── Credentials ──────────────────────────────────────
+        Some(Commands::Keystore(sub)) => cmd_keystore(sub).await,
+
         // ── Migration ────────────────────────────────────────
         Some(Commands::Migrate(sub)) => match sub {
-            MigrateCmd::Import { source, areas, yes } => {
-                ironclad_server::migrate::cmd_migrate_import(&source, &areas, yes)
+            MigrateCmd::Import {
+                source,
+                areas,
+                yes,
+                no_safety_check,
+            } => {
+                ironclad_server::migrate::cmd_migrate_import(&source, &areas, yes, no_safety_check)
             }
             MigrateCmd::Export { target, areas } => {
                 ironclad_server::migrate::cmd_migrate_export(&target, &areas)
@@ -791,6 +898,306 @@ fn step_detail(t: &Theme, label: &str, value: &str) {
     let (d, a, r) = (t.dim(), t.accent(), t.reset());
     let detail = t.icon_detail();
     t.typewrite_line(&format!("       {detail} {d}{label}: {a}{value}{r}"), 4);
+}
+
+async fn cmd_auth_login(
+    provider: &str,
+    client_id_override: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let t = cli::theme();
+    let (a, d, r) = (t.accent(), t.dim(), t.reset());
+
+    let client_id = client_id_override
+        .map(String::from)
+        .or_else(|| {
+            let home = std::env::var("HOME").ok()?;
+            let path = std::path::PathBuf::from(home)
+                .join(".ironclad")
+                .join("ironclad.toml");
+            let cfg = IroncladConfig::from_file(&path).ok()?;
+            cfg.providers
+                .get(provider)
+                .and_then(|p| p.oauth_client_id.clone())
+        })
+        .unwrap_or_else(|| {
+            std::env::var("IRONCLAD_OAUTH_CLIENT_ID").unwrap_or_else(|_| "ironclad-cli".into())
+        });
+
+    let verifier = ironclad_llm::oauth::generate_code_verifier();
+    let challenge = ironclad_llm::oauth::compute_code_challenge(&verifier);
+    let state_param = ironclad_llm::oauth::generate_code_verifier();
+    let redirect_uri = ironclad_llm::oauth::default_redirect_uri();
+    let auth_url = ironclad_llm::oauth::build_authorization_url(
+        &client_id,
+        &redirect_uri,
+        &challenge,
+        &state_param,
+    );
+
+    eprintln!("\n  {a}OAuth Login — {provider}{r}\n");
+    eprintln!("  {d}Opening browser for authorization...{r}");
+    eprintln!("  {d}If the browser doesn't open, visit:{r}");
+    eprintln!("  {a}{auth_url}{r}\n");
+
+    let _ = open::that(&auth_url);
+
+    eprintln!(
+        "  {d}Waiting for callback on port {}...{r}",
+        ironclad_llm::oauth::callback_port()
+    );
+
+    let (code, returned_state) = listen_for_callback().await?;
+
+    if returned_state != state_param {
+        return Err("OAuth state mismatch — possible CSRF attack".into());
+    }
+
+    eprintln!("  {a}Authorization code received, exchanging for tokens...{r}");
+
+    let http = reqwest::Client::new();
+    let mut params = std::collections::HashMap::new();
+    params.insert("grant_type", "authorization_code");
+    params.insert("code", &code);
+    params.insert("redirect_uri", &redirect_uri);
+    params.insert("client_id", &client_id);
+    params.insert("code_verifier", &verifier);
+
+    let resp = http
+        .post(ironclad_llm::oauth::token_url())
+        .form(&params)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Token exchange failed: {body}").into());
+    }
+
+    #[derive(serde::Deserialize)]
+    struct TokenResp {
+        access_token: String,
+        refresh_token: Option<String>,
+        expires_in: Option<i64>,
+    }
+
+    let token_resp: TokenResp = resp.json().await?;
+    let expires_at = token_resp
+        .expires_in
+        .map(|secs| chrono::Utc::now().timestamp() + secs);
+
+    let manager = ironclad_llm::OAuthManager::new()?;
+    manager
+        .store_tokens(ironclad_llm::oauth::StoredTokens {
+            provider: provider.to_string(),
+            access_token: token_resp.access_token,
+            refresh_token: token_resp.refresh_token,
+            expires_at,
+            client_id: None,
+        })
+        .await;
+
+    let ok = t.icon_ok();
+    eprintln!("\n  {ok} {a}Successfully authenticated with {provider}{r}");
+    eprintln!("  {d}Tokens stored in ~/.ironclad/oauth_tokens.json{r}\n");
+    eprintln!("  {d}To use OAuth auth, set auth_mode = \"oauth\" in your provider config:{r}");
+    eprintln!("  {d}  [providers.{provider}]{r}");
+    eprintln!("  {d}  auth_mode = \"oauth\"{r}\n");
+
+    Ok(())
+}
+
+async fn listen_for_callback() -> Result<(String, String), Box<dyn std::error::Error>> {
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    let addr = format!("127.0.0.1:{}", ironclad_llm::oauth::callback_port());
+    let listener = TcpListener::bind(&addr).await?;
+
+    let (mut stream, _) = listener.accept().await?;
+
+    let mut buf = vec![0u8; 4096];
+    let n = stream.read(&mut buf).await?;
+    let request = String::from_utf8_lossy(&buf[..n]);
+
+    let first_line = request.lines().next().unwrap_or("");
+    let path = first_line.split_whitespace().nth(1).unwrap_or("/");
+
+    let mut code = String::new();
+    let mut state = String::new();
+
+    if let Some(query_start) = path.find('?') {
+        let query = &path[query_start + 1..];
+        for pair in query.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                match k {
+                    "code" => code = v.to_string(),
+                    "state" => state = v.to_string(),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let html = "<html><body><h2>Authentication successful!</h2><p>You can close this window and return to the terminal.</p></body></html>";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        html.len(),
+        html
+    );
+    stream.write_all(response.as_bytes()).await?;
+
+    if code.is_empty() {
+        return Err("No authorization code received in callback".into());
+    }
+
+    Ok((code, state))
+}
+
+async fn cmd_auth_status() -> Result<(), Box<dyn std::error::Error>> {
+    let t = cli::theme();
+    let (a, d, r) = (t.accent(), t.dim(), t.reset());
+
+    let manager = ironclad_llm::OAuthManager::new()?;
+    let statuses = manager.status().await;
+
+    eprintln!("\n  {a}OAuth Token Status{r}\n");
+
+    if statuses.is_empty() {
+        eprintln!("  {d}No OAuth tokens stored.{r}");
+        eprintln!("  {d}Run `ironclad auth login --provider <name>` to authenticate.{r}\n");
+        return Ok(());
+    }
+
+    for s in &statuses {
+        let status_icon = if s.expired {
+            t.icon_warn()
+        } else {
+            t.icon_ok()
+        };
+        let status_text = if s.expired { "EXPIRED" } else { "active" };
+        eprintln!("  {status_icon} {a}{}{r}  {d}{status_text}{r}", s.provider);
+        if let Some(exp) = s.expires_at {
+            let dt = chrono::DateTime::from_timestamp(exp, 0)
+                .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                .unwrap_or_else(|| "unknown".into());
+            eprintln!("       {d}expires: {dt}{r}");
+        }
+        let refresh = if s.has_refresh_token { "yes" } else { "no" };
+        eprintln!("       {d}refresh token: {refresh}{r}");
+    }
+    eprintln!();
+
+    Ok(())
+}
+
+async fn cmd_auth_logout(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let t = cli::theme();
+    let (a, d, r) = (t.accent(), t.dim(), t.reset());
+
+    let manager = ironclad_llm::OAuthManager::new()?;
+    let removed = manager.remove_tokens(provider).await;
+
+    if removed {
+        let ok = t.icon_ok();
+        eprintln!("\n  {ok} {a}Removed OAuth tokens for {provider}{r}\n");
+    } else {
+        eprintln!("\n  {d}No tokens found for provider '{provider}'{r}\n");
+    }
+
+    Ok(())
+}
+
+fn open_keystore(
+    password: &Option<String>,
+) -> Result<ironclad_core::keystore::Keystore, Box<dyn std::error::Error>> {
+    let ks =
+        ironclad_core::keystore::Keystore::new(ironclad_core::keystore::Keystore::default_path());
+    match password {
+        Some(p) => ks.unlock(p)?,
+        None => ks.unlock_machine()?,
+    }
+    Ok(ks)
+}
+
+async fn cmd_keystore(sub: KeystoreCmd) -> Result<(), Box<dyn std::error::Error>> {
+    let t = cli::theme();
+    let (a, d, r) = (t.accent(), t.dim(), t.reset());
+    let ok = t.icon_ok();
+
+    match sub {
+        KeystoreCmd::Set {
+            key,
+            value,
+            password,
+        } => {
+            let ks = open_keystore(&password)?;
+
+            let secret = match value {
+                Some(v) => v,
+                None => dialoguer::Password::new()
+                    .with_prompt("Secret value")
+                    .interact()?,
+            };
+            ks.set(&key, &secret)?;
+            eprintln!("  {ok} {a}Stored secret '{key}'{r}");
+        }
+        KeystoreCmd::Get { key, password } => {
+            let ks = open_keystore(&password)?;
+
+            match ks.get(&key) {
+                Some(val) => println!("{val}"),
+                None => {
+                    eprintln!("  {d}Key '{key}' not found{r}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        KeystoreCmd::List { password } => {
+            let ks = open_keystore(&password)?;
+
+            let mut keys = ks.list_keys();
+            keys.sort();
+            if keys.is_empty() {
+                eprintln!("  {d}Keystore is empty{r}");
+            } else {
+                for k in &keys {
+                    eprintln!("  {a}{k}{r}");
+                }
+                eprintln!("\n  {d}{} secret(s){r}", keys.len());
+            }
+        }
+        KeystoreCmd::Remove { key, password } => {
+            let ks = open_keystore(&password)?;
+
+            if ks.remove(&key)? {
+                eprintln!("  {ok} {a}Removed '{key}'{r}");
+            } else {
+                eprintln!("  {d}Key '{key}' not found{r}");
+            }
+        }
+        KeystoreCmd::Import { path, password } => {
+            let ks = open_keystore(&password)?;
+
+            let contents = std::fs::read_to_string(&path)?;
+            let entries: std::collections::HashMap<String, String> =
+                serde_json::from_str(&contents)?;
+            let count = ks.import(entries)?;
+            eprintln!("  {ok} {a}Imported {count} secret(s){r}");
+        }
+        KeystoreCmd::Rekey { password } => {
+            let ks = open_keystore(&password)?;
+
+            let new_pass = dialoguer::Password::new()
+                .with_prompt("New passphrase")
+                .with_confirmation("Confirm new passphrase", "Passphrases do not match")
+                .interact()?;
+            ks.rekey(&new_pass)?;
+            eprintln!("  {ok} {a}Keystore re-encrypted with new passphrase{r}");
+        }
+    }
+
+    Ok(())
 }
 
 async fn cmd_serve(

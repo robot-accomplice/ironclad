@@ -1,4 +1,7 @@
+pub mod agents;
+pub mod ann;
 pub mod backend;
+pub mod cache;
 pub mod checkpoint;
 pub mod cron;
 pub mod embeddings;

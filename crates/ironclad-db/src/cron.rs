@@ -145,6 +145,59 @@ pub fn delete_job(db: &Database, id: &str) -> Result<bool> {
     Ok(changed > 0)
 }
 
+pub fn update_job(
+    db: &Database,
+    id: &str,
+    name: Option<&str>,
+    schedule_kind: Option<&str>,
+    schedule_expr: Option<&str>,
+    enabled: Option<bool>,
+) -> Result<bool> {
+    let conn = db.conn();
+    let mut sets = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if let Some(v) = name {
+        sets.push("name = ?");
+        params.push(Box::new(v.to_string()));
+    }
+    if let Some(v) = schedule_kind {
+        sets.push("schedule_kind = ?");
+        params.push(Box::new(v.to_string()));
+    }
+    if let Some(v) = schedule_expr {
+        sets.push("schedule_expr = ?");
+        params.push(Box::new(v.to_string()));
+    }
+    if let Some(v) = enabled {
+        sets.push("enabled = ?");
+        params.push(Box::new(v as i32));
+    }
+
+    if sets.is_empty() {
+        return Ok(false);
+    }
+
+    // Renumber placeholders: ?1, ?2, ... ?N, id = ?N+1
+    let numbered: Vec<String> = sets
+        .iter()
+        .enumerate()
+        .map(|(i, s)| s.replace('?', &format!("?{}", i + 1)))
+        .collect();
+    let id_param = params.len() + 1;
+    let sql = format!(
+        "UPDATE cron_jobs SET {} WHERE id = ?{id_param}",
+        numbered.join(", ")
+    );
+    params.push(Box::new(id.to_string()));
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let changed = conn
+        .execute(&sql, param_refs.as_slice())
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(changed > 0)
+}
+
 /// Attempts to acquire a 60-second lease for `instance_id` on the given job.
 /// Returns `true` if the lease was acquired (no existing valid lease or expired).
 pub fn acquire_lease(db: &Database, job_id: &str, instance_id: &str) -> Result<bool> {
