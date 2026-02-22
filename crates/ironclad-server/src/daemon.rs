@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use ironclad_core::{IroncladError, Result};
 
 pub fn launchd_plist(binary_path: &str, config_path: &str, port: u16) -> String {
-    format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -35,7 +36,8 @@ pub fn launchd_plist(binary_path: &str, config_path: &str, port: u16) -> String 
 }
 
 pub fn systemd_unit(binary_path: &str, config_path: &str, port: u16) -> String {
-    format!(r#"[Unit]
+    format!(
+        r#"[Unit]
 Description=Ironclad Autonomous Agent Runtime
 After=network.target
 
@@ -57,14 +59,12 @@ WantedBy=default.target
 
 pub fn plist_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home)
-        .join("Library/LaunchAgents/com.ironclad.agent.plist")
+    PathBuf::from(home).join("Library/LaunchAgents/com.ironclad.agent.plist")
 }
 
 pub fn systemd_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home)
-        .join(".config/systemd/user/ironclad.service")
+    PathBuf::from(home).join(".config/systemd/user/ironclad.service")
 }
 
 pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result<PathBuf> {
@@ -117,7 +117,9 @@ pub fn read_pid_file(path: &Path) -> Result<Option<u32>> {
         return Ok(None);
     }
     let contents = std::fs::read_to_string(path)?;
-    let pid = contents.trim().parse::<u32>()
+    let pid = contents
+        .trim()
+        .parse::<u32>()
         .map_err(|e| IroncladError::Config(format!("invalid PID file: {e}")))?;
     Ok(Some(pid))
 }

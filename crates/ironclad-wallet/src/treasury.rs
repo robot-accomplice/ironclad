@@ -140,8 +140,7 @@ impl TreasuryPolicy {
     }
 
     pub fn check_inference_budget(&self, daily_inference_total: f64, new_cost: f64) -> Result<()> {
-        let projected =
-            Money::from_dollars(daily_inference_total) + Money::from_dollars(new_cost);
+        let projected = Money::from_dollars(daily_inference_total) + Money::from_dollars(new_cost);
         let budget = Money::from_dollars(self.daily_inference_budget);
         if projected > budget {
             warn!(

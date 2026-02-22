@@ -107,31 +107,32 @@ fn truncate_str(s: &str, max_bytes: usize) -> String {
 pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<String> {
     if let Ok(content) = std::fs::read_to_string(script_path)
         && let Some(first_line) = content.lines().next()
-            && first_line.starts_with("#!") {
-                let shebang = first_line[2..].trim();
-                let interpreter = shebang
-                    .split('/')
-                    .next_back()
-                    .unwrap_or(shebang)
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or(shebang);
+        && first_line.starts_with("#!")
+    {
+        let shebang = first_line[2..].trim();
+        let interpreter = shebang
+            .split('/')
+            .next_back()
+            .unwrap_or(shebang)
+            .split_whitespace()
+            .next()
+            .unwrap_or(shebang);
 
-                let interp = if interpreter == "env" {
-                    shebang.split_whitespace().nth(1).unwrap_or(interpreter)
-                } else {
-                    interpreter
-                };
+        let interp = if interpreter == "env" {
+            shebang.split_whitespace().nth(1).unwrap_or(interpreter)
+        } else {
+            interpreter
+        };
 
-                if allowed.iter().any(|a| a == interp) {
-                    return Ok(interp.to_string());
-                } else {
-                    return Err(IroncladError::Tool {
-                        tool: "script_runner".into(),
-                        message: format!("interpreter '{interp}' not in whitelist: {allowed:?}"),
-                    });
-                }
-            }
+        if allowed.iter().any(|a| a == interp) {
+            return Ok(interp.to_string());
+        } else {
+            return Err(IroncladError::Tool {
+                tool: "script_runner".into(),
+                message: format!("interpreter '{interp}' not in whitelist: {allowed:?}"),
+            });
+        }
+    }
 
     let ext = script_path
         .extension()

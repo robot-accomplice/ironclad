@@ -86,10 +86,14 @@ impl Browser {
             })?;
 
         let sess = session::CdpSession::connect(&ws_url).await?;
-        sess.send_command("Page.enable", serde_json::json!({})).await?;
-        sess.send_command("DOM.enable", serde_json::json!({})).await?;
-        sess.send_command("Network.enable", serde_json::json!({})).await?;
-        sess.send_command("Runtime.enable", serde_json::json!({})).await?;
+        sess.send_command("Page.enable", serde_json::json!({}))
+            .await?;
+        sess.send_command("DOM.enable", serde_json::json!({}))
+            .await?;
+        sess.send_command("Network.enable", serde_json::json!({}))
+            .await?;
+        sess.send_command("Runtime.enable", serde_json::json!({}))
+            .await?;
 
         *self.session.write().await = Some(sess);
         Ok(())
@@ -106,17 +110,13 @@ impl Browser {
         self.manager.read().await.is_running()
     }
 
-    pub async fn execute_action(
-        &self,
-        action: &actions::BrowserAction,
-    ) -> actions::ActionResult {
+    pub async fn execute_action(&self, action: &actions::BrowserAction) -> actions::ActionResult {
         let session_guard = self.session.read().await;
         match session_guard.as_ref() {
             Some(sess) => actions::ActionExecutor::execute(sess, action).await,
-            None => actions::ActionResult::err(
-                &format!("{:?}", action),
-                "browser not started".into(),
-            ),
+            None => {
+                actions::ActionResult::err(&format!("{:?}", action), "browser not started".into())
+            }
         }
     }
 
@@ -196,7 +196,10 @@ mod tests {
             url: "https://example.com".into(),
         };
         let result = browser.execute_action(&action).await;
-        assert!(!result.success, "navigate should fail when browser isn't started");
+        assert!(
+            !result.success,
+            "navigate should fail when browser isn't started"
+        );
         assert!(result.error.is_some());
         assert!(result.data.is_none());
     }
@@ -205,17 +208,30 @@ mod tests {
     async fn all_actions_return_error_without_session() {
         let browser = Browser::new(BrowserConfig::default());
         let cases = vec![
-            actions::BrowserAction::Navigate { url: "https://example.com".into() },
-            actions::BrowserAction::Click { selector: "#btn".into() },
-            actions::BrowserAction::Type { selector: "input".into(), text: "hello".into() },
+            actions::BrowserAction::Navigate {
+                url: "https://example.com".into(),
+            },
+            actions::BrowserAction::Click {
+                selector: "#btn".into(),
+            },
+            actions::BrowserAction::Type {
+                selector: "input".into(),
+                text: "hello".into(),
+            },
             actions::BrowserAction::Screenshot,
-            actions::BrowserAction::Evaluate { expression: "1+1".into() },
+            actions::BrowserAction::Evaluate {
+                expression: "1+1".into(),
+            },
             actions::BrowserAction::ReadPage,
             actions::BrowserAction::Reload,
         ];
         for action in &cases {
             let result = browser.execute_action(action).await;
-            assert!(!result.success, "action {:?} should fail without session", action);
+            assert!(
+                !result.success,
+                "action {:?} should fail without session",
+                action
+            );
             assert!(result.error.is_some());
         }
     }

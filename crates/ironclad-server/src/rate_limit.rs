@@ -86,7 +86,10 @@ where
     type Error = S::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
@@ -148,8 +151,7 @@ mod tests {
     use tower::{Service, ServiceExt};
 
     fn dummy_service() -> axum::routing::Router {
-        axum::routing::Router::new()
-            .route("/", axum::routing::get(|| async { "ok" }))
+        axum::routing::Router::new().route("/", axum::routing::get(|| async { "ok" }))
     }
 
     #[tokio::test]

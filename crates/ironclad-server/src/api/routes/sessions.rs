@@ -5,7 +5,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{internal_err, AppState};
+use super::{AppState, internal_err};
 
 #[derive(Deserialize)]
 pub struct CreateSessionRequest {
@@ -42,7 +42,9 @@ pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
 
     let sessions: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
 
-    Ok::<_, (axum::http::StatusCode, String)>(axum::Json(serde_json::json!({ "sessions": sessions })))
+    Ok::<_, (axum::http::StatusCode, String)>(axum::Json(
+        serde_json::json!({ "sessions": sessions }),
+    ))
 }
 
 pub async fn create_session(
@@ -55,7 +57,10 @@ pub async fn create_session(
     }
 }
 
-pub async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+pub async fn get_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
     match ironclad_db::sessions::get_session(&state.db, &id) {
         Ok(Some(s)) => Ok(axum::Json(serde_json::json!({
             "id": s.id,
@@ -65,12 +70,18 @@ pub async fn get_session(State(state): State<AppState>, Path(id): Path<String>) 
             "updated_at": s.updated_at,
             "metadata": s.metadata,
         }))),
-        Ok(None) => Err((axum::http::StatusCode::NOT_FOUND, format!("session {id} not found"))),
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("session {id} not found"),
+        )),
         Err(e) => Err(internal_err(&e)),
     }
 }
 
-pub async fn list_messages(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+pub async fn list_messages(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
     match ironclad_db::sessions::list_messages(&state.db, &id, None) {
         Ok(msgs) => {
             let items: Vec<Value> = msgs

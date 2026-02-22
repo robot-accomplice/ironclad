@@ -1,10 +1,10 @@
 //! Config, stats, circuit breaker, wallet, plugins, browser, agents, workspace, A2A.
 
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use ironclad_agent::policy::{PolicyContext, ToolCallRequest};
 use ironclad_core::{InputAuthority, IroncladConfig, PolicyDecision, RiskLevel, SurvivalTier};
 
-use super::{internal_err, AppState};
+use super::{AppState, internal_err};
 
 #[derive(Deserialize)]
 pub struct UpdateConfigRequest {
@@ -49,20 +49,22 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     let config = state.config.read().await;
     let mut cfg = serde_json::to_value(&*config).unwrap_or_default();
     if let Some(providers) = cfg.get_mut("providers")
-        && let Some(obj) = providers.as_object_mut() {
-            for (_name, provider) in obj.iter_mut() {
-                if let Some(p) = provider.as_object_mut() {
-                    p.remove("api_key");
-                    p.remove("secret");
-                    p.remove("token");
-                }
+        && let Some(obj) = providers.as_object_mut()
+    {
+        for (_name, provider) in obj.iter_mut() {
+            if let Some(p) = provider.as_object_mut() {
+                p.remove("api_key");
+                p.remove("secret");
+                p.remove("token");
             }
         }
+    }
     if let Some(wallet) = cfg.get_mut("wallet")
-        && let Some(w) = wallet.as_object_mut() {
-            w.remove("private_key");
-            w.remove("mnemonic");
-        }
+        && let Some(w) = wallet.as_object_mut()
+    {
+        w.remove("private_key");
+        w.remove("mnemonic");
+    }
     axum::Json(cfg)
 }
 
@@ -83,8 +85,7 @@ pub async fn update_config(
     }
 
     let mut config = state.config.write().await;
-    let mut current = serde_json::to_value(&*config)
-        .map_err(|e| internal_err(&e))?;
+    let mut current = serde_json::to_value(&*config).map_err(|e| internal_err(&e))?;
 
     merge_json(&mut current, &body.patch);
 
@@ -203,10 +204,7 @@ pub async fn breaker_status(State(state): State<AppState>) -> impl IntoResponse 
 
     for name in config.providers.keys() {
         if !provider_states.contains_key(name) {
-            provider_states.insert(
-                name.clone(),
-                json!({ "state": "closed", "blocked": false }),
-            );
+            provider_states.insert(name.clone(), json!({ "state": "closed", "blocked": false }));
         }
     }
 
@@ -438,8 +436,8 @@ pub async fn stop_agent(
 }
 
 const WORKSPACE_PALETTE: &[&str] = &[
-    "#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4",
-    "#ec4899", "#14b8a6", "#f97316", "#84cc16", "#a855f7", "#0ea5e9",
+    "#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#14b8a6",
+    "#f97316", "#84cc16", "#a855f7", "#0ea5e9",
 ];
 
 pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse {

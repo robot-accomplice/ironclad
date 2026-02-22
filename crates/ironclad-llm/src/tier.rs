@@ -1,5 +1,5 @@
-use ironclad_core::config::TierAdaptConfig;
 use ironclad_core::ModelTier;
+use ironclad_core::config::TierAdaptConfig;
 
 use crate::format::UnifiedMessage;
 
@@ -38,7 +38,11 @@ pub fn classify(model_name: &str) -> ModelTier {
 }
 
 /// Apply tier-appropriate adaptations to messages using the provided config.
-pub fn adapt_for_tier(tier: ModelTier, messages: &mut Vec<UnifiedMessage>, config: &TierAdaptConfig) {
+pub fn adapt_for_tier(
+    tier: ModelTier,
+    messages: &mut Vec<UnifiedMessage>,
+    config: &TierAdaptConfig,
+) {
     match tier {
         ModelTier::T1 => adapt_t1(messages, config),
         ModelTier::T2 => adapt_t2(messages, config),
@@ -67,16 +71,15 @@ fn adapt_t1(messages: &mut Vec<UnifiedMessage>, config: &TierAdaptConfig) {
 
 fn adapt_t2(messages: &mut Vec<UnifiedMessage>, config: &TierAdaptConfig) {
     let has_system = messages.iter().any(|m| m.role == "system");
-    if !has_system
-        && let Some(ref preamble) = config.t2_default_preamble {
-            messages.insert(
-                0,
-                UnifiedMessage {
-                    role: "system".into(),
-                    content: preamble.clone(),
-                },
-            );
-        }
+    if !has_system && let Some(ref preamble) = config.t2_default_preamble {
+        messages.insert(
+            0,
+            UnifiedMessage {
+                role: "system".into(),
+                content: preamble.clone(),
+            },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -151,10 +154,22 @@ mod tests {
             ..Default::default()
         };
         let mut msgs = vec![
-            UnifiedMessage { role: "system".into(), content: "Be helpful.".into() },
-            UnifiedMessage { role: "user".into(), content: "Hello".into() },
-            UnifiedMessage { role: "assistant".into(), content: "Hi!".into() },
-            UnifiedMessage { role: "user".into(), content: "Bye".into() },
+            UnifiedMessage {
+                role: "system".into(),
+                content: "Be helpful.".into(),
+            },
+            UnifiedMessage {
+                role: "user".into(),
+                content: "Hello".into(),
+            },
+            UnifiedMessage {
+                role: "assistant".into(),
+                content: "Hi!".into(),
+            },
+            UnifiedMessage {
+                role: "user".into(),
+                content: "Bye".into(),
+            },
         ];
         adapt_for_tier(ModelTier::T1, &mut msgs, &cfg);
         assert_eq!(msgs.len(), 4, "no condensing or stripping when disabled");
@@ -201,7 +216,11 @@ mod tests {
             content: "Hello".into(),
         }];
         adapt_for_tier(ModelTier::T2, &mut msgs, &cfg);
-        assert_eq!(msgs.len(), 1, "no system message added when preamble is None");
+        assert_eq!(
+            msgs.len(),
+            1,
+            "no system message added when preamble is None"
+        );
     }
 
     #[test]

@@ -72,7 +72,11 @@ impl ModelRouter {
 
     /// Select a model using complexity-aware routing, consulting the provider
     /// registry for `is_local` when available.
-    pub fn select_for_complexity(&self, complexity: f64, registry: Option<&ProviderRegistry>) -> &str {
+    pub fn select_for_complexity(
+        &self,
+        complexity: f64,
+        registry: Option<&ProviderRegistry>,
+    ) -> &str {
         if self.config.mode == "primary" {
             return &self.primary;
         }
@@ -82,10 +86,12 @@ impl ModelRouter {
             None => is_local_model_heuristic(&self.primary),
         };
 
-        if self.config.local_first && primary_is_local
-            && complexity < self.config.confidence_threshold {
-                return &self.primary;
-            }
+        if self.config.local_first
+            && primary_is_local
+            && complexity < self.config.confidence_threshold
+        {
+            return &self.primary;
+        }
 
         if complexity >= self.config.confidence_threshold && !self.fallbacks.is_empty() {
             return &self.fallbacks[0];
@@ -211,7 +217,7 @@ mod tests {
     fn complexity_classification() {
         let features = extract_features("hello world", 0, 0);
         let score = classify_complexity(&features);
-        assert!(score >= 0.0 && score <= 1.0);
+        assert!((0.0..=1.0).contains(&score));
         assert!(
             score < 0.1,
             "short message with no tools should be low complexity"

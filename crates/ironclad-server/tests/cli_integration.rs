@@ -33,7 +33,10 @@ fn version_shows_semver() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let out = format!("{stdout}{stderr}");
-    assert!(out.contains("ironclad") || out.contains("0."), "output: {out}");
+    assert!(
+        out.contains("ironclad") || out.contains("0."),
+        "output: {out}"
+    );
 }
 
 #[test]
@@ -60,13 +63,14 @@ fn check_without_config_returns_error() {
     // Should fail gracefully when no config exists
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!output.status.success() || stderr.contains("not found") || stdout.contains("not found"));
+    assert!(
+        !output.status.success() || stderr.contains("not found") || stdout.contains("not found")
+    );
 }
 
 #[test]
 fn cli_help_shows_subcommands() {
-    AssertCmd::cargo_bin("ironclad-server")
-        .unwrap()
+    AssertCmd::new(ironclad_bin())
         .arg("--help")
         .assert()
         .success()
@@ -80,13 +84,16 @@ fn cli_init_creates_config() {
     let dir = tempfile::TempDir::new().unwrap();
     let config_path = dir.path().join("ironclad.toml");
     // Init with default path "."; run from temp dir so ironclad.toml is created there
-    AssertCmd::cargo_bin("ironclad-server")
-        .unwrap()
+    AssertCmd::new(ironclad_bin())
         .current_dir(dir.path())
         .arg("init")
         .assert()
         .success();
-    assert!(config_path.exists(), "ironclad.toml should exist at {:?}", config_path);
+    assert!(
+        config_path.exists(),
+        "ironclad.toml should exist at {:?}",
+        config_path
+    );
 }
 
 #[test]
@@ -94,16 +101,14 @@ fn cli_check_validates_config() {
     let dir = tempfile::TempDir::new().unwrap();
     let config_path = dir.path().join("ironclad.toml");
     // First init (run in dir, init ".")
-    AssertCmd::cargo_bin("ironclad-server")
-        .unwrap()
+    AssertCmd::new(ironclad_bin())
         .current_dir(dir.path())
         .args(["init", "."])
         .assert()
         .success();
     assert!(config_path.exists(), "init must create ironclad.toml");
     // Then check (config file path)
-    AssertCmd::cargo_bin("ironclad-server")
-        .unwrap()
+    AssertCmd::new(ironclad_bin())
         .args(["check", "--config", config_path.to_str().unwrap()])
         .assert()
         .success();
@@ -112,14 +117,15 @@ fn cli_check_validates_config() {
 #[test]
 fn cli_status_handles_no_server() {
     // status may exit 0 with a warning when server is not running, or fail; we assert it runs and responds
-    let out = AssertCmd::cargo_bin("ironclad-server")
-        .unwrap()
+    let out = AssertCmd::new(ironclad_bin())
         .args(["status", "--url", "http://127.0.0.1:19999"])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("not running") || stderr.contains("Start with") || out.status.code() != Some(0),
+        stderr.contains("not running")
+            || stderr.contains("Start with")
+            || out.status.code() != Some(0),
         "status when server is down should warn or fail: {}",
         stderr
     );
@@ -127,8 +133,7 @@ fn cli_status_handles_no_server() {
 
 #[test]
 fn cli_config_show_handles_no_server() {
-    AssertCmd::cargo_bin("ironclad-server")
-        .unwrap()
+    AssertCmd::new(ironclad_bin())
         .args(["config", "show", "--url", "http://127.0.0.1:19999"])
         .assert()
         .failure();
@@ -136,8 +141,7 @@ fn cli_config_show_handles_no_server() {
 
 #[test]
 fn cli_wallet_handles_no_server() {
-    AssertCmd::cargo_bin("ironclad-server")
-        .unwrap()
+    AssertCmd::new(ironclad_bin())
         .args(["wallet", "show", "--url", "http://127.0.0.1:19999"])
         .assert()
         .failure();
@@ -145,8 +149,7 @@ fn cli_wallet_handles_no_server() {
 
 #[test]
 fn cli_sessions_handles_no_server() {
-    AssertCmd::cargo_bin("ironclad-server")
-        .unwrap()
+    AssertCmd::new(ironclad_bin())
         .args(["sessions", "list", "--url", "http://127.0.0.1:19999"])
         .assert()
         .failure();
@@ -154,8 +157,7 @@ fn cli_sessions_handles_no_server() {
 
 #[test]
 fn cli_metrics_handles_no_server() {
-    AssertCmd::cargo_bin("ironclad-server")
-        .unwrap()
+    AssertCmd::new(ironclad_bin())
         .args(["metrics", "--url", "http://127.0.0.1:19999"])
         .assert()
         .failure();
@@ -163,8 +165,7 @@ fn cli_metrics_handles_no_server() {
 
 #[test]
 fn cli_version_shows_version() {
-    AssertCmd::cargo_bin("ironclad-server")
-        .unwrap()
+    AssertCmd::new(ironclad_bin())
         .arg("version")
         .assert()
         .success()

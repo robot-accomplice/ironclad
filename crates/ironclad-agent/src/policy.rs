@@ -134,23 +134,30 @@ impl FinancialRule {
 
     fn is_financial_tool(name: &str) -> bool {
         let name_lower = name.to_lowercase();
-        ["transfer", "send", "withdraw", "deposit", "payment", "wallet"]
-            .iter()
-            .any(|k| name_lower.contains(k))
+        [
+            "transfer", "send", "withdraw", "deposit", "payment", "wallet",
+        ]
+        .iter()
+        .any(|k| name_lower.contains(k))
     }
 
     fn extract_amount_cents(params: &Value) -> Option<i64> {
         let obj = params.as_object()?;
         for key in ["amount", "amount_cents", "cents", "value_cents"] {
             if let Some(v) = obj.get(key)
-                && let Some(n) = v.as_i64() {
-                    return Some(n);
-                }
-        }
-        if let Some(v) = obj.get("amount_dollars").or(obj.get("dollars")).or(obj.get("value"))
-            && let Some(n) = v.as_f64() {
-                return Some((n * 100.0).round() as i64);
+                && let Some(n) = v.as_i64()
+            {
+                return Some(n);
             }
+        }
+        if let Some(v) = obj
+            .get("amount_dollars")
+            .or(obj.get("dollars"))
+            .or(obj.get("value"))
+            && let Some(n) = v.as_f64()
+        {
+            return Some((n * 100.0).round() as i64);
+        }
         None
     }
 
@@ -159,7 +166,12 @@ impl FinancialRule {
             Some(o) => o,
             None => return false,
         };
-        let drain_keys = ["drain", "withdraw_all", "export_private_key", "set_wallet_path"];
+        let drain_keys = [
+            "drain",
+            "withdraw_all",
+            "export_private_key",
+            "set_wallet_path",
+        ];
         for key in drain_keys {
             if obj.contains_key(key) {
                 return true;
@@ -190,16 +202,16 @@ impl PolicyRule for FinancialRule {
         }
         let threshold_cents = (self.threshold_dollars * 100.0).round() as i64;
         if let Some(cents) = Self::extract_amount_cents(&call.params)
-            && cents > threshold_cents {
-                return PolicyDecision::Deny {
-                    rule: self.name().into(),
-                    reason: format!(
-                        "amount {} cents exceeds threshold ${:.2}",
-                        cents,
-                        self.threshold_dollars
-                    ),
-                };
-            }
+            && cents > threshold_cents
+        {
+            return PolicyDecision::Deny {
+                rule: self.name().into(),
+                reason: format!(
+                    "amount {} cents exceeds threshold ${:.2}",
+                    cents, self.threshold_dollars
+                ),
+            };
+        }
         PolicyDecision::Allow
     }
 }
@@ -374,7 +386,9 @@ impl ValidationRule {
         if s.contains('$') && (s.contains('(') || s.contains('`') || s.contains("${")) {
             return true;
         }
-        if s.contains("; ") && (s_lower.contains("rm ") || s_lower.contains("curl ") || s_lower.contains("wget ")) {
+        if s.contains("; ")
+            && (s_lower.contains("rm ") || s_lower.contains("curl ") || s_lower.contains("wget "))
+        {
             return true;
         }
         // Path traversal

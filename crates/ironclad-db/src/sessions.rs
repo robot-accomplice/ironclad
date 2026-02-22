@@ -213,7 +213,10 @@ mod tests {
         let id2 = rx.recv().unwrap();
         th1.join().unwrap();
         th2.join().unwrap();
-        assert_eq!(id1, id2, "concurrent find_or_create with same key should return same session id");
+        assert_eq!(
+            id1, id2,
+            "concurrent find_or_create with same key should return same session id"
+        );
     }
 
     #[test]
@@ -308,5 +311,73 @@ mod tests {
         let msgs = list_messages(&db, &sid, Some(1)).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content.len(), 100_000);
+    }
+
+    #[test]
+    fn create_turn_all_fields() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-turn").unwrap();
+        let turn_id =
+            create_turn(&db, &sid, Some("gpt-4"), Some(100), Some(200), Some(0.03)).unwrap();
+        assert!(!turn_id.is_empty());
+    }
+
+    #[test]
+    fn create_turn_all_none() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-turn-none").unwrap();
+        let turn_id = create_turn(&db, &sid, None, None, None, None).unwrap();
+        assert!(!turn_id.is_empty());
+    }
+
+    #[test]
+    fn create_turn_multiple_per_session() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-multi-turn").unwrap();
+        let t1 = create_turn(&db, &sid, Some("gpt-4"), Some(10), Some(20), None).unwrap();
+        let t2 = create_turn(&db, &sid, Some("gpt-4"), Some(30), Some(40), None).unwrap();
+        assert_ne!(t1, t2);
+    }
+
+    #[test]
+    fn find_or_create_different_agents_different_sessions() {
+        let db = test_db();
+        let id1 = find_or_create(&db, "agent-a").unwrap();
+        let id2 = find_or_create(&db, "agent-b").unwrap();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn list_messages_nonexistent_session() {
+        let db = test_db();
+        let msgs = list_messages(&db, "no-such-session", None).unwrap();
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn list_messages_ordering_is_chronological() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-order").unwrap();
+        append_message(&db, &sid, "user", "first").unwrap();
+        append_message(&db, &sid, "assistant", "second").unwrap();
+        append_message(&db, &sid, "user", "third").unwrap();
+
+        let msgs = list_messages(&db, &sid, None).unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].content, "first");
+        assert_eq!(msgs[1].content, "second");
+        assert_eq!(msgs[2].content, "third");
+    }
+
+    #[test]
+    fn message_fields_populated() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-fields").unwrap();
+        let msg_id = append_message(&db, &sid, "user", "hello").unwrap();
+        let msgs = list_messages(&db, &sid, Some(1)).unwrap();
+        assert_eq!(msgs[0].id, msg_id);
+        assert_eq!(msgs[0].session_id, sid);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[0].content, "hello");
     }
 }

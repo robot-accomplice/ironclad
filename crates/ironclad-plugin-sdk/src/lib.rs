@@ -72,7 +72,12 @@ mod tests {
 
     #[test]
     fn plugin_status_roundtrip() {
-        for status in [PluginStatus::Loaded, PluginStatus::Active, PluginStatus::Disabled, PluginStatus::Error] {
+        for status in [
+            PluginStatus::Loaded,
+            PluginStatus::Active,
+            PluginStatus::Disabled,
+            PluginStatus::Error,
+        ] {
             let json = serde_json::to_string(&status).unwrap();
             let back: PluginStatus = serde_json::from_str(&json).unwrap();
             assert_eq!(status, back);

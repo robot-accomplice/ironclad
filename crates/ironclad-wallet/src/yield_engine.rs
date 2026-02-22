@@ -46,7 +46,9 @@ impl YieldEngine {
             chain_rpc_url: config.chain_rpc_url.clone(),
             pool_address: config.pool_address.clone(),
             usdc_address: config.usdc_address.clone(),
-            a_token_address: config.atoken_address.clone()
+            a_token_address: config
+                .atoken_address
+                .clone()
                 .unwrap_or_else(|| "0x4d8e6968b67a2a216b2e5928b793663415377c2e".into()),
         }
     }
@@ -86,7 +88,8 @@ impl YieldEngine {
             (Some(a), Some(k)) => (a, k),
             _ => {
                 return Err(IroncladError::Wallet(
-                    "chain_rpc_url is set but agent_address or private_key missing for deposit".into(),
+                    "chain_rpc_url is set but agent_address or private_key missing for deposit"
+                        .into(),
                 ));
             }
         };
@@ -112,7 +115,8 @@ impl YieldEngine {
             (Some(a), Some(k)) => (a, k),
             _ => {
                 return Err(IroncladError::Wallet(
-                    "chain_rpc_url is set but agent_address or private_key missing for withdraw".into(),
+                    "chain_rpc_url is set but agent_address or private_key missing for withdraw"
+                        .into(),
                 ));
             }
         };
@@ -167,7 +171,8 @@ fn amount_to_raw(amount_usdc: f64) -> U256 {
 
 fn parse_address(s: &str) -> Result<Address> {
     let s = s.trim_start_matches("0x");
-    let bytes = hex::decode(s).map_err(|e| IroncladError::Wallet(format!("invalid address hex: {e}")))?;
+    let bytes =
+        hex::decode(s).map_err(|e| IroncladError::Wallet(format!("invalid address hex: {e}")))?;
     if bytes.len() != 20 {
         return Err(IroncladError::Wallet("address must be 20 bytes".into()));
     }
@@ -195,15 +200,17 @@ async fn real_deposit(
     let on_behalf = parse_address(agent_address)?;
     let amount_raw = amount_to_raw(amount);
 
-    let key_bytes: &[u8; 32] = private_key.try_into().map_err(
-        |_| IroncladError::Wallet("invalid private key length".into()),
-    )?;
+    let key_bytes: &[u8; 32] = private_key
+        .try_into()
+        .map_err(|_| IroncladError::Wallet("invalid private key length".into()))?;
     let signer: PrivateKeySigner = PrivateKeySigner::from_bytes(key_bytes.into())
         .map_err(|e| IroncladError::Wallet(format!("invalid private key: {e}")))?;
     let wallet = EthereumWallet::from(signer);
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .on_http(rpc_url.parse().map_err(|e| IroncladError::Wallet(format!("invalid RPC URL: {e}")))?);
+    let provider = ProviderBuilder::new().wallet(wallet).on_http(
+        rpc_url
+            .parse()
+            .map_err(|e| IroncladError::Wallet(format!("invalid RPC URL: {e}")))?,
+    );
 
     let pool = IPool::new(pool_addr, &provider);
     let erc20 = IERC20::new(usdc_addr, &provider);
@@ -247,15 +254,17 @@ async fn real_withdraw(
     let to_addr = parse_address(agent_address)?;
     let amount_raw = amount_to_raw(amount);
 
-    let key_bytes: &[u8; 32] = private_key.try_into().map_err(
-        |_| IroncladError::Wallet("invalid private key length".into()),
-    )?;
+    let key_bytes: &[u8; 32] = private_key
+        .try_into()
+        .map_err(|_| IroncladError::Wallet("invalid private key length".into()))?;
     let signer: PrivateKeySigner = PrivateKeySigner::from_bytes(key_bytes.into())
         .map_err(|e| IroncladError::Wallet(format!("invalid private key: {e}")))?;
     let wallet = EthereumWallet::from(signer);
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .on_http(rpc_url.parse().map_err(|e| IroncladError::Wallet(format!("invalid RPC URL: {e}")))?);
+    let provider = ProviderBuilder::new().wallet(wallet).on_http(
+        rpc_url
+            .parse()
+            .map_err(|e| IroncladError::Wallet(format!("invalid RPC URL: {e}")))?,
+    );
 
     let pool = IPool::new(pool_addr, &provider);
     let tx_hash = pool
@@ -272,8 +281,11 @@ async fn real_withdraw(
 async fn real_a_token_balance(rpc_url: &str, a_token_address: &str, account: &str) -> Result<f64> {
     use alloy::providers::ProviderBuilder;
 
-    let provider = ProviderBuilder::new()
-        .on_http(rpc_url.parse().map_err(|e| IroncladError::Wallet(format!("invalid RPC URL: {e}")))?);
+    let provider = ProviderBuilder::new().on_http(
+        rpc_url
+            .parse()
+            .map_err(|e| IroncladError::Wallet(format!("invalid RPC URL: {e}")))?,
+    );
     let atoken = parse_address(a_token_address)?;
     let account_addr = parse_address(account)?;
     let contract = IERC20::new(atoken, &provider);
@@ -435,7 +447,114 @@ mod tests {
     #[tokio::test]
     async fn get_a_token_balance_no_rpc_returns_zero() {
         let engine = YieldEngine::new(&enabled_config());
-        let bal = engine.get_a_token_balance("0x0000000000000000000000000000000000000001").await.unwrap();
+        let bal = engine
+            .get_a_token_balance("0x0000000000000000000000000000000000000001")
+            .await
+            .unwrap();
         assert!((bal - 0.0).abs() < f64::EPSILON);
+    }
+
+    fn rpc_config() -> YieldConfig {
+        YieldConfig {
+            chain_rpc_url: Some("http://localhost:8545".into()),
+            ..enabled_config()
+        }
+    }
+
+    #[tokio::test]
+    async fn deposit_rpc_set_missing_agent_address() {
+        let engine = YieldEngine::new(&rpc_config());
+        let result = engine.deposit(10.0, None, Some(&[0u8; 32])).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn deposit_rpc_set_missing_private_key() {
+        let engine = YieldEngine::new(&rpc_config());
+        let result = engine
+            .deposit(10.0, Some("0x0000000000000000000000000000000000000001"), None)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn withdraw_rpc_set_missing_agent_address() {
+        let engine = YieldEngine::new(&rpc_config());
+        let result = engine.withdraw(10.0, None, Some(&[0u8; 32])).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn withdraw_rpc_set_missing_private_key() {
+        let engine = YieldEngine::new(&rpc_config());
+        let result = engine
+            .withdraw(10.0, Some("0x0000000000000000000000000000000000000001"), None)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_address_invalid_hex() {
+        assert!(parse_address("0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ").is_err());
+    }
+
+    #[test]
+    fn parse_address_wrong_length() {
+        assert!(parse_address("0xdead").is_err());
+    }
+
+    #[test]
+    fn amount_to_raw_zero() {
+        assert_eq!(amount_to_raw(0.0), U256::from(0u64));
+    }
+
+    #[test]
+    fn amount_to_raw_fractional() {
+        assert_eq!(amount_to_raw(1.5), U256::from(1_500_000u64));
+    }
+
+    #[test]
+    fn amount_to_raw_large_value() {
+        assert_eq!(amount_to_raw(1_000_000.0), U256::from(1_000_000_000_000u64));
+    }
+
+    #[test]
+    fn build_supply_call_params_invalid_address() {
+        let engine = YieldEngine::new(&enabled_config());
+        assert!(engine
+            .build_supply_call_params(10.0, "not-an-address")
+            .is_err());
+    }
+
+    #[test]
+    fn build_withdraw_call_params_invalid_address() {
+        let engine = YieldEngine::new(&enabled_config());
+        assert!(engine
+            .build_withdraw_call_params(10.0, "not-an-address")
+            .is_err());
+    }
+
+    #[test]
+    fn mock_tx_hash_format() {
+        let hash = mock_tx_hash(100.0);
+        assert!(hash.starts_with("0x"));
+        assert!(hash.len() > 2);
+    }
+
+    #[test]
+    fn mock_tx_hash_different_amounts_differ() {
+        let h1 = mock_tx_hash(1.0);
+        let h2 = mock_tx_hash(2.0);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn new_defaults_atoken_address_when_none() {
+        let mut cfg = enabled_config();
+        cfg.atoken_address = None;
+        let engine = YieldEngine::new(&cfg);
+        assert!(!engine.a_token_address.is_empty());
     }
 }

@@ -125,12 +125,15 @@ impl PluginRegistry {
 
     pub async fn list_plugins(&self) -> Vec<PluginInfo> {
         let plugins = self.plugins.lock().await;
-        plugins.values().map(|entry| PluginInfo {
-            name: entry.plugin.name().to_string(),
-            version: entry.plugin.version().to_string(),
-            status: entry.status,
-            tools: entry.plugin.tools(),
-        }).collect()
+        plugins
+            .values()
+            .map(|entry| PluginInfo {
+                name: entry.plugin.name().to_string(),
+                version: entry.plugin.version().to_string(),
+                status: entry.status,
+                tools: entry.plugin.tools(),
+            })
+            .collect()
     }
 
     pub async fn list_all_tools(&self) -> Vec<(String, ToolDef)> {
@@ -149,7 +152,8 @@ impl PluginRegistry {
 
     pub async fn disable_plugin(&self, name: &str) -> Result<()> {
         let mut plugins = self.plugins.lock().await;
-        let entry = plugins.get_mut(name)
+        let entry = plugins
+            .get_mut(name)
             .ok_or_else(|| IroncladError::Config(format!("plugin '{name}' not found")))?;
         entry.status = PluginStatus::Disabled;
         debug!(name, "plugin disabled");
@@ -158,7 +162,8 @@ impl PluginRegistry {
 
     pub async fn enable_plugin(&self, name: &str) -> Result<()> {
         let mut plugins = self.plugins.lock().await;
-        let entry = plugins.get_mut(name)
+        let entry = plugins
+            .get_mut(name)
             .ok_or_else(|| IroncladError::Config(format!("plugin '{name}' not found")))?;
         entry.status = PluginStatus::Active;
         debug!(name, "plugin enabled");
@@ -183,17 +188,27 @@ mod tests {
 
     impl MockPlugin {
         fn new(name: &str) -> Self {
-            Self { name: name.into(), init_fail: false }
+            Self {
+                name: name.into(),
+                init_fail: false,
+            }
         }
         fn failing(name: &str) -> Self {
-            Self { name: name.into(), init_fail: true }
+            Self {
+                name: name.into(),
+                init_fail: true,
+            }
         }
     }
 
     #[async_trait]
     impl Plugin for MockPlugin {
-        fn name(&self) -> &str { &self.name }
-        fn version(&self) -> &str { "1.0.0" }
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn version(&self) -> &str {
+            "1.0.0"
+        }
         fn tools(&self) -> Vec<ToolDef> {
             vec![ToolDef {
                 name: format!("{}_tool", self.name),
@@ -215,7 +230,9 @@ mod tests {
                 metadata: None,
             })
         }
-        async fn shutdown(&mut self) -> Result<()> { Ok(()) }
+        async fn shutdown(&mut self) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -232,7 +249,9 @@ mod tests {
     #[tokio::test]
     async fn register_and_list() {
         let reg = PluginRegistry::new(vec![], vec![]);
-        reg.register(Box::new(MockPlugin::new("test"))).await.unwrap();
+        reg.register(Box::new(MockPlugin::new("test")))
+            .await
+            .unwrap();
         assert_eq!(reg.plugin_count().await, 1);
         let plugins = reg.list_plugins().await;
         assert_eq!(plugins[0].name, "test");
@@ -259,7 +278,9 @@ mod tests {
     #[tokio::test]
     async fn init_failure_marks_error() {
         let reg = PluginRegistry::new(vec![], vec![]);
-        reg.register(Box::new(MockPlugin::failing("bad"))).await.unwrap();
+        reg.register(Box::new(MockPlugin::failing("bad")))
+            .await
+            .unwrap();
         let errors = reg.init_all().await;
         assert_eq!(errors.len(), 1);
         let plugins = reg.list_plugins().await;
@@ -271,7 +292,10 @@ mod tests {
         let reg = PluginRegistry::new(vec![], vec![]);
         reg.register(Box::new(MockPlugin::new("p1"))).await.unwrap();
         reg.init_all().await;
-        let result = reg.execute_tool("p1_tool", &serde_json::json!({})).await.unwrap();
+        let result = reg
+            .execute_tool("p1_tool", &serde_json::json!({}))
+            .await
+            .unwrap();
         assert!(result.success);
         assert!(result.output.contains("p1_tool"));
     }
@@ -279,14 +303,18 @@ mod tests {
     #[tokio::test]
     async fn execute_tool_not_found() {
         let reg = PluginRegistry::new(vec![], vec![]);
-        let result = reg.execute_tool("nonexistent", &serde_json::json!({})).await;
+        let result = reg
+            .execute_tool("nonexistent", &serde_json::json!({}))
+            .await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn find_tool() {
         let reg = PluginRegistry::new(vec![], vec![]);
-        reg.register(Box::new(MockPlugin::new("alpha"))).await.unwrap();
+        reg.register(Box::new(MockPlugin::new("alpha")))
+            .await
+            .unwrap();
         reg.init_all().await;
         let found = reg.find_tool("alpha_tool").await;
         assert!(found.is_some());

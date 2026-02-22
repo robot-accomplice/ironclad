@@ -128,14 +128,17 @@ impl Plugin for ScriptPlugin {
     }
 
     async fn execute_tool(&self, tool_name: &str, input: &Value) -> Result<ToolResult> {
-        let script_path = self.scripts.get(tool_name).ok_or_else(|| IroncladError::Tool {
-            tool: tool_name.into(),
-            message: format!(
-                "no script found for tool '{}' in {}",
-                tool_name,
-                self.dir.display()
-            ),
-        })?;
+        let script_path = self
+            .scripts
+            .get(tool_name)
+            .ok_or_else(|| IroncladError::Tool {
+                tool: tool_name.into(),
+                message: format!(
+                    "no script found for tool '{}' in {}",
+                    tool_name,
+                    self.dir.display()
+                ),
+            })?;
 
         let input_str = serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
 

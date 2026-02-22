@@ -49,10 +49,16 @@ impl CdpClient {
 
     pub async fn list_targets(&self) -> Result<Vec<CdpTarget>> {
         let url = format!("{}/json/list", self.http_base);
-        let resp = self.client.get(&url).send().await
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .map_err(|e| IroncladError::Network(format!("CDP list targets failed: {e}")))?;
 
-        let targets: Vec<CdpTarget> = resp.json().await
+        let targets: Vec<CdpTarget> = resp
+            .json()
+            .await
             .map_err(|e| IroncladError::Network(format!("CDP parse targets failed: {e}")))?;
 
         debug!(count = targets.len(), "listed CDP targets");
@@ -61,10 +67,16 @@ impl CdpClient {
 
     pub async fn new_tab(&self, url: &str) -> Result<CdpTarget> {
         let api_url = format!("{}/json/new?{}", self.http_base, url);
-        let resp = self.client.get(&api_url).send().await
+        let resp = self
+            .client
+            .get(&api_url)
+            .send()
+            .await
             .map_err(|e| IroncladError::Network(format!("CDP new tab failed: {e}")))?;
 
-        let target: CdpTarget = resp.json().await
+        let target: CdpTarget = resp
+            .json()
+            .await
             .map_err(|e| IroncladError::Network(format!("CDP parse new tab failed: {e}")))?;
 
         debug!(id = %target.id, url = %target.url, "opened new tab");
@@ -73,7 +85,10 @@ impl CdpClient {
 
     pub async fn close_tab(&self, target_id: &str) -> Result<()> {
         let url = format!("{}/json/close/{}", self.http_base, target_id);
-        self.client.get(&url).send().await
+        self.client
+            .get(&url)
+            .send()
+            .await
             .map_err(|e| IroncladError::Network(format!("CDP close tab failed: {e}")))?;
         debug!(id = target_id, "closed tab");
         Ok(())
@@ -81,10 +96,15 @@ impl CdpClient {
 
     pub async fn version(&self) -> Result<Value> {
         let url = format!("{}/json/version", self.http_base);
-        let resp = self.client.get(&url).send().await
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
             .map_err(|e| IroncladError::Network(format!("CDP version failed: {e}")))?;
 
-        resp.json().await
+        resp.json()
+            .await
             .map_err(|e| IroncladError::Network(format!("CDP version parse failed: {e}")))
     }
 
@@ -93,17 +113,23 @@ impl CdpClient {
     }
 
     pub fn evaluate_command(&self, expression: &str) -> Value {
-        self.build_command("Runtime.evaluate", json!({
-            "expression": expression,
-            "returnByValue": true,
-        }))
+        self.build_command(
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "returnByValue": true,
+            }),
+        )
     }
 
     pub fn screenshot_command(&self) -> Value {
-        self.build_command("Page.captureScreenshot", json!({
-            "format": "png",
-            "quality": 80,
-        }))
+        self.build_command(
+            "Page.captureScreenshot",
+            json!({
+                "format": "png",
+                "quality": 80,
+            }),
+        )
     }
 
     pub fn get_document_command(&self) -> Value {
@@ -111,25 +137,34 @@ impl CdpClient {
     }
 
     pub fn click_command(&self, x: f64, y: f64) -> Value {
-        self.build_command("Input.dispatchMouseEvent", json!({
-            "type": "mousePressed",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1,
-        }))
+        self.build_command(
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mousePressed",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": 1,
+            }),
+        )
     }
 
     pub fn type_text_command(&self, text: &str) -> Value {
-        self.build_command("Input.insertText", json!({
-            "text": text,
-        }))
+        self.build_command(
+            "Input.insertText",
+            json!({
+                "text": text,
+            }),
+        )
     }
 
     pub fn pdf_command(&self) -> Value {
-        self.build_command("Page.printToPDF", json!({
-            "printBackground": true,
-        }))
+        self.build_command(
+            "Page.printToPDF",
+            json!({
+                "printBackground": true,
+            }),
+        )
     }
 
     pub fn get_cookies_command(&self) -> Value {

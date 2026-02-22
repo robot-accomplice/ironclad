@@ -5,7 +5,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{internal_err, AppState};
+use super::{AppState, internal_err};
 
 #[derive(Deserialize)]
 pub struct LimitQuery {

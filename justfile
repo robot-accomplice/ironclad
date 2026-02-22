@@ -77,6 +77,22 @@ coverage-crate crate:
     cargo llvm-cov -p ironclad-{{crate}} --html
     @echo "Report: target/llvm-cov/html/index.html"
 
+# Update .coverage-baseline to current coverage (ratchet forward)
+coverage-update-baseline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pct=$(cargo llvm-cov --workspace 2>&1 | grep '^TOTAL' | awk '{print $4}' | tr -d '%')
+    if [ -z "$pct" ]; then
+        echo "ERROR: Could not parse coverage"
+        exit 1
+    fi
+    old="none"
+    if [ -f .coverage-baseline ]; then
+        old=$(tr -d '[:space:]' < .coverage-baseline)
+    fi
+    echo "$pct" > .coverage-baseline
+    echo "Updated .coverage-baseline: ${old}% → ${pct}%"
+
 # Enforce minimum coverage threshold (80% required, 90% goal)
 coverage-check:
     #!/usr/bin/env bash
@@ -214,6 +230,151 @@ tree:
 # Show binary size (release)
 size: release
     @ls -lh target/release/ironclad-server | awk '{print $5 " " $9}'
+
+# ── CI ────────────────────────────────────────────────
+
+# Run the full CI pipeline locally (mirrors .github/workflows/ci.yml)
+ci-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    PASS=0
+    FAIL=0
+    STAGES=()
+
+    run_stage() {
+        local name="$1"; shift
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  Stage: $name"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        if "$@" 2>&1; then
+            echo "  ✔ $name passed"
+            PASS=$((PASS + 1))
+            STAGES+=("✔ $name")
+        else
+            echo "  ✘ $name FAILED"
+            FAIL=$((FAIL + 1))
+            STAGES+=("✘ $name")
+        fi
+    }
+
+    CRATES=(
+        ironclad-core
+        ironclad-db
+        ironclad-llm
+        ironclad-agent
+        ironclad-wallet
+        ironclad-schedule
+        ironclad-channels
+        ironclad-server
+        ironclad-plugin-sdk
+        ironclad-browser
+        ironclad-tests
+    )
+
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║           Ironclad CI — Local Pipeline               ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+
+    # Stage 1: Format
+    run_stage "Format" cargo fmt --all -- --check
+
+    # Stage 2: Lint
+    run_stage "Lint" cargo clippy --workspace --all-targets -- -D warnings
+
+    # Stage 3: Test (per-crate)
+    for crate in "${CRATES[@]}"; do
+        run_stage "Test ($crate)" cargo test -p "$crate" --verbose
+    done
+
+    # Stage 4: Coverage gate (80% floor + no regression)
+    COVERAGE_PCT=""
+
+    coverage_gate() {
+        local output baseline
+        output=$(cargo llvm-cov --workspace 2>&1)
+        echo "$output"
+        COVERAGE_PCT=$(echo "$output" | grep '^TOTAL' | awk '{print $4}' | tr -d '%')
+
+        if [ -z "$COVERAGE_PCT" ]; then
+            echo "  ERROR: Could not parse coverage from cargo llvm-cov output"
+            return 1
+        fi
+
+        echo ""
+        echo "  Total coverage: ${COVERAGE_PCT}%"
+
+        if (( $(echo "$COVERAGE_PCT < 80.0" | bc -l) )); then
+            echo "  FAIL: Coverage ${COVERAGE_PCT}% is below the 80% minimum"
+            return 1
+        fi
+
+        if [ -f ".coverage-baseline" ]; then
+            baseline=$(tr -d '[:space:]' < .coverage-baseline)
+            echo "  Baseline: ${baseline}% → Current: ${COVERAGE_PCT}%"
+            if (( $(echo "$COVERAGE_PCT < $baseline" | bc -l) )); then
+                echo "  FAIL: Coverage regressed from ${baseline}% to ${COVERAGE_PCT}%"
+                return 1
+            fi
+        else
+            echo "  WARN: No .coverage-baseline file — skipping regression check"
+        fi
+        return 0
+    }
+
+    if command -v cargo-llvm-cov &>/dev/null; then
+        run_stage "Coverage" coverage_gate
+    else
+        echo ""
+        echo "  ⊘ Coverage skipped (install: cargo install cargo-llvm-cov)"
+        STAGES+=("⊘ Coverage (skipped)")
+    fi
+
+    # Stage 5: Build (debug)
+    run_stage "Build (debug)" cargo build --bin ironclad-server
+
+    # Stage 6: Build (release)
+    run_stage "Build (release)" cargo build --release --bin ironclad-server
+
+    # Stage 7: Security Audit
+    if command -v cargo-audit &>/dev/null; then
+        run_stage "Security Audit" cargo audit
+    else
+        echo ""
+        echo "  ⊘ Security Audit skipped (install: cargo install cargo-audit)"
+        STAGES+=("⊘ Security Audit (skipped)")
+    fi
+
+    # Stage 8: Docs
+    run_stage "Docs" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+    # Summary
+    echo ""
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║                   CI Summary                         ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+    for s in "${STAGES[@]}"; do
+        echo "  $s"
+    done
+    echo ""
+    echo "  Passed: $PASS   Failed: $FAIL"
+    echo ""
+    if [ "$FAIL" -gt 0 ]; then
+        echo "  ✘ CI FAILED"
+        exit 1
+    else
+        echo "  ✔ CI PASSED"
+    fi
+
+    if [ -n "$COVERAGE_PCT" ]; then
+        old="none"
+        if [ -f .coverage-baseline ]; then
+            old=$(tr -d '[:space:]' < .coverage-baseline)
+        fi
+        echo "$COVERAGE_PCT" > .coverage-baseline
+        echo "  Ratcheted .coverage-baseline: ${old}% → ${COVERAGE_PCT}%"
+    fi
 
 # ── Clean ──────────────────────────────────────────────
 

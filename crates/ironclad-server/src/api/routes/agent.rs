@@ -1,9 +1,9 @@
 //! Agent message, channel processing, and Telegram poll.
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse};
+use ironclad_channels::ChannelAdapter;
 use serde::Deserialize;
 use serde_json::json;
-use ironclad_channels::ChannelAdapter;
 
 use super::AppState;
 
@@ -59,13 +59,23 @@ pub async fn agent_message(
     let agent_id = config.agent.id.clone();
     let session_id = match &body.session_id {
         Some(sid) => sid.clone(),
-        None => ironclad_db::sessions::find_or_create(&state.db, &agent_id)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"error": e.to_string()}))))?,
+        None => ironclad_db::sessions::find_or_create(&state.db, &agent_id).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": e.to_string()})),
+            )
+        })?,
     };
 
     // Store user message
-    let user_msg_id = ironclad_db::sessions::append_message(&state.db, &session_id, "user", &body.content)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"error": e.to_string()}))))?;
+    let user_msg_id =
+        ironclad_db::sessions::append_message(&state.db, &session_id, "user", &body.content)
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": e.to_string()})),
+                )
+            })?;
 
     // Use the ModelRouter to select a model based on complexity
     let features = ironclad_llm::extract_features(&body.content, 0, 1);
@@ -93,10 +103,16 @@ pub async fn agent_message(
                 provider_prefix
             );
             let asst_id = ironclad_db::sessions::append_message(
-                &state.db, &session_id, "assistant", &assistant_content,
+                &state.db,
+                &session_id,
+                "assistant",
+                &assistant_content,
             )
             .map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"error": e.to_string()})))
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": e.to_string()})),
+                )
             })?;
             return Ok(axum::Json(json!({
                 "session_id": session_id,
@@ -119,14 +135,27 @@ pub async fn agent_message(
 
     if let Some(cached) = cached_response {
         let asst_id = ironclad_db::sessions::append_message(
-            &state.db, &session_id, "assistant", &cached.content,
+            &state.db,
+            &session_id,
+            "assistant",
+            &cached.content,
         )
         .map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"error": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": e.to_string()})),
+            )
         })?;
 
         ironclad_db::metrics::record_inference_cost(
-            &state.db, &cached.model, &provider_prefix, 0, 0, 0.0, Some("cached"), true,
+            &state.db,
+            &cached.model,
+            &provider_prefix,
+            0,
+            0,
+            0.0,
+            Some("cached"),
+            true,
         )
         .ok();
 
@@ -142,7 +171,16 @@ pub async fn agent_message(
     }
 
     // Resolve provider from registry (config-driven, format-agnostic)
-    let (provider_url, api_key, auth_header, extra_headers, format, cost_in_rate, cost_out_rate, tier) = {
+    let (
+        provider_url,
+        api_key,
+        auth_header,
+        extra_headers,
+        format,
+        cost_in_rate,
+        cost_out_rate,
+        tier,
+    ) = {
         let llm = state.llm.read().await;
         match llm.providers.get_by_model(&model) {
             Some(provider) => {
@@ -160,11 +198,8 @@ pub async fn agent_message(
                 )
             }
             None => {
-                let key = std::env::var(format!(
-                    "{}_API_KEY",
-                    provider_prefix.to_uppercase()
-                ))
-                .unwrap_or_default();
+                let key = std::env::var(format!("{}_API_KEY", provider_prefix.to_uppercase()))
+                    .unwrap_or_default();
                 (
                     None,
                     key,
@@ -192,7 +227,8 @@ pub async fn agent_message(
     } else {
         soul_text
     };
-    let system_prompt = ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
+    let system_prompt =
+        ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
     assert!(
         ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()),
         "HMAC boundary verification failed immediately after injection"
@@ -268,7 +304,10 @@ pub async fn agent_message(
 
     // Check for HMAC boundary tampering in model output
     let assistant_content = if assistant_content.contains("<<<TRUST_BOUNDARY:") {
-        if !ironclad_agent::prompt::verify_hmac_boundary(&assistant_content, state.hmac_secret.as_ref()) {
+        if !ironclad_agent::prompt::verify_hmac_boundary(
+            &assistant_content,
+            state.hmac_secret.as_ref(),
+        ) {
             tracing::warn!("HMAC boundary tampered in model output");
         }
         assistant_content
@@ -286,14 +325,27 @@ pub async fn agent_message(
 
     // Store assistant response
     let asst_id = ironclad_db::sessions::append_message(
-        &state.db, &session_id, "assistant", &assistant_content,
+        &state.db,
+        &session_id,
+        "assistant",
+        &assistant_content,
     )
     .map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"error": e.to_string()})))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": e.to_string()})),
+        )
     })?;
 
     ironclad_db::metrics::record_inference_cost(
-        &state.db, &model, &provider_prefix, tokens_in, tokens_out, cost, None, false,
+        &state.db,
+        &model,
+        &provider_prefix,
+        tokens_in,
+        tokens_out,
+        cost,
+        None,
+        false,
     )
     .ok();
 
@@ -309,7 +361,8 @@ pub async fn agent_message(
             embedding: None,
         };
         let mut llm = state.llm.write().await;
-        llm.cache.store_with_embedding(&cache_hash, &body.content, cached_entry);
+        llm.cache
+            .store_with_embedding(&cache_hash, &body.content, cached_entry);
     }
 
     Ok(axum::Json(json!({
@@ -326,8 +379,12 @@ pub async fn agent_message(
     })))
 }
 
-
-fn estimate_cost_from_provider(in_rate: f64, out_rate: f64, tokens_in: i64, tokens_out: i64) -> f64 {
+fn estimate_cost_from_provider(
+    in_rate: f64,
+    out_rate: f64,
+    tokens_in: i64,
+    tokens_out: i64,
+) -> f64 {
     tokens_in as f64 * in_rate + tokens_out as f64 * out_rate
 }
 
@@ -457,14 +514,15 @@ pub async fn process_channel_message(
     }
 
     if inbound.content.starts_with('/')
-        && let Some(reply) = handle_bot_command(state, &inbound.content).await {
-            state
-                .channel_router
-                .send_reply(&platform, &chat_id, reply)
-                .await
-                .ok();
-            return Ok(());
-        }
+        && let Some(reply) = handle_bot_command(state, &inbound.content).await
+    {
+        state
+            .channel_router
+            .send_reply(&platform, &chat_id, reply)
+            .await
+            .ok();
+        return Ok(());
+    }
 
     let threat = ironclad_agent::injection::check_injection(&inbound.content);
     if threat.is_blocked() {
@@ -509,8 +567,7 @@ pub async fn process_channel_message(
                 "I'm temporarily unable to reach the {} provider. Please try again shortly.",
                 provider_prefix
             );
-            ironclad_db::sessions::append_message(&state.db, &session_id, "assistant", &reply)
-                .ok();
+            ironclad_db::sessions::append_message(&state.db, &session_id, "assistant", &reply).ok();
             state
                 .channel_router
                 .send_reply(&platform, &chat_id, reply)
@@ -520,7 +577,16 @@ pub async fn process_channel_message(
         }
     }
 
-    let (provider_url, api_key, auth_header, extra_headers, format, cost_in_rate, cost_out_rate, tier) = {
+    let (
+        provider_url,
+        api_key,
+        auth_header,
+        extra_headers,
+        format,
+        cost_in_rate,
+        cost_out_rate,
+        tier,
+    ) = {
         let llm = state.llm.read().await;
         match llm.providers.get_by_model(&model) {
             Some(provider) => {
@@ -538,11 +604,8 @@ pub async fn process_channel_message(
                 )
             }
             None => {
-                let key = std::env::var(format!(
-                    "{}_API_KEY",
-                    provider_prefix.to_uppercase()
-                ))
-                .unwrap_or_default();
+                let key = std::env::var(format!("{}_API_KEY", provider_prefix.to_uppercase()))
+                    .unwrap_or_default();
                 (
                     None,
                     key,
@@ -563,7 +626,8 @@ pub async fn process_channel_message(
     } else {
         soul_text.to_string()
     };
-    let system_prompt = ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
+    let system_prompt =
+        ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
     assert!(
         ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()),
         "HMAC boundary verification failed immediately after injection"
@@ -618,7 +682,14 @@ pub async fn process_channel_message(
                     drop(llm);
 
                     ironclad_db::metrics::record_inference_cost(
-                        &state.db, &model, &provider_prefix, tin, tout, cost, None, false,
+                        &state.db,
+                        &model,
+                        &provider_prefix,
+                        tin,
+                        tout,
+                        cost,
+                        None,
+                        false,
                     )
                     .ok();
 
@@ -689,3 +760,44 @@ pub async fn telegram_poll_loop(state: AppState) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn estimate_cost_zero_tokens() {
+        assert_eq!(estimate_cost_from_provider(0.001, 0.002, 0, 0), 0.0);
+    }
+
+    #[test]
+    fn estimate_cost_input_only() {
+        let cost = estimate_cost_from_provider(0.001, 0.002, 100, 0);
+        assert!((cost - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn estimate_cost_output_only() {
+        let cost = estimate_cost_from_provider(0.001, 0.002, 0, 100);
+        assert!((cost - 0.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn estimate_cost_both_directions() {
+        let cost = estimate_cost_from_provider(0.001, 0.002, 500, 200);
+        let expected = 500.0 * 0.001 + 200.0 * 0.002;
+        assert!((cost - expected).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn check_tool_policy_allows_when_no_rules() {
+        let engine = ironclad_agent::policy::PolicyEngine::new();
+        let result = check_tool_policy(
+            &engine,
+            "read_file",
+            &serde_json::json!({"path": "/tmp/test.txt"}),
+            ironclad_core::InputAuthority::Creator,
+            ironclad_core::SurvivalTier::Normal,
+        );
+        assert!(result.is_ok());
+    }
+}

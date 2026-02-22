@@ -1,8 +1,6 @@
 use ironclad_core::{ApiFormat, IroncladConfig};
 use ironclad_db::Database;
-use ironclad_llm::format::{
-    UnifiedMessage, UnifiedRequest, translate_request, translate_response,
-};
+use ironclad_llm::format::{UnifiedMessage, UnifiedRequest, translate_request, translate_response};
 
 fn test_config() -> IroncladConfig {
     IroncladConfig::from_str(
@@ -70,8 +68,7 @@ fn session_message_and_llm_format_roundtrip() {
         "usage": {"input_tokens": 42, "output_tokens": 18}
     });
 
-    let unified_resp =
-        translate_response(&mock_response, ApiFormat::AnthropicMessages).unwrap();
+    let unified_resp = translate_response(&mock_response, ApiFormat::AnthropicMessages).unwrap();
     assert_eq!(
         unified_resp.content,
         "Rust is a systems programming language."

@@ -5,11 +5,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::cli::{CRT_DRAW_MS, theme};
 use super::{colors, heading, icons};
+use crate::cli::{CRT_DRAW_MS, theme};
 
-const DEFAULT_REGISTRY_URL: &str =
-    "https://registry.roboticus.ai/manifest.json";
+const DEFAULT_REGISTRY_URL: &str = "https://registry.roboticus.ai/manifest.json";
 const CRATES_IO_API: &str = "https://crates.io/api/v1/crates/ironclad-server";
 const CRATE_NAME: &str = "ironclad-server";
 
@@ -88,15 +87,16 @@ impl UpdateState {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(self)
-            .map_err(io::Error::other)?;
+        let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         std::fs::write(&path, json)
     }
 }
 
 fn state_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".ironclad").join("update_state.json")
+    PathBuf::from(home)
+        .join(".ironclad")
+        .join("update_state.json")
 }
 
 fn ironclad_home() -> PathBuf {
@@ -126,18 +126,20 @@ fn resolve_registry_url(cli_override: Option<&str>, config_path: &str) -> String
         return url.to_string();
     }
     if let Ok(val) = std::env::var("IRONCLAD_REGISTRY_URL")
-        && !val.is_empty() {
-            return val;
-        }
+        && !val.is_empty()
+    {
+        return val;
+    }
     if let Ok(content) = std::fs::read_to_string(config_path)
         && let Ok(config) = content.parse::<toml::Value>()
-            && let Some(url) = config
-                .get("update")
-                .and_then(|u| u.get("registry_url"))
-                .and_then(|v| v.as_str())
-                && !url.is_empty() {
-                    return url.to_string();
-                }
+        && let Some(url) = config
+            .get("update")
+            .and_then(|u| u.get("registry_url"))
+            .and_then(|v| v.as_str())
+        && !url.is_empty()
+    {
+        return url.to_string();
+    }
     DEFAULT_REGISTRY_URL.to_string()
 }
 
@@ -283,9 +285,7 @@ async fn check_binary_version(
     Ok(latest)
 }
 
-async fn apply_binary_update(
-    yes: bool,
-) -> Result<bool, Box<dyn std::error::Error>> {
+async fn apply_binary_update(yes: bool) -> Result<bool, Box<dyn std::error::Error>> {
     let (DIM, BOLD, _, GREEN, _, _, _, RESET, MONO) = colors();
     let (OK, _, WARN, _, ERR) = icons();
     let current = env!("CARGO_PKG_VERSION");
@@ -334,7 +334,10 @@ async fn apply_binary_update(
             Ok(true)
         }
         Ok(s) => {
-            println!("    {ERR} cargo install exited with code {}", s.code().unwrap_or(-1));
+            println!(
+                "    {ERR} cargo install exited with code {}",
+                s.code().unwrap_or(-1)
+            );
             Ok(false)
         }
         Err(e) => {
@@ -484,12 +487,10 @@ async fn apply_providers_update(
 fn providers_local_path(config_path: &str) -> PathBuf {
     if let Ok(content) = std::fs::read_to_string(config_path)
         && let Ok(config) = content.parse::<toml::Value>()
-            && let Some(path) = config
-                .get("providers_file")
-                .and_then(|v| v.as_str())
-            {
-                return PathBuf::from(path);
-            }
+        && let Some(path) = config.get("providers_file").and_then(|v| v.as_str())
+    {
+        return PathBuf::from(path);
+    }
     ironclad_home().join("providers.toml")
 }
 
@@ -558,12 +559,14 @@ async fn apply_skills_update(
     }
 
     if new_files.is_empty() && updated_unmodified.is_empty() && updated_modified.is_empty() {
-        println!("    {OK} All skills are up to date ({} files)", up_to_date.len());
+        println!(
+            "    {OK} All skills are up to date ({} files)",
+            up_to_date.len()
+        );
         return Ok(false);
     }
 
-    let total_changes =
-        new_files.len() + updated_unmodified.len() + updated_modified.len();
+    let total_changes = new_files.len() + updated_unmodified.len() + updated_modified.len();
     println!(
         "    {total_changes} change(s): {} new, {} updated, {} with local modifications",
         new_files.len(),
@@ -625,8 +628,7 @@ async fn apply_skills_update(
         match confirm_overwrite(filename) {
             OverwriteChoice::Overwrite => {
                 std::fs::write(&local_file, &remote_content)?;
-                file_hashes
-                    .insert(filename.clone(), bytes_sha256(remote_content.as_bytes()));
+                file_hashes.insert(filename.clone(), bytes_sha256(remote_content.as_bytes()));
                 applied += 1;
             }
             OverwriteChoice::Backup => {
@@ -634,8 +636,7 @@ async fn apply_skills_update(
                 std::fs::copy(&local_file, &backup)?;
                 println!("    {DETAIL} Backed up to {}", backup.display());
                 std::fs::write(&local_file, &remote_content)?;
-                file_hashes
-                    .insert(filename.clone(), bytes_sha256(remote_content.as_bytes()));
+                file_hashes.insert(filename.clone(), bytes_sha256(remote_content.as_bytes()));
                 applied += 1;
             }
             OverwriteChoice::Skip => {
@@ -654,20 +655,23 @@ async fn apply_skills_update(
     state.save().ok();
 
     println!();
-    println!("    {OK} Applied {applied} skill update(s) (v{})", manifest.version);
+    println!(
+        "    {OK} Applied {applied} skill update(s) (v{})",
+        manifest.version
+    );
     Ok(true)
 }
 
 fn skills_local_dir(config_path: &str) -> PathBuf {
     if let Ok(content) = std::fs::read_to_string(config_path)
         && let Ok(config) = content.parse::<toml::Value>()
-            && let Some(path) = config
-                .get("skills")
-                .and_then(|s| s.get("skills_dir"))
-                .and_then(|v| v.as_str())
-            {
-                return PathBuf::from(path);
-            }
+        && let Some(path) = config
+            .get("skills")
+            .and_then(|s| s.get("skills_dir"))
+            .and_then(|v| v.as_str())
+    {
+        return PathBuf::from(path);
+    }
     ironclad_home().join("skills")
 }
 
@@ -827,7 +831,6 @@ pub async fn cmd_update_skills(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn update_state_serde_roundtrip() {
@@ -857,8 +860,20 @@ mod tests {
         let json = serde_json::to_string_pretty(&state).unwrap();
         let parsed: UpdateState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.binary_version, "0.2.0");
-        assert_eq!(parsed.installed_content.providers.as_ref().unwrap().sha256, "abc123");
-        assert_eq!(parsed.installed_content.skills.as_ref().unwrap().files.len(), 2);
+        assert_eq!(
+            parsed.installed_content.providers.as_ref().unwrap().sha256,
+            "abc123"
+        );
+        assert_eq!(
+            parsed
+                .installed_content
+                .skills
+                .as_ref()
+                .unwrap()
+                .files
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -999,15 +1014,15 @@ mod tests {
     #[test]
     fn registry_base_url_strips_filename() {
         let url = "https://registry.roboticus.ai/manifest.json";
-        assert_eq!(
-            registry_base_url(url),
-            "https://registry.roboticus.ai"
-        );
+        assert_eq!(registry_base_url(url), "https://registry.roboticus.ai");
     }
 
     #[test]
     fn resolve_registry_url_cli_override() {
-        let result = resolve_registry_url(Some("https://custom.registry/manifest.json"), "nonexistent.toml");
+        let result = resolve_registry_url(
+            Some("https://custom.registry/manifest.json"),
+            "nonexistent.toml",
+        );
         assert_eq!(result, "https://custom.registry/manifest.json");
     }
 
@@ -1021,7 +1036,11 @@ mod tests {
     fn resolve_registry_url_from_config() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("ironclad.toml");
-        std::fs::write(&config, "[update]\nregistry_url = \"https://my.registry/manifest.json\"\n").unwrap();
+        std::fs::write(
+            &config,
+            "[update]\nregistry_url = \"https://my.registry/manifest.json\"\n",
+        )
+        .unwrap();
 
         let result = resolve_registry_url(None, config.to_str().unwrap());
         assert_eq!(result, "https://my.registry/manifest.json");
@@ -1042,7 +1061,8 @@ mod tests {
         let json = serde_json::to_string_pretty(&state).unwrap();
         std::fs::write(&path, &json).unwrap();
 
-        let loaded: UpdateState = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let loaded: UpdateState =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(loaded.binary_version, "0.3.0");
         assert_eq!(loaded.registry_url, "https://example.com/manifest.json");
     }

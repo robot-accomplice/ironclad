@@ -569,7 +569,7 @@ sequenceDiagram
 ## Cross-Reference Matrix
 
 | Sequence | Related Dataflow Diagrams | Related C4 Docs | Key Tables |
-|----------|--------------------------|-----------------|------------|
+| ---------- | -------------------------- | ----------------- | ------------ |
 | 1. End-to-End Request | Diagram 1 (Primary Request), Diagram 6 (Injection) | ironclad-c4-agent, ironclad-c4-llm, ironclad-c4-channels | sessions, session_messages, turns, tool_calls, policy_decisions, inference_costs, semantic_cache |
 | 2. Cache-Augmented Inference | Diagram 2 (Semantic Cache), Diagram 3 (Heuristic Router) | ironclad-c4-llm | semantic_cache, inference_costs |
 | 3. x402 Payment-Gated Inference | Diagram 7 (Financial + Yield) | ironclad-c4-wallet, ironclad-c4-llm | transactions, inference_costs, policy_decisions |
@@ -581,7 +581,7 @@ sequenceDiagram
 ### Embedded Sequences in C4 Docs (not duplicated here)
 
 | Sequence | Location | Overlaps With |
-|----------|----------|---------------|
+| ---------- | ---------- | --------------- |
 | Agent module interactions | [ironclad-c4-agent.md](ironclad-c4-agent.md) | Sequence 1 (intra-agent detail) |
 | A2A handshake | [ironclad-c4-channels.md](ironclad-c4-channels.md) | Dataflow Diagram 5 |
 | Financial/yield flow | [ironclad-c4-wallet.md](ironclad-c4-wallet.md) | Sequence 3 (wallet-internal detail) |

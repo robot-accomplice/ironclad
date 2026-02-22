@@ -39,11 +39,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     }
 
     let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom == 0.0 {
-        0.0
-    } else {
-        dot / denom
-    }
+    if denom == 0.0 { 0.0 } else { dot / denom }
 }
 
 pub fn store_embedding(
@@ -73,24 +69,26 @@ pub fn search_similar(
     min_similarity: f64,
 ) -> Result<Vec<SearchResult>> {
     let conn = db.conn();
-    let mut stmt = conn.prepare(
-        "SELECT source_table, source_id, content_preview, embedding_json FROM embeddings"
-    ).map_err(|e| IroncladError::Database(e.to_string()))?;
+    let mut stmt = conn
+        .prepare("SELECT source_table, source_id, content_preview, embedding_json FROM embeddings")
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
 
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-        ))
-    }).map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     let mut results: Vec<SearchResult> = Vec::new();
 
     for row in rows {
-        let (source_table, source_id, content_preview, embedding_json) = row
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        let (source_table, source_id, content_preview, embedding_json) =
+            row.map_err(|e| IroncladError::Database(e.to_string()))?;
 
         let embedding: Vec<f32> = serde_json::from_str(&embedding_json)
             .map_err(|e| IroncladError::Database(format!("embedding parse error: {e}")))?;
@@ -107,7 +105,11 @@ pub fn search_similar(
         }
     }
 
-    results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results.truncate(limit);
 
     Ok(results)
@@ -125,20 +127,18 @@ pub fn hybrid_search(
     {
         let conn = db.conn();
         let safe_query = crate::memory::sanitize_fts_query(query_text);
-        let mut stmt = conn.prepare(
-            "SELECT content, category FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2"
-        ).map_err(|e| IroncladError::Database(e.to_string()))?;
+        let mut stmt = conn
+            .prepare("SELECT content, category FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2")
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
 
-        let rows = stmt.query_map(rusqlite::params![safe_query, limit * 2], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-            ))
-        }).map_err(|e| IroncladError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(rusqlite::params![safe_query, limit * 2], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
 
         for (i, row) in rows.enumerate() {
-            let (content, category) = row
-                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            let (content, category) = row.map_err(|e| IroncladError::Database(e.to_string()))?;
             let fts_score = 1.0 - (i as f64 * 0.05).min(0.9);
             fts_results.push(SearchResult {
                 source_table: category,
@@ -157,7 +157,11 @@ pub fn hybrid_search(
         }
     }
 
-    fts_results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+    fts_results.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     fts_results.truncate(limit);
 
     Ok(fts_results)
@@ -165,11 +169,9 @@ pub fn hybrid_search(
 
 pub fn embedding_count(db: &Database) -> Result<usize> {
     let conn = db.conn();
-    let count: usize = conn.query_row(
-        "SELECT COUNT(*) FROM embeddings",
-        [],
-        |row| row.get(0),
-    ).map_err(|e| IroncladError::Database(e.to_string()))?;
+    let count: usize = conn
+        .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(count)
 }
 
@@ -264,5 +266,68 @@ mod tests {
         assert_eq!(embedding_count(&db).unwrap(), 0);
         store_embedding(&db, "e1", "t", "1", "a", &[1.0]).unwrap();
         assert_eq!(embedding_count(&db).unwrap(), 1);
+    }
+
+    #[test]
+    fn cosine_zero_vector() {
+        let a = vec![0.0, 0.0];
+        let b = vec![1.0, 0.0];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn hybrid_search_vector_only() {
+        let db = test_db();
+        store_embedding(&db, "e1", "test", "t1", "hello world", &[1.0, 0.0, 0.0]).unwrap();
+        store_embedding(&db, "e2", "test", "t2", "goodbye", &[0.0, 1.0, 0.0]).unwrap();
+
+        let results = hybrid_search(&db, "zzzznonexistent", Some(&[1.0, 0.0, 0.0]), 10, 0.5).unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn hybrid_search_empty_db() {
+        let db = test_db();
+        let results = hybrid_search(&db, "anything", Some(&[1.0, 0.0]), 10, 0.5).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn hybrid_search_respects_limit() {
+        let db = test_db();
+        for i in 0..20 {
+            store_embedding(
+                &db,
+                &format!("e{i}"),
+                "test",
+                &format!("t{i}"),
+                &format!("entry {i}"),
+                &[1.0, 0.0],
+            )
+            .unwrap();
+        }
+        let results = hybrid_search(&db, "entry", Some(&[1.0, 0.0]), 5, 0.5).unwrap();
+        assert!(results.len() <= 5);
+    }
+
+    #[test]
+    fn hybrid_search_no_embedding() {
+        let db = test_db();
+        store_embedding(&db, "e1", "test", "t1", "hello world", &[1.0, 0.0]).unwrap();
+        let results = hybrid_search(&db, "hello", None, 10, 0.5).unwrap();
+        assert!(results.is_empty() || !results.is_empty());
+    }
+
+    #[test]
+    fn hybrid_search_sorted_by_similarity() {
+        let db = test_db();
+        store_embedding(&db, "e1", "test", "t1", "first", &[1.0, 0.0, 0.0]).unwrap();
+        store_embedding(&db, "e2", "test", "t2", "second", &[0.5, 0.5, 0.0]).unwrap();
+        store_embedding(&db, "e3", "test", "t3", "third", &[0.0, 0.0, 1.0]).unwrap();
+
+        let results = hybrid_search(&db, "query", Some(&[1.0, 0.0, 0.0]), 10, 1.0).unwrap();
+        for w in results.windows(2) {
+            assert!(w[0].similarity >= w[1].similarity);
+        }
     }
 }

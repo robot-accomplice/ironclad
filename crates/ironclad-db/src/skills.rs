@@ -288,7 +288,16 @@ mod tests {
     fn toggle_skill_enabled_flips_value() {
         let db = test_db();
         let id = register_skill(
-            &db, "s1", "structured", None, "/s1.toml", "h1", None, None, None, None,
+            &db,
+            "s1",
+            "structured",
+            None,
+            "/s1.toml",
+            "h1",
+            None,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -337,5 +346,122 @@ mod tests {
         let results = find_by_trigger(&db, "deploy").unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "deploy");
+    }
+
+    #[test]
+    fn get_skill_nonexistent_returns_none() {
+        let db = test_db();
+        assert!(get_skill(&db, "no-such-id").unwrap().is_none());
+    }
+
+    #[test]
+    fn list_skills_empty_db() {
+        let db = test_db();
+        let skills = list_skills(&db).unwrap();
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn find_by_trigger_no_matches() {
+        let db = test_db();
+        register_skill(
+            &db,
+            "s1",
+            "structured",
+            None,
+            "/s1.toml",
+            "h",
+            Some(r#"{"keywords":["deploy"]}"#),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let results = find_by_trigger(&db, "nonexistent-keyword").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn find_by_trigger_excludes_disabled() {
+        let db = test_db();
+        let id = register_skill(
+            &db,
+            "deploy",
+            "structured",
+            None,
+            "/d.toml",
+            "h",
+            Some(r#"{"keywords":["deploy"]}"#),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let results = find_by_trigger(&db, "deploy").unwrap();
+        assert_eq!(results.len(), 1);
+
+        toggle_skill_enabled(&db, &id).unwrap();
+        let results = find_by_trigger(&db, "deploy").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn delete_skill_nonexistent_is_noop() {
+        let db = test_db();
+        delete_skill(&db, "no-such-id").unwrap();
+    }
+
+    #[test]
+    fn register_skill_all_optional_fields() {
+        let db = test_db();
+        let id = register_skill(
+            &db,
+            "full-skill",
+            "scripted",
+            Some("A fully populated skill"),
+            "/skills/full.toml",
+            "deadbeef",
+            Some(r#"{"keywords":["full","test"]}"#),
+            Some(r#"["tool_a","tool_b"]"#),
+            Some(r#"{"allow_web":true}"#),
+            Some("/scripts/full.sh"),
+        )
+        .unwrap();
+
+        let skill = get_skill(&db, &id).unwrap().unwrap();
+        assert_eq!(skill.name, "full-skill");
+        assert_eq!(skill.kind, "scripted");
+        assert_eq!(
+            skill.description.as_deref(),
+            Some("A fully populated skill")
+        );
+        assert!(skill.triggers_json.unwrap().contains("full"));
+        assert!(skill.tool_chain_json.unwrap().contains("tool_a"));
+        assert_eq!(skill.script_path.as_deref(), Some("/scripts/full.sh"));
+    }
+
+    #[test]
+    fn update_skill_sets_last_loaded_at() {
+        let db = test_db();
+        let id = register_skill(
+            &db,
+            "s1",
+            "structured",
+            None,
+            "/s1.toml",
+            "old",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let skill = get_skill(&db, &id).unwrap().unwrap();
+        assert!(skill.last_loaded_at.is_none());
+
+        update_skill(&db, &id, "new", None, None).unwrap();
+        let skill = get_skill(&db, &id).unwrap().unwrap();
+        assert!(skill.last_loaded_at.is_some());
     }
 }

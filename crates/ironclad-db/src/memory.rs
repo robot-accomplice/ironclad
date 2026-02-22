@@ -349,9 +349,7 @@ pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<String>>
 
     // FTS5 MATCH on memory_fts (populated from working_memory, episodic_memory, semantic_memory)
     let fts_query = sanitize_fts_query(query);
-    match conn.prepare(
-        "SELECT content FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2",
-    ) {
+    match conn.prepare("SELECT content FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2") {
         Ok(mut stmt) => {
             match stmt.query_map(rusqlite::params![fts_query, limit], |row| {
                 row.get::<_, String>(0)
@@ -372,7 +370,10 @@ pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<String>>
 
     // LIKE fallback for tables not in FTS: procedural_memory.steps, relationship_memory.interaction_summary.
     // Escape % and _ so they are literal, and use ESCAPE '\\'.
-    let escaped_query = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let escaped_query = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
     let pattern = format!("%{escaped_query}%");
     let tables_and_cols: &[(&str, &str)] = &[
         ("procedural_memory", "steps"),
@@ -394,10 +395,14 @@ pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<String>>
                             }
                         }
                     }
-                    Err(e) => tracing::warn!(error = %e, table, col, "LIKE fallback query_map failed"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, table, col, "LIKE fallback query_map failed")
+                    }
                 }
             }
-            Err(e) => tracing::warn!(error = %e, table, col, "LIKE fallback query preparation failed"),
+            Err(e) => {
+                tracing::warn!(error = %e, table, col, "LIKE fallback query preparation failed")
+            }
         }
     }
 
@@ -533,7 +538,6 @@ mod tests {
         let db = test_db();
         let id = store_working(&db, "sess-1", "fact", "the sky is blue", 5).unwrap();
 
-        // Verify in working_memory
         let conn = db.conn();
         let count: i64 = conn
             .query_row(
@@ -544,7 +548,6 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
 
-        // Verify in memory_fts
         let fts_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM memory_fts WHERE source_id = ?1",
@@ -553,5 +556,86 @@ mod tests {
             )
             .unwrap();
         assert_eq!(fts_count, 1);
+    }
+
+    #[test]
+    fn record_procedural_success_tracking() {
+        let db = test_db();
+        store_procedural(&db, "deploy", r#"["build","push"]"#).unwrap();
+        record_procedural_success(&db, "deploy").unwrap();
+        record_procedural_success(&db, "deploy").unwrap();
+        record_procedural_success(&db, "deploy").unwrap();
+        let entry = retrieve_procedural(&db, "deploy").unwrap().unwrap();
+        assert_eq!(entry.success_count, 3);
+    }
+
+    #[test]
+    fn retrieve_working_empty_session() {
+        let db = test_db();
+        let entries = retrieve_working(&db, "nonexistent-session").unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn retrieve_episodic_limit_zero() {
+        let db = test_db();
+        store_episodic(&db, "event", "something happened", 5).unwrap();
+        let entries = retrieve_episodic(&db, 0).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn retrieve_semantic_empty_category() {
+        let db = test_db();
+        let entries = retrieve_semantic(&db, "no-such-category").unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn retrieve_procedural_nonexistent() {
+        let db = test_db();
+        let entry = retrieve_procedural(&db, "nonexistent").unwrap();
+        assert!(entry.is_none());
+    }
+
+    #[test]
+    fn retrieve_relationship_nonexistent() {
+        let db = test_db();
+        let entry = retrieve_relationship(&db, "no-such-entity").unwrap();
+        assert!(entry.is_none());
+    }
+
+    #[test]
+    fn store_relationship_upsert_increments_interaction() {
+        let db = test_db();
+        store_relationship(&db, "user-1", "Alice", 0.5).unwrap();
+        store_relationship(&db, "user-1", "Alice Updated", 0.8).unwrap();
+        let entry = retrieve_relationship(&db, "user-1").unwrap().unwrap();
+        assert_eq!(entry.interaction_count, 1);
+    }
+
+    #[test]
+    fn store_procedural_upsert_updates_steps() {
+        let db = test_db();
+        store_procedural(&db, "deploy", r#"["build"]"#).unwrap();
+        store_procedural(&db, "deploy", r#"["build","push","verify"]"#).unwrap();
+        let entry = retrieve_procedural(&db, "deploy").unwrap().unwrap();
+        assert_eq!(entry.steps, r#"["build","push","verify"]"#);
+    }
+
+    #[test]
+    fn fts_search_no_matches() {
+        let db = test_db();
+        store_working(&db, "s1", "note", "hello world", 5).unwrap();
+        let hits = fts_search(&db, "zzzznotfound", 10).unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn fts_search_like_fallback_procedural() {
+        let db = test_db();
+        store_procedural(&db, "backup", "step one: tar the archive and compress").unwrap();
+        let hits = fts_search(&db, "tar the archive", 10).unwrap();
+        assert!(!hits.is_empty());
     }
 }

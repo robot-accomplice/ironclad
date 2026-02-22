@@ -107,8 +107,7 @@ impl IroncladConfig {
     }
 
     fn merge_bundled_providers(&mut self) {
-        let bundled: BundledProviders =
-            toml::from_str(BUNDLED_PROVIDERS_TOML).unwrap_or_default();
+        let bundled: BundledProviders = toml::from_str(BUNDLED_PROVIDERS_TOML).unwrap_or_default();
         for (name, bundled_cfg) in bundled.providers {
             self.providers.entry(name).or_insert(bundled_cfg);
         }
@@ -951,8 +950,12 @@ impl Default for PersonalityConfig {
     }
 }
 
-fn default_os_file() -> String { "OS.toml".into() }
-fn default_firmware_file() -> String { "FIRMWARE.toml".into() }
+fn default_os_file() -> String {
+    "OS.toml".into()
+}
+fn default_firmware_file() -> String {
+    "FIRMWARE.toml".into()
+}
 
 #[cfg(test)]
 mod tests {
@@ -1169,7 +1172,10 @@ hot_reload = true
         let cfg = IroncladConfig::from_str(toml).unwrap();
         assert_eq!(cfg.agent.name, "Duncan Idaho");
         assert_eq!(cfg.models.routing.confidence_threshold, 0.85);
-        assert!(cfg.providers.len() >= 2, "user providers plus bundled defaults");
+        assert!(
+            cfg.providers.len() >= 2,
+            "user providers plus bundled defaults"
+        );
         assert!(cfg.providers.contains_key("anthropic"));
         assert!(cfg.providers.contains_key("ollama"));
         assert_eq!(cfg.providers["anthropic"].url, "https://api.anthropic.com");
@@ -1227,10 +1233,7 @@ hot_reload = true
             cfg.providers["anthropic"].format.as_deref(),
             Some("anthropic")
         );
-        assert_eq!(
-            cfg.providers["ollama"].is_local,
-            Some(true)
-        );
+        assert_eq!(cfg.providers["ollama"].is_local, Some(true));
     }
 
     #[test]
@@ -1256,7 +1259,10 @@ tier = "T2"
         let cfg = IroncladConfig::from_str(toml).unwrap();
         assert_eq!(cfg.providers["ollama"].url, "http://custom-host:9999");
         assert_eq!(cfg.providers["ollama"].tier, "T2");
-        assert!(cfg.providers.contains_key("openai"), "bundled providers still present");
+        assert!(
+            cfg.providers.contains_key("openai"),
+            "bundled providers still present"
+        );
     }
 
     #[test]
@@ -1308,7 +1314,9 @@ cost_per_output_token = 0.00015
     #[test]
     fn tilde_expansion_in_database_path() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        let expected = std::path::PathBuf::from(&home).join(".ironclad").join("state.db");
+        let expected = std::path::PathBuf::from(&home)
+            .join(".ironclad")
+            .join("state.db");
         let toml = r#"
 [agent]
 name = "TestBot"
@@ -1324,6 +1332,9 @@ path = "~/.ironclad/state.db"
 primary = "ollama/qwen3:8b"
 "#;
         let cfg = IroncladConfig::from_str(toml).unwrap();
-        assert_eq!(cfg.database.path, expected, "~/.ironclad/state.db should expand to $HOME/.ironclad/state.db");
+        assert_eq!(
+            cfg.database.path, expected,
+            "~/.ironclad/state.db should expand to $HOME/.ironclad/state.db"
+        );
     }
 }

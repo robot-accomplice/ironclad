@@ -108,7 +108,8 @@ impl ApprovalManager {
 
     pub fn approve(&self, request_id: &str, decided_by: &str) -> Result<ApprovalRequest> {
         let mut pending = self.pending.lock().expect("mutex poisoned");
-        let request = pending.get_mut(request_id)
+        let request = pending
+            .get_mut(request_id)
             .ok_or_else(|| IroncladError::Tool {
                 tool: "approvals".into(),
                 message: format!("request {request_id} not found"),
@@ -131,7 +132,8 @@ impl ApprovalManager {
 
     pub fn deny(&self, request_id: &str, decided_by: &str) -> Result<ApprovalRequest> {
         let mut pending = self.pending.lock().expect("mutex poisoned");
-        let request = pending.get_mut(request_id)
+        let request = pending
+            .get_mut(request_id)
             .ok_or_else(|| IroncladError::Tool {
                 tool: "approvals".into(),
                 message: format!("request {request_id} not found"),
@@ -159,7 +161,8 @@ impl ApprovalManager {
 
     pub fn list_pending(&self) -> Vec<ApprovalRequest> {
         let pending = self.pending.lock().expect("mutex poisoned");
-        pending.values()
+        pending
+            .values()
             .filter(|r| r.status == ApprovalStatus::Pending)
             .cloned()
             .collect()
@@ -250,7 +253,9 @@ mod tests {
     #[test]
     fn request_approval_creates_pending() {
         let mgr = ApprovalManager::new(test_config());
-        let req = mgr.request_approval("shell", "ls -la", Some("sess-1")).unwrap();
+        let req = mgr
+            .request_approval("shell", "ls -la", Some("sess-1"))
+            .unwrap();
         assert_eq!(req.status, ApprovalStatus::Pending);
         assert_eq!(req.tool_name, "shell");
         assert!(req.decided_by.is_none());

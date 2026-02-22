@@ -8,7 +8,7 @@ pub mod plugins;
 pub mod rate_limit;
 pub mod ws;
 
-pub use api::{build_router, AppState, PersonalityState};
+pub use api::{AppState, PersonalityState, build_router};
 pub use dashboard::{build_dashboard_html, dashboard_handler};
 pub use ws::{EventBus, ws_route};
 
@@ -19,7 +19,6 @@ use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 
 use auth::ApiKeyLayer;
-use rate_limit::GlobalRateLimitLayer;
 use ironclad_agent::policy::{AuthorityRule, CommandSafetyRule, PolicyEngine};
 use ironclad_agent::subagents::SubagentRegistry;
 use ironclad_browser::Browser;
@@ -32,16 +31,16 @@ use ironclad_core::IroncladConfig;
 use ironclad_db::Database;
 use ironclad_llm::LlmService;
 use ironclad_wallet::WalletService;
+use rate_limit::GlobalRateLimitLayer;
 
 fn init_logging(config: &IroncladConfig) {
+    use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::EnvFilter;
 
     let level = config.agent.log_level.as_str();
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
     let log_dir = &config.server.log_dir;
     if std::fs::create_dir_all(log_dir).is_ok() {
@@ -56,8 +55,7 @@ fn init_logging(config: &IroncladConfig) {
             .with_ansi(false)
             .json();
 
-        let stderr_layer = fmt::layer()
-            .with_writer(std::io::stderr);
+        let stderr_layer = fmt::layer().with_writer(std::io::stderr);
 
         let _ = tracing_subscriber::registry()
             .with(filter)
@@ -76,8 +74,8 @@ fn init_logging(config: &IroncladConfig) {
 }
 
 fn cleanup_old_logs(log_dir: &std::path::Path, max_days: u32) {
-    let cutoff = std::time::SystemTime::now()
-        - std::time::Duration::from_secs(u64::from(max_days) * 86400);
+    let cutoff =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(u64::from(max_days) * 86400);
 
     let entries = match std::fs::read_dir(log_dir) {
         Ok(e) => e,
@@ -91,9 +89,10 @@ fn cleanup_old_logs(log_dir: &std::path::Path, max_days: u32) {
         }
         if let Ok(meta) = entry.metadata()
             && let Ok(modified) = meta.modified()
-                && modified < cutoff {
-                    let _ = std::fs::remove_file(&path);
-                }
+            && modified < cutoff
+        {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 
@@ -144,7 +143,9 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
                         .await;
                     tracing::info!("Telegram adapter registered");
                     if tg_config.webhook_secret.is_none() {
-                        tracing::warn!("Telegram webhook_secret not set; webhook endpoint will reject with 503");
+                        tracing::warn!(
+                            "Telegram webhook_secret not set; webhook endpoint will reject with 503"
+                        );
                     }
                     Some(adapter)
                 } else {
@@ -178,13 +179,13 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
                         .await;
                     tracing::info!("WhatsApp adapter registered");
                     if wa_config.app_secret.is_none() {
-                        tracing::warn!("WhatsApp app_secret not set; webhook endpoint will reject with 503");
+                        tracing::warn!(
+                            "WhatsApp app_secret not set; webhook endpoint will reject with 503"
+                        );
                     }
                     Some(adapter)
                 } else {
-                    tracing::warn!(
-                        "WhatsApp enabled but token env or phone_number_id is empty"
-                    );
+                    tracing::warn!("WhatsApp enabled but token env or phone_number_id is empty");
                     None
                 }
             } else {
@@ -324,6 +325,10 @@ primary = "ollama/qwen3:8b"
     async fn bootstrap_with_memory_db_succeeds() {
         let config = IroncladConfig::from_str(BOOTSTRAP_CONFIG).expect("parse config");
         let result = bootstrap(config).await;
-        assert!(result.is_ok(), "bootstrap with :memory: should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "bootstrap with :memory: should succeed: {:?}",
+            result.err()
+        );
     }
 }

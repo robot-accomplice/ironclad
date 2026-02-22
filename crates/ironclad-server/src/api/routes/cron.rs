@@ -5,7 +5,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{internal_err, AppState};
+use super::{AppState, internal_err};
 
 #[derive(Deserialize)]
 pub struct CreateCronJobRequest {
@@ -87,7 +87,10 @@ pub async fn get_cron_job(
             "next_run_at": job.next_run_at,
             "last_error": job.last_error,
         }))),
-        Ok(None) => Err((axum::http::StatusCode::NOT_FOUND, format!("cron job {id} not found"))),
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("cron job {id} not found"),
+        )),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -98,7 +101,10 @@ pub async fn delete_cron_job(
 ) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
     match ironclad_db::cron::delete_job(&state.db, &id) {
         Ok(true) => Ok(axum::Json(serde_json::json!({ "deleted": true, "id": id }))),
-        Ok(false) => Err((axum::http::StatusCode::NOT_FOUND, format!("cron job {id} not found"))),
+        Ok(false) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("cron job {id} not found"),
+        )),
         Err(e) => Err(internal_err(&e)),
     }
 }

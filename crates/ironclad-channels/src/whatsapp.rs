@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use ironclad_core::{IroncladError, Result};
 use serde_json::{Value, json};
-use tracing::{debug, warn, error};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use crate::{ChannelAdapter, InboundMessage, OutboundMessage};
@@ -182,7 +182,10 @@ impl WhatsAppAdapter {
     ) -> Value {
         let mut media_obj = json!({ "link": media_url });
         if let Some(cap) = caption {
-            media_obj.as_object_mut().unwrap().insert("caption".into(), json!(cap));
+            media_obj
+                .as_object_mut()
+                .unwrap()
+                .insert("caption".into(), json!(cap));
         }
         let mut payload = serde_json::Map::new();
         payload.insert("messaging_product".into(), json!("whatsapp"));
@@ -200,7 +203,8 @@ impl WhatsAppAdapter {
             "message_id": message_id,
         });
 
-        self.client.post(&url)
+        self.client
+            .post(&url)
             .bearer_auth(&self.token)
             .json(&body)
             .send()
@@ -218,15 +222,20 @@ impl WhatsAppAdapter {
             return Err(IroncladError::Network("rate limited".into()));
         }
 
-        let body: Value = resp.json().await
+        let body: Value = resp
+            .json()
+            .await
             .map_err(|e| IroncladError::Network(format!("response parse error: {e}")))?;
 
         if !status.is_success() {
-            let err_msg = body.pointer("/error/message")
+            let err_msg = body
+                .pointer("/error/message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown error");
             error!(status = %status, error = err_msg, "WhatsApp API error");
-            return Err(IroncladError::Network(format!("WhatsApp API {status}: {err_msg}")));
+            return Err(IroncladError::Network(format!(
+                "WhatsApp API {status}: {err_msg}"
+            )));
         }
 
         Ok(body)
@@ -250,7 +259,9 @@ impl ChannelAdapter for WhatsAppAdapter {
 
         debug!(to = %msg.recipient_id, "sending WhatsApp message");
 
-        let resp = self.client.post(&url)
+        let resp = self
+            .client
+            .post(&url)
             .bearer_auth(&self.token)
             .json(&body)
             .send()
@@ -342,7 +353,11 @@ mod tests {
     #[test]
     fn verify_webhook_challenge_success() {
         let adapter = WhatsAppAdapter::with_config(
-            "tok".into(), "ph".into(), "my_verify".into(), vec![], None,
+            "tok".into(),
+            "ph".into(),
+            "my_verify".into(),
+            vec![],
+            None,
         );
         let result = adapter.verify_webhook_challenge("subscribe", "my_verify", "challenge123");
         assert_eq!(result.unwrap(), "challenge123");
@@ -351,7 +366,11 @@ mod tests {
     #[test]
     fn verify_webhook_challenge_wrong_mode() {
         let adapter = WhatsAppAdapter::with_config(
-            "tok".into(), "ph".into(), "my_verify".into(), vec![], None,
+            "tok".into(),
+            "ph".into(),
+            "my_verify".into(),
+            vec![],
+            None,
         );
         let result = adapter.verify_webhook_challenge("unsubscribe", "my_verify", "c");
         assert!(result.is_err());
@@ -360,7 +379,11 @@ mod tests {
     #[test]
     fn verify_webhook_challenge_wrong_token() {
         let adapter = WhatsAppAdapter::with_config(
-            "tok".into(), "ph".into(), "my_verify".into(), vec![], None,
+            "tok".into(),
+            "ph".into(),
+            "my_verify".into(),
+            vec![],
+            None,
         );
         let result = adapter.verify_webhook_challenge("subscribe", "wrong", "c");
         assert!(result.is_err());
@@ -375,7 +398,9 @@ mod tests {
     #[test]
     fn sender_allowed_filters() {
         let adapter = WhatsAppAdapter::with_config(
-            "tok".into(), "ph".into(), "v".into(),
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
             vec!["111".into(), "222".into()],
             None,
         );
@@ -415,7 +440,9 @@ mod tests {
     #[test]
     fn process_webhook_disallowed_sender() {
         let adapter = WhatsAppAdapter::with_config(
-            "tok".into(), "ph".into(), "v".into(),
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
             vec!["allowed_only".into()],
             None,
         );
@@ -464,7 +491,10 @@ mod tests {
     #[test]
     fn format_media_outbound_with_caption() {
         let payload = WhatsAppAdapter::format_media_outbound(
-            "555", "image", "https://example.com/img.png", Some("caption"),
+            "555",
+            "image",
+            "https://example.com/img.png",
+            Some("caption"),
         );
         assert_eq!(payload["messaging_product"], "whatsapp");
         assert_eq!(payload["type"], "image");

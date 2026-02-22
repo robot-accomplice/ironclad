@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use ironclad_core::{IroncladError, Result};
 use serde_json;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::{ChannelAdapter, InboundMessage, OutboundMessage};
@@ -49,7 +49,8 @@ impl WebSocketChannel {
 
     /// Serialize an `OutboundMessage` to a JSON string for WebSocket transmission.
     pub fn format_ws_message(msg: &OutboundMessage) -> Result<String> {
-        serde_json::to_string(msg).map_err(|e| IroncladError::Channel(format!("failed to serialize: {e}")))
+        serde_json::to_string(msg)
+            .map_err(|e| IroncladError::Channel(format!("failed to serialize: {e}")))
     }
 
     /// Parse a raw JSON string from a WebSocket frame into an `InboundMessage`.

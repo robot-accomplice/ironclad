@@ -289,4 +289,99 @@ mod tests {
         assert_eq!(jobs[0].consecutive_errors, 1);
         assert_eq!(jobs[0].last_error.as_deref(), Some("timeout"));
     }
+
+    #[test]
+    fn get_job_nonexistent_returns_none() {
+        let db = test_db();
+        assert!(get_job(&db, "does-not-exist").unwrap().is_none());
+    }
+
+    #[test]
+    fn list_jobs_empty_db() {
+        let db = test_db();
+        let jobs = list_jobs(&db).unwrap();
+        assert!(jobs.is_empty());
+    }
+
+    #[test]
+    fn create_job_defaults() {
+        let db = test_db();
+        let id = create_job(&db, "j1", "a1", "every", None, "{}").unwrap();
+        let job = get_job(&db, &id).unwrap().unwrap();
+        assert!(job.enabled);
+        assert!(job.last_run_at.is_none());
+        assert!(job.last_status.is_none());
+        assert_eq!(job.consecutive_errors, 0);
+        assert!(job.last_error.is_none());
+        assert!(job.lease_holder.is_none());
+    }
+
+    #[test]
+    fn create_job_with_schedule_expr() {
+        let db = test_db();
+        let id = create_job(&db, "cron-job", "a1", "cron", Some("0 */5 * * *"), r#"{"a":1}"#)
+            .unwrap();
+        let job = get_job(&db, &id).unwrap().unwrap();
+        assert_eq!(job.schedule_kind, "cron");
+        assert_eq!(job.schedule_expr.as_deref(), Some("0 */5 * * *"));
+    }
+
+    #[test]
+    fn record_run_success_clears_last_error() {
+        let db = test_db();
+        let job_id = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
+
+        record_run(&db, &job_id, "error", Some(10), Some("oops")).unwrap();
+        let job = get_job(&db, &job_id).unwrap().unwrap();
+        assert_eq!(job.consecutive_errors, 1);
+        assert_eq!(job.last_error.as_deref(), Some("oops"));
+
+        record_run(&db, &job_id, "success", Some(20), None).unwrap();
+        let job = get_job(&db, &job_id).unwrap().unwrap();
+        assert_eq!(job.consecutive_errors, 0);
+        assert!(job.last_error.is_none());
+    }
+
+    #[test]
+    fn record_run_with_none_duration() {
+        let db = test_db();
+        let job_id = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
+        let run_id = record_run(&db, &job_id, "error", None, Some("crash")).unwrap();
+        assert!(!run_id.is_empty());
+        let job = get_job(&db, &job_id).unwrap().unwrap();
+        assert!(job.last_duration_ms.is_none());
+    }
+
+    #[test]
+    fn consecutive_errors_compound() {
+        let db = test_db();
+        let job_id = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
+        for i in 1..=5 {
+            record_run(&db, &job_id, "error", Some(10), Some(&format!("err-{i}"))).unwrap();
+            let job = get_job(&db, &job_id).unwrap().unwrap();
+            assert_eq!(job.consecutive_errors, i);
+        }
+    }
+
+    #[test]
+    fn acquire_lease_nonexistent_job() {
+        let db = test_db();
+        let acquired = acquire_lease(&db, "no-such-job", "inst-1").unwrap();
+        assert!(!acquired);
+    }
+
+    #[test]
+    fn release_lease_nonexistent_job() {
+        let db = test_db();
+        release_lease(&db, "no-such-job").unwrap();
+    }
+
+    #[test]
+    fn record_run_returns_unique_ids() {
+        let db = test_db();
+        let job_id = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
+        let r1 = record_run(&db, &job_id, "success", Some(10), None).unwrap();
+        let r2 = record_run(&db, &job_id, "success", Some(20), None).unwrap();
+        assert_ne!(r1, r2);
+    }
 }

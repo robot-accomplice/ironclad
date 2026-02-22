@@ -17,9 +17,10 @@ pub fn build_system_prompt(
     sections.push(format!("# Agent: {agent_name}\n"));
 
     if let Some(fw_text) = firmware
-        && !fw_text.is_empty() {
-            sections.push(fw_text.to_string());
-        }
+        && !fw_text.is_empty()
+    {
+        sections.push(fw_text.to_string());
+    }
 
     if let Some(soul_text) = soul {
         sections.push(format!("## Identity\n{soul_text}\n"));

@@ -32,14 +32,8 @@ impl LlmClient {
         api_key: &str,
         body: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        self.forward_with_provider(
-            url,
-            api_key,
-            body,
-            "Authorization",
-            &HashMap::new(),
-        )
-        .await
+        self.forward_with_provider(url, api_key, body, "Authorization", &HashMap::new())
+            .await
     }
 
     /// Send a request with provider-specific auth header and extra headers.

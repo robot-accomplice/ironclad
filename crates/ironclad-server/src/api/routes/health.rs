@@ -1,12 +1,9 @@
 //! Health and logs API handlers.
 
-use axum::{
-    extract::State,
-    response::IntoResponse,
-};
+use axum::{extract::State, response::IntoResponse};
 use serde_json::Value;
 
-use super::{internal_err, AppState};
+use super::{AppState, internal_err};
 
 /// Structured log entry returned by the logs API (from tracing JSON lines).
 #[derive(Debug, serde::Serialize)]
@@ -73,15 +70,20 @@ pub fn read_log_entries(
         return Ok(vec![]);
     }
     log_files.sort_by(|a, b| {
-        let ma = std::fs::metadata(a).and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let mb = std::fs::metadata(b).and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let ma = std::fs::metadata(a)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let mb = std::fs::metadata(b)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         ma.cmp(&mb).reverse().then_with(|| a.cmp(b).reverse())
     });
     let path = log_files
         .first()
         .cloned()
         .ok_or_else(|| "no log file path (empty list after sort)".to_string())?;
-    let content = std::fs::read_to_string(&path).map_err(|e| format!("failed to read log file: {}", e))?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("failed to read log file: {}", e))?;
     let raw_lines: Vec<&str> = content.lines().rev().take(lines).collect();
     let raw_lines: Vec<&str> = raw_lines.into_iter().rev().collect();
     let mut entries = Vec::with_capacity(raw_lines.len());
@@ -100,9 +102,10 @@ pub fn read_log_entries(
             .unwrap_or("")
             .to_lowercase();
         if let Some(filter) = level_filter
-            && level != filter {
-                continue;
-            }
+            && level != filter
+        {
+            continue;
+        }
         let message = obj
             .get("fields")
             .and_then(|f| f.get("message"))

@@ -48,13 +48,27 @@ impl Default for OsVoice {
     }
 }
 
-fn default_version() -> String { "1.0".into() }
-fn default_generated_by() -> String { "default".into() }
-fn default_formality() -> String { "balanced".into() }
-fn default_proactiveness() -> String { "suggest".into() }
-fn default_verbosity() -> String { "concise".into() }
-fn default_humor() -> String { "dry".into() }
-fn default_domain() -> String { "general".into() }
+fn default_version() -> String {
+    "1.0".into()
+}
+fn default_generated_by() -> String {
+    "default".into()
+}
+fn default_formality() -> String {
+    "balanced".into()
+}
+fn default_proactiveness() -> String {
+    "suggest".into()
+}
+fn default_verbosity() -> String {
+    "concise".into()
+}
+fn default_humor() -> String {
+    "dry".into()
+}
+fn default_domain() -> String {
+    "general".into()
+}
 
 // ---------------------------------------------------------------------------
 // FIRMWARE.toml -- guardrails, boundaries, hard rules
@@ -85,8 +99,12 @@ impl Default for FirmwareApprovals {
     }
 }
 
-fn default_spending_threshold() -> f64 { 50.0 }
-fn default_require_confirmation() -> String { "risky".into() }
+fn default_spending_threshold() -> f64 {
+    50.0
+}
+fn default_require_confirmation() -> String {
+    "risky".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirmwareRule {
@@ -221,9 +239,10 @@ pub fn compose_identity_text(
     }
 
     if let Some(op) = operator
-        && !op.context.is_empty() {
-            sections.push(format!("## Operator Context\n{}", op.context));
-        }
+        && !op.context.is_empty()
+    {
+        sections.push(format!("## Operator Context\n{}", op.context));
+    }
 
     if let Some(dir) = directives {
         if !dir.context.is_empty() {
@@ -235,7 +254,11 @@ pub fn compose_identity_text(
                 block.push_str(&format!(
                     "- **{}** ({}): {}\n",
                     m.name,
-                    if m.timeframe.is_empty() { "ongoing" } else { &m.timeframe },
+                    if m.timeframe.is_empty() {
+                        "ongoing"
+                    } else {
+                        &m.timeframe
+                    },
                     m.description
                 ));
             }
@@ -254,7 +277,11 @@ pub fn compose_firmware_text(firmware: Option<&FirmwareConfig>) -> String {
     };
     let mut block = String::from("## Firmware (Non-Negotiable Rules)\n");
     for r in &fw.rules {
-        let prefix = if r.rule_type == "must" { "YOU MUST" } else { "YOU MUST NOT" };
+        let prefix = if r.rule_type == "must" {
+            "YOU MUST"
+        } else {
+            "YOU MUST NOT"
+        };
         block.push_str(&format!("- {prefix}: {}\n", r.rule));
     }
     block
@@ -421,29 +448,44 @@ pub fn write_defaults(workspace: &Path) -> std::io::Result<()> {
 }
 
 /// Generate OS.toml content from quick-interview answers.
-pub fn generate_os_toml(
-    name: &str,
-    formality: &str,
-    proactiveness: &str,
-    domain: &str,
-) -> String {
+pub fn generate_os_toml(name: &str, formality: &str, proactiveness: &str, domain: &str) -> String {
     let proactive_desc = match proactiveness {
-        "wait" => "You wait for explicit instructions before acting. You do not volunteer suggestions unless asked.",
-        "initiative" => "You take initiative freely. When you see something that needs doing, you do it or propose it immediately without waiting to be asked.",
-        _ => "When you spot a better approach or an emerging problem, you raise it. But you respect your operator's decisions and never override them.",
+        "wait" => {
+            "You wait for explicit instructions before acting. You do not volunteer suggestions unless asked."
+        }
+        "initiative" => {
+            "You take initiative freely. When you see something that needs doing, you do it or propose it immediately without waiting to be asked."
+        }
+        _ => {
+            "When you spot a better approach or an emerging problem, you raise it. But you respect your operator's decisions and never override them."
+        }
     };
 
     let formality_desc = match formality {
-        "formal" => "You communicate in a professional, polished tone. You use complete sentences, proper titles, and structured formatting. You avoid colloquialisms.",
-        "casual" => "You communicate in a relaxed, conversational tone. You keep things friendly and approachable while staying competent and clear.",
-        _ => "You strike a balance between professional and approachable. Clear and structured, but not stiff.",
+        "formal" => {
+            "You communicate in a professional, polished tone. You use complete sentences, proper titles, and structured formatting. You avoid colloquialisms."
+        }
+        "casual" => {
+            "You communicate in a relaxed, conversational tone. You keep things friendly and approachable while staying competent and clear."
+        }
+        _ => {
+            "You strike a balance between professional and approachable. Clear and structured, but not stiff."
+        }
     };
 
     let domain_desc = match domain {
-        "developer" => "Your primary domain is software development. You think in terms of code, architecture, testing, and deployment.",
-        "business" => "Your primary domain is business operations. You think in terms of processes, metrics, communication, and strategy.",
-        "creative" => "Your primary domain is creative work. You think in terms of ideas, narratives, aesthetics, and audience.",
-        "research" => "Your primary domain is research and analysis. You think in terms of evidence, methodology, synthesis, and accuracy.",
+        "developer" => {
+            "Your primary domain is software development. You think in terms of code, architecture, testing, and deployment."
+        }
+        "business" => {
+            "Your primary domain is business operations. You think in terms of processes, metrics, communication, and strategy."
+        }
+        "creative" => {
+            "Your primary domain is creative work. You think in terms of ideas, narratives, aesthetics, and audience."
+        }
+        "research" => {
+            "Your primary domain is research and analysis. You think in terms of evidence, methodology, synthesis, and accuracy."
+        }
         _ => "You are a general-purpose assistant, adaptable across domains.",
     };
 
@@ -605,22 +647,30 @@ impl InterviewOutput {
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
         if let Some(ref s) = self.os_toml
-            && toml::from_str::<OsConfig>(s).is_err() {
-                errors.push("OS.toml failed to parse".into());
-            }
+            && toml::from_str::<OsConfig>(s).is_err()
+        {
+            errors.push("OS.toml failed to parse".into());
+        }
         if let Some(ref s) = self.firmware_toml
-            && toml::from_str::<FirmwareConfig>(s).is_err() {
-                errors.push("FIRMWARE.toml failed to parse".into());
-            }
+            && toml::from_str::<FirmwareConfig>(s).is_err()
+        {
+            errors.push("FIRMWARE.toml failed to parse".into());
+        }
         if let Some(ref s) = self.operator_toml
-            && toml::from_str::<OperatorConfig>(s).is_err() {
-                errors.push("OPERATOR.toml failed to parse".into());
-            }
+            && toml::from_str::<OperatorConfig>(s).is_err()
+        {
+            errors.push("OPERATOR.toml failed to parse".into());
+        }
         if let Some(ref s) = self.directives_toml
-            && toml::from_str::<DirectivesConfig>(s).is_err() {
-                errors.push("DIRECTIVES.toml failed to parse".into());
-            }
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
+            && toml::from_str::<DirectivesConfig>(s).is_err()
+        {
+            errors.push("DIRECTIVES.toml failed to parse".into());
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     /// Write all present TOML blocks to the workspace directory.
@@ -642,10 +692,15 @@ impl InterviewOutput {
     }
 
     pub fn file_count(&self) -> usize {
-        [&self.os_toml, &self.firmware_toml, &self.operator_toml, &self.directives_toml]
-            .iter()
-            .filter(|o| o.is_some())
-            .count()
+        [
+            &self.os_toml,
+            &self.firmware_toml,
+            &self.operator_toml,
+            &self.directives_toml,
+        ]
+        .iter()
+        .filter(|o| o.is_some())
+        .count()
     }
 }
 
@@ -932,5 +987,184 @@ this is not valid toml {{{
         assert_eq!(voice.verbosity, "concise");
         assert_eq!(voice.humor, "dry");
         assert_eq!(voice.domain, "general");
+    }
+
+    #[test]
+    fn load_returns_none_for_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_os(dir.path()).is_none());
+        assert!(load_firmware(dir.path()).is_none());
+        assert!(load_operator(dir.path()).is_none());
+        assert!(load_directives(dir.path()).is_none());
+    }
+
+    #[test]
+    fn load_operator_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let op = OperatorConfig {
+            identity: OperatorIdentity {
+                name: "Alice".into(),
+                role: "Engineer".into(),
+                timezone: "UTC".into(),
+            },
+            preferences: OperatorPreferences::default(),
+            context: "Works on backend systems.".into(),
+        };
+        let toml_str = generate_operator_toml(&op);
+        std::fs::write(dir.path().join("OPERATOR.toml"), &toml_str).unwrap();
+        let loaded = load_operator(dir.path()).unwrap();
+        assert_eq!(loaded.identity.name, "Alice");
+        assert!(loaded.context.contains("backend"));
+    }
+
+    #[test]
+    fn load_directives_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let directives = DirectivesConfig {
+            missions: vec![Mission {
+                name: "Ship v2".into(),
+                timeframe: "Q2".into(),
+                priority: "high".into(),
+                description: "Major release.".into(),
+            }],
+            context: "Startup phase.".into(),
+        };
+        let toml_str = generate_directives_toml(&directives);
+        std::fs::write(dir.path().join("DIRECTIVES.toml"), &toml_str).unwrap();
+        let loaded = load_directives(dir.path()).unwrap();
+        assert_eq!(loaded.missions.len(), 1);
+        assert_eq!(loaded.missions[0].name, "Ship v2");
+    }
+
+    #[test]
+    fn generate_os_toml_formal_wait_business() {
+        let toml_str = generate_os_toml("FormalBot", "formal", "wait", "business");
+        let os: OsConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(os.identity.name, "FormalBot");
+        assert!(os.prompt_text.contains("professional, polished tone"));
+        assert!(os.prompt_text.contains("wait for explicit instructions"));
+        assert!(os.prompt_text.contains("business operations"));
+    }
+
+    #[test]
+    fn generate_os_toml_creative_domain() {
+        let toml_str = generate_os_toml("Artisan", "balanced", "suggest", "creative");
+        let os: OsConfig = toml::from_str(&toml_str).unwrap();
+        assert!(os.prompt_text.contains("creative work"));
+    }
+
+    #[test]
+    fn generate_os_toml_research_domain() {
+        let toml_str = generate_os_toml("Scholar", "balanced", "suggest", "research");
+        let os: OsConfig = toml::from_str(&toml_str).unwrap();
+        assert!(os.prompt_text.contains("research and analysis"));
+    }
+
+    #[test]
+    fn generate_os_toml_default_branches() {
+        let toml_str = generate_os_toml("GenBot", "balanced", "suggest", "general");
+        let os: OsConfig = toml::from_str(&toml_str).unwrap();
+        assert!(os.prompt_text.contains("general-purpose assistant"));
+        assert!(os.prompt_text.contains("professional and approachable"));
+    }
+
+    #[test]
+    fn generate_firmware_toml_empty_boundaries() {
+        let toml_str = generate_firmware_toml("");
+        let fw: FirmwareConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(fw.rules.len(), 5);
+    }
+
+    #[test]
+    fn compose_identity_text_includes_operator_context() {
+        let op = OperatorConfig {
+            context: "I run a fintech startup.".into(),
+            ..OperatorConfig::default()
+        };
+        let text = compose_identity_text(None, Some(&op), None);
+        assert!(text.contains("## Operator Context"));
+        assert!(text.contains("fintech startup"));
+    }
+
+    #[test]
+    fn compose_identity_text_includes_directives() {
+        let dir = DirectivesConfig {
+            missions: vec![Mission {
+                name: "Launch".into(),
+                timeframe: "Q1".into(),
+                priority: "high".into(),
+                description: "Ship it.".into(),
+            }],
+            context: "Growth phase.".into(),
+        };
+        let text = compose_identity_text(None, None, Some(&dir));
+        assert!(text.contains("## Active Directives"));
+        assert!(text.contains("Growth phase"));
+        assert!(text.contains("## Missions"));
+        assert!(text.contains("**Launch** (Q1): Ship it."));
+    }
+
+    #[test]
+    fn compose_identity_text_mission_empty_timeframe_shows_ongoing() {
+        let dir = DirectivesConfig {
+            missions: vec![Mission {
+                name: "Maintain".into(),
+                timeframe: String::new(),
+                priority: "low".into(),
+                description: "Keep running.".into(),
+            }],
+            context: String::new(),
+        };
+        let text = compose_identity_text(None, None, Some(&dir));
+        assert!(text.contains("(ongoing)"));
+    }
+
+    #[test]
+    fn compose_soul_firmware_only() {
+        let fw: FirmwareConfig = toml::from_str(DEFAULT_FIRMWARE_TOML).unwrap();
+        let soul = compose_soul(None, Some(&fw), None, None);
+        assert!(soul.contains("Firmware"));
+        assert!(!soul.is_empty());
+    }
+
+    #[test]
+    fn compose_firmware_text_none_returns_empty() {
+        assert!(compose_firmware_text(None).is_empty());
+    }
+
+    #[test]
+    fn compose_firmware_text_empty_rules_returns_empty() {
+        let fw = FirmwareConfig {
+            approvals: FirmwareApprovals::default(),
+            rules: vec![],
+        };
+        assert!(compose_firmware_text(Some(&fw)).is_empty());
+    }
+
+    #[test]
+    fn firmware_approvals_default_values() {
+        let approvals = FirmwareApprovals::default();
+        assert_eq!(approvals.spending_threshold, 50.0);
+        assert_eq!(approvals.require_confirmation, "risky");
+    }
+
+    #[test]
+    fn compose_identity_text_skips_empty_operator_context() {
+        let op = OperatorConfig {
+            context: String::new(),
+            ..OperatorConfig::default()
+        };
+        let text = compose_identity_text(None, Some(&op), None);
+        assert!(!text.contains("## Operator Context"));
+    }
+
+    #[test]
+    fn compose_identity_text_skips_empty_directives() {
+        let dir = DirectivesConfig {
+            missions: vec![],
+            context: String::new(),
+        };
+        let text = compose_identity_text(None, None, Some(&dir));
+        assert!(text.is_empty());
     }
 }

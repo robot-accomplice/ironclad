@@ -39,9 +39,13 @@ pub async fn cmd_circuit_reset(url: &str) -> Result<(), Box<dyn std::error::Erro
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{url}/api/breaker/reset")).send().await.inspect_err(|e| {
-        eprintln!("  {ERR} Cannot reach gateway at {url}");
-    })?;
+    let resp = client
+        .post(format!("{url}/api/breaker/reset"))
+        .send()
+        .await
+        .inspect_err(|e| {
+            eprintln!("  {ERR} Cannot reach gateway at {url}");
+        })?;
 
     heading("Circuit Breaker Reset");
 
@@ -61,7 +65,8 @@ pub async fn cmd_agents_list(base_url: &str) -> Result<(), Box<dyn std::error::E
     let resp = reqwest::get(format!("{base_url}/api/agents")).await?;
     let body: serde_json::Value = resp.json().await?;
 
-    let agents = body.get("agents")
+    let agents = body
+        .get("agents")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
@@ -71,7 +76,10 @@ pub async fn cmd_agents_list(base_url: &str) -> Result<(), Box<dyn std::error::E
         return Ok(());
     }
 
-    println!("\n  {:<15} {:<20} {:<10} {:<15}", "ID", "Name", "State", "Model");
+    println!(
+        "\n  {:<15} {:<20} {:<10} {:<15}",
+        "ID", "Name", "State", "Model"
+    );
     println!("  {}", "─".repeat(65));
     for a in &agents {
         let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("?");
@@ -93,15 +101,30 @@ pub async fn cmd_channels_status(base_url: &str) -> Result<(), Box<dyn std::erro
         return Ok(());
     }
 
-    println!("\n  {:<15} {:<10} {:<10} {:<10}", "Channel", "Status", "Recv", "Sent");
+    println!(
+        "\n  {:<15} {:<10} {:<10} {:<10}",
+        "Channel", "Status", "Recv", "Sent"
+    );
     println!("  {}", "─".repeat(50));
     for ch in &channels {
         let name = ch.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-        let connected = ch.get("connected").and_then(|v| v.as_bool()).unwrap_or(false);
+        let connected = ch
+            .get("connected")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let status_str = if connected { "✓ up" } else { "✗ down" };
-        let recv = ch.get("messages_received").and_then(|v| v.as_u64()).unwrap_or(0);
-        let sent = ch.get("messages_sent").and_then(|v| v.as_u64()).unwrap_or(0);
-        println!("  {:<15} {:<10} {:<10} {:<10}", name, status_str, recv, sent);
+        let recv = ch
+            .get("messages_received")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let sent = ch
+            .get("messages_sent")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        println!(
+            "  {:<15} {:<10} {:<10} {:<10}",
+            name, status_str, recv, sent
+        );
     }
     println!();
     Ok(())
@@ -112,7 +135,10 @@ pub async fn cmd_channels_status(base_url: &str) -> Result<(), Box<dyn std::erro
 pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    println!("\n  {BOLD}Ironclad Mechanic{RESET}{}\n", if repair { " (--repair mode)" } else { "" });
+    println!(
+        "\n  {BOLD}Ironclad Mechanic{RESET}{}\n",
+        if repair { " (--repair mode)" } else { "" }
+    );
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let ironclad_dir = std::path::PathBuf::from(&home).join(".ironclad");
@@ -135,7 +161,10 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
             println!("  {ACTION} Created directory: {}", dir.display());
             fixed += 1;
         } else {
-            println!("  {WARN} Missing directory: {} (use --repair to create)", dir.display());
+            println!(
+                "  {WARN} Missing directory: {} (use --repair to create)",
+                dir.display()
+            );
         }
     }
 
@@ -169,7 +198,10 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
             ironclad_dir.display()
         );
         std::fs::write(&alt_config, default_config)?;
-        println!("  {ACTION} Created default config: {}", alt_config.display());
+        println!(
+            "  {ACTION} Created default config: {}",
+            alt_config.display()
+        );
         fixed += 1;
     } else {
         println!("  {WARN} No config file found (use --repair or `ironclad init`)");
@@ -197,7 +229,11 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
                         println!("  {ACTION} Set permissions 600 on {}", file.display());
                         fixed += 1;
                     } else {
-                        println!("  {WARN} {} has loose permissions ({:o}) - use --repair", file.display(), mode);
+                        println!(
+                            "  {WARN} {} has loose permissions ({:o}) - use --repair",
+                            file.display(),
+                            mode
+                        );
                     }
                 } else {
                     println!("  {OK} {} permissions OK ({:o})", file.display(), mode);
@@ -209,7 +245,10 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
     // Check Go toolchain
     match which_binary("go") {
         Some(path) => {
-            let ver = std::process::Command::new("go").arg("version").output().ok()
+            let ver = std::process::Command::new("go")
+                .arg("version")
+                .output()
+                .ok()
                 .and_then(|o| String::from_utf8(o.stdout).ok())
                 .unwrap_or_default();
             let ver = ver.trim().strip_prefix("go version ").unwrap_or(ver.trim());
@@ -243,11 +282,15 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
                     }
                 }
             } else {
-                println!("  {WARN} gosh not found (install Go first, then: go install github.com/drewwalton19216801/gosh@latest)");
+                println!(
+                    "  {WARN} gosh not found (install Go first, then: go install github.com/drewwalton19216801/gosh@latest)"
+                );
             }
         }
         None => {
-            println!("  {WARN} gosh not found (use --repair to install, or: go install github.com/drewwalton19216801/gosh@latest)");
+            println!(
+                "  {WARN} gosh not found (use --repair to install, or: go install github.com/drewwalton19216801/gosh@latest)"
+            );
         }
     }
 
@@ -285,7 +328,11 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
         match reqwest::get(format!("{base_url}/api/skills")).await {
             Ok(resp) if resp.status().is_success() => {
                 let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                let count = body.get("skills").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                let count = body
+                    .get("skills")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
                 println!("  {OK} Skills loaded ({count} skills)");
             }
             Ok(resp) => {
@@ -313,7 +360,14 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
         match reqwest::get(format!("{base_url}/api/channels/status")).await {
             Ok(resp) if resp.status().is_success() => {
                 let body: Vec<serde_json::Value> = resp.json().await.unwrap_or_default();
-                let active = body.iter().filter(|c| c.get("connected").and_then(|v| v.as_bool()).unwrap_or(false)).count();
+                let active = body
+                    .iter()
+                    .filter(|c| {
+                        c.get("connected")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                    })
+                    .count();
                 println!("  {OK} Channels ({active}/{} connected)", body.len());
             }
             Ok(resp) => {
@@ -342,17 +396,40 @@ pub fn cmd_completion(shell: &str) -> Result<(), Box<dyn std::error::Error>> {
         "bash" => {
             println!("# Ironclad bash completion");
             println!("# Add to ~/.bashrc: eval \"$(ironclad completion bash)\"");
-            println!("complete -W \"serve init check version status sessions memory skills cron metrics wallet config breaker channels plugins mechanic daemon completion\" ironclad");
+            println!(
+                "complete -W \"serve init check version status sessions memory skills cron metrics wallet config breaker channels plugins mechanic daemon completion\" ironclad"
+            );
         }
         "zsh" => {
             println!("# Ironclad zsh completion");
             println!("# Add to ~/.zshrc: eval \"$(ironclad completion zsh)\"");
-            println!("compctl -k \"(serve init check version status sessions memory skills cron metrics wallet config breaker channels plugins mechanic daemon completion)\" ironclad");
+            println!(
+                "compctl -k \"(serve init check version status sessions memory skills cron metrics wallet config breaker channels plugins mechanic daemon completion)\" ironclad"
+            );
         }
         "fish" => {
             println!("# Ironclad fish completion");
             println!("# Run: ironclad completion fish | source");
-            for cmd in ["serve", "init", "check", "version", "status", "sessions", "memory", "skills", "cron", "metrics", "wallet", "config", "breaker", "channels", "plugins", "mechanic", "daemon", "completion"] {
+            for cmd in [
+                "serve",
+                "init",
+                "check",
+                "version",
+                "status",
+                "sessions",
+                "memory",
+                "skills",
+                "cron",
+                "metrics",
+                "wallet",
+                "config",
+                "breaker",
+                "channels",
+                "plugins",
+                "mechanic",
+                "daemon",
+                "completion",
+            ] {
                 println!("complete -c ironclad -a {cmd}");
             }
         }
@@ -420,9 +497,13 @@ pub fn cmd_reset(yes: bool) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let db_wal = ironclad_dir.join("state.db-wal");
-    if db_wal.exists() { let _ = std::fs::remove_file(&db_wal); }
+    if db_wal.exists() {
+        let _ = std::fs::remove_file(&db_wal);
+    }
     let db_shm = ironclad_dir.join("state.db-shm");
-    if db_shm.exists() { let _ = std::fs::remove_file(&db_shm); }
+    if db_shm.exists() {
+        let _ = std::fs::remove_file(&db_shm);
+    }
 
     let config_path = ironclad_dir.join("ironclad.toml");
     if config_path.exists() {
@@ -467,7 +548,17 @@ pub async fn cmd_metrics(
             match costs {
                 Some(arr) if !arr.is_empty() => {
                     let widths = [20, 16, 10, 10, 10, 8];
-                    table_header(&["Model", "Provider", "Tokens In", "Tokens Out", "Cost", "Cached"], &widths);
+                    table_header(
+                        &[
+                            "Model",
+                            "Provider",
+                            "Tokens In",
+                            "Tokens Out",
+                            "Cost",
+                            "Cached",
+                        ],
+                        &widths,
+                    );
 
                     let mut total_cost = 0.0f64;
                     let mut total_in = 0i64;
@@ -518,10 +609,13 @@ pub async fn cmd_metrics(
         }
         "transactions" => {
             let h = hours.unwrap_or(24);
-            let data = c.get(&format!("/api/stats/transactions?hours={h}")).await.map_err(|e| {
-                IroncladClient::check_connectivity_hint(&*e);
-                e
-            })?;
+            let data = c
+                .get(&format!("/api/stats/transactions?hours={h}"))
+                .await
+                .map_err(|e| {
+                    IroncladClient::check_connectivity_hint(&*e);
+                    e
+                })?;
             heading(&format!("Transactions (last {h}h)"));
             let txs = data["transactions"].as_array();
             match txs {
@@ -535,10 +629,7 @@ pub async fn cmd_metrics(
                         let tx_type = t["tx_type"].as_str().unwrap_or("").to_string();
                         let amount = t["amount"].as_f64().unwrap_or(0.0);
                         let currency = t["currency"].as_str().unwrap_or("USD");
-                        let counter = t["counterparty"]
-                            .as_str()
-                            .unwrap_or("-")
-                            .to_string();
+                        let counter = t["counterparty"].as_str().unwrap_or("-").to_string();
                         let time = t["created_at"]
                             .as_str()
                             .map(|t| if t.len() > 19 { &t[..19] } else { t })
@@ -592,7 +683,9 @@ pub async fn cmd_metrics(
             kv("Hit Rate", &bar);
         }
         _ => {
-            return Err(format!("unknown metric kind: {kind}. Use: costs, transactions, cache").into());
+            return Err(
+                format!("unknown metric kind: {kind}. Use: costs, transactions, cache").into(),
+            );
         }
     }
 
@@ -606,7 +699,9 @@ fn try_read_log_file(lines: usize, _level: &str) {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let log_dir = std::path::PathBuf::from(&home).join(".ironclad").join("logs");
+    let log_dir = std::path::PathBuf::from(&home)
+        .join(".ironclad")
+        .join("logs");
 
     if !log_dir.exists() {
         println!("  No log directory found at {}", log_dir.display());
@@ -629,7 +724,11 @@ fn try_read_log_file(lines: usize, _level: &str) {
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 let all_lines: Vec<&str> = content.lines().collect();
-                let start = if all_lines.len() > lines { all_lines.len() - lines } else { 0 };
+                let start = if all_lines.len() > lines {
+                    all_lines.len() - lines
+                } else {
+                    0
+                };
                 for line in &all_lines[start..] {
                     println!("{line}");
                 }
@@ -655,7 +754,11 @@ pub async fn cmd_logs(
         let client = reqwest::Client::new();
         let resp = client
             .get(format!("{base_url}/api/logs"))
-            .query(&[("follow", "true"), ("level", level), ("lines", &lines.to_string())])
+            .query(&[
+                ("follow", "true"),
+                ("level", level),
+                ("lines", &lines.to_string()),
+            ])
             .send()
             .await?;
 
@@ -686,10 +789,7 @@ pub async fn cmd_logs(
             }
         }
     } else {
-        let resp = reqwest::get(format!(
-            "{base_url}/api/logs?lines={lines}&level={level}"
-        ))
-        .await;
+        let resp = reqwest::get(format!("{base_url}/api/logs?lines={lines}&level={level}")).await;
 
         match resp {
             Ok(r) if r.status().is_success() => {
@@ -699,8 +799,14 @@ pub async fn cmd_logs(
                         println!("  No log entries found.");
                     }
                     for entry in entries {
-                        let ts = entry.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
-                        let lvl = entry.get("level").and_then(|v| v.as_str()).unwrap_or("info");
+                        let ts = entry
+                            .get("timestamp")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let lvl = entry
+                            .get("level")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("info");
                         let msg = entry.get("message").and_then(|v| v.as_str()).unwrap_or("");
                         let target = entry.get("target").and_then(|v| v.as_str()).unwrap_or("");
                         let color = match lvl {
@@ -749,7 +855,10 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
             let meta = std::fs::metadata(config_file)?;
             let mode = meta.permissions().mode();
             if mode & 0o077 != 0 {
-                println!("  {RED}{ERR} FAIL{RESET} Config file is world/group-readable (mode {:o})", mode & 0o777);
+                println!(
+                    "  {RED}{ERR} FAIL{RESET} Config file is world/group-readable (mode {:o})",
+                    mode & 0o777
+                );
                 println!("         Fix: chmod 600 {config_path}");
                 fail_count += 1;
             } else {
@@ -770,7 +879,8 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     // 2. Check for API keys in config
     if config_file.exists() {
         let content = std::fs::read_to_string(config_file)?;
-        let has_plaintext_key = content.contains("api_key") && !content.contains("${") && !content.contains("env(");
+        let has_plaintext_key =
+            content.contains("api_key") && !content.contains("${") && !content.contains("env(");
         if has_plaintext_key {
             println!("  {WARN} Plaintext API keys found in config");
             println!("         Recommendation: Use environment variables instead");
@@ -796,7 +906,9 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
 
     // 4. Check wallet file permissions
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let wallet_path = std::path::PathBuf::from(&home).join(".ironclad").join("wallet.json");
+    let wallet_path = std::path::PathBuf::from(&home)
+        .join(".ironclad")
+        .join("wallet.json");
     if wallet_path.exists() {
         #[cfg(unix)]
         {
@@ -804,7 +916,10 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
             let meta = std::fs::metadata(&wallet_path)?;
             let mode = meta.permissions().mode();
             if mode & 0o077 != 0 {
-                println!("  {RED}{ERR} FAIL{RESET} Wallet file is world/group-readable (mode {:o})", mode & 0o777);
+                println!(
+                    "  {RED}{ERR} FAIL{RESET} Wallet file is world/group-readable (mode {:o})",
+                    mode & 0o777
+                );
                 println!("         Fix: chmod 600 {}", wallet_path.display());
                 fail_count += 1;
             } else {
@@ -822,7 +937,9 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     }
 
     // 5. Check database file permissions
-    let db_path = std::path::PathBuf::from(&home).join(".ironclad").join("state.db");
+    let db_path = std::path::PathBuf::from(&home)
+        .join(".ironclad")
+        .join("state.db");
     if db_path.exists() {
         #[cfg(unix)]
         {
@@ -830,7 +947,10 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
             let meta = std::fs::metadata(&db_path)?;
             let mode = meta.permissions().mode();
             if mode & 0o077 != 0 {
-                println!("  {WARN} Database is world/group-readable (mode {:o})", mode & 0o777);
+                println!(
+                    "  {WARN} Database is world/group-readable (mode {:o})",
+                    mode & 0o777
+                );
                 println!("         Fix: chmod 600 {}", db_path.display());
                 warn_count += 1;
             } else {
@@ -859,7 +979,9 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     }
 
     // 7. Check PID file
-    let pid_path = std::path::PathBuf::from(&home).join(".ironclad").join("ironclad.pid");
+    let pid_path = std::path::PathBuf::from(&home)
+        .join(".ironclad")
+        .join("ironclad.pid");
     if pid_path.exists() {
         println!("  {OK} PID file exists");
         pass_count += 1;
@@ -869,7 +991,9 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     println!();
     let total = pass_count + warn_count + fail_count;
     if fail_count > 0 {
-        println!("  {RED}{ERR}{RESET} {fail_count} failure(s), {warn_count} warning(s), {pass_count} passed out of {total} checks");
+        println!(
+            "  {RED}{ERR}{RESET} {fail_count} failure(s), {warn_count} warning(s), {pass_count} passed out of {total} checks"
+        );
     } else if warn_count > 0 {
         println!("  {WARN} {warn_count} warning(s), {pass_count} passed out of {total} checks");
     } else {

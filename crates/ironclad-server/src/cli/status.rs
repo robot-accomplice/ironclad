@@ -43,14 +43,19 @@ pub async fn cmd_status(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let agent_id = config["agent"]["id"].as_str().unwrap_or("unknown");
     let agent_state = agent["state"].as_str().unwrap_or("unknown");
     let version = health["version"].as_str().unwrap_or("?");
-    let session_count = sessions["sessions"].as_array().map(|a| a.len()).unwrap_or(0);
+    let session_count = sessions["sessions"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
     let skill_count = skills["skills"].as_array().map(|a| a.len()).unwrap_or(0);
     let job_count = jobs["jobs"].as_array().map(|a| a.len()).unwrap_or(0);
     let hits = cache["hits"].as_u64().unwrap_or(0);
     let misses = cache["misses"].as_u64().unwrap_or(0);
     let hit_rate = if hits + misses > 0 {
         format!("{:.1}%", hits as f64 / (hits + misses) as f64 * 100.0)
-    } else { "n/a".into() };
+    } else {
+        "n/a".into()
+    };
     let balance = wallet["balance"].as_str().unwrap_or("0.00");
     let currency = wallet["currency"].as_str().unwrap_or("USDC");
     kv_accent("Agent", &format!("{agent_name} ({agent_id})"));

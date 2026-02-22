@@ -17,7 +17,10 @@ pub async fn cmd_plugins_list(base_url: &str) -> Result<(), Box<dyn std::error::
         return Ok(());
     }
 
-    println!("\n  {:<20} {:<10} {:<10} {:<10}", "Plugin", "Version", "Status", "Tools");
+    println!(
+        "\n  {:<20} {:<10} {:<10} {:<10}",
+        "Plugin", "Version", "Status", "Tools"
+    );
     println!("  {}", "─".repeat(55));
     for p in &plugins {
         let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
@@ -30,10 +33,7 @@ pub async fn cmd_plugins_list(base_url: &str) -> Result<(), Box<dyn std::error::
             .unwrap_or(0);
         println!(
             "  {:<20} {:<10} {:<10} {:<10}",
-            name,
-            version,
-            status,
-            tools
+            name, version, status, tools
         );
     }
     println!();
@@ -53,9 +53,9 @@ pub async fn cmd_plugin_info(base_url: &str, name: &str) -> Result<(), Box<dyn s
         .cloned()
         .unwrap_or_default();
 
-    let plugin = plugins.iter().find(|p| {
-        p.get("name").and_then(|v| v.as_str()) == Some(name)
-    });
+    let plugin = plugins
+        .iter()
+        .find(|p| p.get("name").and_then(|v| v.as_str()) == Some(name));
 
     match plugin {
         Some(p) => {
@@ -67,7 +67,14 @@ pub async fn cmd_plugin_info(base_url: &str, name: &str) -> Result<(), Box<dyn s
                 println!("  Description: {d}");
             }
             let enabled = p.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-            println!("  Status:      {}", if enabled { format!("{GREEN}enabled{RESET}") } else { format!("{RED}disabled{RESET}") });
+            println!(
+                "  Status:      {}",
+                if enabled {
+                    format!("{GREEN}enabled{RESET}")
+                } else {
+                    format!("{RED}disabled{RESET}")
+                }
+            );
             if let Some(path) = p.get("manifest_path").and_then(|v| v.as_str()) {
                 println!("  Manifest:    {path}");
             }
@@ -122,12 +129,15 @@ pub fn cmd_plugin_install(source: &str) -> Result<(), Box<dyn std::error::Error>
 
     let manifest_content = std::fs::read_to_string(&manifest_path)?;
     let manifest: toml::Value = manifest_content.parse()?;
-    let plugin_name = manifest.get("name")
+    let plugin_name = manifest
+        .get("name")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let plugins_dir = std::path::PathBuf::from(&home).join(".ironclad").join("plugins");
+    let plugins_dir = std::path::PathBuf::from(&home)
+        .join(".ironclad")
+        .join("plugins");
     let dest = plugins_dir.join(plugin_name);
 
     if dest.exists() {

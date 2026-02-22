@@ -9,9 +9,8 @@ use tracing::{debug, trace};
 
 use ironclad_core::{IroncladError, Result};
 
-type WsStream = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// A live CDP WebSocket session connected to a Chrome/Chromium target.
 ///
@@ -115,10 +114,7 @@ impl CdpSession {
 
                     if val.get("id").and_then(|v| v.as_u64()) == Some(id) {
                         if let Some(error) = val.get("error") {
-                            let code = error
-                                .get("code")
-                                .and_then(|c| c.as_i64())
-                                .unwrap_or(-1);
+                            let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
                             let message = error
                                 .get("message")
                                 .and_then(|m| m.as_str())
@@ -205,10 +201,7 @@ mod tests {
         let response = json!({"id": 5, "result": {"frameId": "abc123"}});
         let target_id: u64 = 5;
 
-        assert_eq!(
-            response.get("id").and_then(|v| v.as_u64()),
-            Some(target_id)
-        );
+        assert_eq!(response.get("id").and_then(|v| v.as_u64()), Some(target_id));
 
         let result = response.get("result").cloned().unwrap_or(json!({}));
         assert_eq!(result["frameId"], "abc123");

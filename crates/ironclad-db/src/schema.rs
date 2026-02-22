@@ -374,7 +374,11 @@ pub fn run_migrations(db: &Database) -> Result<()> {
 
     let conn = db.conn();
     let max_version: i64 = conn
-        .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |row| row.get(0))
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     for path in entries {
@@ -481,12 +485,65 @@ mod tests {
             .unwrap()
             .collect::<std::result::Result<Vec<_>, _>>()
             .unwrap();
-        // Base schema inserts 1; run_migrations (called from initialize_db) applies any migration with version > 1.
-        // If migrations/ exists (e.g. workspace root), we get at least [1] and possibly [1, 2].
-        assert!(!versions.is_empty(), "schema_version should have at least version 1");
+        assert!(
+            !versions.is_empty(),
+            "schema_version should have at least version 1"
+        );
         assert_eq!(versions[0], 1);
         for w in versions.windows(2) {
             assert!(w[1] > w[0], "versions must be strictly increasing");
         }
+    }
+
+    #[test]
+    fn version_from_name_edge_cases() {
+        assert_eq!(super::version_from_name(""), 0);
+        assert_eq!(super::version_from_name("_no_number.sql"), 0);
+        assert_eq!(super::version_from_name("abc_nonnumeric.sql"), 0);
+        assert_eq!(super::version_from_name("999_big.sql"), 999);
+    }
+
+    #[test]
+    fn initialize_db_creates_version_row() {
+        let db = Database::new(":memory:").unwrap();
+        let conn = db.conn();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_version WHERE version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn run_migrations_no_dir_is_noop() {
+        let db = Database::new(":memory:").unwrap();
+        run_migrations(&db).unwrap();
+    }
+
+    #[test]
+    fn migrations_dir_returns_option() {
+        let result = migrations_dir();
+        // In test context, migrations dir may or may not exist
+        if let Some(path) = result {
+            assert!(path.is_dir());
+        }
+    }
+
+    #[test]
+    fn fts_table_exists() {
+        let db = Database::new(":memory:").unwrap();
+        let conn = db.conn();
+        let exists: bool = conn
+            .prepare("SELECT COUNT(*) FROM sqlite_master WHERE name = 'memory_fts' AND type = 'table'")
+            .unwrap()
+            .query_row([], |row| {
+                let count: i64 = row.get(0)?;
+                Ok(count > 0)
+            })
+            .unwrap();
+        assert!(exists, "memory_fts FTS5 table should exist");
     }
 }

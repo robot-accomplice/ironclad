@@ -15,8 +15,10 @@ fn a2a_hello_handshake() {
 
 #[test]
 fn a2a_message_size_limit() {
-    let mut config = A2aConfig::default();
-    config.max_message_size = 100;
+    let config = A2aConfig {
+        max_message_size: 100,
+        ..A2aConfig::default()
+    };
     let proto = A2aProtocol::new(config);
     let big = vec![0u8; 200];
     let result = proto.validate_message_size(&big);
@@ -38,7 +40,10 @@ fn a2a_ecdh_handshake_encrypted_roundtrip() {
 
     let key_a = A2aProtocol::derive_session_key(secret_a, &pub_b);
     let key_b = A2aProtocol::derive_session_key(secret_b, &pub_a);
-    assert_eq!(key_a, key_b, "both sides should derive the same session key");
+    assert_eq!(
+        key_a, key_b,
+        "both sides should derive the same session key"
+    );
 
     let plaintext = b"hello agent-to-agent";
     let ciphertext = A2aProtocol::encrypt_message(&key_a, plaintext).unwrap();

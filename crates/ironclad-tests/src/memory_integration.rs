@@ -7,20 +7,13 @@ fn store_and_retrieve_all_memory_tiers() {
     let db = Database::new(":memory:").unwrap();
     let session_id = ironclad_db::sessions::find_or_create(&db, "memory-test-agent").unwrap();
 
-    ironclad_db::memory::store_working(
-        &db,
-        &session_id,
-        "goal",
-        "complete integration tests",
-        9,
-    )
-    .unwrap();
+    ironclad_db::memory::store_working(&db, &session_id, "goal", "complete integration tests", 9)
+        .unwrap();
     let working = ironclad_db::memory::retrieve_working(&db, &session_id).unwrap();
     assert_eq!(working.len(), 1);
     assert_eq!(working[0].content, "complete integration tests");
 
-    ironclad_db::memory::store_episodic(&db, "success", "first deployment succeeded", 8)
-        .unwrap();
+    ironclad_db::memory::store_episodic(&db, "success", "first deployment succeeded", 8).unwrap();
     let episodic = ironclad_db::memory::retrieve_episodic(&db, 10).unwrap();
     assert_eq!(episodic.len(), 1);
     assert_eq!(episodic[0].classification, "success");
@@ -109,13 +102,10 @@ fn full_text_search_across_tiers() {
     let db = Database::new(":memory:").unwrap();
     let session_id = ironclad_db::sessions::find_or_create(&db, "fts-test-agent").unwrap();
 
-    ironclad_db::memory::store_working(&db, &session_id, "note", "the quick brown fox", 5)
-        .unwrap();
+    ironclad_db::memory::store_working(&db, &session_id, "note", "the quick brown fox", 5).unwrap();
     ironclad_db::memory::store_episodic(&db, "event", "a lazy dog appeared", 5).unwrap();
-    ironclad_db::memory::store_semantic(&db, "facts", "animal", "foxes are quick", 0.8)
-        .unwrap();
-    ironclad_db::memory::store_procedural(&db, "catch-fox", "run quickly after the fox")
-        .unwrap();
+    ironclad_db::memory::store_semantic(&db, "facts", "animal", "foxes are quick", 0.8).unwrap();
+    ironclad_db::memory::store_procedural(&db, "catch-fox", "run quickly after the fox").unwrap();
 
     let hits = ironclad_db::memory::fts_search(&db, "quick", 10).unwrap();
     assert!(
@@ -143,7 +133,10 @@ fn memory_ingestion_after_ingest_turn_tiers() {
     );
 
     let working = ironclad_db::memory::retrieve_working(&db, &session_id).unwrap();
-    assert!(!working.is_empty(), "working memory should have turn summary");
+    assert!(
+        !working.is_empty(),
+        "working memory should have turn summary"
+    );
     assert!(working.iter().any(|e| e.entry_type == "turn_summary"));
 
     ironclad_db::memory::store_procedural(&db, "deploy", "run deploy").ok();

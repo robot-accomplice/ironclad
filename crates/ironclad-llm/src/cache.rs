@@ -49,11 +49,12 @@ impl SemanticCache {
         }
 
         if let Some(entry) = self.entries.get_mut(prompt_hash)
-            && Instant::now() < entry.expires_at {
-                entry.hits += 1;
-                self.hit_count += 1;
-                return Some(entry.clone());
-            }
+            && Instant::now() < entry.expires_at
+        {
+            entry.hits += 1;
+            self.hit_count += 1;
+            return Some(entry.clone());
+        }
 
         self.miss_count += 1;
         None
@@ -79,9 +80,12 @@ impl SemanticCache {
             if let Some(ref emb) = entry.embedding {
                 let sim = cosine_similarity(&query_emb, emb);
                 if sim >= self.similarity_threshold
-                    && best_match.as_ref().is_none_or(|(_, best_sim)| sim > *best_sim) {
-                        best_match = Some((key, sim));
-                    }
+                    && best_match
+                        .as_ref()
+                        .is_none_or(|(_, best_sim)| sim > *best_sim)
+                {
+                    best_match = Some((key, sim));
+                }
             }
         }
 
@@ -366,7 +370,10 @@ mod tests {
         let non_tool_hash = "normal_hash";
         cache.store(non_tool_hash, make_response("normal result"));
         let hit = cache.lookup_tool_ttl(non_tool_hash);
-        assert!(hit.is_some(), "fresh non-tool entry should hit via tool_ttl");
+        assert!(
+            hit.is_some(),
+            "fresh non-tool entry should hit via tool_ttl"
+        );
     }
 
     #[test]
@@ -392,7 +399,10 @@ mod tests {
         assert_ne!(emb1, emb3);
 
         let norm: f32 = emb1.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 0.01, "embedding should be unit-normalized");
+        assert!(
+            (norm - 1.0).abs() < 0.01,
+            "embedding should be unit-normalized"
+        );
     }
 
     #[test]

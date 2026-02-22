@@ -2,8 +2,8 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit},
     Aes256Gcm,
+    aead::{Aead, AeadCore, KeyInit},
 };
 use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
@@ -60,10 +60,7 @@ impl A2aProtocol {
         let now = Instant::now();
         let window = std::time::Duration::from_secs(60);
 
-        let timestamps = self
-            .rate_windows
-            .entry(peer_did.to_string())
-            .or_default();
+        let timestamps = self.rate_windows.entry(peer_did.to_string()).or_default();
 
         while let Some(&front) = timestamps.front() {
             if now.duration_since(front) > window {
@@ -144,10 +141,7 @@ impl A2aProtocol {
     }
 
     /// Derive a 32-byte session key from X25519 ECDH shared secret using HKDF-SHA256.
-    pub fn derive_session_key(
-        our_secret: EphemeralSecret,
-        their_public: &PublicKey,
-    ) -> [u8; 32] {
+    pub fn derive_session_key(our_secret: EphemeralSecret, their_public: &PublicKey) -> [u8; 32] {
         let shared = our_secret.diffie_hellman(their_public);
         let h = Hkdf::<Sha256>::new(None, shared.as_bytes());
         let mut key = [0u8; 32];
@@ -310,11 +304,9 @@ mod tests {
     fn aes256gcm_encrypt_decrypt_roundtrip() {
         let key = [0u8; 32];
         let plaintext = b"hello a2a";
-        let ciphertext =
-            A2aProtocol::encrypt_message(&key, plaintext).expect("encrypt");
+        let ciphertext = A2aProtocol::encrypt_message(&key, plaintext).expect("encrypt");
         assert!(ciphertext.len() > plaintext.len());
-        let decrypted =
-            A2aProtocol::decrypt_message(&key, &ciphertext).expect("decrypt");
+        let decrypted = A2aProtocol::decrypt_message(&key, &ciphertext).expect("decrypt");
         assert_eq!(decrypted.as_slice(), plaintext);
     }
 
@@ -322,8 +314,7 @@ mod tests {
     fn tampered_ciphertext_fails_decryption() {
         let key = [0u8; 32];
         let plaintext = b"secret";
-        let mut ciphertext =
-            A2aProtocol::encrypt_message(&key, plaintext).expect("encrypt");
+        let mut ciphertext = A2aProtocol::encrypt_message(&key, plaintext).expect("encrypt");
         // Tamper with the ciphertext (after the 12-byte nonce).
         if ciphertext.len() > 20 {
             ciphertext[20] = ciphertext[20].wrapping_add(1);

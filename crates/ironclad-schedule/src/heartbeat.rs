@@ -27,7 +27,7 @@ impl HeartbeatDaemon {
     /// Returns a new interval if the current tier warrants slowing down the tick loop.
     pub fn should_adjust_interval(&self, tier: &SurvivalTier) -> Option<u64> {
         const MAX_HEARTBEAT_INTERVAL_MS: u64 = 3_600_000; // 1 hour max
-        const MIN_HEARTBEAT_INTERVAL_MS: u64 = 10_000;    // 10 second min
+        const MIN_HEARTBEAT_INTERVAL_MS: u64 = 10_000; // 10 second min
 
         let new = match tier {
             SurvivalTier::LowCompute => self.interval_ms * 2,
@@ -75,7 +75,7 @@ pub async fn run(
     wallet: std::sync::Arc<ironclad_wallet::WalletService>,
     db: ironclad_db::Database,
 ) {
-    use crate::tasks::{execute_task, HeartbeatTask};
+    use crate::tasks::{HeartbeatTask, execute_task};
     use std::time::Duration;
 
     daemon.running = true;
@@ -120,22 +120,23 @@ pub async fn run(
                     .ok()
                     .unwrap_or(0.0);
                 if let Some(prev) = last_atoken_balance
-                    && current > prev {
-                        let delta = current - prev;
-                        if delta > 0.0 {
-                            if let Err(e) = ironclad_db::metrics::record_transaction(
-                                &db,
-                                "yield_earned",
-                                delta,
-                                "USDC",
-                                None,
-                                None,
-                            ) {
-                                tracing::warn!(error = %e, "failed to record yield_earned metric");
-                            }
-                            tracing::debug!(delta, "recorded yield_earned");
+                    && current > prev
+                {
+                    let delta = current - prev;
+                    if delta > 0.0 {
+                        if let Err(e) = ironclad_db::metrics::record_transaction(
+                            &db,
+                            "yield_earned",
+                            delta,
+                            "USDC",
+                            None,
+                            None,
+                        ) {
+                            tracing::warn!(error = %e, "failed to record yield_earned metric");
                         }
+                        tracing::debug!(delta, "recorded yield_earned");
                     }
+                }
                 last_atoken_balance = Some(current);
             }
             // Record task run in cron_runs for observability
@@ -144,22 +145,27 @@ pub async fn run(
                 &format!("heartbeat_{:?}", task).to_lowercase(),
                 if result.success { "success" } else { "error" },
                 None,
-                if result.success { None } else { Some(&result.message) },
+                if result.success {
+                    None
+                } else {
+                    Some(&result.message)
+                },
             )
             .ok();
         }
 
         if let Some(new_interval) = daemon.should_adjust_interval(&ctx.survival_tier)
-            && new_interval != daemon.interval_ms {
-                tracing::info!(
-                    old_ms = daemon.interval_ms,
-                    new_ms = new_interval,
-                    tier = ?ctx.survival_tier,
-                    "Adjusting heartbeat interval"
-                );
-                daemon.interval_ms = new_interval;
-                interval = tokio::time::interval(Duration::from_millis(new_interval));
-            }
+            && new_interval != daemon.interval_ms
+        {
+            tracing::info!(
+                old_ms = daemon.interval_ms,
+                new_ms = new_interval,
+                tier = ?ctx.survival_tier,
+                "Adjusting heartbeat interval"
+            );
+            daemon.interval_ms = new_interval;
+            interval = tokio::time::interval(Duration::from_millis(new_interval));
+        }
     }
 }
 

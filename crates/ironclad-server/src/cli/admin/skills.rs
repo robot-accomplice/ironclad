@@ -30,12 +30,7 @@ pub async fn cmd_skills_list(url: &str) -> Result<(), Box<dyn std::error::Error>
                     format!("{RED}{ERR} no{RESET}")
                 };
                 table_row(
-                    &[
-                        format!("{ACCENT}{name}{RESET}"),
-                        kind,
-                        desc,
-                        enabled,
-                    ],
+                    &[format!("{ACCENT}{name}{RESET}"), kind, desc, enabled],
                     &widths,
                 );
             }
@@ -49,10 +44,7 @@ pub async fn cmd_skills_list(url: &str) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub async fn cmd_skill_detail(
-    url: &str,
-    id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_skill_detail(url: &str, id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let c = IroncladClient::new(url)?;
     let s = c.get(&format!("/api/skills/{id}")).await.map_err(|e| {
         IroncladClient::check_connectivity_hint(&*e);
@@ -78,13 +70,17 @@ pub async fn cmd_skill_detail(
     kv("Enabled", &enabled);
 
     if let Some(triggers) = s["triggers_json"].as_str()
-        && !triggers.is_empty() && triggers != "null" {
-            kv("Triggers", triggers);
-        }
+        && !triggers.is_empty()
+        && triggers != "null"
+    {
+        kv("Triggers", triggers);
+    }
     if let Some(script) = s["script_path"].as_str()
-        && !script.is_empty() && script != "null" {
-            kv_mono("Script", script);
-        }
+        && !script.is_empty()
+        && script != "null"
+    {
+        kv_mono("Script", script);
+    }
 
     eprintln!();
     Ok(())
@@ -94,10 +90,12 @@ pub async fn cmd_skills_reload(url: &str) -> Result<(), Box<dyn std::error::Erro
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
-    c.post("/api/skills/reload", serde_json::json!({})).await.map_err(|e| {
-        IroncladClient::check_connectivity_hint(&*e);
-        e
-    })?;
+    c.post("/api/skills/reload", serde_json::json!({}))
+        .await
+        .map_err(|e| {
+            IroncladClient::check_connectivity_hint(&*e);
+            e
+        })?;
     eprintln!();
     eprintln!("  {OK} Skills reloaded from disk");
     eprintln!();

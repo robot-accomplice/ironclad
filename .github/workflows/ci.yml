@@ -1,0 +1,218 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ── Stage 1: Format ────────────────────────────────────
+  format:
+    name: "Format"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # ── Stage 2: Lint ──────────────────────────────────────
+  lint:
+    name: "Lint"
+    runs-on: ubuntu-latest
+    needs: format
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ── Stage 3: Test (per-crate) ──────────────────────────
+  test:
+    name: "Test (${{ matrix.crate }})"
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - ironclad-core
+          - ironclad-db
+          - ironclad-llm
+          - ironclad-agent
+          - ironclad-wallet
+          - ironclad-schedule
+          - ironclad-channels
+          - ironclad-server
+          - ironclad-plugin-sdk
+          - ironclad-browser
+          - ironclad-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+      - name: "Run tests: ${{ matrix.crate }}"
+        env:
+          TEST_CRATE: ${{ matrix.crate }}
+        run: cargo test -p "$TEST_CRATE" --verbose
+
+  # ── Stage 3b: Coverage Gate ────────────────────────────
+  coverage:
+    name: "Coverage"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: coverage
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: "Measure coverage"
+        run: |
+          cargo llvm-cov --workspace 2>&1 | tee coverage-output.txt
+          pct=$(grep '^TOTAL' coverage-output.txt | awk '{print $4}' | tr -d '%')
+          if [ -z "$pct" ]; then
+            echo "::error::Failed to parse coverage from cargo llvm-cov output"
+            exit 1
+          fi
+          echo "COVERAGE_PCT=$pct" >> "$GITHUB_ENV"
+          echo "::notice::Total coverage: ${pct}%"
+      - name: "Gate: 80% minimum"
+        run: |
+          echo "Coverage: ${COVERAGE_PCT}%"
+          if (( $(echo "$COVERAGE_PCT < 80.0" | bc -l) )); then
+            echo "::error::Coverage ${COVERAGE_PCT}% is below the 80% minimum"
+            exit 1
+          fi
+          echo "Coverage meets 80% minimum"
+      - name: "Gate: no regression"
+        run: |
+          if [ ! -f .coverage-baseline ]; then
+            echo "::warning::No .coverage-baseline found — skipping regression check"
+            exit 0
+          fi
+          baseline=$(tr -d '[:space:]' < .coverage-baseline)
+          echo "Baseline: ${baseline}%  →  Current: ${COVERAGE_PCT}%"
+          if (( $(echo "$COVERAGE_PCT < $baseline" | bc -l) )); then
+            echo "::error::Coverage regressed: ${COVERAGE_PCT}% < baseline ${baseline}%"
+            exit 1
+          fi
+          echo "No coverage regression detected"
+
+  # ── Stage 4: Build ─────────────────────────────────────
+  build:
+    name: "Build (${{ matrix.profile }})"
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      matrix:
+        profile: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: build-${{ matrix.profile }}
+      - name: "Build (${{ matrix.profile }})"
+        env:
+          BUILD_PROFILE: ${{ matrix.profile }}
+        run: |
+          if [ "$BUILD_PROFILE" = "release" ]; then
+            cargo build --release --bin ironclad-server
+          else
+            cargo build --bin ironclad-server
+          fi
+      - name: "Binary size"
+        if: matrix.profile == 'release'
+        run: ls -lh target/release/ironclad-server
+
+  # ── Stage 5: Security Audit ────────────────────────────
+  audit:
+    name: "Security Audit"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Stage 6: Doc Build ─────────────────────────────────
+  docs:
+    name: "Docs"
+    runs-on: ubuntu-latest
+    needs: lint
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: docs
+      - run: cargo doc --workspace --no-deps
+
+  # ── Stage 7: Docker ────────────────────────────────────
+  docker:
+    name: "Docker"
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Build Docker image"
+        env:
+          GIT_SHA: ${{ github.sha }}
+        run: docker build -t "ironclad:ci-${GIT_SHA}" .
+
+  # ── Gate: All Passed ───────────────────────────────────
+  ci-pass:
+    name: "CI Pass"
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [format, lint, test, coverage, build, audit, docs]
+    steps:
+      - name: "Verify all required jobs passed"
+        env:
+          R_FORMAT: ${{ needs.format.result }}
+          R_LINT: ${{ needs.lint.result }}
+          R_TEST: ${{ needs.test.result }}
+          R_COVERAGE: ${{ needs.coverage.result }}
+          R_BUILD: ${{ needs.build.result }}
+          R_AUDIT: ${{ needs.audit.result }}
+          R_DOCS: ${{ needs.docs.result }}
+        run: |
+          echo "format:   $R_FORMAT"
+          echo "lint:     $R_LINT"
+          echo "test:     $R_TEST"
+          echo "coverage: $R_COVERAGE"
+          echo "build:    $R_BUILD"
+          echo "audit:    $R_AUDIT"
+          echo "docs:     $R_DOCS"
+          if [ "$R_FORMAT"   != "success" ] || \
+             [ "$R_LINT"     != "success" ] || \
+             [ "$R_TEST"     != "success" ] || \
+             [ "$R_COVERAGE" != "success" ] || \
+             [ "$R_BUILD"    != "success" ] || \
+             [ "$R_AUDIT"    != "success" ] || \
+             [ "$R_DOCS"     != "success" ]; then
+            echo "::error::One or more CI stages failed"
+            exit 1
+          fi
+          echo "All CI stages passed"

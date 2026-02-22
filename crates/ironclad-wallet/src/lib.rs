@@ -60,7 +60,9 @@ primary = "ollama/qwen3:8b"
         let mut config = IroncladConfig::from_str(MINIMAL_TOML).expect("parse config");
         config.wallet.path = wallet_path;
 
-        let service = WalletService::new(&config).await.expect("WalletService::new");
+        let service = WalletService::new(&config)
+            .await
+            .expect("WalletService::new");
         assert!(!service.wallet.address().is_empty());
         assert_eq!(service.wallet.chain_id(), 8453);
     }
@@ -71,7 +73,9 @@ primary = "ollama/qwen3:8b"
         let mut config = IroncladConfig::from_str(MINIMAL_TOML).expect("parse config");
         config.wallet.path = dir.path().join("wallet.json");
 
-        let service = WalletService::new(&config).await.expect("WalletService::new");
+        let service = WalletService::new(&config)
+            .await
+            .expect("WalletService::new");
         let _ = &service.treasury;
         let _ = &service.yield_engine;
     }

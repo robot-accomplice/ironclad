@@ -131,13 +131,12 @@ async fn session_create_and_list() {
 #[tokio::test]
 async fn message_post_and_retrieve() {
     let state = test_state();
-    let session_id =
-        ironclad_db::sessions::find_or_create(&state.db, "msg-test-agent").unwrap();
+    let session_id = ironclad_db::sessions::find_or_create(&state.db, "msg-test-agent").unwrap();
 
     let app = build_router(state.clone());
     let req = Request::builder()
         .method("POST")
-        .uri(&format!("/api/sessions/{session_id}/messages"))
+        .uri(format!("/api/sessions/{session_id}/messages"))
         .header("content-type", "application/json")
         .body(Body::from(
             r#"{"role":"user","content":"integration test message"}"#,
@@ -151,7 +150,7 @@ async fn message_post_and_retrieve() {
 
     let app = build_router(state.clone());
     let req = Request::builder()
-        .uri(&format!("/api/sessions/{session_id}/messages"))
+        .uri(format!("/api/sessions/{session_id}/messages"))
         .body(Body::empty())
         .unwrap();
 
@@ -358,7 +357,9 @@ async fn agent_pipeline_suspicious_input_blocked() {
         let body = json_body(resp).await;
         let content = body.get("content").and_then(|c| c.as_str()).unwrap_or("");
         assert!(
-            content.contains("safety") || content.contains("can't process") || content.contains("flagged"),
+            content.contains("safety")
+                || content.contains("can't process")
+                || content.contains("flagged"),
             "if 200, response should indicate safety filter: {}",
             content
         );

@@ -4,8 +4,8 @@ use std::process::Stdio;
 use tokio::process::{Child, Command};
 use tracing::{debug, info};
 
-use ironclad_core::{IroncladError, Result};
 use ironclad_core::config::BrowserConfig;
+use ironclad_core::{IroncladError, Result};
 
 pub struct BrowserManager {
     config: BrowserConfig,
@@ -22,9 +22,10 @@ impl BrowserManager {
 
     fn find_chrome_executable(&self) -> Option<String> {
         if let Some(ref path) = self.config.executable_path
-            && Path::new(path).exists() {
-                return Some(path.clone());
-            }
+            && Path::new(path).exists()
+        {
+            return Some(path.clone());
+        }
 
         let candidates = [
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -49,7 +50,8 @@ impl BrowserManager {
             return Ok(());
         }
 
-        let executable = self.find_chrome_executable()
+        let executable = self
+            .find_chrome_executable()
             .ok_or_else(|| IroncladError::Tool {
                 tool: "browser".into(),
                 message: "Chrome/Chromium not found".into(),

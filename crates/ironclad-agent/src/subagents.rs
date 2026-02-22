@@ -91,7 +91,8 @@ impl SubagentRegistry {
 
     pub async fn start_agent(&self, agent_id: &str) -> Result<()> {
         let mut agents = self.agents.lock().await;
-        let agent = agents.get_mut(agent_id)
+        let agent = agents
+            .get_mut(agent_id)
             .ok_or_else(|| IroncladError::Config(format!("agent '{agent_id}' not found")))?;
 
         if agent.state == AgentRunState::Running {
@@ -108,7 +109,8 @@ impl SubagentRegistry {
 
     pub async fn stop_agent(&self, agent_id: &str) -> Result<()> {
         let mut agents = self.agents.lock().await;
-        let agent = agents.get_mut(agent_id)
+        let agent = agents
+            .get_mut(agent_id)
             .ok_or_else(|| IroncladError::Config(format!("agent '{agent_id}' not found")))?;
 
         agent.state = AgentRunState::Stopped;
@@ -137,7 +139,10 @@ impl SubagentRegistry {
 
     pub async fn running_count(&self) -> usize {
         let agents = self.agents.lock().await;
-        agents.values().filter(|a| a.state == AgentRunState::Running).count()
+        agents
+            .values()
+            .filter(|a| a.state == AgentRunState::Running)
+            .count()
     }
 
     pub async fn agent_count(&self) -> usize {
@@ -267,7 +272,12 @@ mod tests {
 
     #[test]
     fn agent_run_state_serde() {
-        for state in [AgentRunState::Idle, AgentRunState::Running, AgentRunState::Stopped, AgentRunState::Error] {
+        for state in [
+            AgentRunState::Idle,
+            AgentRunState::Running,
+            AgentRunState::Stopped,
+            AgentRunState::Error,
+        ] {
             let json = serde_json::to_string(&state).unwrap();
             let back: AgentRunState = serde_json::from_str(&json).unwrap();
             assert_eq!(state, back);

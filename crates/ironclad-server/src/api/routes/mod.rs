@@ -11,16 +11,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
-use axum::{Router, routing::{get, post, put}};
+use axum::{
+    Router,
+    routing::{get, post, put},
+};
 use tokio::sync::RwLock;
 
+use ironclad_agent::policy::PolicyEngine;
 use ironclad_agent::subagents::SubagentRegistry;
 use ironclad_browser::Browser;
 use ironclad_channels::a2a::A2aProtocol;
 use ironclad_channels::router::ChannelRouter;
 use ironclad_channels::telegram::TelegramAdapter;
 use ironclad_channels::whatsapp::WhatsAppAdapter;
-use ironclad_agent::policy::{PolicyEngine};
 use ironclad_core::IroncladConfig;
 use ironclad_core::personality::{self, OsIdentity, OsVoice};
 use ironclad_db::Database;
@@ -52,7 +55,10 @@ pub(crate) fn sanitize_error_message(msg: &str) -> String {
 /// Logs the full error and returns (INTERNAL_SERVER_ERROR, sanitized message) for API responses.
 pub(crate) fn internal_err(e: &impl std::fmt::Display) -> (axum::http::StatusCode, String) {
     tracing::error!(error = %e, "request failed");
-    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, sanitize_error_message(&e.to_string()))
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        sanitize_error_message(&e.to_string()),
+    )
 }
 
 // ── Shared state and types ────────────────────────────────────
@@ -73,11 +79,8 @@ impl PersonalityState {
         let operator = personality::load_operator(workspace);
         let directives = personality::load_directives(workspace);
 
-        let soul_text = personality::compose_identity_text(
-            os.as_ref(),
-            operator.as_ref(),
-            directives.as_ref(),
-        );
+        let soul_text =
+            personality::compose_identity_text(os.as_ref(), operator.as_ref(), directives.as_ref());
         let firmware_text = personality::compose_firmware_text(fw.as_ref());
 
         let (identity, voice) = match os {
@@ -92,7 +95,12 @@ impl PersonalityState {
             ),
         };
 
-        Self { soul_text, firmware_text, identity, voice }
+        Self {
+            soul_text,
+            firmware_text,
+            identity,
+            voice,
+        }
     }
 
     pub fn empty() -> Self {
@@ -178,12 +186,14 @@ impl AppState {
 pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, agent_card, breaker_reset, breaker_status, browser_action, browser_start,
-        browser_status, browser_stop, get_agents, get_cache_stats, get_config, get_costs,
-        get_plugins, get_transactions, start_agent, stop_agent, update_config, wallet_address,
-        wallet_balance, workspace_state, execute_plugin_tool, toggle_plugin,
+        browser_status, browser_stop, execute_plugin_tool, get_agents, get_cache_stats, get_config,
+        get_costs, get_plugins, get_transactions, start_agent, stop_agent, toggle_plugin,
+        update_config, wallet_address, wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_status};
-    use channels::{get_channels_status, webhook_telegram, webhook_whatsapp, webhook_whatsapp_verify};
+    use channels::{
+        get_channels_status, webhook_telegram, webhook_whatsapp, webhook_whatsapp_verify,
+    };
     use cron::{create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs};
     use health::{get_logs, health};
     use memory::{get_episodic_memory, get_semantic_memory, get_working_memory, memory_search};
@@ -198,13 +208,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/logs", get(get_logs))
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/sessions/{id}", get(get_session))
-        .route("/api/sessions/{id}/messages", get(list_messages).post(post_message))
+        .route(
+            "/api/sessions/{id}/messages",
+            get(list_messages).post(post_message),
+        )
         .route("/api/memory/working/{session_id}", get(get_working_memory))
         .route("/api/memory/episodic", get(get_episodic_memory))
         .route("/api/memory/semantic/{category}", get(get_semantic_memory))
         .route("/api/memory/search", get(memory_search))
         .route("/api/cron/jobs", get(list_cron_jobs).post(create_cron_job))
-        .route("/api/cron/jobs/{id}", get(get_cron_job).delete(delete_cron_job))
+        .route(
+            "/api/cron/jobs/{id}",
+            get(get_cron_job).delete(delete_cron_job),
+        )
         .route("/api/stats/costs", get(get_costs))
         .route("/api/stats/transactions", get(get_transactions))
         .route("/api/stats/cache", get(get_cache_stats))
@@ -220,7 +236,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/skills/{id}/toggle", put(toggle_skill))
         .route("/api/plugins", get(get_plugins))
         .route("/api/plugins/{name}/toggle", put(toggle_plugin))
-        .route("/api/plugins/{name}/execute/{tool}", post(execute_plugin_tool))
+        .route(
+            "/api/plugins/{name}/execute/{tool}",
+            post(execute_plugin_tool),
+        )
         .route("/api/browser/status", get(browser_status))
         .route("/api/browser/start", post(browser_start))
         .route("/api/browser/stop", post(browser_stop))
@@ -231,7 +250,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/workspace/state", get(workspace_state))
         .route("/api/a2a/hello", post(a2a_hello))
         .route("/api/webhooks/telegram", post(webhook_telegram))
-        .route("/api/webhooks/whatsapp", get(webhook_whatsapp_verify).post(webhook_whatsapp))
+        .route(
+            "/api/webhooks/whatsapp",
+            get(webhook_whatsapp_verify).post(webhook_whatsapp),
+        )
         .route("/api/channels/status", get(get_channels_status))
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB
         .with_state(state)
@@ -250,7 +272,7 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use ironclad_agent::policy::{CommandSafetyRule, PolicyEngine, AuthorityRule};
+    use ironclad_agent::policy::{AuthorityRule, CommandSafetyRule, PolicyEngine};
     use ironclad_agent::subagents::SubagentRegistry;
     use ironclad_browser::Browser;
     use ironclad_channels::a2a::A2aProtocol;
@@ -400,7 +422,9 @@ primary = "ollama/qwen3:8b"
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = json_body(resp).await;
-        let entries = body.get("entries").expect("response must have 'entries' key");
+        let entries = body
+            .get("entries")
+            .expect("response must have 'entries' key");
         assert!(entries.is_array(), "entries must be a JSON array");
     }
 
@@ -444,7 +468,7 @@ primary = "ollama/qwen3:8b"
         let app = build_router(state.clone());
         let req = Request::builder()
             .method("POST")
-            .uri(&format!("/api/sessions/{session_id}/messages"))
+            .uri(format!("/api/sessions/{session_id}/messages"))
             .header("content-type", "application/json")
             .body(Body::from(r#"{"role":"user","content":"hello"}"#))
             .unwrap();
@@ -454,7 +478,7 @@ primary = "ollama/qwen3:8b"
 
         let app = build_router(state);
         let req = Request::builder()
-            .uri(&format!("/api/sessions/{session_id}/messages"))
+            .uri(format!("/api/sessions/{session_id}/messages"))
             .body(Body::empty())
             .unwrap();
 
@@ -551,7 +575,7 @@ primary = "ollama/qwen3:8b"
         let app = build_router(state);
 
         let req = Request::builder()
-            .uri(&format!("/api/sessions/{session_id}"))
+            .uri(format!("/api/sessions/{session_id}"))
             .body(Body::empty())
             .unwrap();
 
@@ -586,7 +610,7 @@ primary = "ollama/qwen3:8b"
         let app = build_router(state);
 
         let req = Request::builder()
-            .uri(&format!("/api/memory/working/{session_id}"))
+            .uri(format!("/api/memory/working/{session_id}"))
             .body(Body::empty())
             .unwrap();
 
@@ -737,7 +761,7 @@ primary = "ollama/qwen3:8b"
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = json_body(resp).await;
-        assert!(body["job_id"].as_str().unwrap().len() > 0);
+        assert!(!body["job_id"].as_str().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -755,7 +779,7 @@ primary = "ollama/qwen3:8b"
 
         let app = build_router(state);
         let req = Request::builder()
-            .uri(&format!("/api/cron/jobs/{job_id}"))
+            .uri(format!("/api/cron/jobs/{job_id}"))
             .body(Body::empty())
             .unwrap();
 
@@ -796,7 +820,7 @@ primary = "ollama/qwen3:8b"
         let app = build_router(state);
         let req = Request::builder()
             .method("DELETE")
-            .uri(&format!("/api/cron/jobs/{job_id}"))
+            .uri(format!("/api/cron/jobs/{job_id}"))
             .body(Body::empty())
             .unwrap();
 
@@ -996,11 +1020,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn treasury_rejects_negative_amount() {
         let state = test_state();
-        let err = state
-            .wallet
-            .treasury
-            .check_per_payment(-1.0)
-            .unwrap_err();
+        let err = state.wallet.treasury.check_per_payment(-1.0).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("positive") || msg.contains("non_positive") || msg.contains("amount"),
@@ -1079,7 +1099,7 @@ primary = "ollama/qwen3:8b"
         let app = build_router(state);
 
         let req = Request::builder()
-            .uri(&format!("/api/skills/{skill_id}"))
+            .uri(format!("/api/skills/{skill_id}"))
             .body(Body::empty())
             .unwrap();
 
@@ -1129,7 +1149,7 @@ primary = "ollama/qwen3:8b"
         let app = build_router(state.clone());
         let req = Request::builder()
             .method("PUT")
-            .uri(&format!("/api/skills/{skill_id}/toggle"))
+            .uri(format!("/api/skills/{skill_id}/toggle"))
             .body(Body::empty())
             .unwrap();
 
@@ -1178,7 +1198,12 @@ primary = "ollama/qwen3:8b"
         assert_eq!(body["version"], "0.1");
         assert_eq!(body["status"], "ok");
         assert_eq!(body["peer_did"], "did:ironclad:peer-test-123");
-        assert!(body["hello"]["did"].as_str().unwrap().starts_with("did:ironclad:"));
+        assert!(
+            body["hello"]["did"]
+                .as_str()
+                .unwrap()
+                .starts_with("did:ironclad:")
+        );
     }
 
     #[tokio::test]
@@ -1418,8 +1443,7 @@ primary = "ollama/qwen3:8b"
     async fn protected_route_returns_401_without_api_key() {
         use crate::auth::ApiKeyLayer;
         let state = test_state();
-        let app = build_router(state)
-            .layer(ApiKeyLayer::new(Some("my-secret".into())));
+        let app = build_router(state).layer(ApiKeyLayer::new(Some("my-secret".into())));
         let req = Request::builder()
             .uri("/api/sessions")
             .body(Body::empty())
@@ -1432,8 +1456,7 @@ primary = "ollama/qwen3:8b"
     async fn protected_route_returns_ok_with_correct_api_key() {
         use crate::auth::ApiKeyLayer;
         let state = test_state();
-        let app = build_router(state)
-            .layer(ApiKeyLayer::new(Some("my-secret".into())));
+        let app = build_router(state).layer(ApiKeyLayer::new(Some("my-secret".into())));
         let req = Request::builder()
             .uri("/api/sessions")
             .header("x-api-key", "my-secret")
@@ -1450,5 +1473,382 @@ primary = "ollama/qwen3:8b"
 
         let safe = "The capital of France is Paris.";
         assert!(!ironclad_agent::injection::scan_output(safe));
+    }
+
+    #[tokio::test]
+    async fn working_memory_returns_entries() {
+        let state = test_state();
+        let session_id =
+            ironclad_db::sessions::find_or_create(&state.db, "test-working").unwrap();
+        ironclad_db::memory::store_working(
+            &state.db,
+            &session_id,
+            "fact",
+            "user prefers dark mode",
+            5,
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/memory/working/{session_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let entries = body["entries"].as_array().unwrap();
+        assert!(!entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn workspace_state_returns_ok() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workspace/state")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_plugins_returns_array() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/plugins")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["plugins"].is_array());
+    }
+
+    #[tokio::test]
+    async fn toggle_plugin_not_found() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/plugins/nonexistent/toggle")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn browser_status_returns_ok() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/browser/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_agents_returns_array() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["agents"].is_array());
+    }
+
+    #[tokio::test]
+    async fn agent_card_well_known() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/agent.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dashboard_returns_html() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn skills_list_returns_empty_array() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/skills")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["skills"].is_array());
+    }
+
+    #[tokio::test]
+    async fn skill_toggle_not_found() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/skills/nonexistent/toggle")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn browser_stop_when_not_running() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/browser/stop")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.status() == StatusCode::OK
+                || resp.status() == StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn start_agent_unknown_returns_404() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/agents/nonexistent-agent/start")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn stop_agent_unknown_returns_404() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/agents/nonexistent-agent/stop")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn put_config_rejects_immutable_server_key() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"server":{"port":1234}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn put_config_rejects_immutable_wallet_key() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"wallet":{"rpc_url":"http://evil.com"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn put_config_rejects_immutable_treasury_key() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"treasury":{"per_payment_cap":999}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn put_config_rejects_immutable_a2a_key() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"a2a":{"enabled":false}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn agent_card_has_required_fields() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/agent.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["name"].is_string());
+        assert!(body["version"].is_string());
+    }
+
+    #[tokio::test]
+    async fn workspace_state_has_structure() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workspace/state")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["agents"].is_array());
+    }
+
+    #[tokio::test]
+    async fn execute_plugin_tool_not_found() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/plugins/fakeplugin/execute/faketool")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_logs_returns_array() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/logs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

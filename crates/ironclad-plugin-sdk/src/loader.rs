@@ -84,7 +84,8 @@ name = "my-plugin"
 version = "1.0.0"
 description = "Test plugin"
 "#,
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = discover_plugins(dir.path()).unwrap();
         assert_eq!(result.len(), 1);
@@ -127,7 +128,8 @@ description = "Test plugin"
             std::fs::write(
                 p.join("plugin.toml"),
                 format!("name = \"{name}\"\nversion = \"1.0.0\"\n"),
-            ).unwrap();
+            )
+            .unwrap();
         }
         let result = discover_plugins(dir.path()).unwrap();
         let names: Vec<_> = result.iter().map(|p| p.manifest.name.as_str()).collect();

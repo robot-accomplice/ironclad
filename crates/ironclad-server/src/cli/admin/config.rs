@@ -14,9 +14,20 @@ pub async fn cmd_config(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     heading("Configuration");
 
     let sections = [
-        "agent", "server", "database", "models", "memory", "cache",
-        "treasury", "yield", "wallet", "a2a", "skills", "channels",
-        "circuit_breaker", "providers",
+        "agent",
+        "server",
+        "database",
+        "models",
+        "memory",
+        "cache",
+        "treasury",
+        "yield",
+        "wallet",
+        "a2a",
+        "skills",
+        "channels",
+        "circuit_breaker",
+        "providers",
     ];
 
     for section in sections {
@@ -78,7 +89,11 @@ fn format_toml_value(v: &toml::Value) -> String {
     }
 }
 
-fn set_toml_value(table: &mut toml::Value, path: &str, value: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn set_toml_value(
+    table: &mut toml::Value,
+    path: &str,
+    value: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let parts: Vec<&str> = path.split('.').collect();
     let mut current = table;
 
@@ -90,10 +105,12 @@ fn set_toml_value(table: &mut toml::Value, path: &str, value: &str) -> Result<()
             }
         } else {
             if current.get(part).is_none()
-                && let toml::Value::Table(map) = current {
-                    map.insert(part.to_string(), toml::Value::Table(toml::map::Map::new()));
-                }
-            current = current.get_mut(part)
+                && let toml::Value::Table(map) = current
+            {
+                map.insert(part.to_string(), toml::Value::Table(toml::map::Map::new()));
+            }
+            current = current
+                .get_mut(part)
                 .ok_or_else(|| format!("cannot navigate to {part}"))?;
         }
     }
@@ -119,20 +136,32 @@ fn remove_toml_key(table: &mut toml::Value, path: &str) -> bool {
     }
 
     if let toml::Value::Table(map) = current {
-        parts.last().map(|p| map.remove(*p).is_some()).unwrap_or(false)
+        parts
+            .last()
+            .map(|p| map.remove(*p).is_some())
+            .unwrap_or(false)
     } else {
         false
     }
 }
 
 fn parse_toml_value(s: &str) -> toml::Value {
-    if s == "true" { return toml::Value::Boolean(true); }
-    if s == "false" { return toml::Value::Boolean(false); }
-    if let Ok(i) = s.parse::<i64>() { return toml::Value::Integer(i); }
-    if let Ok(f) = s.parse::<f64>() { return toml::Value::Float(f); }
+    if s == "true" {
+        return toml::Value::Boolean(true);
+    }
+    if s == "false" {
+        return toml::Value::Boolean(false);
+    }
+    if let Ok(i) = s.parse::<i64>() {
+        return toml::Value::Integer(i);
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        return toml::Value::Float(f);
+    }
     if s.starts_with('[') && s.ends_with(']') {
-        let inner = &s[1..s.len()-1];
-        let items: Vec<toml::Value> = inner.split(',')
+        let inner = &s[1..s.len() - 1];
+        let items: Vec<toml::Value> = inner
+            .split(',')
             .map(|item| parse_toml_value(item.trim().trim_matches('"')))
             .collect();
         return toml::Value::Array(items);
@@ -158,11 +187,14 @@ pub fn cmd_config_get(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub fn cmd_config_set(path: &str, value: &str, file: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_config_set(
+    path: &str,
+    value: &str,
+    file: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    let contents = std::fs::read_to_string(file)
-        .unwrap_or_else(|_| String::new());
+    let contents = std::fs::read_to_string(file).unwrap_or_else(|_| String::new());
     let mut table: toml::Value = if contents.is_empty() {
         toml::Value::Table(toml::map::Map::new())
     } else {

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use ironclad_core::{IroncladError, Result};
 use serde_json::{Value, json};
-use tracing::{debug, warn, error};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use crate::{ChannelAdapter, InboundMessage, OutboundMessage};
@@ -129,7 +129,12 @@ impl TelegramAdapter {
     pub async fn register_webhook(&self, url: &str) -> Result<()> {
         let api_url = self.api_url("setWebhook");
         let body = json!({ "url": url });
-        let resp = self.client.post(&api_url).json(&body).send().await
+        let resp = self
+            .client
+            .post(&api_url)
+            .json(&body)
+            .send()
+            .await
             .map_err(|e| IroncladError::Network(format!("setWebhook failed: {e}")))?;
 
         if !resp.status().is_success() {
@@ -142,12 +147,18 @@ impl TelegramAdapter {
 
     pub async fn delete_webhook(&self) -> Result<()> {
         let api_url = self.api_url("deleteWebhook");
-        let resp = self.client.post(&api_url).send().await
+        let resp = self
+            .client
+            .post(&api_url)
+            .send()
+            .await
             .map_err(|e| IroncladError::Network(format!("deleteWebhook failed: {e}")))?;
 
         if !resp.status().is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(IroncladError::Network(format!("deleteWebhook error: {text}")));
+            return Err(IroncladError::Network(format!(
+                "deleteWebhook error: {text}"
+            )));
         }
         debug!("Telegram webhook deleted");
         Ok(())
@@ -155,7 +166,10 @@ impl TelegramAdapter {
 
     pub fn process_webhook_update(&self, body: &Value) -> Result<Option<InboundMessage>> {
         if let Some(update_id) = body.get("update_id").and_then(|v| v.as_i64()) {
-            let mut last = self.last_update_id.lock().unwrap_or_else(|e| e.into_inner());
+            let mut last = self
+                .last_update_id
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if update_id > *last {
                 *last = update_id;
             }
@@ -166,10 +180,11 @@ impl TelegramAdapter {
         }
 
         if let Some(chat_id) = body.pointer("/message/chat/id").and_then(|v| v.as_i64())
-            && !self.is_chat_allowed(chat_id) {
-                debug!(chat_id, "ignoring message from disallowed chat");
-                return Ok(None);
-            }
+            && !self.is_chat_allowed(chat_id)
+        {
+            debug!(chat_id, "ignoring message from disallowed chat");
+            return Ok(None);
+        }
 
         Self::parse_inbound(body).map(Some)
     }
@@ -190,15 +205,20 @@ impl TelegramAdapter {
             )));
         }
 
-        let body: Value = resp.json().await
+        let body: Value = resp
+            .json()
+            .await
             .map_err(|e| IroncladError::Network(format!("response parse error: {e}")))?;
 
         if !status.is_success() {
-            let desc = body.get("description")
+            let desc = body
+                .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown error");
             error!(status = %status, description = desc, "Telegram API error");
-            return Err(IroncladError::Network(format!("Telegram API {status}: {desc}")));
+            return Err(IroncladError::Network(format!(
+                "Telegram API {status}: {desc}"
+            )));
         }
 
         Ok(body)
@@ -213,7 +233,10 @@ impl ChannelAdapter for TelegramAdapter {
 
     async fn recv(&self) -> Result<Option<InboundMessage>> {
         let offset = {
-            let last = self.last_update_id.lock().unwrap_or_else(|e| e.into_inner());
+            let last = self
+                .last_update_id
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             *last + 1
         };
 
@@ -226,12 +249,18 @@ impl ChannelAdapter for TelegramAdapter {
 
         debug!(offset, "polling Telegram getUpdates");
 
-        let resp = self.client.post(&url).json(&body).send().await
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
             .map_err(|e| IroncladError::Network(format!("getUpdates failed: {e}")))?;
 
         let data = self.handle_api_response(resp).await?;
 
-        let updates = data.get("result")
+        let updates = data
+            .get("result")
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
@@ -242,15 +271,19 @@ impl ChannelAdapter for TelegramAdapter {
 
         let update = &updates[0];
         if let Some(uid) = update.get("update_id").and_then(|v| v.as_i64()) {
-            let mut last = self.last_update_id.lock().unwrap_or_else(|e| e.into_inner());
+            let mut last = self
+                .last_update_id
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             *last = uid;
         }
 
         if let Some(chat_id) = update.pointer("/message/chat/id").and_then(|v| v.as_i64())
-            && !self.is_chat_allowed(chat_id) {
-                debug!(chat_id, "ignoring message from disallowed chat");
-                return Ok(None);
-            }
+            && !self.is_chat_allowed(chat_id)
+        {
+            debug!(chat_id, "ignoring message from disallowed chat");
+            return Ok(None);
+        }
 
         if update.get("message").is_none() {
             return Ok(None);
@@ -271,7 +304,12 @@ impl ChannelAdapter for TelegramAdapter {
 
             debug!(chat_id = %msg.recipient_id, len = chunk.len(), "sending Telegram message");
 
-            let resp = self.client.post(&url).json(&body).send().await
+            let resp = self
+                .client
+                .post(&url)
+                .json(&body)
+                .send()
+                .await
                 .map_err(|e| IroncladError::Network(format!("sendMessage failed: {e}")))?;
 
             self.handle_api_response(resp).await?;
@@ -407,5 +445,80 @@ mod tests {
         });
         let result = adapter.process_webhook_update(&update).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn api_url_formats_correctly() {
+        let adapter = TelegramAdapter::new("BOT_TOKEN".into());
+        assert_eq!(
+            adapter.api_url("getUpdates"),
+            "https://api.telegram.org/botBOT_TOKEN/getUpdates"
+        );
+        assert_eq!(
+            adapter.api_url("sendMessage"),
+            "https://api.telegram.org/botBOT_TOKEN/sendMessage"
+        );
+    }
+
+    #[test]
+    fn parse_inbound_missing_message() {
+        let update = json!({"update_id": 1});
+        assert!(TelegramAdapter::parse_inbound(&update).is_err());
+    }
+
+    #[test]
+    fn parse_inbound_missing_from() {
+        let update = json!({"message": {"message_id": 1, "text": "hi"}});
+        assert!(TelegramAdapter::parse_inbound(&update).is_err());
+    }
+
+    #[test]
+    fn parse_inbound_missing_from_id() {
+        let update = json!({"message": {"message_id": 1, "from": {}, "text": "hi"}});
+        assert!(TelegramAdapter::parse_inbound(&update).is_err());
+    }
+
+    #[test]
+    fn parse_inbound_no_text_defaults_empty() {
+        let update = json!({"message": {"message_id": 1, "from": {"id": 42}}});
+        let msg = TelegramAdapter::parse_inbound(&update).unwrap();
+        assert_eq!(msg.content, "");
+    }
+
+    #[test]
+    fn parse_inbound_no_message_id_generates_uuid() {
+        let update = json!({"message": {"from": {"id": 42}, "text": "hi"}});
+        let msg = TelegramAdapter::parse_inbound(&update).unwrap();
+        assert!(!msg.id.is_empty());
+    }
+
+    #[test]
+    fn chunk_message_empty_string() {
+        let chunks = TelegramAdapter::chunk_message("", 100);
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn chunk_message_exact_boundary() {
+        let text = "a".repeat(100);
+        let chunks = TelegramAdapter::chunk_message(&text, 100);
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn chunk_message_no_whitespace_forces_hard_split() {
+        let text = "a".repeat(50);
+        let chunks = TelegramAdapter::chunk_message(&text, 20);
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(chunk.len() <= 20);
+        }
+    }
+
+    #[test]
+    fn with_config_webhook_secret() {
+        let adapter =
+            TelegramAdapter::with_config("tok".into(), 30, vec![], Some("secret123".into()));
+        assert_eq!(adapter.webhook_secret.unwrap(), "secret123");
     }
 }

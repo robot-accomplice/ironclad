@@ -2,8 +2,8 @@ pub mod heartbeat;
 pub mod scheduler;
 pub mod tasks;
 
-pub use heartbeat::{HeartbeatDaemon, TickContext};
 pub use heartbeat::run as run_heartbeat;
+pub use heartbeat::{HeartbeatDaemon, TickContext};
 pub use scheduler::DurableScheduler;
 pub use tasks::{HeartbeatTask, TaskResult};
 
@@ -33,12 +33,13 @@ pub async fn run_cron_worker(db: ironclad_db::Database, instance_id: String) {
             }
 
             let due = match job.schedule_kind.as_str() {
-                "cron" => {
-                    job.schedule_expr
-                        .as_deref()
-                        .map(|expr| DurableScheduler::evaluate_cron(expr, job.last_run_at.as_deref(), &now))
-                        .unwrap_or(false)
-                }
+                "cron" => job
+                    .schedule_expr
+                    .as_deref()
+                    .map(|expr| {
+                        DurableScheduler::evaluate_cron(expr, job.last_run_at.as_deref(), &now)
+                    })
+                    .unwrap_or(false),
                 "every" => {
                     let interval_ms = job.schedule_every_ms.unwrap_or(60_000);
                     DurableScheduler::evaluate_interval(

@@ -2,8 +2,8 @@ mod safety;
 mod transform;
 
 pub use safety::{
-    scan_directory_safety, scan_script_safety, FindingCategory, SafetyFinding, SafetyVerdict,
-    Severity, SkillSafetyReport,
+    FindingCategory, SafetyFinding, SafetyVerdict, Severity, SkillSafetyReport,
+    scan_directory_safety, scan_script_safety,
 };
 
 use std::fs;
@@ -32,7 +32,14 @@ pub enum MigrationArea {
 
 impl MigrationArea {
     fn all() -> &'static [MigrationArea] {
-        &[Self::Config, Self::Personality, Self::Skills, Self::Sessions, Self::Cron, Self::Channels]
+        &[
+            Self::Config,
+            Self::Personality,
+            Self::Skills,
+            Self::Sessions,
+            Self::Cron,
+            Self::Channels,
+        ]
     }
 
     fn from_str(s: &str) -> Option<Self> {
@@ -82,12 +89,18 @@ impl MigrationReport {
             Direction::Export => "Export",
         };
         eprintln!();
-        eprintln!("  \u{256d}\u{2500} Migration Report ({dir_label}) \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+        eprintln!(
+            "  \u{256d}\u{2500} Migration Report ({dir_label}) \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
+        );
         eprintln!("  \u{2502} Source: {}", self.source.display());
         eprintln!("  \u{2502}");
         for r in &self.results {
             let icon = if r.success { "\u{2714}" } else { "\u{2718}" };
-            eprintln!("  \u{2502} {icon} {:<14} {} items", r.area.label(), r.items_processed);
+            eprintln!(
+                "  \u{2502} {icon} {:<14} {} items",
+                r.area.label(),
+                r.items_processed
+            );
             for w in &r.warnings {
                 eprintln!("  \u{2502}   \u{26a0} {w}");
             }
@@ -99,7 +112,9 @@ impl MigrationReport {
         let total = self.results.len();
         eprintln!("  \u{2502}");
         eprintln!("  \u{2502} {ok}/{total} areas completed successfully");
-        eprintln!("  \u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+        eprintln!(
+            "  \u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
+        );
         eprintln!();
     }
 }
@@ -110,7 +125,10 @@ fn resolve_areas(area_strs: &[String]) -> Vec<MigrationArea> {
     if area_strs.is_empty() {
         return MigrationArea::all().to_vec();
     }
-    area_strs.iter().filter_map(|s| MigrationArea::from_str(s)).collect()
+    area_strs
+        .iter()
+        .filter_map(|s| MigrationArea::from_str(s))
+        .collect()
 }
 
 pub fn cmd_migrate_import(
@@ -128,11 +146,22 @@ pub fn cmd_migrate_import(
     let areas = resolve_areas(areas);
 
     eprintln!();
-    eprintln!("  \u{256d}\u{2500} OpenClaw \u{2192} Ironclad Import \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+    eprintln!(
+        "  \u{256d}\u{2500} OpenClaw \u{2192} Ironclad Import \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
+    );
     eprintln!("  \u{2502} Source: {}", source_path.display());
     eprintln!("  \u{2502} Target: {}", ironclad_root.display());
-    eprintln!("  \u{2502} Areas:  {}", areas.iter().map(|a| a.label()).collect::<Vec<_>>().join(", "));
-    eprintln!("  \u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+    eprintln!(
+        "  \u{2502} Areas:  {}",
+        areas
+            .iter()
+            .map(|a| a.label())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    eprintln!(
+        "  \u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
+    );
 
     if !yes {
         eprint!("  Proceed? [y/N] ");
@@ -164,7 +193,12 @@ pub fn cmd_migrate_import(
         results.push(result);
     }
 
-    MigrationReport { direction: Direction::Import, source: source_path, results }.print();
+    MigrationReport {
+        direction: Direction::Import,
+        source: source_path,
+        results,
+    }
+    .print();
     Ok(())
 }
 
@@ -177,11 +211,22 @@ pub fn cmd_migrate_export(
     let areas = resolve_areas(areas);
 
     eprintln!();
-    eprintln!("  \u{256d}\u{2500} Ironclad \u{2192} OpenClaw Export \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+    eprintln!(
+        "  \u{256d}\u{2500} Ironclad \u{2192} OpenClaw Export \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
+    );
     eprintln!("  \u{2502} Source: {}", ironclad_root.display());
     eprintln!("  \u{2502} Target: {}", target_path.display());
-    eprintln!("  \u{2502} Areas:  {}", areas.iter().map(|a| a.label()).collect::<Vec<_>>().join(", "));
-    eprintln!("  \u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+    eprintln!(
+        "  \u{2502} Areas:  {}",
+        areas
+            .iter()
+            .map(|a| a.label())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    eprintln!(
+        "  \u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
+    );
 
     if let Err(e) = fs::create_dir_all(&target_path) {
         eprintln!("  \u{2718} Failed to create target directory: {e}");
@@ -207,7 +252,12 @@ pub fn cmd_migrate_export(
         results.push(result);
     }
 
-    MigrationReport { direction: Direction::Export, source: ironclad_root, results }.print();
+    MigrationReport {
+        direction: Direction::Export,
+        source: ironclad_root,
+        results,
+    }
+    .print();
     Ok(())
 }
 
@@ -280,19 +330,22 @@ pub fn cmd_skill_import(
         count = 1;
     }
 
-    eprintln!("  \u{2714} Imported {count} skill(s) to {}", skills_dir.display());
+    eprintln!(
+        "  \u{2714} Imported {count} skill(s) to {}",
+        skills_dir.display()
+    );
     Ok(())
 }
 
-pub fn cmd_skill_export(
-    output: &str,
-    ids: &[String],
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_skill_export(output: &str, ids: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let ironclad_root = default_ironclad_root();
     let skills_dir = ironclad_root.join("skills");
 
     if !skills_dir.exists() {
-        eprintln!("  \u{2718} No skills directory found at {}", skills_dir.display());
+        eprintln!(
+            "  \u{2718} No skills directory found at {}",
+            skills_dir.display()
+        );
         return Ok(());
     }
 
@@ -317,7 +370,10 @@ pub fn cmd_skill_export(
             }
         }
     }
-    eprintln!("  \u{2714} Exported {count} skill(s) to {}", output_path.display());
+    eprintln!(
+        "  \u{2714} Exported {count} skill(s) to {}",
+        output_path.display()
+    );
 
     Ok(())
 }
@@ -368,7 +424,10 @@ mod tests {
 
     #[test]
     fn resolve_areas_invalid_filtered() {
-        assert_eq!(resolve_areas(&["config".into(), "nonsense".into()]).len(), 1);
+        assert_eq!(
+            resolve_areas(&["config".into(), "nonsense".into()]).len(),
+            1
+        );
     }
 
     #[test]
@@ -383,8 +442,14 @@ mod tests {
 
     #[test]
     fn migration_area_from_str_valid() {
-        assert_eq!(MigrationArea::from_str("config"), Some(MigrationArea::Config));
-        assert_eq!(MigrationArea::from_str("CONFIG"), Some(MigrationArea::Config));
+        assert_eq!(
+            MigrationArea::from_str("config"),
+            Some(MigrationArea::Config)
+        );
+        assert_eq!(
+            MigrationArea::from_str("CONFIG"),
+            Some(MigrationArea::Config)
+        );
     }
 
     #[test]
@@ -402,7 +467,10 @@ mod tests {
         let target = dst.path().join("copy");
         copy_dir_recursive(src.path(), &target).unwrap();
         assert_eq!(fs::read_to_string(target.join("a.txt")).unwrap(), "hello");
-        assert_eq!(fs::read_to_string(target.join("sub/b.txt")).unwrap(), "world");
+        assert_eq!(
+            fs::read_to_string(target.join("sub/b.txt")).unwrap(),
+            "world"
+        );
     }
 
     #[test]

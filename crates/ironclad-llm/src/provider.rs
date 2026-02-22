@@ -266,7 +266,10 @@ mod tests {
         assert_eq!(parse_api_format("openai"), ApiFormat::OpenAiCompletions);
         assert_eq!(parse_api_format("anthropic"), ApiFormat::AnthropicMessages);
         assert_eq!(parse_api_format("google"), ApiFormat::GoogleGenerativeAi);
-        assert_eq!(parse_api_format("openai-responses"), ApiFormat::OpenAiResponses);
+        assert_eq!(
+            parse_api_format("openai-responses"),
+            ApiFormat::OpenAiResponses
+        );
         assert_eq!(parse_api_format("OPENAI"), ApiFormat::OpenAiCompletions);
         assert_eq!(parse_api_format("unknown"), ApiFormat::OpenAiCompletions);
     }

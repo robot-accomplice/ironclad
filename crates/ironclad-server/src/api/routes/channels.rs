@@ -3,11 +3,11 @@
 use subtle::ConstantTimeEq;
 
 use axum::{
+    Json,
     body::to_bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use serde_json::{Value, json};
 
@@ -21,7 +21,13 @@ pub async fn webhook_telegram(
 ) -> impl IntoResponse {
     let adapter = match state.telegram.as_ref() {
         Some(a) => a,
-        None => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "error": "Telegram not configured"}))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"ok": false, "error": "Telegram not configured"})),
+            )
+                .into_response();
+        }
     };
     if adapter.webhook_secret.is_none() {
         return (
@@ -31,19 +37,19 @@ pub async fn webhook_telegram(
             .into_response();
     }
     if let Some(ref secret) = adapter.webhook_secret {
-            let header_value = headers
-                .get("X-Telegram-Bot-Api-Secret-Token")
-                .and_then(|v| v.to_str().ok());
-            let matches = header_value
-                .map(|v| bool::from(v.as_bytes().ct_eq(secret.as_bytes())))
-                .unwrap_or(false);
-            if !matches {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({"ok": false, "error": "missing or invalid webhook secret"})),
-                )
-                    .into_response();
-            }
+        let header_value = headers
+            .get("X-Telegram-Bot-Api-Secret-Token")
+            .and_then(|v| v.to_str().ok());
+        let matches = header_value
+            .map(|v| bool::from(v.as_bytes().ct_eq(secret.as_bytes())))
+            .unwrap_or(false);
+        if !matches {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok": false, "error": "missing or invalid webhook secret"})),
+            )
+                .into_response();
+        }
     }
     tracing::debug!("received Telegram webhook");
     {
@@ -70,7 +76,10 @@ pub async fn webhook_whatsapp_verify(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let mode = params.get("hub.mode").map(String::as_str).unwrap_or("");
-    let token = params.get("hub.verify_token").map(String::as_str).unwrap_or("");
+    let token = params
+        .get("hub.verify_token")
+        .map(String::as_str)
+        .unwrap_or("");
     let challenge = params.get("hub.challenge").cloned().unwrap_or_default();
 
     match state.whatsapp.as_ref() {
@@ -89,13 +98,21 @@ pub async fn webhook_whatsapp(
     let adapter = match state.whatsapp.as_ref() {
         Some(a) => a,
         None => {
-            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "error": "WhatsApp not configured"}))).into_response();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"ok": false, "error": "WhatsApp not configured"})),
+            )
+                .into_response();
         }
     };
     let secret = match adapter.app_secret.as_ref() {
         Some(s) => s,
         None => {
-            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "error": "Webhook secret not configured"}))).into_response();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"ok": false, "error": "Webhook secret not configured"})),
+            )
+                .into_response();
         }
     };
     const WEBHOOK_BODY_LIMIT: usize = 1024 * 1024;

@@ -1,5 +1,5 @@
-use ironclad_schedule::heartbeat::build_tick_context;
 use ironclad_core::SurvivalTier;
+use ironclad_schedule::heartbeat::build_tick_context;
 
 #[test]
 fn heartbeat_tick_context_builds_correctly() {
@@ -12,8 +12,14 @@ fn heartbeat_tick_context_builds_correctly() {
 fn survival_tier_from_combined_balance() {
     assert_eq!(SurvivalTier::from_balance(10.0, 0.0), SurvivalTier::High);
     assert_eq!(SurvivalTier::from_balance(4.99, 0.0), SurvivalTier::Normal);
-    assert_eq!(SurvivalTier::from_balance(0.49, 0.0), SurvivalTier::LowCompute);
-    assert_eq!(SurvivalTier::from_balance(0.09, 0.0), SurvivalTier::Critical);
+    assert_eq!(
+        SurvivalTier::from_balance(0.49, 0.0),
+        SurvivalTier::LowCompute
+    );
+    assert_eq!(
+        SurvivalTier::from_balance(0.09, 0.0),
+        SurvivalTier::Critical
+    );
 }
 
 #[test]

@@ -1,13 +1,13 @@
 #[path = "loop.rs"]
 pub mod agent_loop;
+pub mod approvals;
 pub mod context;
 pub mod injection;
+pub mod interview;
 pub mod memory;
 pub mod policy;
 pub mod prompt;
 pub mod script_runner;
 pub mod skills;
-pub mod tools;
-pub mod approvals;
-pub mod interview;
 pub mod subagents;
+pub mod tools;

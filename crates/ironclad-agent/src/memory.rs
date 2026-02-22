@@ -66,18 +66,27 @@ pub fn classify_turn(
         return TurnType::ToolUse;
     }
     let combined = format!("{user_msg} {assistant_msg}").to_lowercase();
-    if combined.contains("transfer") || combined.contains("balance") || combined.contains("wallet")
-        || combined.contains("payment") || combined.contains("usdc")
+    if combined.contains("transfer")
+        || combined.contains("balance")
+        || combined.contains("wallet")
+        || combined.contains("payment")
+        || combined.contains("usdc")
     {
         return TurnType::Financial;
     }
-    if combined.contains("hello") || combined.contains("thanks") || combined.contains("please")
+    if combined.contains("hello")
+        || combined.contains("thanks")
+        || combined.contains("please")
         || combined.contains("how are you")
     {
         return TurnType::Social;
     }
-    if combined.contains("write a") || combined.contains("create a") || combined.contains("design a")
-        || combined.contains("compose a") || combined.contains("draw") || combined.contains("generate a")
+    if combined.contains("write a")
+        || combined.contains("create a")
+        || combined.contains("design a")
+        || combined.contains("compose a")
+        || combined.contains("draw")
+        || combined.contains("generate a")
     {
         return TurnType::Creative;
     }
@@ -118,7 +127,9 @@ pub fn ingest_turn(
     }
 
     // Semantic: extract factual information from responses longer than a threshold
-    if assistant_msg.len() > 100 && (turn_type == TurnType::Reasoning || turn_type == TurnType::Creative) {
+    if assistant_msg.len() > 100
+        && (turn_type == TurnType::Reasoning || turn_type == TurnType::Creative)
+    {
         let key = format!("turn_{}", session_id.get(..8).unwrap_or("unknown"));
         ironclad_db::memory::store_semantic(db, "learned", &key, summary, 0.6).ok();
     }
@@ -201,27 +212,42 @@ mod tests {
     #[test]
     fn classify_turn_tool_use() {
         let results = vec![("echo".into(), "hello".into())];
-        assert_eq!(classify_turn("test", "response", &results), TurnType::ToolUse);
+        assert_eq!(
+            classify_turn("test", "response", &results),
+            TurnType::ToolUse
+        );
     }
 
     #[test]
     fn classify_turn_financial() {
-        assert_eq!(classify_turn("check my wallet balance", "Your balance is 42 USDC", &[]), TurnType::Financial);
+        assert_eq!(
+            classify_turn("check my wallet balance", "Your balance is 42 USDC", &[]),
+            TurnType::Financial
+        );
     }
 
     #[test]
     fn classify_turn_social() {
-        assert_eq!(classify_turn("hello how are you", "I'm great!", &[]), TurnType::Social);
+        assert_eq!(
+            classify_turn("hello how are you", "I'm great!", &[]),
+            TurnType::Social
+        );
     }
 
     #[test]
     fn classify_turn_creative() {
-        assert_eq!(classify_turn("write a poem about rust", "Here's a poem...", &[]), TurnType::Creative);
+        assert_eq!(
+            classify_turn("write a poem about rust", "Here's a poem...", &[]),
+            TurnType::Creative
+        );
     }
 
     #[test]
     fn classify_turn_reasoning() {
-        assert_eq!(classify_turn("explain monads", "A monad is a design pattern...", &[]), TurnType::Reasoning);
+        assert_eq!(
+            classify_turn("explain monads", "A monad is a design pattern...", &[]),
+            TurnType::Reasoning
+        );
     }
 
     #[test]
@@ -236,7 +262,10 @@ mod tests {
             &[],
         );
         let working = ironclad_db::memory::retrieve_working(&db, &session_id).unwrap();
-        assert!(!working.is_empty(), "should store turn summary in working memory");
+        assert!(
+            !working.is_empty(),
+            "should store turn summary in working memory"
+        );
     }
 
     #[test]
@@ -252,6 +281,9 @@ mod tests {
             &[("echo".into(), "hello".into())],
         );
         let episodic = ironclad_db::memory::retrieve_episodic(&db, 10).unwrap();
-        assert!(!episodic.is_empty(), "should store tool use in episodic memory");
+        assert!(
+            !episodic.is_empty(),
+            "should store tool use in episodic memory"
+        );
     }
 }

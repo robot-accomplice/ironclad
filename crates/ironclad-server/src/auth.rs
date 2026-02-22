@@ -48,24 +48,29 @@ fn is_exempt(path: &str) -> bool {
 
 fn extract_api_key(req: &Request<Body>) -> Option<String> {
     if let Some(val) = req.headers().get("x-api-key")
-        && let Ok(s) = val.to_str() {
-            return Some(s.to_string());
-        }
+        && let Ok(s) = val.to_str()
+    {
+        return Some(s.to_string());
+    }
     if let Some(val) = req.headers().get("authorization")
         && let Ok(s) = val.to_str()
-            && let Some(token) = s.strip_prefix("Bearer ") {
-                return Some(token.to_string());
-            }
+        && let Some(token) = s.strip_prefix("Bearer ")
+    {
+        return Some(token.to_string());
+    }
     // Only allow query-string token for WebSocket upgrade path
     if req.uri().path() == "/ws"
-        && let Some(query) = req.uri().query() {
-            for pair in query.split('&') {
-                if let Some((k, v)) = pair.split_once('=')
-                    && k == "token" && !v.is_empty() {
-                        return Some(v.to_string());
-                    }
+        && let Some(query) = req.uri().query()
+    {
+        for pair in query.split('&') {
+            if let Some((k, v)) = pair.split_once('=')
+                && k == "token"
+                && !v.is_empty()
+            {
+                return Some(v.to_string());
             }
         }
+    }
     None
 }
 
@@ -100,7 +105,8 @@ where
                 let path = req.uri().path();
                 if !is_exempt(path) {
                     match extract_api_key(&req) {
-                        Some(provided) if bool::from(provided.as_bytes().ct_eq(expected.as_bytes())) => {}
+                        Some(provided)
+                            if bool::from(provided.as_bytes().ct_eq(expected.as_bytes())) => {}
                         _ => return Ok(unauthorized_response()),
                     }
                 }

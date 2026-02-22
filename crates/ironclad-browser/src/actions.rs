@@ -61,9 +61,7 @@ impl ActionExecutor {
             }
             BrowserAction::Screenshot => Self::screenshot(session).await,
             BrowserAction::Pdf => Self::pdf(session).await,
-            BrowserAction::Evaluate { expression } => {
-                Self::evaluate(session, expression).await
-            }
+            BrowserAction::Evaluate { expression } => Self::evaluate(session, expression).await,
             BrowserAction::GetCookies => Self::get_cookies(session).await,
             BrowserAction::ClearCookies => Self::clear_cookies(session).await,
             BrowserAction::ReadPage => Self::read_page(session).await,
@@ -190,10 +188,7 @@ impl ActionExecutor {
             .unwrap_or("error");
 
         if focus_status == "not_found" {
-            return ActionResult::err(
-                "type",
-                format!("selector '{}' not found on page", selector),
-            );
+            return ActionResult::err("type", format!("selector '{}' not found on page", selector));
         }
 
         match session
@@ -269,10 +264,7 @@ impl ActionExecutor {
             .await
         {
             Ok(result) => {
-                let value = result
-                    .get("result")
-                    .cloned()
-                    .unwrap_or(json!(null));
+                let value = result.get("result").cloned().unwrap_or(json!(null));
 
                 if let Some(exception) = result.get("exceptionDetails") {
                     let text = exception
@@ -316,10 +308,7 @@ impl ActionExecutor {
     }
 
     async fn get_cookies(session: &CdpSession) -> ActionResult {
-        match session
-            .send_command("Network.getCookies", json!({}))
-            .await
-        {
+        match session.send_command("Network.getCookies", json!({})).await {
             Ok(result) => {
                 let cookies = result.get("cookies").cloned().unwrap_or(json!([]));
                 let count = cookies.as_array().map(|a| a.len()).unwrap_or(0);
@@ -488,9 +477,7 @@ mod tests {
     #[test]
     fn action_names_match() {
         assert_eq!(
-            action_name(&BrowserAction::Navigate {
-                url: "x".into()
-            }),
+            action_name(&BrowserAction::Navigate { url: "x".into() }),
             "navigate"
         );
         assert_eq!(

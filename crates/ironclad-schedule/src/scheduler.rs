@@ -199,4 +199,90 @@ mod tests {
             "2025-01-01T12:00:00+00:00"
         ));
     }
+
+    #[test]
+    fn next_run_at_future() {
+        let result = DurableScheduler::calculate_next_run(
+            "at",
+            Some("2025-01-01T02:00:00+00:00"),
+            None,
+            "2025-01-01T01:00:00+00:00",
+        );
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn next_run_cron() {
+        let result = DurableScheduler::calculate_next_run(
+            "cron",
+            Some("0 12 * * *"),
+            None,
+            "2025-01-01T00:00:00+00:00",
+        );
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn next_run_unknown_kind() {
+        let result = DurableScheduler::calculate_next_run(
+            "weekly",
+            None,
+            None,
+            "2025-01-01T00:00:00+00:00",
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn next_run_interval_missing_ms() {
+        let result = DurableScheduler::calculate_next_run(
+            "interval",
+            None,
+            None,
+            "2025-01-01T00:00:00+00:00",
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn cron_wrong_field_count() {
+        assert!(!DurableScheduler::evaluate_cron(
+            "0 12 *",
+            None,
+            "2025-01-01T12:00:00+00:00"
+        ));
+    }
+
+    #[test]
+    fn interval_invalid_now() {
+        assert!(!DurableScheduler::evaluate_interval(None, 60_000, "not-a-date"));
+    }
+
+    #[test]
+    fn at_invalid_target() {
+        assert!(!DurableScheduler::evaluate_at("bad", "2025-01-01T00:00:00+00:00"));
+    }
+
+    #[test]
+    fn at_invalid_now() {
+        assert!(!DurableScheduler::evaluate_at("2025-01-01T00:00:00+00:00", "bad"));
+    }
+
+    #[test]
+    fn cron_with_last_run_still_matches() {
+        assert!(DurableScheduler::evaluate_cron(
+            "0 12 * * *",
+            Some("2024-12-31T12:00:00+00:00"),
+            "2025-01-01T12:00:00+00:00"
+        ));
+    }
+
+    #[test]
+    fn interval_exact_boundary_is_due() {
+        assert!(DurableScheduler::evaluate_interval(
+            Some("2025-01-01T00:00:00+00:00"),
+            60_000,
+            "2025-01-01T00:01:00+00:00"
+        ));
+    }
 }

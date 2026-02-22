@@ -111,11 +111,7 @@ description = "Says hello"
 "#,
         )
         .unwrap();
-        fs::write(
-            plugin_dir.join("say_hello.gosh"),
-            "echo hello",
-        )
-        .unwrap();
+        fs::write(plugin_dir.join("say_hello.gosh"), "echo hello").unwrap();
 
         let config = PluginsConfig {
             dir: dir.path().to_path_buf(),

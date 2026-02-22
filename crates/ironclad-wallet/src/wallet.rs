@@ -17,8 +17,7 @@ const NONCE_LEN: usize = 12;
 
 fn derive_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
     use argon2::Argon2;
-    let params = argon2::Params::new(65536, 3, 1, Some(32))
-        .expect("valid Argon2 params");
+    let params = argon2::Params::new(65536, 3, 1, Some(32)).expect("valid Argon2 params");
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     let mut key = [0u8; 32];
     argon2
@@ -45,7 +44,9 @@ fn encrypt_wallet_data(data: &[u8], passphrase: &str) -> Vec<u8> {
     let key = derive_key(passphrase, &salt);
     let cipher = Aes256Gcm::new_from_slice(&key).expect("AES-256-GCM key is 32 bytes");
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, data).expect("AES-GCM encryption failed");
+    let ciphertext = cipher
+        .encrypt(nonce, data)
+        .expect("AES-GCM encryption failed");
 
     // Format: salt (16) || nonce (12) || ciphertext
     let mut result = Vec::with_capacity(ENCRYPTION_SALT_LEN + NONCE_LEN + ciphertext.len());
@@ -78,7 +79,9 @@ fn decrypt_wallet_data(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
         .map_err(|e| IroncladError::Wallet(format!("cipher init failed: {e}")))?;
     match legacy_cipher.decrypt(nonce, ciphertext) {
         Ok(plaintext) => {
-            tracing::warn!("wallet decrypted with legacy HKDF; re-encrypt with Argon2id by re-saving");
+            tracing::warn!(
+                "wallet decrypted with legacy HKDF; re-encrypt with Argon2id by re-saving"
+            );
             Ok(plaintext)
         }
         Err(_) => Err(IroncladError::Wallet(
@@ -134,22 +137,22 @@ impl Wallet {
                 None
             }
             .or_else(|| {
-                std::env::var("IRONCLAD_WALLET_PASSPHRASE").ok().and_then(|passphrase| {
-                    decrypt_wallet_data(&raw, &passphrase)
-                        .ok()
-                        .and_then(|decrypted| {
-                            serde_json::from_slice::<WalletFile>(&decrypted).ok()
-                        })
-                })
+                std::env::var("IRONCLAD_WALLET_PASSPHRASE")
+                    .ok()
+                    .and_then(|passphrase| {
+                        decrypt_wallet_data(&raw, &passphrase)
+                            .ok()
+                            .and_then(|decrypted| {
+                                serde_json::from_slice::<WalletFile>(&decrypted).ok()
+                            })
+                    })
             });
 
             if let Some(wallet_file) = wallet_file {
-                let key_bytes = hex::decode(&wallet_file.private_key_hex).map_err(|e| {
-                    IroncladError::Wallet(format!("invalid private key hex: {e}"))
-                })?;
-                let signing_key = SigningKey::from_slice(&key_bytes).map_err(|e| {
-                    IroncladError::Wallet(format!("invalid private key: {e}"))
-                })?;
+                let key_bytes = hex::decode(&wallet_file.private_key_hex)
+                    .map_err(|e| IroncladError::Wallet(format!("invalid private key hex: {e}")))?;
+                let signing_key = SigningKey::from_slice(&key_bytes)
+                    .map_err(|e| IroncladError::Wallet(format!("invalid private key: {e}")))?;
 
                 let derived_addr = eth_address_from_public_key(&signing_key);
                 if derived_addr != wallet_file.address {
@@ -167,7 +170,10 @@ impl Wallet {
                 });
             }
 
-            info!(?wallet_path, "legacy wallet file detected, regenerating with real keypair");
+            info!(
+                ?wallet_path,
+                "legacy wallet file detected, regenerating with real keypair"
+            );
         }
 
         {
@@ -200,8 +206,9 @@ impl Wallet {
             {
                 use std::os::unix::fs::PermissionsExt;
                 let perms = std::fs::Permissions::from_mode(0o600);
-                std::fs::set_permissions(wallet_path, perms)
-                    .map_err(|e| IroncladError::Wallet(format!("failed to set wallet permissions: {e}")))?;
+                std::fs::set_permissions(wallet_path, perms).map_err(|e| {
+                    IroncladError::Wallet(format!("failed to set wallet permissions: {e}"))
+                })?;
             }
 
             Ok(Self {
@@ -231,9 +238,8 @@ impl Wallet {
     }
 
     pub async fn sign_message(&self, message: &str) -> Result<String> {
-        let signing_key = SigningKey::from_slice(&self.private_key).map_err(|e| {
-            IroncladError::Wallet(format!("failed to load signing key: {e}"))
-        })?;
+        let signing_key = SigningKey::from_slice(&self.private_key)
+            .map_err(|e| IroncladError::Wallet(format!("failed to load signing key: {e}")))?;
 
         let prefix = format!("\x19Ethereum Signed Message:\n{}", message.len());
         let mut data = Vec::with_capacity(prefix.len() + message.len());
@@ -342,7 +348,11 @@ mod tests {
         let _wallet = Wallet::load_or_generate(&config).await.unwrap();
         let meta = std::fs::metadata(&config.path).unwrap();
         let mode = meta.permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "wallet file should be 0o600 (owner read/write only)");
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "wallet file should be 0o600 (owner read/write only)"
+        );
     }
 
     #[tokio::test]
@@ -416,5 +426,45 @@ mod tests {
         unsafe {
             std::env::remove_var("IRONCLAD_WALLET_PASSPHRASE");
         }
+    }
+
+    #[test]
+    fn decrypt_wallet_data_too_short() {
+        let result = decrypt_wallet_data(&[0u8; 10], "password");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn decrypt_wallet_data_wrong_passphrase() {
+        let data = b"some wallet data to encrypt";
+        let encrypted = encrypt_wallet_data(data, "correct-password");
+        let result = decrypt_wallet_data(&encrypted, "wrong-password");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("wrong passphrase"));
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip_unit() {
+        let original = b"hello wallet world";
+        let encrypted = encrypt_wallet_data(original, "my-pass");
+        let decrypted = decrypt_wallet_data(&encrypted, "my-pass").unwrap();
+        assert_eq!(&decrypted, original);
+    }
+
+    #[tokio::test]
+    async fn private_key_path_returns_wallet_path() {
+        let dir = TempDir::new().unwrap();
+        let config = test_config(&dir);
+        let wallet = Wallet::load_or_generate(&config).await.unwrap();
+        assert_eq!(wallet.private_key_path(), config.path);
+    }
+
+    #[tokio::test]
+    async fn rpc_url_returns_configured_url() {
+        let dir = TempDir::new().unwrap();
+        let config = test_config(&dir);
+        let wallet = Wallet::load_or_generate(&config).await.unwrap();
+        assert_eq!(wallet.rpc_url(), "https://mainnet.base.org");
     }
 }

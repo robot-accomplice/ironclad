@@ -52,7 +52,10 @@ impl Theme {
     }
 
     pub fn from_flags(color_flag: &str, theme_flag: &str) -> Self {
-        Self::resolve(ColorMode::from_flag(color_flag), ThemeVariant::from_flag(theme_flag))
+        Self::resolve(
+            ColorMode::from_flag(color_flag),
+            ThemeVariant::from_flag(theme_flag),
+        )
     }
 
     pub fn resolve(mode: ColorMode, variant: ThemeVariant) -> Self {
@@ -70,11 +73,21 @@ impl Theme {
                 }
             }
         };
-        Self { enabled, draw: enabled, variant, nerdmode: false }
+        Self {
+            enabled,
+            draw: enabled,
+            variant,
+            nerdmode: false,
+        }
     }
 
     pub fn plain() -> Self {
-        Self { enabled: false, draw: false, variant: ThemeVariant::CrtGreen, nerdmode: false }
+        Self {
+            enabled: false,
+            draw: false,
+            variant: ThemeVariant::CrtGreen,
+            nerdmode: false,
+        }
     }
 
     pub fn with_draw(mut self, draw: bool) -> Self {
@@ -121,7 +134,11 @@ impl Theme {
     }
 
     pub fn icon_warn(&self) -> &'static str {
-        if self.nerdmode { "[!!]" } else { "\u{26a0}\u{fe0f}" }
+        if self.nerdmode {
+            "[!!]"
+        } else {
+            "\u{26a0}\u{fe0f}"
+        }
     }
 
     pub fn icon_detail(&self) -> &'static str {
@@ -136,31 +153,37 @@ impl Theme {
 
     /// Emphasis/highlight color. Bright green, bright orange, or bold depending on variant.
     pub fn accent(&self) -> &'static str {
-        if !self.enabled { return ""; }
+        if !self.enabled {
+            return "";
+        }
         match self.variant {
-            ThemeVariant::CrtGreen  => "\x1b[38;5;46m",
+            ThemeVariant::CrtGreen => "\x1b[38;5;46m",
             ThemeVariant::CrtOrange => "\x1b[38;5;208m",
-            ThemeVariant::Terminal  => "\x1b[1m",
+            ThemeVariant::Terminal => "\x1b[1m",
         }
     }
 
     /// Body-text color. Matches the variant's base tone; empty for Terminal.
     pub fn dim(&self) -> &'static str {
-        if !self.enabled { return ""; }
+        if !self.enabled {
+            return "";
+        }
         match self.variant {
-            ThemeVariant::CrtGreen  => "\x1b[38;5;40m",
+            ThemeVariant::CrtGreen => "\x1b[38;5;40m",
             ThemeVariant::CrtOrange => "\x1b[38;5;172m",
-            ThemeVariant::Terminal  => "",
+            ThemeVariant::Terminal => "",
         }
     }
 
     /// Monospace-value color. Same as accent for CRT variants; bold for Terminal.
     pub fn mono(&self) -> &'static str {
-        if !self.enabled { return ""; }
+        if !self.enabled {
+            return "";
+        }
         match self.variant {
-            ThemeVariant::CrtGreen  => "\x1b[38;5;46m",
+            ThemeVariant::CrtGreen => "\x1b[38;5;46m",
             ThemeVariant::CrtOrange => "\x1b[38;5;208m",
-            ThemeVariant::Terminal  => "\x1b[1m",
+            ThemeVariant::Terminal => "\x1b[1m",
         }
     }
 
@@ -193,11 +216,13 @@ impl Theme {
     /// Soft reset: clears styles and re-tints to the variant's body color.
     /// For Terminal variant, this is a plain reset (no tint).
     pub fn reset(&self) -> &'static str {
-        if !self.enabled { return ""; }
+        if !self.enabled {
+            return "";
+        }
         match self.variant {
-            ThemeVariant::CrtGreen  => "\x1b[0m\x1b[38;5;40m",
+            ThemeVariant::CrtGreen => "\x1b[0m\x1b[38;5;40m",
             ThemeVariant::CrtOrange => "\x1b[0m\x1b[38;5;172m",
-            ThemeVariant::Terminal  => "\x1b[0m",
+            ThemeVariant::Terminal => "\x1b[0m",
         }
     }
 
@@ -223,7 +248,9 @@ impl Theme {
                 let mut seq = String::from(ch);
                 for c in chars.by_ref() {
                     seq.push(c);
-                    if c == 'm' { break; }
+                    if c == 'm' {
+                        break;
+                    }
                 }
                 eprint!("{seq}");
             } else if ch == '\n' {
@@ -256,7 +283,9 @@ impl Theme {
                 let mut seq = String::from(ch);
                 for c in chars.by_ref() {
                     seq.push(c);
-                    if c == 'm' { break; }
+                    if c == 'm' {
+                        break;
+                    }
                 }
                 print!("{seq}");
             } else if ch == '\n' {
@@ -288,9 +317,12 @@ impl Theme {
             let sound = "/System/Library/Sounds/Tink.aiff";
             if std::path::Path::new(sound).exists() {
                 let child = std::process::Command::new("bash")
-                    .args(["-c", &format!(
-                        "while true; do afplay -t 0.04 {sound} 2>/dev/null; sleep 0.04; done"
-                    )])
+                    .args([
+                        "-c",
+                        &format!(
+                            "while true; do afplay -t 0.04 {sound} 2>/dev/null; sleep 0.04; done"
+                        ),
+                    ])
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -360,7 +392,10 @@ mod tests {
         let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
         let r = t.reset();
         assert!(r.contains("\x1b[0m"), "reset should clear styles");
-        assert!(r.contains("\x1b[38;5;40m"), "CrtGreen reset should tint green");
+        assert!(
+            r.contains("\x1b[38;5;40m"),
+            "CrtGreen reset should tint green"
+        );
     }
 
     #[test]
@@ -368,7 +403,10 @@ mod tests {
         let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtOrange);
         assert!(t.accent().contains("208"), "CrtOrange accent should be 208");
         assert!(t.dim().contains("172"), "CrtOrange dim should be 172");
-        assert!(t.reset().contains("172"), "CrtOrange reset should tint orange");
+        assert!(
+            t.reset().contains("172"),
+            "CrtOrange reset should tint orange"
+        );
     }
 
     #[test]
@@ -404,7 +442,10 @@ mod tests {
     #[test]
     fn theme_variant_from_flag() {
         assert_eq!(ThemeVariant::from_flag("crt-green"), ThemeVariant::CrtGreen);
-        assert_eq!(ThemeVariant::from_flag("crt-orange"), ThemeVariant::CrtOrange);
+        assert_eq!(
+            ThemeVariant::from_flag("crt-orange"),
+            ThemeVariant::CrtOrange
+        );
         assert_eq!(ThemeVariant::from_flag("terminal"), ThemeVariant::Terminal);
         assert_eq!(ThemeVariant::from_flag("garbage"), ThemeVariant::CrtGreen);
     }
@@ -463,5 +504,137 @@ mod tests {
         assert_eq!(t.icon_warn(), "\u{26a0}\u{fe0f}");
         assert_eq!(t.icon_detail(), "\u{25b8}");
         assert_eq!(t.icon_error(), "\u{26d3}");
+    }
+
+    #[test]
+    fn from_flags_produces_correct_theme() {
+        let t = Theme::from_flags("always", "crt-orange");
+        assert!(t.colors_enabled());
+        assert_eq!(t.variant(), ThemeVariant::CrtOrange);
+
+        let t2 = Theme::from_flags("never", "terminal");
+        assert!(!t2.colors_enabled());
+        assert_eq!(t2.variant(), ThemeVariant::Terminal);
+    }
+
+    #[test]
+    fn from_flags_unknown_defaults() {
+        let t = Theme::from_flags("auto", "garbage");
+        assert_eq!(t.variant(), ThemeVariant::CrtGreen);
+    }
+
+    #[test]
+    fn detect_returns_a_theme() {
+        let t = Theme::detect();
+        assert_eq!(t.variant(), ThemeVariant::CrtGreen);
+    }
+
+    #[test]
+    fn mono_colors_per_variant() {
+        let green = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
+        assert_eq!(green.mono(), "\x1b[38;5;46m");
+
+        let orange = Theme::resolve(ColorMode::Always, ThemeVariant::CrtOrange);
+        assert_eq!(orange.mono(), "\x1b[38;5;208m");
+
+        let term = Theme::resolve(ColorMode::Always, ThemeVariant::Terminal);
+        assert_eq!(term.mono(), "\x1b[1m");
+    }
+
+    #[test]
+    fn typewrite_instant_when_draw_disabled() {
+        let t = Theme::plain();
+        assert!(!t.draw_enabled());
+        t.typewrite("hello", 100);
+        t.typewrite("with \x1b[1m ansi \x1b[0m codes", 100);
+    }
+
+    #[test]
+    fn typewrite_line_instant_when_draw_disabled() {
+        let t = Theme::plain();
+        t.typewrite_line("hello line", 100);
+    }
+
+    #[test]
+    fn typewrite_stdout_instant_when_draw_disabled() {
+        let t = Theme::plain();
+        t.typewrite_stdout("stdout text", 100);
+    }
+
+    #[test]
+    fn typewrite_line_stdout_instant_when_draw_disabled() {
+        let t = Theme::plain();
+        t.typewrite_line_stdout("stdout line", 100);
+    }
+
+    #[test]
+    fn typewrite_with_draw_enabled_processes_ansi() {
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
+        assert!(t.draw_enabled());
+        t.typewrite("ab\x1b[1mc\x1b[0m\nend", 0);
+    }
+
+    #[test]
+    fn typewrite_stdout_with_draw_enabled() {
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
+        t.typewrite_stdout("ab\x1b[1mc\x1b[0m\nend", 0);
+    }
+
+    #[test]
+    fn start_typing_sound_returns_none_when_draw_disabled() {
+        let t = Theme::plain();
+        assert!(t.start_typing_sound().is_none());
+    }
+
+    #[test]
+    fn sleep_ms_does_not_panic() {
+        sleep_ms(0);
+        sleep_ms(1);
+    }
+
+    #[test]
+    fn with_draw_true_enables_draw() {
+        let t = Theme::plain().with_draw(true);
+        assert!(t.draw_enabled());
+    }
+
+    #[test]
+    fn nerdmode_false_is_noop() {
+        let t = Theme::resolve(ColorMode::Always, ThemeVariant::Terminal).with_nerdmode(false);
+        assert!(!t.nerdmode());
+    }
+
+    #[test]
+    fn semantic_colors_plain_theme() {
+        let t = Theme::plain();
+        assert_eq!(t.success(), "");
+        assert_eq!(t.warn(), "");
+        assert_eq!(t.error(), "");
+        assert_eq!(t.info(), "");
+        assert_eq!(t.bold(), "");
+    }
+
+    #[test]
+    fn dim_per_variant() {
+        let green = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
+        assert_eq!(green.dim(), "\x1b[38;5;40m");
+
+        let orange = Theme::resolve(ColorMode::Always, ThemeVariant::CrtOrange);
+        assert_eq!(orange.dim(), "\x1b[38;5;172m");
+
+        let term = Theme::resolve(ColorMode::Always, ThemeVariant::Terminal);
+        assert_eq!(term.dim(), "");
+    }
+
+    #[test]
+    fn reset_per_variant() {
+        let green = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
+        assert!(green.reset().contains("\x1b[38;5;40m"));
+
+        let orange = Theme::resolve(ColorMode::Always, ThemeVariant::CrtOrange);
+        assert!(orange.reset().contains("\x1b[38;5;172m"));
+
+        let term = Theme::resolve(ColorMode::Always, ThemeVariant::Terminal);
+        assert_eq!(term.reset(), "\x1b[0m");
     }
 }

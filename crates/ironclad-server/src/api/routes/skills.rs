@@ -4,7 +4,7 @@ use axum::{
 };
 use serde_json::Value;
 
-use super::{internal_err, AppState};
+use super::{AppState, internal_err};
 
 pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
     match ironclad_db::skills::list_skills(&state.db) {
@@ -47,7 +47,10 @@ pub async fn get_skill(State(state): State<AppState>, Path(id): Path<String>) ->
             "last_loaded_at": s.last_loaded_at,
             "created_at": s.created_at,
         }))),
-        Ok(None) => Err((axum::http::StatusCode::NOT_FOUND, format!("skill {id} not found"))),
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("skill {id} not found"),
+        )),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -129,7 +132,10 @@ pub async fn toggle_skill(
             "id": id,
             "enabled": new_enabled,
         }))),
-        Ok(None) => Err((axum::http::StatusCode::NOT_FOUND, format!("skill {id} not found"))),
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("skill {id} not found"),
+        )),
         Err(e) => Err(internal_err(&e)),
     }
 }

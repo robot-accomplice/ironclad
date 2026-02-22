@@ -37,7 +37,11 @@ fn exceeding_max_turns_forces_done() {
     agent.transition(ReactAction::Think);
     agent.transition(ReactAction::Observe);
     let state = agent.transition(ReactAction::Think);
-    assert_eq!(state, ReactState::Done, "should be Done after exceeding max_turns");
+    assert_eq!(
+        state,
+        ReactState::Done,
+        "should be Done after exceeding max_turns"
+    );
 }
 
 #[test]

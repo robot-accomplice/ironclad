@@ -127,18 +127,17 @@ pub fn needs_hard_clear(messages: &[UnifiedMessage], config: &PruningConfig) -> 
 }
 
 /// Soft trim: remove oldest non-system messages while preserving the most recent N.
-pub fn soft_trim(
-    messages: &[UnifiedMessage],
-    config: &PruningConfig,
-) -> PruningResult {
+pub fn soft_trim(messages: &[UnifiedMessage], config: &PruningConfig) -> PruningResult {
     let target_tokens = (config.max_tokens as f64 * config.soft_trim_ratio) as usize;
 
-    let system_msgs: Vec<_> = messages.iter()
+    let system_msgs: Vec<_> = messages
+        .iter()
         .filter(|m| m.role == "system")
         .cloned()
         .collect();
 
-    let non_system: Vec<_> = messages.iter()
+    let non_system: Vec<_> = messages
+        .iter()
         .filter(|m| m.role != "system")
         .cloned()
         .collect();
@@ -181,7 +180,8 @@ pub fn extract_trimmable(
     messages: &[UnifiedMessage],
     config: &PruningConfig,
 ) -> Vec<UnifiedMessage> {
-    let non_system: Vec<_> = messages.iter()
+    let non_system: Vec<_> = messages
+        .iter()
         .filter(|m| m.role != "system")
         .cloned()
         .collect();
@@ -196,7 +196,7 @@ pub fn extract_trimmable(
 pub fn build_compaction_prompt(trimmed: &[UnifiedMessage]) -> String {
     let mut prompt = String::from(
         "Summarize the following conversation history into a concise paragraph. \
-         Capture key facts, decisions, and context. Do not include greetings or filler.\n\n"
+         Capture key facts, decisions, and context. Do not include greetings or filler.\n\n",
     );
 
     for msg in trimmed {
@@ -207,18 +207,19 @@ pub fn build_compaction_prompt(trimmed: &[UnifiedMessage]) -> String {
 }
 
 /// Insert a compaction summary as a system message after the original system messages.
-pub fn insert_compaction_summary(
-    messages: &mut Vec<UnifiedMessage>,
-    summary: String,
-) {
-    let insert_pos = messages.iter()
+pub fn insert_compaction_summary(messages: &mut Vec<UnifiedMessage>, summary: String) {
+    let insert_pos = messages
+        .iter()
         .position(|m| m.role != "system")
         .unwrap_or(messages.len());
 
-    messages.insert(insert_pos, UnifiedMessage {
-        role: "system".into(),
-        content: format!("[Conversation Summary] {summary}"),
-    });
+    messages.insert(
+        insert_pos,
+        UnifiedMessage {
+            role: "system".into(),
+            content: format!("[Conversation Summary] {summary}"),
+        },
+    );
 }
 
 #[cfg(test)]
@@ -267,7 +268,7 @@ mod tests {
         assert_eq!(ctx[0].content, sys);
 
         let total_chars: usize = ctx.iter().map(|m| m.content.len()).sum();
-        let total_tokens = (total_chars + 3) / 4;
+        let total_tokens = total_chars.div_ceil(4);
         assert!(total_tokens <= token_budget(ComplexityLevel::L0));
     }
 
@@ -303,9 +304,10 @@ mod tests {
 
     #[test]
     fn count_tokens_basic() {
-        let msgs = vec![
-            UnifiedMessage { role: "user".into(), content: "hello world".into() },
-        ];
+        let msgs = vec![UnifiedMessage {
+            role: "user".into(),
+            content: "hello world".into(),
+        }];
         let tokens = count_tokens(&msgs);
         assert!(tokens > 0);
         assert_eq!(tokens, estimate_tokens("hello world"));
@@ -313,9 +315,10 @@ mod tests {
 
     #[test]
     fn needs_pruning_under_threshold() {
-        let msgs = vec![
-            UnifiedMessage { role: "user".into(), content: "short".into() },
-        ];
+        let msgs = vec![UnifiedMessage {
+            role: "user".into(),
+            content: "short".into(),
+        }];
         let cfg = PruningConfig::default();
         assert!(!needs_pruning(&msgs, &cfg));
     }
@@ -323,9 +326,10 @@ mod tests {
     #[test]
     fn needs_pruning_over_threshold() {
         let big = "x".repeat(500_000);
-        let msgs = vec![
-            UnifiedMessage { role: "user".into(), content: big },
-        ];
+        let msgs = vec![UnifiedMessage {
+            role: "user".into(),
+            content: big,
+        }];
         let cfg = PruningConfig::default();
         assert!(needs_pruning(&msgs, &cfg));
     }
@@ -333,7 +337,10 @@ mod tests {
     #[test]
     fn soft_trim_preserves_recent() {
         let mut msgs = Vec::new();
-        msgs.push(UnifiedMessage { role: "system".into(), content: "sys".into() });
+        msgs.push(UnifiedMessage {
+            role: "system".into(),
+            content: "sys".into(),
+        });
         for i in 0..20 {
             msgs.push(UnifiedMessage {
                 role: if i % 2 == 0 { "user" } else { "assistant" }.into(),
@@ -358,12 +365,21 @@ mod tests {
     #[test]
     fn extract_trimmable_gets_old_messages() {
         let mut msgs = Vec::new();
-        msgs.push(UnifiedMessage { role: "system".into(), content: "sys".into() });
+        msgs.push(UnifiedMessage {
+            role: "system".into(),
+            content: "sys".into(),
+        });
         for i in 0..10 {
-            msgs.push(UnifiedMessage { role: "user".into(), content: format!("msg {i}") });
+            msgs.push(UnifiedMessage {
+                role: "user".into(),
+                content: format!("msg {i}"),
+            });
         }
 
-        let cfg = PruningConfig { preserve_recent: 3, ..Default::default() };
+        let cfg = PruningConfig {
+            preserve_recent: 3,
+            ..Default::default()
+        };
         let trimmed = extract_trimmable(&msgs, &cfg);
         assert_eq!(trimmed.len(), 7);
         assert_eq!(trimmed[0].content, "msg 0");
@@ -372,8 +388,14 @@ mod tests {
     #[test]
     fn build_compaction_prompt_format() {
         let msgs = vec![
-            UnifiedMessage { role: "user".into(), content: "hi".into() },
-            UnifiedMessage { role: "assistant".into(), content: "hello".into() },
+            UnifiedMessage {
+                role: "user".into(),
+                content: "hi".into(),
+            },
+            UnifiedMessage {
+                role: "assistant".into(),
+                content: "hello".into(),
+            },
         ];
         let prompt = build_compaction_prompt(&msgs);
         assert!(prompt.contains("Summarize"));
@@ -384,8 +406,14 @@ mod tests {
     #[test]
     fn insert_compaction_summary_placement() {
         let mut msgs = vec![
-            UnifiedMessage { role: "system".into(), content: "sys".into() },
-            UnifiedMessage { role: "user".into(), content: "hi".into() },
+            UnifiedMessage {
+                role: "system".into(),
+                content: "sys".into(),
+            },
+            UnifiedMessage {
+                role: "user".into(),
+                content: "hi".into(),
+            },
         ];
         insert_compaction_summary(&mut msgs, "summary here".into());
         assert_eq!(msgs.len(), 3);

@@ -239,10 +239,10 @@ Verdicts: **Clean** (safe to import), **Warnings** (review recommended, user con
 | **Binary / deploy size** | ~200 MB (node_modules + pip packages) | ~15 MB static binary |
 | **Supply chain** | 500+ npm + pip packages | ~50 auditable crates |
 | **Type safety** | Runtime errors (untyped dicts in proxy) | Compile-time guarantees (strongly typed enums) |
-| **Database** | 5 storage layers (JSONL, PostgreSQL, SQLite, JSON files, Markdown) | 1 unified SQLite database (28 tables, WAL mode) |
+| **Database** | 5 storage layers (JSONL, SQLite, JSON files, Markdown) | 1 unified SQLite database (28 tables, WAL mode) |
 | **Sessions** | Append-only JSONL files | SQLite `sessions` + `session_messages` tables |
-| **Memory** | Split across PostgreSQL (gateway) and SQLite (automaton) with incompatible schemas | Unified 5-tier memory in single SQLite DB |
-| **Full-text search** | PostgreSQL tsvector | SQLite FTS5 |
+| **Memory** | Split across Markdown, JSON, and SQLite (automaton) with incompatible schemas | Unified 5-tier memory in single SQLite DB |
+| **Full-text search** | None | SQLite FTS5 |
 | **Model routing** | Rule-based fallback chain only | Heuristic complexity classifier + rule-based fallback |
 | **Semantic caching** | None | 3-level cache (exact hash, embedding similarity, tool TTL) |
 | **Prompt compression** | None (17 KB system prompt sent every request) | Progressive context loading (4 levels, 2K-16K tokens) |

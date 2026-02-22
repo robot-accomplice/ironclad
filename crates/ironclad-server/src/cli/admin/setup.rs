@@ -3,7 +3,9 @@ use super::*;
 // ── Setup wizard & starter skills ─────────────────────────────
 
 pub const STARTER_SKILLS: &[(&str, &str)] = &[
-    ("hello.md", r#"---
+    (
+        "hello.md",
+        r#"---
 name: hello
 description: Greet the user and introduce the agent
 triggers:
@@ -14,8 +16,11 @@ priority: 5
 Greet the user warmly. Introduce yourself by name and briefly describe what you can do.
 Keep it concise -- one or two sentences. If the user seems new, mention they can
 ask for help at any time.
-"#),
-    ("summarize.md", r#"---
+"#,
+    ),
+    (
+        "summarize.md",
+        r#"---
 name: summarize
 description: Summarize text, articles, or conversations
 triggers:
@@ -30,8 +35,11 @@ Summarize the provided content clearly and concisely. Structure your summary as:
 
 If no content is provided, ask the user what they'd like summarized.
 Preserve important details like names, dates, and numbers.
-"#),
-    ("explain.md", r#"---
+"#,
+    ),
+    (
+        "explain.md",
+        r#"---
 name: explain
 description: Explain concepts, code, or ideas in plain language
 triggers:
@@ -43,8 +51,11 @@ Explain the topic clearly, adjusting depth to the user's apparent level of exper
 Start with a simple one-sentence definition, then expand with relevant details.
 Use analogies when helpful. If explaining code, walk through the logic step by step.
 If the concept is complex, break it into numbered parts.
-"#),
-    ("draft.md", r#"---
+"#,
+    ),
+    (
+        "draft.md",
+        r#"---
 name: draft
 description: Draft emails, messages, documents, or other written content
 triggers:
@@ -55,8 +66,11 @@ priority: 6
 Draft the requested content based on the user's description. Ask clarifying questions
 if the audience, tone, or purpose is unclear. Default to a professional but approachable
 tone unless told otherwise. Present the draft clearly and offer to revise.
-"#),
-    ("review.md", r#"---
+"#,
+    ),
+    (
+        "review.md",
+        r#"---
 name: review
 description: Review code, text, or plans and provide constructive feedback
 triggers:
@@ -71,8 +85,11 @@ Review the provided content carefully. Organize your feedback into:
 
 Be specific -- reference exact lines or passages. Prioritize the most impactful
 feedback first. Keep the tone constructive.
-"#),
-    ("plan.md", r#"---
+"#,
+    ),
+    (
+        "plan.md",
+        r#"---
 name: plan
 description: Break down tasks or projects into actionable steps
 triggers:
@@ -87,8 +104,11 @@ Break the task into clear, actionable steps. For each step:
 
 Order steps logically. Flag any risks or decisions that need to be made before
 proceeding. Keep the plan practical -- prefer concrete actions over vague guidance.
-"#),
-    ("search.md", r#"---
+"#,
+    ),
+    (
+        "search.md",
+        r#"---
 name: search
 description: Help find information, files, or answers
 triggers:
@@ -99,7 +119,8 @@ priority: 5
 Help the user find what they're looking for. If you have access to relevant tools
 or context, use them. If the query is ambiguous, ask one clarifying question before
 searching. Present results clearly with sources or locations when available.
-"#),
+"#,
+    ),
 ];
 
 pub fn write_starter_skills(skills_dir: &std::path::Path) -> std::io::Result<usize> {
@@ -114,7 +135,9 @@ pub fn write_starter_skills(skills_dir: &std::path::Path) -> std::io::Result<usi
     Ok(written)
 }
 
-fn run_quick_personality_setup(workspace: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+fn run_quick_personality_setup(
+    workspace: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     use dialoguer::{Input, Select};
@@ -155,7 +178,9 @@ fn run_quick_personality_setup(workspace: &std::path::Path) -> Result<(), Box<dy
         .interact()?;
 
     let boundaries: String = Input::new()
-        .with_prompt("  Any hard boundaries? (topics/actions that are off-limits, or press Enter to skip)")
+        .with_prompt(
+            "  Any hard boundaries? (topics/actions that are off-limits, or press Enter to skip)",
+        )
         .allow_empty(true)
         .interact_text()?;
 
@@ -179,7 +204,7 @@ fn run_quick_personality_setup(workspace: &std::path::Path) -> Result<(), Box<dy
 pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    use dialoguer::{Input, Select, Confirm};
+    use dialoguer::{Confirm, Input, Select};
 
     println!("\n  {BOLD}Ironclad Setup Wizard{RESET}\n");
     println!("  This wizard will help you create an ironclad.toml configuration.\n");
@@ -191,10 +216,14 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
 
     if !has_go {
         println!("  {WARN} Go is not installed (required for the gosh plugin engine).");
-        println!("     Install from {CYAN}https://go.dev/dl/{RESET} or: {MONO}brew install go{RESET}");
+        println!(
+            "     Install from {CYAN}https://go.dev/dl/{RESET} or: {MONO}brew install go{RESET}"
+        );
         println!();
         let proceed = Confirm::new()
-            .with_prompt("  Continue without Go? (plugins won't work until Go + gosh are installed)")
+            .with_prompt(
+                "  Continue without Go? (plugins won't work until Go + gosh are installed)",
+            )
             .default(true)
             .interact()?;
         if !proceed {
@@ -219,11 +248,15 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 _ => {
                     println!("  {WARN} gosh installation failed. Install manually:");
-                    println!("     {MONO}go install github.com/drewwalton19216801/gosh@latest{RESET}");
+                    println!(
+                        "     {MONO}go install github.com/drewwalton19216801/gosh@latest{RESET}"
+                    );
                 }
             }
         } else {
-            println!("  Skipped. Install later: {MONO}go install github.com/drewwalton19216801/gosh@latest{RESET}");
+            println!(
+                "  Skipped. Install later: {MONO}go install github.com/drewwalton19216801/gosh@latest{RESET}"
+            );
         }
     } else {
         println!("  {OK} Go found");
@@ -333,7 +366,10 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
     config.push_str("# Ironclad Configuration (generated by onboard wizard)\n\n");
     config.push_str("[agent]\n");
     config.push_str(&format!("name = \"{agent_name}\"\n"));
-    config.push_str(&format!("id = \"{}\"\n", agent_name.to_lowercase().replace(' ', "-")));
+    config.push_str(&format!(
+        "id = \"{}\"\n",
+        agent_name.to_lowercase().replace(' ', "-")
+    ));
     config.push_str(&format!("workspace = \"{workspace}\"\n"));
     config.push_str("log_level = \"info\"\n\n");
 
@@ -353,10 +389,14 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
     config.push_str("confidence_threshold = 0.9\n");
     config.push_str("local_first = true\n\n");
 
-    config.push_str("# Bundled provider defaults (ollama, openai, anthropic, google, openrouter)\n");
+    config
+        .push_str("# Bundled provider defaults (ollama, openai, anthropic, google, openrouter)\n");
     config.push_str("# are auto-merged. Override or add new providers here.\n");
     if api_key.is_some() {
-        config.push_str(&format!("# Set the API key via env: {}_API_KEY\n\n", provider_prefix.to_uppercase()));
+        config.push_str(&format!(
+            "# Set the API key via env: {}_API_KEY\n\n",
+            provider_prefix.to_uppercase()
+        ));
     } else {
         config.push('\n');
     }
@@ -461,11 +501,13 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
                 .interact()?;
 
             let starter_os = ironclad_core::personality::generate_os_toml(
-                &basic_name, "balanced", "suggest", domains[domain_idx],
+                &basic_name,
+                "balanced",
+                "suggest",
+                domains[domain_idx],
             );
             std::fs::write(ws_path.join("OS.toml"), &starter_os)?;
-            ironclad_core::personality::write_defaults(ws_path)
-                .ok();
+            ironclad_core::personality::write_defaults(ws_path).ok();
 
             println!();
             println!("  {OK} Starter personality written.");

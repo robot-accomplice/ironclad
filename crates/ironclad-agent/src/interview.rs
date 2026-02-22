@@ -145,6 +145,6 @@ mod tests {
     #[test]
     fn min_categories_is_reasonable() {
         assert!(MIN_CATEGORIES_FOR_GENERATION <= INTERVIEW_CATEGORIES.len());
-        assert!(MIN_CATEGORIES_FOR_GENERATION >= 4);
+        const { assert!(MIN_CATEGORIES_FOR_GENERATION >= 4) };
     }
 }

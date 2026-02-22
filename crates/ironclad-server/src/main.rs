@@ -9,10 +9,19 @@ use ironclad_core::style::Theme;
 use ironclad_server::{bootstrap, cli};
 
 #[derive(Parser)]
-#[command(name = "ironclad", version, about = "Ironclad Autonomous Agent Runtime")]
+#[command(
+    name = "ironclad",
+    version,
+    about = "Ironclad Autonomous Agent Runtime"
+)]
 struct Cli {
     /// Gateway URL for management commands
-    #[arg(long, global = true, default_value = "http://127.0.0.1:18789", env = "IRONCLAD_URL")]
+    #[arg(
+        long,
+        global = true,
+        default_value = "http://127.0.0.1:18789",
+        env = "IRONCLAD_URL"
+    )]
     url: String,
 
     /// Profile name for state isolation
@@ -28,7 +37,12 @@ struct Cli {
     color: String,
 
     /// Color theme: crt-green (default), crt-orange, terminal
-    #[arg(long, global = true, default_value = "crt-green", env = "IRONCLAD_THEME")]
+    #[arg(
+        long,
+        global = true,
+        default_value = "crt-green",
+        env = "IRONCLAD_THEME"
+    )]
     theme: String,
 
     /// Disable CRT typewriter draw effect
@@ -56,7 +70,6 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     // ── Lifecycle ────────────────────────────────────────────
-
     /// Boot the Ironclad runtime
     #[command(alias = "start", alias = "run", next_help_heading = "Lifecycle")]
     Serve {
@@ -89,7 +102,6 @@ enum Commands {
     Update(UpdateCmd),
 
     // ── Operations ──────────────────────────────────────────
-
     /// Display system status
     #[command(next_help_heading = "Operations")]
     Status,
@@ -119,7 +131,6 @@ enum Commands {
     Circuit(CircuitCmd),
 
     // ── Data ────────────────────────────────────────────────
-
     /// Manage sessions
     #[command(next_help_heading = "Data")]
     #[command(subcommand)]
@@ -146,7 +157,6 @@ enum Commands {
     Wallet(WalletCmd),
 
     // ── Configuration ───────────────────────────────────────
-
     /// Read and write configuration
     #[command(next_help_heading = "Configuration")]
     #[command(subcommand)]
@@ -173,14 +183,12 @@ enum Commands {
     Security(SecurityCmd),
 
     // ── Migration ────────────────────────────────────────
-
     /// Migrate between OpenClaw and Ironclad
     #[command(next_help_heading = "Migration")]
     #[command(subcommand)]
     Migrate(MigrateCmd),
 
     // ── System ──────────────────────────────────────────────
-
     /// Manage daemon service
     #[command(next_help_heading = "System")]
     #[command(subcommand)]
@@ -497,18 +505,25 @@ enum UpdateCmd {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let parsed = Cli::parse();
-    cli::init_theme(&parsed.color, &parsed.theme, parsed.no_draw, parsed.nerdmode);
+    cli::init_theme(
+        &parsed.color,
+        &parsed.theme,
+        parsed.no_draw,
+        parsed.nerdmode,
+    );
     let t = cli::theme();
     eprint!("{}", t.reset());
     let url = if parsed.url == "http://127.0.0.1:18789" && parsed.config.is_some() {
         // Default URL — try to derive from config file
-        match parsed.config.as_deref().and_then(|p| std::fs::read_to_string(p).ok()) {
-            Some(contents) => {
-                match IroncladConfig::from_str(&contents) {
-                    Ok(cfg) => format!("http://{}:{}", cfg.server.bind, cfg.server.port),
-                    Err(_) => parsed.url.clone(),
-                }
-            }
+        match parsed
+            .config
+            .as_deref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+        {
+            Some(contents) => match IroncladConfig::from_str(&contents) {
+                Ok(cfg) => format!("http://{}:{}", cfg.server.bind, cfg.server.port),
+                Err(_) => parsed.url.clone(),
+            },
             None => parsed.url.clone(),
         }
     } else {
@@ -523,7 +538,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Init { path }) => cmd_init(&path),
         Some(Commands::Setup) => cli::cmd_setup(),
         Some(Commands::Check) => {
-            let cfg = config_flag.clone().unwrap_or_else(|| "ironclad.toml".into());
+            let cfg = config_flag
+                .clone()
+                .unwrap_or_else(|| "ironclad.toml".into());
             cmd_check(&cfg)
         }
         Some(Commands::Version) => {
@@ -533,23 +550,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Update(subcmd)) => {
             let config_path = parsed.config.as_deref().unwrap_or("ironclad.toml");
             match subcmd {
-                UpdateCmd::Check { channel, registry_url } =>
-                    cli::cmd_update_check(&channel, registry_url.as_deref(), config_path).await,
-                UpdateCmd::All { channel, yes, no_restart, registry_url } =>
-                    cli::cmd_update_all(&channel, yes, no_restart, registry_url.as_deref(), config_path).await,
-                UpdateCmd::Binary { channel, yes } =>
-                    cli::cmd_update_binary(&channel, yes).await,
-                UpdateCmd::Providers { yes, registry_url } =>
-                    cli::cmd_update_providers(yes, registry_url.as_deref(), config_path).await,
-                UpdateCmd::Skills { yes, registry_url } =>
-                    cli::cmd_update_skills(yes, registry_url.as_deref(), config_path).await,
+                UpdateCmd::Check {
+                    channel,
+                    registry_url,
+                } => cli::cmd_update_check(&channel, registry_url.as_deref(), config_path).await,
+                UpdateCmd::All {
+                    channel,
+                    yes,
+                    no_restart,
+                    registry_url,
+                } => {
+                    cli::cmd_update_all(
+                        &channel,
+                        yes,
+                        no_restart,
+                        registry_url.as_deref(),
+                        config_path,
+                    )
+                    .await
+                }
+                UpdateCmd::Binary { channel, yes } => cli::cmd_update_binary(&channel, yes).await,
+                UpdateCmd::Providers { yes, registry_url } => {
+                    cli::cmd_update_providers(yes, registry_url.as_deref(), config_path).await
+                }
+                UpdateCmd::Skills { yes, registry_url } => {
+                    cli::cmd_update_skills(yes, registry_url.as_deref(), config_path).await
+                }
             }
         }
 
         // ── Operations ──────────────────────────────────────
         Some(Commands::Status) => cli::cmd_status(url).await,
         Some(Commands::Mechanic { repair }) => cli::cmd_mechanic(url, repair).await,
-        Some(Commands::Logs { lines, follow, level }) => cli::cmd_logs(url, lines, follow, &level).await,
+        Some(Commands::Logs {
+            lines,
+            follow,
+            level,
+        }) => cli::cmd_logs(url, lines, follow, &level).await,
         Some(Commands::Circuit(sub)) => match sub {
             CircuitCmd::Status => cli::cmd_circuit_status(url).await,
             CircuitCmd::Reset => cli::cmd_circuit_reset(url).await,
@@ -560,19 +597,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SessionsCmd::List => cli::cmd_sessions_list(url).await,
             SessionsCmd::Show { id } => cli::cmd_session_detail(url, &id).await,
             SessionsCmd::Create { agent_id } => cli::cmd_session_create(url, &agent_id).await,
-            SessionsCmd::Export { id, format, output } => cli::cmd_session_export(url, &id, &format, output.as_deref()).await,
+            SessionsCmd::Export { id, format, output } => {
+                cli::cmd_session_export(url, &id, &format, output.as_deref()).await
+            }
         },
         Some(Commands::Memory(sub)) => match sub {
-            MemoryCmd::List { tier, session, limit } => cli::cmd_memory(url, &tier, session.as_deref(), None, limit).await,
-            MemoryCmd::Search { query, limit } => cli::cmd_memory(url, "search", None, Some(query.as_str()), limit).await,
+            MemoryCmd::List {
+                tier,
+                session,
+                limit,
+            } => cli::cmd_memory(url, &tier, session.as_deref(), None, limit).await,
+            MemoryCmd::Search { query, limit } => {
+                cli::cmd_memory(url, "search", None, Some(query.as_str()), limit).await
+            }
         },
         Some(Commands::Skills(sub)) => match sub {
             SkillsCmd::List => cli::cmd_skills_list(url).await,
             SkillsCmd::Show { id } => cli::cmd_skill_detail(url, &id).await,
             SkillsCmd::Reload => cli::cmd_skills_reload(url).await,
-            SkillsCmd::Import { source, no_safety_check, accept_warnings } => {
-                ironclad_server::migrate::cmd_skill_import(&source, no_safety_check, accept_warnings)
-            }
+            SkillsCmd::Import {
+                source,
+                no_safety_check,
+                accept_warnings,
+            } => ironclad_server::migrate::cmd_skill_import(
+                &source,
+                no_safety_check,
+                accept_warnings,
+            ),
             SkillsCmd::Export { output, ids } => {
                 ironclad_server::migrate::cmd_skill_export(&output, &ids)
             }
@@ -582,7 +633,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Some(Commands::Metrics(sub)) => match sub {
             MetricsCmd::Costs => cli::cmd_metrics(url, "costs", None).await,
-            MetricsCmd::Transactions { hours } => cli::cmd_metrics(url, "transactions", hours).await,
+            MetricsCmd::Transactions { hours } => {
+                cli::cmd_metrics(url, "transactions", hours).await
+            }
             MetricsCmd::Cache => cli::cmd_metrics(url, "cache", None).await,
         },
         Some(Commands::Wallet(sub)) => match sub {
@@ -614,13 +667,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             AgentsCmd::List => cli::cmd_agents_list(url).await,
             AgentsCmd::Start { id } => {
                 let client = reqwest::Client::new();
-                client.post(format!("{url}/api/agents/{id}/start")).send().await?;
+                client
+                    .post(format!("{url}/api/agents/{id}/start"))
+                    .send()
+                    .await?;
                 eprintln!("  Agent {id} started");
                 Ok(())
             }
             AgentsCmd::Stop { id } => {
                 let client = reqwest::Client::new();
-                client.post(format!("{url}/api/agents/{id}/stop")).send().await?;
+                client
+                    .post(format!("{url}/api/agents/{id}/stop"))
+                    .send()
+                    .await?;
                 eprintln!("  Agent {id} stopped");
                 Ok(())
             }
@@ -705,10 +764,7 @@ fn print_banner(t: &Theme) {
         } else if line.contains("Autonomous Agent Runtime") {
             let (art, _) = line.split_once("Autonomous Agent Runtime").unwrap();
             eprint!("{p}{art}{r}");
-            t.typewrite_line(
-                &format!("{d}Autonomous Agent Runtime v{version}{r}"),
-                18,
-            );
+            t.typewrite_line(&format!("{d}Autonomous Agent Runtime v{version}{r}"), 18);
         } else {
             eprintln!("{p}{line}{r}");
             sleep_ms(scan);
@@ -722,28 +778,19 @@ fn print_banner(t: &Theme) {
 fn step(t: &Theme, n: u32, total: u32, msg: &str) {
     let (d, b, r) = (t.dim(), t.bold(), t.reset());
     let ok = t.icon_ok();
-    t.typewrite_line(
-        &format!("  {ok} {d}[{n:>2}/{total}]{r} {b}{msg}{r}"),
-        4,
-    );
+    t.typewrite_line(&format!("  {ok} {d}[{n:>2}/{total}]{r} {b}{msg}{r}"), 4);
 }
 
 fn step_warn(t: &Theme, n: u32, total: u32, msg: &str) {
     let (d, r) = (t.dim(), t.reset());
     let warn = t.icon_warn();
-    t.typewrite_line(
-        &format!("  {warn} {d}[{n:>2}/{total}]{r} {msg}"),
-        4,
-    );
+    t.typewrite_line(&format!("  {warn} {d}[{n:>2}/{total}]{r} {msg}"), 4);
 }
 
 fn step_detail(t: &Theme, label: &str, value: &str) {
     let (d, a, r) = (t.dim(), t.accent(), t.reset());
     let detail = t.icon_detail();
-    t.typewrite_line(
-        &format!("       {detail} {d}{label}: {a}{value}{r}"),
-        4,
-    );
+    t.typewrite_line(&format!("       {detail} {d}{label}: {a}{value}{r}"), 4);
 }
 
 async fn cmd_serve(
@@ -791,7 +838,10 @@ async fn cmd_serve(
     if !is_localhost && config.server.api_key.is_none() {
         let (er, r) = (t.error(), t.reset());
         eprintln!();
-        eprintln!("  {er}ERROR:{r} Server bound to {} without API key.", config.server.bind);
+        eprintln!(
+            "  {er}ERROR:{r} Server bound to {} without API key.",
+            config.server.bind
+        );
         eprintln!("         Set [server] api_key = \"your-secret\" in config to secure the API.");
         eprintln!();
         return Err("Refusing to start on non-localhost without API key".into());
@@ -891,11 +941,20 @@ fn cmd_init(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (b, r) = (t.bold(), t.reset());
     let (ok, action, warn) = (t.icon_ok(), t.icon_action(), t.icon_warn());
 
-    t.typewrite_line(&format!("  {b}Initializing Ironclad workspace{r} at {}\n", dir.display()), 4);
+    t.typewrite_line(
+        &format!(
+            "  {b}Initializing Ironclad workspace{r} at {}\n",
+            dir.display()
+        ),
+        4,
+    );
 
     let config_path = dir.join("ironclad.toml");
     if config_path.exists() {
-        t.typewrite_line(&format!("  {warn} ironclad.toml already exists, skipping"), 4);
+        t.typewrite_line(
+            &format!("  {warn} ironclad.toml already exists, skipping"),
+            4,
+        );
     } else {
         std::fs::write(&config_path, INIT_CONFIG)?;
         t.typewrite_line(&format!("  {action} Created ironclad.toml"), 4);
@@ -903,15 +962,24 @@ fn cmd_init(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let skills_dir = dir.join("skills");
     if skills_dir.exists() {
-        t.typewrite_line(&format!("  {warn} skills/ directory already exists, skipping"), 4);
+        t.typewrite_line(
+            &format!("  {warn} skills/ directory already exists, skipping"),
+            4,
+        );
     } else {
         std::fs::create_dir_all(&skills_dir)?;
         let count = cli::write_starter_skills(&skills_dir)?;
-        t.typewrite_line(&format!("  {action} Created skills/ with {count} starter skills"), 4);
+        t.typewrite_line(
+            &format!("  {action} Created skills/ with {count} starter skills"),
+            4,
+        );
     }
 
     eprintln!();
-    t.typewrite_line(&format!("  {ok} Done. Run {b}ironclad serve -c ironclad.toml{r} to start."), 4);
+    t.typewrite_line(
+        &format!("  {ok} Done. Run {b}ironclad serve -c ironclad.toml{r} to start."),
+        4,
+    );
     eprintln!();
 
     Ok(())
@@ -932,10 +1000,19 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     config.validate()?;
     tw(&format!("  {ok} Configuration semantics valid"));
 
-    tw(&format!("  {ok} Agent: {} ({})", config.agent.name, config.agent.id));
-    tw(&format!("  {ok} Server: {}:{}", config.server.bind, config.server.port));
+    tw(&format!(
+        "  {ok} Agent: {} ({})",
+        config.agent.name, config.agent.id
+    ));
+    tw(&format!(
+        "  {ok} Server: {}:{}",
+        config.server.bind, config.server.port
+    ));
     tw(&format!("  {ok} Primary model: {}", config.models.primary));
-    tw(&format!("  {ok} Database: {}", config.database.path.display()));
+    tw(&format!(
+        "  {ok} Database: {}",
+        config.database.path.display()
+    ));
 
     let mem_sum = config.memory.working_budget_pct
         + config.memory.episodic_budget_pct
@@ -944,16 +1021,28 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         + config.memory.relationship_budget_pct;
     tw(&format!("  {ok} Memory budgets sum to {mem_sum}%"));
 
-    tw(&format!("  {ok} Treasury: cap=${:.2}/payment, reserve=${:.2}", config.treasury.per_payment_cap, config.treasury.minimum_reserve));
+    tw(&format!(
+        "  {ok} Treasury: cap=${:.2}/payment, reserve=${:.2}",
+        config.treasury.per_payment_cap, config.treasury.minimum_reserve
+    ));
 
     if config.skills.skills_dir.exists() {
-        tw(&format!("  {ok} Skills dir exists: {}", config.skills.skills_dir.display()));
+        tw(&format!(
+            "  {ok} Skills dir exists: {}",
+            config.skills.skills_dir.display()
+        ));
     } else {
-        tw(&format!("  {warn} Skills dir missing: {}", config.skills.skills_dir.display()));
+        tw(&format!(
+            "  {warn} Skills dir missing: {}",
+            config.skills.skills_dir.display()
+        ));
     }
 
     if config.a2a.enabled {
-        tw(&format!("  {ok} A2A enabled (rate limit: {}/peer)", config.a2a.rate_limit_per_peer));
+        tw(&format!(
+            "  {ok} A2A enabled (rate limit: {}/peer)",
+            config.a2a.rate_limit_per_peer
+        ));
     }
 
     eprintln!();
@@ -974,14 +1063,15 @@ fn cmd_version() {
     eprintln!();
 }
 
-fn cmd_web(
-    config_path: Option<&str>,
-    cli_url: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_web(config_path: Option<&str>, cli_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let url = if let Some(path) = config_path {
         let raw = std::fs::read_to_string(path)?;
         let cfg: ironclad_core::config::IroncladConfig = toml::from_str(&raw)?;
-        let host = if cfg.server.bind == "0.0.0.0" { "127.0.0.1" } else { &cfg.server.bind };
+        let host = if cfg.server.bind == "0.0.0.0" {
+            "127.0.0.1"
+        } else {
+            &cfg.server.bind
+        };
         format!("http://{}:{}", host, cfg.server.port)
     } else {
         cli_url.to_string()
@@ -1067,4 +1157,3 @@ rate_limit_per_peer = 10
 session_timeout_seconds = 3600
 require_on_chain_identity = true
 "#;
-
