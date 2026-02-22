@@ -2,6 +2,7 @@
 pub mod agent_loop;
 pub mod approvals;
 pub mod context;
+pub mod digest;
 pub mod injection;
 pub mod interview;
 pub mod memory;

@@ -323,16 +323,28 @@ pub struct Chunk {
     pub end_char: usize,
 }
 
+/// Snap a byte offset to the nearest char boundary at or before `pos`.
+fn floor_char_boundary(text: &str, pos: usize) -> usize {
+    if pos >= text.len() {
+        return text.len();
+    }
+    let mut p = pos;
+    while p > 0 && !text.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
+}
+
 /// Split text into overlapping chunks for embedding.
 pub fn chunk_text(text: &str, config: &ChunkConfig) -> Vec<Chunk> {
     if text.is_empty() || config.max_tokens == 0 {
         return Vec::new();
     }
 
-    let max_chars = config.max_tokens * 4;
-    let overlap_chars = config.overlap_tokens * 4;
+    let max_bytes = config.max_tokens * 4;
+    let overlap_bytes = config.overlap_tokens * 4;
 
-    if text.len() <= max_chars {
+    if text.len() <= max_bytes {
         return vec![Chunk {
             text: text.to_string(),
             index: 0,
@@ -341,14 +353,13 @@ pub fn chunk_text(text: &str, config: &ChunkConfig) -> Vec<Chunk> {
         }];
     }
 
-    let step = max_chars.saturating_sub(overlap_chars).max(1);
+    let step = max_bytes.saturating_sub(overlap_bytes).max(1);
     let mut chunks = Vec::new();
     let mut start = 0;
 
     while start < text.len() {
-        let raw_end = (start + max_chars).min(text.len());
+        let raw_end = floor_char_boundary(text, (start + max_bytes).min(text.len()));
 
-        // Try to break at a sentence/paragraph boundary
         let end = find_break_point(text, start, raw_end);
 
         chunks.push(Chunk {
@@ -362,7 +373,8 @@ pub fn chunk_text(text: &str, config: &ChunkConfig) -> Vec<Chunk> {
             break;
         }
 
-        start += step.min(end - start).max(1);
+        let advance = step.min(end - start).max(1);
+        start = floor_char_boundary(text, start + advance);
     }
 
     chunks
@@ -373,10 +385,9 @@ fn find_break_point(text: &str, start: usize, raw_end: usize) -> usize {
         return text.len();
     }
 
-    let search_start = start + (raw_end - start) / 2;
+    let search_start = floor_char_boundary(text, start + (raw_end - start) / 2);
     let window = &text[search_start..raw_end];
 
-    // Prefer paragraph break, then sentence break, then word break
     if let Some(pos) = window.rfind("\n\n") {
         return search_start + pos + 2;
     }
@@ -578,5 +589,34 @@ mod tests {
         assert_eq!(estimate_tokens(""), 0);
         assert_eq!(estimate_tokens("abcd"), 1);
         assert_eq!(estimate_tokens("hello world!"), 3);
+    }
+
+    #[test]
+    fn chunk_multibyte_does_not_panic() {
+        let text = "Hello \u{1F600} world. ".repeat(200);
+        let config = ChunkConfig {
+            max_tokens: 20,
+            overlap_tokens: 5,
+        };
+        let chunks = chunk_text(&text, &config);
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(!chunk.text.is_empty());
+            // Verify each chunk is valid UTF-8 (would panic on slice if not)
+            let _ = chunk.text.as_bytes();
+        }
+    }
+
+    #[test]
+    fn chunk_cjk_text() {
+        let text = "\u{4F60}\u{597D}\u{4E16}\u{754C} ".repeat(300);
+        let config = ChunkConfig {
+            max_tokens: 15,
+            overlap_tokens: 3,
+        };
+        let chunks = chunk_text(&text, &config);
+        assert!(chunks.len() > 1);
+        assert_eq!(chunks.first().unwrap().start_char, 0);
+        assert_eq!(chunks.last().unwrap().end_char, text.len());
     }
 }

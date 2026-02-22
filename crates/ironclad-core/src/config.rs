@@ -47,6 +47,8 @@ pub struct IroncladConfig {
     pub tier_adapt: TierAdaptConfig,
     #[serde(default)]
     pub personality: PersonalityConfig,
+    #[serde(default)]
+    pub digest: DigestConfig,
 }
 
 const BUNDLED_PROVIDERS_TOML: &str = include_str!("bundled_providers.toml");
@@ -987,6 +989,38 @@ fn default_firmware_file() -> String {
     "FIRMWARE.toml".into()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DigestConfig {
+    #[serde(default = "default_digest_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_digest_max_tokens")]
+    pub max_tokens: usize,
+    #[serde(default = "default_decay_half_life_days")]
+    pub decay_half_life_days: u32,
+}
+
+impl Default for DigestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_digest_enabled(),
+            max_tokens: default_digest_max_tokens(),
+            decay_half_life_days: default_decay_half_life_days(),
+        }
+    }
+}
+
+fn default_digest_enabled() -> bool {
+    true
+}
+
+fn default_digest_max_tokens() -> usize {
+    512
+}
+
+fn default_decay_half_life_days() -> u32 {
+    7
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1339,6 +1373,14 @@ cost_per_output_token = 0.00015
         let toml_str = IroncladConfig::bundled_providers_toml();
         let parsed: BundledProviders = toml::from_str(toml_str).expect("bundled TOML must parse");
         assert!(!parsed.providers.is_empty());
+    }
+
+    #[test]
+    fn digest_config_defaults() {
+        let cfg = DigestConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_tokens, 512);
+        assert_eq!(cfg.decay_half_life_days, 7);
     }
 
     #[test]

@@ -1505,11 +1505,16 @@ pub async fn process_channel_message(
         .inspect_err(|e| tracing::warn!(error = %e, "failed to store channel assistant message"))
         .ok();
 
-    state
+    if let Err(e) = state
         .channel_router
         .send_reply(&platform, &chat_id, response_content.clone())
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
+        return Err(e.to_string());
+    }
 
     // Post-turn memory ingestion + embedding generation with chunking (background)
     {

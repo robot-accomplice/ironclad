@@ -127,15 +127,17 @@ impl OAuthManager {
             .expires_in
             .map(|secs| chrono::Utc::now().timestamp() + secs);
 
+        let old_refresh = {
+            let tokens = self.tokens.read().await;
+            tokens
+                .get(provider_name)
+                .and_then(|t| t.refresh_token.clone())
+        };
+
         let new_stored = StoredTokens {
             provider: provider_name.to_string(),
             access_token: token_resp.access_token.clone(),
-            refresh_token: token_resp.refresh_token.or_else(|| {
-                let tokens = self.tokens.blocking_read();
-                tokens
-                    .get(provider_name)
-                    .and_then(|t| t.refresh_token.clone())
-            }),
+            refresh_token: token_resp.refresh_token.or(old_refresh),
             expires_at,
         };
 
