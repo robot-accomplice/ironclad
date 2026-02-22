@@ -15,7 +15,7 @@ use std::sync::Arc;
 use axum::extract::DefaultBodyLimit;
 use axum::{
     Router,
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
 };
 use tokio::sync::RwLock;
 
@@ -53,7 +53,13 @@ pub(crate) fn sanitize_error_message(msg: &str) -> String {
         .trim_end_matches("\")");
 
     if sanitized.len() > 200 {
-        format!("{}...", &sanitized[..200])
+        let boundary = sanitized
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= 200)
+            .last()
+            .unwrap_or(0);
+        format!("{}...", &sanitized[..boundary])
     } else {
         sanitized.to_string()
     }

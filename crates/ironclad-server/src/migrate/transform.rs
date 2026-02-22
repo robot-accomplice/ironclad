@@ -137,6 +137,7 @@ pub(crate) struct OpenClawMessage {
 struct OpenClawJSONLLine {
     #[serde(default, rename = "type")]
     line_type: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]

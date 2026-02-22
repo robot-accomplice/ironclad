@@ -140,9 +140,6 @@ pub async fn interview_turn(
                     }
                 });
 
-            let interviews = state.interviews.write().await;
-            // Re-borrow after the LLM call
-            drop(interviews);
             let mut interviews = state.interviews.write().await;
             if let Some(session) = interviews.get_mut(&body.session_key) {
                 session.history.push(ironclad_llm::format::UnifiedMessage {
@@ -218,7 +215,7 @@ pub async fn finish_interview(
     session.pending_output = Some(parsed);
     session.awaiting_confirmation = true;
 
-    let pending = session.pending_output.as_ref().unwrap();
+    let pending = session.pending_output.as_ref().expect("just assigned");
     Ok(axum::Json(json!({
         "session_key": body.session_key,
         "status": "awaiting_confirmation",

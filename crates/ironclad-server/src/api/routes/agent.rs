@@ -264,6 +264,10 @@ pub async fn agent_message(
                     axum::Json(json!({"error": e.to_string()})),
                 )
             })?;
+            {
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+            }
             return Ok(axum::Json(json!({
                 "session_id": session_id,
                 "nickname": session_nickname,
@@ -378,6 +382,11 @@ pub async fn agent_message(
         )
         .inspect_err(|e| tracing::warn!(error = %e, "failed to record cached inference cost"))
         .ok();
+
+        {
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+        }
 
         return Ok(axum::Json(json!({
             "session_id": session_id,
@@ -671,6 +680,26 @@ pub async fn agent_message(
                 content: follow_content.clone(),
             });
 
+            let follow_content = if follow_content.contains("<<<TRUST_BOUNDARY:") {
+                if !ironclad_agent::prompt::verify_hmac_boundary(
+                    &follow_content,
+                    state.hmac_secret.as_ref(),
+                ) {
+                    tracing::warn!("HMAC boundary tampered in ReAct follow-up, stripping");
+                    ironclad_agent::prompt::strip_hmac_boundaries(&follow_content)
+                } else {
+                    follow_content
+                }
+            } else {
+                follow_content
+            };
+            let follow_content = if ironclad_agent::injection::scan_output(&follow_content) {
+                tracing::warn!("L4 output scan flagged ReAct follow-up response, blocking");
+                "[Response blocked by output safety filter]".to_string()
+            } else {
+                follow_content
+            };
+
             current_tool = parse_tool_call(&follow_content);
             if current_tool.is_none() {
                 react_loop.transition(ReactAction::Finish);
@@ -831,13 +860,16 @@ async fn refine_session_nickname(
 
     let provider = llm_read.providers.get_by_model(&model_id);
     let (url, api_key, auth_header, format, extra_headers) = match provider {
-        Some(p) => (
-            format!("{}{}", p.url, p.chat_path),
-            std::env::var(&p.api_key_env).unwrap_or_default(),
-            p.auth_header.clone(),
-            p.format,
-            p.extra_headers.clone(),
-        ),
+        Some(p) => {
+            let key = std::env::var(&p.api_key_env).unwrap_or_default();
+            (
+                format!("{}{}", p.url, p.chat_path),
+                key,
+                p.auth_header.clone(),
+                p.format,
+                p.extra_headers.clone(),
+            )
+        }
         None => return Ok(()),
     };
 
