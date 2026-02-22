@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn blob_roundtrip() {
-        let original = vec![1.0f32, -0.5, 0.0, 3.14159, f32::MIN, f32::MAX];
+        let original = vec![1.0f32, -0.5, 0.0, 1.23456, f32::MIN, f32::MAX];
         let blob = embedding_to_blob(&original);
         let restored = blob_to_embedding(&blob);
         assert_eq!(original, restored);

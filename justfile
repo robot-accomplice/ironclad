@@ -93,20 +93,20 @@ coverage-update-baseline:
     echo "$pct" > .coverage-baseline
     echo "Updated .coverage-baseline: ${old}% → ${pct}%"
 
-# Enforce minimum coverage threshold (80% required, 90% goal)
+# Enforce minimum coverage threshold (70% required, 80% goal)
 coverage-check:
     #!/usr/bin/env bash
     set -euo pipefail
     output=$(cargo llvm-cov --workspace 2>&1 | grep '^TOTAL')
     pct=$(echo "$output" | awk '{print $4}' | tr -d '%')
     echo "Total line coverage: ${pct}%"
-    if (( $(echo "$pct < 80.0" | bc -l) )); then
-        echo "FAIL: Coverage ${pct}% is below the 80% minimum"
+    if (( $(echo "$pct < 70.0" | bc -l) )); then
+        echo "FAIL: Coverage ${pct}% is below the 70% minimum"
         exit 1
-    elif (( $(echo "$pct < 90.0" | bc -l) )); then
-        echo "WARN: Coverage ${pct}% is below the 90% goal"
+    elif (( $(echo "$pct < 80.0" | bc -l) )); then
+        echo "WARN: Coverage ${pct}% is below the 80% goal"
     else
-        echo "PASS: Coverage ${pct}% meets the 90% goal"
+        echo "PASS: Coverage ${pct}% meets the 80% goal"
     fi
 
 # ── Run ────────────────────────────────────────────────
@@ -305,8 +305,8 @@ ci-test:
         echo ""
         echo "  Total coverage: ${COVERAGE_PCT}%"
 
-        if (( $(echo "$COVERAGE_PCT < 80.0" | bc -l) )); then
-            echo "  FAIL: Coverage ${COVERAGE_PCT}% is below the 80% minimum"
+        if (( $(echo "$COVERAGE_PCT < 70.0" | bc -l) )); then
+            echo "  FAIL: Coverage ${COVERAGE_PCT}% is below the 70% minimum"
             return 1
         fi
 

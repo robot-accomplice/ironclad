@@ -524,9 +524,9 @@ mod tests {
         let chunks = chunk_text(&text, &config);
         assert!(chunks.len() > 1);
 
-        for i in 0..chunks.len() {
-            assert_eq!(chunks[i].index, i);
-            assert!(!chunks[i].text.is_empty());
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk.index, i);
+            assert!(!chunk.text.is_empty());
         }
 
         // Verify continuity: each chunk's start is before the previous chunk's end
