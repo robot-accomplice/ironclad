@@ -42,8 +42,11 @@ flowchart TD
     subgraph ContextPhase["③ Context & Prompt Assembly"]
         CONTEXT_BUILD["ironclad-agent/context.rs"]
         CONTEXT_BUILD --> HEURISTIC["ironclad-llm/router.rs<br/>Heuristic classify_complexity"]
-        HEURISTIC --> MEMORY_RETRIEVE["ironclad-agent/memory.rs<br/>MemoryBudgetManager · 5-tier retrieval"]
-        MEMORY_RETRIEVE --> PROMPT_BUILD["ironclad-agent/prompt.rs<br/>Build system prompt + HMAC L2 boundaries"]
+        HEURISTIC --> EMBED_QUERY["ironclad-llm/embedding.rs<br/>EmbeddingClient · embed_single(query)<br/>(external provider or n-gram fallback)"]
+        EMBED_QUERY --> MEMORY_RETRIEVE["ironclad-agent/retrieval.rs<br/>MemoryRetriever · 5-tier retrieval<br/>(hybrid_search: FTS5 + vector cosine)"]
+        MEMORY_RETRIEVE --> LOAD_HISTORY["ironclad-db/sessions.rs<br/>list_messages(session_id, 50)"]
+        LOAD_HISTORY --> BUILD_CTX["ironclad-agent/context.rs<br/>build_context(system + memories + history)"]
+        BUILD_CTX --> PROMPT_BUILD["ironclad-agent/prompt.rs<br/>Build system prompt + HMAC L2 boundaries"]
     end
 
     PROMPT_BUILD --> MODEL_SELECT
@@ -77,8 +80,9 @@ flowchart TD
     subgraph DeliverPhase["⑥ Persist & Deliver"]
         PERSIST["ironclad-db · Atomic SQLite transaction:<br/>session_messages, turn, tool_calls,<br/>policy_decisions"]
         PERSIST --> INJECTION_L4["L4 scan_output:<br/>NFKC, decode, homoglyph, regex"]
-        INJECTION_L4 --> MEMORY_INGEST["ingest_turn → classify → store"]
-        MEMORY_INGEST --> CACHE_STORE["Cache store (HashMap)"]
+        INJECTION_L4 --> MEMORY_INGEST["ingest_turn → classify → store<br/>(background tokio::spawn)"]
+        MEMORY_INGEST --> EMBED_RESP["ironclad-llm/embedding.rs<br/>Generate embedding for response<br/>→ store_embedding(BLOB)"]
+        EMBED_RESP --> CACHE_STORE["Cache store (HashMap)<br/>+ periodic SQLite flush"]
         CACHE_STORE --> DELIVER["ironclad-channels · Deliver"]
         DELIVER --> USER_RESP["Response to User"]
     end
@@ -88,7 +92,7 @@ flowchart TD
 
 ## 2. Semantic Cache Dataflow
 
-All operations within `ironclad-llm/cache.rs`. **In-memory only** (HashMap `SemanticCache.entries`). No SQLite; the `semantic_cache` table in the DB schema is not used by the runtime cache.
+Runtime cache in `ironclad-llm/cache.rs` (in-memory HashMap) with **SQLite persistence** via `ironclad-db/cache.rs`. On startup the server loads persisted entries from the `semantic_cache` table; a background task flushes in-memory entries to SQLite every 5 minutes and evicts expired rows.
 
 ```mermaid
 flowchart TD
@@ -99,7 +103,7 @@ flowchart TD
         EXACT -->|hit| HIT_EXACT["Return CachedResponse<br/>hits++"]
         EXACT -->|miss| L3{"lookup_tool_ttl(prompt_hash)"}
         L3 -->|hit| HIT_TOOL["Return cached (shorter TTL if tools)"]
-        L3 -->|miss| EMBED["lookup_semantic(prompt)<br/>char n-gram embedding, cosine"]
+        L3 -->|miss| EMBED["lookup_semantic(prompt)<br/>real embedding (if provider configured)<br/>or char n-gram fallback, cosine"]
         EMBED --> ANN{"cosine >= similarity_threshold (0.85)"}
         ANN -->|hit| HIT_SEMANTIC["Return best match"]
         ANN -->|miss| MISS["Cache miss -> LLM pipeline"]
@@ -110,9 +114,15 @@ flowchart TD
         RESP_OK --> STORE_ENTRY["store() or store_with_embedding()<br/>entries.insert(prompt_hash, entry)<br/>evict_lfu() if len >= max_entries"]
     end
 
+    subgraph Persistence["SQLite Persistence (ironclad-db/cache.rs)"]
+        BOOT_LOAD["Server startup:<br/>load_cache_entries() → import_entries()"]
+        FLUSH["Background task (5 min interval):<br/>export_entries() → save_cache_entry()<br/>evict_expired_cache()"]
+    end
+
     subgraph Eviction["Eviction"]
         EVICT_EXPIRE["evict_expired(): retain where expires_at > now()"]
         EVICT_LFU["evict_lfu(): remove min hits when at capacity"]
+        DB_EVICT["evict_expired_cache():<br/>DELETE FROM semantic_cache<br/>WHERE expires_at < now()"]
     end
 ```
 
@@ -186,17 +196,29 @@ flowchart TD
         T_EPISODIC --> FTS_SYNC["Sync memory_fts<br/>(FTS5 virtual table)"]
     end
 
-    subgraph Retrieval["Pre-Inference Retrieval (ironclad-agent/memory.rs)"]
+    subgraph EmbeddingGen["Embedding Generation (post-ingestion)"]
+        EX_EPISODIC --> GEN_EMBED["ironclad-llm/embedding.rs<br/>EmbeddingClient · embed_single(content)<br/>(external provider or n-gram fallback)"]
+        GEN_EMBED --> CHUNK_CHECK{"Content > 512 tokens?"}
+        CHUNK_CHECK -->|yes| CHUNK["ironclad-agent/retrieval.rs<br/>chunk_text() with overlap<br/>(default 512 tok, 64 overlap)"]
+        CHUNK -->|each chunk| STORE_EMBED["ironclad-db/embeddings.rs<br/>store_embedding()<br/>(BLOB format, ~4x smaller than JSON)"]
+        CHUNK_CHECK -->|no| STORE_EMBED
+    end
+
+    subgraph Retrieval["Pre-Inference Retrieval (ironclad-agent/retrieval.rs)"]
         INFER_START["Inference call starting"]
-        INFER_START --> BUDGET["MemoryBudgetManager<br/>Allocate token budget per tier:<br/>working: memory.working_budget_pct (30%)<br/>episodic: memory.episodic_budget_pct (25%)<br/>semantic: memory.semantic_budget_pct (20%)<br/>procedural: memory.procedural_budget_pct (15%)<br/>relationship: memory.relationship_budget_pct (10%)<br/>(unused tier budget rolls over)"]
+        INFER_START --> EMBED_QUERY_R["ironclad-llm/embedding.rs<br/>Generate query embedding"]
+        EMBED_QUERY_R --> BUDGET["MemoryRetriever<br/>MemoryBudgetManager allocates<br/>token budget per tier:<br/>working: 30% · episodic: 25%<br/>semantic: 20% · procedural: 15%<br/>relationship: 10%<br/>(unused budget rolls over)"]
 
         BUDGET --> R_WORK["Retrieve working_memory<br/>(all entries for current session_id)"]
-        BUDGET --> R_EPIS["Retrieve episodic_memory<br/>(ORDER BY importance DESC,<br/>created_at DESC, within budget)"]
-        BUDGET --> R_SEMA["Retrieve semantic_memory<br/>(category-filtered,<br/>confidence-ranked)"]
-        BUDGET --> R_PROC["Retrieve procedural_memory<br/>(relevant to current context)"]
+        BUDGET --> R_HYBRID["hybrid_search(query, embedding)<br/>FTS5 keyword + vector cosine<br/>(configurable hybrid_weight)"]
+        BUDGET --> R_PROC["Retrieve procedural_memory<br/>(tool success/failure rates)"]
         BUDGET --> R_REL["Retrieve relationship_memory<br/>(active entities from conversation)"]
 
-        R_WORK & R_EPIS & R_SEMA & R_PROC & R_REL --> FORMAT_BLOCK["Format memory block<br/>(structured text within<br/>total token budget)"]
+        R_HYBRID --> ANN_CHECK{"ANN index built?<br/>(memory.ann_index = true<br/>& entries > threshold)"}
+        ANN_CHECK -->|yes| ANN_SEARCH["ironclad-db/ann.rs<br/>HNSW O(log n) search<br/>(instant-distance crate)"]
+        ANN_CHECK -->|no| BRUTE["Brute-force cosine scan<br/>(O(n) over embeddings table)"]
+
+        R_WORK & ANN_SEARCH & BRUTE & R_PROC & R_REL --> FORMAT_BLOCK["Format memory block<br/>(structured text within<br/>total token budget)"]
         FORMAT_BLOCK --> INJECT["Inject into context<br/>(after system prompt,<br/>before conversation history)"]
     end
 
@@ -533,10 +555,10 @@ flowchart TD
 
 | Diagram | Tables Referenced |
 | --------- | ------------------- |
-| 1. Request | sessions, policy_decisions, semantic_cache, inference_costs, session_messages, turns, tool_calls |
+| 1. Request | sessions, policy_decisions, semantic_cache, inference_costs, session_messages, turns, tool_calls, embeddings |
 | 2. Cache | semantic_cache, inference_costs |
 | 3. Router | inference_costs |
-| 4. Memory | working_memory, episodic_memory, semantic_memory, procedural_memory, relationship_memory, memory_fts |
+| 4. Memory | working_memory, episodic_memory, semantic_memory, procedural_memory, relationship_memory, memory_fts, embeddings |
 | 5. A2A | relationship_memory, discovered_agents |
 | 6. Injection | policy_decisions, relationship_memory, metric_snapshots |
 | 7. Financial | transactions, inference_costs |
@@ -550,9 +572,9 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `t
 | Diagram | Crates Referenced |
 | --------- | ------------------- |
 | 1. Request | ironclad-channels, ironclad-db, ironclad-agent, ironclad-llm |
-| 2. Cache | ironclad-llm |
+| 2. Cache | ironclad-llm, ironclad-db |
 | 3. Router | ironclad-llm |
-| 4. Memory | ironclad-agent, ironclad-db |
+| 4. Memory | ironclad-agent, ironclad-db, ironclad-llm |
 | 5. A2A | ironclad-channels, ironclad-wallet |
 | 6. Injection | ironclad-agent |
 | 7. Financial | ironclad-wallet, ironclad-schedule, ironclad-agent, ironclad-core |
@@ -568,7 +590,7 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `t
 | 1. Request | (crate-level config, not direct keys) |
 | 2. Cache | cache.semantic_threshold, cache.exact_match_ttl_seconds, cache.max_entries |
 | 3. Router | models.routing.mode, models.routing.confidence_threshold, models.routing.local_first, models.primary, models.fallbacks |
-| 4. Memory | memory.working_budget_pct, memory.episodic_budget_pct, memory.semantic_budget_pct, memory.procedural_budget_pct, memory.relationship_budget_pct |
+| 4. Memory | memory.working_budget_pct, memory.episodic_budget_pct, memory.semantic_budget_pct, memory.procedural_budget_pct, memory.relationship_budget_pct, memory.embedding_provider, memory.embedding_model, memory.hybrid_weight, memory.ann_index |
 | 5. A2A | wallet.chain_id, wallet.rpc_url, a2a.max_message_size, a2a.rate_limit_per_peer |
 | 6. Injection | (hardcoded thresholds; `hmac_session_secret` stored in `identity` table) |
 | 7. Financial | yield.enabled, yield.min_deposit, yield.withdrawal_threshold, yield.protocol, treasury.minimum_reserve, treasury.per_payment_cap, treasury.hourly_transfer_limit, treasury.daily_transfer_limit, treasury.daily_inference_budget, wallet.rpc_url, wallet.path |
@@ -580,6 +602,7 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `t
 | Differentiator | Diagram |
 | --------------- | --------- |
 | Semantic cache | 2 |
+| Persistent semantic cache (SQLite-backed) | 2 |
 | Heuristic model routing | 3 |
 | Yield engine | 7 |
 | Zero-trust A2A | 5 |
@@ -591,6 +614,11 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `t
 | Connection pooling | 1 |
 | Dual-format skill system | 9 |
 | Sandboxed script execution | 9 |
+| Hybrid RAG (FTS5 + vector cosine) | 1, 4 |
+| Multi-provider embedding (OpenAI/Ollama/Google + n-gram fallback) | 1, 4 |
+| Binary BLOB embedding storage | 4 |
+| HNSW ANN index (instant-distance) | 4 |
+| Content chunking with overlap | 4 |
 
 ### Error/Failure Paths
 

@@ -17,7 +17,9 @@ flowchart TB
         METRICS["metrics.rs<br/>Metrics + Cost Tracking"]
         CRON["cron.rs<br/>Cron Job State"]
         SKILLS["skills.rs<br/>Skill Definition CRUD"]
-        EMBEDDINGS["embeddings.rs<br/>Embedding storage / lookup"]
+        EMBEDDINGS["embeddings.rs<br/>Embedding storage / lookup<br/>(BLOB + JSON fallback)"]
+        ANN["ann.rs<br/>HNSW ANN Index<br/>(instant-distance)"]
+        CACHE_DB["cache.rs<br/>Semantic Cache Persistence"]
         MIGRATIONS["migrations/<br/>Versioned SQL files"]
     end
 
@@ -103,7 +105,7 @@ flowchart TB
 | `transactions` | (schema) | Financial and yield tx log |
 | `inference_costs` | (schema) | Per-request cost tracking |
 | `proxy_stats` | (schema) | Snapshot JSON |
-| `semantic_cache` | (schema) | **Not used at runtime** — LLM cache is in-memory HashMap in `ironclad-llm/cache.rs` |
+| `semantic_cache` | `cache.rs` | Persistent backing store for in-memory cache; loaded on boot, flushed every 5 min |
 | `identity` | direct | Key-value (ethereum_address, did, hmac_session_secret, a2a_identity_key, etc.) |
 | `soul_history` | direct | Soul content history |
 | `metric_snapshots` | (schema) | Alerts and metrics JSON |
@@ -111,12 +113,12 @@ flowchart TB
 | `delivery_queue` | (schema) | Outbound channel delivery (status, attempts, next_retry_at) |
 | `approval_requests` | (schema) | Gated tool approvals (pending/approved/denied, timeout_at) |
 | `plugins` | (schema) | Plugin manifests and permissions |
-| `embeddings` | `embeddings.rs` | source_table, source_id, embedding_json for semantic search |
+| `embeddings` | `embeddings.rs` | source_table, source_id, embedding_blob (BLOB, ~4x smaller) + embedding_json (legacy fallback); optional HNSW ANN index via `ann.rs` |
 | `skills` | `skills.rs` | Dozens |
 
 ## Dependencies
 
-**External crates**: `rusqlite` (with `bundled` and `fts5` features)
+**External crates**: `rusqlite` (with `bundled` and `fts5` features), `instant-distance` (HNSW ANN index)
 
 **Internal crates**: `ironclad-core` (types, config, errors)
 

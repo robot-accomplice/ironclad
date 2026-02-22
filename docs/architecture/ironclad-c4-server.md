@@ -22,15 +22,16 @@ flowchart TB
         BOOT_3["3. Initialize SQLite DB +<br/>run migrations (ironclad-db)"]
         BOOT_4["4. Load/generate wallet (ironclad-wallet)"]
         BOOT_5["5. Generate cryptographic HMAC secret<br/>(OsRng, 32 bytes)"]
-        BOOT_6["6. Initialize LLM client pool +<br/>heuristic router (ironclad-llm)"]
-        BOOT_7["7. Initialize agent loop +<br/>tool registry (ironclad-agent)"]
+        BOOT_6["6. Initialize LLM client pool +<br/>heuristic router + embedding client<br/>(ironclad-llm)"]
+        BOOT_6B["6b. Load persisted semantic cache<br/>from SQLite (ironclad-db/cache.rs)"]
+        BOOT_7["7. Initialize agent loop +<br/>tool registry + MemoryRetriever<br/>(ironclad-agent)"]
         BOOT_8["8. Skills loaded on demand<br/>via POST /api/skills/reload"]
         BOOT_9["9. Start heartbeat daemon +<br/>cron scheduler (ironclad-schedule)"]
         BOOT_10["10. Start channel adapters<br/>(ironclad-channels)"]
         BOOT_11["11. Start axum HTTP server"]
         BOOT_12["12. Await shutdown signal<br/>(SIGTERM / SIGINT)"]
 
-        BOOT_1 --> BOOT_2 --> BOOT_3 --> BOOT_4 --> BOOT_5 --> BOOT_6 --> BOOT_7 --> BOOT_8 --> BOOT_9 --> BOOT_10 --> BOOT_11 --> BOOT_12
+        BOOT_1 --> BOOT_2 --> BOOT_3 --> BOOT_4 --> BOOT_5 --> BOOT_6 --> BOOT_6B --> BOOT_7 --> BOOT_8 --> BOOT_9 --> BOOT_10 --> BOOT_11 --> BOOT_12
     end
 
     subgraph ApiDetail ["api/routes/ - REST API (build_router)"]
@@ -77,6 +78,7 @@ flowchart TB
 | Method | Path | Handler | Crate |
 |--------|------|---------|-------|
 | GET | `/` | Dashboard | `ironclad-server` |
+| GET | `/.well-known/agent.json` | A2A agent card (discovery) | `ironclad-channels` |
 | GET | `/api/health` | Quick health check | `ironclad-server` |
 | GET | `/api/config` | Current configuration | `ironclad-core` |
 | PUT | `/api/config` | Update config | `ironclad-core` |
@@ -100,7 +102,7 @@ flowchart TB
 | GET | `/api/breaker/status` | Circuit breaker states | `ironclad-llm` |
 | POST | `/api/breaker/reset/{provider}` | Reset provider breaker | `ironclad-llm` |
 | GET | `/api/agent/status` | Agent status | `ironclad-agent` |
-| POST | `/api/agent/message` | Send message to agent | `ironclad-agent` |
+| POST | `/api/agent/message` | Send message through RAG pipeline (embed → retrieve → context → LLM → ingest) | `ironclad-agent`, `ironclad-llm`, `ironclad-db` |
 | GET | `/api/wallet/balance` | USDC + credit balance | `ironclad-wallet` |
 | GET | `/api/wallet/address` | Wallet address | `ironclad-wallet` |
 | GET | `/api/skills` | List all registered skills | `ironclad-db` |
@@ -129,7 +131,7 @@ flowchart TB
 | Path | Responsibility |
 |------|----------------|
 | `main.rs` | CLI (clap), bootstrap, serve loop |
-| `lib.rs` | Bootstrap app (config, db, wallet, llm, agent, router, dashboard, ws) |
+| `lib.rs` | Bootstrap app (config, db, wallet, llm, embedding, cache load, agent, retriever, router, dashboard, ws, cache flush daemon) |
 | `api/mod.rs` | API mount, shared state |
 | `api/routes/mod.rs` | `build_router()`, AppState, route table |
 | `api/routes/admin.rs` | Config, wallet, browser, agents, workspace, a2a, plugins |

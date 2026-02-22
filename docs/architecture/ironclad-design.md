@@ -34,7 +34,9 @@ ironclad/
 │   │       ├── metrics.rs      # Metrics + cost tracking
 │   │       ├── cron.rs         # Cron job state
 │   │       ├── skills.rs       # Skill definition CRUD
-│   │       ├── embeddings.rs   # Embedding storage / lookup
+│   │       ├── embeddings.rs   # Embedding storage / lookup (BLOB + JSON)
+│   │       ├── ann.rs          # HNSW ANN index (instant-distance)
+│   │       ├── cache.rs        # Semantic cache persistence
 │   │       └── migrations/     # SQL migration files
 │   │
 │   ├── ironclad-llm/           # LLM client + format translation
@@ -48,7 +50,8 @@ ironclad/
 │   │       ├── dedup.rs        # In-flight dedup tracker
 │   │       ├── tier.rs         # Tier classification + adaptation
 │   │       ├── router.rs       # Heuristic model router
-│   │       └── cache.rs        # Semantic cache
+│   │       ├── cache.rs        # Semantic cache (HashMap + SQLite persist)
+│   │       └── embedding.rs    # Multi-provider embedding client
 │   │
 │   ├── ironclad-agent/         # Agent loop + tools + policy
 │   │   ├── Cargo.toml
@@ -60,7 +63,8 @@ ironclad/
 │   │       ├── prompt.rs       # System prompt builder
 │   │       ├── context.rs      # Context assembly + compression
 │   │       ├── injection.rs    # Injection defense
-│   │       ├── memory.rs       # Memory retrieval + ingestion
+│   │       ├── memory.rs       # Memory budget + ingestion
+│   │       ├── retrieval.rs    # MemoryRetriever + content chunker (RAG)
 │   │       ├── skills.rs       # Skill loader, registry, executor
 │   │       ├── script_runner.rs # Sandboxed external script execution
 │   │       ├── approvals.rs    # Approval flows
@@ -176,7 +180,7 @@ pub enum SurvivalTier {
     Dead,       // < $0.00 for 1 hour
 }
 
-/// Agent lifecycle states (enforced by type-state pattern)
+/// Agent lifecycle states (typestate enforcement is a roadmap item)
 pub enum AgentState {
     Setup,
     Waking,
@@ -419,7 +423,8 @@ CREATE TABLE relationship_memory (
 CREATE VIRTUAL TABLE memory_fts USING fts5(
     content,
     category,
-    content_rowid=rowid
+    source_table,
+    source_id
 );
 
 -- Tasks (replaces PostgreSQL tasks table)
@@ -516,6 +521,19 @@ CREATE TABLE semantic_cache (
 );
 CREATE INDEX idx_cache_hash ON semantic_cache(prompt_hash);
 
+-- Embeddings (vector storage for RAG)
+CREATE TABLE embeddings (
+    id TEXT PRIMARY KEY,
+    source_table TEXT NOT NULL,      -- memory tier or 'turn'
+    source_id TEXT NOT NULL,
+    content_preview TEXT NOT NULL DEFAULT '',
+    embedding_json TEXT NOT NULL DEFAULT '',   -- legacy JSON format
+    embedding_blob BLOB,                      -- preferred binary format (~4x smaller)
+    dimensions INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_embeddings_source ON embeddings(source_table, source_id);
+
 -- Agent identity (includes runtime-generated secrets)
 -- Keys include: "ethereum_address", "did", "soul_hash",
 -- "hmac_session_secret" (generated on first boot for injection defense HMAC tags),
@@ -573,6 +591,47 @@ CREATE TABLE skills (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_skills_kind ON skills(kind);
+
+-- Delivery queue (outbound notifications with retry)
+CREATE TABLE delivery_queue (
+    id TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 5,
+    next_retry_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_delivery_queue_status ON delivery_queue(status, next_retry_at);
+
+-- Approval requests (human-in-the-loop gating)
+CREATE TABLE approval_requests (
+    id TEXT PRIMARY KEY,
+    tool_name TEXT NOT NULL,
+    tool_input TEXT NOT NULL,
+    session_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_by TEXT,
+    decided_at TEXT,
+    timeout_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_approvals_status ON approval_requests(status);
+
+-- Plugins (installed plugin registry)
+CREATE TABLE plugins (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    version TEXT NOT NULL,
+    description TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    manifest_path TEXT NOT NULL,
+    permissions_json TEXT,
+    installed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 ```
 
 ## 5. Configuration (ironclad.toml)
@@ -603,7 +662,7 @@ fallbacks = [
 ]
 
 [models.routing]
-mode = "ml"  # "ml" or "rule"
+mode = "heuristic"  # "heuristic", "primary", or "round-robin"
 confidence_threshold = 0.9
 local_first = true
 
@@ -626,6 +685,9 @@ tier = "T3"
 [providers.ollama]
 url = "http://127.0.0.1:11434"
 tier = "T1"
+embedding_path = "/api/embed"
+embedding_model = "nomic-embed-text"
+embedding_dimensions = 768
 
 [providers.ollama-gpu]
 url = "http://192.168.50.253:11434"
@@ -644,6 +706,10 @@ episodic_budget_pct = 25
 semantic_budget_pct = 20
 procedural_budget_pct = 15
 relationship_budget_pct = 10
+embedding_provider = "ollama"       # provider name for embeddings (must have embedding_path)
+# embedding_model = "nomic-embed-text"  # override provider default
+# hybrid_weight = 0.7              # FTS5 vs vector cosine blend (0.0 = pure keyword, 1.0 = pure vector)
+ann_index = false                   # enable HNSW ANN index for large embedding sets
 
 [cache]
 enabled = true

@@ -18,6 +18,8 @@ sequenceDiagram
     participant Injection as ironclad-agent/injection.rs
     participant Skills as ironclad-agent/skills.rs
     participant Memory as ironclad-agent/memory.rs
+    participant Retrieval as ironclad-agent/retrieval.rs
+    participant Embedding as ironclad-llm/embedding.rs
     participant Context as ironclad-agent/context.rs
     participant Prompt as ironclad-agent/prompt.rs
     participant Cache as ironclad-llm/cache.rs
@@ -55,12 +57,22 @@ sequenceDiagram
     Loop->>Skills: match_skills(turn_context)
     Skills-->>Loop: matched skills (structured + instruction)
 
-    Loop->>Memory: retrieve_memories(budget)
-    Memory->>DB: query all 5 tiers within token budget
-    DB-->>Memory: memory entries
-    Memory-->>Loop: formatted memory block
+    Loop->>Embedding: embed_single(user_message)
+    Embedding-->>Loop: query embedding (provider or n-gram fallback)
 
-    Loop->>Context: progressive_load(complexity)
+    Loop->>Retrieval: retrieve(session, query, embedding, complexity)
+    Retrieval->>Retrieval: MemoryBudgetManager allocate per-tier budgets
+    Retrieval->>DB: retrieve working_memory (session-scoped)
+    Retrieval->>DB: hybrid_search (FTS5 + vector cosine)
+    Retrieval->>DB: retrieve procedural_memory (tool stats)
+    Retrieval->>DB: retrieve relationship_memory (entities)
+    DB-->>Retrieval: memory entries
+    Retrieval-->>Loop: formatted [Active Memory] block
+
+    Loop->>DB: list_messages(session_id, 50)
+    DB-->>Loop: conversation history
+
+    Loop->>Context: build_context(system, memories, history)
     Context->>Router: classify_complexity(features) [heuristic, no ONNX]
     Router-->>Context: complexity score 0.0-1.0
     Context-->>Loop: assembled context (L0-L3)
@@ -128,10 +140,14 @@ sequenceDiagram
     Loop->>Injection: L4 scan_output (NFKC, decode, homoglyph, regex)
     Injection-->>Loop: clean or stripped response
 
-    Loop->>Memory: ingest_turn(classify_turn -> store)
+    Loop->>Memory: ingest_turn(classify_turn -> store) [background]
     Memory->>DB: store working/episodic/semantic + FTS
+    Loop->>Embedding: embed_single(assistant_response)
+    Embedding-->>Loop: response embedding
+    Loop->>DB: store_embedding(BLOB)
 
     Loop->>Cache: store(prompt_hash, response) [HashMap]
+    Note over Cache: Periodic flush to SQLite (5 min)
 
     Loop->>Channel: OutboundMessage
     Channel->>Channel: format_outbound()
@@ -193,6 +209,7 @@ sequenceDiagram
 
                 Agent->>CacheMod: store(prompt_hash, response)
                 CacheMod->>CacheMod: entries.insert (in-memory)
+                Note over CacheMod: Periodic flush to SQLite via ironclad-db/cache.rs
             end
         end
     end
@@ -265,7 +282,7 @@ sequenceDiagram
 
 ---
 
-## 4. 12-Step Bootstrap Sequence
+## 4. 13-Step Bootstrap Sequence
 
 Server `main()` initializing all crates in dependency order with error handling at each step.
 
@@ -310,6 +327,12 @@ sequenceDiagram
     LLM->>LLM: ModelRouter with HeuristicBackend (no ONNX)
     LLM->>LLM: reqwest Client, ProviderRegistry
     LLM-->>Main: LlmService
+
+    Note over Main,LLM: Step 6b: Load persisted semantic cache
+    Main->>DB: SELECT * FROM semantic_cache
+    DB-->>Main: cached entries
+    Main->>LLM: cache.load_persisted(entries)
+    LLM->>LLM: populate in-memory HashMap from SQLite rows
 
     Note over Main,Agent: Step 7: Initialize agent
     Main->>Agent: AgentLoop::new(config.agent, db, llm_service)
@@ -570,10 +593,10 @@ sequenceDiagram
 
 | Sequence | Related Dataflow Diagrams | Related C4 Docs | Key Tables |
 | ---------- | -------------------------- | ----------------- | ------------ |
-| 1. End-to-End Request | Diagram 1 (Primary Request), Diagram 6 (Injection) | ironclad-c4-agent, ironclad-c4-llm, ironclad-c4-channels | sessions, session_messages, turns, tool_calls, policy_decisions, inference_costs, semantic_cache |
-| 2. Cache-Augmented Inference | Diagram 2 (Semantic Cache), Diagram 3 (Heuristic Router) | ironclad-c4-llm | semantic_cache, inference_costs |
+| 1. End-to-End Request | Diagram 1 (Primary Request), Diagram 4 (Memory), Diagram 6 (Injection) | ironclad-c4-agent, ironclad-c4-llm, ironclad-c4-channels, ironclad-c4-db | sessions, session_messages, turns, tool_calls, policy_decisions, inference_costs, semantic_cache, embeddings |
+| 2. Cache-Augmented Inference | Diagram 2 (Semantic Cache), Diagram 3 (Heuristic Router) | ironclad-c4-llm, ironclad-c4-db | semantic_cache, inference_costs |
 | 3. x402 Payment-Gated Inference | Diagram 7 (Financial + Yield) | ironclad-c4-wallet, ironclad-c4-llm | transactions, inference_costs, policy_decisions |
-| 4. 12-Step Bootstrap | All diagrams (covers full system init) | ironclad-c4-server (bootstrap sequence) | identity, skills, cron_jobs |
+| 4. 13-Step Bootstrap | All diagrams (covers full system init) | ironclad-c4-server (bootstrap sequence) | identity, skills, cron_jobs, semantic_cache |
 | 5. Injection Attack Blocked | Diagram 6 (Multi-Layer Injection Defense) | ironclad-c4-agent | policy_decisions, metric_snapshots |
 | 6. Skill-Triggered Script | Diagram 9 (Skill Execution) | ironclad-c4-agent, ironclad-c4-db | skills, policy_decisions |
 | 7. Cron Lease + Execution | Diagram 8 (Cron + Heartbeat Scheduling) | ironclad-c4-schedule, ironclad-c4-db | cron_jobs, cron_runs, working_memory, episodic_memory, memory_fts |
