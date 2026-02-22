@@ -282,40 +282,41 @@ pub async fn agent_message(
     drop(config);
 
     // Check circuit breaker
-    {
+    let breaker_blocked = {
         let llm = state.llm.read().await;
-        if llm.breakers.is_blocked(&provider_prefix) {
-            let assistant_content = format!(
-                "I'm temporarily unable to reach the {} provider (circuit breaker open). Please try again shortly.",
-                provider_prefix
-            );
-            let asst_id = ironclad_db::sessions::append_message(
-                &state.db,
-                &session_id,
-                "assistant",
-                &assistant_content,
+        llm.breakers.is_blocked(&provider_prefix)
+    };
+    if breaker_blocked {
+        let assistant_content = format!(
+            "I'm temporarily unable to reach the {} provider (circuit breaker open). Please try again shortly.",
+            provider_prefix
+        );
+        let asst_id = ironclad_db::sessions::append_message(
+            &state.db,
+            &session_id,
+            "assistant",
+            &assistant_content,
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": e.to_string()})),
             )
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(json!({"error": e.to_string()})),
-                )
-            })?;
-            {
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-            }
-            return Ok(axum::Json(json!({
-                "session_id": session_id,
-                "nickname": session_nickname,
-                "user_message_id": user_msg_id,
-                "assistant_message_id": asst_id,
-                "content": assistant_content,
-                "model": model,
-                "cached": false,
-                "provider_blocked": true,
-            })));
+        })?;
+        {
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
         }
+        return Ok(axum::Json(json!({
+            "session_id": session_id,
+            "nickname": session_nickname,
+            "user_message_id": user_msg_id,
+            "assistant_message_id": asst_id,
+            "content": assistant_content,
+            "model": model,
+            "cached": false,
+            "provider_blocked": true,
+        })));
     }
 
     // Resolve provider from registry (config-driven, format-agnostic)
