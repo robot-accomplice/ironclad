@@ -281,7 +281,8 @@ mod tests {
         store_embedding(&db, "e1", "test", "t1", "hello world", &[1.0, 0.0, 0.0]).unwrap();
         store_embedding(&db, "e2", "test", "t2", "goodbye", &[0.0, 1.0, 0.0]).unwrap();
 
-        let results = hybrid_search(&db, "zzzznonexistent", Some(&[1.0, 0.0, 0.0]), 10, 0.5).unwrap();
+        let results =
+            hybrid_search(&db, "zzzznonexistent", Some(&[1.0, 0.0, 0.0]), 10, 0.5).unwrap();
         assert!(!results.is_empty());
     }
 

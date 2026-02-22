@@ -242,11 +242,7 @@ mod tests {
         let cfg = dir.path().join("ironclad.toml");
         std::fs::write(&cfg, "").unwrap();
 
-        let result = install_daemon(
-            bin.to_str().unwrap(),
-            cfg.to_str().unwrap(),
-            18789,
-        );
+        let result = install_daemon(bin.to_str().unwrap(), cfg.to_str().unwrap(), 18789);
         assert!(result.is_ok());
         let path = result.unwrap();
         assert!(path.exists());

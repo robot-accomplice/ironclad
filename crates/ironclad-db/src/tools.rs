@@ -123,7 +123,16 @@ mod tests {
     #[test]
     fn record_tool_call_no_output_no_duration() {
         let db = test_db();
-        let id = record_tool_call(&db, "t1", "search", r#"{"q":"test"}"#, None, "pending", None).unwrap();
+        let id = record_tool_call(
+            &db,
+            "t1",
+            "search",
+            r#"{"q":"test"}"#,
+            None,
+            "pending",
+            None,
+        )
+        .unwrap();
         assert!(!id.is_empty());
         let calls = get_tool_calls_for_turn(&db, "t1").unwrap();
         assert!(calls[0].output.is_none());
@@ -134,7 +143,16 @@ mod tests {
     #[test]
     fn record_tool_call_error_status() {
         let db = test_db();
-        record_tool_call(&db, "t1", "bash", r#"{"cmd":"rm -rf /"}"#, Some("permission denied"), "error", Some(5)).unwrap();
+        record_tool_call(
+            &db,
+            "t1",
+            "bash",
+            r#"{"cmd":"rm -rf /"}"#,
+            Some("permission denied"),
+            "error",
+            Some(5),
+        )
+        .unwrap();
         let calls = get_tool_calls_for_turn(&db, "t1").unwrap();
         assert_eq!(calls[0].status, "error");
         assert_eq!(calls[0].output.as_deref(), Some("permission denied"));
@@ -150,7 +168,16 @@ mod tests {
     #[test]
     fn tool_call_fields_populated() {
         let db = test_db();
-        record_tool_call(&db, "t1", "bash", r#"{"cmd":"echo hi"}"#, Some("hi"), "success", Some(100)).unwrap();
+        record_tool_call(
+            &db,
+            "t1",
+            "bash",
+            r#"{"cmd":"echo hi"}"#,
+            Some("hi"),
+            "success",
+            Some(100),
+        )
+        .unwrap();
         let calls = get_tool_calls_for_turn(&db, "t1").unwrap();
         assert!(!calls[0].id.is_empty());
         assert_eq!(calls[0].turn_id, "t1");

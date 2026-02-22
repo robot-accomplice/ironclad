@@ -473,7 +473,11 @@ mod tests {
     async fn deposit_rpc_set_missing_private_key() {
         let engine = YieldEngine::new(&rpc_config());
         let result = engine
-            .deposit(10.0, Some("0x0000000000000000000000000000000000000001"), None)
+            .deposit(
+                10.0,
+                Some("0x0000000000000000000000000000000000000001"),
+                None,
+            )
             .await;
         assert!(result.is_err());
     }
@@ -490,7 +494,11 @@ mod tests {
     async fn withdraw_rpc_set_missing_private_key() {
         let engine = YieldEngine::new(&rpc_config());
         let result = engine
-            .withdraw(10.0, Some("0x0000000000000000000000000000000000000001"), None)
+            .withdraw(
+                10.0,
+                Some("0x0000000000000000000000000000000000000001"),
+                None,
+            )
             .await;
         assert!(result.is_err());
     }
@@ -523,17 +531,21 @@ mod tests {
     #[test]
     fn build_supply_call_params_invalid_address() {
         let engine = YieldEngine::new(&enabled_config());
-        assert!(engine
-            .build_supply_call_params(10.0, "not-an-address")
-            .is_err());
+        assert!(
+            engine
+                .build_supply_call_params(10.0, "not-an-address")
+                .is_err()
+        );
     }
 
     #[test]
     fn build_withdraw_call_params_invalid_address() {
         let engine = YieldEngine::new(&enabled_config());
-        assert!(engine
-            .build_withdraw_call_params(10.0, "not-an-address")
-            .is_err());
+        assert!(
+            engine
+                .build_withdraw_call_params(10.0, "not-an-address")
+                .is_err()
+        );
     }
 
     #[test]

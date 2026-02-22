@@ -521,6 +521,34 @@ pub async fn agent_card(State(state): State<AppState>) -> impl IntoResponse {
     axum::Json(card)
 }
 
+pub async fn a2a_hello(
+    State(state): State<AppState>,
+    axum::Json(body): axum::Json<A2aHelloRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let peer_did = ironclad_channels::a2a::A2aProtocol::verify_hello(&body.hello)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let mut a2a = state.a2a.write().await;
+    a2a.check_rate_limit(&peer_did)
+        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e.to_string()))?;
+    drop(a2a);
+
+    let config = state.config.read().await;
+    let our_did = format!("did:ironclad:{}", config.agent.id);
+    drop(config);
+
+    let nonce = uuid::Uuid::new_v4();
+    let our_hello = ironclad_channels::a2a::A2aProtocol::generate_hello(&our_did, nonce.as_bytes());
+
+    Ok(axum::Json(json!({
+        "protocol": "a2a",
+        "version": "0.1",
+        "status": "ok",
+        "peer_did": peer_did,
+        "hello": our_hello,
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,36 +617,11 @@ mod tests {
     #[test]
     fn merge_json_three_levels() {
         let mut base = json!({"l1": {"l2": {"l3": "old"}}});
-        merge_json(&mut base, &json!({"l1": {"l2": {"l3": "new", "extra": true}}}));
+        merge_json(
+            &mut base,
+            &json!({"l1": {"l2": {"l3": "new", "extra": true}}}),
+        );
         assert_eq!(base["l1"]["l2"]["l3"], "new");
         assert_eq!(base["l1"]["l2"]["extra"], true);
     }
-}
-
-pub async fn a2a_hello(
-    State(state): State<AppState>,
-    axum::Json(body): axum::Json<A2aHelloRequest>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let peer_did = ironclad_channels::a2a::A2aProtocol::verify_hello(&body.hello)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-
-    let mut a2a = state.a2a.write().await;
-    a2a.check_rate_limit(&peer_did)
-        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e.to_string()))?;
-    drop(a2a);
-
-    let config = state.config.read().await;
-    let our_did = format!("did:ironclad:{}", config.agent.id);
-    drop(config);
-
-    let nonce = uuid::Uuid::new_v4();
-    let our_hello = ironclad_channels::a2a::A2aProtocol::generate_hello(&our_did, nonce.as_bytes());
-
-    Ok(axum::Json(json!({
-        "protocol": "a2a",
-        "version": "0.1",
-        "status": "ok",
-        "peer_did": peer_did,
-        "hello": our_hello,
-    })))
 }

@@ -159,17 +159,7 @@ mod tests {
     #[test]
     fn record_inference_cost_cached() {
         let db = test_db();
-        let id = record_inference_cost(
-            &db,
-            "gpt-4",
-            "openai",
-            100,
-            50,
-            0.005,
-            None,
-            true,
-        )
-        .unwrap();
+        let id = record_inference_cost(&db, "gpt-4", "openai", 100, 50, 0.005, None, true).unwrap();
         assert!(!id.is_empty());
     }
 

@@ -319,8 +319,15 @@ mod tests {
     #[test]
     fn create_job_with_schedule_expr() {
         let db = test_db();
-        let id = create_job(&db, "cron-job", "a1", "cron", Some("0 */5 * * *"), r#"{"a":1}"#)
-            .unwrap();
+        let id = create_job(
+            &db,
+            "cron-job",
+            "a1",
+            "cron",
+            Some("0 */5 * * *"),
+            r#"{"a":1}"#,
+        )
+        .unwrap();
         let job = get_job(&db, &id).unwrap().unwrap();
         assert_eq!(job.schedule_kind, "cron");
         assert_eq!(job.schedule_expr.as_deref(), Some("0 */5 * * *"));

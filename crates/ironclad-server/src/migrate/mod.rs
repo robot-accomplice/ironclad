@@ -493,7 +493,14 @@ mod tests {
 
     #[test]
     fn migration_area_from_str_all_variants() {
-        for s in &["config", "personality", "skills", "sessions", "cron", "channels"] {
+        for s in &[
+            "config",
+            "personality",
+            "skills",
+            "sessions",
+            "cron",
+            "channels",
+        ] {
             assert!(MigrationArea::from_str(s).is_some(), "failed for: {s}");
         }
     }
@@ -508,10 +515,7 @@ mod tests {
             MigrationArea::from_str("SESSIONS"),
             Some(MigrationArea::Sessions)
         );
-        assert_eq!(
-            MigrationArea::from_str("CrOn"),
-            Some(MigrationArea::Cron)
-        );
+        assert_eq!(MigrationArea::from_str("CrOn"), Some(MigrationArea::Cron));
     }
 
     #[test]

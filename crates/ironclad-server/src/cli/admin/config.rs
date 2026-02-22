@@ -253,7 +253,7 @@ mod tests {
     fn navigate_toml_deeply_nested() {
         let toml: toml::Value = "[a.b.c]\nval = true".parse().unwrap();
         let result = navigate_toml(&toml, "a.b.c.val");
-        assert_eq!(result.unwrap().as_bool().unwrap(), true);
+        assert!(result.unwrap().as_bool().unwrap());
     }
 
     #[test]
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn format_toml_value_float() {
-        assert_eq!(format_toml_value(&toml::Value::Float(3.14)), "3.14");
+        assert_eq!(format_toml_value(&toml::Value::Float(2.72)), "2.72");
     }
 
     #[test]
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn parse_toml_value_float() {
-        assert_eq!(parse_toml_value("3.14"), toml::Value::Float(3.14));
+        assert_eq!(parse_toml_value("2.72"), toml::Value::Float(2.72));
     }
 
     #[test]

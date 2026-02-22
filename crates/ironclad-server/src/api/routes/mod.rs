@@ -1478,8 +1478,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn working_memory_returns_entries() {
         let state = test_state();
-        let session_id =
-            ironclad_db::sessions::find_or_create(&state.db, "test-working").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&state.db, "test-working").unwrap();
         ironclad_db::memory::store_working(
             &state.db,
             &session_id,
@@ -1611,12 +1610,7 @@ primary = "ollama/qwen3:8b"
         let state = test_state();
         let app = build_router(state);
         let resp = app
-            .oneshot(
-                Request::builder()
-                    .uri("/")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1672,8 +1666,7 @@ primary = "ollama/qwen3:8b"
             .await
             .unwrap();
         assert!(
-            resp.status() == StatusCode::OK
-                || resp.status() == StatusCode::INTERNAL_SERVER_ERROR
+            resp.status() == StatusCode::OK || resp.status() == StatusCode::INTERNAL_SERVER_ERROR
         );
     }
 
@@ -1737,9 +1730,7 @@ primary = "ollama/qwen3:8b"
                     .method("PUT")
                     .uri("/api/config")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"wallet":{"rpc_url":"http://evil.com"}}"#,
-                    ))
+                    .body(Body::from(r#"{"wallet":{"rpc_url":"http://evil.com"}}"#))
                     .unwrap(),
             )
             .await
@@ -1965,7 +1956,12 @@ primary = "ollama/qwen3:8b"
 
         let body = json_body(resp).await;
         assert_eq!(body["provider_blocked"], true);
-        assert!(body["content"].as_str().unwrap().contains("circuit breaker"));
+        assert!(
+            body["content"]
+                .as_str()
+                .unwrap()
+                .contains("circuit breaker")
+        );
         assert_eq!(body["cached"], false);
     }
 
@@ -1975,8 +1971,7 @@ primary = "ollama/qwen3:8b"
     async fn agent_message_cache_hit_returns_cached_response() {
         let state = test_state();
         let test_content = "cached question for testing";
-        let cache_hash =
-            ironclad_llm::SemanticCache::compute_hash("", "", test_content);
+        let cache_hash = ironclad_llm::SemanticCache::compute_hash("", "", test_content);
         {
             let mut llm = state.llm.write().await;
             let cached = ironclad_llm::CachedResponse {
@@ -1989,7 +1984,8 @@ primary = "ollama/qwen3:8b"
                 involved_tools: false,
                 embedding: None,
             };
-            llm.cache.store_with_embedding(&cache_hash, test_content, cached);
+            llm.cache
+                .store_with_embedding(&cache_hash, test_content, cached);
         }
         let app = build_router(state);
         let req = Request::builder()
@@ -2073,7 +2069,10 @@ primary = "ollama/qwen3:8b"
         assert!(result.is_err());
         let (status, msg) = result.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
-        assert!(msg.contains("denied") || msg.contains("Policy"), "msg: {msg}");
+        assert!(
+            msg.contains("denied") || msg.contains("Policy"),
+            "msg: {msg}"
+        );
     }
 
     #[test]
@@ -2302,8 +2301,12 @@ primary = "ollama/qwen3:8b"
         struct TestPlugin;
         #[async_trait::async_trait]
         impl Plugin for TestPlugin {
-            fn name(&self) -> &str { "mock-success" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "mock-success"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             fn tools(&self) -> Vec<ToolDef> {
                 vec![ToolDef {
                     name: "greet".into(),
@@ -2311,7 +2314,9 @@ primary = "ollama/qwen3:8b"
                     parameters: serde_json::json!({}),
                 }]
             }
-            async fn init(&mut self) -> ironclad_core::Result<()> { Ok(()) }
+            async fn init(&mut self) -> ironclad_core::Result<()> {
+                Ok(())
+            }
             async fn execute_tool(
                 &self,
                 _name: &str,
@@ -2323,7 +2328,9 @@ primary = "ollama/qwen3:8b"
                     metadata: None,
                 })
             }
-            async fn shutdown(&mut self) -> ironclad_core::Result<()> { Ok(()) }
+            async fn shutdown(&mut self) -> ironclad_core::Result<()> {
+                Ok(())
+            }
         }
 
         let mut state = test_state();
@@ -2420,13 +2427,8 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn episodic_memory_returns_seeded_entry() {
         let state = test_state();
-        ironclad_db::memory::store_episodic(
-            &state.db,
-            "tool_use",
-            "ran a shell command",
-            5,
-        )
-        .unwrap();
+        ironclad_db::memory::store_episodic(&state.db, "tool_use", "ran a shell command", 5)
+            .unwrap();
         let app = build_router(state);
         let resp = app
             .oneshot(
@@ -2447,14 +2449,8 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn semantic_memory_returns_seeded_entry() {
         let state = test_state();
-        ironclad_db::memory::store_semantic(
-            &state.db,
-            "preferences",
-            "color",
-            "blue",
-            0.9,
-        )
-        .unwrap();
+        ironclad_db::memory::store_semantic(&state.db, "preferences", "color", "blue", 0.9)
+            .unwrap();
         let app = build_router(state);
         let resp = app
             .oneshot(

@@ -537,7 +537,9 @@ mod tests {
         let db = Database::new(":memory:").unwrap();
         let conn = db.conn();
         let exists: bool = conn
-            .prepare("SELECT COUNT(*) FROM sqlite_master WHERE name = 'memory_fts' AND type = 'table'")
+            .prepare(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'memory_fts' AND type = 'table'",
+            )
             .unwrap()
             .query_row([], |row| {
                 let count: i64 = row.get(0)?;

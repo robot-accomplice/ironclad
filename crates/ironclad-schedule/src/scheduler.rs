@@ -224,12 +224,8 @@ mod tests {
 
     #[test]
     fn next_run_unknown_kind() {
-        let result = DurableScheduler::calculate_next_run(
-            "weekly",
-            None,
-            None,
-            "2025-01-01T00:00:00+00:00",
-        );
+        let result =
+            DurableScheduler::calculate_next_run("weekly", None, None, "2025-01-01T00:00:00+00:00");
         assert!(result.is_none());
     }
 
@@ -255,17 +251,27 @@ mod tests {
 
     #[test]
     fn interval_invalid_now() {
-        assert!(!DurableScheduler::evaluate_interval(None, 60_000, "not-a-date"));
+        assert!(!DurableScheduler::evaluate_interval(
+            None,
+            60_000,
+            "not-a-date"
+        ));
     }
 
     #[test]
     fn at_invalid_target() {
-        assert!(!DurableScheduler::evaluate_at("bad", "2025-01-01T00:00:00+00:00"));
+        assert!(!DurableScheduler::evaluate_at(
+            "bad",
+            "2025-01-01T00:00:00+00:00"
+        ));
     }
 
     #[test]
     fn at_invalid_now() {
-        assert!(!DurableScheduler::evaluate_at("2025-01-01T00:00:00+00:00", "bad"));
+        assert!(!DurableScheduler::evaluate_at(
+            "2025-01-01T00:00:00+00:00",
+            "bad"
+        ));
     }
 
     #[test]
