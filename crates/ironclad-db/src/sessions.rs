@@ -53,15 +53,19 @@ pub fn find_or_create(
     let conn = db.conn();
     let scope_key = scope.map(|s| s.scope_key());
 
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
     let existing: Option<String> = if let Some(ref key) = scope_key {
-        conn.query_row(
+        tx.query_row(
             "SELECT id FROM sessions WHERE agent_id = ?1 AND scope_key = ?2 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
             rusqlite::params![agent_id, key],
             |row| row.get(0),
         )
         .ok()
     } else {
-        conn.query_row(
+        tx.query_row(
             "SELECT id FROM sessions WHERE agent_id = ?1 AND scope_key IS NULL AND status = 'active' ORDER BY created_at DESC LIMIT 1",
             [agent_id],
             |row| row.get(0),
@@ -70,15 +74,20 @@ pub fn find_or_create(
     };
 
     if let Some(id) = existing {
+        tx.commit()
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
         return Ok(id);
     }
 
     let id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
+    tx.execute(
         "INSERT INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",
         rusqlite::params![id, agent_id, scope_key],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    tx.commit()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     Ok(id)
 }

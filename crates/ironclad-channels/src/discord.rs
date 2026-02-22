@@ -161,11 +161,12 @@ impl DiscordAdapter {
                 break;
             }
 
-            let boundary = &remaining[..max_len];
+            let safe_max = remaining.floor_char_boundary(max_len);
+            let boundary = &remaining[..safe_max];
             let split_at = boundary
                 .rfind('\n')
                 .or_else(|| boundary.rfind(|c: char| c.is_whitespace()))
-                .unwrap_or(max_len);
+                .unwrap_or(safe_max);
 
             let (chunk, rest) = remaining.split_at(split_at);
             chunks.push(chunk.to_string());

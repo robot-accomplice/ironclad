@@ -279,6 +279,27 @@ impl IroncladConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.models.primary.is_empty() {
+            return Err(IroncladError::Config(
+                "models.primary must be non-empty".into(),
+            ));
+        }
+
+        if self.agent.id.is_empty() {
+            return Err(IroncladError::Config("agent.id must be non-empty".into()));
+        }
+
+        if self.agent.name.is_empty() {
+            return Err(IroncladError::Config("agent.name must be non-empty".into()));
+        }
+
+        if !matches!(self.session.scope_mode.as_str(), "agent" | "peer" | "group") {
+            return Err(IroncladError::Config(format!(
+                "session.scope_mode must be one of \"agent\", \"peer\", \"group\", got \"{}\"",
+                self.session.scope_mode
+            )));
+        }
+
         let sum = self.memory.working_budget_pct
             + self.memory.episodic_budget_pct
             + self.memory.semantic_budget_pct
@@ -365,6 +386,10 @@ pub struct ServerConfig {
     pub log_dir: PathBuf,
     #[serde(default = "default_log_max_days")]
     pub log_max_days: u32,
+    #[serde(default = "default_rate_limit_requests")]
+    pub rate_limit_requests: u32,
+    #[serde(default = "default_rate_limit_window_secs")]
+    pub rate_limit_window_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -375,8 +400,18 @@ impl Default for ServerConfig {
             api_key: None,
             log_dir: default_log_dir(),
             log_max_days: default_log_max_days(),
+            rate_limit_requests: default_rate_limit_requests(),
+            rate_limit_window_secs: default_rate_limit_window_secs(),
         }
     }
+}
+
+fn default_rate_limit_requests() -> u32 {
+    100
+}
+
+fn default_rate_limit_window_secs() -> u64 {
+    60
 }
 
 fn default_port() -> u16 {

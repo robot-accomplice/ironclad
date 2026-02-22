@@ -16,15 +16,13 @@ use super::{ChannelAdapter, InboundMessage, OutboundMessage};
 pub struct EmailAdapter {
     from_address: String,
     smtp_host: String,
-    smtp_port: u16,
     #[allow(dead_code)]
     imap_host: String,
     #[allow(dead_code)]
     imap_port: u16,
-    username: String,
-    password: String,
     allowed_senders: Vec<String>,
     buffer: Arc<Mutex<VecDeque<InboundMessage>>>,
+    transport: AsyncSmtpTransport<Tokio1Executor>,
 }
 
 impl EmailAdapter {
@@ -37,16 +35,21 @@ impl EmailAdapter {
         username: String,
         password: String,
     ) -> Self {
+        let creds = Credentials::new(username, password);
+        let transport = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp_host)
+            .expect("valid SMTP relay hostname")
+            .port(smtp_port)
+            .credentials(creds)
+            .build();
+
         Self {
             from_address,
             smtp_host,
-            smtp_port,
             imap_host,
             imap_port,
-            username,
-            password,
             allowed_senders: Vec::new(),
             buffer: Arc::new(Mutex::new(VecDeque::new())),
+            transport,
         }
     }
 
@@ -177,15 +180,7 @@ impl ChannelAdapter for EmailAdapter {
             .body(msg.content.clone())
             .map_err(|e| IroncladError::Channel(format!("failed to build email: {e}")))?;
 
-        let creds = Credentials::new(self.username.clone(), self.password.clone());
-
-        let transport = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&self.smtp_host)
-            .map_err(|e| IroncladError::Channel(format!("SMTP relay error: {e}")))?
-            .port(self.smtp_port)
-            .credentials(creds)
-            .build();
-
-        transport
+        self.transport
             .send(email)
             .await
             .map_err(|e| IroncladError::Channel(format!("SMTP send failed: {e}")))?;

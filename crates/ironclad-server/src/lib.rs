@@ -13,6 +13,7 @@ pub use dashboard::{build_dashboard_html, dashboard_handler};
 pub use ws::{EventBus, ws_route};
 
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -35,6 +36,7 @@ use ironclad_wallet::WalletService;
 use rate_limit::GlobalRateLimitLayer;
 
 static STDERR_ENABLED: AtomicBool = AtomicBool::new(false);
+static LOG_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
 pub fn enable_stderr_logging() {
     STDERR_ENABLED.store(true, Ordering::Release);
@@ -56,9 +58,8 @@ fn init_logging(config: &IroncladConfig) {
     let log_dir = &config.server.log_dir;
     if std::fs::create_dir_all(log_dir).is_ok() {
         let file_appender = tracing_appender::rolling::daily(log_dir, "ironclad.log");
-        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-
-        std::mem::forget(_guard);
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        let _ = LOG_GUARD.set(guard);
 
         let file_layer = fmt::layer()
             .with_writer(non_blocking)
@@ -311,7 +312,10 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
         .route("/ws", ws_route(event_bus.clone()))
         .layer(auth_layer)
         .layer(cors)
-        .layer(GlobalRateLimitLayer::new(100, Duration::from_secs(60)));
+        .layer(GlobalRateLimitLayer::new(
+            u64::from(config.server.rate_limit_requests),
+            Duration::from_secs(config.server.rate_limit_window_secs),
+        ));
     Ok(app)
 }
 

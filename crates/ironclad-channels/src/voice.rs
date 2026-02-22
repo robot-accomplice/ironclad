@@ -17,7 +17,7 @@ pub struct VoiceConfig {
     pub local_tts: bool,
     #[serde(default = "default_sample_rate")]
     pub sample_rate: u32,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub api_key: Option<String>,
     #[serde(default = "default_api_base_url")]
     pub api_base_url: String,

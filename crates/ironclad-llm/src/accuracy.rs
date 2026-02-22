@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use tracing::{debug, info};
 
@@ -7,7 +7,7 @@ use crate::provider::ProviderRegistry;
 /// Tracks observed quality scores per model for accuracy-target routing.
 #[derive(Debug)]
 pub struct QualityTracker {
-    observations: HashMap<String, Vec<f64>>,
+    observations: HashMap<String, VecDeque<f64>>,
     window_size: usize,
 }
 
@@ -22,9 +22,9 @@ impl QualityTracker {
     /// Record an observed quality score for a model.
     pub fn record(&mut self, model: &str, quality: f64) {
         let scores = self.observations.entry(model.to_string()).or_default();
-        scores.push(quality.clamp(0.0, 1.0));
+        scores.push_back(quality.clamp(0.0, 1.0));
         if scores.len() > self.window_size {
-            scores.remove(0);
+            scores.pop_front();
         }
     }
 

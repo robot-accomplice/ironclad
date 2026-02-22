@@ -107,33 +107,38 @@ impl KnowledgeSource for DirectorySource {
     async fn query(&self, query: &str, max_results: usize) -> Result<Vec<KnowledgeChunk>> {
         let query_lower = query.to_lowercase();
         let files = self.scan_files();
-        let mut chunks = Vec::new();
 
-        for path in files {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let content_lower = content.to_lowercase();
-                if content_lower.contains(&query_lower) {
-                    let relevance = content_lower.matches(&query_lower).count() as f64
-                        / content.len().max(1) as f64;
-                    chunks.push(KnowledgeChunk {
-                        content: truncate(&content, 2000),
-                        source: path.display().to_string(),
-                        relevance,
-                        metadata: Some(serde_json::json!({
-                            "file_size": content.len(),
-                            "path": path.display().to_string(),
-                        })),
-                    });
+        let chunks = tokio::task::spawn_blocking(move || {
+            let mut chunks = Vec::new();
+            for path in files {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let content_lower = content.to_lowercase();
+                    if content_lower.contains(&query_lower) {
+                        let relevance = content_lower.matches(&query_lower).count() as f64
+                            / content.len().max(1) as f64;
+                        chunks.push(KnowledgeChunk {
+                            content: truncate(&content, 2000),
+                            source: path.display().to_string(),
+                            relevance,
+                            metadata: Some(serde_json::json!({
+                                "file_size": content.len(),
+                                "path": path.display().to_string(),
+                            })),
+                        });
+                    }
                 }
             }
-        }
+            chunks.sort_by(|a, b| {
+                b.relevance
+                    .partial_cmp(&a.relevance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            chunks.truncate(max_results);
+            chunks
+        })
+        .await
+        .map_err(|e| IroncladError::Config(format!("blocking task failed: {e}")))?;
 
-        chunks.sort_by(|a, b| {
-            b.relevance
-                .partial_cmp(&a.relevance)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        chunks.truncate(max_results);
         Ok(chunks)
     }
 
@@ -205,7 +210,10 @@ impl VectorDbSource {
         Self {
             name: name.to_string(),
             url: url.to_string(),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("HTTP client build"),
             api_key: None,
         }
     }
@@ -325,7 +333,10 @@ impl GraphSource {
         Self {
             name: name.to_string(),
             url: url.to_string(),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("HTTP client build"),
             api_key: None,
         }
     }
@@ -515,7 +526,8 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        let boundary = s.floor_char_boundary(max);
+        format!("{}...", &s[..boundary])
     }
 }
 

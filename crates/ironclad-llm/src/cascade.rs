@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use tracing::debug;
 
 /// Outcome of a cascade attempt.
@@ -14,7 +14,7 @@ pub struct CascadeOutcome {
 /// Tracks cascade outcomes for strategy optimization.
 #[derive(Debug)]
 pub struct CascadeOptimizer {
-    outcomes: HashMap<String, Vec<CascadeOutcome>>,
+    outcomes: HashMap<String, VecDeque<CascadeOutcome>>,
     window_size: usize,
 }
 
@@ -30,9 +30,9 @@ impl CascadeOptimizer {
     pub fn record(&mut self, outcome: CascadeOutcome) {
         let class = outcome.query_class.clone();
         let entries = self.outcomes.entry(class).or_default();
-        entries.push(outcome);
+        entries.push_back(outcome);
         if entries.len() > self.window_size {
-            entries.remove(0);
+            entries.pop_front();
         }
     }
 

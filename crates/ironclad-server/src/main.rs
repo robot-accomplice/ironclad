@@ -937,23 +937,25 @@ async fn cmd_serve(
 
             if let Ok(pids) = find_listeners(config.server.port) {
                 let own_pid = std::process::id();
-                for pid in &pids {
-                    if *pid != own_pid {
+                for pid in pids.iter().filter(|&&p| p != own_pid) {
+                    if let Ok(p) = i32::try_from(*pid) {
                         unsafe {
-                            libc::kill(*pid as i32, libc::SIGTERM);
+                            libc::kill(p, libc::SIGTERM);
                         }
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-                for pid in &pids {
-                    if *pid != own_pid {
-                        unsafe {
-                            libc::kill(*pid as i32, libc::SIGKILL);
+                if let Ok(remaining) = find_listeners(config.server.port) {
+                    for pid in remaining.iter().filter(|&&p| p != own_pid) {
+                        if let Ok(p) = i32::try_from(*pid) {
+                            unsafe {
+                                libc::kill(p, libc::SIGKILL);
+                            }
                         }
                     }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
 
             tokio::net::TcpListener::bind(&bind_addr)

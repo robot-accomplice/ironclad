@@ -131,6 +131,15 @@ pub fn list_agent_tables(db: &Database, agent_id: &str) -> Result<Vec<SchemaEntr
         .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
+fn validate_identifier(s: &str) -> Result<()> {
+    if s.is_empty() || !s.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Err(IroncladError::Database(format!(
+            "identifier contains invalid characters: {s}"
+        )));
+    }
+    Ok(())
+}
+
 /// Create an agent-owned table with the given columns.
 /// Table names are prefixed with the agent ID for isolation.
 pub fn create_agent_table(
@@ -149,6 +158,11 @@ pub fn create_agent_table(
         return Err(IroncladError::Database(
             "table name contains invalid characters".into(),
         ));
+    }
+
+    for col in columns {
+        validate_identifier(&col.name)?;
+        validate_identifier(&col.col_type)?;
     }
 
     let col_defs: Vec<String> = columns

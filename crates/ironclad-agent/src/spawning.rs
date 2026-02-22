@@ -7,14 +7,16 @@ use sha3::{Digest, Keccak256};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
-fn derive_child_address() -> String {
+fn derive_child_address() -> (String, String) {
     let signing_key = SigningKey::random(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
     let pubkey_point = verifying_key.to_encoded_point(false);
     let pubkey_bytes = &pubkey_point.as_bytes()[1..];
     let hash = Keccak256::digest(pubkey_bytes);
     let addr_bytes = &hash[hash.len() - 20..];
-    format!("0x{}", hex::encode(addr_bytes))
+    let address = format!("0x{}", hex::encode(addr_bytes));
+    let secret = hex::encode(signing_key.to_bytes());
+    (address, secret)
 }
 
 /// Configuration for spawning a child agent.
@@ -23,6 +25,8 @@ pub struct SpawnConfig {
     pub parent_id: String,
     pub child_name: String,
     pub task_description: String,
+    /// Budget threshold in USDC. Uses f64 for planning/threshold purposes;
+    /// exact decimal arithmetic should be used for production financial accounting.
     pub budget_usdc: f64,
     pub timeout_seconds: u64,
     #[serde(default)]
@@ -38,10 +42,16 @@ pub struct SpawnedAgent {
     pub parent_id: String,
     pub name: String,
     pub task: String,
+    /// Budget threshold in USDC. Uses f64 for planning/threshold purposes;
+    /// exact decimal arithmetic should be used for production financial accounting.
     pub budget_usdc: f64,
     pub spent_usdc: f64,
     pub status: SpawnStatus,
     pub wallet_address: Option<String>,
+    #[serde(skip_serializing, default)]
+    pub wallet_secret: Option<String>,
+    #[serde(default)]
+    pub timeout_seconds: u64,
     pub spawned_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub result: Option<String>,
@@ -109,6 +119,7 @@ impl SpawnManager {
         self.spawn_counter += 1;
         let child_id = format!("child_{}_{}", config.parent_id, self.spawn_counter);
 
+        let (wallet_address, wallet_secret) = derive_child_address();
         let child = SpawnedAgent {
             child_id: child_id.clone(),
             parent_id: config.parent_id,
@@ -117,7 +128,9 @@ impl SpawnManager {
             budget_usdc: config.budget_usdc,
             spent_usdc: 0.0,
             status: SpawnStatus::Provisioning,
-            wallet_address: Some(derive_child_address()),
+            wallet_address: Some(wallet_address),
+            wallet_secret: Some(wallet_secret),
+            timeout_seconds: config.timeout_seconds,
             spawned_at: Utc::now(),
             completed_at: None,
             result: None,
@@ -184,6 +197,13 @@ impl SpawnManager {
             .get_mut(child_id)
             .ok_or_else(|| IroncladError::Config(format!("child '{}' not found", child_id)))?;
 
+        if child.status != SpawnStatus::Running {
+            return Err(IroncladError::Config(format!(
+                "child '{}' is {:?}, expected Running",
+                child_id, child.status
+            )));
+        }
+
         child.status = SpawnStatus::Completed;
         child.completed_at = Some(Utc::now());
         child.result = Some(result);
@@ -200,6 +220,13 @@ impl SpawnManager {
             .get_mut(child_id)
             .ok_or_else(|| IroncladError::Config(format!("child '{}' not found", child_id)))?;
 
+        if child.status != SpawnStatus::Running {
+            return Err(IroncladError::Config(format!(
+                "child '{}' is {:?}, expected Running",
+                child_id, child.status
+            )));
+        }
+
         child.status = SpawnStatus::Failed;
         child.completed_at = Some(Utc::now());
         child.result = Some(format!("FAILED: {}", error));
@@ -215,6 +242,13 @@ impl SpawnManager {
             .children
             .get_mut(child_id)
             .ok_or_else(|| IroncladError::Config(format!("child '{}' not found", child_id)))?;
+
+        if child.status != SpawnStatus::Running {
+            return Err(IroncladError::Config(format!(
+                "child '{}' is {:?}, expected Running",
+                child_id, child.status
+            )));
+        }
 
         child.status = SpawnStatus::TimedOut;
         child.completed_at = Some(Utc::now());
@@ -264,7 +298,7 @@ impl SpawnManager {
             .filter(|c| c.status == SpawnStatus::Running)
             .filter(|c| {
                 let elapsed = (now - c.spawned_at).num_seconds();
-                elapsed > 3600
+                elapsed > c.timeout_seconds as i64
             })
             .map(|c| c.child_id.clone())
             .collect()

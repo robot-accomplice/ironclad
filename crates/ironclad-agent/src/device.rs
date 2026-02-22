@@ -1,26 +1,43 @@
 use chrono::{DateTime, Utc};
 use ironclad_core::{IroncladError, Result};
-use k256::ecdsa::SigningKey;
+use k256::ecdsa::{SigningKey, signature::Signer};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::HashMap;
 use tracing::{debug, info};
 
 /// Unique device identity derived from an ECDSA keypair.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DeviceIdentity {
     pub device_id: String,
     pub public_key_hex: String,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub device_name: String,
+    #[serde(skip)]
+    pub signing_key: Option<SigningKey>,
+}
+
+impl std::fmt::Debug for DeviceIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceIdentity")
+            .field("device_id", &self.device_id)
+            .field("public_key_hex", &self.public_key_hex)
+            .field("created_at", &self.created_at)
+            .field("device_name", &self.device_name)
+            .field(
+                "signing_key",
+                &self.signing_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl DeviceIdentity {
     /// Generate a new device identity with a random ID.
     pub fn generate(device_name: &str) -> Self {
         let device_id = format!("dev_{}", generate_short_id());
-        let public_key_hex = generate_pubkey();
+        let (public_key_hex, signing_key) = generate_keypair();
 
         info!(device_id = %device_id, name = %device_name, "generated device identity");
 
@@ -29,12 +46,22 @@ impl DeviceIdentity {
             public_key_hex,
             created_at: Utc::now(),
             device_name: device_name.to_string(),
+            signing_key: Some(signing_key),
         }
     }
 
     pub fn fingerprint(&self) -> String {
         let hash = sha2::Sha256::digest(self.public_key_hex.as_bytes());
         hex::encode(&hash[..8])
+    }
+
+    pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let key = self
+            .signing_key
+            .as_ref()
+            .ok_or_else(|| IroncladError::Config("no signing key available".into()))?;
+        let signature: k256::ecdsa::Signature = key.sign(data);
+        Ok(signature.to_bytes().to_vec())
     }
 }
 
@@ -192,13 +219,13 @@ impl DeviceManager {
 }
 
 fn generate_short_id() -> String {
-    format!("{:08x}", rand::random::<u32>())
+    format!("{:016x}", rand::random::<u64>())
 }
 
-fn generate_pubkey() -> String {
+fn generate_keypair() -> (String, SigningKey) {
     let signing_key = SigningKey::random(&mut k256::elliptic_curve::rand_core::OsRng);
     let point = signing_key.verifying_key().to_encoded_point(true);
-    hex::encode(point.as_bytes())
+    (hex::encode(point.as_bytes()), signing_key)
 }
 
 #[cfg(test)]
@@ -217,6 +244,7 @@ mod tests {
     fn generate_identity() {
         let id = DeviceIdentity::generate("laptop");
         assert!(id.device_id.starts_with("dev_"));
+        assert_eq!(id.device_id.len(), 20);
         assert!(!id.public_key_hex.is_empty());
         assert_eq!(id.device_name, "laptop");
     }

@@ -143,6 +143,15 @@ fn meets_hard_constraints(model: &ModelVector, req: &QueryRequirements) -> bool 
     if req.needs_streaming && !model.supports_streaming {
         return false;
     }
+    if model.context_window < req.min_context {
+        return false;
+    }
+    if model.quality_score < req.min_quality {
+        return false;
+    }
+    if req.max_cost_per_1k > 0.0 && model.cost_per_1k_input > req.max_cost_per_1k {
+        return false;
+    }
     true
 }
 

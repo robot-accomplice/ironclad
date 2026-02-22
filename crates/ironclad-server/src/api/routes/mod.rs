@@ -2012,7 +2012,8 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn agent_message_with_explicit_session_id() {
         let state = test_state();
-        let sid = ironclad_db::sessions::find_or_create(&state.db, "test-agent", None).unwrap();
+        let agent_id = state.config.read().await.agent.id.clone();
+        let sid = ironclad_db::sessions::find_or_create(&state.db, &agent_id, None).unwrap();
 
         let app = build_router(state);
         let req = Request::builder()

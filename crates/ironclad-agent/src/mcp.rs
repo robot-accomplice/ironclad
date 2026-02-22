@@ -319,7 +319,10 @@ mod tests {
     #[test]
     fn mcp_transport_default() {
         let transport = ironclad_core::config::McpTransport::default();
-        matches!(transport, ironclad_core::config::McpTransport::Sse);
+        assert!(matches!(
+            transport,
+            ironclad_core::config::McpTransport::Sse
+        ));
     }
 
     #[test]

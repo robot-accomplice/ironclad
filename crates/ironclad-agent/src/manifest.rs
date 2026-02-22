@@ -146,6 +146,9 @@ impl ManifestLoader {
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("toml"))
             .collect();
 
+        let disk_paths: std::collections::HashSet<PathBuf> =
+            entries.iter().map(|e| e.path()).collect();
+
         for entry in entries {
             let path = entry.path();
             if let Ok(content) = std::fs::read_to_string(&path) {
@@ -175,6 +178,8 @@ impl ManifestLoader {
                 }
             }
         }
+
+        self.manifests.retain(|_, lm| disk_paths.contains(&lm.path));
 
         if !changed.is_empty() {
             info!(changed = ?changed, "reloaded manifests");

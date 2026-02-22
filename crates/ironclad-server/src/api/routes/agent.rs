@@ -55,10 +55,29 @@ pub async fn agent_message(
         ));
     }
 
-    // Find or create session
     let agent_id = config.agent.id.clone();
     let session_id = match &body.session_id {
-        Some(sid) => sid.clone(),
+        Some(sid) => match ironclad_db::sessions::get_session(&state.db, sid) {
+            Ok(Some(session)) if session.agent_id == agent_id => sid.clone(),
+            Ok(Some(_)) => {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    axum::Json(json!({"error": "session does not belong to this agent"})),
+                ));
+            }
+            Ok(None) => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    axum::Json(json!({"error": "session not found"})),
+                ));
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": e.to_string()})),
+                ));
+            }
+        },
         None => ironclad_db::sessions::find_or_create(&state.db, &agent_id, None).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -247,22 +266,32 @@ pub async fn agent_message(
     };
     let system_prompt =
         ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
-    assert!(
-        ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()),
-        "HMAC boundary verification failed immediately after injection"
-    );
-    let mut messages = vec![
-        ironclad_llm::format::UnifiedMessage {
-            role: "system".into(),
-            content: system_prompt,
+    if !ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()) {
+        tracing::error!("HMAC boundary verification failed after injection");
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": "internal prompt integrity check failed"})),
+        ));
+    }
+    let history =
+        ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).unwrap_or_default();
+    let mut messages = vec![ironclad_llm::format::UnifiedMessage {
+        role: "system".into(),
+        content: system_prompt,
+        parts: None,
+    }];
+    for msg in &history {
+        messages.push(ironclad_llm::format::UnifiedMessage {
+            role: msg.role.clone(),
+            content: msg.content.clone(),
             parts: None,
-        },
-        ironclad_llm::format::UnifiedMessage {
-            role: "user".into(),
-            content: body.content.clone(),
-            parts: None,
-        },
-    ];
+        });
+    }
+    messages.push(ironclad_llm::format::UnifiedMessage {
+        role: "user".into(),
+        content: body.content.clone(),
+        parts: None,
+    });
     ironclad_llm::tier::adapt_for_tier(tier, &mut messages, &tier_adapt);
 
     let unified_req = ironclad_llm::format::UnifiedRequest {
@@ -667,23 +696,30 @@ pub async fn process_channel_message(
     };
     let system_prompt =
         ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
-    assert!(
-        ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()),
-        "HMAC boundary verification failed immediately after injection"
-    );
+    if !ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()) {
+        tracing::error!("HMAC boundary verification failed after injection");
+        return Err("internal prompt integrity check failed".to_string());
+    }
 
-    let mut messages = vec![
-        ironclad_llm::format::UnifiedMessage {
-            role: "system".into(),
-            content: system_prompt,
+    let history =
+        ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).unwrap_or_default();
+    let mut messages = vec![ironclad_llm::format::UnifiedMessage {
+        role: "system".into(),
+        content: system_prompt,
+        parts: None,
+    }];
+    for msg in &history {
+        messages.push(ironclad_llm::format::UnifiedMessage {
+            role: msg.role.clone(),
+            content: msg.content.clone(),
             parts: None,
-        },
-        ironclad_llm::format::UnifiedMessage {
-            role: "user".into(),
-            content: inbound.content.clone(),
-            parts: None,
-        },
-    ];
+        });
+    }
+    messages.push(ironclad_llm::format::UnifiedMessage {
+        role: "user".into(),
+        content: inbound.content.clone(),
+        parts: None,
+    });
     ironclad_llm::tier::adapt_for_tier(tier, &mut messages, &tier_adapt);
 
     let unified_req = ironclad_llm::format::UnifiedRequest {

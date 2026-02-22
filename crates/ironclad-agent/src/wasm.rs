@@ -88,6 +88,18 @@ impl WasmPlugin {
         let module = wasmer::Module::new(&engine, &wasm_bytes)
             .map_err(|e| IroncladError::Config(format!("WASM compilation failed: {e}")))?;
 
+        for export in module.exports() {
+            if let wasmer::ExternType::Memory(mem_type) = export.ty() {
+                let min_bytes = mem_type.minimum.0 as u64 * 65_536;
+                if min_bytes > self.config.memory_limit_bytes {
+                    return Err(IroncladError::Config(format!(
+                        "WASM module minimum memory ({min_bytes} bytes) exceeds limit ({} bytes)",
+                        self.config.memory_limit_bytes
+                    )));
+                }
+            }
+        }
+
         let size = wasm_bytes.len();
         self.engine = Some(engine);
         self.module = Some(module);
@@ -102,7 +114,7 @@ impl WasmPlugin {
     }
 
     /// Execute the plugin with JSON input, returning JSON output.
-    pub fn execute(&mut self, _input: &serde_json::Value) -> Result<serde_json::Value> {
+    pub fn execute(&mut self, input: &serde_json::Value) -> Result<serde_json::Value> {
         if !self.loaded {
             return Err(IroncladError::Config("WASM plugin not loaded".into()));
         }
@@ -128,6 +140,13 @@ impl WasmPlugin {
         let instance = wasmer::Instance::new(&mut store, module, &imports)
             .map_err(|e| IroncladError::Config(format!("WASM instantiation failed: {e}")))?;
 
+        if let Ok(memory) = instance.exports.get_memory("memory")
+            && let Ok(input_bytes) = serde_json::to_vec(input)
+        {
+            let view = memory.view(&store);
+            let _ = view.write(0, &input_bytes);
+        }
+
         if let Ok(func) = instance.exports.get_function("process") {
             let results = func
                 .call(&mut store, &[])
@@ -138,8 +157,10 @@ impl WasmPlugin {
 
             if let Ok(memory) = instance.exports.get_memory("memory")
                 && result_values.len() == 2
-                && let (Some(ptr), Some(len)) =
-                    (result_values[0].as_i64(), result_values[1].as_i64())
+                && let Some(ptr) = result_values[0].as_i64().filter(|&v| v >= 0)
+                && let Some(len) = result_values[1]
+                    .as_i64()
+                    .filter(|&v| v > 0 && v <= 10_000_000)
             {
                 let view = memory.view(&store);
                 let mut buf = vec![0u8; len as usize];
