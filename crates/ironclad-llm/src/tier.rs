@@ -117,7 +117,11 @@ mod tests {
 
     #[test]
     fn t1_strips_system_and_condenses() {
-        let cfg = default_adapt();
+        let cfg = TierAdaptConfig {
+            t1_strip_system: true,
+            t1_condense_turns: true,
+            ..Default::default()
+        };
         let mut msgs = vec![
             UnifiedMessage {
                 role: "system".into(),

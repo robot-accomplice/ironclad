@@ -37,6 +37,11 @@ impl LlmClient {
     }
 
     /// Send a request with provider-specific auth header and extra headers.
+    ///
+    /// Auth modes based on `auth_header` value:
+    /// - `"Authorization"` -> sends `Authorization: Bearer <key>`
+    /// - `"query:<param>"` (e.g. `"query:key"`) -> appends `?<param>=<key>` to the URL
+    /// - anything else -> sends `<auth_header>: <key>` as a raw header
     pub async fn forward_with_provider(
         &self,
         url: &str,
@@ -47,17 +52,24 @@ impl LlmClient {
     ) -> Result<serde_json::Value> {
         debug!(url, auth_header, "forwarding request to provider");
 
-        let auth_value = if auth_header.eq_ignore_ascii_case("authorization") {
-            format!("Bearer {api_key}")
+        let effective_url;
+        let mut request = if let Some(param_name) = auth_header.strip_prefix("query:") {
+            let separator = if url.contains('?') { '&' } else { '?' };
+            effective_url = format!("{url}{separator}{param_name}={api_key}");
+            self.http
+                .post(&effective_url)
+                .header("Content-Type", "application/json")
         } else {
-            api_key.to_string()
+            let auth_value = if auth_header.eq_ignore_ascii_case("authorization") {
+                format!("Bearer {api_key}")
+            } else {
+                api_key.to_string()
+            };
+            self.http
+                .post(url)
+                .header(auth_header, &auth_value)
+                .header("Content-Type", "application/json")
         };
-
-        let mut request = self
-            .http
-            .post(url)
-            .header(auth_header, &auth_value)
-            .header("Content-Type", "application/json");
 
         for (key, value) in extra_headers {
             request = request.header(key.as_str(), value.as_str());

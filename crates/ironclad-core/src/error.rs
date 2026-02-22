@@ -40,6 +40,9 @@ pub enum IroncladError {
 
     #[error("skill error: {0}")]
     Skill(String),
+
+    #[error("keystore error: {0}")]
+    Keystore(String),
 }
 
 impl From<toml::de::Error> for IroncladError {
@@ -113,6 +116,10 @@ mod tests {
             (
                 IroncladError::Skill("parse error".into()),
                 "skill error: parse error",
+            ),
+            (
+                IroncladError::Keystore("locked".into()),
+                "keystore error: locked",
             ),
         ];
 

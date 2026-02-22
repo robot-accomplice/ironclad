@@ -29,12 +29,21 @@ pub struct SemanticCache {
 
 impl SemanticCache {
     pub fn new(enabled: bool, ttl_seconds: u64, max_entries: usize) -> Self {
+        Self::with_threshold(enabled, ttl_seconds, max_entries, 0.85)
+    }
+
+    pub fn with_threshold(
+        enabled: bool,
+        ttl_seconds: u64,
+        max_entries: usize,
+        similarity_threshold: f32,
+    ) -> Self {
         Self {
             enabled,
             ttl: Duration::from_secs(ttl_seconds),
             tool_ttl: Duration::from_secs(ttl_seconds / 4),
             max_entries,
-            similarity_threshold: 0.85,
+            similarity_threshold,
             entries: HashMap::new(),
             hit_count: 0,
             miss_count: 0,
@@ -127,7 +136,49 @@ impl SemanticCache {
         None
     }
 
-    /// Multi-level lookup: L1 exact -> L3 tool-TTL -> L2 semantic.
+    /// L2 semantic lookup using a provided embedding vector (from an external
+    /// EmbeddingClient) instead of the internal n-gram fallback.
+    pub fn lookup_semantic_with_embedding(
+        &mut self,
+        query_embedding: &[f32],
+    ) -> Option<CachedResponse> {
+        if !self.enabled {
+            return None;
+        }
+
+        let now = Instant::now();
+        let mut best_match: Option<(&str, f32)> = None;
+
+        for (key, entry) in &self.entries {
+            if now >= entry.expires_at {
+                continue;
+            }
+            if let Some(ref emb) = entry.embedding {
+                let sim = cosine_similarity(query_embedding, emb);
+                if sim >= self.similarity_threshold
+                    && best_match
+                        .as_ref()
+                        .is_none_or(|(_, best_sim)| sim > *best_sim)
+                {
+                    best_match = Some((key, sim));
+                }
+            }
+        }
+
+        if let Some((key, _)) = best_match {
+            let key = key.to_string();
+            if let Some(entry) = self.entries.get_mut(&key) {
+                entry.hits += 1;
+                self.hit_count += 1;
+                return Some(entry.clone());
+            }
+        }
+
+        self.miss_count += 1;
+        None
+    }
+
+    /// Multi-level lookup: L1 exact -> L3 tool-TTL -> L2 semantic (n-gram fallback).
     pub fn lookup(&mut self, prompt_hash: &str, prompt_text: &str) -> Option<CachedResponse> {
         if let Some(hit) = self.lookup_exact(prompt_hash) {
             return Some(hit);
@@ -136,6 +187,21 @@ impl SemanticCache {
             return Some(hit);
         }
         self.lookup_semantic(prompt_text)
+    }
+
+    /// Multi-level lookup using a real embedding for L2 (from EmbeddingClient).
+    pub fn lookup_with_embedding(
+        &mut self,
+        prompt_hash: &str,
+        query_embedding: &[f32],
+    ) -> Option<CachedResponse> {
+        if let Some(hit) = self.lookup_exact(prompt_hash) {
+            return Some(hit);
+        }
+        if let Some(hit) = self.lookup_tool_ttl(prompt_hash) {
+            return Some(hit);
+        }
+        self.lookup_semantic_with_embedding(query_embedding)
     }
 
     pub fn store(&mut self, prompt_hash: &str, response: CachedResponse) {
@@ -206,6 +272,72 @@ impl SemanticCache {
     pub fn size(&self) -> usize {
         self.entries.len()
     }
+
+    /// Export all entries for persistence.
+    pub fn export_entries(&self) -> Vec<(String, ExportedCacheEntry)> {
+        self.entries
+            .iter()
+            .map(|(key, entry)| {
+                let ttl_remaining = entry
+                    .expires_at
+                    .checked_duration_since(Instant::now())
+                    .unwrap_or_default();
+                (
+                    key.clone(),
+                    ExportedCacheEntry {
+                        content: entry.content.clone(),
+                        model: entry.model.clone(),
+                        tokens_saved: entry.tokens_saved,
+                        hits: entry.hits,
+                        involved_tools: entry.involved_tools,
+                        embedding: entry.embedding.clone(),
+                        ttl_remaining_secs: ttl_remaining.as_secs(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Import entries loaded from persistent storage.
+    pub fn import_entries(&mut self, entries: Vec<(String, ExportedCacheEntry)>) {
+        if !self.enabled {
+            return;
+        }
+
+        for (key, exported) in entries {
+            if exported.ttl_remaining_secs == 0 {
+                continue;
+            }
+
+            let now = Instant::now();
+            let expires = now + Duration::from_secs(exported.ttl_remaining_secs);
+
+            self.entries.insert(
+                key,
+                CachedResponse {
+                    content: exported.content,
+                    model: exported.model,
+                    tokens_saved: exported.tokens_saved,
+                    created_at: now,
+                    expires_at: expires,
+                    hits: exported.hits,
+                    involved_tools: exported.involved_tools,
+                    embedding: exported.embedding,
+                },
+            );
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportedCacheEntry {
+    pub content: String,
+    pub model: String,
+    pub tokens_saved: u32,
+    pub hits: u32,
+    pub involved_tools: bool,
+    pub embedding: Option<Vec<f32>>,
+    pub ttl_remaining_secs: u64,
 }
 
 const NGRAM_DIM: usize = 128;
@@ -437,5 +569,133 @@ mod tests {
         let hit = cache.lookup_exact(&hash);
         assert!(hit.is_some());
         assert_eq!(hit.unwrap().content, "second");
+    }
+
+    #[test]
+    fn export_entries_produces_valid_data() {
+        let mut cache = SemanticCache::new(true, 3600, 10);
+        cache.store_with_embedding("hash1", "prompt one", make_response("response one"));
+        cache.store("hash2", make_response("response two"));
+
+        let exported = cache.export_entries();
+        assert_eq!(exported.len(), 2);
+
+        for (key, entry) in &exported {
+            assert!(!key.is_empty());
+            assert!(!entry.content.is_empty());
+            assert!(entry.ttl_remaining_secs > 0);
+        }
+    }
+
+    #[test]
+    fn import_entries_restores_lookups() {
+        let mut cache = SemanticCache::new(true, 3600, 10);
+        cache.store("h1", make_response("original"));
+
+        let exported = cache.export_entries();
+
+        let mut fresh = SemanticCache::new(true, 3600, 10);
+        assert_eq!(fresh.size(), 0);
+
+        fresh.import_entries(exported);
+        assert_eq!(fresh.size(), 1);
+
+        let hit = fresh.lookup_exact("h1");
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().content, "original");
+    }
+
+    #[test]
+    fn import_skips_expired_entries() {
+        let entries = vec![(
+            "expired".to_string(),
+            ExportedCacheEntry {
+                content: "old".into(),
+                model: "m".into(),
+                tokens_saved: 0,
+                hits: 0,
+                involved_tools: false,
+                embedding: None,
+                ttl_remaining_secs: 0,
+            },
+        )];
+
+        let mut cache = SemanticCache::new(true, 3600, 10);
+        cache.import_entries(entries);
+        assert_eq!(cache.size(), 0);
+    }
+
+    #[test]
+    fn export_import_roundtrip_preserves_embeddings() {
+        let mut cache = SemanticCache::new(true, 3600, 10);
+        cache.store_with_embedding("emb_hash", "test prompt", make_response("resp"));
+
+        let exported = cache.export_entries();
+        let entry = &exported[0].1;
+        assert!(entry.embedding.is_some());
+
+        let mut fresh = SemanticCache::new(true, 3600, 10);
+        fresh.import_entries(exported);
+
+        let hit = fresh.lookup_semantic("test prompt");
+        assert!(hit.is_some());
+    }
+
+    #[test]
+    fn with_threshold_uses_custom_value() {
+        let mut cache = SemanticCache::with_threshold(true, 3600, 100, 0.99);
+        let prompt1 = "What is the capital city of France?";
+        let hash1 = SemanticCache::compute_hash("sys", "", prompt1);
+        cache.store_with_embedding(&hash1, prompt1, make_response("Paris"));
+
+        // With a 0.99 threshold, the similar-but-not-identical prompt should miss
+        let similar = "What is the capital of France?";
+        let result = cache.lookup_semantic(similar);
+        assert!(result.is_none(), "high threshold should reject near-match");
+    }
+
+    #[test]
+    fn lookup_with_embedding_uses_provided_vector() {
+        let mut cache = SemanticCache::new(true, 3600, 100);
+        let emb = vec![1.0, 0.0, 0.0, 0.0];
+        let mut resp = make_response("answer");
+        resp.embedding = Some(emb.clone());
+        cache.store("h1", resp);
+
+        // The provided embedding matches perfectly
+        let result = cache.lookup_with_embedding("nonexistent_hash", &emb);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().content, "answer");
+    }
+
+    #[test]
+    fn lookup_with_embedding_prefers_exact() {
+        let mut cache = SemanticCache::new(true, 3600, 100);
+        cache.store("exact_h", make_response("exact"));
+
+        let emb = vec![1.0, 0.0];
+        let result = cache.lookup_with_embedding("exact_h", &emb);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().content, "exact");
+    }
+
+    #[test]
+    fn disabled_cache_ignores_import() {
+        let entries = vec![(
+            "key".to_string(),
+            ExportedCacheEntry {
+                content: "data".into(),
+                model: "m".into(),
+                tokens_saved: 10,
+                hits: 0,
+                involved_tools: false,
+                embedding: None,
+                ttl_remaining_secs: 3600,
+            },
+        )];
+
+        let mut cache = SemanticCache::new(false, 3600, 10);
+        cache.import_entries(entries);
+        assert_eq!(cache.size(), 0);
     }
 }
