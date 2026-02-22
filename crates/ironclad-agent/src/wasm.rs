@@ -34,12 +34,26 @@ pub enum WasmCapability {
 }
 
 /// Represents a loaded WASM plugin (the sandbox instance).
-#[derive(Debug)]
 pub struct WasmPlugin {
     pub config: WasmPluginConfig,
     pub loaded: bool,
     pub invocation_count: u64,
     pub last_error: Option<String>,
+    engine: Option<wasmer::Engine>,
+    module: Option<wasmer::Module>,
+}
+
+impl std::fmt::Debug for WasmPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmPlugin")
+            .field("config", &self.config)
+            .field("loaded", &self.loaded)
+            .field("invocation_count", &self.invocation_count)
+            .field("last_error", &self.last_error)
+            .field("has_engine", &self.engine.is_some())
+            .field("has_module", &self.module.is_some())
+            .finish()
+    }
 }
 
 impl WasmPlugin {
@@ -49,10 +63,12 @@ impl WasmPlugin {
             loaded: false,
             invocation_count: 0,
             last_error: None,
+            engine: None,
+            module: None,
         }
     }
 
-    /// Load the WASM module (validates the file exists and is readable).
+    /// Load and compile the WASM module from disk.
     pub fn load(&mut self) -> Result<()> {
         if !self.config.wasm_path.exists() {
             return Err(IroncladError::Config(format!(
@@ -61,28 +77,44 @@ impl WasmPlugin {
             )));
         }
 
-        let metadata = std::fs::metadata(&self.config.wasm_path)
+        let wasm_bytes = std::fs::read(&self.config.wasm_path)
             .map_err(|e| IroncladError::Config(format!("cannot read WASM file: {e}")))?;
 
-        if metadata.len() == 0 {
+        if wasm_bytes.is_empty() {
             return Err(IroncladError::Config("WASM file is empty".into()));
         }
 
+        let engine = wasmer::Engine::default();
+        let module = wasmer::Module::new(&engine, &wasm_bytes)
+            .map_err(|e| IroncladError::Config(format!("WASM compilation failed: {e}")))?;
+
+        let size = wasm_bytes.len();
+        self.engine = Some(engine);
+        self.module = Some(module);
         self.loaded = true;
+
         info!(
             name = %self.config.name,
-            size = metadata.len(),
+            size,
             "loaded WASM plugin"
         );
         Ok(())
     }
 
     /// Execute the plugin with JSON input, returning JSON output.
-    /// In a real implementation, this would invoke the wasmtime runtime.
-    pub fn execute(&mut self, input: &serde_json::Value) -> Result<serde_json::Value> {
+    pub fn execute(&mut self, _input: &serde_json::Value) -> Result<serde_json::Value> {
         if !self.loaded {
             return Err(IroncladError::Config("WASM plugin not loaded".into()));
         }
+
+        let engine = self
+            .engine
+            .as_ref()
+            .ok_or_else(|| IroncladError::Config("WASM engine not initialized".into()))?;
+        let module = self
+            .module
+            .as_ref()
+            .ok_or_else(|| IroncladError::Config("WASM module not compiled".into()))?;
 
         self.invocation_count += 1;
         debug!(
@@ -91,10 +123,76 @@ impl WasmPlugin {
             "executing WASM plugin"
         );
 
+        let mut store = wasmer::Store::new(engine.clone());
+        let imports = wasmer::Imports::new();
+        let instance = wasmer::Instance::new(&mut store, module, &imports)
+            .map_err(|e| IroncladError::Config(format!("WASM instantiation failed: {e}")))?;
+
+        if let Ok(func) = instance.exports.get_function("process") {
+            let results = func
+                .call(&mut store, &[])
+                .map_err(|e| IroncladError::Config(format!("WASM execution failed: {e}")))?;
+
+            let result_values: Vec<serde_json::Value> =
+                results.iter().map(wasmer_value_to_json).collect();
+
+            if let Ok(memory) = instance.exports.get_memory("memory")
+                && result_values.len() == 2
+                && let (Some(ptr), Some(len)) =
+                    (result_values[0].as_i64(), result_values[1].as_i64())
+            {
+                let view = memory.view(&store);
+                let mut buf = vec![0u8; len as usize];
+                if view.read(ptr as u64, &mut buf).is_ok()
+                    && let Ok(text) = String::from_utf8(buf)
+                {
+                    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&text) {
+                        return Ok(serde_json::json!({
+                            "status": "executed",
+                            "plugin": self.config.name,
+                            "output": json_val,
+                        }));
+                    }
+                    return Ok(serde_json::json!({
+                        "status": "executed",
+                        "plugin": self.config.name,
+                        "output": text,
+                    }));
+                }
+            }
+
+            let result_json = match result_values.len() {
+                0 => serde_json::Value::Null,
+                1 => result_values.into_iter().next().unwrap(),
+                _ => serde_json::json!(result_values),
+            };
+
+            return Ok(serde_json::json!({
+                "status": "executed",
+                "plugin": self.config.name,
+                "result": result_json,
+            }));
+        }
+
+        if let Ok(func) = instance.exports.get_function("_start") {
+            func.call(&mut store, &[])
+                .map_err(|e| IroncladError::Config(format!("WASM execution failed: {e}")))?;
+            return Ok(serde_json::json!({
+                "status": "executed",
+                "plugin": self.config.name,
+            }));
+        }
+
+        let export_names: Vec<String> = instance
+            .exports
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
+
         Ok(serde_json::json!({
-            "status": "executed",
+            "status": "no_entry_point",
             "plugin": self.config.name,
-            "input_keys": input.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default(),
+            "available_exports": export_names,
         }))
     }
 
@@ -108,7 +206,19 @@ impl WasmPlugin {
 
     pub fn unload(&mut self) {
         self.loaded = false;
+        self.engine = None;
+        self.module = None;
         debug!(name = %self.config.name, "unloaded WASM plugin");
+    }
+}
+
+fn wasmer_value_to_json(val: &wasmer::Value) -> serde_json::Value {
+    match val {
+        wasmer::Value::I32(v) => serde_json::json!(v),
+        wasmer::Value::I64(v) => serde_json::json!(v),
+        wasmer::Value::F32(v) => serde_json::json!(v),
+        wasmer::Value::F64(v) => serde_json::json!(v),
+        other => serde_json::json!(format!("{:?}", other)),
     }
 }
 
@@ -176,9 +286,13 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
+    fn test_wasm_bytes() -> Vec<u8> {
+        wat::parse_str(r#"(module (func (export "process") (result i32) i32.const 42))"#).unwrap()
+    }
+
     fn test_config(dir: &Path, name: &str) -> WasmPluginConfig {
         let wasm_path = dir.join(format!("{name}.wasm"));
-        fs::write(&wasm_path, b"fake wasm bytes").unwrap();
+        fs::write(&wasm_path, test_wasm_bytes()).unwrap();
         WasmPluginConfig {
             name: name.to_string(),
             wasm_path,
@@ -202,6 +316,7 @@ mod tests {
             .execute(&serde_json::json!({"key": "value"}))
             .unwrap();
         assert_eq!(result["status"], "executed");
+        assert_eq!(result["result"], 42);
         assert_eq!(plugin.invocation_count, 1);
     }
 
@@ -233,6 +348,24 @@ mod tests {
         };
         let mut plugin = WasmPlugin::new(config);
         assert!(plugin.load().is_err());
+    }
+
+    #[test]
+    fn plugin_load_invalid_wasm() {
+        let dir = TempDir::new().unwrap();
+        let wasm_path = dir.path().join("invalid.wasm");
+        fs::write(&wasm_path, b"not valid wasm bytes").unwrap();
+
+        let config = WasmPluginConfig {
+            name: "invalid".to_string(),
+            wasm_path,
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities: vec![],
+        };
+        let mut plugin = WasmPlugin::new(config);
+        let err = plugin.load().unwrap_err();
+        assert!(err.to_string().contains("WASM compilation failed"));
     }
 
     #[test]
@@ -272,6 +405,55 @@ mod tests {
         assert!(plugin.is_loaded());
         plugin.unload();
         assert!(!plugin.is_loaded());
+        assert!(plugin.engine.is_none());
+        assert!(plugin.module.is_none());
+    }
+
+    #[test]
+    fn plugin_no_entry_point() {
+        let dir = TempDir::new().unwrap();
+        let wasm_bytes =
+            wat::parse_str(r#"(module (func (export "other_fn") (result i32) i32.const 1))"#)
+                .unwrap();
+        let wasm_path = dir.path().join("no-entry.wasm");
+        fs::write(&wasm_path, wasm_bytes).unwrap();
+
+        let config = WasmPluginConfig {
+            name: "no-entry".to_string(),
+            wasm_path,
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities: vec![],
+        };
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        let result = plugin.execute(&serde_json::json!({})).unwrap();
+        assert_eq!(result["status"], "no_entry_point");
+        let exports = result["available_exports"].as_array().unwrap();
+        assert!(exports.iter().any(|e| e == "other_fn"));
+    }
+
+    #[test]
+    fn plugin_start_entry_point() {
+        let dir = TempDir::new().unwrap();
+        let wasm_bytes = wat::parse_str(r#"(module (func (export "_start") nop))"#).unwrap();
+        let wasm_path = dir.path().join("start.wasm");
+        fs::write(&wasm_path, wasm_bytes).unwrap();
+
+        let config = WasmPluginConfig {
+            name: "start".to_string(),
+            wasm_path,
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities: vec![],
+        };
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        let result = plugin.execute(&serde_json::json!({})).unwrap();
+        assert_eq!(result["status"], "executed");
+        assert_eq!(result["plugin"], "start");
     }
 
     #[test]
@@ -296,6 +478,7 @@ mod tests {
             .execute("plugin", &serde_json::json!({"q": "test"}))
             .unwrap();
         assert_eq!(result["status"], "executed");
+        assert_eq!(result["result"], 42);
     }
 
     #[test]

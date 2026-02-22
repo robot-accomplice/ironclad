@@ -1,8 +1,21 @@
 use chrono::{DateTime, Utc};
 use ironclad_core::{IroncladError, Result};
+use k256::ecdsa::SigningKey;
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
+use sha3::{Digest, Keccak256};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
+
+fn derive_child_address() -> String {
+    let signing_key = SigningKey::random(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+    let pubkey_point = verifying_key.to_encoded_point(false);
+    let pubkey_bytes = &pubkey_point.as_bytes()[1..];
+    let hash = Keccak256::digest(pubkey_bytes);
+    let addr_bytes = &hash[hash.len() - 20..];
+    format!("0x{}", hex::encode(addr_bytes))
+}
 
 /// Configuration for spawning a child agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,7 +117,7 @@ impl SpawnManager {
             budget_usdc: config.budget_usdc,
             spent_usdc: 0.0,
             status: SpawnStatus::Provisioning,
-            wallet_address: Some(format!("0x{:040x}", self.spawn_counter)),
+            wallet_address: Some(derive_child_address()),
             spawned_at: Utc::now(),
             completed_at: None,
             result: None,

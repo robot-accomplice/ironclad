@@ -1,3 +1,4 @@
+use ironclad_core::{IroncladError, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
@@ -16,21 +17,31 @@ pub struct VoiceConfig {
     pub local_tts: bool,
     #[serde(default = "default_sample_rate")]
     pub sample_rate: u32,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_api_base_url")]
+    pub api_base_url: String,
 }
 
 fn default_sample_rate() -> u32 {
     16_000
 }
 
+fn default_api_base_url() -> String {
+    "https://api.openai.com/v1".to_string()
+}
+
 impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
             stt_model: "whisper-large-v3".to_string(),
-            tts_model: "piper".to_string(),
-            tts_voice: "en_US-amy-medium".to_string(),
-            local_stt: true,
-            local_tts: true,
+            tts_model: "tts-1".to_string(),
+            tts_voice: "alloy".to_string(),
+            local_stt: false,
+            local_tts: false,
             sample_rate: default_sample_rate(),
+            api_key: None,
+            api_base_url: default_api_base_url(),
         }
     }
 }
@@ -75,9 +86,19 @@ impl std::fmt::Display for AudioFormat {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct WhisperResponse {
+    text: String,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    duration: Option<f64>,
+}
+
 /// Voice processing pipeline for STT and TTS.
 pub struct VoicePipeline {
     config: VoiceConfig,
+    http: reqwest::Client,
     transcription_count: u64,
     synthesis_count: u64,
 }
@@ -87,17 +108,27 @@ impl VoicePipeline {
         info!(stt = %config.stt_model, tts = %config.tts_model, "voice pipeline initialized");
         Self {
             config,
+            http: reqwest::Client::new(),
             transcription_count: 0,
             synthesis_count: 0,
         }
     }
 
-    /// Transcribe audio data to text using STT.
-    pub fn transcribe(&mut self, audio_data: &[u8], format: AudioFormat) -> Transcription {
-        self.transcription_count += 1;
+    fn api_key(&self) -> Result<&str> {
+        self.config
+            .api_key
+            .as_deref()
+            .ok_or_else(|| IroncladError::Config("voice API key not configured".to_string()))
+    }
 
-        let estimated_duration =
-            (audio_data.len() as u64 * 1000) / (self.config.sample_rate as u64 * 2).max(1);
+    /// Transcribe audio data to text using OpenAI Whisper API.
+    pub async fn transcribe(
+        &mut self,
+        audio_data: &[u8],
+        format: AudioFormat,
+    ) -> Result<Transcription> {
+        self.transcription_count += 1;
+        let api_key = self.api_key()?.to_string();
 
         debug!(
             model = %self.config.stt_model,
@@ -106,25 +137,53 @@ impl VoicePipeline {
             "transcribing audio"
         );
 
-        Transcription {
-            text: format!(
-                "[Transcription of {} bytes of {} audio]",
-                audio_data.len(),
-                format
-            ),
-            language: "en".to_string(),
-            confidence: 0.95,
-            duration_ms: estimated_duration,
+        let filename = format!("audio.{format}");
+        let file_part = reqwest::multipart::Part::bytes(audio_data.to_vec())
+            .file_name(filename)
+            .mime_str("application/octet-stream")
+            .map_err(|e| IroncladError::Channel(format!("multipart error: {e}")))?;
+
+        let form = reqwest::multipart::Form::new()
+            .text("model", self.config.stt_model.clone())
+            .text("response_format", "verbose_json")
+            .part("file", file_part);
+
+        let url = format!("{}/audio/transcriptions", self.config.api_base_url);
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&api_key)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("whisper request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(IroncladError::Channel(format!(
+                "whisper API returned {status}: {body}"
+            )));
         }
+
+        let whisper: WhisperResponse = resp
+            .json()
+            .await
+            .map_err(|e| IroncladError::Channel(format!("whisper response parse error: {e}")))?;
+
+        Ok(Transcription {
+            text: whisper.text,
+            language: whisper.language.unwrap_or_else(|| "en".to_string()),
+            confidence: 1.0,
+            duration_ms: whisper.duration.map(|d| (d * 1000.0) as u64).unwrap_or(0),
+        })
     }
 
-    /// Synthesize text to audio using TTS.
-    pub fn synthesize(&mut self, text: &str) -> SynthesisResult {
+    /// Synthesize text to audio using OpenAI TTS API.
+    pub async fn synthesize(&mut self, text: &str) -> Result<SynthesisResult> {
         self.synthesis_count += 1;
-
-        let words = text.split_whitespace().count();
-        let duration_ms = (words as u64 * 300).max(100);
-        let estimated_bytes = (duration_ms * self.config.sample_rate as u64 * 2) / 1000;
+        let api_key = self.api_key()?.to_string();
 
         debug!(
             model = %self.config.tts_model,
@@ -133,12 +192,46 @@ impl VoicePipeline {
             "synthesizing speech"
         );
 
-        SynthesisResult {
-            audio_data: vec![0u8; estimated_bytes as usize],
-            format: AudioFormat::Wav,
-            sample_rate: self.config.sample_rate,
-            duration_ms,
+        let url = format!("{}/audio/speech", self.config.api_base_url);
+
+        let body = serde_json::json!({
+            "model": self.config.tts_model,
+            "voice": self.config.tts_voice,
+            "input": text,
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("TTS request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(IroncladError::Channel(format!(
+                "TTS API returned {status}: {body}"
+            )));
         }
+
+        let audio_data = resp
+            .bytes()
+            .await
+            .map_err(|e| IroncladError::Network(format!("TTS response read error: {e}")))?
+            .to_vec();
+
+        let words = text.split_whitespace().count();
+        let estimated_duration_ms = (words as u64 * 300).max(100);
+
+        Ok(SynthesisResult {
+            audio_data,
+            format: AudioFormat::Mp3,
+            sample_rate: self.config.sample_rate,
+            duration_ms: estimated_duration_ms,
+        })
     }
 
     pub fn config(&self) -> &VoiceConfig {
@@ -162,32 +255,31 @@ mod tests {
     fn voice_config_defaults() {
         let config = VoiceConfig::default();
         assert_eq!(config.stt_model, "whisper-large-v3");
-        assert_eq!(config.tts_model, "piper");
-        assert!(config.local_stt);
-        assert!(config.local_tts);
+        assert_eq!(config.tts_model, "tts-1");
+        assert!(!config.local_stt);
+        assert!(!config.local_tts);
         assert_eq!(config.sample_rate, 16_000);
+        assert!(config.api_key.is_none());
+        assert_eq!(config.api_base_url, "https://api.openai.com/v1");
     }
 
-    #[test]
-    fn transcribe_audio() {
+    #[tokio::test]
+    async fn transcribe_fails_without_api_key() {
         let mut pipeline = VoicePipeline::new(VoiceConfig::default());
         let audio = vec![0u8; 32_000];
-        let result = pipeline.transcribe(&audio, AudioFormat::Wav);
-        assert!(!result.text.is_empty());
-        assert_eq!(result.language, "en");
-        assert!(result.confidence > 0.0);
-        assert_eq!(pipeline.transcription_count(), 1);
+        let result = pipeline.transcribe(&audio, AudioFormat::Wav).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("API key"), "unexpected error: {err}");
     }
 
-    #[test]
-    fn synthesize_text() {
+    #[tokio::test]
+    async fn synthesize_fails_without_api_key() {
         let mut pipeline = VoicePipeline::new(VoiceConfig::default());
-        let result = pipeline.synthesize("Hello world, this is a test.");
-        assert!(!result.audio_data.is_empty());
-        assert_eq!(result.format, AudioFormat::Wav);
-        assert_eq!(result.sample_rate, 16_000);
-        assert!(result.duration_ms > 0);
-        assert_eq!(pipeline.synthesis_count(), 1);
+        let result = pipeline.synthesize("Hello world").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("API key"), "unexpected error: {err}");
     }
 
     #[test]
@@ -214,15 +306,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pipeline_counters() {
+    #[tokio::test]
+    async fn pipeline_counters() {
         let mut pipeline = VoicePipeline::new(VoiceConfig::default());
         assert_eq!(pipeline.transcription_count(), 0);
         assert_eq!(pipeline.synthesis_count(), 0);
 
-        pipeline.transcribe(&[0; 100], AudioFormat::Pcm);
-        pipeline.transcribe(&[0; 100], AudioFormat::Pcm);
-        pipeline.synthesize("test");
+        let _ = pipeline.transcribe(&[0; 100], AudioFormat::Pcm).await;
+        let _ = pipeline.transcribe(&[0; 100], AudioFormat::Pcm).await;
+        let _ = pipeline.synthesize("test").await;
 
         assert_eq!(pipeline.transcription_count(), 2);
         assert_eq!(pipeline.synthesis_count(), 1);
@@ -234,5 +326,6 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let back: VoiceConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config.stt_model, back.stt_model);
+        assert_eq!(back.api_base_url, "https://api.openai.com/v1");
     }
 }

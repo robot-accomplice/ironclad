@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use ironclad_core::{IroncladError, Result};
+use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::HashMap;
 use tracing::{debug, info};
 
@@ -18,7 +20,7 @@ impl DeviceIdentity {
     /// Generate a new device identity with a random ID.
     pub fn generate(device_name: &str) -> Self {
         let device_id = format!("dev_{}", generate_short_id());
-        let public_key_hex = generate_mock_pubkey();
+        let public_key_hex = generate_pubkey();
 
         info!(device_id = %device_id, name = %device_name, "generated device identity");
 
@@ -31,10 +33,8 @@ impl DeviceIdentity {
     }
 
     pub fn fingerprint(&self) -> String {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.public_key_hex.hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
+        let hash = sha2::Sha256::digest(self.public_key_hex.as_bytes());
+        hex::encode(&hash[..8])
     }
 }
 
@@ -192,21 +192,13 @@ impl DeviceManager {
 }
 
 fn generate_short_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{:x}", nanos % 0xFFFF_FFFF)
+    format!("{:08x}", rand::random::<u32>())
 }
 
-fn generate_mock_pubkey() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("04{:064x}", seed)
+fn generate_pubkey() -> String {
+    let signing_key = SigningKey::random(&mut k256::elliptic_curve::rand_core::OsRng);
+    let point = signing_key.verifying_key().to_encoded_point(true);
+    hex::encode(point.as_bytes())
 }
 
 #[cfg(test)]

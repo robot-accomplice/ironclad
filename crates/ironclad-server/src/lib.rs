@@ -13,6 +13,7 @@ pub use dashboard::{build_dashboard_html, dashboard_handler};
 pub use ws::{EventBus, ws_route};
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::RwLock;
@@ -33,8 +34,16 @@ use ironclad_llm::LlmService;
 use ironclad_wallet::WalletService;
 use rate_limit::GlobalRateLimitLayer;
 
+static STDERR_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn enable_stderr_logging() {
+    STDERR_ENABLED.store(true, Ordering::Release);
+}
+
 fn init_logging(config: &IroncladConfig) {
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::filter::filter_fn;
     use tracing_subscriber::fmt;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -42,12 +51,13 @@ fn init_logging(config: &IroncladConfig) {
     let level = config.agent.log_level.as_str();
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
+    let stderr_gate = filter_fn(|_| STDERR_ENABLED.load(Ordering::Acquire));
+
     let log_dir = &config.server.log_dir;
     if std::fs::create_dir_all(log_dir).is_ok() {
         let file_appender = tracing_appender::rolling::daily(log_dir, "ironclad.log");
         let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-        // Leak the guard so it lives for the entire process
         std::mem::forget(_guard);
 
         let file_layer = fmt::layer()
@@ -55,7 +65,9 @@ fn init_logging(config: &IroncladConfig) {
             .with_ansi(false)
             .json();
 
-        let stderr_layer = fmt::layer().with_writer(std::io::stderr);
+        let stderr_layer = fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(stderr_gate);
 
         let _ = tracing_subscriber::registry()
             .with(filter)
@@ -63,7 +75,9 @@ fn init_logging(config: &IroncladConfig) {
             .with(file_layer)
             .try_init();
     } else {
-        let stderr_layer = fmt::layer().with_writer(std::io::stderr);
+        let stderr_layer = fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(stderr_gate);
         let _ = tracing_subscriber::registry()
             .with(filter)
             .with(stderr_layer)

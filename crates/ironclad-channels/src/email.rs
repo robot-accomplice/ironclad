@@ -3,7 +3,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use ironclad_core::Result;
+use ironclad_core::{IroncladError, Result};
+use lettre::message::{Mailbox, MessageBuilder};
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use serde_json::json;
 use tracing::debug;
 
@@ -13,11 +16,13 @@ use super::{ChannelAdapter, InboundMessage, OutboundMessage};
 pub struct EmailAdapter {
     from_address: String,
     smtp_host: String,
-    _smtp_port: u16,
-    _imap_host: String,
-    _imap_port: u16,
-    _username: String,
-    _password: String,
+    smtp_port: u16,
+    #[allow(dead_code)]
+    imap_host: String,
+    #[allow(dead_code)]
+    imap_port: u16,
+    username: String,
+    password: String,
     allowed_senders: Vec<String>,
     buffer: Arc<Mutex<VecDeque<InboundMessage>>>,
 }
@@ -35,11 +40,11 @@ impl EmailAdapter {
         Self {
             from_address,
             smtp_host,
-            _smtp_port: smtp_port,
-            _imap_host: imap_host,
-            _imap_port: imap_port,
-            _username: username,
-            _password: password,
+            smtp_port,
+            imap_host,
+            imap_port,
+            username,
+            password,
             allowed_senders: Vec::new(),
             buffer: Arc::new(Mutex::new(VecDeque::new())),
         }
@@ -140,15 +145,52 @@ impl ChannelAdapter for EmailAdapter {
             len = msg.content.len(),
             "email send requested"
         );
-        let reply = self.format_reply(
-            &msg.recipient_id,
-            &msg.content,
-            msg.metadata
-                .as_ref()
-                .and_then(|m| m.get("in_reply_to"))
-                .and_then(|v| v.as_str()),
-        );
-        debug!(reply = %reply, "formatted email reply");
+
+        let in_reply_to = msg
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("in_reply_to"))
+            .and_then(|v| v.as_str());
+
+        let from_mailbox: Mailbox = self
+            .from_address
+            .parse()
+            .map_err(|e| IroncladError::Channel(format!("invalid from address: {e}")))?;
+        let to_mailbox: Mailbox = msg
+            .recipient_id
+            .parse()
+            .map_err(|e| IroncladError::Channel(format!("invalid to address: {e}")))?;
+
+        let message_id = format!("<{}.ironclad@{}>", uuid::Uuid::new_v4(), self.smtp_host);
+
+        let mut builder: MessageBuilder = lettre::Message::builder()
+            .from(from_mailbox)
+            .to(to_mailbox)
+            .subject("Re: Agent Response")
+            .message_id(Some(message_id));
+
+        if let Some(reply_id) = in_reply_to {
+            builder = builder.in_reply_to(reply_id.to_string());
+        }
+
+        let email = builder
+            .body(msg.content.clone())
+            .map_err(|e| IroncladError::Channel(format!("failed to build email: {e}")))?;
+
+        let creds = Credentials::new(self.username.clone(), self.password.clone());
+
+        let transport = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&self.smtp_host)
+            .map_err(|e| IroncladError::Channel(format!("SMTP relay error: {e}")))?
+            .port(self.smtp_port)
+            .credentials(creds)
+            .build();
+
+        transport
+            .send(email)
+            .await
+            .map_err(|e| IroncladError::Channel(format!("SMTP send failed: {e}")))?;
+
+        debug!(to = %msg.recipient_id, "email sent successfully");
         Ok(())
     }
 }
@@ -249,17 +291,6 @@ mod tests {
         let adapter = test_adapter();
         let msg = adapter.recv().await.unwrap();
         assert!(msg.is_none());
-    }
-
-    #[tokio::test]
-    async fn send_does_not_error() {
-        let adapter = test_adapter();
-        let msg = OutboundMessage {
-            content: "Hello from agent".into(),
-            recipient_id: "user@example.com".into(),
-            metadata: None,
-        };
-        adapter.send(msg).await.unwrap();
     }
 
     #[test]

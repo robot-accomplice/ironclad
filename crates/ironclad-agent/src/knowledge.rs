@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use ironclad_core::Result;
+use ironclad_core::{IroncladError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -192,10 +192,12 @@ impl KnowledgeSource for GitSource {
     }
 }
 
-/// A stub for vector database knowledge sources.
+/// A knowledge source backed by a vector database HTTP API.
 pub struct VectorDbSource {
     name: String,
     url: String,
+    http: reqwest::Client,
+    api_key: Option<String>,
 }
 
 impl VectorDbSource {
@@ -203,8 +205,25 @@ impl VectorDbSource {
         Self {
             name: name.to_string(),
             url: url.to_string(),
+            http: reqwest::Client::new(),
+            api_key: None,
         }
     }
+
+    pub fn with_api_key(mut self, key: String) -> Self {
+        self.api_key = Some(key);
+        self
+    }
+}
+
+#[derive(Deserialize)]
+struct VectorQueryResult {
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    relevance: f64,
 }
 
 #[async_trait]
@@ -218,23 +237,73 @@ impl KnowledgeSource for VectorDbSource {
     }
 
     async fn query(&self, query: &str, max_results: usize) -> Result<Vec<KnowledgeChunk>> {
-        tracing::debug!(
-            source = %self.name,
-            query = %query,
-            max = max_results,
-            url = %self.url,
-            "vector DB query"
-        );
-        Ok(vec![])
+        let url = format!("{}/query", self.url);
+        let body = serde_json::json!({
+            "query": query,
+            "top_k": max_results,
+        });
+
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("vector DB query failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(IroncladError::Network(format!(
+                "vector DB returned {status}: {body}"
+            )));
+        }
+
+        let results: Vec<VectorQueryResult> = resp
+            .json()
+            .await
+            .map_err(|e| IroncladError::Network(format!("vector DB response parse error: {e}")))?;
+
+        Ok(results
+            .into_iter()
+            .map(|r| KnowledgeChunk {
+                content: r.content,
+                source: r.source,
+                relevance: r.relevance,
+                metadata: None,
+            })
+            .collect())
     }
 
     async fn ingest(&self, content: &str, source: &str) -> Result<()> {
-        tracing::debug!(
-            target_source = %self.name,
-            content_len = content.len(),
-            source = %source,
-            "vector DB ingest"
-        );
+        let url = format!("{}/upsert", self.url);
+        let body = serde_json::json!({
+            "documents": [{
+                "content": content,
+                "source": source,
+            }],
+        });
+
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("vector DB ingest failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(IroncladError::Network(format!(
+                "vector DB ingest returned {status}: {body}"
+            )));
+        }
+
         Ok(())
     }
 
@@ -243,10 +312,12 @@ impl KnowledgeSource for VectorDbSource {
     }
 }
 
-/// A stub for graph database knowledge sources.
+/// A knowledge source backed by a Neo4j graph database.
 pub struct GraphSource {
     name: String,
     url: String,
+    http: reqwest::Client,
+    api_key: Option<String>,
 }
 
 impl GraphSource {
@@ -254,7 +325,14 @@ impl GraphSource {
         Self {
             name: name.to_string(),
             url: url.to_string(),
+            http: reqwest::Client::new(),
+            api_key: None,
         }
+    }
+
+    pub fn with_api_key(mut self, key: String) -> Self {
+        self.api_key = Some(key);
+        self
     }
 }
 
@@ -269,23 +347,106 @@ impl KnowledgeSource for GraphSource {
     }
 
     async fn query(&self, query: &str, max_results: usize) -> Result<Vec<KnowledgeChunk>> {
-        tracing::debug!(
-            source = %self.name,
-            query = %query,
-            max = max_results,
-            url = %self.url,
-            "graph DB query"
-        );
-        Ok(vec![])
+        let url = format!("{}/db/neo4j/tx/commit", self.url);
+        let cypher = "MATCH (n) WHERE n.content CONTAINS $query RETURN n.content AS content, \
+             n.source AS source, 1.0 AS relevance LIMIT $limit"
+            .to_string();
+        let body = serde_json::json!({
+            "statements": [{
+                "statement": cypher,
+                "parameters": {
+                    "query": query,
+                    "limit": max_results,
+                },
+            }],
+        });
+
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("graph DB query failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(IroncladError::Network(format!(
+                "graph DB returned {status}: {body}"
+            )));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| IroncladError::Network(format!("graph DB response parse error: {e}")))?;
+
+        let mut chunks = Vec::new();
+        if let Some(results) = json.get("results").and_then(|r| r.as_array()) {
+            for result in results {
+                if let Some(data) = result.get("data").and_then(|d| d.as_array()) {
+                    for row in data {
+                        if let Some(row_vals) = row.get("row").and_then(|r| r.as_array()) {
+                            let content = row_vals
+                                .first()
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            let source = row_vals
+                                .get(1)
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            let relevance = row_vals.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+                            chunks.push(KnowledgeChunk {
+                                content,
+                                source,
+                                relevance,
+                                metadata: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(chunks)
     }
 
     async fn ingest(&self, content: &str, source: &str) -> Result<()> {
-        tracing::debug!(
-            target_source = %self.name,
-            content_len = content.len(),
-            source = %source,
-            "graph DB ingest"
-        );
+        let url = format!("{}/db/neo4j/tx/commit", self.url);
+        let body = serde_json::json!({
+            "statements": [{
+                "statement": "MERGE (n:Knowledge {source: $source}) SET n.content = $content",
+                "parameters": {
+                    "content": content,
+                    "source": source,
+                },
+            }],
+        });
+
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("graph DB ingest failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(IroncladError::Network(format!(
+                "graph DB ingest returned {status}: {body}"
+            )));
+        }
+
         Ok(())
     }
 
@@ -440,10 +601,24 @@ mod tests {
     }
 
     #[test]
+    fn vector_db_source_with_api_key() {
+        let source = VectorDbSource::new("pinecone", "https://pinecone.io")
+            .with_api_key("sk-test".to_string());
+        assert!(source.api_key.is_some());
+    }
+
+    #[test]
     fn graph_source_available_with_url() {
-        let source = GraphSource::new("neo4j", "bolt://localhost:7687");
+        let source = GraphSource::new("neo4j", "http://localhost:7474");
         assert!(source.is_available());
         assert_eq!(source.source_type(), "graph");
+    }
+
+    #[test]
+    fn graph_source_with_api_key() {
+        let source =
+            GraphSource::new("neo4j", "http://localhost:7474").with_api_key("token".to_string());
+        assert!(source.api_key.is_some());
     }
 
     #[test]
@@ -482,7 +657,6 @@ mod tests {
             "docs",
             dir.path().to_path_buf(),
         )));
-        reg.add(Box::new(VectorDbSource::new("vec", "https://vec.io")));
 
         let results = reg.query_all("Rust", 5).await;
         assert_eq!(results.len(), 1);

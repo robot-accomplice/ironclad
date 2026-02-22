@@ -927,6 +927,7 @@ async fn cmd_serve(
     eprintln!();
     eprintln!();
 
+    ironclad_server::enable_stderr_logging();
     info!("Ironclad listening on http://{bind_addr}");
     let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
         Ok(l) => l,
@@ -938,22 +939,28 @@ async fn cmd_serve(
                 let own_pid = std::process::id();
                 for pid in &pids {
                     if *pid != own_pid {
-                        unsafe { libc::kill(*pid as i32, libc::SIGTERM); }
+                        unsafe {
+                            libc::kill(*pid as i32, libc::SIGTERM);
+                        }
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
                 for pid in &pids {
                     if *pid != own_pid {
-                        unsafe { libc::kill(*pid as i32, libc::SIGKILL); }
+                        unsafe {
+                            libc::kill(*pid as i32, libc::SIGKILL);
+                        }
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
 
-            tokio::net::TcpListener::bind(&bind_addr).await.map_err(|e2| {
-                format!("port {bind_addr} still in use after killing previous instance: {e2}")
-            })?
+            tokio::net::TcpListener::bind(&bind_addr)
+                .await
+                .map_err(|e2| {
+                    format!("port {bind_addr} still in use after killing previous instance: {e2}")
+                })?
         }
         Err(e) => return Err(e.into()),
     };
