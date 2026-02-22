@@ -298,6 +298,12 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub chat_path: Option<String>,
     #[serde(default)]
+    pub embedding_path: Option<String>,
+    #[serde(default)]
+    pub embedding_model: Option<String>,
+    #[serde(default)]
+    pub embedding_dimensions: Option<usize>,
+    #[serde(default)]
     pub is_local: Option<bool>,
     #[serde(default)]
     pub cost_per_input_token: Option<f64>,
@@ -307,6 +313,14 @@ pub struct ProviderConfig {
     pub auth_header: Option<String>,
     #[serde(default)]
     pub extra_headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub auth_mode: Option<String>,
+    #[serde(default)]
+    pub oauth_client_id: Option<String>,
+    #[serde(default)]
+    pub oauth_redirect_uri: Option<String>,
+    #[serde(default)]
+    pub api_key_ref: Option<String>,
 }
 
 impl ProviderConfig {
@@ -317,11 +331,18 @@ impl ProviderConfig {
             format: None,
             api_key_env: None,
             chat_path: None,
+            embedding_path: None,
+            embedding_model: None,
+            embedding_dimensions: None,
             is_local: None,
             cost_per_input_token: None,
             cost_per_output_token: None,
             auth_header: None,
             extra_headers: None,
+            auth_mode: None,
+            oauth_client_id: None,
+            oauth_redirect_uri: None,
+            api_key_ref: None,
         }
     }
 }
@@ -338,9 +359,9 @@ pub struct ModelOverride {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TierAdaptConfig {
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub t1_strip_system: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub t1_condense_turns: bool,
     #[serde(default = "default_t2_preamble")]
     pub t2_default_preamble: Option<String>,
@@ -351,8 +372,8 @@ pub struct TierAdaptConfig {
 impl Default for TierAdaptConfig {
     fn default() -> Self {
         Self {
-            t1_strip_system: true,
-            t1_condense_turns: true,
+            t1_strip_system: false,
+            t1_condense_turns: false,
             t2_default_preamble: default_t2_preamble(),
             t3_t4_passthrough: true,
         }
@@ -423,6 +444,8 @@ pub struct MemoryConfig {
     pub embedding_model: Option<String>,
     #[serde(default = "default_hybrid_weight")]
     pub hybrid_weight: f64,
+    #[serde(default)]
+    pub ann_index: bool,
 }
 
 impl Default for MemoryConfig {
@@ -436,6 +459,7 @@ impl Default for MemoryConfig {
             embedding_provider: None,
             embedding_model: None,
             hybrid_weight: default_hybrid_weight(),
+            ann_index: false,
         }
     }
 }
@@ -726,6 +750,8 @@ pub struct TelegramConfig {
     #[serde(default)]
     pub token_env: String,
     #[serde(default)]
+    pub token_ref: Option<String>,
+    #[serde(default)]
     pub allowed_chat_ids: Vec<i64>,
     #[serde(default = "default_poll_timeout")]
     pub poll_timeout_seconds: u64,
@@ -744,6 +770,8 @@ pub struct WhatsAppConfig {
     #[serde(default)]
     pub token_env: String,
     #[serde(default)]
+    pub token_ref: Option<String>,
+    #[serde(default)]
     pub phone_number_id: String,
     #[serde(default)]
     pub verify_token: String,
@@ -760,6 +788,8 @@ pub struct DiscordConfig {
     pub enabled: bool,
     #[serde(default)]
     pub token_env: String,
+    #[serde(default)]
+    pub token_ref: Option<String>,
     #[serde(default)]
     pub application_id: String,
     #[serde(default)]
@@ -1268,8 +1298,8 @@ tier = "T2"
     #[test]
     fn tier_adapt_defaults() {
         let cfg = IroncladConfig::from_str(minimal_toml()).unwrap();
-        assert!(cfg.tier_adapt.t1_strip_system);
-        assert!(cfg.tier_adapt.t1_condense_turns);
+        assert!(!cfg.tier_adapt.t1_strip_system);
+        assert!(!cfg.tier_adapt.t1_condense_turns);
         assert_eq!(
             cfg.tier_adapt.t2_default_preamble.as_deref(),
             Some("Be concise and direct. Focus on accuracy.")

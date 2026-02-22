@@ -363,11 +363,17 @@ mod tests {
             api_key_env: "CUSTOM_API_KEY".into(),
             format: ApiFormat::OpenAiCompletions,
             chat_path: "/v1/chat/completions".into(),
+            embedding_path: None,
+            embedding_model: None,
+            embedding_dimensions: None,
             is_local: true,
             cost_per_input_token: 0.0,
             cost_per_output_token: 0.0,
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            auth_mode: "api_key".into(),
+            oauth_client_id: None,
+            api_key_ref: None,
         });
         assert_eq!(
             router.select_for_complexity(0.3, Some(&reg)),

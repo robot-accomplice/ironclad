@@ -42,6 +42,24 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if denom == 0.0 { 0.0 } else { dot / denom }
 }
 
+/// Serialize `Vec<f32>` to a compact little-endian byte representation.
+pub fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(embedding.len() * 4);
+    for &val in embedding {
+        bytes.extend_from_slice(&val.to_le_bytes());
+    }
+    bytes
+}
+
+/// Deserialize a BLOB back to `Vec<f32>`.
+pub fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
+    blob.chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
+}
+
+/// Store an embedding using binary BLOB format (with JSON fallback column for
+/// backward compatibility).
 pub fn store_embedding(
     db: &Database,
     id: &str,
@@ -50,16 +68,32 @@ pub fn store_embedding(
     content_preview: &str,
     embedding: &[f32],
 ) -> Result<()> {
-    let embedding_json = serde_json::to_string(embedding)
-        .map_err(|e| IroncladError::Database(format!("embedding serialize error: {e}")))?;
+    let blob = embedding_to_blob(embedding);
+    let dimensions = embedding.len() as i64;
 
     let conn = db.conn();
     conn.execute(
-        "INSERT OR REPLACE INTO embeddings (id, source_table, source_id, content_preview, embedding_json) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![id, source_table, source_id, content_preview, embedding_json],
-    ).map_err(|e| IroncladError::Database(e.to_string()))?;
+        "INSERT OR REPLACE INTO embeddings \
+         (id, source_table, source_id, content_preview, embedding_json, embedding_blob, dimensions) \
+         VALUES (?1, ?2, ?3, ?4, '', ?5, ?6)",
+        rusqlite::params![id, source_table, source_id, content_preview, blob, dimensions],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     Ok(())
+}
+
+/// Load an embedding from a row, preferring BLOB over JSON.
+fn load_embedding_from_row(blob: Option<Vec<u8>>, json_text: &str) -> Option<Vec<f32>> {
+    if let Some(b) = blob {
+        if !b.is_empty() {
+            return Some(blob_to_embedding(&b));
+        }
+    }
+    if !json_text.is_empty() {
+        return serde_json::from_str(json_text).ok();
+    }
+    None
 }
 
 pub fn search_similar(
@@ -70,7 +104,10 @@ pub fn search_similar(
 ) -> Result<Vec<SearchResult>> {
     let conn = db.conn();
     let mut stmt = conn
-        .prepare("SELECT source_table, source_id, content_preview, embedding_json FROM embeddings")
+        .prepare(
+            "SELECT source_table, source_id, content_preview, embedding_blob, embedding_json \
+             FROM embeddings",
+        )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     let rows = stmt
@@ -79,7 +116,8 @@ pub fn search_similar(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -87,11 +125,13 @@ pub fn search_similar(
     let mut results: Vec<SearchResult> = Vec::new();
 
     for row in rows {
-        let (source_table, source_id, content_preview, embedding_json) =
+        let (source_table, source_id, content_preview, blob, json_text) =
             row.map_err(|e| IroncladError::Database(e.to_string()))?;
 
-        let embedding: Vec<f32> = serde_json::from_str(&embedding_json)
-            .map_err(|e| IroncladError::Database(format!("embedding parse error: {e}")))?;
+        let embedding = match load_embedding_from_row(blob, &json_text) {
+            Some(e) => e,
+            None => continue,
+        };
 
         let similarity = cosine_similarity(query_embedding, &embedding);
 
@@ -167,6 +207,7 @@ pub fn hybrid_search(
     Ok(fts_results)
 }
 
+#[allow(dead_code)]
 pub fn embedding_count(db: &Database) -> Result<usize> {
     let conn = db.conn();
     let count: usize = conn
@@ -181,6 +222,29 @@ mod tests {
 
     fn test_db() -> Database {
         Database::new(":memory:").unwrap()
+    }
+
+    #[test]
+    fn blob_roundtrip() {
+        let original = vec![1.0f32, -0.5, 0.0, 3.14159, f32::MIN, f32::MAX];
+        let blob = embedding_to_blob(&original);
+        let restored = blob_to_embedding(&blob);
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn blob_empty() {
+        let blob = embedding_to_blob(&[]);
+        assert!(blob.is_empty());
+        let restored = blob_to_embedding(&blob);
+        assert!(restored.is_empty());
+    }
+
+    #[test]
+    fn blob_size_is_4x_floats() {
+        let emb = vec![0.0f32; 768];
+        let blob = embedding_to_blob(&emb);
+        assert_eq!(blob.len(), 768 * 4);
     }
 
     #[test]
@@ -330,5 +394,27 @@ mod tests {
         for w in results.windows(2) {
             assert!(w[0].similarity >= w[1].similarity);
         }
+    }
+
+    #[test]
+    fn load_embedding_prefers_blob() {
+        let emb = vec![1.0f32, 2.0, 3.0];
+        let blob = embedding_to_blob(&emb);
+        let json = serde_json::to_string(&vec![4.0f32, 5.0, 6.0]).unwrap();
+        let loaded = load_embedding_from_row(Some(blob), &json).unwrap();
+        assert_eq!(loaded, emb);
+    }
+
+    #[test]
+    fn load_embedding_falls_back_to_json() {
+        let json = serde_json::to_string(&vec![7.0f32, 8.0]).unwrap();
+        let loaded = load_embedding_from_row(None, &json).unwrap();
+        assert_eq!(loaded, vec![7.0, 8.0]);
+    }
+
+    #[test]
+    fn load_embedding_empty_both() {
+        let loaded = load_embedding_from_row(None, "");
+        assert!(loaded.is_none());
     }
 }
