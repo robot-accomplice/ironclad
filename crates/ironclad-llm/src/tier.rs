@@ -65,6 +65,7 @@ fn adapt_t1(messages: &mut Vec<UnifiedMessage>, config: &TierAdaptConfig) {
         messages.push(UnifiedMessage {
             role: "user".into(),
             content: combined,
+            parts: None,
         });
     }
 }
@@ -77,6 +78,7 @@ fn adapt_t2(messages: &mut Vec<UnifiedMessage>, config: &TierAdaptConfig) {
             UnifiedMessage {
                 role: "system".into(),
                 content: preamble.clone(),
+                parts: None,
             },
         );
     }
@@ -122,18 +124,22 @@ mod tests {
             UnifiedMessage {
                 role: "system".into(),
                 content: "You are helpful.".into(),
+                parts: None,
             },
             UnifiedMessage {
                 role: "user".into(),
                 content: "Hello".into(),
+                parts: None,
             },
             UnifiedMessage {
                 role: "assistant".into(),
                 content: "Hi!".into(),
+                parts: None,
             },
             UnifiedMessage {
                 role: "user".into(),
                 content: "How are you?".into(),
+                parts: None,
             },
         ];
 
@@ -157,18 +163,22 @@ mod tests {
             UnifiedMessage {
                 role: "system".into(),
                 content: "Be helpful.".into(),
+                parts: None,
             },
             UnifiedMessage {
                 role: "user".into(),
                 content: "Hello".into(),
+                parts: None,
             },
             UnifiedMessage {
                 role: "assistant".into(),
                 content: "Hi!".into(),
+                parts: None,
             },
             UnifiedMessage {
                 role: "user".into(),
                 content: "Bye".into(),
+                parts: None,
             },
         ];
         adapt_for_tier(ModelTier::T1, &mut msgs, &cfg);
@@ -182,6 +192,7 @@ mod tests {
         let mut msgs = vec![UnifiedMessage {
             role: "user".into(),
             content: "Hello".into(),
+            parts: None,
         }];
 
         adapt_for_tier(ModelTier::T2, &mut msgs, &cfg);
@@ -200,6 +211,7 @@ mod tests {
         let mut msgs = vec![UnifiedMessage {
             role: "user".into(),
             content: "Hello".into(),
+            parts: None,
         }];
         adapt_for_tier(ModelTier::T2, &mut msgs, &cfg);
         assert_eq!(msgs[0].content, "You are a pirate.");
@@ -214,6 +226,7 @@ mod tests {
         let mut msgs = vec![UnifiedMessage {
             role: "user".into(),
             content: "Hello".into(),
+            parts: None,
         }];
         adapt_for_tier(ModelTier::T2, &mut msgs, &cfg);
         assert_eq!(
@@ -230,10 +243,12 @@ mod tests {
             UnifiedMessage {
                 role: "system".into(),
                 content: "You are an expert.".into(),
+                parts: None,
             },
             UnifiedMessage {
                 role: "user".into(),
                 content: "Explain quantum computing.".into(),
+                parts: None,
             },
         ];
         let original = msgs.clone();

@@ -27,7 +27,7 @@ fn session_message_and_llm_format_roundtrip() {
     let db = Database::new(":memory:").unwrap();
     let _config = test_config();
 
-    let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent").unwrap();
+    let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
 
     ironclad_db::sessions::append_message(&db, &session_id, "user", "What is Rust?").unwrap();
 
@@ -43,11 +43,13 @@ fn session_message_and_llm_format_roundtrip() {
             .map(|m| UnifiedMessage {
                 role: m.role.clone(),
                 content: m.content.clone(),
+                parts: None,
             })
             .collect(),
         max_tokens: Some(1024),
         temperature: Some(0.7),
         system: Some("You are a helpful programming assistant.".into()),
+        quality_target: None,
     };
 
     let anthropic_body = translate_request(&unified, ApiFormat::AnthropicMessages).unwrap();
@@ -114,15 +116,18 @@ fn multi_format_translation_consistency() {
             UnifiedMessage {
                 role: "user".into(),
                 content: "Hello".into(),
+                parts: None,
             },
             UnifiedMessage {
                 role: "assistant".into(),
                 content: "Hi".into(),
+                parts: None,
             },
         ],
         max_tokens: Some(512),
         temperature: None,
         system: Some("Be brief.".into()),
+        quality_target: None,
     };
 
     for format in [

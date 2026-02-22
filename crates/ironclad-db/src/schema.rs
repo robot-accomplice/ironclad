@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
+    scope_key TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
     model TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -315,6 +317,29 @@ CREATE TABLE IF NOT EXISTS embeddings (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_embeddings_source ON embeddings(source_table, source_id);
+
+CREATE TABLE IF NOT EXISTS context_checkpoints (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    system_prompt_hash TEXT NOT NULL,
+    memory_summary TEXT NOT NULL,
+    active_tasks TEXT,
+    conversation_digest TEXT,
+    turn_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON context_checkpoints(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS hippocampus (
+    table_name TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    columns_json TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT 'system',
+    agent_owned INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_hippocampus_agent ON hippocampus(created_by, agent_owned);
 "#;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
@@ -428,8 +453,8 @@ mod tests {
     fn schema_creates_all_tables() {
         let db = Database::new(":memory:").unwrap();
         let count = table_count(&db).unwrap();
-        // 27 regular tables + 1 FTS5 virtual table = 28 user-defined tables
-        assert_eq!(count, 28, "expected 28 user-defined tables, got {count}");
+        // 28 regular tables + 1 FTS5 virtual table + hippocampus = 30 user-defined tables
+        assert_eq!(count, 30, "expected 30 user-defined tables, got {count}");
     }
 
     #[test]
@@ -438,7 +463,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 28);
+        assert_eq!(count, 30);
     }
 
     #[test]

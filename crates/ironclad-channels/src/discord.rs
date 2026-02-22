@@ -238,6 +238,117 @@ impl ChannelAdapter for DiscordAdapter {
     }
 }
 
+/// Discord WebSocket Gateway connection state.
+pub struct GatewayConnection {
+    _heartbeat_interval_ms: u64,
+    sequence: Arc<Mutex<Option<u64>>>,
+    session_id: Arc<Mutex<Option<String>>>,
+    _resume_gateway_url: Arc<Mutex<Option<String>>>,
+}
+
+impl Default for GatewayConnection {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GatewayConnection {
+    pub fn new() -> Self {
+        Self {
+            _heartbeat_interval_ms: 41250,
+            sequence: Arc::new(Mutex::new(None)),
+            session_id: Arc::new(Mutex::new(None)),
+            _resume_gateway_url: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn sequence(&self) -> Option<u64> {
+        *self.sequence.lock().expect("mutex poisoned")
+    }
+
+    pub fn set_sequence(&self, seq: Option<u64>) {
+        *self.sequence.lock().expect("mutex poisoned") = seq;
+    }
+
+    pub fn session_id(&self) -> Option<String> {
+        self.session_id.lock().expect("mutex poisoned").clone()
+    }
+
+    pub fn set_session_id(&self, id: String) {
+        *self.session_id.lock().expect("mutex poisoned") = Some(id);
+    }
+}
+
+impl DiscordAdapter {
+    /// Build the Gateway Identify payload.
+    pub fn build_identify(&self) -> serde_json::Value {
+        serde_json::json!({
+            "op": 2,
+            "d": {
+                "token": self.token,
+                "intents": 512 | 1 | 4096,
+                "properties": {
+                    "os": "linux",
+                    "browser": "ironclad",
+                    "device": "ironclad"
+                }
+            }
+        })
+    }
+
+    /// Build a heartbeat payload.
+    pub fn build_heartbeat(&self, sequence: Option<u64>) -> serde_json::Value {
+        serde_json::json!({
+            "op": 1,
+            "d": sequence
+        })
+    }
+
+    /// Build a Resume payload for reconnection.
+    pub fn build_resume(&self, session_id: &str, sequence: u64) -> serde_json::Value {
+        serde_json::json!({
+            "op": 6,
+            "d": {
+                "token": self.token,
+                "session_id": session_id,
+                "seq": sequence
+            }
+        })
+    }
+
+    /// Parse a gateway dispatch event (op=0). Returns the event name and parsed data.
+    pub fn parse_dispatch(
+        &self,
+        payload: &serde_json::Value,
+    ) -> Option<(String, serde_json::Value)> {
+        let event_name = payload.get("t")?.as_str()?.to_string();
+        let data = payload.get("d")?.clone();
+        let _seq = payload.get("s").and_then(|v| v.as_u64());
+
+        Some((event_name, data))
+    }
+
+    /// Determine the gateway opcode from a received message.
+    pub fn gateway_opcode(payload: &serde_json::Value) -> Option<u64> {
+        payload.get("op")?.as_u64()
+    }
+
+    /// Extract the heartbeat interval from a Hello (op=10) payload.
+    pub fn extract_heartbeat_interval(payload: &serde_json::Value) -> Option<u64> {
+        payload.get("d")?.get("heartbeat_interval")?.as_u64()
+    }
+
+    /// Check if a gateway close code is resumable.
+    pub fn is_resumable_close(code: u16) -> bool {
+        matches!(code, 4000 | 4001 | 4002 | 4003 | 4005 | 4007 | 4008 | 4009)
+    }
+
+    /// Check if a gateway close code is fatal (should not reconnect).
+    pub fn is_fatal_close(code: u16) -> bool {
+        matches!(code, 4004 | 4010 | 4011 | 4012 | 4013 | 4014)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,5 +573,96 @@ mod tests {
         let adapter = DiscordAdapter::new("tok".into());
         let rt = tokio::runtime::Runtime::new().unwrap();
         assert_eq!(rt.block_on(async { adapter.platform_name() }), "discord");
+    }
+
+    #[test]
+    fn build_identify_has_token_and_intents() {
+        let adapter = DiscordAdapter::new("test-bot-token".into());
+        let identify = adapter.build_identify();
+        assert_eq!(identify["op"], 2);
+        assert_eq!(identify["d"]["token"], "test-bot-token");
+        let intents = identify["d"]["intents"].as_u64().unwrap();
+        assert!(intents & 512 != 0, "should have GUILD_MESSAGES intent");
+    }
+
+    #[test]
+    fn build_heartbeat_with_sequence() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let hb = adapter.build_heartbeat(Some(42));
+        assert_eq!(hb["op"], 1);
+        assert_eq!(hb["d"], 42);
+    }
+
+    #[test]
+    fn build_heartbeat_null_sequence() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let hb = adapter.build_heartbeat(None);
+        assert_eq!(hb["op"], 1);
+        assert!(hb["d"].is_null());
+    }
+
+    #[test]
+    fn build_resume_payload() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let resume = adapter.build_resume("session-123", 99);
+        assert_eq!(resume["op"], 6);
+        assert_eq!(resume["d"]["session_id"], "session-123");
+        assert_eq!(resume["d"]["seq"], 99);
+    }
+
+    #[test]
+    fn gateway_opcode_extracts_op() {
+        let hello = serde_json::json!({"op": 10, "d": {"heartbeat_interval": 41250}});
+        assert_eq!(DiscordAdapter::gateway_opcode(&hello), Some(10));
+    }
+
+    #[test]
+    fn extract_heartbeat_interval_from_hello() {
+        let hello = serde_json::json!({"op": 10, "d": {"heartbeat_interval": 41250}});
+        assert_eq!(
+            DiscordAdapter::extract_heartbeat_interval(&hello),
+            Some(41250)
+        );
+    }
+
+    #[test]
+    fn resumable_close_codes() {
+        assert!(DiscordAdapter::is_resumable_close(4000));
+        assert!(DiscordAdapter::is_resumable_close(4009));
+        assert!(!DiscordAdapter::is_resumable_close(4004));
+    }
+
+    #[test]
+    fn fatal_close_codes() {
+        assert!(DiscordAdapter::is_fatal_close(4004));
+        assert!(DiscordAdapter::is_fatal_close(4014));
+        assert!(!DiscordAdapter::is_fatal_close(4000));
+    }
+
+    #[test]
+    fn parse_dispatch_extracts_event() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let dispatch = serde_json::json!({
+            "op": 0,
+            "s": 42,
+            "t": "MESSAGE_CREATE",
+            "d": {"content": "hello", "author": {"id": "123", "bot": false}}
+        });
+        let (name, data) = adapter.parse_dispatch(&dispatch).unwrap();
+        assert_eq!(name, "MESSAGE_CREATE");
+        assert_eq!(data["content"], "hello");
+    }
+
+    #[test]
+    fn gateway_connection_state() {
+        let conn = GatewayConnection::new();
+        assert!(conn.sequence().is_none());
+        assert!(conn.session_id().is_none());
+
+        conn.set_sequence(Some(42));
+        assert_eq!(conn.sequence(), Some(42));
+
+        conn.set_session_id("test-session".to_string());
+        assert_eq!(conn.session_id().as_deref(), Some("test-session"));
     }
 }

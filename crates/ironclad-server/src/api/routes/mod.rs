@@ -137,6 +137,7 @@ impl InterviewSession {
             history: vec![ironclad_llm::format::UnifiedMessage {
                 role: "system".into(),
                 content: ironclad_agent::interview::build_interview_prompt(),
+                parts: None,
             }],
             awaiting_confirmation: false,
             pending_output: None,
@@ -463,7 +464,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn post_and_list_messages() {
         let state = test_state();
-        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1", None).unwrap();
 
         let app = build_router(state.clone());
         let req = Request::builder()
@@ -571,7 +572,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn get_session_ok() {
         let state = test_state();
-        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1", None).unwrap();
         let app = build_router(state);
 
         let req = Request::builder()
@@ -606,7 +607,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn get_working_memory_returns_entries() {
         let state = test_state();
-        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1", None).unwrap();
         let app = build_router(state);
 
         let req = Request::builder()
@@ -1478,7 +1479,8 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn working_memory_returns_entries() {
         let state = test_state();
-        let session_id = ironclad_db::sessions::find_or_create(&state.db, "test-working").unwrap();
+        let session_id =
+            ironclad_db::sessions::find_or_create(&state.db, "test-working", None).unwrap();
         ironclad_db::memory::store_working(
             &state.db,
             &session_id,
@@ -2010,7 +2012,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn agent_message_with_explicit_session_id() {
         let state = test_state();
-        let sid = ironclad_db::sessions::find_or_create(&state.db, "test-agent").unwrap();
+        let sid = ironclad_db::sessions::find_or_create(&state.db, "test-agent", None).unwrap();
 
         let app = build_router(state);
         let req = Request::builder()
@@ -2404,8 +2406,8 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn list_sessions_returns_seeded_sessions() {
         let state = test_state();
-        ironclad_db::sessions::find_or_create(&state.db, "agent-a").unwrap();
-        ironclad_db::sessions::find_or_create(&state.db, "agent-b").unwrap();
+        ironclad_db::sessions::find_or_create(&state.db, "agent-a", None).unwrap();
+        ironclad_db::sessions::find_or_create(&state.db, "agent-b", None).unwrap();
         let app = build_router(state);
         let resp = app
             .oneshot(

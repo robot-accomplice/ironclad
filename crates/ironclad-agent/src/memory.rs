@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn ingest_turn_stores_memories() {
         let db = ironclad_db::Database::new(":memory:").unwrap();
-        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
         ingest_turn(
             &db,
             &session_id,
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn ingest_turn_with_tools_stores_episodic() {
         let db = ironclad_db::Database::new(":memory:").unwrap();
-        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
         ironclad_db::memory::store_procedural(&db, "echo", "echo tool").ok();
         ingest_turn(
             &db,

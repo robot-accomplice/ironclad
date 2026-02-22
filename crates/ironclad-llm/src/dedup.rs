@@ -68,6 +68,7 @@ mod tests {
         let msgs = vec![UnifiedMessage {
             role: "user".into(),
             content: "hello".into(),
+            parts: None,
         }];
         let fp = DedupTracker::fingerprint("gpt-4o", &msgs);
 
@@ -80,6 +81,7 @@ mod tests {
         let msgs = vec![UnifiedMessage {
             role: "user".into(),
             content: "hello".into(),
+            parts: None,
         }];
         let fp = DedupTracker::fingerprint("gpt-4o", &msgs);
 
@@ -93,6 +95,7 @@ mod tests {
         let msgs = vec![UnifiedMessage {
             role: "user".into(),
             content: "hello".into(),
+            parts: None,
         }];
         let fp = DedupTracker::fingerprint("gpt-4o", &msgs);
 
@@ -109,6 +112,7 @@ mod tests {
             &[UnifiedMessage {
                 role: "user".into(),
                 content: "test".into(),
+                parts: None,
             }],
         );
 
@@ -123,6 +127,7 @@ mod tests {
         let msgs = vec![UnifiedMessage {
             role: "user".into(),
             content: "hello".into(),
+            parts: None,
         }];
         let fp1 = DedupTracker::fingerprint("gpt-4o", &msgs);
         let fp2 = DedupTracker::fingerprint("claude-sonnet", &msgs);

@@ -16,6 +16,8 @@ pub struct Provider {
     pub cost_per_output_token: f64,
     pub auth_header: String,
     pub extra_headers: HashMap<String, String>,
+    pub tpm_limit: Option<u64>,
+    pub rpm_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +93,8 @@ impl ProviderRegistry {
                 cost_per_output_token: cfg.cost_per_output_token.unwrap_or(0.0),
                 auth_header,
                 extra_headers,
+                tpm_limit: cfg.tpm_limit,
+                rpm_limit: cfg.rpm_limit,
             });
         }
 
@@ -167,6 +171,8 @@ mod tests {
             cost_per_output_token: 0.0,
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            tpm_limit: None,
+            rpm_limit: None,
         }
     }
 

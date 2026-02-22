@@ -71,11 +71,12 @@ impl ModelRouter {
     }
 
     /// Select a model using complexity-aware routing, consulting the provider
-    /// registry for `is_local` when available.
+    /// registry for `is_local` and the capacity tracker for throughput headroom.
     pub fn select_for_complexity(
         &self,
         complexity: f64,
         registry: Option<&ProviderRegistry>,
+        capacity: Option<&super::capacity::CapacityTracker>,
     ) -> &str {
         if self.config.mode == "primary" {
             return &self.primary;
@@ -93,8 +94,90 @@ impl ModelRouter {
             return &self.primary;
         }
 
-        if complexity >= self.config.confidence_threshold && !self.fallbacks.is_empty() {
-            return &self.fallbacks[0];
+        let selected =
+            if complexity >= self.config.confidence_threshold && !self.fallbacks.is_empty() {
+                &self.fallbacks[0]
+            } else {
+                &self.primary
+            };
+
+        if let Some(cap) = capacity {
+            let provider_name = selected.split('/').next().unwrap_or(selected);
+            if cap.is_near_capacity(provider_name) {
+                for fb in &self.fallbacks {
+                    let fb_provider = fb.split('/').next().unwrap_or(fb);
+                    if !cap.is_near_capacity(fb_provider) {
+                        return fb;
+                    }
+                }
+            }
+        }
+
+        selected
+    }
+
+    /// Select the cheapest qualified model that has capacity.
+    /// Falls back to complexity-based selection if no cost data is available.
+    pub fn select_cheapest_qualified(
+        &self,
+        complexity: f64,
+        registry: &ProviderRegistry,
+        capacity: Option<&super::capacity::CapacityTracker>,
+        estimated_input_tokens: u32,
+        estimated_output_tokens: u32,
+    ) -> &str {
+        let mut candidates: Vec<(&str, f64)> = Vec::new();
+
+        let primary_cost = estimate_cost(
+            &self.primary,
+            registry,
+            estimated_input_tokens,
+            estimated_output_tokens,
+        );
+        candidates.push((&self.primary, primary_cost));
+
+        for fb in &self.fallbacks {
+            let cost = estimate_cost(
+                fb,
+                registry,
+                estimated_input_tokens,
+                estimated_output_tokens,
+            );
+            candidates.push((fb, cost));
+        }
+
+        if let Some(cap) = capacity {
+            candidates.retain(|(model, _)| {
+                let provider_name = model.split('/').next().unwrap_or(model);
+                !cap.is_near_capacity(provider_name)
+            });
+        }
+
+        if complexity >= self.config.confidence_threshold {
+            let cloud: Vec<_> = candidates
+                .iter()
+                .filter(|(model, _)| {
+                    registry
+                        .get_by_model(model)
+                        .map(|p| !p.is_local)
+                        .unwrap_or(true)
+                })
+                .cloned()
+                .collect();
+            if !cloud.is_empty() {
+                return cloud
+                    .iter()
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(model, _)| *model)
+                    .unwrap_or(&self.primary);
+            }
+        }
+
+        if let Some((model, _)) = candidates
+            .iter()
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            return model;
         }
 
         &self.primary
@@ -118,6 +201,22 @@ impl ModelRouter {
 
     pub fn config(&self) -> &RoutingConfig {
         &self.config
+    }
+}
+
+/// Estimate the cost of a request for a given model.
+fn estimate_cost(
+    model: &str,
+    registry: &ProviderRegistry,
+    input_tokens: u32,
+    output_tokens: u32,
+) -> f64 {
+    match registry.get_by_model(model) {
+        Some(provider) => {
+            provider.cost_per_input_token * input_tokens as f64
+                + provider.cost_per_output_token * output_tokens as f64
+        }
+        None => f64::MAX,
     }
 }
 
@@ -159,7 +258,10 @@ fn heuristic_classify_complexity(features: &[f32]) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
+    use crate::provider::Provider;
 
     fn test_config() -> RoutingConfig {
         RoutingConfig::default()
@@ -261,7 +363,10 @@ mod tests {
             Box::new(HeuristicBackend),
         );
         assert_eq!(router.select_model(), "ollama/qwen3:8b");
-        assert_eq!(router.select_for_complexity(0.99, None), "ollama/qwen3:8b");
+        assert_eq!(
+            router.select_for_complexity(0.99, None, None),
+            "ollama/qwen3:8b"
+        );
     }
 
     #[test]
@@ -292,6 +397,7 @@ mod tests {
             mode: "ml".into(),
             confidence_threshold: 0.7,
             local_first: true,
+            ..Default::default()
         };
         let router = ModelRouter::new(
             "ollama/qwen3:8b".into(),
@@ -301,13 +407,13 @@ mod tests {
         );
 
         assert_eq!(
-            router.select_for_complexity(0.3, None),
+            router.select_for_complexity(0.3, None, None),
             "ollama/qwen3:8b",
             "low complexity should use local primary"
         );
 
         assert_eq!(
-            router.select_for_complexity(0.9, None),
+            router.select_for_complexity(0.9, None, None),
             "openai/gpt-4o",
             "high complexity should promote to fallback"
         );
@@ -319,6 +425,7 @@ mod tests {
             mode: "ml".into(),
             confidence_threshold: 0.5,
             local_first: true,
+            ..Default::default()
         };
         let router = ModelRouter::new(
             "ollama/local-model".into(),
@@ -328,7 +435,7 @@ mod tests {
         );
 
         assert_eq!(
-            router.select_for_complexity(0.4, None),
+            router.select_for_complexity(0.4, None, None),
             "ollama/local-model",
         );
     }
@@ -343,6 +450,7 @@ mod tests {
             mode: "ml".into(),
             confidence_threshold: 0.5,
             local_first: true,
+            ..Default::default()
         };
         let router = ModelRouter::new(
             "custom/model".into(),
@@ -352,7 +460,10 @@ mod tests {
         );
 
         // Without registry, "custom/model" is not local by heuristic
-        assert_eq!(router.select_for_complexity(0.3, None), "custom/model");
+        assert_eq!(
+            router.select_for_complexity(0.3, None, None),
+            "custom/model"
+        );
 
         // With registry marking it as local
         let mut reg = ProviderRegistry::new();
@@ -368,9 +479,11 @@ mod tests {
             cost_per_output_token: 0.0,
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            tpm_limit: None,
+            rpm_limit: None,
         });
         assert_eq!(
-            router.select_for_complexity(0.3, Some(&reg)),
+            router.select_for_complexity(0.3, Some(&reg), None),
             "custom/model",
             "registry is_local=true keeps it on primary"
         );
@@ -382,6 +495,7 @@ mod tests {
             mode: "ml".into(),
             confidence_threshold: 0.85,
             local_first: false,
+            ..Default::default()
         };
         let router = ModelRouter::new("p".into(), vec![], config, Box::new(HeuristicBackend));
         assert_eq!(router.config().mode, "ml");
@@ -396,5 +510,148 @@ mod tests {
         assert!(is_local_model_heuristic("llama-cpp/gguf-model"));
         assert!(!is_local_model_heuristic("openai/gpt-4o"));
         assert!(!is_local_model_heuristic("anthropic/claude"));
+    }
+
+    fn cost_test_registry() -> ProviderRegistry {
+        use ironclad_core::{ApiFormat, ModelTier};
+
+        let mut reg = ProviderRegistry::new();
+        reg.register(Provider {
+            name: "cheap".into(),
+            url: "http://cheap.example.com".into(),
+            tier: ModelTier::T2,
+            api_key_env: "CHEAP_KEY".into(),
+            format: ApiFormat::OpenAiCompletions,
+            chat_path: "/v1/chat/completions".into(),
+            is_local: false,
+            cost_per_input_token: 0.00001,
+            cost_per_output_token: 0.00002,
+            auth_header: "Authorization".into(),
+            extra_headers: HashMap::new(),
+            tpm_limit: None,
+            rpm_limit: None,
+        });
+        reg.register(Provider {
+            name: "expensive".into(),
+            url: "http://expensive.example.com".into(),
+            tier: ModelTier::T3,
+            api_key_env: "EXPENSIVE_KEY".into(),
+            format: ApiFormat::OpenAiCompletions,
+            chat_path: "/v1/chat/completions".into(),
+            is_local: false,
+            cost_per_input_token: 0.001,
+            cost_per_output_token: 0.002,
+            auth_header: "Authorization".into(),
+            extra_headers: HashMap::new(),
+            tpm_limit: Some(100_000),
+            rpm_limit: Some(60),
+        });
+        reg.register(Provider {
+            name: "ollama".into(),
+            url: "http://localhost:11434".into(),
+            tier: ModelTier::T1,
+            api_key_env: "OLLAMA_KEY".into(),
+            format: ApiFormat::OpenAiCompletions,
+            chat_path: "/v1/chat/completions".into(),
+            is_local: true,
+            cost_per_input_token: 0.0,
+            cost_per_output_token: 0.0,
+            auth_header: "Authorization".into(),
+            extra_headers: HashMap::new(),
+            tpm_limit: None,
+            rpm_limit: None,
+        });
+        reg
+    }
+
+    #[test]
+    fn select_cheapest_qualified_prefers_cheaper() {
+        let config = RoutingConfig {
+            mode: "ml".into(),
+            confidence_threshold: 0.9,
+            local_first: false,
+            ..Default::default()
+        };
+        let router = ModelRouter::new(
+            "expensive/gpt-5".into(),
+            vec!["cheap/lite-model".into()],
+            config,
+            Box::new(HeuristicBackend),
+        );
+        let reg = cost_test_registry();
+
+        let selected = router.select_cheapest_qualified(0.3, &reg, None, 1000, 500);
+        assert_eq!(
+            selected, "cheap/lite-model",
+            "should pick the cheaper provider for low complexity"
+        );
+    }
+
+    #[test]
+    fn select_cheapest_qualified_skips_near_capacity() {
+        let config = RoutingConfig {
+            mode: "ml".into(),
+            confidence_threshold: 0.9,
+            local_first: false,
+            ..Default::default()
+        };
+        let router = ModelRouter::new(
+            "cheap/lite-model".into(),
+            vec!["expensive/gpt-5".into()],
+            config,
+            Box::new(HeuristicBackend),
+        );
+        let reg = cost_test_registry();
+
+        let cap = super::super::capacity::CapacityTracker::new(60);
+        cap.register("cheap", Some(100), None);
+        cap.record("cheap", 95);
+
+        let selected = router.select_cheapest_qualified(0.3, &reg, Some(&cap), 1000, 500);
+        assert_eq!(
+            selected, "expensive/gpt-5",
+            "should skip cheap provider when near capacity"
+        );
+    }
+
+    #[test]
+    fn select_cheapest_qualified_high_complexity_prefers_cloud() {
+        let config = RoutingConfig {
+            mode: "ml".into(),
+            confidence_threshold: 0.5,
+            local_first: false,
+            ..Default::default()
+        };
+        let router = ModelRouter::new(
+            "ollama/local-model".into(),
+            vec!["cheap/cloud-lite".into(), "expensive/gpt-5".into()],
+            config,
+            Box::new(HeuristicBackend),
+        );
+        let reg = cost_test_registry();
+
+        let selected = router.select_cheapest_qualified(0.8, &reg, None, 1000, 500);
+        assert_eq!(
+            selected, "cheap/cloud-lite",
+            "high complexity should filter to cloud and pick cheapest"
+        );
+    }
+
+    #[test]
+    fn estimate_cost_unknown_provider() {
+        let reg = ProviderRegistry::new();
+        let cost = estimate_cost("unknown/model", &reg, 1000, 500);
+        assert_eq!(cost, f64::MAX);
+    }
+
+    #[test]
+    fn estimate_cost_calculates_correctly() {
+        let reg = cost_test_registry();
+        let cost = estimate_cost("expensive/gpt-5", &reg, 1000, 500);
+        let expected = 1000.0 * 0.001 + 500.0 * 0.002;
+        assert!(
+            (cost - expected).abs() < f64::EPSILON,
+            "cost should be {expected}, got {cost}"
+        );
     }
 }

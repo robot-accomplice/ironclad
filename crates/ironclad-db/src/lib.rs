@@ -1,5 +1,8 @@
+pub mod backend;
+pub mod checkpoint;
 pub mod cron;
 pub mod embeddings;
+pub mod hippocampus;
 pub mod memory;
 pub mod metrics;
 pub mod policy;

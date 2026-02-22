@@ -6,6 +6,98 @@ use serde::{Deserialize, Serialize};
 use crate::error::{IroncladError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultimodalConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub media_dir: Option<PathBuf>,
+    #[serde(default = "default_max_image_size")]
+    pub max_image_size_bytes: usize,
+    #[serde(default)]
+    pub vision_model: Option<String>,
+    #[serde(default)]
+    pub transcription_model: Option<String>,
+}
+
+impl Default for MultimodalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            media_dir: None,
+            max_image_size_bytes: default_max_image_size(),
+            vision_model: None,
+            transcription_model: None,
+        }
+    }
+}
+
+fn default_max_image_size() -> usize {
+    10 * 1024 * 1024
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KnowledgeConfig {
+    #[serde(default)]
+    pub sources: Vec<KnowledgeSourceEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeSourceEntry {
+    pub name: String,
+    pub source_type: String,
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default = "default_max_chunks")]
+    pub max_chunks: usize,
+}
+
+fn default_max_chunks() -> usize {
+    10
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DigestConfig {
+    #[serde(default = "default_digest_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_digest_max_tokens")]
+    pub max_tokens: usize,
+    #[serde(default = "default_decay_half_life_days")]
+    pub decay_half_life_days: u32,
+}
+
+impl Default for DigestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_digest_enabled(),
+            max_tokens: default_digest_max_tokens(),
+            decay_half_life_days: default_decay_half_life_days(),
+        }
+    }
+}
+
+fn default_digest_enabled() -> bool {
+    true
+}
+fn default_digest_max_tokens() -> usize {
+    512
+}
+fn default_decay_half_life_days() -> u32 {
+    7
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceConfig {
+    #[serde(default)]
+    pub soul_versioning: bool,
+    #[serde(default)]
+    pub index_on_start: bool,
+    #[serde(default)]
+    pub watch_for_changes: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IroncladConfig {
     pub agent: AgentConfig,
     pub server: ServerConfig,
@@ -47,6 +139,75 @@ pub struct IroncladConfig {
     pub tier_adapt: TierAdaptConfig,
     #[serde(default)]
     pub personality: PersonalityConfig,
+    #[serde(default)]
+    pub session: SessionConfig,
+    #[serde(default)]
+    pub digest: DigestConfig,
+    #[serde(default)]
+    pub multimodal: MultimodalConfig,
+    #[serde(default)]
+    pub knowledge: KnowledgeConfig,
+    #[serde(default)]
+    pub workspace_config: WorkspaceConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+    #[serde(default)]
+    pub devices: DeviceConfig,
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub dns_sd: bool,
+    #[serde(default)]
+    pub mdns: bool,
+    #[serde(default)]
+    pub advertise: bool,
+    #[serde(default = "default_service_name")]
+    pub service_name: String,
+}
+
+fn default_service_name() -> String {
+    "_ironclad._tcp".to_string()
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dns_sd: false,
+            mdns: false,
+            advertise: false,
+            service_name: default_service_name(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub identity_path: Option<PathBuf>,
+    #[serde(default)]
+    pub sync_enabled: bool,
+    #[serde(default)]
+    pub max_paired_devices: usize,
+}
+
+impl Default for DeviceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            identity_path: None,
+            sync_enabled: false,
+            max_paired_devices: 5,
+        }
+    }
 }
 
 const BUNDLED_PROVIDERS_TOML: &str = include_str!("bundled_providers.toml");
@@ -253,6 +414,37 @@ pub struct ModelsConfig {
     pub routing: RoutingConfig,
     #[serde(default)]
     pub model_overrides: HashMap<String, ModelOverride>,
+    #[serde(default)]
+    pub stream_by_default: bool,
+    #[serde(default)]
+    pub tiered_inference: TieredInferenceConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TieredInferenceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_confidence_floor")]
+    pub confidence_floor: f64,
+    #[serde(default = "default_escalation_latency_ms")]
+    pub escalation_latency_budget_ms: u64,
+}
+
+fn default_confidence_floor() -> f64 {
+    0.6
+}
+fn default_escalation_latency_ms() -> u64 {
+    3000
+}
+
+impl Default for TieredInferenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            confidence_floor: default_confidence_floor(),
+            escalation_latency_budget_ms: default_escalation_latency_ms(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +455,10 @@ pub struct RoutingConfig {
     pub confidence_threshold: f64,
     #[serde(default = "default_true")]
     pub local_first: bool,
+    #[serde(default)]
+    pub cost_aware: bool,
+    #[serde(default = "default_estimated_output_tokens")]
+    pub estimated_output_tokens: u32,
 }
 
 impl Default for RoutingConfig {
@@ -271,8 +467,14 @@ impl Default for RoutingConfig {
             mode: default_routing_mode(),
             confidence_threshold: default_confidence_threshold(),
             local_first: true,
+            cost_aware: false,
+            estimated_output_tokens: default_estimated_output_tokens(),
         }
     }
+}
+
+fn default_estimated_output_tokens() -> u32 {
+    500
 }
 
 fn default_routing_mode() -> String {
@@ -307,6 +509,10 @@ pub struct ProviderConfig {
     pub auth_header: Option<String>,
     #[serde(default)]
     pub extra_headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub tpm_limit: Option<u64>,
+    #[serde(default)]
+    pub rpm_limit: Option<u64>,
 }
 
 impl ProviderConfig {
@@ -322,6 +528,8 @@ impl ProviderConfig {
             cost_per_output_token: None,
             auth_header: None,
             extra_headers: None,
+            tpm_limit: None,
+            rpm_limit: None,
         }
     }
 }
@@ -470,6 +678,10 @@ pub struct CacheConfig {
     pub semantic_threshold: f64,
     #[serde(default = "default_max_entries")]
     pub max_entries: usize,
+    #[serde(default)]
+    pub prompt_compression: bool,
+    #[serde(default = "default_compression_ratio")]
+    pub compression_target_ratio: f64,
 }
 
 impl Default for CacheConfig {
@@ -479,8 +691,14 @@ impl Default for CacheConfig {
             exact_match_ttl_seconds: default_cache_ttl(),
             semantic_threshold: default_semantic_threshold(),
             max_entries: default_max_entries(),
+            prompt_compression: false,
+            compression_target_ratio: default_compression_ratio(),
         }
     }
+}
+
+fn default_compression_ratio() -> f64 {
+    0.5
 }
 
 fn default_cache_ttl() -> u64 {
@@ -710,6 +928,18 @@ fn default_interpreters() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VoiceChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub stt_model: Option<String>,
+    #[serde(default)]
+    pub tts_model: Option<String>,
+    #[serde(default)]
+    pub tts_voice: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChannelsConfig {
     #[serde(default)]
     pub telegram: Option<TelegramConfig>,
@@ -717,6 +947,10 @@ pub struct ChannelsConfig {
     pub whatsapp: Option<WhatsAppConfig>,
     #[serde(default)]
     pub discord: Option<DiscordConfig>,
+    #[serde(default)]
+    pub email: EmailConfig,
+    #[serde(default)]
+    pub voice: VoiceChannelConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -766,6 +1000,57 @@ pub struct DiscordConfig {
     pub allowed_guild_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub imap_host: String,
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password_env: String,
+    #[serde(default)]
+    pub from_address: String,
+    #[serde(default)]
+    pub allowed_senders: Vec<String>,
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_seconds: u64,
+}
+
+impl Default for EmailConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            imap_host: String::new(),
+            imap_port: default_imap_port(),
+            smtp_host: String::new(),
+            smtp_port: default_smtp_port(),
+            username: String::new(),
+            password_env: String::new(),
+            from_address: String::new(),
+            allowed_senders: Vec::new(),
+            poll_interval_seconds: default_poll_interval(),
+        }
+    }
+}
+
+fn default_imap_port() -> u16 {
+    993
+}
+fn default_smtp_port() -> u16 {
+    587
+}
+fn default_poll_interval() -> u64 {
+    30
+}
+
 fn default_poll_timeout() -> u64 {
     30
 }
@@ -780,6 +1065,10 @@ pub struct ContextConfig {
     pub hard_clear_ratio: f64,
     #[serde(default = "default_preserve_recent")]
     pub preserve_recent: usize,
+    #[serde(default)]
+    pub checkpoint_enabled: bool,
+    #[serde(default = "default_checkpoint_interval")]
+    pub checkpoint_interval_turns: u32,
 }
 
 impl Default for ContextConfig {
@@ -789,8 +1078,14 @@ impl Default for ContextConfig {
             soft_trim_ratio: default_soft_trim_ratio(),
             hard_clear_ratio: default_hard_clear_ratio(),
             preserve_recent: default_preserve_recent(),
+            checkpoint_enabled: false,
+            checkpoint_interval_turns: default_checkpoint_interval(),
         }
     }
+}
+
+fn default_checkpoint_interval() -> u32 {
+    10
 }
 
 fn default_max_context_tokens() -> usize {
@@ -955,6 +1250,76 @@ fn default_os_file() -> String {
 }
 fn default_firmware_file() -> String {
     "FIRMWARE.toml".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    #[serde(default = "default_session_ttl")]
+    pub ttl_seconds: u64,
+    #[serde(default = "default_session_scope_mode")]
+    pub scope_mode: String,
+    #[serde(default)]
+    pub reset_schedule: Option<String>,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            ttl_seconds: default_session_ttl(),
+            scope_mode: default_session_scope_mode(),
+            reset_schedule: None,
+        }
+    }
+}
+
+fn default_session_ttl() -> u64 {
+    86400
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub server_enabled: bool,
+    #[serde(default = "default_mcp_port")]
+    pub server_port: u16,
+    #[serde(default)]
+    pub clients: Vec<McpClientConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpClientConfig {
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub transport: McpTransport,
+    #[serde(default)]
+    pub auth_token_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub enum McpTransport {
+    #[default]
+    Sse,
+    Stdio,
+    Http,
+    WebSocket,
+}
+
+fn default_mcp_port() -> u16 {
+    3001
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            server_enabled: false,
+            server_port: default_mcp_port(),
+            clients: Vec::new(),
+        }
+    }
+}
+fn default_session_scope_mode() -> String {
+    "agent".into()
 }
 
 #[cfg(test)]
@@ -1312,6 +1677,61 @@ cost_per_output_token = 0.00015
     }
 
     #[test]
+    fn context_checkpoint_config_defaults() {
+        let cfg = ContextConfig::default();
+        assert!(!cfg.checkpoint_enabled);
+        assert_eq!(cfg.checkpoint_interval_turns, 10);
+    }
+
+    #[test]
+    fn session_config_defaults() {
+        let cfg = SessionConfig::default();
+        assert_eq!(cfg.ttl_seconds, 86400);
+        assert_eq!(cfg.scope_mode, "agent");
+        assert!(cfg.reset_schedule.is_none());
+    }
+
+    #[test]
+    fn digest_config_defaults() {
+        let cfg = DigestConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_tokens, 512);
+        assert_eq!(cfg.decay_half_life_days, 7);
+
+        let full = IroncladConfig::from_str(minimal_toml()).unwrap();
+        assert!(full.digest.enabled);
+        assert_eq!(full.digest.max_tokens, 512);
+        assert_eq!(full.digest.decay_half_life_days, 7);
+    }
+
+    #[test]
+    fn session_config_from_toml() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[session]
+ttl_seconds = 3600
+scope_mode = "peer"
+reset_schedule = "0 0 * * *"
+"#;
+        let cfg = IroncladConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.session.ttl_seconds, 3600);
+        assert_eq!(cfg.session.scope_mode, "peer");
+        assert_eq!(cfg.session.reset_schedule.as_deref(), Some("0 0 * * *"));
+    }
+
+    #[test]
     fn tilde_expansion_in_database_path() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
         let expected = std::path::PathBuf::from(&home)
@@ -1336,5 +1756,19 @@ primary = "ollama/qwen3:8b"
             cfg.database.path, expected,
             "~/.ironclad/state.db should expand to $HOME/.ironclad/state.db"
         );
+    }
+
+    #[test]
+    fn multimodal_config_defaults() {
+        let cfg = MultimodalConfig::default();
+        assert!(!cfg.enabled);
+        assert!(cfg.media_dir.is_none());
+        assert_eq!(cfg.max_image_size_bytes, 10 * 1024 * 1024);
+        assert!(cfg.vision_model.is_none());
+        assert!(cfg.transcription_model.is_none());
+
+        let full = IroncladConfig::from_str(minimal_toml()).unwrap();
+        assert!(!full.multimodal.enabled);
+        assert!(full.multimodal.vision_model.is_none());
     }
 }

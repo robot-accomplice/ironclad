@@ -59,7 +59,7 @@ pub async fn agent_message(
     let agent_id = config.agent.id.clone();
     let session_id = match &body.session_id {
         Some(sid) => sid.clone(),
-        None => ironclad_db::sessions::find_or_create(&state.db, &agent_id).map_err(|e| {
+        None => ironclad_db::sessions::find_or_create(&state.db, &agent_id, None).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(json!({"error": e.to_string()})),
@@ -82,10 +82,28 @@ pub async fn agent_message(
     let complexity = ironclad_llm::classify_complexity(&features);
 
     let llm_read = state.llm.read().await;
-    let model = llm_read
-        .router
-        .select_for_complexity(complexity, Some(&llm_read.providers))
-        .to_string();
+    let routing_config = &config.models.routing;
+    let model = if routing_config.cost_aware {
+        llm_read
+            .router
+            .select_cheapest_qualified(
+                complexity,
+                &llm_read.providers,
+                Some(&llm_read.capacity),
+                (body.content.len() as u32 / 4).max(1),
+                routing_config.estimated_output_tokens,
+            )
+            .to_string()
+    } else {
+        llm_read
+            .router
+            .select_for_complexity(
+                complexity,
+                Some(&llm_read.providers),
+                Some(&llm_read.capacity),
+            )
+            .to_string()
+    };
     drop(llm_read);
 
     let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
@@ -237,10 +255,12 @@ pub async fn agent_message(
         ironclad_llm::format::UnifiedMessage {
             role: "system".into(),
             content: system_prompt,
+            parts: None,
         },
         ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
             content: body.content.clone(),
+            parts: None,
         },
     ];
     ironclad_llm::tier::adapt_for_tier(tier, &mut messages, &tier_adapt);
@@ -251,6 +271,7 @@ pub async fn agent_message(
         max_tokens: Some(2048),
         temperature: None,
         system: None,
+        quality_target: None,
     };
 
     let (assistant_content, tokens_in, tokens_out, cost) = match provider_url {
@@ -539,7 +560,7 @@ pub async fn process_channel_message(
     }
 
     let session_key = format!("{}:{}", platform, inbound.sender_id);
-    let session_id = ironclad_db::sessions::find_or_create(&state.db, &session_key)
+    let session_id = ironclad_db::sessions::find_or_create(&state.db, &session_key, None)
         .map_err(|e| e.to_string())?;
     ironclad_db::sessions::append_message(&state.db, &session_id, "user", &inbound.content)
         .map_err(|e| e.to_string())?;
@@ -548,10 +569,28 @@ pub async fn process_channel_message(
     let features = ironclad_llm::extract_features(&inbound.content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
     let llm_read = state.llm.read().await;
-    let model = llm_read
-        .router
-        .select_for_complexity(complexity, Some(&llm_read.providers))
-        .to_string();
+    let routing_config = &config.models.routing;
+    let model = if routing_config.cost_aware {
+        llm_read
+            .router
+            .select_cheapest_qualified(
+                complexity,
+                &llm_read.providers,
+                Some(&llm_read.capacity),
+                (inbound.content.len() as u32 / 4).max(1),
+                routing_config.estimated_output_tokens,
+            )
+            .to_string()
+    } else {
+        llm_read
+            .router
+            .select_for_complexity(
+                complexity,
+                Some(&llm_read.providers),
+                Some(&llm_read.capacity),
+            )
+            .to_string()
+    };
     drop(llm_read);
 
     let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
@@ -637,10 +676,12 @@ pub async fn process_channel_message(
         ironclad_llm::format::UnifiedMessage {
             role: "system".into(),
             content: system_prompt,
+            parts: None,
         },
         ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
             content: inbound.content.clone(),
+            parts: None,
         },
     ];
     ironclad_llm::tier::adapt_for_tier(tier, &mut messages, &tier_adapt);
@@ -651,6 +692,7 @@ pub async fn process_channel_message(
         max_tokens: Some(2048),
         temperature: None,
         system: None,
+        quality_target: None,
     };
 
     let response_content = match provider_url {

@@ -131,7 +131,8 @@ async fn session_create_and_list() {
 #[tokio::test]
 async fn message_post_and_retrieve() {
     let state = test_state();
-    let session_id = ironclad_db::sessions::find_or_create(&state.db, "msg-test-agent").unwrap();
+    let session_id =
+        ironclad_db::sessions::find_or_create(&state.db, "msg-test-agent", None).unwrap();
 
     let app = build_router(state.clone());
     let req = Request::builder()

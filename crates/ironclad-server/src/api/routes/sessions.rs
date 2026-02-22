@@ -22,7 +22,7 @@ pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     let conn = state.db.conn();
     let mut stmt = conn
         .prepare(
-            "SELECT id, agent_id, model, created_at, updated_at, metadata \
+            "SELECT id, agent_id, scope_key, status, model, created_at, updated_at, metadata \
              FROM sessions ORDER BY created_at DESC",
         )
         .map_err(|e| internal_err(&e))?;
@@ -32,10 +32,12 @@ pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
             Ok(serde_json::json!({
                 "id": row.get::<_, String>(0)?,
                 "agent_id": row.get::<_, String>(1)?,
-                "model": row.get::<_, Option<String>>(2)?,
-                "created_at": row.get::<_, String>(3)?,
-                "updated_at": row.get::<_, String>(4)?,
-                "metadata": row.get::<_, Option<String>>(5)?,
+                "scope_key": row.get::<_, Option<String>>(2)?,
+                "status": row.get::<_, String>(3)?,
+                "model": row.get::<_, Option<String>>(4)?,
+                "created_at": row.get::<_, String>(5)?,
+                "updated_at": row.get::<_, String>(6)?,
+                "metadata": row.get::<_, Option<String>>(7)?,
             }))
         })
         .map_err(|e| internal_err(&e))?;
@@ -51,7 +53,7 @@ pub async fn create_session(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
-    match ironclad_db::sessions::find_or_create(&state.db, &body.agent_id) {
+    match ironclad_db::sessions::find_or_create(&state.db, &body.agent_id, None) {
         Ok(id) => Ok(axum::Json(serde_json::json!({ "session_id": id }))),
         Err(e) => Err(internal_err(&e)),
     }
@@ -65,6 +67,8 @@ pub async fn get_session(
         Ok(Some(s)) => Ok(axum::Json(serde_json::json!({
             "id": s.id,
             "agent_id": s.agent_id,
+            "scope_key": s.scope_key,
+            "status": s.status,
             "model": s.model,
             "created_at": s.created_at,
             "updated_at": s.updated_at,

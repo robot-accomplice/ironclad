@@ -1,10 +1,32 @@
+use serde::{Deserialize, Serialize};
+
 use crate::Database;
 use ironclad_core::{IroncladError, Result};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SessionScope {
+    Agent,
+    Peer { peer_id: String, channel: String },
+    Group { group_id: String, channel: String },
+}
+
+impl SessionScope {
+    pub fn scope_key(&self) -> String {
+        match self {
+            Self::Agent => "agent".to_string(),
+            Self::Peer { peer_id, channel } => format!("peer:{channel}:{peer_id}"),
+            Self::Group { group_id, channel } => format!("group:{channel}:{group_id}"),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Session {
     pub id: String,
     pub agent_id: String,
+    pub scope_key: Option<String>,
+    pub status: String,
     pub model: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -22,17 +44,30 @@ pub struct Message {
     pub created_at: String,
 }
 
-/// Returns the existing session for `agent_id`, or creates one if none exists.
-pub fn find_or_create(db: &Database, agent_id: &str) -> Result<String> {
+/// Returns the existing active session for `agent_id` (optionally scoped), or creates one.
+pub fn find_or_create(
+    db: &Database,
+    agent_id: &str,
+    scope: Option<&SessionScope>,
+) -> Result<String> {
     let conn = db.conn();
+    let scope_key = scope.map(|s| s.scope_key());
 
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT id FROM sessions WHERE agent_id = ?1 ORDER BY created_at DESC LIMIT 1",
+    let existing: Option<String> = if let Some(ref key) = scope_key {
+        conn.query_row(
+            "SELECT id FROM sessions WHERE agent_id = ?1 AND scope_key = ?2 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+            rusqlite::params![agent_id, key],
+            |row| row.get(0),
+        )
+        .ok()
+    } else {
+        conn.query_row(
+            "SELECT id FROM sessions WHERE agent_id = ?1 AND scope_key IS NULL AND status = 'active' ORDER BY created_at DESC LIMIT 1",
             [agent_id],
             |row| row.get(0),
         )
-        .ok();
+        .ok()
+    };
 
     if let Some(id) = existing {
         return Ok(id);
@@ -40,8 +75,8 @@ pub fn find_or_create(db: &Database, agent_id: &str) -> Result<String> {
 
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO sessions (id, agent_id) VALUES (?1, ?2)",
-        rusqlite::params![id, agent_id],
+        "INSERT INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",
+        rusqlite::params![id, agent_id, scope_key],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -51,16 +86,18 @@ pub fn find_or_create(db: &Database, agent_id: &str) -> Result<String> {
 pub fn get_session(db: &Database, id: &str) -> Result<Option<Session>> {
     let conn = db.conn();
     conn.query_row(
-        "SELECT id, agent_id, model, created_at, updated_at, metadata FROM sessions WHERE id = ?1",
+        "SELECT id, agent_id, scope_key, status, model, created_at, updated_at, metadata FROM sessions WHERE id = ?1",
         [id],
         |row| {
             Ok(Session {
                 id: row.get(0)?,
                 agent_id: row.get(1)?,
-                model: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-                metadata: row.get(5)?,
+                scope_key: row.get(2)?,
+                status: row.get(3)?,
+                model: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                metadata: row.get(7)?,
             })
         },
     )
@@ -159,6 +196,95 @@ pub fn update_metadata(db: &Database, session_id: &str, metadata_json: &str) -> 
     Ok(())
 }
 
+/// Mark a session as archived (inactive).
+pub fn archive_session(db: &Database, session_id: &str) -> Result<()> {
+    let conn = db.conn();
+    let changed = conn
+        .execute(
+            "UPDATE sessions SET status = 'archived', updated_at = datetime('now') WHERE id = ?1",
+            [session_id],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    if changed == 0 {
+        return Err(IroncladError::Database(format!(
+            "session not found: {session_id}"
+        )));
+    }
+    Ok(())
+}
+
+/// Expire active sessions older than `max_age_seconds`.
+pub fn expire_stale_sessions(db: &Database, max_age_seconds: u64) -> Result<usize> {
+    let conn = db.conn();
+    let expired = conn
+        .execute(
+            "UPDATE sessions SET status = 'expired', updated_at = datetime('now') \
+             WHERE status = 'active' \
+             AND (julianday('now') - julianday(updated_at)) * 86400 > ?1",
+            rusqlite::params![max_age_seconds as f64],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(expired)
+}
+
+/// List all active sessions, optionally filtered by agent_id.
+pub fn list_active_sessions(db: &Database, agent_id: Option<&str>) -> Result<Vec<Session>> {
+    let conn = db.conn();
+    let mut sessions = Vec::new();
+
+    if let Some(aid) = agent_id {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, agent_id, scope_key, status, model, created_at, updated_at, metadata \
+                 FROM sessions WHERE agent_id = ?1 AND status = 'active' ORDER BY created_at DESC",
+            )
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([aid], |row| {
+                Ok(Session {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    scope_key: row.get(2)?,
+                    status: row.get(3)?,
+                    model: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    metadata: row.get(7)?,
+                })
+            })
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        for row in rows {
+            sessions.push(row.map_err(|e| IroncladError::Database(e.to_string()))?);
+        }
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, agent_id, scope_key, status, model, created_at, updated_at, metadata \
+                 FROM sessions WHERE status = 'active' ORDER BY created_at DESC",
+            )
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(Session {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    scope_key: row.get(2)?,
+                    status: row.get(3)?,
+                    model: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    metadata: row.get(7)?,
+                })
+            })
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        for row in rows {
+            sessions.push(row.map_err(|e| IroncladError::Database(e.to_string()))?);
+        }
+    }
+
+    Ok(sessions)
+}
+
 trait Optional<T> {
     fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error>;
 }
@@ -184,8 +310,8 @@ mod tests {
     #[test]
     fn find_or_create_returns_same_id() {
         let db = test_db();
-        let id1 = find_or_create(&db, "agent-1").unwrap();
-        let id2 = find_or_create(&db, "agent-1").unwrap();
+        let id1 = find_or_create(&db, "agent-1", None).unwrap();
+        let id2 = find_or_create(&db, "agent-1", None).unwrap();
         assert_eq!(id1, id2);
     }
 
@@ -198,14 +324,14 @@ mod tests {
         let th1 = {
             let db = std::sync::Arc::clone(&db);
             std::thread::spawn(move || {
-                let id = find_or_create(db.as_ref(), key).unwrap();
+                let id = find_or_create(db.as_ref(), key, None).unwrap();
                 tx.send(id).unwrap();
             })
         };
         let th2 = {
             let db = std::sync::Arc::clone(&db);
             std::thread::spawn(move || {
-                let id = find_or_create(db.as_ref(), key).unwrap();
+                let id = find_or_create(db.as_ref(), key, None).unwrap();
                 tx2.send(id).unwrap();
             })
         };
@@ -229,7 +355,7 @@ mod tests {
     #[test]
     fn append_and_list_messages() {
         let db = test_db();
-        let sid = find_or_create(&db, "agent-1").unwrap();
+        let sid = find_or_create(&db, "agent-1", None).unwrap();
         append_message(&db, &sid, "user", "hello").unwrap();
         append_message(&db, &sid, "assistant", "hi there").unwrap();
 
@@ -242,18 +368,19 @@ mod tests {
     #[test]
     fn get_session_after_create() {
         let db = test_db();
-        let sid = find_or_create(&db, "agent-x").unwrap();
+        let sid = find_or_create(&db, "agent-x", None).unwrap();
         let session = get_session(&db, &sid)
             .unwrap()
             .expect("session should exist");
         assert_eq!(session.agent_id, "agent-x");
+        assert_eq!(session.status, "active");
         assert!(session.model.is_none());
     }
 
     #[test]
     fn list_messages_with_limit() {
         let db = test_db();
-        let sid = find_or_create(&db, "agent-lim").unwrap();
+        let sid = find_or_create(&db, "agent-lim", None).unwrap();
         for i in 0..10 {
             append_message(&db, &sid, "user", &format!("msg-{i}")).unwrap();
         }
@@ -269,7 +396,7 @@ mod tests {
     #[test]
     fn update_metadata_roundtrip() {
         let db = test_db();
-        let sid = find_or_create(&db, "agent-meta").unwrap();
+        let sid = find_or_create(&db, "agent-meta", None).unwrap();
         update_metadata(&db, &sid, r#"{"topic":"testing"}"#).unwrap();
 
         let session = get_session(&db, &sid).unwrap().unwrap();
@@ -288,7 +415,7 @@ mod tests {
     #[test]
     fn update_metadata_accepts_malformed_json() {
         let db = test_db();
-        let sid = find_or_create(&db, "agent-meta").unwrap();
+        let sid = find_or_create(&db, "agent-meta", None).unwrap();
         update_metadata(&db, &sid, "{invalid json blob").unwrap();
         let session = get_session(&db, &sid).unwrap().unwrap();
         assert_eq!(session.metadata.as_deref(), Some("{invalid json blob"));
@@ -304,7 +431,7 @@ mod tests {
     #[test]
     fn append_message_very_long_content() {
         let db = test_db();
-        let sid = find_or_create(&db, "agent-long").unwrap();
+        let sid = find_or_create(&db, "agent-long", None).unwrap();
         let long = "x".repeat(100_000);
         let id = append_message(&db, &sid, "user", &long).unwrap();
         assert!(!id.is_empty());
@@ -316,7 +443,7 @@ mod tests {
     #[test]
     fn create_turn_all_fields() {
         let db = test_db();
-        let sid = find_or_create(&db, "agent-turn").unwrap();
+        let sid = find_or_create(&db, "agent-turn", None).unwrap();
         let turn_id =
             create_turn(&db, &sid, Some("gpt-4"), Some(100), Some(200), Some(0.03)).unwrap();
         assert!(!turn_id.is_empty());
@@ -325,7 +452,7 @@ mod tests {
     #[test]
     fn create_turn_all_none() {
         let db = test_db();
-        let sid = find_or_create(&db, "agent-turn-none").unwrap();
+        let sid = find_or_create(&db, "agent-turn-none", None).unwrap();
         let turn_id = create_turn(&db, &sid, None, None, None, None).unwrap();
         assert!(!turn_id.is_empty());
     }
@@ -333,7 +460,7 @@ mod tests {
     #[test]
     fn create_turn_multiple_per_session() {
         let db = test_db();
-        let sid = find_or_create(&db, "agent-multi-turn").unwrap();
+        let sid = find_or_create(&db, "agent-multi-turn", None).unwrap();
         let t1 = create_turn(&db, &sid, Some("gpt-4"), Some(10), Some(20), None).unwrap();
         let t2 = create_turn(&db, &sid, Some("gpt-4"), Some(30), Some(40), None).unwrap();
         assert_ne!(t1, t2);
@@ -342,8 +469,8 @@ mod tests {
     #[test]
     fn find_or_create_different_agents_different_sessions() {
         let db = test_db();
-        let id1 = find_or_create(&db, "agent-a").unwrap();
-        let id2 = find_or_create(&db, "agent-b").unwrap();
+        let id1 = find_or_create(&db, "agent-a", None).unwrap();
+        let id2 = find_or_create(&db, "agent-b", None).unwrap();
         assert_ne!(id1, id2);
     }
 
@@ -357,7 +484,7 @@ mod tests {
     #[test]
     fn list_messages_ordering_is_chronological() {
         let db = test_db();
-        let sid = find_or_create(&db, "agent-order").unwrap();
+        let sid = find_or_create(&db, "agent-order", None).unwrap();
         append_message(&db, &sid, "user", "first").unwrap();
         append_message(&db, &sid, "assistant", "second").unwrap();
         append_message(&db, &sid, "user", "third").unwrap();
@@ -372,12 +499,123 @@ mod tests {
     #[test]
     fn message_fields_populated() {
         let db = test_db();
-        let sid = find_or_create(&db, "agent-fields").unwrap();
+        let sid = find_or_create(&db, "agent-fields", None).unwrap();
         let msg_id = append_message(&db, &sid, "user", "hello").unwrap();
         let msgs = list_messages(&db, &sid, Some(1)).unwrap();
         assert_eq!(msgs[0].id, msg_id);
         assert_eq!(msgs[0].session_id, sid);
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[0].content, "hello");
+    }
+
+    // ── Session scoping tests ──
+
+    #[test]
+    fn scope_key_agent() {
+        let scope = SessionScope::Agent;
+        assert_eq!(scope.scope_key(), "agent");
+    }
+
+    #[test]
+    fn scope_key_peer() {
+        let scope = SessionScope::Peer {
+            peer_id: "user123".into(),
+            channel: "telegram".into(),
+        };
+        assert_eq!(scope.scope_key(), "peer:telegram:user123");
+    }
+
+    #[test]
+    fn scope_key_group() {
+        let scope = SessionScope::Group {
+            group_id: "grp-42".into(),
+            channel: "discord".into(),
+        };
+        assert_eq!(scope.scope_key(), "group:discord:grp-42");
+    }
+
+    #[test]
+    fn find_or_create_with_peer_scope() {
+        let db = test_db();
+        let scope = SessionScope::Peer {
+            peer_id: "alice".into(),
+            channel: "telegram".into(),
+        };
+        let id1 = find_or_create(&db, "agent-1", Some(&scope)).unwrap();
+        let id2 = find_or_create(&db, "agent-1", Some(&scope)).unwrap();
+        assert_eq!(id1, id2);
+
+        let id_no_scope = find_or_create(&db, "agent-1", None).unwrap();
+        assert_ne!(
+            id1, id_no_scope,
+            "scoped and unscoped sessions should differ"
+        );
+    }
+
+    #[test]
+    fn find_or_create_different_scopes_different_sessions() {
+        let db = test_db();
+        let scope_a = SessionScope::Peer {
+            peer_id: "alice".into(),
+            channel: "telegram".into(),
+        };
+        let scope_b = SessionScope::Peer {
+            peer_id: "bob".into(),
+            channel: "telegram".into(),
+        };
+        let id_a = find_or_create(&db, "agent-1", Some(&scope_a)).unwrap();
+        let id_b = find_or_create(&db, "agent-1", Some(&scope_b)).unwrap();
+        assert_ne!(id_a, id_b);
+    }
+
+    #[test]
+    fn archive_session_sets_status() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-archive", None).unwrap();
+        archive_session(&db, &sid).unwrap();
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.status, "archived");
+    }
+
+    #[test]
+    fn archive_session_not_found() {
+        let db = test_db();
+        let result = archive_session(&db, "nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn find_or_create_skips_archived_sessions() {
+        let db = test_db();
+        let sid1 = find_or_create(&db, "agent-skip", None).unwrap();
+        archive_session(&db, &sid1).unwrap();
+        let sid2 = find_or_create(&db, "agent-skip", None).unwrap();
+        assert_ne!(sid1, sid2, "should create new session after archiving");
+    }
+
+    #[test]
+    fn list_active_sessions_filters_correctly() {
+        let db = test_db();
+        let sid1 = find_or_create(&db, "agent-list", None).unwrap();
+        let _sid2 = find_or_create(&db, "agent-list-2", None).unwrap();
+        archive_session(&db, &sid1).unwrap();
+
+        let active = list_active_sessions(&db, Some("agent-list")).unwrap();
+        assert!(active.is_empty());
+
+        let all_active = list_active_sessions(&db, None).unwrap();
+        assert_eq!(all_active.len(), 1);
+        assert_eq!(all_active[0].agent_id, "agent-list-2");
+    }
+
+    #[test]
+    fn session_scope_serde_roundtrip() {
+        let scope = SessionScope::Peer {
+            peer_id: "u1".into(),
+            channel: "tg".into(),
+        };
+        let json = serde_json::to_string(&scope).unwrap();
+        let back: SessionScope = serde_json::from_str(&json).unwrap();
+        assert_eq!(scope, back);
     }
 }
