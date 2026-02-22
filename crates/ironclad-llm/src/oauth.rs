@@ -127,15 +127,17 @@ impl OAuthManager {
             .expires_in
             .map(|secs| chrono::Utc::now().timestamp() + secs);
 
+        let old_refresh = {
+            let tokens = self.tokens.read().await;
+            tokens
+                .get(provider_name)
+                .and_then(|t| t.refresh_token.clone())
+        };
+
         let new_stored = StoredTokens {
             provider: provider_name.to_string(),
             access_token: token_resp.access_token.clone(),
-            refresh_token: token_resp.refresh_token.or_else(|| {
-                let tokens = self.tokens.blocking_read();
-                tokens
-                    .get(provider_name)
-                    .and_then(|t| t.refresh_token.clone())
-            }),
+            refresh_token: token_resp.refresh_token.or(old_refresh),
             expires_at,
         };
 
@@ -197,6 +199,15 @@ impl OAuthManager {
             Ok(json) => {
                 if let Err(e) = std::fs::write(&path, json) {
                     warn!(error = %e, "failed to persist OAuth tokens");
+                } else {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(
+                            &path,
+                            std::fs::Permissions::from_mode(0o600),
+                        );
+                    }
                 }
             }
             Err(e) => warn!(error = %e, "failed to serialize OAuth tokens"),
@@ -248,15 +259,36 @@ pub fn build_authorization_url(
     code_challenge: &str,
     state: &str,
 ) -> String {
+    fn pct_encode(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char);
+                }
+                _ => {
+                    out.push('%');
+                    out.push(char::from(b"0123456789ABCDEF"[(b >> 4) as usize]));
+                    out.push(char::from(b"0123456789ABCDEF"[(b & 0x0F) as usize]));
+                }
+            }
+        }
+        out
+    }
+
     format!(
         "{ANTHROPIC_AUTHORIZE_URL}?\
          response_type=code\
-         &client_id={client_id}\
-         &redirect_uri={redirect_uri}\
-         &code_challenge={code_challenge}\
+         &client_id={}\
+         &redirect_uri={}\
+         &code_challenge={}\
          &code_challenge_method=S256\
-         &state={state}\
-         &scope=user:inference"
+         &state={}\
+         &scope=user%3Ainference",
+        pct_encode(client_id),
+        pct_encode(redirect_uri),
+        pct_encode(code_challenge),
+        pct_encode(state),
     )
 }
 
@@ -326,6 +358,14 @@ mod tests {
         assert!(url.contains("code_challenge=challenge123"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("state=state-abc"));
+        assert!(
+            url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A18791%2Fcallback"),
+            "redirect_uri must be percent-encoded: {url}"
+        );
+        assert!(
+            url.contains("scope=user%3Ainference"),
+            "scope colon must be percent-encoded: {url}"
+        );
     }
 
     #[test]

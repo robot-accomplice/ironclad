@@ -74,6 +74,12 @@ impl Keystore {
         Ok(())
     }
 
+    /// Unlock with a deterministic machine-derived passphrase (hostname + username).
+    ///
+    /// **Security note:** This provides convenience-only protection. The passphrase
+    /// is derived from publicly-known values and does NOT protect against local
+    /// attackers who know the machine's hostname and username. Use a user-supplied
+    /// passphrase via `unlock()` for secrets requiring real confidentiality.
     pub fn unlock_machine(&self) -> Result<()> {
         self.unlock(&machine_passphrase())
     }
@@ -189,13 +195,17 @@ impl Keystore {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&self.path, &out)?;
+
+        let tmp = self.path.with_extension("tmp");
+        std::fs::write(&tmp, &out)?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
         }
+
+        std::fs::rename(&tmp, &self.path)?;
 
         Ok(())
     }
