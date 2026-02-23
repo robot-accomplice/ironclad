@@ -338,12 +338,15 @@ pub async fn get_session_insights(
         Err(e) => return Err(internal_err(&e)),
     };
 
+    let all_tool_calls =
+        ironclad_db::tools::get_tool_calls_for_session(&state.db, &id).unwrap_or_default();
+
     let turn_data: Vec<TurnData> = turns
         .iter()
         .map(|t| {
-            let tool_calls =
-                ironclad_db::tools::get_tool_calls_for_turn(&state.db, &t.id).unwrap_or_default();
-            build_turn_data(t, &tool_calls)
+            let empty = Vec::new();
+            let tool_calls = all_tool_calls.get(&t.id).unwrap_or(&empty);
+            build_turn_data(t, tool_calls)
         })
         .collect();
 
@@ -410,12 +413,15 @@ pub async fn analyze_session(
         Err(e) => return Err(internal_err(&e)),
     };
 
+    let all_tool_calls =
+        ironclad_db::tools::get_tool_calls_for_session(&state.db, &id).unwrap_or_default();
+
     let turn_data: Vec<TurnData> = turns
         .iter()
         .map(|t| {
-            let tool_calls =
-                ironclad_db::tools::get_tool_calls_for_turn(&state.db, &t.id).unwrap_or_default();
-            build_turn_data(t, &tool_calls)
+            let empty = Vec::new();
+            let tool_calls = all_tool_calls.get(&t.id).unwrap_or(&empty);
+            build_turn_data(t, tool_calls)
         })
         .collect();
 

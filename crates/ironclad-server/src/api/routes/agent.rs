@@ -838,6 +838,19 @@ pub async fn agent_message_stream(
 > {
     let config = state.config.read().await;
 
+    if body.content.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "message content cannot be empty"})),
+        ));
+    }
+    if body.content.len() > 32_768 {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            axum::Json(json!({"error": "message content exceeds maximum length (32768 bytes)"})),
+        ));
+    }
+
     let threat = ironclad_agent::injection::check_injection(&body.content);
     if threat.is_blocked() {
         return Err((
@@ -1047,6 +1060,16 @@ pub async fn agent_message_stream(
     );
     let system_prompt =
         ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
+    if !ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()) {
+        tracing::error!("HMAC boundary verification failed immediately after injection (stream)");
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": "internal HMAC verification failure"})),
+        ));
+    }
 
     let mut messages = ironclad_agent::context::build_context(
         complexity_level,
@@ -1226,8 +1249,15 @@ pub async fn agent_message_stream(
         };
 
         // L4 output scanning
-        let assistant_content = if ironclad_agent::injection::scan_output(&assistant_content) {
+        let content_blocked = ironclad_agent::injection::scan_output(&assistant_content);
+        let assistant_content = if content_blocked {
             tracing::warn!("L4 output scan flagged streaming response");
+            let blocked_event = json!({
+                "type": "stream_blocked",
+                "reason": "output safety filter triggered",
+                "session_id": session_id_clone,
+            });
+            yield Ok(Event::default().data(blocked_event.to_string()));
             "[Response blocked by output safety filter]".to_string()
         } else {
             assistant_content
@@ -1293,6 +1323,7 @@ pub async fn agent_message_stream(
             "tokens_in": unified_resp.tokens_in,
             "tokens_out": unified_resp.tokens_out,
             "content_length": assistant_content.len(),
+            "content_blocked": content_blocked,
         });
         yield Ok(Event::default().data(final_event.to_string()));
     };

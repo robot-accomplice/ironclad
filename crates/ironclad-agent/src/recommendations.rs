@@ -515,22 +515,22 @@ impl RecommendationRule for MemoryUnderutilized {
         if profile.total_turns < 20 {
             return None;
         }
-        if profile.grade_coverage < 0.2 {
+        if profile.memory_retrieval_rate < 0.2 {
             Some(Recommendation {
                 category: self.category(),
                 priority: Priority::Medium,
                 title: "Memory system is underutilized".into(),
                 explanation: format!(
-                    "Only {:.0}% of turns leverage stored memories. The memory system can reduce \
+                    "Only {:.0}% of turns retrieve stored memories. The memory system can reduce \
                      repetitive context and improve personalization.",
-                    profile.grade_coverage * 100.0
+                    profile.memory_retrieval_rate * 100.0
                 ),
                 action:
                     "Store frequently referenced facts in semantic memory to reduce prompt repetition."
                         .into(),
                 evidence: vec![Evidence {
-                    metric: "grade_coverage".into(),
-                    value: format!("{:.0}%", profile.grade_coverage * 100.0),
+                    metric: "memory_retrieval_rate".into(),
+                    value: format!("{:.0}%", profile.memory_retrieval_rate * 100.0),
                     context: "percentage of turns using memory retrieval".into(),
                 }],
                 estimated_impact: Some(Impact {
@@ -558,7 +558,7 @@ impl RecommendationRule for MemoryOverloaded {
         if profile.total_turns < 20 {
             return None;
         }
-        if profile.grade_coverage > 0.9 && profile.avg_tokens_per_turn > 2000.0 {
+        if profile.memory_retrieval_rate > 0.9 && profile.avg_tokens_per_turn > 2000.0 {
             Some(Recommendation {
                 category: self.category(),
                 priority: Priority::Medium,
@@ -566,7 +566,7 @@ impl RecommendationRule for MemoryOverloaded {
                 explanation: format!(
                     "Memory is retrieved on {:.0}% of turns with an average of {:.0} tokens/turn. \
                      Excessive memory injection can crowd out useful conversation history.",
-                    profile.grade_coverage * 100.0,
+                    profile.memory_retrieval_rate * 100.0,
                     profile.avg_tokens_per_turn
                 ),
                 action:
@@ -574,8 +574,8 @@ impl RecommendationRule for MemoryOverloaded {
                         .into(),
                 evidence: vec![
                     Evidence {
-                        metric: "grade_coverage".into(),
-                        value: format!("{:.0}%", profile.grade_coverage * 100.0),
+                        metric: "memory_retrieval_rate".into(),
+                        value: format!("{:.0}%", profile.memory_retrieval_rate * 100.0),
                         context: "memory retrieval rate".into(),
                     },
                     Evidence {
@@ -947,6 +947,7 @@ mod tests {
             avg_tokens_per_turn: 200.0,
             tool_success_rate: 0.9,
             cache_hit_rate: 0.35,
+            memory_retrieval_rate: 0.5,
         }
     }
 
@@ -1086,10 +1087,10 @@ mod tests {
     fn memory_underutilized_fires() {
         let rule = MemoryUnderutilized;
         let mut profile = base_profile();
-        profile.grade_coverage = 0.05;
+        profile.memory_retrieval_rate = 0.05;
         assert!(rule.evaluate(&profile).is_some());
 
-        profile.grade_coverage = 0.6;
+        profile.memory_retrieval_rate = 0.6;
         assert!(rule.evaluate(&profile).is_none());
     }
 
@@ -1127,6 +1128,7 @@ mod tests {
             avg_tokens_per_turn: 100.0,
             tool_success_rate: 1.0,
             cache_hit_rate: 0.5,
+            memory_retrieval_rate: 0.5,
         };
         let recs = engine.generate(&profile);
         assert!(recs.is_empty(), "minimal profile should produce no recs");

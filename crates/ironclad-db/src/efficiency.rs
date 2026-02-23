@@ -512,6 +512,7 @@ pub struct RecommendationUserProfile {
     pub avg_tokens_per_turn: f64,
     pub tool_success_rate: f64,
     pub cache_hit_rate: f64,
+    pub memory_retrieval_rate: f64,
 }
 
 pub fn build_user_profile(db: &Database, period: &str) -> Result<RecommendationUserProfile> {
@@ -633,6 +634,21 @@ pub fn build_user_profile(db: &Database, period: &str) -> Result<RecommendationU
         0.0
     };
 
+    // Compute memory retrieval rate from context_snapshots if available,
+    // otherwise default to 0.5
+    let memory_retrieval_rate: f64 = conn
+        .query_row(
+            &format!(
+                "SELECT CASE WHEN COUNT(*) > 0 \
+                   THEN CAST(SUM(CASE WHEN memory_tokens > 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) \
+                   ELSE 0.5 END \
+                 FROM context_snapshots WHERE created_at >= {cutoff}"
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0.5);
+
     Ok(RecommendationUserProfile {
         total_sessions,
         total_turns,
@@ -645,6 +661,7 @@ pub fn build_user_profile(db: &Database, period: &str) -> Result<RecommendationU
         avg_tokens_per_turn,
         tool_success_rate,
         cache_hit_rate,
+        memory_retrieval_rate,
     })
 }
 
