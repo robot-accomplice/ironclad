@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use super::{colors, heading, icons};
 use crate::cli::{CRT_DRAW_MS, theme};
 
-const DEFAULT_REGISTRY_URL: &str = "https://roboticus.ai/registry/manifest.json";
+const DEFAULT_REGISTRY_URL: &str = "https://registry.roboticus.ai/manifest.json";
 const CRATES_IO_API: &str = "https://crates.io/api/v1/crates/ironclad-server";
 const CRATE_NAME: &str = "ironclad-server";
 
@@ -1013,8 +1013,8 @@ mod tests {
 
     #[test]
     fn registry_base_url_strips_filename() {
-        let url = "https://roboticus.ai/registry/manifest.json";
-        assert_eq!(registry_base_url(url), "https://roboticus.ai/registry");
+        let url = "https://registry.roboticus.ai/manifest.json";
+        assert_eq!(registry_base_url(url), "https://registry.roboticus.ai");
     }
 
     #[test]
