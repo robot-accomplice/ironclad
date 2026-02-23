@@ -271,7 +271,15 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
         .interact_text()?;
 
     // 2. LLM provider
-    let providers = vec!["Ollama (local)", "OpenAI", "Anthropic", "Google AI"];
+    let providers = vec![
+        "Ollama (local)",
+        "OpenAI",
+        "Anthropic",
+        "Google AI",
+        "Moonshot",
+        "OpenRouter",
+        "llama-cpp (local)",
+    ];
     let provider_idx = Select::new()
         .with_prompt("  Select LLM provider")
         .items(&providers)
@@ -283,6 +291,9 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
         1 => ("openai", true),
         2 => ("anthropic", true),
         3 => ("google", true),
+        4 => ("moonshot", true),
+        5 => ("openrouter", true),
+        6 => ("llama-cpp", false),
         _ => ("ollama", false),
     };
 
@@ -302,7 +313,10 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
         0 => "ollama/qwen3:8b",
         1 => "openai/gpt-4o",
         2 => "anthropic/claude-sonnet-4-20250514",
-        3 => "google/gemini-2.5-pro",
+        3 => "google/gemini-3.1-pro-preview",
+        4 => "moonshot/kimi-k2.5",
+        5 => "openrouter/google/gemini-3.1-pro-preview",
+        6 => "llama-cpp/default",
         _ => "ollama/qwen3:8b",
     };
     let model: String = Input::new()

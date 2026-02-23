@@ -135,9 +135,63 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     if let Some(providers) = cfg.get_mut("providers")
         && let Some(obj) = providers.as_object_mut()
     {
-        for (_name, provider) in obj.iter_mut() {
+        for (name, provider) in obj.iter_mut() {
             if let Some(p) = provider.as_object_mut() {
+                let is_local = p.get("is_local").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                let key_status = if is_local {
+                    "not_required"
+                } else {
+                    let has_env = p
+                        .get("api_key_env")
+                        .and_then(|v| v.as_str())
+                        .map(|env_name| std::env::var(env_name).is_ok())
+                        .unwrap_or(false);
+
+                    let has_keystore = p
+                        .get("api_key_ref")
+                        .and_then(|v| v.as_str())
+                        .and_then(|r| r.strip_prefix("keystore:"))
+                        .map(|ks_key| state.keystore.get(ks_key).is_some())
+                        .unwrap_or(false);
+
+                    let has_oauth = p
+                        .get("auth_mode")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|m| m == "oauth");
+
+                    if has_env || has_keystore || has_oauth {
+                        "configured"
+                    } else {
+                        "missing"
+                    }
+                };
+
+                let key_source = if is_local {
+                    "local"
+                } else if p
+                    .get("api_key_ref")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|r| r.starts_with("keystore:"))
+                {
+                    "keystore"
+                } else if p
+                    .get("auth_mode")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|m| m == "oauth")
+                {
+                    "oauth"
+                } else {
+                    "env"
+                };
+
+                p.insert("_key_status".into(), json!(key_status));
+                p.insert("_key_source".into(), json!(key_source));
+                p.insert("_provider_name".into(), json!(name.clone()));
+
                 p.remove("api_key");
+                p.remove("api_key_env");
+                p.remove("api_key_ref");
                 p.remove("secret");
                 p.remove("token");
             }
