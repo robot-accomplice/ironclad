@@ -134,13 +134,13 @@ jobs:
           BUILD_PROFILE: ${{ matrix.profile }}
         run: |
           if [ "$BUILD_PROFILE" = "release" ]; then
-            cargo build --release --bin ironclad-server
+            cargo build --release --bin ironclad
           else
-            cargo build --bin ironclad-server
+            cargo build --bin ironclad
           fi
       - name: "Binary size"
         if: matrix.profile == 'release'
-        run: ls -lh target/release/ironclad-server
+        run: ls -lh target/release/ironclad
 
   # ── Stage 5: Security Audit ────────────────────────────
   audit:
