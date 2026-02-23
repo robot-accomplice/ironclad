@@ -130,6 +130,26 @@ impl DiscordAdapter {
         self.handle_api_response(resp).await
     }
 
+    /// Send a typing indicator to a Discord channel. The indicator lasts ~10s
+    /// or until a message is sent. Best-effort; errors are silently ignored.
+    pub async fn send_typing(&self, channel_id: &str) {
+        let url = format!("{}/channels/{}/typing", DISCORD_API_BASE, channel_id);
+        let _ = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bot {}", self.token))
+            .send()
+            .await;
+    }
+
+    /// Send a short ephemeral message and return its message ID. Best-effort.
+    pub async fn send_ephemeral(&self, channel_id: &str, text: &str) -> Option<String> {
+        let resp = self.send_message(channel_id, text).await.ok()?;
+        resp.get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
     pub async fn get_gateway_url(&self) -> Result<String> {
         let url = format!("{}/gateway", DISCORD_API_BASE);
         let resp = self

@@ -1,0 +1,350 @@
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use chrono::Utc;
+use ironclad_core::{IroncladError, Result};
+use serde_json::{Value, json};
+use tracing::{debug, error};
+
+use crate::{ChannelAdapter, InboundMessage, OutboundMessage};
+
+/// Signal channel adapter backed by signal-cli's JSON-RPC daemon.
+///
+/// signal-cli must be running in daemon mode (`signal-cli -a +NUMBER daemon --json-rpc`)
+/// for this adapter to function. All API calls go through the local daemon URL.
+pub struct SignalAdapter {
+    pub phone_number: String,
+    pub daemon_url: String,
+    pub client: reqwest::Client,
+    pub allowed_numbers: Vec<String>,
+    message_buffer: Arc<Mutex<VecDeque<InboundMessage>>>,
+}
+
+impl SignalAdapter {
+    pub fn new(phone_number: String, daemon_url: String) -> Self {
+        Self {
+            phone_number,
+            daemon_url,
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
+            allowed_numbers: Vec::new(),
+            message_buffer: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    pub fn with_config(
+        phone_number: String,
+        daemon_url: String,
+        allowed_numbers: Vec<String>,
+    ) -> Self {
+        Self {
+            allowed_numbers,
+            ..Self::new(phone_number, daemon_url)
+        }
+    }
+
+    fn is_sender_allowed(&self, sender: &str) -> bool {
+        self.allowed_numbers.is_empty() || self.allowed_numbers.iter().any(|n| n == sender)
+    }
+
+    fn rpc_url(&self) -> &str {
+        &self.daemon_url
+    }
+
+    async fn json_rpc(&self, method: &str, params: Value) -> Result<Value> {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": 1,
+        });
+
+        let resp = self
+            .client
+            .post(self.rpc_url())
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("signal-cli RPC failed: {e}")))?;
+
+        let status = resp.status();
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|e| IroncladError::Network(format!("signal-cli response parse error: {e}")))?;
+
+        if !status.is_success() {
+            let err_msg = body
+                .pointer("/error/message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            error!(status = %status, error = err_msg, "signal-cli RPC error");
+            return Err(IroncladError::Network(format!(
+                "signal-cli RPC {status}: {err_msg}"
+            )));
+        }
+
+        if let Some(err) = body.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("RPC error");
+            return Err(IroncladError::Network(format!("signal-cli error: {msg}")));
+        }
+
+        Ok(body.get("result").cloned().unwrap_or(Value::Null))
+    }
+
+    pub fn parse_inbound(envelope: &Value) -> Option<InboundMessage> {
+        let data_message = envelope.get("dataMessage")?;
+        let message = data_message
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if message.is_empty() {
+            return None;
+        }
+
+        let sender = envelope
+            .get("sourceNumber")
+            .or_else(|| envelope.get("source"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        let timestamp = data_message
+            .get("timestamp")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        Some(InboundMessage {
+            id: format!("{}-{}", sender, timestamp),
+            platform: "signal".into(),
+            sender_id: sender.to_string(),
+            content: message.to_string(),
+            timestamp: Utc::now(),
+            metadata: Some(envelope.clone()),
+        })
+    }
+
+    pub fn push_message(&self, msg: InboundMessage) {
+        let mut buf = self
+            .message_buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        buf.push_back(msg);
+    }
+
+    pub fn process_envelope(&self, envelope: &Value) -> Option<InboundMessage> {
+        let msg = Self::parse_inbound(envelope)?;
+
+        if !self.is_sender_allowed(&msg.sender_id) {
+            debug!(sender = %msg.sender_id, "ignoring Signal message from disallowed number");
+            return None;
+        }
+
+        Some(msg)
+    }
+
+    pub async fn send_text(&self, recipient: &str, text: &str) -> Result<Value> {
+        self.json_rpc(
+            "send",
+            json!({
+                "recipient": [recipient],
+                "message": text,
+                "account": self.phone_number,
+            }),
+        )
+        .await
+    }
+
+    /// Best-effort typing indicator. Signal doesn't expose a public "typing"
+    /// API through signal-cli's JSON-RPC, so we send a short receipt action.
+    /// This is a no-op if the daemon doesn't support it.
+    pub async fn send_typing(&self, recipient: &str) {
+        let _ = self
+            .json_rpc(
+                "sendTyping",
+                json!({
+                    "recipient": [recipient],
+                    "account": self.phone_number,
+                }),
+            )
+            .await;
+    }
+
+    /// Send a short ephemeral text message. Returns the timestamp (Signal's
+    /// message identifier) on success.
+    pub async fn send_ephemeral(&self, recipient: &str, text: &str) -> Option<u64> {
+        let result = self.send_text(recipient, text).await.ok()?;
+        result.get("timestamp").and_then(|v| v.as_u64())
+    }
+}
+
+#[async_trait]
+impl ChannelAdapter for SignalAdapter {
+    fn platform_name(&self) -> &str {
+        "signal"
+    }
+
+    async fn recv(&self) -> Result<Option<InboundMessage>> {
+        let mut buf = self
+            .message_buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        Ok(buf.pop_front())
+    }
+
+    async fn send(&self, msg: OutboundMessage) -> Result<()> {
+        self.send_typing(&msg.recipient_id).await;
+
+        debug!(to = %msg.recipient_id, "sending Signal message");
+        self.send_text(&msg.recipient_id, &msg.content).await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_adapter_defaults() {
+        let adapter = SignalAdapter::new("+15551234567".into(), "http://localhost:8080".into());
+        assert_eq!(adapter.phone_number, "+15551234567");
+        assert_eq!(adapter.daemon_url, "http://localhost:8080");
+        assert!(adapter.allowed_numbers.is_empty());
+    }
+
+    #[test]
+    fn with_config_sets_fields() {
+        let adapter = SignalAdapter::with_config(
+            "+1555".into(),
+            "http://localhost:9090".into(),
+            vec!["+1666".into()],
+        );
+        assert_eq!(adapter.allowed_numbers, vec!["+1666"]);
+    }
+
+    #[test]
+    fn sender_allowed_empty_means_all() {
+        let adapter = SignalAdapter::new("+1".into(), "http://localhost:8080".into());
+        assert!(adapter.is_sender_allowed("+any_number"));
+    }
+
+    #[test]
+    fn sender_allowed_filters() {
+        let adapter = SignalAdapter::with_config(
+            "+1".into(),
+            "http://localhost:8080".into(),
+            vec!["+111".into(), "+222".into()],
+        );
+        assert!(adapter.is_sender_allowed("+111"));
+        assert!(!adapter.is_sender_allowed("+333"));
+    }
+
+    #[test]
+    fn parse_inbound_valid_message() {
+        let envelope = json!({
+            "sourceNumber": "+15559876543",
+            "dataMessage": {
+                "timestamp": 1700000000000_u64,
+                "message": "Hello from Signal"
+            }
+        });
+        let msg = SignalAdapter::parse_inbound(&envelope).unwrap();
+        assert_eq!(msg.platform, "signal");
+        assert_eq!(msg.sender_id, "+15559876543");
+        assert_eq!(msg.content, "Hello from Signal");
+    }
+
+    #[test]
+    fn parse_inbound_empty_message_returns_none() {
+        let envelope = json!({
+            "sourceNumber": "+155",
+            "dataMessage": {
+                "timestamp": 170000,
+                "message": ""
+            }
+        });
+        assert!(SignalAdapter::parse_inbound(&envelope).is_none());
+    }
+
+    #[test]
+    fn parse_inbound_no_data_message_returns_none() {
+        let envelope = json!({ "sourceNumber": "+155" });
+        assert!(SignalAdapter::parse_inbound(&envelope).is_none());
+    }
+
+    #[test]
+    fn process_envelope_filters_disallowed() {
+        let adapter = SignalAdapter::with_config(
+            "+1".into(),
+            "http://localhost:8080".into(),
+            vec!["+allowed".into()],
+        );
+        let envelope = json!({
+            "sourceNumber": "+not_allowed",
+            "dataMessage": {
+                "timestamp": 1,
+                "message": "nope"
+            }
+        });
+        assert!(adapter.process_envelope(&envelope).is_none());
+    }
+
+    #[test]
+    fn process_envelope_passes_allowed() {
+        let adapter = SignalAdapter::with_config(
+            "+1".into(),
+            "http://localhost:8080".into(),
+            vec!["+allowed".into()],
+        );
+        let envelope = json!({
+            "sourceNumber": "+allowed",
+            "dataMessage": {
+                "timestamp": 1,
+                "message": "ok"
+            }
+        });
+        let msg = adapter.process_envelope(&envelope).unwrap();
+        assert_eq!(msg.content, "ok");
+    }
+
+    #[test]
+    fn push_and_recv_message() {
+        let adapter = SignalAdapter::new("+1".into(), "http://localhost:8080".into());
+        let msg = InboundMessage {
+            id: "s1".into(),
+            platform: "signal".into(),
+            sender_id: "+555".into(),
+            content: "buffered".into(),
+            timestamp: Utc::now(),
+            metadata: None,
+        };
+        adapter.push_message(msg);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(adapter.recv()).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().content, "buffered");
+
+        let result2 = rt.block_on(adapter.recv()).unwrap();
+        assert!(result2.is_none());
+    }
+
+    #[test]
+    fn platform_name_is_signal() {
+        let adapter = SignalAdapter::new("+1".into(), "http://localhost:8080".into());
+        assert_eq!(adapter.platform_name(), "signal");
+    }
+
+    #[test]
+    fn rpc_url_returns_daemon_url() {
+        let adapter = SignalAdapter::new("+1".into(), "http://custom:9999".into());
+        assert_eq!(adapter.rpc_url(), "http://custom:9999");
+    }
+}

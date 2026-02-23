@@ -61,13 +61,29 @@ impl DeliveryItem {
 
     pub fn mark_failed(&mut self, error: String) {
         self.attempts += 1;
-        self.last_error = Some(error);
-        if self.attempts >= self.max_attempts {
+        self.last_error = Some(error.clone());
+        if self.attempts >= self.max_attempts || Self::is_permanent_error(&error) {
             self.status = DeliveryStatus::DeadLetter;
         } else {
             self.status = DeliveryStatus::Pending;
             self.next_retry_at = Utc::now() + Self::backoff_delay(self.attempts);
         }
+    }
+
+    /// HTTP 4xx client errors that will never succeed on retry.
+    pub fn is_permanent_error(error: &str) -> bool {
+        let permanent_patterns = [
+            "403 Forbidden",
+            "401 Unauthorized",
+            "400 Bad Request",
+            "blocked by the user",
+            "bot was blocked",
+            "chat not found",
+            "user is deactivated",
+            "bot was kicked",
+            "PEER_ID_INVALID",
+        ];
+        permanent_patterns.iter().any(|p| error.contains(p))
     }
 
     pub fn mark_delivered(&mut self) {
@@ -249,5 +265,52 @@ mod tests {
         item.mark_delivered();
         assert_eq!(item.status, DeliveryStatus::Delivered);
         assert_eq!(item.attempts, 1);
+    }
+
+    #[test]
+    fn permanent_error_detected() {
+        assert!(DeliveryItem::is_permanent_error(
+            "Telegram API 403 Forbidden: Forbidden: bot was blocked by the user"
+        ));
+        assert!(DeliveryItem::is_permanent_error("401 Unauthorized"));
+        assert!(DeliveryItem::is_permanent_error(
+            "400 Bad Request: chat not found"
+        ));
+        assert!(DeliveryItem::is_permanent_error("user is deactivated"));
+        assert!(DeliveryItem::is_permanent_error(
+            "bot was kicked from the group"
+        ));
+        assert!(DeliveryItem::is_permanent_error("PEER_ID_INVALID"));
+    }
+
+    #[test]
+    fn transient_error_not_permanent() {
+        assert!(!DeliveryItem::is_permanent_error(
+            "rate limited, retry after 5s"
+        ));
+        assert!(!DeliveryItem::is_permanent_error("network timeout"));
+        assert!(!DeliveryItem::is_permanent_error(
+            "500 Internal Server Error"
+        ));
+        assert!(!DeliveryItem::is_permanent_error("connection reset"));
+    }
+
+    #[test]
+    fn mark_failed_permanent_dead_letters_immediately() {
+        let mut item = DeliveryItem::new("tg".into(), test_msg("hi"));
+        item.mark_failed("Telegram API 403 Forbidden: bot was blocked by the user".into());
+        assert_eq!(item.status, DeliveryStatus::DeadLetter);
+        assert_eq!(item.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn permanent_error_dead_letters_on_first_requeue() {
+        let q = DeliveryQueue::new();
+        q.enqueue("ch".into(), test_msg("msg")).await;
+        let item = q.next_ready().await.unwrap();
+        q.requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+        assert_eq!(q.dead_letter_count().await, 1);
+        assert_eq!(q.queue_size().await, 0);
     }
 }

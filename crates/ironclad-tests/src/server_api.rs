@@ -75,10 +75,12 @@ primary = "ollama/qwen3:8b"
             ironclad_core::config::ApprovalsConfig::default(),
         )),
         discord: None,
+        signal: None,
         oauth: Arc::new(OAuthManager::new().unwrap()),
         keystore: Arc::new(ironclad_core::keystore::Keystore::new(
             std::env::temp_dir().join(format!("ironclad-test-ks-{}.enc", uuid::Uuid::new_v4())),
         )),
+        obsidian: None,
         started_at: std::time::Instant::now(),
         policy_engine: {
             let mut engine = ironclad_agent::policy::PolicyEngine::new();

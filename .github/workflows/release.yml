@@ -1,0 +1,305 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Preflight: validate tag matches workspace version ──
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      date: ${{ steps.meta.outputs.date }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract and validate version
+        id: meta
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          ws_ver=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+
+          echo "Tag version:       $tag"
+          echo "Workspace version: $ws_ver"
+
+          if [ "$tag" != "$ws_ver" ]; then
+            echo "::error::Tag v$tag does not match workspace version $ws_ver"
+            exit 1
+          fi
+
+          if ! grep -q "## \[$tag\]" CHANGELOG.md; then
+            echo "::error::No CHANGELOG.md entry for version $tag"
+            exit 1
+          fi
+
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+  # ── Build: cross-platform binary matrix ────────────────
+  build:
+    name: "Build (${{ matrix.target }})"
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            os: linux
+            arch: x86_64
+            use_cross: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            os: linux
+            arch: aarch64
+            use_cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            os: darwin
+            arch: x86_64
+            use_cross: false
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            os: darwin
+            arch: aarch64
+            use_cross: false
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            os: windows
+            arch: x86_64
+            use_cross: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build release binary
+        env:
+          TARGET: ${{ matrix.target }}
+          USE_CROSS: ${{ matrix.use_cross }}
+        run: |
+          if [ "$USE_CROSS" = "true" ]; then
+            cross build --release --locked --bin ironclad --target "$TARGET"
+          else
+            cargo build --release --locked --bin ironclad --target "$TARGET"
+          fi
+        shell: bash
+
+      - name: Package artifact (unix)
+        if: matrix.os != 'windows'
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          OS: ${{ matrix.os }}
+        run: |
+          artifact="ironclad-${VERSION}-${ARCH}-${OS}"
+          mkdir -p "$artifact"
+          cp "target/${TARGET}/release/ironclad" "$artifact/"
+          tar czf "${artifact}.tar.gz" "$artifact"
+          shasum -a 256 "${artifact}.tar.gz" | awk '{print $1}' > "${artifact}.tar.gz.sha256"
+          size=$(ls -l "${artifact}.tar.gz" | awk '{print $5}')
+          mb=$(echo "scale=1; $size / 1048576" | bc)
+          echo "${mb} MB" > "${artifact}.tar.gz.size"
+          echo "ARTIFACT=${artifact}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package artifact (windows)
+        if: matrix.os == 'windows'
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          OS: ${{ matrix.os }}
+          TARGET: ${{ matrix.target }}
+        shell: pwsh
+        run: |
+          $artifact = "ironclad-${env:VERSION}-${env:ARCH}-${env:OS}"
+          New-Item -ItemType Directory -Path $artifact | Out-Null
+          Copy-Item "target/${env:TARGET}/release/ironclad.exe" "$artifact/"
+          Compress-Archive -Path "$artifact/*" -DestinationPath "${artifact}.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 "${artifact}.zip").Hash.ToLower()
+          $hash | Out-File -NoNewline -Encoding ascii "${artifact}.zip.sha256"
+          $size = (Get-Item "${artifact}.zip").Length
+          $mb = [math]::Round($size / 1MB, 1)
+          "${mb} MB" | Out-File -NoNewline -Encoding ascii "${artifact}.zip.size"
+          "ARTIFACT=${artifact}.zip" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            ironclad-*.*
+
+  # ── Publish: crates.io in dependency order ─────────────
+  publish:
+    name: Publish Crates
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish level 0
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p ironclad-core --locked
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish level 1
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          for crate in ironclad-db ironclad-llm ironclad-channels ironclad-browser ironclad-plugin-sdk; do
+            echo "Publishing $crate..."
+            cargo publish -p "$crate" --locked
+            sleep 10
+          done
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish level 2
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          for crate in ironclad-agent ironclad-wallet; do
+            echo "Publishing $crate..."
+            cargo publish -p "$crate" --locked
+            sleep 10
+          done
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish level 3
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p ironclad-schedule --locked
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish level 4
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p ironclad-server --locked
+
+  # ── Release: GitHub Release with binaries ──────────────
+  release:
+    name: Create GitHub Release
+    needs: [preflight, build, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: binary-*
+
+      - name: Prepare release assets
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          mkdir -p release-assets
+
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) \
+            ! -name '*.sha256' ! -name '*.size' \
+            -exec cp {} release-assets/ \;
+
+          echo "# SHA256 checksums for Ironclad v${VERSION}" > release-assets/SHA256SUMS.txt
+          for f in release-assets/*.tar.gz release-assets/*.zip; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            sha=$(shasum -a 256 "$f" | awk '{print $1}')
+            echo "$sha  $base" >> release-assets/SHA256SUMS.txt
+          done
+
+          cat release-assets/SHA256SUMS.txt
+
+      - name: Extract changelog section
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          awk -v ver="$VERSION" '
+            /^## \[/ { if (found) exit; if ($0 ~ "\\[" ver "\\]") found=1; next }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+
+          echo "::notice::Changelog extracted ($(wc -l < release-notes.md) lines)"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes-file release-notes.md \
+            release-assets/*
+
+  # ── Sync Site: dispatch to ironclad.ai ─────────────────
+  sync-site:
+    name: Sync Site
+    needs: [preflight, build, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: binary-*
+
+      - name: Build and send dispatch payload
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_PAT }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          DATE: ${{ needs.preflight.outputs.date }}
+        run: |
+          # Build JSON object for each binary's sha256 + size
+          binaries="{}"
+          for sha_file in artifacts/binary-*/ironclad-*.sha256; do
+            [ -f "$sha_file" ] || continue
+            archive=$(basename "$sha_file" .sha256)
+            sha=$(cat "$sha_file")
+            size_file="${sha_file%.sha256}.size"
+            size="unknown"
+            [ -f "$size_file" ] && size=$(cat "$size_file")
+            binaries=$(echo "$binaries" | jq \
+              --arg k "$archive" \
+              --arg s "$sha" \
+              --arg sz "$size" \
+              '. + {($k): {"sha256": $s, "size": $sz}}')
+          done
+
+          payload=$(jq -n \
+            --arg version "$VERSION" \
+            --arg date "$DATE" \
+            --argjson binaries "$binaries" \
+            '{version: $version, date: $date, binaries: $binaries}')
+
+          echo "$payload" | jq .
+
+          gh api repos/robot-accomplice/ironclad.ai/dispatches \
+            --method POST \
+            -f event_type=release-sync \
+            --input <(echo "{\"client_payload\": $payload}")

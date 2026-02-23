@@ -37,7 +37,7 @@ The workspace is organized as eleven crates with a strict dependency hierarchy:
 | `ironclad-core` | Shared types (`SurvivalTier`, `ApiFormat`, `ModelTier`, `RiskLevel`, `SkillKind`), unified config parsing, personality system, error types |
 | `ironclad-db` | SQLite persistence via rusqlite — 28 tables (incl. FTS5), WAL mode, migration system, embedding storage (BLOB + JSON), HNSW ANN index, semantic cache persistence |
 | `ironclad-llm` | LLM client pipeline — format translation (4 API formats), circuit breaker, in-flight dedup, heuristic model router, 3-level semantic cache (persistent), tier-based prompt adaptation, multi-provider embedding client |
-| `ironclad-agent` | Agent core — ReAct loop state machine, tool system (trait-based), policy engine, 4-layer injection defense, HMAC trust boundaries, 5-tier memory system, hybrid RAG retrieval, content chunking, dual-format skill loader, sandboxed script runner |
+| `ironclad-agent` | Agent core — ReAct loop state machine, tool system (trait-based), policy engine, 4-layer injection defense, HMAC trust boundaries, 5-tier memory system, hybrid RAG retrieval, content chunking, dual-format skill loader, sandboxed script runner, Obsidian vault integration |
 | `ironclad-wallet` | Ethereum wallet (alloy-rs), x402 payment protocol (EIP-3009), treasury policy engine, DeFi yield engine (Aave/Compound on Base) |
 | `ironclad-schedule` | Unified cron/heartbeat scheduler — DB-backed with lease-based mutual exclusion, wake signaling via mpsc channels |
 | `ironclad-channels` | Chat adapters (Telegram Bot API, WhatsApp Cloud API, Discord, WebSocket) + zero-trust Agent-to-Agent protocol (ECDH session keys, AES-256-GCM) |
@@ -135,7 +135,7 @@ port = 18789
 primary = "ollama/qwen3:8b"
 ```
 
-Full configuration supports 22 sections: `[agent]`, `[server]`, `[database]`, `[models]`, `[providers.*]`, `[circuit_breaker]`, `[memory]`, `[cache]`, `[treasury]`, `[yield]`, `[wallet]`, `[a2a]`, `[skills]`, `[channels.*]`, `[context]`, `[approvals]`, `[plugins]`, `[browser]`, `[daemon]`, `[update]`, `[tier_adapt]`, `[personality]`. See `docs/architecture/ironclad-design.md` §5 for all options.
+Full configuration supports 23 sections: `[agent]`, `[server]`, `[database]`, `[models]`, `[providers.*]`, `[circuit_breaker]`, `[memory]`, `[cache]`, `[treasury]`, `[yield]`, `[wallet]`, `[a2a]`, `[skills]`, `[channels.*]`, `[context]`, `[approvals]`, `[plugins]`, `[browser]`, `[daemon]`, `[update]`, `[tier_adapt]`, `[personality]`, `[obsidian]`. See `docs/architecture/ironclad-design.md` §5 for all options.
 
 Key configuration areas:
 
@@ -148,6 +148,7 @@ Key configuration areas:
 | `[treasury]` | Per-payment cap, hourly/daily transfer limits, minimum reserve, daily inference budget |
 | `[skills]` | Skills directory, script timeout, allowed interpreters, sandbox mode, hot-reload |
 | `[a2a]` | Max message size, rate limit per peer, session timeout, on-chain identity requirement |
+| `[obsidian]` | Vault path, auto-detect, default output folder, tag boost, template folder, file watching, preferred destination |
 
 ## Skill System
 

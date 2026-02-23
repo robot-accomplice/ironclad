@@ -226,6 +226,39 @@ impl TelegramAdapter {
 
         Ok(body)
     }
+
+    /// Send a "typing..." indicator to the given chat. Best-effort; errors are
+    /// silently ignored so they never block message delivery.
+    pub async fn send_typing(&self, chat_id: &str) {
+        let url = self.api_url("sendChatAction");
+        let body = json!({
+            "chat_id": chat_id,
+            "action": "typing",
+        });
+        let _ = self.client.post(&url).json(&body).send().await;
+    }
+
+    /// Send a short message and return its message_id (for later deletion).
+    pub async fn send_ephemeral(&self, chat_id: &str, text: &str) -> Option<i64> {
+        let url = self.api_url("sendMessage");
+        let body = json!({
+            "chat_id": chat_id,
+            "text": text,
+        });
+        let resp = self.client.post(&url).json(&body).send().await.ok()?;
+        let json: Value = resp.json().await.ok()?;
+        json.pointer("/result/message_id").and_then(|v| v.as_i64())
+    }
+
+    /// Delete a message by chat_id and message_id. Best-effort.
+    pub async fn delete_message(&self, chat_id: &str, message_id: i64) {
+        let url = self.api_url("deleteMessage");
+        let body = json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+        });
+        let _ = self.client.post(&url).json(&body).send().await;
+    }
 }
 
 #[async_trait]
@@ -331,6 +364,8 @@ impl ChannelAdapter for TelegramAdapter {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
+        self.send_typing(&msg.recipient_id).await;
+
         let url = self.api_url("sendMessage");
         let chunks = Self::chunk_message(&msg.content, 4096);
 
