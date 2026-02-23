@@ -22,9 +22,11 @@ pub struct A2aSession {
     pub last_activity: DateTime<Utc>,
 }
 
+const MAX_A2A_SESSIONS: usize = 256;
+
 pub struct A2aProtocol {
     pub config: A2aConfig,
-    pub sessions: HashMap<String, A2aSession>,
+    sessions: HashMap<String, A2aSession>,
     rate_windows: HashMap<String, VecDeque<Instant>>,
 }
 
@@ -35,6 +37,42 @@ impl A2aProtocol {
             sessions: HashMap::new(),
             rate_windows: HashMap::new(),
         }
+    }
+
+    fn evict_expired_sessions(&mut self) {
+        let timeout = chrono::Duration::seconds(self.config.session_timeout_seconds as i64);
+        let cutoff = Utc::now() - timeout;
+        self.sessions.retain(|_, s| s.last_activity > cutoff);
+    }
+
+    pub fn insert_session(&mut self, id: String, session: A2aSession) {
+        self.evict_expired_sessions();
+        if self.sessions.len() >= MAX_A2A_SESSIONS
+            && let Some(oldest_key) = self
+                .sessions
+                .iter()
+                .min_by_key(|(_, s)| s.last_activity)
+                .map(|(k, _)| k.clone())
+        {
+            self.sessions.remove(&oldest_key);
+        }
+        self.sessions.insert(id, session);
+    }
+
+    pub fn get_session(&self, id: &str) -> Option<&A2aSession> {
+        self.sessions.get(id)
+    }
+
+    pub fn get_session_mut(&mut self, id: &str) -> Option<&mut A2aSession> {
+        self.sessions.get_mut(id)
+    }
+
+    pub fn remove_session(&mut self, id: &str) -> Option<A2aSession> {
+        self.sessions.remove(id)
+    }
+
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
     }
 
     /// Reject messages that exceed the configured maximum size.
