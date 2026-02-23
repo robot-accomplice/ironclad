@@ -430,6 +430,62 @@ embedding_dimensions = 768
         assert_eq!(result.embedding_path, "/api/embed");
     }
 
+    // ── SseChunkStream tests ──────────────────────────────────
+
+    use futures::stream;
+
+    /// Helper: drive an `SseChunkStream` to completion and collect all chunks.
+    fn collect_sse_chunks(data: Vec<Vec<u8>>) -> Vec<format::StreamChunk> {
+        let byte_stream = stream::iter(
+            data.into_iter()
+                .map(|b| Ok::<_, reqwest::Error>(Bytes::from(b))),
+        );
+        let mut sse =
+            SseChunkStream::new(Box::pin(byte_stream), ApiFormat::OpenAiCompletions);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut chunks = vec![];
+            while let Some(item) = futures::StreamExt::next(&mut sse).await {
+                chunks.push(item.unwrap());
+            }
+            chunks
+        })
+    }
+
+    #[test]
+    fn sse_chunk_stream_multiple_trailing_chunks() {
+        let data = vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"B\"}}]}\n".to_vec(),
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"C\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"D\"}}]}".to_vec(),
+        ];
+        let chunks = collect_sse_chunks(data);
+        let text: String = chunks.iter().map(|c| c.delta.as_str()).collect();
+        assert_eq!(text, "ABCD", "all four chunks should be yielded");
+    }
+
+    #[test]
+    fn sse_chunk_stream_trailing_done_not_lost() {
+        let data = vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\ndata: [DONE]".to_vec(),
+        ];
+        let chunks = collect_sse_chunks(data);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].delta, "hello");
+    }
+
+    #[test]
+    fn sse_chunk_stream_empty_buffer_at_end() {
+        let data = vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"only\"}}]}\n".to_vec(),
+        ];
+        let chunks = collect_sse_chunks(data);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].delta, "only");
+    }
+
     #[test]
     fn resolve_embedding_config_default_dimensions() {
         let memory = ironclad_core::config::MemoryConfig {

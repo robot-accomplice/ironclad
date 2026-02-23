@@ -1105,6 +1105,40 @@ mod tests {
     }
 
     #[test]
+    fn tool_cost_fires_for_zero_success_rate() {
+        let rule = ToolCostAwareness;
+        let mut profile = base_profile();
+        profile.tool_success_rate = 0.0;
+        let rec = rule.evaluate(&profile);
+        assert!(rec.is_some(), "0% tool success should trigger the rule");
+        let rec = rec.unwrap();
+        assert!(rec.explanation.contains("0%"));
+    }
+
+    #[test]
+    fn tool_cost_silent_for_high_success() {
+        let rule = ToolCostAwareness;
+        let mut profile = base_profile();
+        profile.tool_success_rate = 0.85;
+        assert!(
+            rule.evaluate(&profile).is_none(),
+            "85% success rate should not trigger"
+        );
+    }
+
+    #[test]
+    fn tool_cost_silent_for_insufficient_data() {
+        let rule = ToolCostAwareness;
+        let mut profile = base_profile();
+        profile.total_turns = 5;
+        profile.tool_success_rate = 0.0;
+        assert!(
+            rule.evaluate(&profile).is_none(),
+            "should not fire with < 10 turns"
+        );
+    }
+
+    #[test]
     fn engine_no_recs_for_minimal_profile() {
         let engine = RecommendationEngine::new();
         let profile = UserProfile {

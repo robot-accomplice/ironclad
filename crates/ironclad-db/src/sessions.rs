@@ -1233,4 +1233,24 @@ mod tests {
         let fbs = list_session_feedback(&db, "nonexistent").unwrap();
         assert!(fbs.is_empty());
     }
+
+    #[test]
+    fn record_feedback_upserts_on_duplicate_turn() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-fb-upsert", None).unwrap();
+        let tid = create_turn(&db, &sid, Some("gpt-4"), Some(100), Some(50), Some(0.01)).unwrap();
+
+        record_feedback(&db, &tid, &sid, 3, "dashboard", Some("okay")).unwrap();
+        let fb1 = get_feedback(&db, &tid).unwrap().unwrap();
+        assert_eq!(fb1.grade, 3);
+
+        record_feedback(&db, &tid, &sid, 5, "api", Some("great")).unwrap();
+        let fb2 = get_feedback(&db, &tid).unwrap().unwrap();
+        assert_eq!(fb2.grade, 5, "grade should be updated by upsert");
+        assert_eq!(fb2.source, "api", "source should be updated by upsert");
+        assert_eq!(fb2.comment.as_deref(), Some("great"));
+
+        let all = list_session_feedback(&db, &sid).unwrap();
+        assert_eq!(all.len(), 1, "upsert should not create duplicate rows");
+    }
 }
