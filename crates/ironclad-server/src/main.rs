@@ -1407,26 +1407,10 @@ async fn cmd_serve(
     step(t, 11, STEPS, "Channel adapters ready");
     step_detail(t, "active", &channels.join(", "));
 
-    let resolved_bind = ironclad_server::resolve_bind_address(&config.server);
-    let bind_addr = format!("{}:{}", resolved_bind, config.server.port);
-
-    if let Some(ref _tls) = config.server.tls {
-        tracing::info!(addr = %bind_addr, "Starting server with TLS");
-        tracing::warn!("TLS configured but axum-server tls-rustls feature not yet enabled; starting plain HTTP");
-    }
-
-    if let Some(ref url) = config.server.advertise_url {
-        tracing::info!(advertise_url = %url, "Agent will advertise at this URL");
-    }
+    let bind_addr = format!("{}:{}", config.server.bind, config.server.port);
 
     step(t, 12, STEPS, "HTTP server starting");
     step_detail(t, "bind", &bind_addr);
-    if config.server.bind_interface.is_some() {
-        step_detail(t, "interface", config.server.bind_interface.as_deref().unwrap_or(""));
-    }
-    if let Some(ref url) = config.server.advertise_url {
-        step_detail(t, "advertise", url);
-    }
     step_detail(t, "dashboard", &format!("http://{bind_addr}"));
 
     let elapsed = boot_start.elapsed();
