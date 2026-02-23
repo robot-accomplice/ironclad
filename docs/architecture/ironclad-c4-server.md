@@ -1,3 +1,4 @@
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 # C4 Level 3: Component Diagram -- ironclad-server
 
 *Top-level binary crate that wires all other crates together: HTTP server (axum), REST API, embedded dashboard, WebSocket push, and application bootstrap.*
@@ -54,6 +55,11 @@ flowchart TB
         WEBHOOKS_API["POST /api/webhooks/telegram<br/>GET /api/webhooks/whatsapp (verify)<br/>POST /api/webhooks/whatsapp"]
         CHANNELS_API["GET /api/channels/status"]
         WORKSPACE_API["GET /api/workspace/state"]
+        TURNS_API["GET /api/sessions/{id}/turns<br/>GET /api/turns/{turn_id}<br/>(v0.5.0)"]
+        FEEDBACK_API["POST /api/turns/{turn_id}/feedback<br/>GET /api/feedback/summary<br/>(v0.5.0)"]
+        EFFICIENCY_API["GET /api/stats/efficiency<br/>GET /api/stats/efficiency/trends<br/>(v0.5.0)"]
+        RECOMMENDATIONS_API["GET /api/agent/recommendations<br/>POST /api/agent/recommendations/{id}/apply<br/>(v0.5.0)"]
+        STREAMING_API["GET /api/agent/stream<br/>POST /api/agent/message/stream<br/>(v0.5.0 — SSE streaming)"]
     end
 
     subgraph DashboardDetail ["dashboard.rs"]
@@ -125,6 +131,16 @@ flowchart TB
 | GET | `/api/webhooks/whatsapp` | WhatsApp webhook verify | `ironclad-channels` |
 | POST | `/api/webhooks/whatsapp` | WhatsApp webhook | `ironclad-channels` |
 | GET | `/api/channels/status` | Channel adapters status | `ironclad-channels` |
+| GET | `/api/sessions/{id}/turns` | List turns for a session | `ironclad-db` |
+| GET | `/api/turns/{turn_id}` | Get turn detail with tool calls | `ironclad-db` |
+| POST | `/api/turns/{turn_id}/feedback` | Submit feedback on a turn | `ironclad-db` |
+| GET | `/api/feedback/summary` | Aggregated feedback metrics | `ironclad-db` |
+| GET | `/api/stats/efficiency` | Current efficiency metrics | `ironclad-db` |
+| GET | `/api/stats/efficiency/trends` | Efficiency trends over time | `ironclad-db` |
+| GET | `/api/agent/recommendations` | Proactive recommendations | `ironclad-agent` |
+| POST | `/api/agent/recommendations/{id}/apply` | Apply a recommendation | `ironclad-agent` |
+| GET | `/api/agent/stream` | SSE event stream (live) | `ironclad-server` |
+| POST | `/api/agent/message/stream` | Send message with SSE streaming response | `ironclad-agent`, `ironclad-llm` |
 
 ## Server Module Layout
 

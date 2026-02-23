@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-02-23
+
+### Added
+
+- **Addressability Filter**: Composable filter chain for group chat addressability detection. Agent only responds when mentioned by name, replied to, or in a DM. Configurable via `[addressability]` config section with alias names support.
+- **Response Transform Pipeline**: Three-stage pipeline applied to all LLM responses -- `ReasoningExtractor` (captures `<think>` blocks), `FormatNormalizer` (whitespace/fence cleanup), `ContentGuard` (injection defense). Replaces the previous inline `scan_output` approach.
+- **Flexible Network Binding**: Interface-based binding (`bind_interface`), optional TLS via `axum-server` with rustls, and `advertise_url` for agent card generation.
+- **Approval Workflow Loop Integration**: Agent pauses on gated tool calls, publishes `pending_approval` events via WebSocket, and resumes after admin approve/deny. Dashboard "Approvals" panel with real-time updates.
+- **Browser as Agent Tool**: `BrowserTool` adapter wrapping the 12-action `ironclad-browser` crate, registered in `ToolRegistry`. Tool schemas injected into system prompt so the LLM can request browser actions.
+- **Context Observatory**: Full turn inspector and analytics suite:
+  - Turn recording with `context_snapshots` table capturing token allocation, memory tier breakdown, complexity level, and model for every LLM call
+  - Turn & Context API: `GET /api/sessions/{id}/turns`, `GET /api/turns/{id}`, `GET /api/turns/{id}/context`, `GET /api/turns/{id}/tools`
+  - Dashboard per-message context expansion (token allocation bar, memory breakdown, reasoning trace, tool calls)
+  - Context Explorer tab with session selector, turn timeline, and aggregate charts
+  - Heuristic context analyzer with 12 per-turn rules and 10 session-aggregate rules across Budget, Memory, Prompt, Tools, Cost, and Quality categories
+  - LLM-powered deep analysis stub for on-demand qualitative context evaluation
+  - Prompt efficiency metrics per model: output density, budget utilization, memory ROI, cache hit rate, context pressure, cost attribution
+  - Efficiency dashboard with model comparison cards, time series charts, period selector, and auto-generated cost optimization tips
+  - Outcome grading: 1-5 star ratings on assistant responses via `turn_feedback` table, with quality-adjusted metrics (cost per quality point, quality by complexity, memory impact analysis)
+  - Behavioral recommendations engine: ~14 heuristic rules across 7 categories (query crafting, model selection, session management, memory leverage, cost optimization, tool usage, configuration) with evidence and estimated impact
+- **Streaming LLM Responses**: `SseChunkStream` adapter for token-by-token streaming. `POST /api/agent/message/stream` SSE endpoint. WebSocket forwarding via EventBus. Dashboard incremental rendering with typing indicator.
+- **New reference documents**: `docs/CONFIGURATION.md`, `docs/CLI.md`, `docs/API.md`, `docs/DEPLOYMENT.md`, `docs/ENV.md`
+
+### Changed
+
+- All 10 crate READMEs updated to v0.5.0 with expanded descriptions and key types
+- All 10 `lib.rs` files now have `//!` crate-level doc comments
+- 10 new dataflow diagrams added to `ironclad-dataflow.md` (approval, browser, context, transform, streaming, addressability, observatory, plugin SDK, OAuth, channel lifecycle)
+- 6 new sequence diagrams added to `ironclad-sequences.md` (approval, streaming, turn recording, grading, TLS, CDP)
+- All 6 C4 component diagrams updated with ~40 previously undocumented modules
+- Documentation standards added to CONTRIBUTING.md
+- `cargo doc` CI gate added with `-D warnings` to prevent future documentation drift
+
+## [0.4.3] - 2026-02-23
+
+### Added
+
+- Slash commands for agent chat: `/model`, `/models`, `/breaker`, `/retry` for runtime LLM control
+- Runtime model override via `/model set <model>` — temporarily forces a specific model, bypassing routing
+- Circuit breaker status and reset via `/breaker` and `/breaker reset [provider]` slash commands
+- Breaker-aware model routing — `select_for_complexity` and `select_cheapest_qualified` now skip providers with tripped circuit breakers
+- Pre-flight API key check in `infer_with_fallback` — cloud providers with no configured key are skipped before sending a doomed request
+- Dashboard settings inputs show a dimmed "none" placeholder instead of literal "null" for empty fields
+
+### Fixed
+
+- Credit/billing errors now permanently trip the circuit breaker (no auto-recovery to HalfOpen) — providers with exhausted credits are never probed again until explicitly reset via `/breaker reset`
+- Dashboard "Save to keystore" button now sends `Content-Type: application/json` header — previously failed with "Expected request with 'Content-Type: application/json'"
+- Settings form no longer renders `"null"` as a literal value in input fields; empty fields display a styled placeholder and save as `null`
+
+### Changed
+
+- Merged "Roster" and "Agents" into a single "Agents" page with tabbed Roster/List views
+- Removed CLI typing sound effects (`start_typing_sound` / `SoundHandle`) from banner rendering
+
 ## [0.4.2] - 2026-02-23
 
 ### Fixed

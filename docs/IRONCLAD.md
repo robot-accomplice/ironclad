@@ -15,20 +15,20 @@ Ironclad compiles to a single static binary. Every subsystem -- LLM routing, age
 | Source files | 117 |
 | Lines of code | ~32,000 |
 | Test count | ~1,271 unit + integration |
-| SQLite tables | 28 |
+| SQLite tables | 32 |
 | Architecture docs | 17 (C4 + dataflow + sequence diagrams) |
 
 ### Crate Map
 
 ```text
 ironclad-core        Shared types, config, error definitions, personality system
-ironclad-db          SQLite persistence (28 tables, FTS5, WAL mode, BLOB embeddings, ANN index, cache persistence)
+ironclad-db          SQLite persistence (32 tables, FTS5, WAL mode, BLOB embeddings, ANN index, cache persistence, efficiency analytics)
 ironclad-llm         LLM client pipeline, format translation, routing, caching (persistent), circuit breakers, embedding client
 ironclad-agent       ReAct loop, tool system, policy engine, injection defense, hybrid RAG, skills, subagents
 ironclad-wallet      Ethereum wallet, x402 payments, treasury policy, yield engine
 ironclad-schedule    Cron scheduler, heartbeat daemon, built-in tasks
 ironclad-channels    Telegram, WhatsApp, Discord, WebSocket, A2A protocol
-ironclad-server      HTTP server (axum), REST API, CLI, dashboard, auth, migration
+ironclad-server      HTTP server (axum), REST API, CLI, dashboard, auth, migration, flexible network binding
 ironclad-plugin-sdk  Plugin trait, script runner, manifest parser, plugin registry
 ironclad-browser     Headless browser automation via CDP
 ironclad-tests       Integration test suite
@@ -40,6 +40,7 @@ ironclad-tests       Integration test suite
 
 ### LLM Client Pipeline
 
+- **Streaming responses** -- `POST /api/agent/message/stream` streams tokens to the user in real-time via SSE as they arrive from the provider
 - **Model-agnostic proxy** -- provider configuration is fully externalized in TOML; adding a new provider requires zero code changes
 - **Bundled provider configs** for OpenAI, Anthropic, Google, Ollama, OpenRouter (shipped as `bundled_providers.toml`)
 - **Format translation** -- typed Rust enums with `From<T>` implementations for 4 API formats (OpenAI Chat, OpenAI Responses, Anthropic Messages, Google GenerativeAI); 12+ translation pairs
@@ -64,7 +65,10 @@ ironclad-tests       Integration test suite
   - L4: output scanning (NFKC normalization, encoding decode, homoglyph folding, regex pattern detection)
 - **Progressive context loading** -- 4 complexity levels (L0 ~2K, L1 ~4K, L2 ~8K, L3 ~16K tokens)
 - **Subagent framework** -- spawn child agents with isolated tool registries and policy overrides
-- **Human-in-the-loop approvals** -- configurable approval gates for high-risk tool calls
+- **Human-in-the-loop approvals** -- configurable approval gates for high-risk tool calls with REST API (`/api/approvals`), WebSocket push, and channel-based prompts
+- **Browser tool** -- `BrowserTool` registered in `ToolRegistry` wraps CDP actions (navigate, click, type, screenshot, evaluate) so the agent can autonomously browse the web during the ReAct loop
+- **Addressability filter** -- configurable message filtering (`MentionFilter`, `ReplyFilter`, `ConversationFilter`) so the agent only processes messages directed at it in group chats
+- **Response transform pipeline** -- composable `ResponseTransform` trait with `ReasoningExtractor` (captures `<think>` blocks to `turns.reasoning_trace`), `FormatNormalizer`, and `ContentGuard` (reflected injection defense)
 
 ### Memory System
 
@@ -131,6 +135,18 @@ ironclad-tests       Integration test suite
 - **Session management** -- start/stop headless Chrome instances
 - **REST API integration** -- `/api/browser/*` endpoints for remote control
 
+### Context Observatory
+
+Ironclad 0.5.0 introduces the Context Observatory — a subsystem for understanding and optimizing how context is assembled, how much it costs, and how well it performs.
+
+- **Efficiency metrics** — per-model analytics: output density (useful tokens / total output), budget utilization, memory ROI, system prompt weight, cache hit rate, context pressure rate
+- **Cost attribution** — breaks down input token costs into system prompt, memories, and history components; tracks wasted budget (allocated but unused context slots)
+- **Outcome grading** — `turn_feedback` table stores thumbs up/down + comment per turn; grades feed into quality metrics (avg grade, grade coverage, cost-per-quality-point, complexity breakdown)
+- **Memory impact analysis** — compares quality metrics for turns with vs. without memory context to quantify RAG effectiveness
+- **Trend tracking** — sliding-window trend detection (improving/stable/declining) for both cost and quality metrics
+- **Optimization recommendations** — rule-based recommendations derived from efficiency data; `/api/recommendations/generate` produces LLM-powered deep analysis with actionable optimization suggestions
+- **REST API** — `GET /api/stats/efficiency`, `GET /api/recommendations`, `POST /api/recommendations/generate`
+
 ### Obsidian Integration
 
 - **Bidirectional knowledge store** -- agent reads vault content via `KnowledgeSource` trait, writes documents via `Tool` implementations
@@ -186,7 +202,7 @@ ironclad version        Version and build info
 
 ### REST API
 
-48 routes covering all subsystems. Full CRUD for sessions, memory, cron jobs, skills, plugins, agents, and browser sessions. WebSocket push for real-time events.
+85 routes covering all subsystems. Full CRUD for sessions, memory, cron jobs, skills, plugins, agents, and browser sessions. Approval workflow endpoints, Context Observatory analytics, turn-level feedback and analysis. WebSocket push for real-time events. See `docs/API.md` for the full route reference.
 
 ### Dashboard
 

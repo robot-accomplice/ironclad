@@ -1,3 +1,40 @@
+//! # ironclad-llm
+//!
+//! LLM client pipeline for the Ironclad agent runtime. Requests flow through a
+//! multi-stage pipeline: cache check, routing (heuristic or ML), circuit
+//! breaker, dedup, format translation, prompt compression, tier adaptation,
+//! and HTTP forwarding.
+//!
+//! ## Key Types
+//!
+//! - [`LlmService`] -- Top-level facade composing all pipeline stages
+//! - [`SemanticCache`] -- 3-level cache (exact hash, tool TTL, semantic cosine)
+//! - [`ModelRouter`] -- Heuristic complexity classification and model selection
+//! - [`LlmClient`] -- HTTP/2 client pool with streaming support
+//! - [`EmbeddingClient`] -- Multi-provider embedding client with n-gram fallback
+//! - [`SseChunkStream`] -- SSE byte stream to parsed `StreamChunk` adapter
+//!
+//! ## Modules
+//!
+//! - `cache` -- Semantic cache with HashMap + SQLite persistence
+//! - `router` -- Heuristic model router (feature extraction, complexity scoring)
+//! - `ml_router` -- Logistic regression backend + preference learning
+//! - `uniroute` -- Unified routing via model capability vectors
+//! - `tiered` -- Tiered inference with confidence evaluation and escalation
+//! - `cascade` -- Cascade optimizer (cheapest-first, fallback chain)
+//! - `circuit` -- Per-provider circuit breaker with exponential backoff
+//! - `dedup` -- In-flight duplicate request detection
+//! - `format` -- API format translation (OpenAI, Ollama, Google, Anthropic)
+//! - `compression` -- Prompt compression and token estimation
+//! - `tier` -- Tier-based prompt adaptation (T1 strip, T2 preamble, T3/T4 pass)
+//! - `client` -- HTTP client pool, request forwarding, cost tracking
+//! - `provider` -- Provider definitions and registry
+//! - `embedding` -- Multi-provider embedding client
+//! - `capacity` -- TPM/RPM sliding-window capacity tracking
+//! - `accuracy` -- Per-model quality tracking and quality-target selection
+//! - `oauth` -- OAuth2 token management and refresh
+//! - `transform` -- Request/response transform pipeline
+
 pub mod accuracy;
 pub mod cache;
 pub mod capacity;
@@ -32,7 +69,15 @@ pub use router::{ModelRouter, classify_complexity, extract_features};
 pub use tiered::{ConfidenceEvaluator, EscalationTracker, InferenceTier, TieredResult};
 pub use uniroute::{ModelVector, ModelVectorRegistry, QueryRequirements};
 
-use ironclad_core::{IroncladConfig, Result};
+pub use format::StreamChunk;
+
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use bytes::Bytes;
+use futures::Stream;
+use ironclad_core::{ApiFormat, IroncladConfig, Result};
 use router::HeuristicBackend;
 
 pub struct LlmService {
@@ -92,6 +137,30 @@ impl LlmService {
         })
     }
 
+    /// Stream a request to the given provider, returning parsed `StreamChunk`s.
+    ///
+    /// The caller is responsible for provider selection and key resolution.
+    /// `body` should already be translated via `format::translate_request`.
+    /// This method injects `"stream": true` into the body before sending.
+    pub async fn stream_to_provider(
+        &self,
+        url: String,
+        api_key: String,
+        mut body: serde_json::Value,
+        auth_header: String,
+        extra_headers: HashMap<String, String>,
+        api_format: ApiFormat,
+    ) -> Result<SseChunkStream> {
+        body["stream"] = serde_json::json!(true);
+
+        let raw_stream = self
+            .client
+            .forward_stream(&url, &api_key, body, &auth_header, &extra_headers)
+            .await?;
+
+        Ok(SseChunkStream::new(raw_stream, api_format))
+    }
+
     fn resolve_embedding_config(
         memory: &ironclad_core::config::MemoryConfig,
         providers: &ProviderRegistry,
@@ -117,6 +186,99 @@ impl LlmService {
             auth_header: provider.auth_header.clone(),
             extra_headers: provider.extra_headers.clone(),
         })
+    }
+}
+
+/// A `Stream` adapter that converts raw SSE byte chunks from an LLM provider
+/// into parsed `StreamChunk` items. Handles buffering across chunk boundaries.
+pub struct SseChunkStream {
+    inner: Pin<Box<dyn Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send>>,
+    format: ApiFormat,
+    buffer: String,
+    /// Chunks parsed from the buffer remainder when the inner stream ends.
+    /// Drained before returning `None` to avoid dropping trailing data.
+    pending: std::collections::VecDeque<format::StreamChunk>,
+    inner_done: bool,
+}
+
+impl SseChunkStream {
+    pub fn new(
+        inner: Pin<Box<dyn Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send>>,
+        format: ApiFormat,
+    ) -> Self {
+        Self {
+            inner,
+            format,
+            buffer: String::new(),
+            pending: std::collections::VecDeque::new(),
+            inner_done: false,
+        }
+    }
+}
+
+impl Stream for SseChunkStream {
+    type Item = Result<format::StreamChunk>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        // Drain any chunks buffered from the final flush before signaling end-of-stream
+        if let Some(chunk) = this.pending.pop_front() {
+            return Poll::Ready(Some(Ok(chunk)));
+        }
+        if this.inner_done {
+            return Poll::Ready(None);
+        }
+
+        loop {
+            // First, try to parse a complete line from the buffer
+            if let Some(newline_pos) = this.buffer.find('\n') {
+                let line = this.buffer[..newline_pos].trim().to_string();
+                this.buffer = this.buffer[newline_pos + 1..].to_string();
+
+                if line.is_empty() {
+                    continue;
+                }
+
+                if let Some(chunk) = format::parse_sse_chunk(&line, &this.format) {
+                    return Poll::Ready(Some(Ok(chunk)));
+                }
+                continue;
+            }
+
+            // No complete line in buffer — poll for more bytes
+            match Pin::new(&mut this.inner).poll_next(cx) {
+                Poll::Ready(Some(Ok(bytes))) => {
+                    this.buffer.push_str(&String::from_utf8_lossy(&bytes));
+                }
+                Poll::Ready(Some(Err(e))) => {
+                    return Poll::Ready(Some(Err(ironclad_core::IroncladError::Network(format!(
+                        "stream error: {e}"
+                    )))));
+                }
+                Poll::Ready(None) => {
+                    this.inner_done = true;
+                    // Parse ALL remaining lines and queue them for delivery
+                    if !this.buffer.trim().is_empty() {
+                        let remaining = std::mem::take(&mut this.buffer);
+                        for line in remaining.lines() {
+                            let line = line.trim();
+                            if line.is_empty() {
+                                continue;
+                            }
+                            if let Some(chunk) = format::parse_sse_chunk(line, &this.format) {
+                                this.pending.push_back(chunk);
+                            }
+                        }
+                    }
+                    return match this.pending.pop_front() {
+                        Some(chunk) => Poll::Ready(Some(Ok(chunk))),
+                        None => Poll::Ready(None),
+                    };
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
     }
 }
 
@@ -266,6 +428,59 @@ embedding_dimensions = 768
         assert_eq!(result.dimensions, 768);
         assert_eq!(result.base_url, "http://localhost:11434");
         assert_eq!(result.embedding_path, "/api/embed");
+    }
+
+    // ── SseChunkStream tests ──────────────────────────────────
+
+    use futures::stream;
+
+    /// Helper: drive an `SseChunkStream` to completion and collect all chunks.
+    fn collect_sse_chunks(data: Vec<Vec<u8>>) -> Vec<format::StreamChunk> {
+        let byte_stream = stream::iter(
+            data.into_iter()
+                .map(|b| Ok::<_, reqwest::Error>(Bytes::from(b))),
+        );
+        let mut sse = SseChunkStream::new(Box::pin(byte_stream), ApiFormat::OpenAiCompletions);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut chunks = vec![];
+            while let Some(item) = futures::StreamExt::next(&mut sse).await {
+                chunks.push(item.unwrap());
+            }
+            chunks
+        })
+    }
+
+    #[test]
+    fn sse_chunk_stream_multiple_trailing_chunks() {
+        let data = vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"B\"}}]}\n".to_vec(),
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"C\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"D\"}}]}".to_vec(),
+        ];
+        let chunks = collect_sse_chunks(data);
+        let text: String = chunks.iter().map(|c| c.delta.as_str()).collect();
+        assert_eq!(text, "ABCD", "all four chunks should be yielded");
+    }
+
+    #[test]
+    fn sse_chunk_stream_trailing_done_not_lost() {
+        let data = vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\ndata: [DONE]".to_vec(),
+        ];
+        let chunks = collect_sse_chunks(data);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].delta, "hello");
+    }
+
+    #[test]
+    fn sse_chunk_stream_empty_buffer_at_end() {
+        let data = vec![b"data: {\"choices\":[{\"delta\":{\"content\":\"only\"}}]}\n".to_vec()];
+        let chunks = collect_sse_chunks(data);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].delta, "only");
     }
 
     #[test]

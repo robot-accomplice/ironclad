@@ -301,7 +301,7 @@ impl IroncladConfig {
     /// log_level = "info"
     ///
     /// [server]
-    /// host = "127.0.0.1"
+    /// bind = "127.0.0.1"
     /// port = 3001
     ///
     /// [database]
@@ -395,6 +395,14 @@ impl IroncladConfig {
             ));
         }
 
+        if self.server.bind.parse::<std::net::IpAddr>().is_err() && self.server.bind != "localhost"
+        {
+            return Err(IroncladError::Config(format!(
+                "server.bind '{}' is not a valid IP address",
+                self.server.bind
+            )));
+        }
+
         Ok(())
     }
 }
@@ -449,7 +457,7 @@ fn expand_tilde(path: &Path) -> PathBuf {
 pub struct ServerConfig {
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default = "default_bind")]
+    #[serde(default = "default_bind", alias = "host")]
     pub bind: String,
     #[serde(default, skip_serializing)]
     pub api_key: Option<String>,
@@ -1527,7 +1535,7 @@ workspace = "/tmp/test"
 log_level = "debug"
 
 [server]
-host = "127.0.0.1"
+bind = "127.0.0.1"
 port = {port}
 
 [database]
@@ -1538,6 +1546,7 @@ primary = "ollama/qwen3:8b"
 "#);
             let config = IroncladConfig::from_str(&toml_str).unwrap();
             assert_eq!(config.server.port, port);
+            assert_eq!(config.server.bind, "127.0.0.1");
         }
     }
 

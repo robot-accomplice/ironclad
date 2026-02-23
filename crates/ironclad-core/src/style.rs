@@ -305,44 +305,6 @@ impl Theme {
         println!();
         std::io::stdout().flush().ok();
     }
-
-    /// Start a looping keystroke sound in the background (macOS only).
-    /// Returns a handle that stops the sound when dropped.
-    pub fn start_typing_sound(&self) -> Option<SoundHandle> {
-        if !self.draw {
-            return None;
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let sound = "/System/Library/Sounds/Tink.aiff";
-            if std::path::Path::new(sound).exists() {
-                let child = std::process::Command::new("bash")
-                    .args([
-                        "-c",
-                        &format!(
-                            "while true; do afplay -t 0.04 {sound} 2>/dev/null; sleep 0.04; done"
-                        ),
-                    ])
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                    .ok()?;
-                return Some(SoundHandle(child));
-            }
-        }
-        None
-    }
-}
-
-/// RAII guard that stops a background sound process when dropped.
-pub struct SoundHandle(std::process::Child);
-
-impl Drop for SoundHandle {
-    fn drop(&mut self) {
-        self.0.kill().ok();
-        self.0.wait().ok();
-    }
 }
 
 /// Convenience sleep in milliseconds.
@@ -578,12 +540,6 @@ mod tests {
     fn typewrite_stdout_with_draw_enabled() {
         let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
         t.typewrite_stdout("ab\x1b[1mc\x1b[0m\nend", 0);
-    }
-
-    #[test]
-    fn start_typing_sound_returns_none_when_draw_disabled() {
-        let t = Theme::plain();
-        assert!(t.start_typing_sound().is_none());
     }
 
     #[test]

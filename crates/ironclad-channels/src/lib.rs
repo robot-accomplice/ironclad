@@ -1,7 +1,34 @@
+//! # ironclad-channels
+//!
+//! Channel adapters for user-facing chat platforms and the zero-trust
+//! agent-to-agent (A2A) communication protocol. All adapters implement the
+//! [`ChannelAdapter`] trait for unified message handling.
+//!
+//! ## Key Types
+//!
+//! - [`ChannelAdapter`] -- Async trait: `recv()`, `send()`, `platform_name()`
+//! - [`InboundMessage`] -- Normalized inbound message from any platform
+//! - [`OutboundMessage`] -- Normalized outbound message for any platform
+//!
+//! ## Modules
+//!
+//! - `telegram` -- Telegram Bot API (long-poll + webhook, Markdown V2)
+//! - `whatsapp` -- WhatsApp Cloud API (webhook, message templates)
+//! - `discord` -- Discord Gateway + REST API (slash commands, rich embeds)
+//! - `signal` -- Signal Protocol via signal-cli daemon (JSON-RPC)
+//! - `web` -- WebSocket interface (axum, JSON frames, ping/pong)
+//! - `voice` -- Voice channel (WebRTC, STT, TTS)
+//! - `email` -- Email adapter (IMAP listener + SMTP sender)
+//! - `a2a` -- Zero-trust A2A protocol (ECDH key exchange, AES-256-GCM)
+//! - `router` -- Multi-channel message routing and dispatch
+//! - `delivery` -- Outbound delivery queue with retry logic
+//! - `filter` -- Addressability filter (per-channel routing rules)
+
 pub mod a2a;
 pub mod delivery;
 pub mod discord;
 pub mod email;
+pub mod filter;
 pub mod router;
 pub mod signal;
 pub mod telegram;

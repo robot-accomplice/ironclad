@@ -198,7 +198,8 @@ mod tests {
     #[test]
     fn is_credit_error_detects_billing() {
         let err = IroncladError::Llm(
-            r#"provider returned 403: {"error": {"message": "Your billing account is inactive"}}"#.into(),
+            r#"provider returned 403: {"error": {"message": "Your billing account is inactive"}}"#
+                .into(),
         );
         assert!(err.is_credit_error());
     }
@@ -206,7 +207,8 @@ mod tests {
     #[test]
     fn is_credit_error_detects_quota_exhaustion() {
         let err = IroncladError::Llm(
-            r#"provider returned 429: {"error": {"message": "You exceeded your current quota"}}"#.into(),
+            r#"provider returned 429: {"error": {"message": "You exceeded your current quota"}}"#
+                .into(),
         );
         assert!(err.is_credit_error());
     }
@@ -235,9 +237,8 @@ mod tests {
 
     #[test]
     fn is_credit_error_works_on_network_variant() {
-        let err = IroncladError::Network(
-            "provider returned 402 Payment Required: no credits".into(),
-        );
+        let err =
+            IroncladError::Network("provider returned 402 Payment Required: no credits".into());
         assert!(err.is_credit_error());
     }
 }

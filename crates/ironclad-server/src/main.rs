@@ -836,8 +836,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .canonicalize()
                     .or_else(|_| {
                         let home = std::env::var("HOME").unwrap_or_default();
-                        let home_cfg =
-                            std::path::PathBuf::from(home).join(".ironclad").join(&config);
+                        let home_cfg = std::path::PathBuf::from(home)
+                            .join(".ironclad")
+                            .join(&config);
                         home_cfg.canonicalize()
                     })
                     .map_err(|_| {
@@ -933,8 +934,6 @@ fn print_banner(t: &Theme) {
     let r = t.reset();
     let scan = if t.colors_enabled() { 55 } else { 0 };
 
-    let _sound = t.start_typing_sound();
-
     eprintln!();
     for line in BANNER.lines() {
         if line.contains("I R O N C L A D") {
@@ -951,8 +950,6 @@ fn print_banner(t: &Theme) {
         }
     }
     eprintln!();
-
-    drop(_sound);
 }
 
 fn step(t: &Theme, n: u32, total: u32, msg: &str) {

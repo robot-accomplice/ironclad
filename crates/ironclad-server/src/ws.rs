@@ -31,6 +31,10 @@ pub fn ws_route(bus: EventBus) -> axum::routing::MethodRouter {
     axum::routing::get(handler)
 }
 
+// WebSocket connections are intentionally unauthenticated here because:
+// 1. The dashboard SPA is served behind the API key layer
+// 2. WebSocket upgrade requests cannot easily carry Authorization headers
+// 3. The /ws route only broadcasts events, it doesn't accept commands
 async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
     let mut rx = bus.subscribe();
 
@@ -55,7 +59,11 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
                             break; // client disconnected
                         }
                     }
-                    Err(_) => break,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, "WebSocket subscriber lagged, skipping lost events");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
             msg = socket.recv() => {

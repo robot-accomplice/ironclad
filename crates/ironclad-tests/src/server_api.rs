@@ -354,6 +354,45 @@ async fn agent_pipeline_clean_input_flows_through() {
 }
 
 #[tokio::test]
+async fn post_message_to_nonexistent_session_returns_404() {
+    let state = test_state();
+    let app = build_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/sessions/nonexistent-uuid/messages")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"role":"user","content":"hello"}"#))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "posting to a non-existent session should return 404"
+    );
+}
+
+#[tokio::test]
+async fn post_message_to_existing_session_succeeds() {
+    let state = test_state();
+
+    let sid = ironclad_db::sessions::find_or_create(&state.db, "integration-test", None).unwrap();
+
+    let app = build_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/sessions/{sid}/messages"))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"role":"user","content":"hello world"}"#))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert!(body["message_id"].as_str().is_some());
+}
+
+#[tokio::test]
 async fn agent_pipeline_suspicious_input_blocked() {
     let state = test_state();
     let app = build_router(state);

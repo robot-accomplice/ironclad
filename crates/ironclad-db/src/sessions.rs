@@ -488,6 +488,177 @@ pub fn backfill_nicknames(db: &Database) -> Result<usize> {
     Ok(count)
 }
 
+// ── Turn query helpers ─────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct TurnRecord {
+    pub id: String,
+    pub session_id: String,
+    pub thinking: Option<String>,
+    pub tool_calls_json: Option<String>,
+    pub tokens_in: Option<i64>,
+    pub tokens_out: Option<i64>,
+    pub cost: Option<f64>,
+    pub model: Option<String>,
+    pub created_at: String,
+}
+
+pub fn list_turns_for_session(db: &Database, session_id: &str) -> Result<Vec<TurnRecord>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_id, thinking, tool_calls_json, tokens_in, tokens_out, cost, model, created_at \
+             FROM turns WHERE session_id = ?1 ORDER BY created_at ASC",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([session_id], |row| {
+            Ok(TurnRecord {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                thinking: row.get(2)?,
+                tool_calls_json: row.get(3)?,
+                tokens_in: row.get(4)?,
+                tokens_out: row.get(5)?,
+                cost: row.get(6)?,
+                model: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
+pub fn get_turn_by_id(db: &Database, turn_id: &str) -> Result<Option<TurnRecord>> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT id, session_id, thinking, tool_calls_json, tokens_in, tokens_out, cost, model, created_at \
+         FROM turns WHERE id = ?1",
+        [turn_id],
+        |row| {
+            Ok(TurnRecord {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                thinking: row.get(2)?,
+                tool_calls_json: row.get(3)?,
+                tokens_in: row.get(4)?,
+                tokens_out: row.get(5)?,
+                cost: row.get(6)?,
+                model: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
+// ── Turn feedback ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnFeedback {
+    pub id: String,
+    pub turn_id: String,
+    pub session_id: String,
+    pub grade: i32,
+    pub source: String,
+    pub comment: Option<String>,
+    pub created_at: String,
+}
+
+pub fn record_feedback(
+    db: &Database,
+    turn_id: &str,
+    session_id: &str,
+    grade: i32,
+    source: &str,
+    comment: Option<&str>,
+) -> Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    db.conn()
+        .execute(
+            "INSERT INTO turn_feedback (id, turn_id, session_id, grade, source, comment) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(turn_id) DO UPDATE SET grade = excluded.grade, source = excluded.source, comment = excluded.comment",
+            rusqlite::params![id, turn_id, session_id, grade, source, comment],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(id)
+}
+
+pub fn get_feedback(db: &Database, turn_id: &str) -> Result<Option<TurnFeedback>> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT id, turn_id, session_id, grade, source, comment, created_at \
+         FROM turn_feedback WHERE turn_id = ?1 LIMIT 1",
+        [turn_id],
+        |row| {
+            Ok(TurnFeedback {
+                id: row.get(0)?,
+                turn_id: row.get(1)?,
+                session_id: row.get(2)?,
+                grade: row.get(3)?,
+                source: row.get(4)?,
+                comment: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
+pub fn update_feedback(
+    db: &Database,
+    turn_id: &str,
+    grade: i32,
+    comment: Option<&str>,
+) -> Result<()> {
+    let conn = db.conn();
+    let changed = conn
+        .execute(
+            "UPDATE turn_feedback SET grade = ?1, comment = ?2 WHERE turn_id = ?3",
+            rusqlite::params![grade, comment, turn_id],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    if changed == 0 {
+        return Err(IroncladError::Database(format!(
+            "no feedback found for turn: {turn_id}"
+        )));
+    }
+    Ok(())
+}
+
+pub fn list_session_feedback(db: &Database, session_id: &str) -> Result<Vec<TurnFeedback>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, turn_id, session_id, grade, source, comment, created_at \
+             FROM turn_feedback WHERE session_id = ?1 ORDER BY created_at ASC",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([session_id], |row| {
+            Ok(TurnFeedback {
+                id: row.get(0)?,
+                turn_id: row.get(1)?,
+                session_id: row.get(2)?,
+                grade: row.get(3)?,
+                source: row.get(4)?,
+                comment: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
 /// Count messages in a session.
 pub fn message_count(db: &Database, session_id: &str) -> Result<i64> {
     let conn = db.conn();
@@ -996,5 +1167,90 @@ mod tests {
         append_message(&db, &sid, "assistant", "b").unwrap();
         append_message(&db, &sid, "user", "c").unwrap();
         assert_eq!(message_count(&db, &sid).unwrap(), 3);
+    }
+
+    // ── turn feedback tests ──────────────────────────────────
+
+    #[test]
+    fn record_and_get_feedback() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-fb", None).unwrap();
+        let tid = create_turn(&db, &sid, Some("gpt-4"), Some(100), Some(50), Some(0.01)).unwrap();
+
+        let fb_id = record_feedback(&db, &tid, &sid, 4, "dashboard", Some("good")).unwrap();
+        assert!(!fb_id.is_empty());
+
+        let fb = get_feedback(&db, &tid)
+            .unwrap()
+            .expect("feedback should exist");
+        assert_eq!(fb.grade, 4);
+        assert_eq!(fb.source, "dashboard");
+        assert_eq!(fb.comment.as_deref(), Some("good"));
+    }
+
+    #[test]
+    fn get_feedback_returns_none_for_missing() {
+        let db = test_db();
+        assert!(get_feedback(&db, "nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn update_feedback_changes_grade() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-fb-up", None).unwrap();
+        let tid = create_turn(&db, &sid, None, None, None, None).unwrap();
+        record_feedback(&db, &tid, &sid, 3, "dashboard", None).unwrap();
+
+        update_feedback(&db, &tid, 5, Some("revised")).unwrap();
+
+        let fb = get_feedback(&db, &tid).unwrap().unwrap();
+        assert_eq!(fb.grade, 5);
+        assert_eq!(fb.comment.as_deref(), Some("revised"));
+    }
+
+    #[test]
+    fn update_feedback_missing_returns_error() {
+        let db = test_db();
+        assert!(update_feedback(&db, "nonexistent", 3, None).is_err());
+    }
+
+    #[test]
+    fn list_session_feedback_returns_all() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-fb-list", None).unwrap();
+        let t1 = create_turn(&db, &sid, None, None, None, None).unwrap();
+        let t2 = create_turn(&db, &sid, None, None, None, None).unwrap();
+        record_feedback(&db, &t1, &sid, 4, "dashboard", None).unwrap();
+        record_feedback(&db, &t2, &sid, 2, "dashboard", Some("bad")).unwrap();
+
+        let fbs = list_session_feedback(&db, &sid).unwrap();
+        assert_eq!(fbs.len(), 2);
+    }
+
+    #[test]
+    fn list_session_feedback_empty() {
+        let db = test_db();
+        let fbs = list_session_feedback(&db, "nonexistent").unwrap();
+        assert!(fbs.is_empty());
+    }
+
+    #[test]
+    fn record_feedback_upserts_on_duplicate_turn() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-fb-upsert", None).unwrap();
+        let tid = create_turn(&db, &sid, Some("gpt-4"), Some(100), Some(50), Some(0.01)).unwrap();
+
+        record_feedback(&db, &tid, &sid, 3, "dashboard", Some("okay")).unwrap();
+        let fb1 = get_feedback(&db, &tid).unwrap().unwrap();
+        assert_eq!(fb1.grade, 3);
+
+        record_feedback(&db, &tid, &sid, 5, "api", Some("great")).unwrap();
+        let fb2 = get_feedback(&db, &tid).unwrap().unwrap();
+        assert_eq!(fb2.grade, 5, "grade should be updated by upsert");
+        assert_eq!(fb2.source, "api", "source should be updated by upsert");
+        assert_eq!(fb2.comment.as_deref(), Some("great"));
+
+        let all = list_session_feedback(&db, &sid).unwrap();
+        assert_eq!(all.len(), 1, "upsert should not create duplicate rows");
     }
 }

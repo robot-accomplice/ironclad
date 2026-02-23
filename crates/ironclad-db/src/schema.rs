@@ -356,6 +356,31 @@ CREATE TABLE IF NOT EXISTS hippocampus (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_hippocampus_agent ON hippocampus(created_by, agent_owned);
+
+CREATE TABLE IF NOT EXISTS turn_feedback (
+    id TEXT PRIMARY KEY,
+    turn_id TEXT NOT NULL UNIQUE REFERENCES turns(id),
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    grade INTEGER NOT NULL CHECK (grade BETWEEN 1 AND 5),
+    source TEXT NOT NULL DEFAULT 'dashboard',
+    comment TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_turn_feedback_session ON turn_feedback(session_id);
+
+CREATE TABLE IF NOT EXISTS context_snapshots (
+    turn_id TEXT PRIMARY KEY REFERENCES turns(id),
+    complexity_level TEXT NOT NULL,
+    token_budget INTEGER NOT NULL,
+    system_prompt_tokens INTEGER,
+    memory_tokens INTEGER,
+    history_tokens INTEGER,
+    history_depth INTEGER,
+    memory_tiers_json TEXT,
+    retrieved_memories_json TEXT,
+    model TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 "#;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
@@ -477,8 +502,8 @@ mod tests {
     fn schema_creates_all_tables() {
         let db = Database::new(":memory:").unwrap();
         let count = table_count(&db).unwrap();
-        // 29 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus = 31
-        assert_eq!(count, 31, "expected 31 user-defined tables, got {count}");
+        // 29 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback + context_snapshots = 33
+        assert_eq!(count, 33, "expected 33 user-defined tables, got {count}");
     }
 
     #[test]
@@ -487,7 +512,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 31);
+        assert_eq!(count, 33);
     }
 
     #[test]

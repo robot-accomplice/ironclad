@@ -1,9 +1,40 @@
+//! # ironclad-db
+//!
+//! SQLite persistence layer for the Ironclad agent runtime. All state --
+//! sessions, memories, tool calls, policy decisions, cron jobs, embeddings,
+//! skills, and semantic cache -- lives in a single SQLite database with WAL
+//! mode enabled.
+//!
+//! ## Key Types
+//!
+//! - [`Database`] -- Thread-safe handle wrapping `Arc<Mutex<Connection>>`
+//!
+//! ## Modules
+//!
+//! - `schema` -- Table definitions, `initialize_db()`, migration runner
+//! - `sessions` -- Session CRUD, message append/list, turn persistence
+//! - `memory` -- 5-tier memory CRUD (working, episodic, semantic, procedural, relationship) + FTS5
+//! - `embeddings` -- BLOB embedding storage / lookup with JSON fallback
+//! - `ann` -- HNSW approximate nearest-neighbor index (instant-distance)
+//! - `hippocampus` -- Long-term memory consolidation and decay
+//! - `checkpoint` -- Session checkpoint / restore via `context_snapshots` table
+//! - `efficiency` -- Efficiency metrics tracking and queries
+//! - `agents` -- Sub-agent registry and enabled-agent CRUD
+//! - `backend` -- Storage backend abstraction trait
+//! - `cache` -- Semantic cache persistence (loaded on boot, flushed every 5 min)
+//! - `cron` -- Cron job state, lease acquisition, run history
+//! - `skills` -- Skill definition CRUD and trigger lookup
+//! - `tools` -- Tool call records
+//! - `policy` -- Policy decision records
+//! - `metrics` -- Inference cost tracking, proxy snapshots, transactions, turn feedback
+
 pub mod agents;
 pub mod ann;
 pub mod backend;
 pub mod cache;
 pub mod checkpoint;
 pub mod cron;
+pub mod efficiency;
 pub mod embeddings;
 pub mod hippocampus;
 pub mod memory;

@@ -1,3 +1,23 @@
+//! # ironclad-plugin-sdk
+//!
+//! Plugin system for the Ironclad agent runtime. Plugins extend the agent with
+//! custom tools that are discovered, loaded, and executed through a unified
+//! async trait interface.
+//!
+//! ## Key Types
+//!
+//! - [`Plugin`] -- Async trait defining the plugin lifecycle
+//! - [`ToolDef`] -- Tool definition with name, description, and JSON Schema parameters
+//! - [`ToolResult`] -- Execution result (success flag, output text, optional metadata)
+//! - [`PluginStatus`] -- Plugin state: Loaded, Active, Disabled, Error
+//!
+//! ## Modules
+//!
+//! - `loader` -- Load plugins from a directory with auto-discovery and hot-reload
+//! - `manifest` -- TOML manifest parsing and validation
+//! - `registry` -- Plugin registration, lookup, enable/disable
+//! - `script` -- Script-based plugin execution (subprocess with sandboxing)
+
 pub mod loader;
 pub mod manifest;
 pub mod registry;

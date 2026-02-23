@@ -1,3 +1,26 @@
+//! # ironclad-schedule
+//!
+//! Unified cron/heartbeat scheduler for the Ironclad agent runtime. Jobs are
+//! persisted in SQLite (`ironclad-db/cron.rs`) with lease-based mutual
+//! exclusion to prevent duplicate execution across restarts.
+//!
+//! ## Key Types
+//!
+//! - [`HeartbeatDaemon`] -- Periodic tick loop driving registered heartbeat tasks
+//! - [`DurableScheduler`] -- Cron expression and fixed-interval evaluation
+//! - [`HeartbeatTask`] / [`TaskResult`] -- Pluggable task trait and outcome type
+//!
+//! ## Modules
+//!
+//! - `heartbeat` -- Heartbeat daemon loop with wallet and DB context
+//! - `scheduler` -- Cron expression parsing (`evaluate_cron`) and interval checks
+//! - `tasks` -- `HeartbeatTask` trait and built-in task implementations
+//!
+//! ## Entry Points
+//!
+//! - [`run_heartbeat()`] -- Start the heartbeat daemon
+//! - [`run_cron_worker()`] -- Start the cron worker (lease, execute, record)
+
 pub mod heartbeat;
 pub mod scheduler;
 pub mod tasks;

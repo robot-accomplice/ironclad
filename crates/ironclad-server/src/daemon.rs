@@ -119,7 +119,10 @@ pub fn start_daemon() -> Result<()> {
         }
         "linux" => {
             run_cmd("systemctl", &["--user", "daemon-reload"])?;
-            run_cmd("systemctl", &["--user", "enable", "--now", "ironclad.service"])
+            run_cmd(
+                "systemctl",
+                &["--user", "enable", "--now", "ironclad.service"],
+            )
         }
         other => Err(IroncladError::Config(format!(
             "daemon start not supported on {other}"
@@ -193,10 +196,8 @@ fn verify_launchd_running() -> Result<()> {
                 .trim_end_matches(';')
                 .trim();
             if code != "0" {
-                let stderr_path = PathBuf::from(
-                    std::env::var("HOME").unwrap_or_default(),
-                )
-                .join(".ironclad/logs/ironclad.stderr.log");
+                let stderr_path = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                    .join(".ironclad/logs/ironclad.stderr.log");
                 let hint = if stderr_path.exists() {
                     format!(" (see {})", stderr_path.display())
                 } else {

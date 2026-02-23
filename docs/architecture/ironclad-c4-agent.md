@@ -1,3 +1,4 @@
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 # C4 Level 3: Component Diagram -- ironclad-agent
 
 *Agent core implementing the ReAct reasoning loop, tool execution, policy enforcement, prompt injection defense, memory management, and context assembly.*
@@ -22,6 +23,22 @@ flowchart TB
         APPROVALS["approvals.rs<br/>Approval flows"]
         INTERVIEW["interview.rs<br/>Personality interview"]
         SUBAGENTS["subagents.rs<br/>Subagent registry"]
+        ANALYZER["analyzer.rs<br/>Conversation Analyzer"]
+        RECOMMENDATIONS["recommendations.rs<br/>Proactive Recommendations"]
+        WORKSPACE["workspace.rs<br/>Workspace State Manager"]
+        KNOWLEDGE["knowledge.rs<br/>Knowledge Source Trait +<br/>Aggregation"]
+        DISCOVERY["discovery.rs<br/>Capability Discovery"]
+        DIGEST["digest.rs<br/>Turn Digest +<br/>Summarization"]
+        DEVICE["device.rs<br/>Device Context +<br/>Hardware Info"]
+        GOVERNOR["governor.rs<br/>Rate Governor +<br/>Concurrency Limits"]
+        MANIFEST["manifest.rs<br/>Agent Manifest +<br/>Capability Declarations"]
+        SERVICES["services.rs<br/>Service Locator +<br/>Dependency Wiring"]
+        ORCHESTRATION["orchestration.rs<br/>Multi-Agent<br/>Orchestration"]
+        MCP["mcp.rs<br/>Model Context Protocol<br/>Client"]
+        SPAWNING["spawning.rs<br/>Subagent Spawning +<br/>Lifecycle"]
+        SPECULATIVE["speculative.rs<br/>Speculative Execution +<br/>Branch Evaluation"]
+        TYPESTATE["typestate.rs<br/>Typed State Machine<br/>Transitions"]
+        WASM["wasm.rs<br/>WASM Plugin Runtime"]
     end
 
     subgraph LoopDetail ["loop.rs - ReAct State Machine"]
@@ -105,6 +122,37 @@ flowchart TB
     LOOP --> MEMORY
     LOOP --> RETRIEVAL
 
+    subgraph AnalyzerDetail ["analyzer.rs + recommendations.rs"]
+        CONV_ANALYZE["ConversationAnalyzer:<br/>topic extraction, sentiment,<br/>complexity scoring"]
+        REC_ENGINE["RecommendationEngine:<br/>proactive suggestions from<br/>conversation + memory patterns"]
+    end
+
+    subgraph OrchestrationDetail ["orchestration.rs + spawning.rs"]
+        ORCH_PLAN["OrchestrationPlan:<br/>decompose task into<br/>subagent assignments"]
+        SPAWN_MGR["SpawnManager:<br/>lifecycle, health checks,<br/>result aggregation"]
+    end
+
+    subgraph ExtensionDetail ["wasm.rs + mcp.rs"]
+        WASM_RT["WasmRuntime:<br/>wasmtime sandbox,<br/>host function bindings"]
+        MCP_CLIENT["McpClient:<br/>tool discovery, invoke,<br/>resource fetch"]
+    end
+
+    subgraph InfraDetail ["governor.rs + typestate.rs + services.rs"]
+        GOV_RATE["RateGovernor:<br/>per-session + global<br/>concurrency limits"]
+        TS_MACHINE["TypestateMachine:<br/>compile-time valid<br/>state transitions"]
+        SVC_LOCATOR["ServiceLocator:<br/>dependency wiring,<br/>lazy initialization"]
+    end
+
+    subgraph ContextExtDetail ["knowledge.rs + discovery.rs + digest.rs + device.rs + workspace.rs + manifest.rs + speculative.rs"]
+        KNOW_SRC["KnowledgeSource trait:<br/>search, rank, format"]
+        DISC_CAP["CapabilityDiscovery:<br/>scan tools, skills, plugins"]
+        DIGEST_TURN["TurnDigest:<br/>compress history into<br/>salient summaries"]
+        DEV_CTX["DeviceContext:<br/>OS, hardware, env info"]
+        WS_STATE["WorkspaceState:<br/>file tree, git status,<br/>project metadata"]
+        AGENT_MANIFEST["AgentManifest:<br/>capability declarations,<br/>version, endpoints"]
+        SPEC_EXEC["SpeculativeExecutor:<br/>parallel branch evaluation,<br/>best-result selection"]
+    end
+
     VAULT --> NOTE
     OBS_SOURCE --> VAULT
     OBS_READ --> VAULT
@@ -114,6 +162,23 @@ flowchart TB
     TOOLS --> OBS_READ
     TOOLS --> OBS_WRITE
     TOOLS --> OBS_SEARCH
+
+    LOOP --> ANALYZER
+    ANALYZER --> RECOMMENDATIONS
+    LOOP --> TYPESTATE
+    LOOP --> GOVERNOR
+    LOOP --> SPECULATIVE
+    CONTEXT --> KNOWLEDGE
+    CONTEXT --> DISCOVERY
+    CONTEXT --> DIGEST
+    CONTEXT --> DEVICE
+    CONTEXT --> WORKSPACE
+    SUBAGENTS --> ORCHESTRATION
+    SUBAGENTS --> SPAWNING
+    TOOLS --> MCP
+    TOOLS --> WASM
+    LOOP --> SERVICES
+    MANIFEST --> DISCOVERY
 ```
 
 ## Module Interactions

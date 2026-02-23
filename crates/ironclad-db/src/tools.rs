@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::Database;
 use ironclad_core::{IroncladError, Result};
 
@@ -59,6 +61,47 @@ pub fn get_tool_calls_for_turn(db: &Database, turn_id: &str) -> Result<Vec<ToolC
 
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
+/// Batch-fetch all tool calls for every turn in a session, grouped by turn_id.
+/// Eliminates the N+1 query pattern when analyzing sessions with many turns.
+pub fn get_tool_calls_for_session(
+    db: &Database,
+    session_id: &str,
+) -> Result<HashMap<String, Vec<ToolCallRecord>>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT tc.id, tc.turn_id, tc.tool_name, tc.input, tc.output, tc.status, \
+                    tc.duration_ms, tc.created_at \
+             FROM tool_calls tc \
+             INNER JOIN turns t ON tc.turn_id = t.id \
+             WHERE t.session_id = ?1 \
+             ORDER BY tc.created_at ASC",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([session_id], |row| {
+            Ok(ToolCallRecord {
+                id: row.get(0)?,
+                turn_id: row.get(1)?,
+                tool_name: row.get(2)?,
+                input: row.get(3)?,
+                output: row.get(4)?,
+                status: row.get(5)?,
+                duration_ms: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let mut map: HashMap<String, Vec<ToolCallRecord>> = HashMap::new();
+    for row in rows {
+        let record = row.map_err(|e| IroncladError::Database(e.to_string()))?;
+        map.entry(record.turn_id.clone()).or_default().push(record);
+    }
+    Ok(map)
 }
 
 #[cfg(test)]
@@ -163,6 +206,31 @@ mod tests {
         let db = test_db();
         let calls = get_tool_calls_for_turn(&db, "nonexistent").unwrap();
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn batch_get_tool_calls_for_session() {
+        let db = test_db();
+        let conn = db.conn();
+        conn.execute("INSERT INTO turns (id, session_id) VALUES ('t2', 's1')", [])
+            .unwrap();
+        drop(conn);
+        record_tool_call(&db, "t1", "read", "{}", None, "success", Some(10)).unwrap();
+        record_tool_call(&db, "t1", "write", "{}", None, "success", Some(20)).unwrap();
+        record_tool_call(&db, "t2", "bash", "{}", None, "error", Some(5)).unwrap();
+
+        let map = get_tool_calls_for_session(&db, "s1").unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["t1"].len(), 2);
+        assert_eq!(map["t2"].len(), 1);
+        assert_eq!(map["t2"][0].tool_name, "bash");
+    }
+
+    #[test]
+    fn batch_get_empty_session() {
+        let db = test_db();
+        let map = get_tool_calls_for_session(&db, "s1").unwrap();
+        assert!(map.is_empty());
     }
 
     #[test]

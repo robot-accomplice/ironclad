@@ -3,7 +3,7 @@
 /// In group chats the agent should only respond when explicitly addressed
 /// (mentioned by name, replied-to, etc.). These filters compose with OR
 /// semantics so any single match is sufficient.
-
+///
 /// Determines whether the agent should process a given message.
 pub trait MessageFilter: Send + Sync {
     fn name(&self) -> &str;
@@ -257,10 +257,7 @@ mod tests {
     #[test]
     fn default_chain_accepts_mention() {
         let chain = default_addressability_chain("ironclad");
-        let msg = make_msg(
-            "ironclad help me",
-            Some(json!({"is_group": true})),
-        );
+        let msg = make_msg("ironclad help me", Some(json!({"is_group": true})));
         assert!(chain.accepts(&msg));
     }
 

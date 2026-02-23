@@ -179,8 +179,14 @@ pub async fn get_policy_audit(
     State(state): State<AppState>,
     Path(turn_id): Path<String>,
 ) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
-    let decisions = ironclad_db::policy::get_decisions_for_turn(&state.db, &turn_id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let decisions =
+        ironclad_db::policy::get_decisions_for_turn(&state.db, &turn_id).map_err(|e| {
+            tracing::error!(error = %e, "failed to fetch policy audit");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal server error".to_string(),
+            )
+        })?;
     Ok(Json(json!({
         "turn_id": turn_id,
         "decisions": decisions.iter().map(|d| json!({
@@ -198,8 +204,13 @@ pub async fn get_tool_audit(
     State(state): State<AppState>,
     Path(turn_id): Path<String>,
 ) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
-    let calls = ironclad_db::tools::get_tool_calls_for_turn(&state.db, &turn_id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let calls = ironclad_db::tools::get_tool_calls_for_turn(&state.db, &turn_id).map_err(|e| {
+        tracing::error!(error = %e, "failed to fetch tool audit");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal server error".to_string(),
+        )
+    })?;
     Ok(Json(json!({
         "turn_id": turn_id,
         "tool_calls": calls.iter().map(|c| json!({
@@ -1023,9 +1034,10 @@ pub async fn set_provider_key(
 
     let ks_name = format!("{name}_api_key");
     state.keystore.set(&ks_name, key).map_err(|e| {
+        tracing::error!(provider = %name, error = %e, "failed to store API key in keystore");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("keystore error: {e}"),
+            "internal server error".to_string(),
         )
     })?;
 
@@ -1053,9 +1065,10 @@ pub async fn delete_provider_key(
 
     let ks_name = format!("{name}_api_key");
     let removed = state.keystore.remove(&ks_name).map_err(|e| {
+        tracing::error!(provider = %name, error = %e, "failed to remove API key from keystore");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("keystore error: {e}"),
+            "internal server error".to_string(),
         )
     })?;
 
@@ -1067,6 +1080,96 @@ pub async fn delete_provider_key(
         "removed": removed,
         "provider": name,
         "keystore_entry": ks_name,
+    })))
+}
+
+// ── Prompt efficiency metrics ────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct EfficiencyParams {
+    pub period: Option<String>,
+    pub model: Option<String>,
+}
+
+pub async fn get_efficiency(
+    State(state): State<AppState>,
+    Query(params): Query<EfficiencyParams>,
+) -> impl IntoResponse {
+    let period = params.period.as_deref().unwrap_or("7d");
+    let model = params.model.as_deref();
+
+    match ironclad_db::efficiency::compute_efficiency(&state.db, period, model) {
+        Ok(report) => Json(serde_json::to_value(report).unwrap_or_default()).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to compute efficiency report");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal server error".to_string(),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ── Behavioral Recommendations ───────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RecommendationsParams {
+    pub period: Option<String>,
+}
+
+pub async fn get_recommendations(
+    State(state): State<AppState>,
+    Query(params): Query<RecommendationsParams>,
+) -> impl IntoResponse {
+    let period = params.period.as_deref().unwrap_or("30d");
+
+    let profile = match ironclad_db::efficiency::build_user_profile(&state.db, period) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to build user profile for recommendations");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal server error".to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    let engine = ironclad_agent::recommendations::RecommendationEngine::new();
+    let recs = engine.generate(&profile);
+
+    Json(json!({
+        "period": period,
+        "profile": profile,
+        "recommendations": recs,
+        "count": recs.len(),
+    }))
+    .into_response()
+}
+
+pub async fn generate_deep_analysis(
+    State(state): State<AppState>,
+    Query(params): Query<RecommendationsParams>,
+) -> impl IntoResponse {
+    let period = params.period.as_deref().unwrap_or("30d");
+
+    let profile = match ironclad_db::efficiency::build_user_profile(&state.db, period) {
+        Ok(p) => p,
+        Err(e) => return Err(internal_err(&e)),
+    };
+
+    let engine = ironclad_agent::recommendations::RecommendationEngine::new();
+    let recs = engine.generate(&profile);
+    let prompt =
+        ironclad_agent::recommendations::LlmRecommendationAnalyzer::build_prompt(&profile, &recs);
+
+    Ok(Json(json!({
+        "status": "stub",
+        "message": "LLM deep analysis not yet wired — prompt generated for manual review",
+        "prompt": prompt,
+        "heuristic_recommendations": recs,
+        "profile": profile,
     })))
 }
 

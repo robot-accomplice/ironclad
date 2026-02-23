@@ -1,8 +1,13 @@
 //! Agent message, channel processing, and Telegram poll.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse};
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
+use futures_util::StreamExt;
 use ironclad_agent::agent_loop::{AgentLoop, ReactAction, ReactState};
 use ironclad_agent::tools::ToolContext;
 use ironclad_channels::ChannelAdapter;
@@ -11,6 +16,27 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::AppState;
+
+/// RAII guard that releases a dedup fingerprint when dropped.
+/// Ensures cleanup on all exit paths, including async stream disconnects.
+struct DedupGuard {
+    llm: Arc<tokio::sync::RwLock<ironclad_llm::LlmService>>,
+    fingerprint: String,
+}
+
+impl Drop for DedupGuard {
+    fn drop(&mut self) {
+        if self.fingerprint.is_empty() {
+            return;
+        }
+        let llm = Arc::clone(&self.llm);
+        let fp = std::mem::take(&mut self.fingerprint);
+        tokio::spawn(async move {
+            let mut llm = llm.write().await;
+            llm.dedup.release(&fp);
+        });
+    }
+}
 
 /// Try to extract a tool call from the LLM's text response.
 /// Looks for `{"tool_call": {"name": "...", "params": {...}}}` in the response.
@@ -78,6 +104,32 @@ async fn execute_tool_call(
         return Err(format!("Policy denied: {msg}"));
     }
 
+    // Approval gate: block gated tools until a human approves
+    match state.approvals.check_tool(tool_name) {
+        Ok(ironclad_agent::approvals::ToolClassification::Gated) => {
+            let request = state
+                .approvals
+                .request_approval(tool_name, &params.to_string(), Some(turn_id))
+                .map_err(|e| format!("Approval error: {e}"))?;
+            state.event_bus.publish(
+                serde_json::json!({
+                    "type": "pending_approval",
+                    "tool": tool_name,
+                    "request_id": request.id,
+                })
+                .to_string(),
+            );
+            return Err(format!(
+                "Tool '{tool_name}' requires approval (request: {})",
+                request.id
+            ));
+        }
+        Err(e) => {
+            return Err(format!("Tool blocked: {e}"));
+        }
+        Ok(_) => {}
+    }
+
     let tool = match state.tools.get(tool_name) {
         Some(t) => t,
         None => return Err(format!("Unknown tool: {tool_name}")),
@@ -90,11 +142,31 @@ async fn execute_tool_call(
     };
 
     let start = std::time::Instant::now();
-    let result = tool.execute(params.clone(), &ctx).await;
+    let timeout_duration = std::time::Duration::from_secs(120);
+    let result =
+        match tokio::time::timeout(timeout_duration, tool.execute(params.clone(), &ctx)).await {
+            Ok(result) => result,
+            Err(_) => Err(ironclad_agent::tools::ToolError {
+                message: format!("Tool '{tool_name}' timed out after {timeout_duration:?}"),
+            }),
+        };
     let duration_ms = start.elapsed().as_millis() as i64;
 
+    const MAX_TOOL_OUTPUT: usize = 16_384;
     let (output, status) = match &result {
-        Ok(r) => (r.output.clone(), "success"),
+        Ok(r) => {
+            let out = if r.output.len() > MAX_TOOL_OUTPUT {
+                let boundary = r.output.floor_char_boundary(MAX_TOOL_OUTPUT);
+                format!(
+                    "{}...\n[truncated: {} bytes total]",
+                    &r.output[..boundary],
+                    r.output.len()
+                )
+            } else {
+                r.output.clone()
+            };
+            (out, "success")
+        }
         Err(e) => (e.message.clone(), "error"),
     };
 
@@ -110,7 +182,7 @@ async fn execute_tool_call(
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record tool call"))
     .ok();
 
-    result.map(|r| r.output).map_err(|e| e.message)
+    result.map(|_| output).map_err(|e| e.message)
 }
 
 pub async fn agent_status(State(state): State<AppState>) -> impl IntoResponse {
@@ -147,6 +219,19 @@ pub async fn agent_message(
     axum::Json(body): axum::Json<AgentMessageRequest>,
 ) -> impl IntoResponse {
     let config = state.config.read().await;
+
+    if body.content.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "message content cannot be empty"})),
+        ));
+    }
+    if body.content.len() > 32_768 {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            axum::Json(json!({"error": "message content exceeds maximum length (32768 bytes)"})),
+        ));
+    }
 
     // Injection defense: block (>0.7), sanitize (0.3-0.7), or pass (<0.3)
     let threat = ironclad_agent::injection::check_injection(&body.content);
@@ -195,30 +280,47 @@ pub async fn agent_message(
         Some(sid) => match ironclad_db::sessions::get_session(&state.db, sid) {
             Ok(Some(session)) if session.agent_id == agent_id => sid.clone(),
             Ok(Some(_)) => {
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
                 return Err((
                     StatusCode::FORBIDDEN,
                     axum::Json(json!({"error": "session does not belong to this agent"})),
                 ));
             }
             Ok(None) => {
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
                 return Err((
                     StatusCode::NOT_FOUND,
                     axum::Json(json!({"error": "session not found"})),
                 ));
             }
             Err(e) => {
+                tracing::error!(error = %e, "failed to retrieve session");
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(json!({"error": e.to_string()})),
+                    axum::Json(json!({"error": "internal server error"})),
                 ));
             }
         },
-        None => ironclad_db::sessions::find_or_create(&state.db, &agent_id, None).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": e.to_string()})),
-            )
-        })?,
+        None => match ironclad_db::sessions::find_or_create(&state.db, &agent_id, None) {
+            Ok(sid) => sid,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to create session");
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": "internal server error"})),
+                ));
+            }
+        },
     };
 
     // Set nickname on first message in a session
@@ -233,14 +335,24 @@ pub async fn agent_message(
     };
 
     // Store user message
-    let user_msg_id =
-        ironclad_db::sessions::append_message(&state.db, &session_id, "user", &body.content)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(json!({"error": e.to_string()})),
-                )
-            })?;
+    let user_msg_id = match ironclad_db::sessions::append_message(
+        &state.db,
+        &session_id,
+        "user",
+        &body.content,
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to store user message");
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": "internal server error"})),
+            ));
+        }
+    };
 
     // Use the ModelRouter to select a model based on complexity
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
@@ -255,6 +367,7 @@ pub async fn agent_message(
                 complexity,
                 &llm_read.providers,
                 Some(&llm_read.capacity),
+                Some(&llm_read.breakers),
                 (body.content.len() as u32 / 4).max(1),
                 routing_config.estimated_output_tokens,
             )
@@ -266,6 +379,7 @@ pub async fn agent_message(
                 complexity,
                 Some(&llm_read.providers),
                 Some(&llm_read.capacity),
+                Some(&llm_read.breakers),
             )
             .to_string()
     };
@@ -308,18 +422,24 @@ pub async fn agent_message(
     };
 
     if let Some(cached) = cached_response {
-        let asst_id = ironclad_db::sessions::append_message(
+        let asst_id = match ironclad_db::sessions::append_message(
             &state.db,
             &session_id,
             "assistant",
             &cached.content,
-        )
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": e.to_string()})),
-            )
-        })?;
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to store cached response");
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": "internal server error"})),
+                ));
+            }
+        };
 
         ironclad_db::metrics::record_inference_cost(
             &state.db,
@@ -602,18 +722,24 @@ pub async fn agent_message(
     let assistant_content = final_content;
 
     // Store assistant response
-    let asst_id = ironclad_db::sessions::append_message(
+    let asst_id = match ironclad_db::sessions::append_message(
         &state.db,
         &session_id,
         "assistant",
         &assistant_content,
-    )
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": e.to_string()})),
-        )
-    })?;
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to store assistant response");
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": "internal server error"})),
+            ));
+        }
+    };
 
     ironclad_db::metrics::record_inference_cost(
         &state.db,
@@ -729,6 +855,518 @@ pub async fn agent_message(
         "reduced_authority": reduced_authority,
         "react_turns": react_loop.turn_count,
     })))
+}
+
+/// Streaming version of `agent_message`. Returns an SSE stream of `StreamChunk`
+/// events as tokens arrive from the LLM provider. The accumulated response is
+/// stored in the session and published to the EventBus after the stream ends.
+pub async fn agent_message_stream(
+    State(state): State<AppState>,
+    axum::Json(body): axum::Json<AgentMessageRequest>,
+) -> Result<
+    Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>,
+    (StatusCode, axum::Json<serde_json::Value>),
+> {
+    let config = state.config.read().await;
+
+    if body.content.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "message content cannot be empty"})),
+        ));
+    }
+    if body.content.len() > 32_768 {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            axum::Json(json!({"error": "message content exceeds maximum length (32768 bytes)"})),
+        ));
+    }
+
+    let threat = ironclad_agent::injection::check_injection(&body.content);
+    if threat.is_blocked() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({
+                "error": "message_blocked",
+                "reason": "prompt injection detected",
+                "threat_score": threat.value(),
+            })),
+        ));
+    }
+    let user_content = if threat.is_caution() {
+        ironclad_agent::injection::sanitize(&body.content)
+    } else {
+        body.content.clone()
+    };
+
+    // In-flight deduplication
+    let dedup_fp = ironclad_llm::DedupTracker::fingerprint(
+        "",
+        &[ironclad_llm::format::UnifiedMessage {
+            role: "user".into(),
+            content: user_content.clone(),
+            parts: None,
+        }],
+    );
+    {
+        let mut llm = state.llm.write().await;
+        if !llm.dedup.check_and_track(&dedup_fp) {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                axum::Json(json!({
+                    "error": "duplicate_request",
+                    "reason": "identical request already in flight",
+                })),
+            ));
+        }
+    }
+
+    let agent_id = config.agent.id.clone();
+    let session_id = match &body.session_id {
+        Some(sid) => match ironclad_db::sessions::get_session(&state.db, sid) {
+            Ok(Some(session)) if session.agent_id == agent_id => sid.clone(),
+            Ok(Some(_)) => {
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    axum::Json(json!({"error": "session does not belong to this agent"})),
+                ));
+            }
+            Ok(None) => {
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    axum::Json(json!({"error": "session not found"})),
+                ));
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to retrieve session");
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": "internal server error"})),
+                ));
+            }
+        },
+        None => match ironclad_db::sessions::find_or_create(&state.db, &agent_id, None) {
+            Ok(sid) => sid,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to create session");
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": "internal server error"})),
+                ));
+            }
+        },
+    };
+
+    match ironclad_db::sessions::append_message(&state.db, &session_id, "user", &body.content) {
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(error = %e, "failed to store user message");
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": "internal server error"})),
+            ));
+        }
+    }
+
+    let features = ironclad_llm::extract_features(&user_content, 0, 1);
+    let complexity = ironclad_llm::classify_complexity(&features);
+
+    let llm_read = state.llm.read().await;
+    let routing_config = &config.models.routing;
+    let model = if routing_config.cost_aware {
+        llm_read
+            .router
+            .select_cheapest_qualified(
+                complexity,
+                &llm_read.providers,
+                Some(&llm_read.capacity),
+                Some(&llm_read.breakers),
+                (body.content.len() as u32 / 4).max(1),
+                routing_config.estimated_output_tokens,
+            )
+            .to_string()
+    } else {
+        llm_read
+            .router
+            .select_for_complexity(
+                complexity,
+                Some(&llm_read.providers),
+                Some(&llm_read.capacity),
+                Some(&llm_read.breakers),
+            )
+            .to_string()
+    };
+    drop(llm_read);
+
+    let tier_adapt = config.tier_adapt.clone();
+    let agent_name = config.agent.name.clone();
+    let primary_model = config.models.primary.clone();
+    let personality = state.personality.read().await;
+    let soul_text = personality.soul_text.clone();
+    let firmware_text = personality.firmware_text.clone();
+    drop(personality);
+    drop(config);
+
+    let tier = {
+        let llm = state.llm.read().await;
+        llm.providers
+            .get_by_model(&model)
+            .map(|p| p.tier)
+            .unwrap_or_else(|| ironclad_llm::tier::classify(&model))
+    };
+
+    let query_embedding = {
+        let llm = state.llm.read().await;
+        llm.embedding.embed_single(&user_content).await.ok()
+    };
+
+    let complexity_level = ironclad_agent::context::determine_level(complexity);
+    let ann_ref = if state.ann_index.is_built() {
+        Some(&state.ann_index)
+    } else {
+        None
+    };
+    let memories = state.retriever.retrieve_with_ann(
+        &state.db,
+        &session_id,
+        &user_content,
+        query_embedding.as_deref(),
+        complexity_level,
+        ann_ref,
+    );
+
+    let history_messages =
+        ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).unwrap_or_default();
+    let history: Vec<ironclad_llm::format::UnifiedMessage> = history_messages
+        .iter()
+        .rev()
+        .skip(1)
+        .rev()
+        .map(|m| ironclad_llm::format::UnifiedMessage {
+            role: m.role.clone(),
+            content: m.content.clone(),
+            parts: None,
+        })
+        .collect();
+
+    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let system_prompt = if soul_text.is_empty() {
+        format!(
+            "You are {name}, an autonomous AI agent (id: {id}). \
+             When asked who you are, always identify as {name}. \
+             Never reveal the underlying model name or claim to be a generic assistant.",
+            name = agent_name,
+            id = agent_id,
+        )
+    } else {
+        let mut prompt = soul_text;
+        if !firmware_text.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&firmware_text);
+        }
+        prompt
+    };
+    let system_prompt = format!(
+        "{system_prompt}{}",
+        ironclad_agent::prompt::runtime_metadata_block(
+            env!("CARGO_PKG_VERSION"),
+            &primary_model,
+            &model,
+        )
+    );
+    let system_prompt =
+        ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
+    if !ironclad_agent::prompt::verify_hmac_boundary(&system_prompt, state.hmac_secret.as_ref()) {
+        tracing::error!("HMAC boundary verification failed immediately after injection (stream)");
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": "internal HMAC verification failure"})),
+        ));
+    }
+
+    let mut messages = ironclad_agent::context::build_context(
+        complexity_level,
+        &system_prompt,
+        &memories,
+        &history,
+    );
+    if messages.last().is_none_or(|m| m.content != user_content) {
+        messages.push(ironclad_llm::format::UnifiedMessage {
+            role: "user".into(),
+            content: user_content.clone(),
+            parts: None,
+        });
+    }
+    ironclad_llm::tier::adapt_for_tier(tier, &mut messages, &tier_adapt);
+
+    let unified_req = ironclad_llm::format::UnifiedRequest {
+        model: model_for_api,
+        messages,
+        max_tokens: Some(2048),
+        temperature: None,
+        system: None,
+        quality_target: None,
+    };
+
+    // Resolve the provider to get URL, key, format, cost rates, etc.
+    let resolved = {
+        let llm = state.llm.read().await;
+        match llm.providers.get_by_model(&model) {
+            Some(provider) => {
+                let url = format!("{}{}", provider.url, provider.chat_path);
+                let key = super::admin::resolve_provider_key(
+                    &provider.name,
+                    provider.is_local,
+                    &provider.auth_mode,
+                    provider.api_key_ref.as_deref(),
+                    &provider.api_key_env,
+                    &state.oauth,
+                    &state.keystore,
+                )
+                .await
+                .unwrap_or_default();
+                Some((
+                    url,
+                    key,
+                    provider.auth_header.clone(),
+                    provider.extra_headers.clone(),
+                    provider.format,
+                    provider.cost_per_input_token,
+                    provider.cost_per_output_token,
+                ))
+            }
+            None => None,
+        }
+    };
+
+    let Some((url, api_key, auth_header, extra_headers, api_format, cost_in, cost_out)) = resolved
+    else {
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            axum::Json(json!({"error": "no provider configured for selected model"})),
+        ));
+    };
+
+    let llm_body = match ironclad_llm::format::translate_request(&unified_req, api_format) {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to translate LLM request");
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": "internal server error"})),
+            ));
+        }
+    };
+
+    let chunk_stream = {
+        let llm = state.llm.read().await;
+        let result = llm
+            .stream_to_provider(
+                url,
+                api_key,
+                llm_body,
+                auth_header,
+                extra_headers,
+                api_format,
+            )
+            .await;
+        drop(llm);
+        match result {
+            Ok(stream) => stream,
+            Err(e) => {
+                tracing::error!(error = %e, "streaming provider connection failed");
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    axum::Json(json!({"error": "upstream provider error"})),
+                ));
+            }
+        }
+    };
+
+    // Send initial metadata event, then stream chunks, then send a final summary
+    let session_id_clone = session_id.clone();
+    let model_clone = model.clone();
+    let event_bus = state.event_bus.clone();
+    let db = state.db.clone();
+    let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
+    let cache_hash = ironclad_llm::SemanticCache::compute_hash("", "", &user_content);
+    let llm_arc = Arc::clone(&state.llm);
+    let hmac_secret_clone = state.hmac_secret.clone();
+    let user_content_clone = user_content.clone();
+
+    // DedupGuard ensures the fingerprint is released even if the client disconnects
+    // mid-stream and the generator is dropped before reaching the explicit release.
+    let dedup_guard = DedupGuard {
+        llm: Arc::clone(&state.llm),
+        fingerprint: dedup_fp,
+    };
+
+    let sse_stream = async_stream::stream! {
+        // Move the guard into the generator so it drops with the stream
+        let _dedup_guard = dedup_guard;
+
+        // Opening event with session metadata
+        let open = json!({
+            "type": "stream_start",
+            "session_id": session_id_clone,
+            "model": model_clone,
+        });
+        yield Ok(Event::default().data(open.to_string()));
+
+        let mut accumulator = ironclad_llm::format::StreamAccumulator::default();
+        let mut stream = std::pin::pin!(chunk_stream);
+
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(chunk) => {
+                    accumulator.push(&chunk);
+
+                    let chunk_event = json!({
+                        "type": "stream_chunk",
+                        "delta": chunk.delta,
+                        "done": false,
+                        "session_id": session_id_clone,
+                    });
+                    event_bus.publish(chunk_event.to_string());
+
+                    let sse_data = json!({
+                        "type": "chunk",
+                        "delta": chunk.delta,
+                        "model": chunk.model,
+                        "finish_reason": chunk.finish_reason,
+                    });
+                    yield Ok(Event::default().data(sse_data.to_string()));
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "streaming chunk error from provider");
+                    let err_data = json!({"type": "error", "error": "upstream provider error"});
+                    yield Ok(Event::default().data(err_data.to_string()));
+                    break;
+                }
+            }
+        }
+
+        let unified_resp = accumulator.finalize();
+
+        // HMAC boundary check on accumulated output
+        let assistant_content = if unified_resp.content.contains("<<<TRUST_BOUNDARY:") {
+            if !ironclad_agent::prompt::verify_hmac_boundary(
+                &unified_resp.content,
+                hmac_secret_clone.as_ref(),
+            ) {
+                tracing::warn!("HMAC boundary tampered in streaming output, stripping");
+                ironclad_agent::prompt::strip_hmac_boundaries(&unified_resp.content)
+            } else {
+                unified_resp.content.clone()
+            }
+        } else {
+            unified_resp.content.clone()
+        };
+
+        // L4 output scanning
+        let content_blocked = ironclad_agent::injection::scan_output(&assistant_content);
+        let assistant_content = if content_blocked {
+            tracing::warn!("L4 output scan flagged streaming response");
+            let blocked_event = json!({
+                "type": "stream_blocked",
+                "reason": "output safety filter triggered",
+                "session_id": session_id_clone,
+            });
+            yield Ok(Event::default().data(blocked_event.to_string()));
+            "[Response blocked by output safety filter]".to_string()
+        } else {
+            assistant_content
+        };
+
+        // Post-stream: store assistant response (scanned content)
+        ironclad_db::sessions::append_message(
+            &db,
+            &session_id_clone,
+            "assistant",
+            &assistant_content,
+        ).ok();
+
+        // Record inference cost
+        let cost = unified_resp.tokens_in as f64 * cost_in + unified_resp.tokens_out as f64 * cost_out;
+        ironclad_db::metrics::record_inference_cost(
+            &db,
+            &model_clone,
+            &provider_prefix,
+            unified_resp.tokens_in as i64,
+            unified_resp.tokens_out as i64,
+            cost,
+            None,
+            false,
+        )
+        .inspect_err(|e| tracing::warn!(error = %e, "failed to record streaming inference cost"))
+        .ok();
+
+        // Cache write-through
+        if unified_resp.tokens_out > 0 {
+            let cached_entry = ironclad_llm::CachedResponse {
+                content: assistant_content.clone(),
+                model: model_clone.clone(),
+                tokens_saved: unified_resp.tokens_out,
+                created_at: std::time::Instant::now(),
+                expires_at: std::time::Instant::now() + std::time::Duration::from_secs(3600),
+                hits: 0,
+                involved_tools: false,
+                embedding: None,
+            };
+            let mut llm = llm_arc.write().await;
+            llm.cache.store_with_embedding(&cache_hash, &user_content_clone, cached_entry);
+        }
+
+        let done_event = json!({
+            "type": "stream_chunk",
+            "content": "",
+            "done": true,
+            "session_id": session_id_clone,
+        });
+        event_bus.publish(done_event.to_string());
+
+        let final_event = json!({
+            "type": "stream_end",
+            "session_id": session_id_clone,
+            "model": unified_resp.model,
+            "tokens_in": unified_resp.tokens_in,
+            "tokens_out": unified_resp.tokens_out,
+            "content_length": assistant_content.len(),
+            "content_blocked": content_blocked,
+        });
+        yield Ok(Event::default().data(final_event.to_string()));
+
+        // Guard drops here on normal completion, releasing the fingerprint
+    };
+
+    Ok(Sse::new(sse_stream).keep_alive(KeepAlive::default()))
 }
 
 /// Refine a session's nickname using the LLM to summarize conversation topics.
@@ -887,18 +1525,26 @@ async fn infer_with_fallback(
                         provider.format,
                         provider.cost_per_input_token,
                         provider.cost_per_output_token,
+                        provider.is_local,
                     ))
                 }
                 None => None,
             }
         };
 
-        let Some((url, api_key, auth_header, extra_headers, format, cost_in, cost_out)) = resolved
+        let Some((url, api_key, auth_header, extra_headers, format, cost_in, cost_out, is_local)) =
+            resolved
         else {
             tracing::debug!(model, "no provider found, skipping");
             last_error = format!("no provider configured for {model}");
             continue;
         };
+
+        if !is_local && api_key.is_empty() {
+            tracing::debug!(model, "skipping cloud provider — no API key configured");
+            last_error = format!("no API key for {provider_prefix}");
+            continue;
+        }
 
         let model_for_api = model.split('/').nth(1).unwrap_or(model).to_string();
         let mut req_clone = unified_req.clone();
@@ -1138,22 +1784,160 @@ pub fn check_tool_policy(
 
 // ── Group 8: Wallet ───────────────────────────────────────────
 
-async fn handle_bot_command(state: &AppState, command: &str) -> Option<String> {
-    let (cmd, _args) = command
+pub(crate) async fn handle_bot_command(state: &AppState, command: &str) -> Option<String> {
+    let (cmd, args) = command
         .split_once(|c: char| c.is_whitespace())
         .unwrap_or((command, ""));
     let cmd = cmd.split('@').next().unwrap_or(cmd);
+    let args = args.trim();
 
     match cmd {
         "/status" => Some(build_status_reply(state).await),
-        "/help" => Some(
-            "/status — agent health & model info\n\
-             /help — show this message\n\n\
-             Anything else is sent to the LLM."
-                .into(),
-        ),
+        "/model" => Some(handle_model_command(state, args).await),
+        "/models" => Some(handle_models_list(state).await),
+        "/breaker" => Some(handle_breaker_command(state, args).await),
+        "/retry" => Some("Retry is not yet implemented — please resend your message.".into()),
+        "/help" => Some(HELP_TEXT.into()),
         _ => None,
     }
+}
+
+const HELP_TEXT: &str = "\
+/status  — agent health & model info\n\
+/model   — show current model & override\n\
+/model <provider/name> — force a model override\n\
+/model reset — clear override, resume normal routing\n\
+/models  — list primary + fallback models\n\
+/breaker — show circuit breaker status\n\
+/breaker reset [provider] — reset tripped breakers\n\
+/retry   — retry last failed message\n\
+/help    — show this message\n\n\
+Anything else is sent to the LLM.";
+
+async fn handle_model_command(state: &AppState, args: &str) -> String {
+    if args.is_empty() {
+        let llm = state.llm.read().await;
+        let current = llm.router.select_model().to_string();
+        let primary = llm.router.primary().to_string();
+        return match llm.router.get_override() {
+            Some(ovr) => {
+                format!("🔧 Model override active\n  override: {ovr}\n  primary: {primary}")
+            }
+            None => {
+                format!("🤖 Current model: {current}\n  primary: {primary}\n  (no override set)")
+            }
+        };
+    }
+
+    if args == "reset" || args == "clear" {
+        let mut llm = state.llm.write().await;
+        llm.router.clear_override();
+        let current = llm.router.select_model().to_string();
+        return format!("✅ Model override cleared. Routing normally → {current}");
+    }
+
+    let model_name = args.to_string();
+    let has_provider = {
+        let llm = state.llm.read().await;
+        llm.providers.get_by_model(&model_name).is_some()
+    };
+
+    if !has_provider {
+        return format!(
+            "⚠️ Unknown model: {model_name}\n\
+             Use /models to see available models, or specify as provider/model."
+        );
+    }
+
+    let mut llm = state.llm.write().await;
+    llm.router.set_override(model_name.clone());
+    format!("✅ Model override set → {model_name}\nUse /model reset to return to normal routing.")
+}
+
+async fn handle_models_list(state: &AppState) -> String {
+    let config = state.config.read().await;
+    let llm = state.llm.read().await;
+
+    let primary = &config.models.primary;
+    let current = llm.router.select_model();
+    let mut lines = vec!["📋 Configured models".to_string()];
+    lines.push(format!("  primary: {primary}"));
+
+    if !config.models.fallbacks.is_empty() {
+        lines.push("  fallbacks:".into());
+        for fb in &config.models.fallbacks {
+            lines.push(format!("    • {fb}"));
+        }
+    } else {
+        lines.push("  fallbacks: (none)".into());
+    }
+
+    if current != primary {
+        lines.push(format!("  active: {current}"));
+    }
+
+    if let Some(ovr) = llm.router.get_override() {
+        lines.push(format!("  override: {ovr}"));
+    }
+
+    lines.push(format!("  routing: {}", config.models.routing.mode));
+    lines.join("\n")
+}
+
+async fn handle_breaker_command(state: &AppState, args: &str) -> String {
+    if args.starts_with("reset") {
+        let provider = args.strip_prefix("reset").unwrap_or("").trim();
+        let mut llm = state.llm.write().await;
+
+        if provider.is_empty() {
+            let providers: Vec<String> = llm
+                .breakers
+                .list_providers()
+                .into_iter()
+                .filter(|(_, s)| *s != ironclad_llm::CircuitState::Closed)
+                .map(|(name, _)| name)
+                .collect();
+
+            if providers.is_empty() {
+                return "✅ All circuit breakers are already closed.".into();
+            }
+            for p in &providers {
+                llm.breakers.reset(p);
+            }
+            return format!(
+                "✅ Reset {} circuit breaker(s): {}",
+                providers.len(),
+                providers.join(", ")
+            );
+        }
+
+        llm.breakers.reset(provider);
+        return format!("✅ Circuit breaker for '{provider}' reset to closed.");
+    }
+
+    let llm = state.llm.read().await;
+    let providers = llm.breakers.list_providers();
+
+    if providers.is_empty() {
+        return "🔌 No circuit breaker state recorded yet.".into();
+    }
+
+    let mut lines = vec!["🔌 Circuit breaker status".to_string()];
+    for (name, state) in &providers {
+        let icon = match state {
+            ironclad_llm::CircuitState::Closed => "🟢",
+            ironclad_llm::CircuitState::Open => "🔴",
+            ironclad_llm::CircuitState::HalfOpen => "🟡",
+        };
+        let credit_note = if llm.breakers.is_credit_tripped(name) {
+            " (credit — requires /breaker reset)"
+        } else {
+            ""
+        };
+        lines.push(format!("  {icon} {name}: {state:?}{credit_note}"));
+    }
+    lines.push("\nUse /breaker reset [provider] to reset.".into());
+    lines.join("\n")
 }
 
 async fn build_status_reply(state: &AppState) -> String {
@@ -1232,6 +2016,17 @@ pub async fn process_channel_message(
         return Ok(());
     }
 
+    // Addressability filter: in group chats, only respond when explicitly addressed
+    {
+        let config = state.config.read().await;
+        let agent_name = &config.agent.name;
+        let chain = ironclad_channels::filter::default_addressability_chain(agent_name);
+        if !chain.accepts(&inbound) {
+            tracing::debug!(chat_id = %chat_id, "addressability filter: not addressed, skipping");
+            return Ok(());
+        }
+    }
+
     if inbound.content.starts_with('/')
         && let Some(reply) = handle_bot_command(state, &inbound.content).await
     {
@@ -1287,10 +2082,23 @@ pub async fn process_channel_message(
     }
 
     let session_key = format!("{}:{}", platform, inbound.sender_id);
-    let session_id = ironclad_db::sessions::find_or_create(&state.db, &session_key, None)
-        .map_err(|e| e.to_string())?;
-    ironclad_db::sessions::append_message(&state.db, &session_id, "user", &inbound.content)
-        .map_err(|e| e.to_string())?;
+    let session_id = match ironclad_db::sessions::find_or_create(&state.db, &session_key, None) {
+        Ok(id) => id,
+        Err(e) => {
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Err(e.to_string());
+        }
+    };
+    if let Err(e) =
+        ironclad_db::sessions::append_message(&state.db, &session_id, "user", &inbound.content)
+    {
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
+        return Err(e.to_string());
+    }
 
     let config = state.config.read().await;
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
@@ -1304,6 +2112,7 @@ pub async fn process_channel_message(
                 complexity,
                 &llm_read.providers,
                 Some(&llm_read.capacity),
+                Some(&llm_read.breakers),
                 (inbound.content.len() as u32 / 4).max(1),
                 routing_config.estimated_output_tokens,
             )
@@ -1315,6 +2124,7 @@ pub async fn process_channel_message(
                 complexity,
                 Some(&llm_read.providers),
                 Some(&llm_read.capacity),
+                Some(&llm_read.breakers),
             )
             .to_string()
     };
@@ -1646,6 +2456,9 @@ pub async fn process_channel_message(
 }
 
 pub async fn telegram_poll_loop(state: AppState) {
+    static CHANNEL_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+        std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(8)));
+
     let adapter = match &state.telegram {
         Some(a) => a.clone(),
         None => return,
@@ -1657,7 +2470,12 @@ pub async fn telegram_poll_loop(state: AppState) {
         match adapter.recv().await {
             Ok(Some(inbound)) => {
                 let state = state.clone();
+                let semaphore = Arc::clone(&CHANNEL_SEMAPHORE);
                 tokio::spawn(async move {
+                    let _permit = match semaphore.acquire_owned().await {
+                        Ok(p) => p,
+                        Err(_) => return,
+                    };
                     if let Err(e) = process_channel_message(&state, inbound).await {
                         tracing::error!(error = %e, "Telegram message processing failed");
                     }
