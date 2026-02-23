@@ -13,6 +13,8 @@ pub use dashboard::{build_dashboard_html, dashboard_handler};
 pub use ws::{EventBus, ws_route};
 
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::RwLock;
@@ -42,8 +44,17 @@ use ironclad_channels::discord::DiscordAdapter;
 
 use rate_limit::GlobalRateLimitLayer;
 
+static STDERR_ENABLED: AtomicBool = AtomicBool::new(false);
+static LOG_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
+
+pub fn enable_stderr_logging() {
+    STDERR_ENABLED.store(true, Ordering::Release);
+}
+
 fn init_logging(config: &IroncladConfig) {
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::filter::filter_fn;
     use tracing_subscriber::fmt;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -51,20 +62,22 @@ fn init_logging(config: &IroncladConfig) {
     let level = config.agent.log_level.as_str();
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
+    let stderr_gate = filter_fn(|_| STDERR_ENABLED.load(Ordering::Acquire));
+
     let log_dir = &config.server.log_dir;
     if std::fs::create_dir_all(log_dir).is_ok() {
         let file_appender = tracing_appender::rolling::daily(log_dir, "ironclad.log");
-        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-
-        // Leak the guard so it lives for the entire process
-        std::mem::forget(_guard);
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        let _ = LOG_GUARD.set(guard);
 
         let file_layer = fmt::layer()
             .with_writer(non_blocking)
             .with_ansi(false)
             .json();
 
-        let stderr_layer = fmt::layer().with_writer(std::io::stderr);
+        let stderr_layer = fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(stderr_gate);
 
         let _ = tracing_subscriber::registry()
             .with(filter)
@@ -72,7 +85,9 @@ fn init_logging(config: &IroncladConfig) {
             .with(file_layer)
             .try_init();
     } else {
-        let stderr_layer = fmt::layer().with_writer(std::io::stderr);
+        let stderr_layer = fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(stderr_gate);
         let _ = tracing_subscriber::registry()
             .with(filter)
             .with(stderr_layer)
@@ -111,13 +126,13 @@ fn resolve_token(
     token_env: &str,
     keystore: &ironclad_core::Keystore,
 ) -> String {
-    if let Some(r) = token_ref {
-        if let Some(name) = r.strip_prefix("keystore:") {
-            if let Some(val) = keystore.get(name) {
-                return val;
-            }
-            tracing::warn!(key = %name, "keystore reference not found, falling back to env var");
+    if let Some(r) = token_ref
+        && let Some(name) = r.strip_prefix("keystore:")
+    {
+        if let Some(val) = keystore.get(name) {
+            return val;
         }
+        tracing::warn!(key = %name, "keystore reference not found, falling back to env var");
     }
     if !token_env.is_empty() {
         return std::env::var(token_env).unwrap_or_default();
@@ -560,7 +575,10 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
         .route("/ws", ws_route(event_bus.clone()))
         .layer(auth_layer)
         .layer(cors)
-        .layer(GlobalRateLimitLayer::new(600, Duration::from_secs(60)));
+        .layer(GlobalRateLimitLayer::new(
+            u64::from(config.server.rate_limit_requests),
+            Duration::from_secs(config.server.rate_limit_window_secs),
+        ));
     Ok(app)
 }
 

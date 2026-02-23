@@ -49,11 +49,11 @@ impl OAuthManager {
             .map_err(|e| IroncladError::Network(e.to_string()))?;
 
         let mut map = HashMap::new();
-        if let Ok(data) = std::fs::read_to_string(token_file_path()) {
-            if let Ok(file) = serde_json::from_str::<TokenFile>(&data) {
-                for entry in file.tokens {
-                    map.insert(entry.provider.clone(), entry);
-                }
+        if let Ok(data) = std::fs::read_to_string(token_file_path())
+            && let Ok(file) = serde_json::from_str::<TokenFile>(&data)
+        {
+            for entry in file.tokens {
+                map.insert(entry.provider.clone(), entry);
             }
         }
 
@@ -208,10 +208,7 @@ impl OAuthManager {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &tmp,
-                        std::fs::Permissions::from_mode(0o600),
-                    );
+                    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
                 }
                 if let Err(e) = std::fs::rename(&tmp, &path) {
                     warn!(error = %e, "failed to rename OAuth token file into place");

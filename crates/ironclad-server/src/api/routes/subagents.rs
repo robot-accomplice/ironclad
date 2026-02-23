@@ -56,7 +56,9 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
                 })
                 .collect();
             let count = items.len();
-            Ok(axum::Json(serde_json::json!({ "agents": items, "count": count })))
+            Ok(axum::Json(
+                serde_json::json!({ "agents": items, "count": count }),
+            ))
         }
         Err(e) => Err(internal_err(&e)),
     }
@@ -97,7 +99,10 @@ pub async fn create_sub_agent(
             if agent.enabled {
                 let config = ironclad_agent::subagents::AgentInstanceConfig {
                     id: agent.name.clone(),
-                    name: agent.display_name.clone().unwrap_or_else(|| agent.name.clone()),
+                    name: agent
+                        .display_name
+                        .clone()
+                        .unwrap_or_else(|| agent.name.clone()),
                     model: agent.model.clone(),
                     skills: vec![],
                     allowed_subagents: vec![],
@@ -120,8 +125,7 @@ pub async fn update_sub_agent(
     Path(name): Path<String>,
     axum::Json(body): axum::Json<UpdateSubAgentRequest>,
 ) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
-    let agents = ironclad_db::agents::list_sub_agents(&state.db)
-        .map_err(|e| internal_err(&e))?;
+    let agents = ironclad_db::agents::list_sub_agents(&state.db).map_err(|e| internal_err(&e))?;
 
     let existing = agents.iter().find(|a| a.name == name).ok_or_else(|| {
         (
@@ -142,8 +146,7 @@ pub async fn update_sub_agent(
         session_count: existing.session_count,
     };
 
-    ironclad_db::agents::upsert_sub_agent(&state.db, &updated)
-        .map_err(|e| internal_err(&e))?;
+    ironclad_db::agents::upsert_sub_agent(&state.db, &updated).map_err(|e| internal_err(&e))?;
 
     Ok(axum::Json(serde_json::json!({
         "updated": true,
@@ -171,8 +174,7 @@ pub async fn toggle_sub_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
-    let agents = ironclad_db::agents::list_sub_agents(&state.db)
-        .map_err(|e| internal_err(&e))?;
+    let agents = ironclad_db::agents::list_sub_agents(&state.db).map_err(|e| internal_err(&e))?;
 
     let existing = agents.iter().find(|a| a.name == name).ok_or_else(|| {
         (
@@ -185,8 +187,7 @@ pub async fn toggle_sub_agent(
     let mut updated = existing.clone();
     updated.enabled = new_enabled;
 
-    ironclad_db::agents::upsert_sub_agent(&state.db, &updated)
-        .map_err(|e| internal_err(&e))?;
+    ironclad_db::agents::upsert_sub_agent(&state.db, &updated).map_err(|e| internal_err(&e))?;
 
     Ok(axum::Json(serde_json::json!({
         "name": name,

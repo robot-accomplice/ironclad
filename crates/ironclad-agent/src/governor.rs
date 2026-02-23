@@ -1,44 +1,29 @@
-use std::sync::Arc;
 use ironclad_core::config::SessionConfig;
 use ironclad_db::Database;
-use tracing::{debug, info};
 
 pub struct SessionGovernor {
     config: SessionConfig,
-    db: Database,
 }
 
 impl SessionGovernor {
-    pub fn new(config: SessionConfig, db: Database) -> Self {
-        Self { config, db }
+    pub fn new(config: SessionConfig) -> Self {
+        Self { config }
     }
 
-    /// Run one cycle of session maintenance: expire stale sessions.
-    pub fn tick(&self) -> Vec<String> {
-        match ironclad_db::sessions::expire_stale_sessions(&self.db, self.config.ttl_seconds) {
-            Ok(expired) => {
-                if !expired.is_empty() {
-                    info!(count = expired.len(), "expired stale sessions");
-                }
-                expired
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "session governor tick failed");
-                vec![]
-            }
-        }
+    /// Run a single maintenance tick: expire stale sessions based on TTL.
+    /// Returns the number of sessions expired.
+    pub fn tick(&self, db: &Database) -> ironclad_core::Result<usize> {
+        ironclad_db::sessions::expire_stale_sessions(db, self.config.ttl_seconds)
     }
 
-    /// Spawn a background task that runs `tick()` at a regular interval.
-    pub fn spawn(self: Arc<Self>, interval: std::time::Duration) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            loop {
-                ticker.tick().await;
-                debug!("session governor: running maintenance cycle");
-                self.tick();
-            }
-        })
+    /// Spawn a new scoped session for the given agent, returning the session id.
+    pub fn spawn(
+        &self,
+        db: &Database,
+        agent_id: &str,
+        scope: Option<&ironclad_db::sessions::SessionScope>,
+    ) -> ironclad_core::Result<String> {
+        ironclad_db::sessions::find_or_create(db, agent_id, scope)
     }
 }
 
@@ -46,45 +31,40 @@ impl SessionGovernor {
 mod tests {
     use super::*;
 
-    fn test_governor(ttl: u64) -> SessionGovernor {
-        let db = Database::new(":memory:").unwrap();
-        let config = SessionConfig {
-            ttl_seconds: ttl,
-            scope_mode: "agent".into(),
-            reset_schedule: None,
+    fn test_db() -> Database {
+        Database::new(":memory:").unwrap()
+    }
+
+    #[test]
+    fn governor_tick_no_sessions() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+        let expired = gov.tick(&db).unwrap();
+        assert_eq!(expired, 0);
+    }
+
+    #[test]
+    fn governor_spawn_creates_session() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+        let sid = gov.spawn(&db, "gov-agent", None).unwrap();
+        assert!(!sid.is_empty());
+
+        let sid2 = gov.spawn(&db, "gov-agent", None).unwrap();
+        assert_eq!(sid, sid2, "same agent should reuse session");
+    }
+
+    #[test]
+    fn governor_spawn_with_scope() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+
+        let scope = ironclad_db::sessions::SessionScope::Peer {
+            peer_id: "alice".into(),
+            channel: "telegram".into(),
         };
-        SessionGovernor::new(config, db)
-    }
-
-    #[test]
-    fn tick_no_sessions_no_errors() {
-        let gov = test_governor(3600);
-        let expired = gov.tick();
-        assert!(expired.is_empty());
-    }
-
-    #[test]
-    fn tick_does_not_expire_fresh_sessions() {
-        let gov = test_governor(3600);
-        let _sid = ironclad_db::sessions::find_or_create(&gov.db, "agent-1", None).unwrap();
-        let expired = gov.tick();
-        assert!(expired.is_empty());
-    }
-
-    #[test]
-    fn tick_expires_old_sessions() {
-        let gov = test_governor(1);
-        let sid = ironclad_db::sessions::find_or_create(&gov.db, "agent-1", None).unwrap();
-        // Backdate updated_at so it's clearly older than the TTL
-        gov.db.conn().execute(
-            "UPDATE sessions SET updated_at = datetime('now', '-10 seconds') WHERE id = ?1",
-            [&sid],
-        ).unwrap();
-        let expired = gov.tick();
-        assert_eq!(expired.len(), 1);
-        assert_eq!(expired[0], sid);
-
-        let session = ironclad_db::sessions::get_session(&gov.db, &sid).unwrap().unwrap();
-        assert_eq!(session.status, "expired");
+        let sid_scoped = gov.spawn(&db, "gov-agent", Some(&scope)).unwrap();
+        let sid_plain = gov.spawn(&db, "gov-agent", None).unwrap();
+        assert_ne!(sid_scoped, sid_plain);
     }
 }

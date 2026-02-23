@@ -419,7 +419,7 @@ mod tests {
     fn retriever_empty_db_returns_empty() {
         let db = test_db();
         let retriever = MemoryRetriever::new(default_config());
-        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
         let result = retriever.retrieve(&db, &session_id, "hello", None, ComplexityLevel::L1);
         assert!(result.is_empty());
     }
@@ -428,7 +428,7 @@ mod tests {
     fn retriever_returns_working_memory() {
         let db = test_db();
         let retriever = MemoryRetriever::new(default_config());
-        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
 
         ironclad_db::memory::store_working(&db, &session_id, "goal", "find documentation", 8)
             .unwrap();
@@ -442,7 +442,7 @@ mod tests {
     fn retriever_returns_relevant_memories() {
         let db = test_db();
         let retriever = MemoryRetriever::new(default_config());
-        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
 
         ironclad_db::memory::store_semantic(&db, "facts", "sky", "the sky is blue", 0.9).unwrap();
 
@@ -454,7 +454,7 @@ mod tests {
     fn retriever_returns_procedural_experience() {
         let db = test_db();
         let retriever = MemoryRetriever::new(default_config());
-        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
 
         ironclad_db::memory::store_procedural(&db, "web_search", "search the web").unwrap();
         ironclad_db::memory::record_procedural_success(&db, "web_search").unwrap();
@@ -469,7 +469,7 @@ mod tests {
     fn retriever_returns_relationships() {
         let db = test_db();
         let retriever = MemoryRetriever::new(default_config());
-        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
 
         ironclad_db::memory::store_relationship(&db, "user-1", "Jon", 0.9).unwrap();
         // Need > 2 interactions or name in query
@@ -489,7 +489,7 @@ mod tests {
         };
         let db = test_db();
         let retriever = MemoryRetriever::new(config);
-        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
 
         ironclad_db::memory::store_working(&db, &session_id, "goal", "test", 5).unwrap();
 
@@ -524,9 +524,9 @@ mod tests {
         let chunks = chunk_text(&text, &config);
         assert!(chunks.len() > 1);
 
-        for i in 0..chunks.len() {
-            assert_eq!(chunks[i].index, i);
-            assert!(!chunks[i].text.is_empty());
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert_eq!(chunk.index, i);
+            assert!(!chunk.text.is_empty());
         }
 
         // Verify continuity: each chunk's start is before the previous chunk's end

@@ -18,7 +18,6 @@ impl EpisodicDigest {
     /// Generate a digest from a session's message history.
     pub fn from_session(db: &Database, session: &Session) -> Option<Self> {
         let messages = sessions::list_messages(db, &session.id, None).ok()?;
-
         if messages.is_empty() {
             return None;
         }
@@ -45,7 +44,6 @@ impl EpisodicDigest {
             let truncated = truncate_str(&last_assistant.content, 200);
             summary_parts.push(format!("Concluded with: {truncated}"));
         }
-
         summary_parts.push(format!("Total turns: {turn_count}"));
 
         let importance = calculate_importance(turn_count, topics.len());
@@ -68,7 +66,6 @@ impl EpisodicDigest {
             self.key_topics.join(", "),
             self.turn_count,
         );
-
         ironclad_db::memory::store_episodic(db, "digest", &content, self.importance)
     }
 }
@@ -76,7 +73,7 @@ impl EpisodicDigest {
 /// Calculate importance based on session engagement.
 fn calculate_importance(turn_count: i64, topic_count: usize) -> i32 {
     let base = 5i32;
-    let turn_bonus = ((turn_count / 5) as i32).min(3);
+    let turn_bonus = (turn_count as i32 / 5).min(3);
     let topic_bonus = (topic_count as i32).min(2);
     (base + turn_bonus + topic_bonus).min(10)
 }
@@ -91,16 +88,17 @@ pub fn decay_importance(original_importance: i32, age_days: f64, half_life_days:
     decayed.max(1)
 }
 
-fn truncate_str(s: &str, max_len: usize) -> &str {
+fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
-        s
+        s.to_string()
     } else {
-        &s[..s
+        let boundary = s
             .char_indices()
             .take_while(|&(i, _)| i < max_len)
             .last()
             .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(0)]
+            .unwrap_or(0);
+        s[..boundary].to_string()
     }
 }
 
@@ -137,7 +135,7 @@ mod tests {
     #[test]
     fn empty_session_produces_no_digest() {
         let db = test_db();
-        let sid = sessions::find_or_create(&db, "agent-1").unwrap();
+        let sid = sessions::find_or_create(&db, "agent-1", None).unwrap();
         let session = sessions::get_session(&db, &sid).unwrap().unwrap();
         let digest = EpisodicDigest::from_session(&db, &session);
         assert!(digest.is_none());
@@ -146,7 +144,7 @@ mod tests {
     #[test]
     fn session_with_messages_produces_digest() {
         let db = test_db();
-        let sid = sessions::find_or_create(&db, "agent-1").unwrap();
+        let sid = sessions::find_or_create(&db, "agent-1", None).unwrap();
         sessions::append_message(&db, &sid, "user", "How do I sort a vector in Rust?").unwrap();
         sessions::append_message(&db, &sid, "assistant", "Use vec.sort() or vec.sort_by()")
             .unwrap();
@@ -163,7 +161,7 @@ mod tests {
     #[test]
     fn digest_persist_stores_in_episodic_memory() {
         let db = test_db();
-        let sid = sessions::find_or_create(&db, "agent-1").unwrap();
+        let sid = sessions::find_or_create(&db, "agent-1", None).unwrap();
         sessions::append_message(&db, &sid, "user", "Tell me about Rust").unwrap();
         sessions::append_message(&db, &sid, "assistant", "Rust is a systems language").unwrap();
 
@@ -173,9 +171,10 @@ mod tests {
         assert!(!id.is_empty());
 
         let entries = ironclad_db::memory::retrieve_episodic(&db, 10).unwrap();
-        assert!(!entries.is_empty());
-        let found = entries.iter().any(|e| e.content.contains("[Session Digest]"));
-        assert!(found, "digest should be in episodic memory");
+        let found = entries
+            .iter()
+            .any(|e| e.content.contains("[Session Digest]"));
+        assert!(found, "digest should be stored in episodic memory");
     }
 
     #[test]
@@ -187,26 +186,22 @@ mod tests {
 
     #[test]
     fn decay_importance_halves_at_half_life() {
-        let result = decay_importance(10, 7.0, 7.0);
-        assert_eq!(result, 5);
+        assert_eq!(decay_importance(10, 7.0, 7.0), 5);
     }
 
     #[test]
     fn decay_importance_zero_age_no_change() {
-        let result = decay_importance(8, 0.0, 7.0);
-        assert_eq!(result, 8);
+        assert_eq!(decay_importance(8, 0.0, 7.0), 8);
     }
 
     #[test]
     fn decay_importance_never_below_one() {
-        let result = decay_importance(2, 100.0, 7.0);
-        assert_eq!(result, 1);
+        assert_eq!(decay_importance(2, 100.0, 7.0), 1);
     }
 
     #[test]
     fn decay_importance_zero_half_life_no_decay() {
-        let result = decay_importance(8, 30.0, 0.0);
-        assert_eq!(result, 8);
+        assert_eq!(decay_importance(8, 30.0, 0.0), 8);
     }
 
     #[test]
@@ -223,7 +218,7 @@ mod tests {
     #[test]
     fn digest_on_close_disabled() {
         let db = test_db();
-        let sid = sessions::find_or_create(&db, "agent-1").unwrap();
+        let sid = sessions::find_or_create(&db, "agent-1", None).unwrap();
         sessions::append_message(&db, &sid, "user", "hello").unwrap();
         let session = sessions::get_session(&db, &sid).unwrap().unwrap();
 
@@ -235,14 +230,16 @@ mod tests {
         digest_on_close(&db, &config, &session);
 
         let entries = ironclad_db::memory::retrieve_episodic(&db, 10).unwrap();
-        let has_digest = entries.iter().any(|e| e.content.contains("[Session Digest]"));
-        assert!(!has_digest, "no digest should be stored when disabled");
+        let has_digest = entries
+            .iter()
+            .any(|e| e.content.contains("[Session Digest]"));
+        assert!(!has_digest);
     }
 
     #[test]
     fn digest_on_close_enabled() {
         let db = test_db();
-        let sid = sessions::find_or_create(&db, "agent-1").unwrap();
+        let sid = sessions::find_or_create(&db, "agent-1", None).unwrap();
         sessions::append_message(&db, &sid, "user", "hello").unwrap();
         sessions::append_message(&db, &sid, "assistant", "hi!").unwrap();
         let session = sessions::get_session(&db, &sid).unwrap().unwrap();
@@ -251,14 +248,16 @@ mod tests {
         digest_on_close(&db, &config, &session);
 
         let entries = ironclad_db::memory::retrieve_episodic(&db, 10).unwrap();
-        let has_digest = entries.iter().any(|e| e.content.contains("[Session Digest]"));
-        assert!(has_digest, "digest should be stored when enabled");
+        let has_digest = entries
+            .iter()
+            .any(|e| e.content.contains("[Session Digest]"));
+        assert!(has_digest);
     }
 
     #[test]
     fn topics_limited_to_five() {
         let db = test_db();
-        let sid = sessions::find_or_create(&db, "agent-1").unwrap();
+        let sid = sessions::find_or_create(&db, "agent-1", None).unwrap();
         for i in 0..10 {
             sessions::append_message(&db, &sid, "user", &format!("Topic {i}")).unwrap();
             sessions::append_message(&db, &sid, "assistant", "response").unwrap();

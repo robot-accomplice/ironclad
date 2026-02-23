@@ -150,6 +150,7 @@ impl InterviewSession {
             history: vec![ironclad_llm::format::UnifiedMessage {
                 role: "system".into(),
                 content: ironclad_agent::interview::build_interview_prompt(),
+                parts: None,
             }],
             awaiting_confirmation: false,
             pending_output: None,
@@ -207,9 +208,8 @@ pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, agent_card, breaker_reset, breaker_status, browser_action, browser_start,
         browser_status, browser_stop, change_agent_model, execute_plugin_tool, get_agents,
-        get_cache_stats, get_config, get_costs, get_plugins, get_transactions, roster,
-        start_agent, stop_agent, toggle_plugin, update_config, wallet_address, wallet_balance,
-        workspace_state,
+        get_cache_stats, get_config, get_costs, get_plugins, get_transactions, roster, start_agent,
+        stop_agent, toggle_plugin, update_config, wallet_address, wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_status};
     use channels::{
@@ -218,8 +218,8 @@ pub fn build_router(state: AppState) -> Router {
     use cron::{create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs, update_cron_job};
     use health::{get_logs, health};
     use memory::{
-        get_episodic_memory, get_semantic_categories, get_semantic_memory,
-        get_semantic_memory_all, get_working_memory, get_working_memory_all, memory_search,
+        get_episodic_memory, get_semantic_categories, get_semantic_memory, get_semantic_memory_all,
+        get_working_memory, get_working_memory_all, memory_search,
     };
     use sessions::{
         backfill_nicknames, create_session, get_session, list_messages, list_sessions, post_message,
@@ -246,7 +246,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/memory/working/{session_id}", get(get_working_memory))
         .route("/api/memory/episodic", get(get_episodic_memory))
         .route("/api/memory/semantic", get(get_semantic_memory_all))
-        .route("/api/memory/semantic/categories", get(get_semantic_categories))
+        .route(
+            "/api/memory/semantic/categories",
+            get(get_semantic_categories),
+        )
         .route("/api/memory/semantic/{category}", get(get_semantic_memory))
         .route("/api/memory/search", get(memory_search))
         .route("/api/cron/jobs", get(list_cron_jobs).post(create_cron_job))
@@ -535,7 +538,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn post_and_list_messages() {
         let state = test_state();
-        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1", None).unwrap();
 
         let app = build_router(state.clone());
         let req = Request::builder()
@@ -643,7 +646,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn get_session_ok() {
         let state = test_state();
-        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1", None).unwrap();
         let app = build_router(state);
 
         let req = Request::builder()
@@ -678,7 +681,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn get_working_memory_returns_entries() {
         let state = test_state();
-        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&state.db, "agent-1", None).unwrap();
         let app = build_router(state);
 
         let req = Request::builder()
@@ -1550,7 +1553,8 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn working_memory_returns_entries() {
         let state = test_state();
-        let session_id = ironclad_db::sessions::find_or_create(&state.db, "test-working").unwrap();
+        let session_id =
+            ironclad_db::sessions::find_or_create(&state.db, "test-working", None).unwrap();
         ironclad_db::memory::store_working(
             &state.db,
             &session_id,
@@ -2162,7 +2166,8 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn agent_message_with_explicit_session_id() {
         let state = test_state();
-        let sid = ironclad_db::sessions::find_or_create(&state.db, "test-agent").unwrap();
+        let agent_id = state.config.read().await.agent.id.clone();
+        let sid = ironclad_db::sessions::find_or_create(&state.db, &agent_id, None).unwrap();
 
         let app = build_router(state);
         let req = Request::builder()
@@ -2556,8 +2561,8 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn list_sessions_returns_seeded_sessions() {
         let state = test_state();
-        ironclad_db::sessions::find_or_create(&state.db, "agent-a").unwrap();
-        ironclad_db::sessions::find_or_create(&state.db, "agent-b").unwrap();
+        ironclad_db::sessions::find_or_create(&state.db, "agent-a", None).unwrap();
+        ironclad_db::sessions::find_or_create(&state.db, "agent-b", None).unwrap();
         let app = build_router(state);
         let resp = app
             .oneshot(

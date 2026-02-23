@@ -174,6 +174,7 @@ pub async fn agent_message(
         &[ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
             content: user_content.clone(),
+            parts: None,
         }],
     );
     {
@@ -189,11 +190,30 @@ pub async fn agent_message(
         }
     }
 
-    // Find or create session
     let agent_id = config.agent.id.clone();
     let session_id = match &body.session_id {
-        Some(sid) => sid.clone(),
-        None => ironclad_db::sessions::find_or_create(&state.db, &agent_id).map_err(|e| {
+        Some(sid) => match ironclad_db::sessions::get_session(&state.db, sid) {
+            Ok(Some(session)) if session.agent_id == agent_id => sid.clone(),
+            Ok(Some(_)) => {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    axum::Json(json!({"error": "session does not belong to this agent"})),
+                ));
+            }
+            Ok(None) => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    axum::Json(json!({"error": "session not found"})),
+                ));
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": e.to_string()})),
+                ));
+            }
+        },
+        None => ironclad_db::sessions::find_or_create(&state.db, &agent_id, None).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(json!({"error": e.to_string()})),
@@ -227,10 +247,28 @@ pub async fn agent_message(
     let complexity = ironclad_llm::classify_complexity(&features);
 
     let llm_read = state.llm.read().await;
-    let model = llm_read
-        .router
-        .select_for_complexity(complexity, Some(&llm_read.providers))
-        .to_string();
+    let routing_config = &config.models.routing;
+    let model = if routing_config.cost_aware {
+        llm_read
+            .router
+            .select_cheapest_qualified(
+                complexity,
+                &llm_read.providers,
+                Some(&llm_read.capacity),
+                (body.content.len() as u32 / 4).max(1),
+                routing_config.estimated_output_tokens,
+            )
+            .to_string()
+    } else {
+        llm_read
+            .router
+            .select_for_complexity(
+                complexity,
+                Some(&llm_read.providers),
+                Some(&llm_read.capacity),
+            )
+            .to_string()
+    };
     drop(llm_read);
 
     let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
@@ -244,40 +282,41 @@ pub async fn agent_message(
     drop(config);
 
     // Check circuit breaker
-    {
+    let breaker_blocked = {
         let llm = state.llm.read().await;
-        if llm.breakers.is_blocked(&provider_prefix) {
-            let assistant_content = format!(
-                "I'm temporarily unable to reach the {} provider (circuit breaker open). Please try again shortly.",
-                provider_prefix
-            );
-            let asst_id = ironclad_db::sessions::append_message(
-                &state.db,
-                &session_id,
-                "assistant",
-                &assistant_content,
+        llm.breakers.is_blocked(&provider_prefix)
+    };
+    if breaker_blocked {
+        let assistant_content = format!(
+            "I'm temporarily unable to reach the {} provider (circuit breaker open). Please try again shortly.",
+            provider_prefix
+        );
+        let asst_id = ironclad_db::sessions::append_message(
+            &state.db,
+            &session_id,
+            "assistant",
+            &assistant_content,
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": e.to_string()})),
             )
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(json!({"error": e.to_string()})),
-                )
-            })?;
-            {
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-            }
-            return Ok(axum::Json(json!({
-                "session_id": session_id,
-                "nickname": session_nickname,
-                "user_message_id": user_msg_id,
-                "assistant_message_id": asst_id,
-                "content": assistant_content,
-                "model": model,
-                "cached": false,
-                "provider_blocked": true,
-            })));
+        })?;
+        {
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
         }
+        return Ok(axum::Json(json!({
+            "session_id": session_id,
+            "nickname": session_nickname,
+            "user_message_id": user_msg_id,
+            "assistant_message_id": asst_id,
+            "content": assistant_content,
+            "model": model,
+            "cached": false,
+            "provider_blocked": true,
+        })));
     }
 
     // Resolve provider from registry (config-driven, format-agnostic)
@@ -426,10 +465,10 @@ pub async fn agent_message(
         .map(|m| ironclad_llm::format::UnifiedMessage {
             role: m.role.clone(),
             content: m.content.clone(),
+            parts: None,
         })
         .collect();
 
-    // Build context-aware prompt with memory and history
     let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
     let system_prompt = if soul_text.is_empty() {
         format!(
@@ -473,11 +512,11 @@ pub async fn agent_message(
         &memories,
         &history,
     );
-    // Ensure the current user message is always present at the end
     if messages.last().is_none_or(|m| m.content != user_content) {
         messages.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
             content: user_content.clone(),
+            parts: None,
         });
     }
     ironclad_llm::tier::adapt_for_tier(tier, &mut messages, &tier_adapt);
@@ -488,6 +527,7 @@ pub async fn agent_message(
         max_tokens: Some(2048),
         temperature: None,
         system: None,
+        quality_target: None,
     };
 
     let (assistant_content, tokens_in, tokens_out, cost) = match provider_url {
@@ -498,7 +538,7 @@ pub async fn agent_message(
             let llm = state.llm.read().await;
             match llm
                 .client
-                .forward_with_provider(&url, &api_key, llm_body, &auth_header, &extra_headers)
+                .forward_with_provider(url, &api_key, llm_body, &auth_header, &extra_headers)
                 .await
             {
                 Ok(resp) => {
@@ -584,6 +624,7 @@ pub async fn agent_message(
         react_messages.push(ironclad_llm::format::UnifiedMessage {
             role: "assistant".into(),
             content: assistant_content.clone(),
+            parts: None,
         });
 
         let mut current_tool = Some((tool_name, tool_params));
@@ -612,6 +653,7 @@ pub async fn agent_message(
             react_messages.push(ironclad_llm::format::UnifiedMessage {
                 role: "user".into(),
                 content: observation,
+                parts: None,
             });
 
             if react_loop.state == ReactState::Done {
@@ -624,6 +666,7 @@ pub async fn agent_message(
                 max_tokens: Some(2048),
                 temperature: None,
                 system: None,
+                quality_target: None,
             };
 
             let follow_content = match &provider_url {
@@ -680,6 +723,7 @@ pub async fn agent_message(
             react_messages.push(ironclad_llm::format::UnifiedMessage {
                 role: "assistant".into(),
                 content: follow_content.clone(),
+                parts: None,
             });
 
             let follow_content = if follow_content.contains("<<<TRUST_BOUNDARY:") {
@@ -802,27 +846,27 @@ pub async fn agent_message(
     }
 
     // Background nickname refinement after 4+ messages
-    if let Ok(count) = ironclad_db::sessions::message_count(&state.db, &session_id) {
-        if count >= 4 {
-            let refine_db = state.db.clone();
-            let refine_llm = Arc::clone(&state.llm);
-            let refine_sid = session_id.clone();
-            let refine_oauth = state.oauth.clone();
-            let refine_keystore = state.keystore.clone();
-            tokio::spawn(async move {
-                if let Err(e) = refine_session_nickname(
-                    &refine_db,
-                    &refine_llm,
-                    &refine_sid,
-                    &refine_oauth,
-                    &refine_keystore,
-                )
-                .await
-                {
-                    tracing::debug!(error = %e, session = %refine_sid, "nickname refinement skipped");
-                }
-            });
-        }
+    if let Ok(count) = ironclad_db::sessions::message_count(&state.db, &session_id)
+        && count >= 4
+    {
+        let refine_db = state.db.clone();
+        let refine_llm = Arc::clone(&state.llm);
+        let refine_sid = session_id.clone();
+        let refine_oauth = state.oauth.clone();
+        let refine_keystore = state.keystore.clone();
+        tokio::spawn(async move {
+            if let Err(e) = refine_session_nickname(
+                &refine_db,
+                &refine_llm,
+                &refine_sid,
+                &refine_oauth,
+                &refine_keystore,
+            )
+            .await
+            {
+                tracing::debug!(error = %e, session = %refine_sid, "nickname refinement skipped");
+            }
+        });
     }
 
     Ok(axum::Json(json!({
@@ -857,7 +901,11 @@ async fn refine_session_nickname(
 
     let mut conversation = String::with_capacity(1024);
     for m in &messages {
-        let prefix = if m.role == "user" { "User" } else { "Assistant" };
+        let prefix = if m.role == "user" {
+            "User"
+        } else {
+            "Assistant"
+        };
         let snippet: String = m.content.chars().take(200).collect();
         conversation.push_str(&format!("{prefix}: {snippet}\n"));
     }
@@ -901,10 +949,12 @@ async fn refine_session_nickname(
         messages: vec![ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
             content: prompt,
+            parts: None,
         }],
         max_tokens: Some(30),
         temperature: Some(0.3),
         system: None,
+        quality_target: None,
     };
 
     let body = ironclad_llm::format::translate_request(&req, format)?;
@@ -1101,6 +1151,7 @@ pub async fn process_channel_message(
         &[ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
             content: user_content.clone(),
+            parts: None,
         }],
     );
     {
@@ -1112,7 +1163,7 @@ pub async fn process_channel_message(
     }
 
     let session_key = format!("{}:{}", platform, inbound.sender_id);
-    let session_id = ironclad_db::sessions::find_or_create(&state.db, &session_key)
+    let session_id = ironclad_db::sessions::find_or_create(&state.db, &session_key, None)
         .map_err(|e| e.to_string())?;
     ironclad_db::sessions::append_message(&state.db, &session_id, "user", &inbound.content)
         .map_err(|e| e.to_string())?;
@@ -1121,10 +1172,28 @@ pub async fn process_channel_message(
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
     let llm_read = state.llm.read().await;
-    let model = llm_read
-        .router
-        .select_for_complexity(complexity, Some(&llm_read.providers))
-        .to_string();
+    let routing_config = &config.models.routing;
+    let model = if routing_config.cost_aware {
+        llm_read
+            .router
+            .select_cheapest_qualified(
+                complexity,
+                &llm_read.providers,
+                Some(&llm_read.capacity),
+                (inbound.content.len() as u32 / 4).max(1),
+                routing_config.estimated_output_tokens,
+            )
+            .to_string()
+    } else {
+        llm_read
+            .router
+            .select_for_complexity(
+                complexity,
+                Some(&llm_read.providers),
+                Some(&llm_read.capacity),
+            )
+            .to_string()
+    };
     drop(llm_read);
 
     let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
@@ -1243,7 +1312,6 @@ pub async fn process_channel_message(
         ann_ref,
     );
 
-    // Load conversation history
     let history_messages =
         ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).unwrap_or_default();
     let history: Vec<ironclad_llm::format::UnifiedMessage> = history_messages
@@ -1254,10 +1322,10 @@ pub async fn process_channel_message(
         .map(|m| ironclad_llm::format::UnifiedMessage {
             role: m.role.clone(),
             content: m.content.clone(),
+            parts: None,
         })
         .collect();
 
-    // Build context-aware prompt with memory and history
     let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
     let system_prompt = if soul_text.is_empty() {
         format!(
@@ -1302,6 +1370,7 @@ pub async fn process_channel_message(
         messages.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
             content: user_content.clone(),
+            parts: None,
         });
     }
     ironclad_llm::tier::adapt_for_tier(tier, &mut messages, &tier_adapt);
@@ -1326,6 +1395,7 @@ pub async fn process_channel_message(
         max_tokens: Some(2048),
         temperature: None,
         system: None,
+        quality_target: None,
     };
 
     let response_content = match provider_url {
@@ -1336,7 +1406,7 @@ pub async fn process_channel_message(
             let llm = state.llm.read().await;
             match llm
                 .client
-                .forward_with_provider(&url, &api_key, llm_body, &auth_header, &extra_headers)
+                .forward_with_provider(url, &api_key, llm_body, &auth_header, &extra_headers)
                 .await
             {
                 Ok(resp) => {
@@ -1415,6 +1485,7 @@ pub async fn process_channel_message(
         react_msgs.push(ironclad_llm::format::UnifiedMessage {
             role: "assistant".into(),
             content: response_content.clone(),
+            parts: None,
         });
 
         let mut current_tool = Some((tool_name, tool_params));
@@ -1438,6 +1509,7 @@ pub async fn process_channel_message(
             react_msgs.push(ironclad_llm::format::UnifiedMessage {
                 role: "user".into(),
                 content: obs,
+                parts: None,
             });
 
             if channel_react.state == ReactState::Done {
@@ -1451,6 +1523,7 @@ pub async fn process_channel_message(
                     max_tokens: Some(2048),
                     temperature: None,
                     system: None,
+                    quality_target: None,
                 };
                 let follow_body = ironclad_llm::format::translate_request(&follow_req, format)
                     .unwrap_or_else(|_| serde_json::json!({}));
@@ -1475,7 +1548,9 @@ pub async fn process_channel_message(
                         drop(llm);
                         let content = check_hmac(ur.content, state.hmac_secret.as_ref());
                         let content = if ironclad_agent::injection::scan_output(&content) {
-                            tracing::warn!("L4 output scan flagged channel ReAct follow-up, blocking");
+                            tracing::warn!(
+                                "L4 output scan flagged channel ReAct follow-up, blocking"
+                            );
                             "[Response blocked by output safety filter]".to_string()
                         } else {
                             content
@@ -1483,6 +1558,7 @@ pub async fn process_channel_message(
                         react_msgs.push(ironclad_llm::format::UnifiedMessage {
                             role: "assistant".into(),
                             content: content.clone(),
+                            parts: None,
                         });
                         current_tool = parse_tool_call(&content);
                         if current_tool.is_none() {

@@ -239,7 +239,9 @@ pub fn list_semantic_categories(db: &Database) -> Result<Vec<(String, i64)>> {
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     rows.collect::<std::result::Result<Vec<_>, _>>()

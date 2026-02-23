@@ -119,9 +119,7 @@ pub async fn get_semantic_memory(
     }
 }
 
-pub async fn get_semantic_categories(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn get_semantic_categories(State(state): State<AppState>) -> impl IntoResponse {
     match ironclad_db::memory::list_semantic_categories(&state.db) {
         Ok(cats) => {
             let items: Vec<Value> = cats

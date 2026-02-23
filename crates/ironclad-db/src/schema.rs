@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
+    scope_key TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
     model TEXT,
     nickname TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -343,6 +345,17 @@ CREATE TABLE IF NOT EXISTS context_checkpoints (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON context_checkpoints(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS hippocampus (
+    table_name TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    columns_json TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT 'system',
+    agent_owned INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_hippocampus_agent ON hippocampus(created_by, agent_owned);
 "#;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
@@ -459,8 +472,8 @@ mod tests {
     fn schema_creates_all_tables() {
         let db = Database::new(":memory:").unwrap();
         let count = table_count(&db).unwrap();
-        // 28 regular tables + 1 FTS5 virtual table + 1 context_checkpoints = 30
-        assert_eq!(count, 30, "expected 30 user-defined tables, got {count}");
+        // 29 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus = 31
+        assert_eq!(count, 31, "expected 31 user-defined tables, got {count}");
     }
 
     #[test]
@@ -469,7 +482,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 30);
+        assert_eq!(count, 31);
     }
 
     #[test]

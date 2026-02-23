@@ -72,12 +72,19 @@ impl EmbeddingClient {
         let url = build_embedding_url(cfg, texts.len());
         let body = build_embedding_request(cfg, texts);
 
-        let log_url = if url.contains('?') { url.split('?').next().unwrap_or(&url) } else { &url };
+        let log_url = if url.contains('?') {
+            url.split('?').next().unwrap_or(&url)
+        } else {
+            &url
+        };
         debug!(url = %log_url, model = %cfg.model, count = texts.len(), "embedding request");
 
         let is_query_auth = cfg.auth_header.starts_with("query:");
 
-        let mut request = self.http.post(&url).header("Content-Type", "application/json");
+        let mut request = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/json");
 
         if !is_query_auth {
             let auth_value = if cfg.auth_header.eq_ignore_ascii_case("authorization") {

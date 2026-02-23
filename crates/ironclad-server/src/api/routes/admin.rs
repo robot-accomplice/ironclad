@@ -637,12 +637,18 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
     let directives = ironclad_core::personality::load_directives(workspace);
 
     let skills = ironclad_db::skills::list_skills(&state.db).unwrap_or_default();
-    let enabled_skills: Vec<&str> = skills.iter().filter(|s| s.enabled).map(|s| s.name.as_str()).collect();
+    let enabled_skills: Vec<&str> = skills
+        .iter()
+        .filter(|s| s.enabled)
+        .map(|s| s.name.as_str())
+        .collect();
     let skill_kinds: std::collections::HashMap<&str, Vec<&str>> = {
         let mut map: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
         for s in &skills {
             if s.enabled {
-                map.entry(s.kind.as_str()).or_default().push(s.name.as_str());
+                map.entry(s.kind.as_str())
+                    .or_default()
+                    .push(s.name.as_str());
             }
         }
         map
@@ -658,23 +664,40 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         })
     });
 
-    let missions: Vec<Value> = directives.as_ref().map(|d| {
-        d.missions.iter().map(|m| json!({
-            "name": m.name,
-            "timeframe": m.timeframe,
-            "priority": m.priority,
-            "description": m.description,
-        })).collect()
-    }).unwrap_or_default();
+    let missions: Vec<Value> = directives
+        .as_ref()
+        .map(|d| {
+            d.missions
+                .iter()
+                .map(|m| {
+                    json!({
+                        "name": m.name,
+                        "timeframe": m.timeframe,
+                        "priority": m.priority,
+                        "description": m.description,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
-    let firmware_rules: Vec<Value> = firmware.as_ref().map(|f| {
-        f.rules.iter().map(|r| json!({
-            "type": r.rule_type,
-            "rule": r.rule,
-        })).collect()
-    }).unwrap_or_default();
+    let firmware_rules: Vec<Value> = firmware
+        .as_ref()
+        .map(|f| {
+            f.rules
+                .iter()
+                .map(|r| {
+                    json!({
+                        "type": r.rule_type,
+                        "rule": r.rule,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
-    let running_count = agents_in_registry.iter()
+    let running_count = agents_in_registry
+        .iter()
         .filter(|a| a.state == ironclad_agent::subagents::AgentRunState::Running)
         .count();
     let stats = json!({
@@ -693,11 +716,11 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         "enabled": true,
         "color": WORKSPACE_PALETTE[0],
         "session_count": null,
-        "description": os.as_ref().and_then(|o| {
+        "description": os.as_ref().map(|o| {
             let first_line = o.prompt_text.lines()
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or("Autonomous agent");
-            Some(first_line.to_string())
+            first_line.to_string()
         }),
         "voice": voice,
         "missions": missions,
@@ -769,16 +792,21 @@ pub async fn change_agent_model(
             "scope": "commander (runtime only, not persisted to disk)",
         })))
     } else {
-        let agents = ironclad_db::agents::list_sub_agents(&state.db)
-            .map_err(|e| internal_err(&e))?;
-        let existing = agents.iter().find(|a| a.name == agent_name).ok_or_else(|| {
-            (StatusCode::NOT_FOUND, format!("agent '{agent_name}' not found"))
-        })?;
+        let agents =
+            ironclad_db::agents::list_sub_agents(&state.db).map_err(|e| internal_err(&e))?;
+        let existing = agents
+            .iter()
+            .find(|a| a.name == agent_name)
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    format!("agent '{agent_name}' not found"),
+                )
+            })?;
         old_model = existing.model.clone();
         let mut updated = existing.clone();
         updated.model = model.clone();
-        ironclad_db::agents::upsert_sub_agent(&state.db, &updated)
-            .map_err(|e| internal_err(&e))?;
+        ironclad_db::agents::upsert_sub_agent(&state.db, &updated).map_err(|e| internal_err(&e))?;
         Ok(axum::Json(json!({
             "updated": true,
             "agent": agent_name,

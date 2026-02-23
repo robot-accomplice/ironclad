@@ -1,24 +1,37 @@
+pub mod accuracy;
 pub mod cache;
+pub mod capacity;
+pub mod cascade;
 pub mod circuit;
 pub mod client;
+pub mod compression;
 pub mod dedup;
 pub mod embedding;
 pub mod format;
+pub mod ml_router;
 pub mod oauth;
 pub mod provider;
 pub mod router;
 pub mod tier;
+pub mod tiered;
+pub mod uniroute;
 
+pub use accuracy::{QualityTracker, select_for_quality_target};
 pub use cache::{CachedResponse, ExportedCacheEntry, SemanticCache};
+pub use capacity::CapacityTracker;
+pub use cascade::{CascadeOptimizer, CascadeOutcome, CascadeStrategy};
 pub use circuit::{CircuitBreakerRegistry, CircuitState};
 pub use client::LlmClient;
+pub use compression::{CompressionEstimate, PromptCompressor};
 pub use dedup::DedupTracker;
 pub use embedding::{EmbeddingClient, EmbeddingConfig};
+pub use ml_router::{LogisticBackend, PreferenceCollector, PreferenceRecord};
 pub use oauth::OAuthManager;
 pub use provider::{Provider, ProviderRegistry};
 pub use router::{ModelRouter, classify_complexity, extract_features};
+pub use tiered::{ConfidenceEvaluator, EscalationTracker, InferenceTier, TieredResult};
+pub use uniroute::{ModelVector, ModelVectorRegistry, QueryRequirements};
 
-use ironclad_core::config::RoutingConfig;
 use ironclad_core::{IroncladConfig, Result};
 use router::HeuristicBackend;
 
@@ -29,6 +42,7 @@ pub struct LlmService {
     pub router: ModelRouter,
     pub client: LlmClient,
     pub providers: ProviderRegistry,
+    pub capacity: CapacityTracker,
     pub embedding: EmbeddingClient,
 }
 
@@ -45,11 +59,7 @@ impl LlmService {
 
         let dedup = DedupTracker::default();
 
-        let routing_config = RoutingConfig {
-            mode: config.models.routing.mode.clone(),
-            confidence_threshold: config.models.routing.confidence_threshold,
-            local_first: config.models.routing.local_first,
-        };
+        let routing_config = config.models.routing.clone();
 
         let router = ModelRouter::new(
             config.models.primary.clone(),
@@ -62,6 +72,11 @@ impl LlmService {
 
         let providers = ProviderRegistry::from_config(&config.providers);
 
+        let capacity = CapacityTracker::new(60);
+        for provider in providers.list() {
+            capacity.register(&provider.name, provider.tpm_limit, provider.rpm_limit);
+        }
+
         let embedding_config = Self::resolve_embedding_config(&config.memory, &providers);
         let embedding = EmbeddingClient::new(embedding_config)?;
 
@@ -72,6 +87,7 @@ impl LlmService {
             router,
             client,
             providers,
+            capacity,
             embedding,
         })
     }

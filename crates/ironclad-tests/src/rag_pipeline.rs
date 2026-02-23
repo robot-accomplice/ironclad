@@ -14,7 +14,7 @@ fn test_db() -> Database {
 #[test]
 fn e2e_store_embed_retrieve_context() {
     let db = test_db();
-    let session_id = ironclad_db::sessions::find_or_create(&db, "rag-test").unwrap();
+    let session_id = ironclad_db::sessions::find_or_create(&db, "rag-test", None).unwrap();
 
     // 1. Store some working memory
     ironclad_db::memory::store_working(&db, &session_id, "goal", "analyze Rust code", 8).unwrap();
@@ -83,10 +83,12 @@ fn e2e_store_embed_retrieve_context() {
         ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
             content: "Hello".into(),
+            parts: None,
         },
         ironclad_llm::format::UnifiedMessage {
             role: "assistant".into(),
             content: "Hi there! How can I help?".into(),
+            parts: None,
         },
     ];
 
@@ -111,7 +113,7 @@ fn e2e_store_embed_retrieve_context() {
 #[test]
 fn ingest_turn_produces_retrievable_memories() {
     let db = test_db();
-    let session_id = ironclad_db::sessions::find_or_create(&db, "ingest-rag").unwrap();
+    let session_id = ironclad_db::sessions::find_or_create(&db, "ingest-rag", None).unwrap();
 
     // Ingest a conversation turn
     ironclad_agent::memory::ingest_turn(
@@ -158,7 +160,7 @@ fn ingest_turn_produces_retrievable_memories() {
 fn binary_embedding_storage_roundtrip() {
     let db = test_db();
 
-    let original = vec![0.1f32, -0.5, 3.14, 0.0, f32::MAX, f32::MIN_POSITIVE];
+    let original = vec![0.1f32, -0.5, 1.23, 0.0, f32::MAX, f32::MIN_POSITIVE];
     embeddings::store_embedding(&db, "bin-test", "test", "source", "preview", &original).unwrap();
 
     // Search should find it and the similarity should be 1.0
@@ -182,6 +184,7 @@ fn build_context_respects_token_budget() {
         .map(|i| ironclad_llm::format::UnifiedMessage {
             role: if i % 2 == 0 { "user" } else { "assistant" }.into(),
             content: format!("Message number {i}: {}", "x".repeat(200)),
+            parts: None,
         })
         .collect();
 
@@ -248,7 +251,7 @@ fn chunk_embed_and_search() {
 #[test]
 fn hybrid_search_combines_fts_and_vector() {
     let db = test_db();
-    let session_id = ironclad_db::sessions::find_or_create(&db, "hybrid-test").unwrap();
+    let session_id = ironclad_db::sessions::find_or_create(&db, "hybrid-test", None).unwrap();
 
     // FTS content
     ironclad_db::memory::store_working(

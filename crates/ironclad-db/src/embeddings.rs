@@ -85,10 +85,10 @@ pub fn store_embedding(
 
 /// Load an embedding from a row, preferring BLOB over JSON.
 fn load_embedding_from_row(blob: Option<Vec<u8>>, json_text: &str) -> Option<Vec<f32>> {
-    if let Some(b) = blob {
-        if !b.is_empty() {
-            return Some(blob_to_embedding(&b));
-        }
+    if let Some(b) = blob
+        && !b.is_empty()
+    {
+        return Some(blob_to_embedding(&b));
     }
     if !json_text.is_empty() {
         return serde_json::from_str(json_text).ok();
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn blob_roundtrip() {
-        let original = vec![1.0f32, -0.5, 0.0, 3.14159, f32::MIN, f32::MAX];
+        let original = vec![1.0f32, -0.5, 0.0, 1.23456, f32::MIN, f32::MAX];
         let blob = embedding_to_blob(&original);
         let restored = blob_to_embedding(&blob);
         assert_eq!(original, restored);

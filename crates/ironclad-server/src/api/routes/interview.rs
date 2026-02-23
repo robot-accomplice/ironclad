@@ -64,6 +64,7 @@ pub async fn interview_turn(
         session.history.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
             content: body.content,
+            parts: None,
         });
         session.history.clone()
     }; // write lock dropped — LLM call below won't serialize other interview traffic
@@ -79,6 +80,7 @@ pub async fn interview_turn(
         max_tokens: Some(4096),
         temperature: None,
         system: None,
+        quality_target: None,
     };
 
     let llm_read = state.llm.read().await;
@@ -155,6 +157,7 @@ pub async fn interview_turn(
                 session.history.push(ironclad_llm::format::UnifiedMessage {
                     role: "assistant".into(),
                     content: unified.content.clone(),
+                    parts: None,
                 });
             }
             let turn_count = interviews

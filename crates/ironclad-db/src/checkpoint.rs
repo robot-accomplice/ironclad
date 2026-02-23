@@ -102,7 +102,7 @@ mod tests {
     }
 
     fn create_session(db: &Database) -> String {
-        crate::sessions::find_or_create(db, "test-agent").unwrap()
+        crate::sessions::find_or_create(db, "test-agent", None).unwrap()
     }
 
     #[test]

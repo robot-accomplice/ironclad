@@ -241,7 +241,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
                     let trimmed = l.trim();
                     if let Some(rest) = trimmed.strip_prefix("I am ") {
                         let name = rest
-                            .split(|c: char| c == ',' || c == '.' || c == '—' || c == '-')
+                            .split([',', '.', '\u{2014}', '-'])
                             .next()
                             .unwrap_or(rest)
                             .trim();
@@ -293,24 +293,22 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
         .and_then(|g| g.get("auth"))
         .and_then(|a| a.get("token"))
         .and_then(|v| v.as_str())
+        && !token.is_empty()
     {
-        if !token.is_empty() {
-            match store_in_keystore("gateway_auth_token", token) {
-                Ok(()) => {
-                    toml.push(format!(
-                        "api_key_ref = {}",
-                        qt("keystore:gateway_auth_token")
-                    ));
-                    warnings.push(
-                        "Gateway auth token stored in keystore as \"gateway_auth_token\"".into(),
-                    );
-                }
-                Err(e) => {
-                    toml.push(format!("api_key_env = {}", qt("IRONCLAD_API_KEY")));
-                    warnings.push(format!(
-                        "Keystore unavailable ({e}); set IRONCLAD_API_KEY to your gateway token"
-                    ));
-                }
+        match store_in_keystore("gateway_auth_token", token) {
+            Ok(()) => {
+                toml.push(format!(
+                    "api_key_ref = {}",
+                    qt("keystore:gateway_auth_token")
+                ));
+                warnings
+                    .push("Gateway auth token stored in keystore as \"gateway_auth_token\"".into());
+            }
+            Err(e) => {
+                toml.push(format!("api_key_env = {}", qt("IRONCLAD_API_KEY")));
+                warnings.push(format!(
+                    "Keystore unavailable ({e}); set IRONCLAD_API_KEY to your gateway token"
+                ));
             }
         }
     }
@@ -445,8 +443,6 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
 
             let tier = if is_local {
                 "T1"
-            } else if first_cost == 0.0 {
-                "T2"
             } else if first_cost <= 1.0 {
                 "T2"
             } else {
@@ -482,31 +478,30 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
             ));
 
             // API key → keystore
-            if let Some(api_key) = prov.get("apiKey").and_then(|v| v.as_str()) {
-                if !api_key.is_empty()
-                    && api_key != "ollama"
-                    && api_key != "ollama-local"
-                    && api_key != "not-needed"
-                {
-                    let ks_name = format!("{prov_name}_api_key");
-                    match store_in_keystore(&ks_name, api_key) {
-                        Ok(()) => {
-                            toml.push(format!(
-                                "api_key_ref = {}",
-                                qt(&format!("keystore:{ks_name}"))
-                            ));
-                            warnings.push(format!(
-                                "{prov_name} API key stored in encrypted keystore as \"{ks_name}\""
-                            ));
-                        }
-                        Err(e) => {
-                            let env_name =
-                                format!("{}_API_KEY", prov_name.to_uppercase().replace('-', "_"));
-                            toml.push(format!("api_key_env = {}", qt(&env_name)));
-                            warnings.push(format!(
-                                "Keystore unavailable ({e}); set env var {env_name}=<your-key>"
-                            ));
-                        }
+            if let Some(api_key) = prov.get("apiKey").and_then(|v| v.as_str())
+                && !api_key.is_empty()
+                && api_key != "ollama"
+                && api_key != "ollama-local"
+                && api_key != "not-needed"
+            {
+                let ks_name = format!("{prov_name}_api_key");
+                match store_in_keystore(&ks_name, api_key) {
+                    Ok(()) => {
+                        toml.push(format!(
+                            "api_key_ref = {}",
+                            qt(&format!("keystore:{ks_name}"))
+                        ));
+                        warnings.push(format!(
+                            "{prov_name} API key stored in encrypted keystore as \"{ks_name}\""
+                        ));
+                    }
+                    Err(e) => {
+                        let env_name =
+                            format!("{}_API_KEY", prov_name.to_uppercase().replace('-', "_"));
+                        toml.push(format!("api_key_env = {}", qt(&env_name)));
+                        warnings.push(format!(
+                            "Keystore unavailable ({e}); set env var {env_name}=<your-key>"
+                        ));
                     }
                 }
             }
@@ -619,25 +614,23 @@ pub(crate) fn export_config(ic_root: &Path, oc_root: &Path) -> AreaResult {
             oc.insert("api_url".into(), serde_json::Value::String(url.into()));
         }
         let mut key_resolved = false;
-        if let Some(key_ref) = prov.get("api_key_ref").and_then(|v| v.as_str()) {
-            if let Some(ks_name) = key_ref.strip_prefix("keystore:") {
-                if let Some(val) = read_from_keystore(ks_name) {
-                    oc.insert("api_key".into(), serde_json::Value::String(val));
-                    key_resolved = true;
-                } else {
-                    warnings.push(format!(
-                        "Keystore key \"{ks_name}\" not found; api_key omitted"
-                    ));
-                }
+        if let Some(key_ref) = prov.get("api_key_ref").and_then(|v| v.as_str())
+            && let Some(ks_name) = key_ref.strip_prefix("keystore:")
+        {
+            if let Some(val) = read_from_keystore(ks_name) {
+                oc.insert("api_key".into(), serde_json::Value::String(val));
+                key_resolved = true;
+            } else {
+                warnings.push(format!(
+                    "Keystore key \"{ks_name}\" not found; api_key omitted"
+                ));
             }
         }
-        if !key_resolved {
-            if let Some(key_env) = prov.get("api_key_env").and_then(|v| v.as_str()) {
-                if let Ok(val) = std::env::var(key_env) {
-                    oc.insert("api_key".into(), serde_json::Value::String(val));
-                } else {
-                    warnings.push(format!("Env var {key_env} not set; api_key omitted"));
-                }
+        if !key_resolved && let Some(key_env) = prov.get("api_key_env").and_then(|v| v.as_str()) {
+            if let Ok(val) = std::env::var(key_env) {
+                oc.insert("api_key".into(), serde_json::Value::String(val));
+            } else {
+                warnings.push(format!("Env var {key_env} not set; api_key omitted"));
             }
         }
     }
@@ -1213,20 +1206,19 @@ pub(crate) fn import_sessions(oc_root: &Path, ic_root: &Path) -> AreaResult {
                                     // Try new wrapper format first (must have an explicit "type" field)
                                     if let Ok(wrapper) =
                                         serde_json::from_str::<OpenClawJSONLLine>(line)
+                                        && let Some(lt) = wrapper.line_type.as_deref()
                                     {
-                                        if let Some(lt) = wrapper.line_type.as_deref() {
-                                            if lt == "session" {
-                                                created_at = wrapper.timestamp.clone();
-                                            }
-                                            if lt == "message" {
-                                                if let Some(msg) = wrapper.message.and_then(|m| {
-                                                    m.into_message(wrapper.timestamp.as_deref())
-                                                }) {
-                                                    msgs.push(msg);
-                                                }
-                                            }
-                                            continue;
+                                        if lt == "session" {
+                                            created_at = wrapper.timestamp.clone();
                                         }
+                                        if lt == "message"
+                                            && let Some(msg) = wrapper.message.and_then(|m| {
+                                                m.into_message(wrapper.timestamp.as_deref())
+                                            })
+                                        {
+                                            msgs.push(msg);
+                                        }
+                                        continue;
                                     }
                                     // Fallback: simple `{"role":"...","content":"..."}` format
                                     if let Ok(msg) = serde_json::from_str::<OpenClawMessage>(line) {
@@ -1888,24 +1880,23 @@ fn agent_display_name(name: &str) -> String {
 
 fn detect_agent_model(agent_dir: &Path) -> String {
     let models_path = agent_dir.join("agent").join("models.json");
-    if let Ok(content) = fs::read_to_string(&models_path) {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-            // Try top-level "primary" field
-            if let Some(p) = val.get("primary").and_then(|v| v.as_str()) {
-                if !p.is_empty() {
-                    return p.to_string();
-                }
-            }
-            // Try first model from first provider
-            if let Some(providers) = val.get("providers").and_then(|v| v.as_object()) {
-                for (prov_name, prov) in providers {
-                    if let Some(models) = prov.get("models").and_then(|v| v.as_array()) {
-                        if let Some(first) = models.first() {
-                            if let Some(id) = first.get("id").and_then(|v| v.as_str()) {
-                                return format!("{prov_name}/{id}");
-                            }
-                        }
-                    }
+    if let Ok(content) = fs::read_to_string(&models_path)
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
+    {
+        // Try top-level "primary" field
+        if let Some(p) = val.get("primary").and_then(|v| v.as_str())
+            && !p.is_empty()
+        {
+            return p.to_string();
+        }
+        // Try first model from first provider
+        if let Some(providers) = val.get("providers").and_then(|v| v.as_object()) {
+            for (prov_name, prov) in providers {
+                if let Some(models) = prov.get("models").and_then(|v| v.as_array())
+                    && let Some(first) = models.first()
+                    && let Some(id) = first.get("id").and_then(|v| v.as_str())
+                {
+                    return format!("{prov_name}/{id}");
                 }
             }
         }
@@ -2093,16 +2084,16 @@ fn resolve_channel_token_for_export(
     warnings: &mut Vec<String>,
     channel_name: &str,
 ) -> bool {
-    if let Some(token_ref) = channel_table.get("token_ref").and_then(|v| v.as_str()) {
-        if let Some(ks_name) = token_ref.strip_prefix("keystore:") {
-            if let Some(val) = read_from_keystore(ks_name) {
-                obj.insert("token".into(), serde_json::Value::String(val));
-                return true;
-            }
-            warnings.push(format!(
-                "Keystore key \"{ks_name}\" not found; {channel_name} token omitted"
-            ));
+    if let Some(token_ref) = channel_table.get("token_ref").and_then(|v| v.as_str())
+        && let Some(ks_name) = token_ref.strip_prefix("keystore:")
+    {
+        if let Some(val) = read_from_keystore(ks_name) {
+            obj.insert("token".into(), serde_json::Value::String(val));
+            return true;
         }
+        warnings.push(format!(
+            "Keystore key \"{ks_name}\" not found; {channel_name} token omitted"
+        ));
     }
     if let Some(env) = channel_table.get("token_env").and_then(|v| v.as_str()) {
         if let Ok(tok) = std::env::var(env) {

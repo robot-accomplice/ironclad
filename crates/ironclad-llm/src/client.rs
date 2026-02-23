@@ -97,6 +97,54 @@ impl LlmClient {
             .await
             .map_err(|e| IroncladError::Llm(format!("failed to parse provider response: {e}")))
     }
+
+    /// Send a streaming request and return the raw byte stream.
+    pub async fn forward_stream(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: serde_json::Value,
+        auth_header: &str,
+        extra_headers: &HashMap<String, String>,
+    ) -> Result<impl futures::Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>>>
+    {
+        debug!(url, auth_header, "forwarding streaming request to provider");
+
+        let auth_value = if auth_header.eq_ignore_ascii_case("authorization") {
+            format!("Bearer {api_key}")
+        } else {
+            api_key.to_string()
+        };
+
+        let mut request = self
+            .http
+            .post(url)
+            .header(auth_header, &auth_value)
+            .header("Content-Type", "application/json");
+
+        for (key, value) in extra_headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+
+        let response = request
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("stream request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unable to read error body".into());
+            return Err(IroncladError::Llm(format!(
+                "provider returned {status}: {error_body}"
+            )));
+        }
+
+        Ok(response.bytes_stream())
+    }
 }
 
 #[cfg(test)]
