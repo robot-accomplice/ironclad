@@ -440,8 +440,7 @@ embedding_dimensions = 768
             data.into_iter()
                 .map(|b| Ok::<_, reqwest::Error>(Bytes::from(b))),
         );
-        let mut sse =
-            SseChunkStream::new(Box::pin(byte_stream), ApiFormat::OpenAiCompletions);
+        let mut sse = SseChunkStream::new(Box::pin(byte_stream), ApiFormat::OpenAiCompletions);
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -478,9 +477,7 @@ embedding_dimensions = 768
 
     #[test]
     fn sse_chunk_stream_empty_buffer_at_end() {
-        let data = vec![
-            b"data: {\"choices\":[{\"delta\":{\"content\":\"only\"}}]}\n".to_vec(),
-        ];
+        let data = vec![b"data: {\"choices\":[{\"delta\":{\"content\":\"only\"}}]}\n".to_vec()];
         let chunks = collect_sse_chunks(data);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].delta, "only");
