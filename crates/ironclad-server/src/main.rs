@@ -371,7 +371,16 @@ enum DaemonCmd {
         /// Path to config file
         #[arg(short, long, default_value = "ironclad.toml")]
         config: String,
+        /// Start the daemon immediately after install without prompting
+        #[arg(long)]
+        start: bool,
     },
+    /// Start the daemon
+    Start,
+    /// Stop the daemon
+    Stop,
+    /// Restart the daemon
+    Restart,
     /// Show daemon status
     Status,
     /// Uninstall daemon service
@@ -588,6 +597,17 @@ enum UpdateCmd {
         #[arg(long, env = "IRONCLAD_REGISTRY_URL")]
         registry_url: Option<String>,
     },
+}
+
+fn prompt_yes_no(question: &str) -> bool {
+    use std::io::Write;
+    eprint!("  {question} [y/N] ");
+    std::io::stderr().flush().ok();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    matches!(input.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
 }
 
 #[tokio::main]
@@ -810,17 +830,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // ── System ──────────────────────────────────────────
         Some(Commands::Daemon(sub)) => match sub {
-            DaemonCmd::Install { config } => {
+            DaemonCmd::Install { config, start } => {
                 let binary = std::env::current_exe()?.to_string_lossy().to_string();
                 let path = ironclad_server::daemon::install_daemon(&binary, &config, 18789)?;
                 eprintln!("  Daemon installed: {}", path.display());
+
+                let should_start =
+                    start || prompt_yes_no("Would you like to start the daemon now?");
+                if should_start {
+                    ironclad_server::daemon::start_daemon()?;
+                    eprintln!("  Daemon started");
+                } else {
+                    eprintln!("  Run `ironclad daemon start` when you're ready");
+                }
+                Ok(())
+            }
+            DaemonCmd::Start => {
+                if !ironclad_server::daemon::is_installed() {
+                    eprintln!("  Daemon is not installed. Run `ironclad daemon install` first.");
+                    std::process::exit(1);
+                }
+                ironclad_server::daemon::start_daemon()?;
+                eprintln!("  Daemon started");
+                Ok(())
+            }
+            DaemonCmd::Stop => {
+                ironclad_server::daemon::stop_daemon()?;
+                eprintln!("  Daemon stopped");
+                Ok(())
+            }
+            DaemonCmd::Restart => {
+                if !ironclad_server::daemon::is_installed() {
+                    eprintln!("  Daemon is not installed. Run `ironclad daemon install` first.");
+                    std::process::exit(1);
+                }
+                ironclad_server::daemon::restart_daemon()?;
+                eprintln!("  Daemon restarted");
                 Ok(())
             }
             DaemonCmd::Status => {
+                if !ironclad_server::daemon::is_installed() {
+                    eprintln!("  Daemon not installed");
+                    return Ok(());
+                }
                 let pid_path = ironclad_core::config::DaemonConfig::default().pid_file;
                 match ironclad_server::daemon::read_pid_file(&pid_path) {
                     Ok(Some(pid)) => eprintln!("  Daemon running (PID {pid})"),
-                    Ok(None) => eprintln!("  Daemon not running"),
+                    Ok(None) => eprintln!("  Daemon installed but not running"),
                     Err(e) => eprintln!("  Error reading PID: {e}"),
                 }
                 Ok(())

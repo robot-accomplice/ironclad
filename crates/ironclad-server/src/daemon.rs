@@ -90,26 +90,129 @@ pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result
         std::fs::create_dir_all(parent)?;
     }
 
-    std::fs::write(&path, content)?;
+    std::fs::write(&path, &content)?;
     Ok(path)
 }
 
-pub fn uninstall_daemon() -> Result<()> {
+pub fn start_daemon() -> Result<()> {
     let os = std::env::consts::OS;
-    let path = match os {
-        "macos" => plist_path(),
-        "linux" => systemd_path(),
+    let status = match os {
+        "macos" => std::process::Command::new("launchctl")
+            .args(["load", "-w"])
+            .arg(plist_path())
+            .status(),
+        "linux" => std::process::Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status()
+            .and_then(|_| {
+                std::process::Command::new("systemctl")
+                    .args(["--user", "enable", "--now", "ironclad.service"])
+                    .status()
+            }),
         other => {
             return Err(IroncladError::Config(format!(
-                "daemon uninstall not supported on {other}"
+                "daemon start not supported on {other}"
             )));
         }
     };
 
-    if path.exists() {
-        std::fs::remove_file(&path)?;
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(IroncladError::Config(format!(
+            "service manager exited with {}",
+            s.code().unwrap_or(-1)
+        ))),
+        Err(e) => Err(IroncladError::Config(format!(
+            "failed to start service: {e}"
+        ))),
     }
+}
 
+pub fn stop_daemon() -> Result<()> {
+    let os = std::env::consts::OS;
+    let status = match os {
+        "macos" => std::process::Command::new("launchctl")
+            .args(["unload"])
+            .arg(plist_path())
+            .status(),
+        "linux" => std::process::Command::new("systemctl")
+            .args(["--user", "stop", "ironclad.service"])
+            .status(),
+        other => {
+            return Err(IroncladError::Config(format!(
+                "daemon stop not supported on {other}"
+            )));
+        }
+    };
+
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(IroncladError::Config(format!(
+            "service manager exited with {}",
+            s.code().unwrap_or(-1)
+        ))),
+        Err(e) => Err(IroncladError::Config(format!(
+            "failed to stop service: {e}"
+        ))),
+    }
+}
+
+pub fn restart_daemon() -> Result<()> {
+    let os = std::env::consts::OS;
+    let status = match os {
+        "macos" => {
+            let path = plist_path();
+            let _ = std::process::Command::new("launchctl")
+                .args(["unload"])
+                .arg(&path)
+                .status();
+            std::process::Command::new("launchctl")
+                .args(["load", "-w"])
+                .arg(&path)
+                .status()
+        }
+        "linux" => std::process::Command::new("systemctl")
+            .args(["--user", "restart", "ironclad.service"])
+            .status(),
+        other => {
+            return Err(IroncladError::Config(format!(
+                "daemon restart not supported on {other}"
+            )));
+        }
+    };
+
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(IroncladError::Config(format!(
+            "service manager exited with {}",
+            s.code().unwrap_or(-1)
+        ))),
+        Err(e) => Err(IroncladError::Config(format!(
+            "failed to restart service: {e}"
+        ))),
+    }
+}
+
+pub fn is_installed() -> bool {
+    let path = match std::env::consts::OS {
+        "macos" => plist_path(),
+        "linux" => systemd_path(),
+        _ => return false,
+    };
+    path.exists()
+}
+
+pub fn uninstall_daemon() -> Result<()> {
+    if !is_installed() {
+        return Ok(());
+    }
+    let _ = stop_daemon();
+    let path = match std::env::consts::OS {
+        "macos" => plist_path(),
+        "linux" => systemd_path(),
+        _ => return Ok(()),
+    };
+    std::fs::remove_file(&path)?;
     Ok(())
 }
 
