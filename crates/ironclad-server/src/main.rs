@@ -1450,26 +1450,29 @@ async fn cmd_serve(
             let (w, r) = (t.icon_warn(), t.reset());
             eprintln!("  {w} Port {bind_addr} in use, shutting down previous instance...{r}");
 
-            if let Ok(pids) = find_listeners(config.server.port) {
-                let own_pid = std::process::id();
-                for pid in pids.iter().filter(|&&p| p != own_pid) {
-                    if let Ok(p) = i32::try_from(*pid) {
-                        unsafe {
-                            libc::kill(p, libc::SIGTERM);
-                        }
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-                if let Ok(remaining) = find_listeners(config.server.port) {
-                    for pid in remaining.iter().filter(|&&p| p != own_pid) {
+            #[cfg(unix)]
+            {
+                if let Ok(pids) = find_listeners(config.server.port) {
+                    let own_pid = std::process::id();
+                    for pid in pids.iter().filter(|&&p| p != own_pid) {
                         if let Ok(p) = i32::try_from(*pid) {
                             unsafe {
-                                libc::kill(p, libc::SIGKILL);
+                                libc::kill(p, libc::SIGTERM);
                             }
                         }
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                    if let Ok(remaining) = find_listeners(config.server.port) {
+                        for pid in remaining.iter().filter(|&&p| p != own_pid) {
+                            if let Ok(p) = i32::try_from(*pid) {
+                                unsafe {
+                                    libc::kill(p, libc::SIGKILL);
+                                }
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
                 }
             }
 
