@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ironclad daemon start|stop|restart` subcommands for full daemon lifecycle management
 - Interactive prompt after `ironclad daemon install` asking whether to start immediately
 - `--start` flag on `ironclad daemon install` for non-interactive use
+- Dashboard keystore management: save/remove provider API keys from the settings page
+- Session nicknames in dashboard sessions table with click-to-copy session ID
 
 ### Fixed
 
@@ -20,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ironclad daemon install` now actually offers to load the service (previously only wrote the plist/unit file)
 - `ironclad daemon uninstall` now stops the running service before removing the file
 - `ironclad daemon status` distinguishes between "not installed" and "installed but not running"
+- Registry URL restored to correct `roboticus.ai/registry` path (not subdomain)
+- Empty env vars no longer falsely reported as "configured" in key status checks
+
+### Security
+
+- `delete_provider_key` endpoint now validates provider exists before allowing keystore deletion
+- Unified key resolution via `KeySource` enum eliminates 3 duplicated cascade implementations
+- `resolve_provider_key` returns `Option<String>` instead of silently sending empty auth headers
+- Replace secret-looking test placeholders to prevent false GitGuardian alerts
 
 ## [0.4.0] - 2026-02-23
 
