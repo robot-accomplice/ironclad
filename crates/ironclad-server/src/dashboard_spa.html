@@ -169,7 +169,35 @@
     .message { margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 3px; max-width: 85%; }
     .message.user { margin-left: auto; background: var(--accent-dim); border: 1px solid rgba(99,102,241,0.3); }
     .message.assistant { margin-right: auto; background: var(--surface); border: 1px solid var(--border); }
-    .message-role { font-size: 0.7rem; text-transform: uppercase; color: var(--muted); margin-bottom: 0.25rem; }
+    .message-role { font-size: 0.7rem; text-transform: uppercase; color: var(--muted); margin-bottom: 0.25rem; display: flex; align-items: center; gap: 0.5rem; }
+    .ctx-expand-btn { background: none; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); cursor: pointer; padding: 1px 5px; font-size: 0.625rem; line-height: 1.2; transition: all 0.15s; font-family: var(--font); margin-left: auto; }
+    .ctx-expand-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .ctx-detail { margin-top: 0.5rem; padding: 0.625rem; background: rgba(0,0,0,0.2); border-radius: 3px; border: 1px solid var(--border); font-size: 0.75rem; }
+    .ctx-detail .ctx-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 0.375rem 0; gap: 1px; }
+    .ctx-detail .ctx-bar span { display: block; height: 100%; transition: width 0.3s; }
+    .ctx-detail .ctx-bar .sys { background: var(--accent); }
+    .ctx-detail .ctx-bar .mem { background: var(--success); }
+    .ctx-detail .ctx-bar .hist { background: var(--warning); }
+    .ctx-detail .ctx-bar .free { background: rgba(255,255,255,0.05); }
+    .ctx-detail .ctx-legend { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 0.25rem; }
+    .ctx-detail .ctx-legend span { display: flex; align-items: center; gap: 0.25rem; font-size: 0.6875rem; color: var(--muted); }
+    .ctx-detail .ctx-legend span::before { content: ''; width: 8px; height: 8px; border-radius: 2px; }
+    .ctx-detail .ctx-legend .l-sys::before { background: var(--accent); }
+    .ctx-detail .ctx-legend .l-mem::before { background: var(--success); }
+    .ctx-detail .ctx-legend .l-hist::before { background: var(--warning); }
+    .ctx-section { margin-top: 0.5rem; }
+    .ctx-section summary { cursor: pointer; color: var(--muted); font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .ctx-section pre { margin: 0.25rem 0 0; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; color: var(--text); max-height: 200px; overflow-y: auto; }
+    .ctx-explorer-grid { display: grid; grid-template-columns: 260px 1fr; gap: 1rem; min-height: 500px; }
+    .ctx-timeline { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow-y: auto; max-height: 600px; }
+    .ctx-timeline-item { padding: 0.625rem 0.75rem; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.15s; font-size: 0.8125rem; }
+    .ctx-timeline-item:hover { background: rgba(255,255,255,0.03); }
+    .ctx-timeline-item.active { background: var(--accent-dim); border-left: 3px solid var(--accent); }
+    .ctx-turn-detail { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }
+    .ctx-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+    .ctx-stat { background: rgba(0,0,0,0.15); border-radius: 4px; padding: 0.625rem; text-align: center; }
+    .ctx-stat .val { font-size: 1.25rem; font-weight: 700; color: var(--text); }
+    .ctx-stat .lbl { font-size: 0.6875rem; color: var(--muted); text-transform: uppercase; margin-top: 0.125rem; }
     .thinking-indicator { margin-right: auto; padding: 0.75rem 1rem; display: flex; align-items: center; gap: 0.625rem; }
     .thinking-brain { display: inline-block; font-size: 1.25rem; animation: brainBounce 1.2s ease-in-out infinite; }
     .thinking-dots span { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); margin: 0 2px; animation: dotPulse 1.4s ease-in-out infinite; }
@@ -451,6 +479,7 @@
   <nav class="mobile-nav">
     <a href="#overview" data-page="overview">Overview</a>
     <a href="#sessions" data-page="sessions">Sessions</a>
+    <a href="#context" data-page="context">Context</a>
     <a href="#memory" data-page="memory">Memory</a>
     <a href="#skills" data-page="skills">Skills</a>
     <a href="#roster" data-page="roster">Roster</a>
@@ -465,8 +494,8 @@
 (function() {
   var setHtml = function(el, html) { if (el) el["inner" + "HTML"] = html; };
   var BASE = '';
-  var pages = ['overview','sessions','memory','skills','roster','agents','scheduler','metrics','wallet','settings','workspace'];
-  var titles = { overview: 'Overview', sessions: 'Sessions', memory: 'Memory', skills: 'Skills', roster: 'Roster', agents: 'Agents', scheduler: 'Scheduler', metrics: 'Metrics', wallet: 'Wallet', settings: 'Settings', workspace: 'Workspace' };
+  var pages = ['overview','sessions','context','memory','skills','roster','agents','scheduler','metrics','wallet','settings','workspace'];
+  var titles = { overview: 'Overview', sessions: 'Sessions', context: 'Context Explorer', memory: 'Memory', skills: 'Skills', roster: 'Roster', agents: 'Agents', scheduler: 'Scheduler', metrics: 'Metrics', wallet: 'Wallet', settings: 'Settings', workspace: 'Workspace' };
 
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   function truncate(s, n) { return (s && s.length > n) ? s.slice(0, n) + '\u2026' : (s || ''); }
@@ -789,9 +818,10 @@
         if (self._activeSession) {
           return api('/api/sessions/' + encodeURIComponent(self._activeSession.id) + '/messages').catch(function() { return { messages: [] }; }).then(function(r) {
             self._sessionMessages = r.messages || [];
-            var msgs = self._sessionMessages.map(function(m) {
+            var msgs = self._sessionMessages.map(function(m, idx) {
               var side = m.role === 'user' ? 'user' : 'assistant';
-              return '<div class="message ' + side + '"><div class="message-role">' + esc(m.role || '') + '</div><div>' + esc(m.content || '') + '</div></div>';
+              var expandBtn = side === 'assistant' ? '<button class="ctx-expand-btn" data-msg-idx="' + idx + '" data-session-id="' + esc(self._activeSession.id) + '">ctx</button>' : '';
+              return '<div class="message ' + side + '" id="msg-' + idx + '"><div class="message-role">' + esc(m.role || '') + expandBtn + '</div><div>' + esc(m.content || '') + '</div><div class="ctx-detail" id="ctx-detail-' + idx + '" style="display:none"></div></div>';
             }).join('') || '<p style="color:var(--muted);padding:1rem">Send a message to begin the conversation.</p>';
             var chatLabel = self._activeSession.nickname || truncate(self._activeSession.id, 16);
             return '<div class="session-chat-wrap"><div class="session-chat-header"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="btn-back-sessions">\u25c0 Back</button><span style="font-weight:600">' + esc(self._activeSession.agent_id || 'default') + '</span><span class="session-nick" data-copy-id="' + esc(self._activeSession.id) + '" title="' + esc(self._activeSession.id) + '" style="color:var(--muted);font-size:0.75rem">' + esc(chatLabel) + '</span></div><div class="message-thread">' + msgs + '</div><div class="session-chat-input"><input type="text" id="session-msg-input" placeholder="Type a message\u2026" autocomplete="off"><button class="btn" id="btn-send-msg">Send</button></div></div>';
@@ -1440,6 +1470,96 @@
         }, 0);
 
         return html;
+      });
+    },
+
+    _ctxSession: null,
+    _ctxTurns: [],
+    _ctxActiveTurn: null,
+    renderContext: function() {
+      var self = this;
+      return api('/api/sessions').then(function(data) {
+        var sessions = (data.sessions || []).filter(function(s) { return s.status === 'active'; });
+
+        if (self._ctxSession && self._ctxActiveTurn) {
+          return Promise.all([
+            api('/api/turns/' + encodeURIComponent(self._ctxActiveTurn.id)).catch(function() { return null; }),
+            api('/api/turns/' + encodeURIComponent(self._ctxActiveTurn.id) + '/context').catch(function() { return null; }),
+            api('/api/turns/' + encodeURIComponent(self._ctxActiveTurn.id) + '/tools').catch(function() { return { tool_calls: [] }; })
+          ]).then(function(results) {
+            var turn = results[0], ctx = results[1], tools = results[2];
+            var detailHtml = '';
+            if (ctx) {
+              var budget = ctx.token_budget || 1;
+              var sysPct = Math.round(((ctx.system_prompt_tokens || 0) / budget) * 100);
+              var memPct = Math.round(((ctx.memory_tokens || 0) / budget) * 100);
+              var histPct = Math.round(((ctx.history_tokens || 0) / budget) * 100);
+              var freePct = Math.max(0, 100 - sysPct - memPct - histPct);
+              detailHtml += '<div class="ctx-stats">';
+              detailHtml += '<div class="ctx-stat"><div class="val">' + esc(ctx.complexity_level) + '</div><div class="lbl">Level</div></div>';
+              detailHtml += '<div class="ctx-stat"><div class="val">' + (ctx.token_budget || 0).toLocaleString() + '</div><div class="lbl">Budget</div></div>';
+              detailHtml += '<div class="ctx-stat"><div class="val">' + (ctx.history_depth || 0) + '</div><div class="lbl">History Depth</div></div>';
+              if (turn) {
+                detailHtml += '<div class="ctx-stat"><div class="val">' + ((turn.tokens_in || 0) + (turn.tokens_out || 0)).toLocaleString() + '</div><div class="lbl">Tokens</div></div>';
+                detailHtml += '<div class="ctx-stat"><div class="val">$' + (turn.cost || 0).toFixed(4) + '</div><div class="lbl">Cost</div></div>';
+              }
+              detailHtml += '</div>';
+              detailHtml += '<h4 style="margin:0 0 0.25rem;font-size:0.75rem;color:var(--muted)">TOKEN ALLOCATION</h4>';
+              detailHtml += '<div class="ctx-bar"><span class="sys" style="width:' + sysPct + '%"></span><span class="mem" style="width:' + memPct + '%"></span><span class="hist" style="width:' + histPct + '%"></span><span class="free" style="width:' + freePct + '%"></span></div>';
+              detailHtml += '<div class="ctx-legend"><span class="l-sys">System ' + (ctx.system_prompt_tokens || 0) + '</span><span class="l-mem">Memory ' + (ctx.memory_tokens || 0) + '</span><span class="l-hist">History ' + (ctx.history_tokens || 0) + '</span></div>';
+              if (ctx.model) detailHtml += '<p style="margin:0.75rem 0 0;font-size:0.75rem;color:var(--muted)">Model: <span style="color:var(--text)">' + esc(ctx.model) + '</span></p>';
+            } else {
+              detailHtml += '<p style="color:var(--muted)">No context snapshot recorded for this turn.</p>';
+            }
+            if (turn && turn.thinking) {
+              detailHtml += '<details class="ctx-section"><summary>Reasoning Trace</summary><pre>' + esc(turn.thinking) + '</pre></details>';
+            }
+            var toolCalls = (tools && tools.tool_calls) || [];
+            if (toolCalls.length > 0) {
+              detailHtml += '<details class="ctx-section"><summary>Tool Calls (' + toolCalls.length + ')</summary>';
+              toolCalls.forEach(function(tc) {
+                detailHtml += '<div style="margin:0.375rem 0;padding:0.375rem;background:rgba(0,0,0,0.15);border-radius:3px;font-size:0.75rem">';
+                detailHtml += '<span class="badge ' + (tc.status === 'success' ? 'success' : 'error') + '" style="font-size:0.5625rem;margin-right:0.25rem">' + esc(tc.status) + '</span>';
+                detailHtml += '<strong>' + esc(tc.tool_name) + '</strong>';
+                if (tc.duration_ms != null) detailHtml += ' <span style="color:var(--muted)">' + tc.duration_ms + 'ms</span>';
+                detailHtml += '</div>';
+              });
+              detailHtml += '</details>';
+            }
+
+            var timelineHtml = self._ctxTurns.map(function(t) {
+              var isActive = t.id === self._ctxActiveTurn.id;
+              var cost = t.cost != null ? '$' + t.cost.toFixed(4) : '';
+              return '<div class="ctx-timeline-item' + (isActive ? ' active' : '') + '" data-turn-id="' + esc(t.id) + '"><div style="font-size:0.6875rem;color:var(--muted)">' + esc(t.created_at || '') + '</div><div style="display:flex;justify-content:space-between;align-items:center"><span class="badge muted" style="font-size:0.5625rem">' + esc(t.model || '') + '</span><span style="font-size:0.6875rem;color:var(--success)">' + cost + '</span></div></div>';
+            }).join('');
+
+            return '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="ctx-back-btn">\u25c0 Back</button><h3 style="margin:0">Turn Detail</h3></div><div class="ctx-explorer-grid"><div class="ctx-timeline">' + timelineHtml + '</div><div class="ctx-turn-detail">' + detailHtml + '</div></div>';
+          });
+        }
+
+        if (self._ctxSession) {
+          return api('/api/sessions/' + encodeURIComponent(self._ctxSession.id) + '/turns').catch(function() { return { turns: [] }; }).then(function(r) {
+            self._ctxTurns = r.turns || [];
+            if (self._ctxTurns.length === 0) {
+              return '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="ctx-back-btn">\u25c0 Back</button><h3 style="margin:0">' + esc(self._ctxSession.nickname || self._ctxSession.id) + '</h3></div><div class="card"><p style="color:var(--muted)">No turns recorded for this session yet.</p></div>';
+            }
+            var totalCost = 0, totalTokens = 0;
+            self._ctxTurns.forEach(function(t) { totalCost += t.cost || 0; totalTokens += (t.tokens_in || 0) + (t.tokens_out || 0); });
+            var summaryHtml = '<div class="ctx-stats"><div class="ctx-stat"><div class="val">' + self._ctxTurns.length + '</div><div class="lbl">Turns</div></div><div class="ctx-stat"><div class="val">' + totalTokens.toLocaleString() + '</div><div class="lbl">Total Tokens</div></div><div class="ctx-stat"><div class="val">$' + totalCost.toFixed(4) + '</div><div class="lbl">Total Cost</div></div></div>';
+            var timelineHtml = self._ctxTurns.map(function(t) {
+              var cost = t.cost != null ? '$' + t.cost.toFixed(4) : '';
+              var tokens = ((t.tokens_in || 0) + (t.tokens_out || 0)).toLocaleString();
+              return '<div class="ctx-timeline-item" data-turn-id="' + esc(t.id) + '" style="cursor:pointer"><div style="font-size:0.6875rem;color:var(--muted)">' + esc(t.created_at || '') + '</div><div style="display:flex;justify-content:space-between;align-items:center"><span class="badge muted" style="font-size:0.5625rem">' + esc(t.model || '') + '</span><span style="font-size:0.6875rem">' + tokens + ' tok</span><span style="font-size:0.6875rem;color:var(--success)">' + cost + '</span></div></div>';
+            }).join('');
+            return '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="ctx-back-btn">\u25c0 Back</button><h3 style="margin:0">' + esc(self._ctxSession.nickname || self._ctxSession.id) + '</h3></div>' + summaryHtml + '<div class="ctx-timeline">' + timelineHtml + '</div>';
+          });
+        }
+
+        var rows = sessions.map(function(s) {
+          var nick = s.nickname || truncate(s.id, 16);
+          return '<tr data-ctx-session=\'' + esc(JSON.stringify(s)) + '\' style="cursor:pointer"><td>' + esc(nick) + '</td><td><span class="badge muted" style="font-size:0.5625rem">' + esc(s.agent_id) + '</span></td><td style="font-size:0.75rem;color:var(--muted)">' + esc(s.created_at || '') + '</td></tr>';
+        }).join('');
+        return '<h3>Context Explorer</h3><p style="color:var(--muted);font-size:0.875rem;margin-bottom:1rem">Select a session to inspect turn-by-turn context allocation, token budgets, and reasoning traces.</p><div class="table-wrap"><table><thead><tr><th>Session</th><th>Agent</th><th>Created</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
       });
     },
 
@@ -2134,6 +2254,70 @@
       var nick = nickTd ? nickTd.textContent.trim() : '';
       App._activeSession = { id: id, agent_id: agentTd ? agentTd.textContent : 'default', nickname: nick !== id ? nick : null };
       App.navigate('sessions');
+      return;
+    }
+    // Context Explorer: session selection
+    var ctxSessionRow = e.target.closest('tr[data-ctx-session]');
+    if (ctxSessionRow) {
+      try { App._ctxSession = JSON.parse(ctxSessionRow.getAttribute('data-ctx-session')); } catch(ex) {}
+      App._ctxActiveTurn = null;
+      App.navigate('context');
+      return;
+    }
+    // Context Explorer: turn selection
+    var ctxTurnItem = e.target.closest('.ctx-timeline-item[data-turn-id]');
+    if (ctxTurnItem) {
+      var turnId = ctxTurnItem.getAttribute('data-turn-id');
+      var found = App._ctxTurns.find(function(t) { return t.id === turnId; });
+      if (found) { App._ctxActiveTurn = found; App.navigate('context'); }
+      return;
+    }
+    // Context Explorer: back button
+    if (e.target.closest('#ctx-back-btn')) {
+      if (App._ctxActiveTurn) { App._ctxActiveTurn = null; }
+      else { App._ctxSession = null; }
+      App.navigate('context');
+      return;
+    }
+    // Per-message context expand button
+    var ctxBtn = e.target.closest('.ctx-expand-btn');
+    if (ctxBtn) {
+      var msgIdx = ctxBtn.getAttribute('data-msg-idx');
+      var detailEl = document.getElementById('ctx-detail-' + msgIdx);
+      if (!detailEl) return;
+      if (detailEl.style.display !== 'none') { detailEl.style.display = 'none'; return; }
+      var sessionId = ctxBtn.getAttribute('data-session-id');
+      setHtml(detailEl, '<span style="color:var(--muted);font-size:0.75rem">Loading context\u2026</span>');
+      detailEl.style.display = 'block';
+      api('/api/sessions/' + encodeURIComponent(sessionId) + '/turns').then(function(r) {
+        var turns = r.turns || [];
+        var asstIdx = 0;
+        var allMsgs = App._sessionMessages || [];
+        for (var mi = 0; mi < allMsgs.length && mi <= parseInt(msgIdx); mi++) {
+          if (allMsgs[mi].role === 'assistant') asstIdx++;
+        }
+        var turn = turns[asstIdx - 1];
+        if (!turn) { setHtml(detailEl, '<span style="color:var(--muted);font-size:0.75rem">No turn data found.</span>'); return; }
+        return api('/api/turns/' + encodeURIComponent(turn.id) + '/context').catch(function() { return null; }).then(function(ctx) {
+          var html = '';
+          if (ctx) {
+            var budget = ctx.token_budget || 1;
+            var sysPct = Math.round(((ctx.system_prompt_tokens || 0) / budget) * 100);
+            var memPct = Math.round(((ctx.memory_tokens || 0) / budget) * 100);
+            var histPct = Math.round(((ctx.history_tokens || 0) / budget) * 100);
+            var freePct = Math.max(0, 100 - sysPct - memPct - histPct);
+            html += '<div style="font-size:0.6875rem;color:var(--muted);margin-bottom:0.25rem">' + esc(ctx.complexity_level) + ' \u2022 budget: ' + (ctx.token_budget || 0).toLocaleString() + ' tok \u2022 depth: ' + (ctx.history_depth || 0) + '</div>';
+            html += '<div class="ctx-bar"><span class="sys" style="width:' + sysPct + '%"></span><span class="mem" style="width:' + memPct + '%"></span><span class="hist" style="width:' + histPct + '%"></span><span class="free" style="width:' + freePct + '%"></span></div>';
+            html += '<div class="ctx-legend"><span class="l-sys">Sys ' + (ctx.system_prompt_tokens || 0) + '</span><span class="l-mem">Mem ' + (ctx.memory_tokens || 0) + '</span><span class="l-hist">Hist ' + (ctx.history_tokens || 0) + '</span></div>';
+            if (ctx.model) html += '<div style="margin-top:0.25rem;font-size:0.6875rem;color:var(--muted)">Model: ' + esc(ctx.model) + '</div>';
+          } else {
+            html += '<span style="color:var(--muted)">No context snapshot.</span>';
+          }
+          if (turn.cost != null) html += '<div style="margin-top:0.25rem;font-size:0.6875rem;color:var(--success)">$' + turn.cost.toFixed(4) + ' \u2022 ' + ((turn.tokens_in || 0) + (turn.tokens_out || 0)).toLocaleString() + ' tokens</div>';
+          if (turn.thinking) html += '<details class="ctx-section"><summary>Reasoning</summary><pre>' + esc(turn.thinking) + '</pre></details>';
+          setHtml(detailEl, html);
+        });
+      }).catch(function() { setHtml(detailEl, '<span style="color:var(--error);font-size:0.75rem">Failed to load context.</span>'); });
       return;
     }
   });
