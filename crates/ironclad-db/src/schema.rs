@@ -372,9 +372,9 @@ pub fn initialize_db(db: &Database) -> Result<()> {
             .map_err(|e| IroncladError::Database(e.to_string()))?;
 
         if !version_exists {
-            // The embedded schema already incorporates all migrations through v6,
-            // so seed the version to 6 so run_migrations() won't re-apply them.
-            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [6])
+            // The embedded schema already incorporates all migrations through v10,
+            // so seed the version to 10 so run_migrations() won't re-apply them.
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [10])
                 .map_err(|e| IroncladError::Database(e.to_string()))?;
         }
     }
@@ -431,13 +431,18 @@ pub fn run_migrations(db: &Database) -> Result<()> {
         }
         let sql = std::fs::read_to_string(&path)
             .map_err(|e| IroncladError::Database(format!("read migration {:?}: {e}", path)))?;
-        conn.execute_batch(sql.trim())
-            .map_err(|e| IroncladError::Database(format!("migration {}: {e}", version)))?;
-        conn.execute(
+        let tx = conn.unchecked_transaction().map_err(|e| {
+            IroncladError::Database(format!("begin tx for migration {version}: {e}"))
+        })?;
+        tx.execute_batch(sql.trim())
+            .map_err(|e| IroncladError::Database(format!("migration {version}: {e}")))?;
+        tx.execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
             [version],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
+        tx.commit()
+            .map_err(|e| IroncladError::Database(format!("commit migration {version}: {e}")))?;
     }
 
     Ok(())
@@ -496,7 +501,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(version >= 5, "embedded schema seeds at version 5");
+        assert!(version >= 10, "embedded schema seeds at version 10");
     }
 
     #[test]
@@ -533,7 +538,7 @@ mod tests {
             !versions.is_empty(),
             "schema_version should have at least one entry"
         );
-        assert!(versions[0] >= 5, "embedded schema seeds at version 5");
+        assert!(versions[0] >= 10, "embedded schema seeds at version 10");
         for w in versions.windows(2) {
             assert!(w[1] > w[0], "versions must be strictly increasing");
         }
@@ -553,12 +558,15 @@ mod tests {
         let conn = db.conn();
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM schema_version WHERE version >= 5",
+                "SELECT COUNT(*) FROM schema_version WHERE version >= 10",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(count >= 1, "embedded schema should seed at least version 5");
+        assert!(
+            count >= 1,
+            "embedded schema should seed at least version 10"
+        );
     }
 
     #[test]

@@ -137,13 +137,14 @@ pub fn toggle_skill_enabled(db: &Database, id: &str) -> Result<Option<bool>> {
 /// Searches skills whose `triggers_json` contains the given keyword (case-insensitive).
 pub fn find_by_trigger(db: &Database, keyword: &str) -> Result<Vec<SkillRecord>> {
     let conn = db.conn();
-    let pattern = format!("%{keyword}%");
+    let escaped = keyword.replace('%', "\\%").replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
     let mut stmt = conn
         .prepare(
             "SELECT id, name, kind, description, source_path, content_hash, \
              triggers_json, tool_chain_json, policy_overrides_json, script_path, \
              enabled, last_loaded_at, created_at \
-             FROM skills WHERE triggers_json LIKE ?1 AND enabled = 1",
+             FROM skills WHERE triggers_json LIKE ?1 ESCAPE '\\' AND enabled = 1",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 

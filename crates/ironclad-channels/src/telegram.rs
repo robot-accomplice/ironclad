@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -16,6 +17,7 @@ pub struct TelegramAdapter {
     pub poll_timeout: u64,
     pub allowed_chat_ids: Vec<i64>,
     pub webhook_secret: Option<String>,
+    message_buffer: Arc<Mutex<VecDeque<InboundMessage>>>,
 }
 
 impl TelegramAdapter {
@@ -30,6 +32,7 @@ impl TelegramAdapter {
             poll_timeout: 30,
             allowed_chat_ids: Vec::new(),
             webhook_secret: None,
+            message_buffer: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -232,6 +235,17 @@ impl ChannelAdapter for TelegramAdapter {
     }
 
     async fn recv(&self) -> Result<Option<InboundMessage>> {
+        // Return buffered messages first before polling for new ones
+        {
+            let mut buffer = self
+                .message_buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(msg) = buffer.pop_front() {
+                return Ok(Some(msg));
+            }
+        }
+
         let offset = {
             let last = self
                 .last_update_id
@@ -269,27 +283,51 @@ impl ChannelAdapter for TelegramAdapter {
             return Ok(None);
         }
 
-        let update = &updates[0];
-        if let Some(uid) = update.get("update_id").and_then(|v| v.as_i64()) {
+        // Advance last_update_id to the highest in the batch
+        if let Some(max_uid) = updates
+            .iter()
+            .filter_map(|u| u.get("update_id").and_then(|v| v.as_i64()))
+            .max()
+        {
             let mut last = self
                 .last_update_id
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            *last = uid;
+            *last = max_uid;
         }
 
-        if let Some(chat_id) = update.pointer("/message/chat/id").and_then(|v| v.as_i64())
-            && !self.is_chat_allowed(chat_id)
-        {
-            debug!(chat_id, "ignoring message from disallowed chat");
+        // Parse all valid messages from the batch
+        let mut parsed: Vec<InboundMessage> = Vec::new();
+        for update in &updates {
+            if update.get("message").is_none() {
+                continue;
+            }
+            if let Some(chat_id) = update.pointer("/message/chat/id").and_then(|v| v.as_i64())
+                && !self.is_chat_allowed(chat_id)
+            {
+                debug!(chat_id, "ignoring message from disallowed chat");
+                continue;
+            }
+            if let Ok(msg) = Self::parse_inbound(update) {
+                parsed.push(msg);
+            }
+        }
+
+        if parsed.is_empty() {
             return Ok(None);
         }
 
-        if update.get("message").is_none() {
-            return Ok(None);
+        // Return the first message, buffer the rest
+        let first = parsed.remove(0);
+        if !parsed.is_empty() {
+            let mut buffer = self
+                .message_buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            buffer.extend(parsed);
         }
 
-        Self::parse_inbound(update).map(Some)
+        Ok(Some(first))
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {

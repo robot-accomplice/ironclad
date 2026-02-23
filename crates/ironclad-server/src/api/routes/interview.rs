@@ -1,8 +1,13 @@
+use std::time::Instant;
+
 use axum::{extract::State, http::StatusCode, response::IntoResponse};
 use serde::Deserialize;
 use serde_json::json;
 
 use super::AppState;
+
+const MAX_INTERVIEW_SESSIONS: usize = 100;
+const INTERVIEW_TTL_SECS: u64 = 3600;
 
 #[derive(Deserialize)]
 pub struct InterviewStartRequest {
@@ -24,6 +29,21 @@ pub async fn start_interview(
             StatusCode::CONFLICT,
             axum::Json(json!({"error": "interview already in progress", "session_key": key})),
         ));
+    }
+
+    // Evict expired sessions (older than TTL)
+    let ttl = std::time::Duration::from_secs(INTERVIEW_TTL_SECS);
+    let now = Instant::now();
+    interviews.retain(|_, session| now.duration_since(session.created_at) < ttl);
+
+    // Evict oldest if at capacity
+    if interviews.len() >= MAX_INTERVIEW_SESSIONS
+        && let Some(oldest_key) = interviews
+            .iter()
+            .min_by_key(|(_, s)| s.created_at)
+            .map(|(k, _)| k.clone())
+    {
+        interviews.remove(&oldest_key);
     }
 
     let session = super::InterviewSession::new();
