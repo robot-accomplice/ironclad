@@ -1484,18 +1484,27 @@
             providerKeys.forEach(function(pName) {
               var pData = sectionData[pName];
               if (typeof pData !== 'object' || pData === null) return;
-              html += '<div class="settings-provider-card"><div class="settings-provider-header"><span class="settings-provider-name">' + esc(pName) + '</span></div>';
+              var keyStatus = pData._key_status || 'missing';
+              var keySource = pData._key_source || 'unknown';
+              var keyBadge = '';
+              if (keyStatus === 'configured') {
+                keyBadge = '<span class="badge success" style="font-size:0.6rem;padding:0.1rem 0.4rem">Key: ' + esc(keySource) + '</span>';
+              } else if (keyStatus === 'not_required') {
+                keyBadge = '<span class="badge muted" style="font-size:0.6rem;padding:0.1rem 0.4rem">Local</span>';
+              } else {
+                keyBadge = '<span class="badge error" style="font-size:0.6rem;padding:0.1rem 0.4rem">Key missing</span>';
+              }
+              html += '<div class="settings-provider-card"><div class="settings-provider-header"><span class="settings-provider-name">' + esc(pName) + '</span>' + keyBadge + '</div>';
               Object.keys(pData).forEach(function(pKey) {
+                if (pKey.charAt(0) === '_') return;
                 var pVal = pData[pKey]; var pPath = 'providers.' + pName + '.' + pKey;
-                var isApiKey = pKey.toLowerCase().indexOf('api_key') !== -1 || pKey.toLowerCase().indexOf('apikey') !== -1;
-                var isEmpty = pVal === null || pVal === '' || pVal === 'null';
-                var warnCls = isApiKey && isEmpty ? ' warn' : '';
-                var warnIcon = isApiKey && isEmpty ? '<span class="settings-warn-icon" title="API key is not configured">\u26a0</span>' : '';
                 if (typeof pVal === 'boolean') {
                   html += '<div class="settings-row"><div class="settings-label">' + esc(pKey) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(pPath) + '"' + (pVal ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (pVal ? 'On' : 'Off') + '</span></div></div>';
+                } else if (typeof pVal === 'object' && pVal !== null) {
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(pKey) + '</div><span class="badge muted" style="font-size:0.6rem">' + Object.keys(pVal).length + ' entries</span></div>';
                 } else {
                   var type = typeof pVal === 'number' ? 'number' : 'text';
-                  html += '<div class="settings-row"><div class="settings-label' + warnCls + '">' + esc(pKey) + warnIcon + '</div><input class="settings-input' + warnCls + '" type="' + type + '" data-settings-path="' + esc(pPath) + '" value="' + esc(String(pVal == null ? '' : pVal)) + '" placeholder="' + (isApiKey ? 'Required - enter API key' : '') + '"></div>';
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(pKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(pPath) + '" value="' + esc(String(pVal == null ? '' : pVal)) + '"></div>';
                 }
               });
               html += '</div>';
@@ -1821,7 +1830,7 @@
           + (function() {
             var allModels = {};
             (data.roster || []).forEach(function(a) { if (a.model) allModels[a.model] = true; });
-            ['anthropic/claude-sonnet-4-20250514','anthropic/claude-sonnet-4-6','anthropic/claude-opus-4','openai/gpt-4o','openai/gpt-4o-mini','google/gemini-2.0-flash','google/gemini-2.5-pro','ollama/phi4-mini','ollama/qwen3:8b','ollama/llama3.1:8b'].forEach(function(m) { allModels[m] = true; });
+            ['anthropic/claude-sonnet-4-20250514','anthropic/claude-sonnet-4-6','anthropic/claude-opus-4','openai/gpt-4o','openai/gpt-4o-mini','google/gemini-2.0-flash','google/gemini-2.5-pro','google/gemini-3-pro-preview','google/gemini-3-flash-preview','google/gemini-3.1-pro-preview','moonshot/kimi-k2.5','ollama/phi4-mini','ollama/qwen3:8b','ollama/llama3.1:8b'].forEach(function(m) { allModels[m] = true; });
             var sorted = Object.keys(allModels).sort();
             var opts = sorted.map(function(m) {
               var sel = m === (agent.model || '') ? ' selected' : '';
@@ -1919,7 +1928,7 @@
       if (!newAddr) { toast('Address cannot be empty'); return; }
       var draft = App._getSettingsDraft();
       App._setNestedValue(draft, 'wallet.address', newAddr);
-      api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft) }).then(function() {
+      api('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft) }).then(function() {
         _cachedConfig = JSON.parse(JSON.stringify(draft));
         App._walletEditing = false;
         toast('Wallet address updated');
@@ -1955,7 +1964,7 @@
       var isApply = !!e.target.closest('#settings-apply');
       if (App._settingsMode === 'json') { try { App._settingsDraft = JSON.parse(App._settingsJsonText || '{}'); } catch(err) { toast('Fix JSON errors first'); return; } }
       var draft = App._getSettingsDraft();
-      api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft) }).then(function() {
+      api('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft) }).then(function() {
         _cachedConfig = JSON.parse(JSON.stringify(draft));
         App._settingsDirty = false; App._settingsJsonText = null;
         toast(isApply ? 'Configuration applied' : 'Configuration saved');
@@ -1988,7 +1997,7 @@
       var draft = App._getSettingsDraft();
       if (!draft.providers) draft.providers = {};
       if (draft.providers[name]) { toast('Provider "' + name + '" already exists'); return; }
-      draft.providers[name] = { server: '', api_key: '', enabled: true };
+      draft.providers[name] = { url: '', tier: 'T2', format: 'openai', chat_path: '/v1/chat/completions' };
       App._settingsDirty = true; App._settingsJsonText = null;
       App.navigate('settings');
       return;
