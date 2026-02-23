@@ -522,12 +522,12 @@
   </nav>
   <script>
 (function() {
-  var setHtml = function(el, html) { if (el) el["inner" + "HTML"] = html; };
+  var setHtml = function(el, html) { if (el) el.innerHTML = html; };
   var BASE = '';
   var pages = ['overview','sessions','context','memory','skills','agents','scheduler','metrics','efficiency','recommendations','wallet','settings','workspace'];
   var titles = { overview: 'Overview', sessions: 'Sessions', context: 'Context Explorer', memory: 'Memory', skills: 'Skills', agents: 'Agents', scheduler: 'Scheduler', metrics: 'Metrics', efficiency: 'Prompt Efficiency', wallet: 'Wallet', settings: 'Settings', workspace: 'Workspace' };
 
-  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
   function truncate(s, n) { return (s && s.length > n) ? s.slice(0, n) + '\u2026' : (s || ''); }
   function toast(msg) {
     var c = document.getElementById('toasts'); if (!c) return;
@@ -537,6 +537,7 @@
 
   var AUTH_CHECKED = false;
   var AUTH_REQUIRED = false;
+  var API_KEY = null;
 
   function authHeaders(extra) {
     var h = extra || { 'Accept': 'application/json' };
@@ -673,7 +674,7 @@
         ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
       }
       if (opts.yAxis) {
-        ctx.fillStyle = tc.muted; ctx.font = '9px "JetBrains Mono", monospace'; ctx.textAlign = 'right';
+        ctx.fillStyle = '#71717a'; ctx.font = '9px "JetBrains Mono", monospace'; ctx.textAlign = 'right';
         var steps = 4;
         for (var s = 0; s <= steps; s++) {
           var val = (maxTotal / steps) * s, y = toY(val);
@@ -682,7 +683,7 @@
         }
       }
       if (showLabels) {
-        ctx.fillStyle = tc.muted; ctx.font = '9px "JetBrains Mono", monospace'; ctx.textAlign = 'center';
+        ctx.fillStyle = '#71717a'; ctx.font = '9px "JetBrains Mono", monospace'; ctx.textAlign = 'center';
         var labelStep = Math.max(1, Math.floor(len / 6));
         for (var i = 0; i < len; i += labelStep) { var label = opts.xLabels ? opts.xLabels[i] : (i + 'h'); ctx.fillText(label, toX(i), H - 4); }
       }
@@ -2248,7 +2249,7 @@
         try {
           var resp = await fetch('/api/agent/message/stream', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ content: msg, session_id: App._activeSession.id })
           });
           if (!resp.ok) {

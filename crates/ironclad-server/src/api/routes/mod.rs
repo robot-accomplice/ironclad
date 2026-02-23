@@ -212,16 +212,14 @@ impl AppState {
 
 pub fn build_router(state: AppState) -> Router {
     use admin::{
-        a2a_hello, agent_card, breaker_reset, breaker_status, browser_action, browser_start,
-        browser_status, browser_stop, change_agent_model, delete_provider_key, execute_plugin_tool,
+        a2a_hello, breaker_reset, breaker_status, browser_action, browser_start, browser_status,
+        browser_stop, change_agent_model, delete_provider_key, execute_plugin_tool,
         generate_deep_analysis, get_agents, get_cache_stats, get_config, get_costs, get_efficiency,
         get_plugins, get_recommendations, get_transactions, roster, set_provider_key, start_agent,
         stop_agent, toggle_plugin, update_config, wallet_address, wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
-    use channels::{
-        get_channels_status, webhook_telegram, webhook_whatsapp, webhook_whatsapp_verify,
-    };
+    use channels::get_channels_status;
     use cron::{create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs, update_cron_job};
     use health::{get_logs, health};
     use memory::{
@@ -241,7 +239,6 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/", get(crate::dashboard::dashboard_handler))
-        .route("/.well-known/agent.json", get(agent_card))
         .route("/api/health", get(health))
         .route("/api/config", get(get_config).put(update_config))
         .route(
@@ -334,11 +331,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/roster", get(roster))
         .route("/api/roster/{name}/model", put(change_agent_model))
         .route("/api/a2a/hello", post(a2a_hello))
-        .route("/api/webhooks/telegram", post(webhook_telegram))
-        .route(
-            "/api/webhooks/whatsapp",
-            get(webhook_whatsapp_verify).post(webhook_whatsapp),
-        )
         .route("/api/channels/status", get(get_channels_status))
         .route("/api/approvals", get(admin::list_approvals))
         .route("/api/approvals/{id}/approve", post(admin::approve_request))
@@ -349,6 +341,22 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/audit/policy/{turn_id}", get(admin::get_policy_audit))
         .route("/api/audit/tools/{turn_id}", get(admin::get_tool_audit))
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB
+        .with_state(state)
+}
+
+/// Routes that must be accessible without API key authentication
+/// (webhooks from external services, discovery endpoints).
+pub fn build_public_router(state: AppState) -> Router {
+    use admin::agent_card;
+    use channels::{webhook_telegram, webhook_whatsapp, webhook_whatsapp_verify};
+
+    Router::new()
+        .route("/.well-known/agent.json", get(agent_card))
+        .route("/api/webhooks/telegram", post(webhook_telegram))
+        .route(
+            "/api/webhooks/whatsapp",
+            get(webhook_whatsapp_verify).post(webhook_whatsapp),
+        )
         .with_state(state)
 }
 
@@ -423,7 +431,7 @@ primary = "ollama/qwen3:8b"
         let policy_engine = Arc::new(policy_engine);
         let browser = Arc::new(Browser::new(ironclad_core::config::BrowserConfig::default()));
         let registry = Arc::new(SubagentRegistry::new(4, vec![]));
-        let event_bus = EventBus::new(16);
+        let event_bus = EventBus::new(256);
         let channel_router = Arc::new(ChannelRouter::new());
         let retriever = Arc::new(ironclad_agent::retrieval::MemoryRetriever::new(
             config.memory.clone(),
@@ -487,6 +495,10 @@ primary = "ollama/qwen3:8b"
         );
         state.whatsapp = Some(Arc::new(adapter));
         state
+    }
+
+    fn full_app(state: AppState) -> Router {
+        build_router(state.clone()).merge(build_public_router(state))
     }
 
     async fn json_body(resp: axum::http::Response<Body>) -> serde_json::Value {
@@ -1341,7 +1353,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn webhook_telegram_accepts_body() {
         let state = test_state_with_telegram_webhook_secret("expected-secret");
-        let app = build_router(state);
+        let app = full_app(state);
         let body = serde_json::json!({"update_id": 1, "message": {}});
         let response = app
             .oneshot(
@@ -1361,7 +1373,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn webhook_telegram_rejects_without_valid_secret() {
         let state = test_state_with_telegram_webhook_secret("expected-secret");
-        let app = build_router(state);
+        let app = full_app(state);
         let body = serde_json::json!({"update_id": 1, "message": {}});
         let response = app
             .oneshot(
@@ -1382,7 +1394,7 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn webhook_whatsapp_verify_no_adapter_returns_503() {
-        let app = build_router(test_state());
+        let app = full_app(test_state());
         let response = app
             .oneshot(
                 Request::builder()
@@ -1399,7 +1411,7 @@ primary = "ollama/qwen3:8b"
     async fn webhook_whatsapp_parses_real_payload_fixture() {
         let secret = "test-whatsapp-hmac-key";
         let state = test_state_with_whatsapp_app_secret(secret);
-        let app = build_router(state);
+        let app = full_app(state);
         let body = serde_json::json!({
             "object": "whatsapp_business_account",
             "entry": [{
@@ -1447,7 +1459,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn webhook_whatsapp_rejects_invalid_signature() {
         let state = test_state_with_whatsapp_app_secret("test-whatsapp-hmac-key");
-        let app = build_router(state);
+        let app = full_app(state);
         let body_bytes = br#"{"object":"whatsapp_business_account","entry":[]}"#;
         let response = app
             .oneshot(
@@ -1786,7 +1798,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn agent_card_well_known() {
         let state = test_state();
-        let app = build_router(state);
+        let app = full_app(state);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -1969,7 +1981,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn agent_card_has_required_fields() {
         let state = test_state();
-        let app = build_router(state);
+        let app = full_app(state);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -2420,7 +2432,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn webhook_whatsapp_verify_with_correct_token() {
         let state = test_state_with_whatsapp_app_secret("test-secret");
-        let app = build_router(state);
+        let app = full_app(state);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -2438,7 +2450,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn webhook_whatsapp_verify_wrong_token_returns_forbidden() {
         let state = test_state_with_whatsapp_app_secret("test-secret");
-        let app = build_router(state);
+        let app = full_app(state);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -2455,7 +2467,7 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn webhook_telegram_no_adapter_returns_503() {
-        let app = build_router(test_state());
+        let app = full_app(test_state());
         let resp = app
             .oneshot(
                 Request::builder()
@@ -2472,7 +2484,7 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn webhook_whatsapp_no_adapter_post_returns_503() {
-        let app = build_router(test_state());
+        let app = full_app(test_state());
         let resp = app
             .oneshot(
                 Request::builder()

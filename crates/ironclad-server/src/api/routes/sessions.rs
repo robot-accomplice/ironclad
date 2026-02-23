@@ -31,7 +31,7 @@ pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     let mut stmt = conn
         .prepare(
             "SELECT id, agent_id, scope_key, status, model, nickname, created_at, updated_at, metadata \
-             FROM sessions ORDER BY created_at DESC",
+             FROM sessions ORDER BY created_at DESC LIMIT 200",
         )
         .map_err(|e| internal_err(&e))?;
 
@@ -96,7 +96,7 @@ pub async fn list_messages(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match ironclad_db::sessions::list_messages(&state.db, &id, None) {
+    match ironclad_db::sessions::list_messages(&state.db, &id, Some(200)) {
         Ok(msgs) => {
             let items: Vec<Value> = msgs
                 .into_iter()

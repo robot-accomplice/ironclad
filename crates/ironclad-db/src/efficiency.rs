@@ -77,6 +77,7 @@ pub struct TimeSeriesPoint {
     pub cost: f64,
     pub turns: i64,
     pub budget_utilization: f64,
+    pub cached_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,8 +157,8 @@ fn compute_quality_for_model(
             ))
         })
         .ok()?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .ok()?;
 
     if rows.is_empty() {
         return None;
@@ -258,8 +259,8 @@ pub fn compute_efficiency(
         stmt.query_map([], map_row)
     }
     .map_err(|e| IroncladError::Database(e.to_string()))?
-    .filter_map(|r| r.ok())
-    .collect();
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     // ── Time-series (daily buckets) ──────────────────────────
     let ts_sql = format!(
@@ -268,7 +269,8 @@ pub fn compute_efficiency(
             model, \
             AVG(CAST(tokens_out AS REAL) / NULLIF(tokens_in, 0)) AS output_density, \
             SUM(cost) AS cost, \
-            COUNT(*) AS turns \
+            COUNT(*) AS turns, \
+            SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END) AS cached_count \
          FROM inference_costs \
          WHERE created_at >= {cutoff}{model_clause} \
          GROUP BY bucket, model \
@@ -287,6 +289,7 @@ pub fn compute_efficiency(
             cost: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
             turns: row.get(4)?,
             budget_utilization: 0.0,
+            cached_count: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
         })
     };
 
@@ -296,8 +299,8 @@ pub fn compute_efficiency(
         ts_stmt.query_map([], ts_map)
     }
     .map_err(|e| IroncladError::Database(e.to_string()))?
-    .filter_map(|r| r.ok())
-    .collect();
+    .collect::<std::result::Result<Vec<_>, _>>()
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     // ── Build per-model trend data from time series ──────────
     let mut model_ts: HashMap<String, Vec<&TimeSeriesPoint>> = HashMap::new();
@@ -365,8 +368,20 @@ pub fn compute_efficiency(
                 }
             });
 
-            let first_cache = cache_hit_rate;
-            let second_cache = cache_hit_rate;
+            let first_cache = avg(first, |p| {
+                if p.turns > 0 {
+                    p.cached_count as f64 / p.turns as f64
+                } else {
+                    0.0
+                }
+            });
+            let second_cache = avg(second, |p| {
+                if p.turns > 0 {
+                    p.cached_count as f64 / p.turns as f64
+                } else {
+                    0.0
+                }
+            });
 
             TrendMetrics {
                 output_density: trend_label(first_density, second_density),
@@ -596,14 +611,34 @@ pub fn build_user_profile(db: &Database, period: &str) -> Result<RecommendationU
             [],
             |row| row.get(0),
         )
-        .unwrap_or(1.0);
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let (graded_turns, avg_quality): (i64, Option<f64>) = conn
+        .query_row(
+            &format!(
+                "SELECT COUNT(*), AVG(CAST(tf.grade AS REAL)) \
+                 FROM turn_feedback tf \
+                 JOIN turns t ON t.id = tf.turn_id \
+                 JOIN sessions s ON s.id = t.session_id \
+                 WHERE s.created_at >= {cutoff}"
+            ),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, None));
+
+    let grade_coverage = if total_turns > 0 {
+        graded_turns as f64 / total_turns as f64
+    } else {
+        0.0
+    };
 
     Ok(RecommendationUserProfile {
         total_sessions,
         total_turns,
         total_cost,
-        avg_quality: None,
-        grade_coverage: 0.0,
+        avg_quality,
+        grade_coverage,
         models_used,
         model_stats,
         avg_session_length,

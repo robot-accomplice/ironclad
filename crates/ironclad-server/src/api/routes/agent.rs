@@ -83,6 +83,32 @@ async fn execute_tool_call(
         return Err(format!("Policy denied: {msg}"));
     }
 
+    // Approval gate: block gated tools until a human approves
+    match state.approvals.check_tool(tool_name) {
+        Ok(ironclad_agent::approvals::ToolClassification::Gated) => {
+            let request = state
+                .approvals
+                .request_approval(tool_name, &params.to_string(), Some(turn_id))
+                .map_err(|e| format!("Approval error: {e}"))?;
+            state.event_bus.publish(
+                serde_json::json!({
+                    "type": "pending_approval",
+                    "tool": tool_name,
+                    "request_id": request.id,
+                })
+                .to_string(),
+            );
+            return Err(format!(
+                "Tool '{tool_name}' requires approval (request: {})",
+                request.id
+            ));
+        }
+        Err(e) => {
+            return Err(format!("Tool blocked: {e}"));
+        }
+        Ok(_) => {}
+    }
+
     let tool = match state.tools.get(tool_name) {
         Some(t) => t,
         None => return Err(format!("Unknown tool: {tool_name}")),
@@ -95,11 +121,31 @@ async fn execute_tool_call(
     };
 
     let start = std::time::Instant::now();
-    let result = tool.execute(params.clone(), &ctx).await;
+    let timeout_duration = std::time::Duration::from_secs(120);
+    let result =
+        match tokio::time::timeout(timeout_duration, tool.execute(params.clone(), &ctx)).await {
+            Ok(result) => result,
+            Err(_) => Err(ironclad_agent::tools::ToolError {
+                message: format!("Tool '{tool_name}' timed out after {timeout_duration:?}"),
+            }),
+        };
     let duration_ms = start.elapsed().as_millis() as i64;
 
+    const MAX_TOOL_OUTPUT: usize = 16_384;
     let (output, status) = match &result {
-        Ok(r) => (r.output.clone(), "success"),
+        Ok(r) => {
+            let out = if r.output.len() > MAX_TOOL_OUTPUT {
+                let boundary = r.output.floor_char_boundary(MAX_TOOL_OUTPUT);
+                format!(
+                    "{}...\n[truncated: {} bytes total]",
+                    &r.output[..boundary],
+                    r.output.len()
+                )
+            } else {
+                r.output.clone()
+            };
+            (out, "success")
+        }
         Err(e) => (e.message.clone(), "error"),
     };
 
@@ -115,7 +161,7 @@ async fn execute_tool_call(
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record tool call"))
     .ok();
 
-    result.map(|r| r.output).map_err(|e| e.message)
+    result.map(|_| output).map_err(|e| e.message)
 }
 
 pub async fn agent_status(State(state): State<AppState>) -> impl IntoResponse {
@@ -152,6 +198,19 @@ pub async fn agent_message(
     axum::Json(body): axum::Json<AgentMessageRequest>,
 ) -> impl IntoResponse {
     let config = state.config.read().await;
+
+    if body.content.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": "message content cannot be empty"})),
+        ));
+    }
+    if body.content.len() > 32_768 {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            axum::Json(json!({"error": "message content exceeds maximum length (32768 bytes)"})),
+        ));
+    }
 
     // Injection defense: block (>0.7), sanitize (0.3-0.7), or pass (<0.3)
     let threat = ironclad_agent::injection::check_injection(&body.content);
@@ -200,30 +259,47 @@ pub async fn agent_message(
         Some(sid) => match ironclad_db::sessions::get_session(&state.db, sid) {
             Ok(Some(session)) if session.agent_id == agent_id => sid.clone(),
             Ok(Some(_)) => {
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
                 return Err((
                     StatusCode::FORBIDDEN,
                     axum::Json(json!({"error": "session does not belong to this agent"})),
                 ));
             }
             Ok(None) => {
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
                 return Err((
                     StatusCode::NOT_FOUND,
                     axum::Json(json!({"error": "session not found"})),
                 ));
             }
             Err(e) => {
+                tracing::error!(error = %e, "failed to retrieve session");
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(json!({"error": e.to_string()})),
+                    axum::Json(json!({"error": "internal server error"})),
                 ));
             }
         },
-        None => ironclad_db::sessions::find_or_create(&state.db, &agent_id, None).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": e.to_string()})),
-            )
-        })?,
+        None => match ironclad_db::sessions::find_or_create(&state.db, &agent_id, None) {
+            Ok(sid) => sid,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to create session");
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": "internal server error"})),
+                ));
+            }
+        },
     };
 
     // Set nickname on first message in a session
@@ -238,14 +314,24 @@ pub async fn agent_message(
     };
 
     // Store user message
-    let user_msg_id =
-        ironclad_db::sessions::append_message(&state.db, &session_id, "user", &body.content)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(json!({"error": e.to_string()})),
-                )
-            })?;
+    let user_msg_id = match ironclad_db::sessions::append_message(
+        &state.db,
+        &session_id,
+        "user",
+        &body.content,
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to store user message");
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": "internal server error"})),
+            ));
+        }
+    };
 
     // Use the ModelRouter to select a model based on complexity
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
@@ -322,9 +408,10 @@ pub async fn agent_message(
             &cached.content,
         )
         .map_err(|e| {
+            tracing::error!(error = %e, "failed to store cached response");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": e.to_string()})),
+                axum::Json(json!({"error": "internal server error"})),
             )
         })?;
 
@@ -616,9 +703,10 @@ pub async fn agent_message(
         &assistant_content,
     )
     .map_err(|e| {
+        tracing::error!(error = %e, "failed to store assistant response");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": e.to_string()})),
+            axum::Json(json!({"error": "internal server error"})),
         )
     })?;
 
@@ -767,45 +855,89 @@ pub async fn agent_message_stream(
         body.content.clone()
     };
 
+    // In-flight deduplication
+    let dedup_fp = ironclad_llm::DedupTracker::fingerprint(
+        "",
+        &[ironclad_llm::format::UnifiedMessage {
+            role: "user".into(),
+            content: user_content.clone(),
+            parts: None,
+        }],
+    );
+    {
+        let mut llm = state.llm.write().await;
+        if !llm.dedup.check_and_track(&dedup_fp) {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                axum::Json(json!({
+                    "error": "duplicate_request",
+                    "reason": "identical request already in flight",
+                })),
+            ));
+        }
+    }
+
     let agent_id = config.agent.id.clone();
     let session_id = match &body.session_id {
         Some(sid) => match ironclad_db::sessions::get_session(&state.db, sid) {
             Ok(Some(session)) if session.agent_id == agent_id => sid.clone(),
             Ok(Some(_)) => {
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
                 return Err((
                     StatusCode::FORBIDDEN,
                     axum::Json(json!({"error": "session does not belong to this agent"})),
                 ));
             }
             Ok(None) => {
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
                 return Err((
                     StatusCode::NOT_FOUND,
                     axum::Json(json!({"error": "session not found"})),
                 ));
             }
             Err(e) => {
+                tracing::error!(error = %e, "failed to retrieve session");
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(json!({"error": e.to_string()})),
+                    axum::Json(json!({"error": "internal server error"})),
                 ));
             }
         },
-        None => ironclad_db::sessions::find_or_create(&state.db, &agent_id, None).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": e.to_string()})),
-            )
-        })?,
+        None => match ironclad_db::sessions::find_or_create(&state.db, &agent_id, None) {
+            Ok(sid) => sid,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to create session");
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": "internal server error"})),
+                ));
+            }
+        },
     };
 
-    ironclad_db::sessions::append_message(&state.db, &session_id, "user", &body.content).map_err(
-        |e| {
-            (
+    match ironclad_db::sessions::append_message(&state.db, &session_id, "user", &body.content) {
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(error = %e, "failed to store user message");
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": e.to_string()})),
-            )
-        },
-    )?;
+                axum::Json(json!({"error": "internal server error"})),
+            ));
+        }
+    }
 
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
@@ -940,7 +1072,7 @@ pub async fn agent_message_stream(
         quality_target: None,
     };
 
-    // Resolve the provider to get URL, key, format, etc.
+    // Resolve the provider to get URL, key, format, cost rates, etc.
     let resolved = {
         let llm = state.llm.read().await;
         match llm.providers.get_by_model(&model) {
@@ -963,44 +1095,64 @@ pub async fn agent_message_stream(
                     provider.auth_header.clone(),
                     provider.extra_headers.clone(),
                     provider.format,
+                    provider.cost_per_input_token,
+                    provider.cost_per_output_token,
                 ))
             }
             None => None,
         }
     };
 
-    let Some((url, api_key, auth_header, extra_headers, api_format)) = resolved else {
+    let Some((url, api_key, auth_header, extra_headers, api_format, cost_in, cost_out)) = resolved
+    else {
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
         return Err((
             StatusCode::BAD_GATEWAY,
             axum::Json(json!({"error": "no provider configured for selected model"})),
         ));
     };
 
-    let llm_body =
-        ironclad_llm::format::translate_request(&unified_req, api_format).map_err(|e| {
-            (
+    let llm_body = match ironclad_llm::format::translate_request(&unified_req, api_format) {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to translate LLM request");
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": e.to_string()})),
-            )
-        })?;
+                axum::Json(json!({"error": "internal server error"})),
+            ));
+        }
+    };
 
     let chunk_stream = {
         let llm = state.llm.read().await;
-        llm.stream_to_provider(
-            url,
-            api_key,
-            llm_body,
-            auth_header,
-            extra_headers,
-            api_format,
-        )
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                axum::Json(json!({"error": e.to_string()})),
+        let result = llm
+            .stream_to_provider(
+                url,
+                api_key,
+                llm_body,
+                auth_header,
+                extra_headers,
+                api_format,
             )
-        })?
+            .await;
+        drop(llm);
+        match result {
+            Ok(stream) => stream,
+            Err(e) => {
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    axum::Json(json!({"error": e.to_string()})),
+                ));
+            }
+        }
     };
 
     // Send initial metadata event, then stream chunks, then send a final summary
@@ -1008,6 +1160,12 @@ pub async fn agent_message_stream(
     let model_clone = model.clone();
     let event_bus = state.event_bus.clone();
     let db = state.db.clone();
+    let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
+    let cache_hash = ironclad_llm::SemanticCache::compute_hash("", "", &user_content);
+    let llm_arc = Arc::clone(&state.llm);
+    let hmac_secret_clone = state.hmac_secret.clone();
+    let user_content_clone = user_content.clone();
+    let dedup_fp_clone = dedup_fp.clone();
 
     let sse_stream = async_stream::stream! {
         // Opening event with session metadata
@@ -1052,13 +1210,73 @@ pub async fn agent_message_stream(
 
         let unified_resp = accumulator.finalize();
 
-        // Post-stream: store assistant response
+        // HMAC boundary check on accumulated output
+        let assistant_content = if unified_resp.content.contains("<<<TRUST_BOUNDARY:") {
+            if !ironclad_agent::prompt::verify_hmac_boundary(
+                &unified_resp.content,
+                hmac_secret_clone.as_ref(),
+            ) {
+                tracing::warn!("HMAC boundary tampered in streaming output, stripping");
+                ironclad_agent::prompt::strip_hmac_boundaries(&unified_resp.content)
+            } else {
+                unified_resp.content.clone()
+            }
+        } else {
+            unified_resp.content.clone()
+        };
+
+        // L4 output scanning
+        let assistant_content = if ironclad_agent::injection::scan_output(&assistant_content) {
+            tracing::warn!("L4 output scan flagged streaming response");
+            "[Response blocked by output safety filter]".to_string()
+        } else {
+            assistant_content
+        };
+
+        // Post-stream: store assistant response (scanned content)
         ironclad_db::sessions::append_message(
             &db,
             &session_id_clone,
             "assistant",
-            &unified_resp.content,
+            &assistant_content,
         ).ok();
+
+        // Record inference cost
+        let cost = unified_resp.tokens_in as f64 * cost_in + unified_resp.tokens_out as f64 * cost_out;
+        ironclad_db::metrics::record_inference_cost(
+            &db,
+            &model_clone,
+            &provider_prefix,
+            unified_resp.tokens_in as i64,
+            unified_resp.tokens_out as i64,
+            cost,
+            None,
+            false,
+        )
+        .inspect_err(|e| tracing::warn!(error = %e, "failed to record streaming inference cost"))
+        .ok();
+
+        // Cache write-through
+        if unified_resp.tokens_out > 0 {
+            let cached_entry = ironclad_llm::CachedResponse {
+                content: assistant_content.clone(),
+                model: model_clone.clone(),
+                tokens_saved: unified_resp.tokens_out,
+                created_at: std::time::Instant::now(),
+                expires_at: std::time::Instant::now() + std::time::Duration::from_secs(3600),
+                hits: 0,
+                involved_tools: false,
+                embedding: None,
+            };
+            let mut llm = llm_arc.write().await;
+            llm.cache.store_with_embedding(&cache_hash, &user_content_clone, cached_entry);
+        }
+
+        // Release dedup tracking
+        {
+            let mut llm = llm_arc.write().await;
+            llm.dedup.release(&dedup_fp_clone);
+        }
 
         let done_event = json!({
             "type": "stream_chunk",
@@ -1074,7 +1292,7 @@ pub async fn agent_message_stream(
             "model": unified_resp.model,
             "tokens_in": unified_resp.tokens_in,
             "tokens_out": unified_resp.tokens_out,
-            "content_length": unified_resp.content.len(),
+            "content_length": assistant_content.len(),
         });
         yield Ok(Event::default().data(final_event.to_string()));
     };
@@ -1729,6 +1947,17 @@ pub async fn process_channel_message(
         return Ok(());
     }
 
+    // Addressability filter: in group chats, only respond when explicitly addressed
+    {
+        let config = state.config.read().await;
+        let agent_name = &config.agent.name;
+        let chain = ironclad_channels::filter::default_addressability_chain(agent_name);
+        if !chain.accepts(&inbound) {
+            tracing::debug!(chat_id = %chat_id, "addressability filter: not addressed, skipping");
+            return Ok(());
+        }
+    }
+
     if inbound.content.starts_with('/')
         && let Some(reply) = handle_bot_command(state, &inbound.content).await
     {
@@ -2145,6 +2374,9 @@ pub async fn process_channel_message(
 }
 
 pub async fn telegram_poll_loop(state: AppState) {
+    static CHANNEL_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+        std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(8)));
+
     let adapter = match &state.telegram {
         Some(a) => a.clone(),
         None => return,
@@ -2156,7 +2388,12 @@ pub async fn telegram_poll_loop(state: AppState) {
         match adapter.recv().await {
             Ok(Some(inbound)) => {
                 let state = state.clone();
+                let semaphore = Arc::clone(&CHANNEL_SEMAPHORE);
                 tokio::spawn(async move {
+                    let _permit = match semaphore.acquire_owned().await {
+                        Ok(p) => p,
+                        Err(_) => return,
+                    };
                     if let Err(e) = process_channel_message(&state, inbound).await {
                         tracing::error!(error = %e, "Telegram message processing failed");
                     }

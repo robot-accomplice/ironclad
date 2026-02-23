@@ -42,7 +42,7 @@ pub mod plugins;
 pub mod rate_limit;
 pub mod ws;
 
-pub use api::{AppState, PersonalityState, build_router};
+pub use api::{AppState, PersonalityState, build_public_router, build_router};
 pub use dashboard::{build_dashboard_html, dashboard_handler};
 pub use ws::{EventBus, ws_route};
 
@@ -670,9 +670,14 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
                 axum::http::HeaderName::from_static("x-api-key"),
             ])
     };
-    let app = build_router(state)
+    let authed_routes = build_router(state.clone())
         .route("/ws", ws_route(event_bus.clone()))
-        .layer(auth_layer)
+        .layer(auth_layer);
+
+    let public_routes = build_public_router(state);
+
+    let app = authed_routes
+        .merge(public_routes)
         .layer(cors)
         .layer(GlobalRateLimitLayer::new(
             u64::from(config.server.rate_limit_requests),

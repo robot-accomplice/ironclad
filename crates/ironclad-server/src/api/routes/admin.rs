@@ -179,8 +179,14 @@ pub async fn get_policy_audit(
     State(state): State<AppState>,
     Path(turn_id): Path<String>,
 ) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
-    let decisions = ironclad_db::policy::get_decisions_for_turn(&state.db, &turn_id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let decisions =
+        ironclad_db::policy::get_decisions_for_turn(&state.db, &turn_id).map_err(|e| {
+            tracing::error!(error = %e, "failed to fetch policy audit");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal server error".to_string(),
+            )
+        })?;
     Ok(Json(json!({
         "turn_id": turn_id,
         "decisions": decisions.iter().map(|d| json!({
@@ -198,8 +204,13 @@ pub async fn get_tool_audit(
     State(state): State<AppState>,
     Path(turn_id): Path<String>,
 ) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
-    let calls = ironclad_db::tools::get_tool_calls_for_turn(&state.db, &turn_id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let calls = ironclad_db::tools::get_tool_calls_for_turn(&state.db, &turn_id).map_err(|e| {
+        tracing::error!(error = %e, "failed to fetch tool audit");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal server error".to_string(),
+        )
+    })?;
     Ok(Json(json!({
         "turn_id": turn_id,
         "tool_calls": calls.iter().map(|c| json!({
@@ -1087,7 +1098,14 @@ pub async fn get_efficiency(
 
     match ironclad_db::efficiency::compute_efficiency(&state.db, period, model) {
         Ok(report) => Json(serde_json::to_value(report).unwrap_or_default()).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to compute efficiency report");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal server error".to_string(),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -1106,7 +1124,14 @@ pub async fn get_recommendations(
 
     let profile = match ironclad_db::efficiency::build_user_profile(&state.db, period) {
         Ok(p) => p,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to build user profile for recommendations");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal server error".to_string(),
+            )
+                .into_response();
+        }
     };
 
     let engine = ironclad_agent::recommendations::RecommendationEngine::new();

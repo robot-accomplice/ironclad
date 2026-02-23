@@ -69,7 +69,9 @@ impl ModelRouter {
                 if self.current_index == 0 {
                     &self.primary
                 } else {
-                    &self.fallbacks[self.current_index - 1]
+                    self.fallbacks
+                        .get(self.current_index - 1)
+                        .unwrap_or(&self.primary)
                 }
             }
         }

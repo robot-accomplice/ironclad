@@ -37,7 +37,10 @@ pub async fn create_approval(
         &body.tool_input,
         body.session_id.as_deref(),
     ) {
-        Ok(req) => (StatusCode::CREATED, Json(serde_json::to_value(req).unwrap())).into_response(),
+        Ok(req) => match serde_json::to_value(req) {
+            Ok(v) => (StatusCode::CREATED, Json(v)).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
+        },
         Err(e) => super::internal_err(&e).into_response(),
     }
 }
@@ -47,7 +50,10 @@ pub async fn get_approval(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.approvals.get_request(&id) {
-        Some(req) => Json(serde_json::to_value(req).unwrap()).into_response(),
+        Some(req) => match serde_json::to_value(req) {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
+        },
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -58,7 +64,10 @@ pub async fn approve_approval(
     Json(body): Json<DecisionRequest>,
 ) -> impl IntoResponse {
     match state.approvals.approve(&id, &body.decided_by) {
-        Ok(req) => Json(serde_json::to_value(req).unwrap()).into_response(),
+        Ok(req) => match serde_json::to_value(req) {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
+        },
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -69,7 +78,10 @@ pub async fn deny_approval(
     Json(body): Json<DecisionRequest>,
 ) -> impl IntoResponse {
     match state.approvals.deny(&id, &body.decided_by) {
-        Ok(req) => Json(serde_json::to_value(req).unwrap()).into_response(),
+        Ok(req) => match serde_json::to_value(req) {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
+        },
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
