@@ -195,6 +195,10 @@ pub struct SseChunkStream {
     inner: Pin<Box<dyn Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send>>,
     format: ApiFormat,
     buffer: String,
+    /// Chunks parsed from the buffer remainder when the inner stream ends.
+    /// Drained before returning `None` to avoid dropping trailing data.
+    pending: std::collections::VecDeque<format::StreamChunk>,
+    inner_done: bool,
 }
 
 impl SseChunkStream {
@@ -206,6 +210,8 @@ impl SseChunkStream {
             inner,
             format,
             buffer: String::new(),
+            pending: std::collections::VecDeque::new(),
+            inner_done: false,
         }
     }
 }
@@ -215,6 +221,14 @@ impl Stream for SseChunkStream {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
+
+        // Drain any chunks buffered from the final flush before signaling end-of-stream
+        if let Some(chunk) = this.pending.pop_front() {
+            return Poll::Ready(Some(Ok(chunk)));
+        }
+        if this.inner_done {
+            return Poll::Ready(None);
+        }
 
         loop {
             // First, try to parse a complete line from the buffer
@@ -243,7 +257,8 @@ impl Stream for SseChunkStream {
                     )))));
                 }
                 Poll::Ready(None) => {
-                    // Stream ended — try to flush remaining buffer
+                    this.inner_done = true;
+                    // Parse ALL remaining lines and queue them for delivery
                     if !this.buffer.trim().is_empty() {
                         let remaining = std::mem::take(&mut this.buffer);
                         for line in remaining.lines() {
@@ -252,11 +267,14 @@ impl Stream for SseChunkStream {
                                 continue;
                             }
                             if let Some(chunk) = format::parse_sse_chunk(line, &this.format) {
-                                return Poll::Ready(Some(Ok(chunk)));
+                                this.pending.push_back(chunk);
                             }
                         }
                     }
-                    return Poll::Ready(None);
+                    return match this.pending.pop_front() {
+                        Some(chunk) => Poll::Ready(Some(Ok(chunk))),
+                        None => Poll::Ready(None),
+                    };
                 }
                 Poll::Pending => return Poll::Pending,
             }

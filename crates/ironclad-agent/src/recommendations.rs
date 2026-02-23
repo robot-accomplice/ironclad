@@ -693,7 +693,7 @@ impl RecommendationRule for ToolCostAwareness {
         if profile.total_turns < 10 {
             return None;
         }
-        if profile.tool_success_rate > 0.0 && profile.tool_success_rate < 0.7 {
+        if profile.tool_success_rate < 0.7 {
             Some(Recommendation {
                 category: self.category(),
                 priority: Priority::Medium,

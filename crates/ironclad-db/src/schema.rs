@@ -359,14 +359,13 @@ CREATE INDEX IF NOT EXISTS idx_hippocampus_agent ON hippocampus(created_by, agen
 
 CREATE TABLE IF NOT EXISTS turn_feedback (
     id TEXT PRIMARY KEY,
-    turn_id TEXT NOT NULL REFERENCES turns(id),
+    turn_id TEXT NOT NULL UNIQUE REFERENCES turns(id),
     session_id TEXT NOT NULL REFERENCES sessions(id),
     grade INTEGER NOT NULL CHECK (grade BETWEEN 1 AND 5),
     source TEXT NOT NULL DEFAULT 'dashboard',
     comment TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_turn_feedback_turn ON turn_feedback(turn_id);
 CREATE INDEX IF NOT EXISTS idx_turn_feedback_session ON turn_feedback(session_id);
 
 CREATE TABLE IF NOT EXISTS context_snapshots (

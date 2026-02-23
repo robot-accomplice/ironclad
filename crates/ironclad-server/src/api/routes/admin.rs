@@ -1034,9 +1034,10 @@ pub async fn set_provider_key(
 
     let ks_name = format!("{name}_api_key");
     state.keystore.set(&ks_name, key).map_err(|e| {
+        tracing::error!(provider = %name, error = %e, "failed to store API key in keystore");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("keystore error: {e}"),
+            "internal server error".to_string(),
         )
     })?;
 
@@ -1064,9 +1065,10 @@ pub async fn delete_provider_key(
 
     let ks_name = format!("{name}_api_key");
     let removed = state.keystore.remove(&ks_name).map_err(|e| {
+        tracing::error!(provider = %name, error = %e, "failed to remove API key from keystore");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("keystore error: {e}"),
+            "internal server error".to_string(),
         )
     })?;
 

@@ -17,6 +17,27 @@ use serde_json::json;
 
 use super::AppState;
 
+/// RAII guard that releases a dedup fingerprint when dropped.
+/// Ensures cleanup on all exit paths, including async stream disconnects.
+struct DedupGuard {
+    llm: Arc<tokio::sync::RwLock<ironclad_llm::LlmService>>,
+    fingerprint: String,
+}
+
+impl Drop for DedupGuard {
+    fn drop(&mut self) {
+        if self.fingerprint.is_empty() {
+            return;
+        }
+        let llm = Arc::clone(&self.llm);
+        let fp = std::mem::take(&mut self.fingerprint);
+        tokio::spawn(async move {
+            let mut llm = llm.write().await;
+            llm.dedup.release(&fp);
+        });
+    }
+}
+
 /// Try to extract a tool call from the LLM's text response.
 /// Looks for `{"tool_call": {"name": "...", "params": {...}}}` in the response.
 fn parse_tool_call(response: &str) -> Option<(String, serde_json::Value)> {
@@ -401,19 +422,24 @@ pub async fn agent_message(
     };
 
     if let Some(cached) = cached_response {
-        let asst_id = ironclad_db::sessions::append_message(
+        let asst_id = match ironclad_db::sessions::append_message(
             &state.db,
             &session_id,
             "assistant",
             &cached.content,
-        )
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to store cached response");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": "internal server error"})),
-            )
-        })?;
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to store cached response");
+                let mut llm = state.llm.write().await;
+                llm.dedup.release(&dedup_fp);
+                drop(llm);
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": "internal server error"})),
+                ));
+            }
+        };
 
         ironclad_db::metrics::record_inference_cost(
             &state.db,
@@ -696,19 +722,24 @@ pub async fn agent_message(
     let assistant_content = final_content;
 
     // Store assistant response
-    let asst_id = ironclad_db::sessions::append_message(
+    let asst_id = match ironclad_db::sessions::append_message(
         &state.db,
         &session_id,
         "assistant",
         &assistant_content,
-    )
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to store assistant response");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": "internal server error"})),
-        )
-    })?;
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to store assistant response");
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": "internal server error"})),
+            ));
+        }
+    };
 
     ironclad_db::metrics::record_inference_cost(
         &state.db,
@@ -1167,12 +1198,13 @@ pub async fn agent_message_stream(
         match result {
             Ok(stream) => stream,
             Err(e) => {
+                tracing::error!(error = %e, "streaming provider connection failed");
                 let mut llm = state.llm.write().await;
                 llm.dedup.release(&dedup_fp);
                 drop(llm);
                 return Err((
                     StatusCode::BAD_GATEWAY,
-                    axum::Json(json!({"error": e.to_string()})),
+                    axum::Json(json!({"error": "upstream provider error"})),
                 ));
             }
         }
@@ -1188,9 +1220,18 @@ pub async fn agent_message_stream(
     let llm_arc = Arc::clone(&state.llm);
     let hmac_secret_clone = state.hmac_secret.clone();
     let user_content_clone = user_content.clone();
-    let dedup_fp_clone = dedup_fp.clone();
+
+    // DedupGuard ensures the fingerprint is released even if the client disconnects
+    // mid-stream and the generator is dropped before reaching the explicit release.
+    let dedup_guard = DedupGuard {
+        llm: Arc::clone(&state.llm),
+        fingerprint: dedup_fp,
+    };
 
     let sse_stream = async_stream::stream! {
+        // Move the guard into the generator so it drops with the stream
+        let _dedup_guard = dedup_guard;
+
         // Opening event with session metadata
         let open = json!({
             "type": "stream_start",
@@ -1224,7 +1265,8 @@ pub async fn agent_message_stream(
                     yield Ok(Event::default().data(sse_data.to_string()));
                 }
                 Err(e) => {
-                    let err_data = json!({"type": "error", "error": e.to_string()});
+                    tracing::error!(error = %e, "streaming chunk error from provider");
+                    let err_data = json!({"type": "error", "error": "upstream provider error"});
                     yield Ok(Event::default().data(err_data.to_string()));
                     break;
                 }
@@ -1302,12 +1344,6 @@ pub async fn agent_message_stream(
             llm.cache.store_with_embedding(&cache_hash, &user_content_clone, cached_entry);
         }
 
-        // Release dedup tracking
-        {
-            let mut llm = llm_arc.write().await;
-            llm.dedup.release(&dedup_fp_clone);
-        }
-
         let done_event = json!({
             "type": "stream_chunk",
             "content": "",
@@ -1326,6 +1362,8 @@ pub async fn agent_message_stream(
             "content_blocked": content_blocked,
         });
         yield Ok(Event::default().data(final_event.to_string()));
+
+        // Guard drops here on normal completion, releasing the fingerprint
     };
 
     Ok(Sse::new(sse_stream).keep_alive(KeepAlive::default()))
@@ -2044,10 +2082,23 @@ pub async fn process_channel_message(
     }
 
     let session_key = format!("{}:{}", platform, inbound.sender_id);
-    let session_id = ironclad_db::sessions::find_or_create(&state.db, &session_key, None)
-        .map_err(|e| e.to_string())?;
-    ironclad_db::sessions::append_message(&state.db, &session_id, "user", &inbound.content)
-        .map_err(|e| e.to_string())?;
+    let session_id = match ironclad_db::sessions::find_or_create(&state.db, &session_key, None) {
+        Ok(id) => id,
+        Err(e) => {
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Err(e.to_string());
+        }
+    };
+    if let Err(e) =
+        ironclad_db::sessions::append_message(&state.db, &session_id, "user", &inbound.content)
+    {
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
+        return Err(e.to_string());
+    }
 
     let config = state.config.read().await;
     let features = ironclad_llm::extract_features(&user_content, 0, 1);

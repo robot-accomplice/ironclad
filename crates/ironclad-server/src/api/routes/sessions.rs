@@ -135,6 +135,17 @@ pub async fn post_message(
         ));
     }
 
+    match ironclad_db::sessions::get_session(&state.db, &id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return Err((
+                axum::http::StatusCode::NOT_FOUND,
+                format!("session '{id}' not found"),
+            ));
+        }
+        Err(e) => return Err(internal_err(&e)),
+    }
+
     match ironclad_db::sessions::append_message(&state.db, &id, &body.role, &body.content) {
         Ok(msg_id) => Ok(axum::Json(serde_json::json!({ "message_id": msg_id }))),
         Err(e) => Err(internal_err(&e)),

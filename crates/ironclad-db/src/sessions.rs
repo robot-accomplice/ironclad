@@ -580,7 +580,9 @@ pub fn record_feedback(
     let id = uuid::Uuid::new_v4().to_string();
     db.conn()
         .execute(
-            "INSERT OR REPLACE INTO turn_feedback (id, turn_id, session_id, grade, source, comment) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO turn_feedback (id, turn_id, session_id, grade, source, comment) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(turn_id) DO UPDATE SET grade = excluded.grade, source = excluded.source, comment = excluded.comment",
             rusqlite::params![id, turn_id, session_id, grade, source, comment],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
