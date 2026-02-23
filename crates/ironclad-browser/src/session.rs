@@ -20,7 +20,7 @@ type WsStream =
 pub struct CdpSession {
     ws: Mutex<WsStream>,
     command_id: AtomicU64,
-    timeout: Duration,
+    timeout_ms: AtomicU64,
 }
 
 impl CdpSession {
@@ -35,17 +35,18 @@ impl CdpSession {
         Ok(Self {
             ws: Mutex::new(ws),
             command_id: AtomicU64::new(1),
-            timeout: Duration::from_secs(30),
+            timeout_ms: AtomicU64::new(30_000),
         })
     }
 
     /// Set the per-command response timeout.
     pub fn set_timeout(&self, timeout: Duration) {
-        // AtomicU64 doesn't work for Duration, but we can use interior mutability
-        // via the fact that timeout is only read during send_command which holds the lock.
-        // For simplicity, we make timeout a fixed value set at construction.
-        // To change it, callers should create a new session.
-        let _ = timeout; // kept for API symmetry
+        self.timeout_ms
+            .store(timeout.as_millis() as u64, Ordering::SeqCst);
+    }
+
+    fn timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout_ms.load(Ordering::SeqCst))
     }
 
     fn next_id(&self) -> u64 {
@@ -75,14 +76,14 @@ impl CdpSession {
             .await
             .map_err(|e| IroncladError::Network(format!("CDP send failed: {e}")))?;
 
-        let deadline = tokio::time::Instant::now() + self.timeout;
+        let timeout = self.timeout();
+        let deadline = tokio::time::Instant::now() + timeout;
 
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 return Err(IroncladError::Network(format!(
-                    "CDP command {method} (id={id}) timed out after {:?}",
-                    self.timeout
+                    "CDP command {method} (id={id}) timed out after {timeout:?}",
                 )));
             }
 
@@ -100,8 +101,7 @@ impl CdpSession {
                 }
                 Err(_) => {
                     return Err(IroncladError::Network(format!(
-                        "CDP command {method} (id={id}) timed out after {:?}",
-                        self.timeout
+                        "CDP command {method} (id={id}) timed out after {timeout:?}",
                     )));
                 }
             };

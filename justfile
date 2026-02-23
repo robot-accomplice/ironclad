@@ -398,11 +398,13 @@ deps:
 
 # ── Git Hooks ──────────────────────────────────────────
 
-# Install git hooks (pre-push runs full CI gate before push)
+# Install git hooks (pre-commit for format, pre-push for full CI gate)
 install-hooks:
+    cp hooks/pre-commit .git/hooks/pre-commit
+    chmod +x .git/hooks/pre-commit
     cp hooks/pre-push .git/hooks/pre-push
     chmod +x .git/hooks/pre-push
-    @echo "✔ Installed pre-push hook (runs: just ci-test with mandatory coverage gates)"
+    @echo "✔ Installed pre-commit hook (format check) and pre-push hook (full CI gate)"
 
 # ── Install Dev Tools ──────────────────────────────────
 

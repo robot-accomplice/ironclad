@@ -3,6 +3,11 @@ use std::path::{Path, PathBuf};
 use ironclad_core::{IroncladError, Result};
 
 pub fn launchd_plist(binary_path: &str, config_path: &str, port: u16) -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/var/log".into());
+    let log_dir = PathBuf::from(&home).join(".ironclad").join("logs");
+    let stdout_log = log_dir.join("ironclad.stdout.log");
+    let stderr_log = log_dir.join("ironclad.stderr.log");
+
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -24,14 +29,16 @@ pub fn launchd_plist(binary_path: &str, config_path: &str, port: u16) -> String 
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/ironclad.stdout.log</string>
+    <string>{stdout}</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/ironclad.stderr.log</string>
+    <string>{stderr}</string>
 </dict>
 </plist>"#,
         binary_path = binary_path,
         config_path = config_path,
-        port = port
+        port = port,
+        stdout = stdout_log.display(),
+        stderr = stderr_log.display(),
     )
 }
 
