@@ -198,6 +198,22 @@
     .ctx-stat { background: rgba(0,0,0,0.15); border-radius: 4px; padding: 0.625rem; text-align: center; }
     .ctx-stat .val { font-size: 1.25rem; font-weight: 700; color: var(--text); }
     .ctx-stat .lbl { font-size: 0.6875rem; color: var(--muted); text-transform: uppercase; margin-top: 0.125rem; }
+    .ctx-tips { margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.375rem; }
+    .ctx-tip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.625rem; line-height: 1.3; cursor: default; }
+    .ctx-tip.info { background: rgba(59,130,246,0.15); color: #93bbfd; border: 1px solid rgba(59,130,246,0.3); }
+    .ctx-tip.warning { background: rgba(245,158,11,0.15); color: #fbbf24; border: 1px solid rgba(245,158,11,0.3); }
+    .ctx-tip.critical { background: rgba(239,68,68,0.15); color: #fca5a5; border: 1px solid rgba(239,68,68,0.3); }
+    .ctx-tip .tip-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .ctx-tip.info .tip-dot { background: #3b82f6; }
+    .ctx-tip.warning .tip-dot { background: #f59e0b; }
+    .ctx-tip.critical .tip-dot { background: #ef4444; }
+    .ctx-tip-detail { margin-top: 0.375rem; padding: 0.375rem 0.5rem; background: rgba(0,0,0,0.15); border-radius: 3px; font-size: 0.6875rem; color: var(--muted); }
+    .ctx-tip-detail strong { color: var(--text); font-weight: 600; }
+    .ctx-analyze-btn { margin-top: 0.5rem; font-size: 0.6875rem; padding: 0.25rem 0.625rem; }
+    .ctx-insights { margin-top: 1rem; }
+    .streaming-content { white-space: pre-wrap; word-break: break-word; }
+    .streaming-content::after { content: '\u2588'; animation: cursorBlink 0.8s step-end infinite; color: var(--accent); }
+    @keyframes cursorBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
     .thinking-indicator { margin-right: auto; padding: 0.75rem 1rem; display: flex; align-items: center; gap: 0.625rem; }
     .thinking-brain { display: inline-block; font-size: 1.25rem; animation: brainBounce 1.2s ease-in-out infinite; }
     .thinking-dots span { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); margin: 0 2px; animation: dotPulse 1.4s ease-in-out infinite; }
@@ -253,6 +269,7 @@
     .settings-toggle-label { font-size: 0.75rem; color: var(--muted); }
     .settings-nested { margin-left: 0.75rem; padding-left: 0.75rem; border-left: 2px solid var(--border); }
     .settings-dirty-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--warning); margin-left: 0.5rem; vertical-align: middle; }
+    .settings-input::placeholder { color: var(--muted); opacity: 0.45; font-style: italic; }
     .settings-input.warn { border-color: var(--error); background: rgba(239,68,68,0.06); }
     .settings-label.warn { color: var(--error); }
     .settings-warn-icon { color: var(--error); font-size: 0.75rem; margin-left: 0.25rem; }
@@ -270,6 +287,17 @@
     .key-manage-btn.remove { background: none; border-color: var(--error); color: var(--error); }
     .key-manage-btn.remove:hover { background: var(--error); color: #fff; }
     .key-manage-msg { font-size: 0.675rem; margin-left: 0.25rem; }
+    .grade-stars { display: flex; gap: 0.125rem; margin-top: 0.375rem; align-items: center; }
+    .grade-stars .star { font-size: 1rem; cursor: pointer; color: var(--border); transition: color 0.15s; user-select: none; line-height: 1; }
+    .grade-stars .star:hover, .grade-stars .star.hovered { color: var(--warning); }
+    .grade-stars .star.filled { color: var(--warning); }
+    .grade-stars .grade-comment-toggle { font-size: 0.625rem; color: var(--muted); cursor: pointer; margin-left: 0.375rem; border: none; background: none; font-family: var(--font); }
+    .grade-stars .grade-comment-toggle:hover { color: var(--text); }
+    .grade-comment-row { display: flex; gap: 0.375rem; align-items: center; margin-top: 0.25rem; }
+    .grade-comment-row input { flex: 1; font-family: var(--font); font-size: 0.6875rem; padding: 0.25rem 0.5rem; background: var(--surface); border: 1px solid var(--border); border-radius: 3px; color: var(--text); outline: none; }
+    .grade-comment-row input:focus { border-color: var(--accent); }
+    .grade-comment-row .grade-save-btn { font-size: 0.625rem; padding: 0.2rem 0.5rem; background: var(--accent); border: none; border-radius: 3px; color: #fff; cursor: pointer; font-family: var(--font); }
+    .grade-badge { display: inline-flex; align-items: center; gap: 0.125rem; font-size: 0.5625rem; color: var(--warning); margin-left: 0.25rem; }
     .session-chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 56px - 3rem); min-height: 0; }
     .session-chat-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 0; border-bottom: 1px solid var(--border); margin-bottom: 0.75rem; flex-shrink: 0; }
     .session-chat-input { display: flex; gap: 0.5rem; flex-shrink: 0; padding-top: 0.75rem; border-top: 1px solid var(--border); margin-top: auto; }
@@ -437,10 +465,11 @@
         <a href="#sessions" data-page="sessions"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M2 1h12a1 1 0 011 1v8a1 1 0 01-1 1H5.5L2 14V2a1 1 0 010-1z" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="9" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span class="nav-label">Sessions</span></a>
         <a href="#memory" data-page="memory"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="3" y="2" width="10" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="1" y1="5" x2="3" y2="5" stroke="currentColor" stroke-width="1.2"/><line x1="1" y1="8" x2="3" y2="8" stroke="currentColor" stroke-width="1.2"/><line x1="1" y1="11" x2="3" y2="11" stroke="currentColor" stroke-width="1.2"/><line x1="13" y1="5" x2="15" y2="5" stroke="currentColor" stroke-width="1.2"/><line x1="13" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.2"/><line x1="13" y1="11" x2="15" y2="11" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg><span class="nav-label">Memory</span></a>
         <a href="#skills" data-page="skills"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M8 1l1.8 3.6L14 5.3l-3 2.9.7 4.1L8 10.5l-3.7 1.8.7-4.1-3-2.9 4.2-.7z" fill="currentColor"/></svg><span class="nav-label">Skills</span></a>
-        <a href="#roster" data-page="roster"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1" y="1" width="6" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="1" width="6" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="4" cy="4" r="1.5" fill="currentColor"/><circle cx="12" cy="4" r="1.5" fill="currentColor"/><line x1="2.5" y1="7" x2="5.5" y2="7" stroke="currentColor" stroke-width="1"/><line x1="10.5" y1="7" x2="13.5" y2="7" stroke="currentColor" stroke-width="1"/><rect x="5" y="10" width="6" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="12.5" r="1.5" fill="currentColor"/></svg><span class="nav-label">Roster</span></a>
         <a href="#agents" data-page="agents"><svg class="nav-icon" viewBox="0 0 16 16"><circle cx="8" cy="4" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="13" cy="6" r="2" fill="currentColor" opacity=".5"/><circle cx="3" cy="6" r="2" fill="currentColor" opacity=".5"/></svg><span class="nav-label">Agents</span></a>
         <a href="#scheduler" data-page="scheduler"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="1.5" y1="6" x2="14.5" y2="6" stroke="currentColor" stroke-width="1.5"/><line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="11" y1="1" x2="11" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="4" y="8.5" width="2" height="2" rx=".5" fill="currentColor"/><rect x="7" y="8.5" width="2" height="2" rx=".5" fill="currentColor"/><rect x="10" y="8.5" width="2" height="2" rx=".5" fill="currentColor"/><rect x="4" y="11.5" width="2" height="1.5" rx=".5" fill="currentColor"/></svg><span class="nav-label">Scheduler</span></a>
         <a href="#metrics" data-page="metrics"><svg class="nav-icon" viewBox="0 0 16 16"><polyline points="1,12 4,7 7,9 10,3 14,6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><line x1="1" y1="14.5" x2="15" y2="14.5" stroke="currentColor" stroke-width="1.2"/></svg><span class="nav-label">Metrics</span></a>
+        <a href="#efficiency" data-page="efficiency"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M8 1v6l4.2 2.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1" fill="currentColor"/></svg><span class="nav-label">Efficiency</span></a>
+        <a href="#recommendations" data-page="recommendations"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M8 1l2 4h4l-3 3 1 4-4-2-4 2 1-4-3-3h4z" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="3" y1="14" x2="13" y2="14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span class="nav-label">Recommendations</span></a>
         <a href="#wallet" data-page="wallet"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1" y="3" width="14" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M1 3V2.5A1.5 1.5 0 012.5 1h9L14 3" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="10" y="7" width="5" height="3" rx="1" fill="currentColor"/><circle cx="12.5" cy="8.5" r=".8" fill="var(--bg)"/></svg><span class="nav-label">Wallet</span></a>
         <a href="#settings" data-page="settings"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M6.5 1h3l.3 2.1a5.5 5.5 0 011.3.7L13 2.7l1.5 2.6-1.8 1.2a5.5 5.5 0 010 1.5l1.8 1.2-1.5 2.6-1.9-1.1a5.5 5.5 0 01-1.3.7L9.5 13.5h-3l-.3-2.1a5.5 5.5 0 01-1.3-.7L3 11.8l-1.5-2.6 1.8-1.2a5.5 5.5 0 010-1.5L1.5 5.3 3 2.7l1.9 1.1a5.5 5.5 0 011.3-.7L6.5 1zM8 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z" fill="currentColor"/></svg><span class="nav-label">Settings</span></a>
         <a href="#workspace" data-page="workspace"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="5.5" r="1.5" fill="currentColor"/><circle cx="11" cy="5.5" r="1.5" fill="currentColor"/><circle cx="8" cy="11" r="1.5" fill="currentColor"/><line x1="5" y1="7" x2="8" y2="9.5" stroke="currentColor" stroke-width="1" opacity=".5"/><line x1="11" y1="7" x2="8" y2="9.5" stroke="currentColor" stroke-width="1" opacity=".5"/></svg><span class="nav-label">Workspace</span></a>
@@ -482,10 +511,11 @@
     <a href="#context" data-page="context">Context</a>
     <a href="#memory" data-page="memory">Memory</a>
     <a href="#skills" data-page="skills">Skills</a>
-    <a href="#roster" data-page="roster">Roster</a>
     <a href="#agents" data-page="agents">Agents</a>
     <a href="#scheduler" data-page="scheduler">Scheduler</a>
     <a href="#metrics" data-page="metrics">Metrics</a>
+    <a href="#efficiency" data-page="efficiency">Efficiency</a>
+    <a href="#recommendations" data-page="recommendations">Recommendations</a>
     <a href="#wallet" data-page="wallet">Wallet</a>
     <a href="#settings" data-page="settings">Settings</a>
     <a href="#workspace" data-page="workspace">Workspace</a>
@@ -494,8 +524,8 @@
 (function() {
   var setHtml = function(el, html) { if (el) el["inner" + "HTML"] = html; };
   var BASE = '';
-  var pages = ['overview','sessions','context','memory','skills','roster','agents','scheduler','metrics','wallet','settings','workspace'];
-  var titles = { overview: 'Overview', sessions: 'Sessions', context: 'Context Explorer', memory: 'Memory', skills: 'Skills', roster: 'Roster', agents: 'Agents', scheduler: 'Scheduler', metrics: 'Metrics', wallet: 'Wallet', settings: 'Settings', workspace: 'Workspace' };
+  var pages = ['overview','sessions','context','memory','skills','agents','scheduler','metrics','efficiency','recommendations','wallet','settings','workspace'];
+  var titles = { overview: 'Overview', sessions: 'Sessions', context: 'Context Explorer', memory: 'Memory', skills: 'Skills', agents: 'Agents', scheduler: 'Scheduler', metrics: 'Metrics', efficiency: 'Prompt Efficiency', wallet: 'Wallet', settings: 'Settings', workspace: 'Workspace' };
 
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   function truncate(s, n) { return (s && s.length > n) ? s.slice(0, n) + '\u2026' : (s || ''); }
@@ -536,7 +566,9 @@
   function api(path, opts) {
     opts = opts || {};
     var url = BASE + path;
-    var headers = opts.headers ? authHeaders(opts.headers) : authHeaders({ 'Accept': 'application/json' });
+    var defaultHeaders = { 'Accept': 'application/json' };
+    if (opts.body) defaultHeaders['Content-Type'] = 'application/json';
+    var headers = opts.headers ? authHeaders(opts.headers) : authHeaders(defaultHeaders);
     return fetch(url, { headers: headers, method: opts.method || 'GET', body: opts.body }).then(function(r) {
       if (!r.ok) return r.text().then(function(t) { throw new Error(t || r.statusText); });
       var ct = r.headers.get('content-type');
@@ -816,12 +848,39 @@
         var sessions = data.sessions || [];
 
         if (self._activeSession) {
-          return api('/api/sessions/' + encodeURIComponent(self._activeSession.id) + '/messages').catch(function() { return { messages: [] }; }).then(function(r) {
+          return Promise.all([
+            api('/api/sessions/' + encodeURIComponent(self._activeSession.id) + '/messages').catch(function() { return { messages: [] }; }),
+            api('/api/sessions/' + encodeURIComponent(self._activeSession.id) + '/turns').catch(function() { return { turns: [] }; }),
+            api('/api/sessions/' + encodeURIComponent(self._activeSession.id) + '/feedback').catch(function() { return { feedback: [] }; })
+          ]).then(function(results) {
+            var r = results[0], turnsData = results[1], fbData = results[2];
             self._sessionMessages = r.messages || [];
+            var turns = turnsData.turns || [];
+            var feedbackByTurn = {};
+            (fbData.feedback || []).forEach(function(fb) { feedbackByTurn[fb.turn_id] = fb; });
+            var asstCount = 0;
             var msgs = self._sessionMessages.map(function(m, idx) {
               var side = m.role === 'user' ? 'user' : 'assistant';
               var expandBtn = side === 'assistant' ? '<button class="ctx-expand-btn" data-msg-idx="' + idx + '" data-session-id="' + esc(self._activeSession.id) + '">ctx</button>' : '';
-              return '<div class="message ' + side + '" id="msg-' + idx + '"><div class="message-role">' + esc(m.role || '') + expandBtn + '</div><div>' + esc(m.content || '') + '</div><div class="ctx-detail" id="ctx-detail-' + idx + '" style="display:none"></div></div>';
+              var gradeHtml = '';
+              if (side === 'assistant') {
+                var turnForMsg = turns[asstCount] || null;
+                asstCount++;
+                if (turnForMsg) {
+                  var existingFb = feedbackByTurn[turnForMsg.id];
+                  var existingGrade = existingFb ? existingFb.grade : 0;
+                  gradeHtml = '<div class="grade-stars" data-turn-id="' + esc(turnForMsg.id) + '">';
+                  for (var g = 1; g <= 5; g++) {
+                    gradeHtml += '<span class="star' + (g <= existingGrade ? ' filled' : '') + '" data-grade="' + g + '">\u2605</span>';
+                  }
+                  gradeHtml += '<button class="grade-comment-toggle" data-turn-id="' + esc(turnForMsg.id) + '">comment</button>';
+                  gradeHtml += '</div>';
+                  if (existingFb && existingFb.comment) {
+                    gradeHtml += '<div style="font-size:0.625rem;color:var(--muted);margin-top:0.125rem">\u201c' + esc(existingFb.comment) + '\u201d</div>';
+                  }
+                }
+              }
+              return '<div class="message ' + side + '" id="msg-' + idx + '"><div class="message-role">' + esc(m.role || '') + expandBtn + '</div><div>' + esc(m.content || '') + '</div>' + gradeHtml + '<div class="ctx-detail" id="ctx-detail-' + idx + '" style="display:none"></div></div>';
             }).join('') || '<p style="color:var(--muted);padding:1rem">Send a message to begin the conversation.</p>';
             var chatLabel = self._activeSession.nickname || truncate(self._activeSession.id, 16);
             return '<div class="session-chat-wrap"><div class="session-chat-header"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="btn-back-sessions">\u25c0 Back</button><span style="font-weight:600">' + esc(self._activeSession.agent_id || 'default') + '</span><span class="session-nick" data-copy-id="' + esc(self._activeSession.id) + '" title="' + esc(self._activeSession.id) + '" style="color:var(--muted);font-size:0.75rem">' + esc(chatLabel) + '</span></div><div class="message-thread">' + msgs + '</div><div class="session-chat-input"><input type="text" id="session-msg-input" placeholder="Type a message\u2026" autocomplete="off"><button class="btn" id="btn-send-msg">Send</button></div></div>';
@@ -1159,6 +1218,323 @@
       });
     },
 
+    _effPeriod: '7d',
+    renderEfficiency: function() {
+      var self = this;
+      var period = this._effPeriod || '7d';
+      return api('/api/stats/efficiency?period=' + encodeURIComponent(period)).then(function(report) {
+        var models = report.models || {};
+        var ts = report.time_series || [];
+        var totals = report.totals || {};
+        var modelNames = Object.keys(models).sort(function(a, b) {
+          return (models[b].cost.total || 0) - (models[a].cost.total || 0);
+        });
+
+        // Period selector
+        var periods = ['1h', '24h', '7d', '30d', 'all'];
+        var periodBar = '<div style="display:flex;gap:0.5rem;margin-bottom:1.25rem;flex-wrap:wrap">';
+        periods.forEach(function(p) {
+          var cls = p === period ? 'background:var(--accent);color:var(--bg)' : 'background:var(--surface);color:var(--muted);border:1px solid var(--border)';
+          periodBar += '<button data-eff-period="' + p + '" style="padding:0.375rem 0.875rem;border-radius:4px;font-family:var(--font);font-size:0.8125rem;cursor:pointer;border:none;' + cls + '">' + p.toUpperCase() + '</button>';
+        });
+        periodBar += '</div>';
+
+        // Cost overview banner
+        var banner = '<div class="card" style="margin-bottom:1rem;background:linear-gradient(135deg,var(--surface) 0%,rgba(99,102,241,0.08) 100%)">'
+          + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1rem">'
+          + '<div><div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Total Cost</div><div style="font-size:1.5rem;font-weight:700;color:var(--accent)">$' + (totals.total_cost || 0).toFixed(4) + '</div></div>'
+          + '<div><div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Cache Savings</div><div style="font-size:1.5rem;font-weight:700;color:var(--success)">$' + (totals.total_cache_savings || 0).toFixed(4) + '</div></div>'
+          + '<div><div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Total Turns</div><div style="font-size:1.5rem;font-weight:700">' + (totals.total_turns || 0).toLocaleString() + '</div></div>'
+          + '<div><div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Models Active</div><div style="font-size:1.5rem;font-weight:700">' + modelNames.length + '</div></div>'
+          + '</div></div>';
+
+        // Model comparison cards
+        var trendArrow = function(t) {
+          if (t === 'increasing') return '<span style="color:var(--error)">&#9650;</span>';
+          if (t === 'decreasing') return '<span style="color:var(--success)">&#9660;</span>';
+          return '<span style="color:var(--muted)">&#9644;</span>';
+        };
+        var trendArrowGood = function(t) {
+          if (t === 'increasing') return '<span style="color:var(--success)">&#9650;</span>';
+          if (t === 'decreasing') return '<span style="color:var(--error)">&#9660;</span>';
+          return '<span style="color:var(--muted)">&#9644;</span>';
+        };
+
+        var modelColors = ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#14b8a6'];
+        var cards = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1rem;margin-bottom:1.25rem">';
+        modelNames.forEach(function(name, idx) {
+          var m = models[name];
+          var c = m.cost || {};
+          var t = m.trend || {};
+          var color = modelColors[idx % modelColors.length];
+          var isMostExpensive = totals.most_expensive_model === name;
+          var isMostEfficient = totals.most_efficient_model === name;
+          var badges = '';
+          if (isMostExpensive) badges += '<span style="background:rgba(239,68,68,0.15);color:var(--error);padding:0.125rem 0.5rem;border-radius:3px;font-size:0.6875rem;margin-right:0.25rem">HIGHEST COST</span>';
+          if (isMostEfficient) badges += '<span style="background:rgba(34,197,94,0.15);color:var(--success);padding:0.125rem 0.5rem;border-radius:3px;font-size:0.6875rem">MOST EFFICIENT</span>';
+
+          cards += '<div class="card" style="border-left:3px solid ' + color + '">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem"><div style="font-weight:600;font-size:0.9375rem">' + esc(name) + '</div><div>' + badges + '</div></div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;font-size:0.8125rem">'
+            + '<div><span style="color:var(--muted)">Turns</span><div style="font-weight:600">' + m.total_turns.toLocaleString() + '</div></div>'
+            + '<div><span style="color:var(--muted)">Total Cost</span><div style="font-weight:600;color:' + color + '">$' + c.total.toFixed(4) + '</div></div>'
+            + '<div><span style="color:var(--muted)">Output Density</span><div style="font-weight:600">' + m.avg_output_density.toFixed(3) + ' ' + trendArrowGood(t.output_density) + '</div></div>'
+            + '<div><span style="color:var(--muted)">Cost/Turn</span><div style="font-weight:600">$' + c.effective_per_turn.toFixed(4) + ' ' + trendArrow(t.cost_per_turn) + '</div></div>'
+            + '<div><span style="color:var(--muted)">Cache Hit Rate</span><div style="font-weight:600">' + (m.cache_hit_rate * 100).toFixed(1) + '% ' + trendArrowGood(t.cache_hit_rate) + '</div></div>'
+            + '<div><span style="color:var(--muted)">Cache Savings</span><div style="font-weight:600;color:var(--success)">$' + c.cache_savings.toFixed(4) + '</div></div>'
+            + '<div><span style="color:var(--muted)">$/Output Token</span><div style="font-weight:600">' + (c.per_output_token * 1000).toFixed(4) + '/1k</div></div>'
+            + '<div><span style="color:var(--muted)">Cost Trend</span><div style="font-weight:600">' + trendArrow(c.cumulative_trend) + ' ' + esc(c.cumulative_trend) + '</div></div>'
+            + '</div>';
+
+          // Cost attribution bar
+          var attr = c.attribution || {};
+          var attrBar = '<div style="margin-top:0.75rem"><div style="font-size:0.6875rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.375rem">Input Cost Attribution</div>';
+          var sys = attr.system_prompt || {};
+          var mem = attr.memories || {};
+          var hist = attr.history || {};
+          if (sys.pct > 0 || mem.pct > 0 || hist.pct > 0) {
+            attrBar += '<div style="display:flex;height:8px;border-radius:4px;overflow:hidden;margin-bottom:0.375rem">';
+            if (sys.pct > 0) attrBar += '<div style="width:' + sys.pct + '%;background:#6366f1" title="System prompt: ' + sys.pct.toFixed(1) + '%"></div>';
+            if (mem.pct > 0) attrBar += '<div style="width:' + mem.pct + '%;background:#22c55e" title="Memories: ' + mem.pct.toFixed(1) + '%"></div>';
+            if (hist.pct > 0) attrBar += '<div style="width:' + hist.pct + '%;background:#f59e0b" title="History: ' + hist.pct.toFixed(1) + '%"></div>';
+            attrBar += '</div>';
+            attrBar += '<div style="display:flex;gap:0.75rem;font-size:0.6875rem;color:var(--muted)">';
+            if (sys.pct > 0) attrBar += '<span style="color:#6366f1">\u25cf System ' + sys.pct.toFixed(0) + '%</span>';
+            if (mem.pct > 0) attrBar += '<span style="color:#22c55e">\u25cf Memory ' + mem.pct.toFixed(0) + '%</span>';
+            if (hist.pct > 0) attrBar += '<span style="color:#f59e0b">\u25cf History ' + hist.pct.toFixed(0) + '%</span>';
+            attrBar += '</div>';
+          } else {
+            attrBar += '<div style="font-size:0.75rem;color:var(--muted);font-style:italic">No context snapshot data available</div>';
+          }
+          attrBar += '</div>';
+          cards += attrBar + '</div>';
+        });
+        cards += '</div>';
+
+        if (modelNames.length === 0) {
+          cards = '<div class="card" style="text-align:center;padding:2rem;color:var(--muted)"><div style="font-size:1.5rem;margin-bottom:0.5rem">No inference data</div><div style="font-size:0.875rem">Run some inference requests to see efficiency metrics here.</div></div>';
+        }
+
+        // Time series chart (CSS bar chart)
+        var tsChart = '';
+        if (ts.length > 0) {
+          var maxCost = Math.max.apply(null, ts.map(function(p) { return p.cost; }));
+          if (maxCost === 0) maxCost = 1;
+          tsChart = '<div class="card" style="margin-bottom:1.25rem"><div style="font-weight:600;margin-bottom:0.75rem">Cost Over Time</div>';
+          tsChart += '<div style="display:flex;align-items:flex-end;gap:2px;height:120px;padding-bottom:1.5rem;position:relative">';
+          var buckets = [];
+          ts.forEach(function(p) { if (buckets.indexOf(p.bucket) === -1) buckets.push(p.bucket); });
+          var bucketTotals = {};
+          ts.forEach(function(p) { bucketTotals[p.bucket] = (bucketTotals[p.bucket] || 0) + p.cost; });
+
+          var maxBucketCost = Math.max.apply(null, Object.keys(bucketTotals).map(function(k) { return bucketTotals[k]; }));
+          if (maxBucketCost === 0) maxBucketCost = 1;
+
+          buckets.forEach(function(b, i) {
+            var pct = (bucketTotals[b] / maxBucketCost) * 100;
+            var shortDate = b.slice(5);
+            var colorIdx = i % modelColors.length;
+            tsChart += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;min-width:0">'
+              + '<div style="width:100%;background:' + modelColors[colorIdx] + ';border-radius:2px 2px 0 0;height:' + Math.max(pct, 2) + '%;opacity:0.85;transition:height 0.3s" title="' + b + ': $' + bucketTotals[b].toFixed(4) + '"></div>'
+              + '<div style="font-size:0.5625rem;color:var(--muted);margin-top:0.25rem;transform:rotate(-45deg);white-space:nowrap">' + shortDate + '</div>'
+              + '</div>';
+          });
+          tsChart += '</div></div>';
+        }
+
+        // Model comparison table (sortable)
+        var table = '';
+        if (modelNames.length > 0) {
+          table = '<div class="card" style="margin-bottom:1.25rem"><div style="font-weight:600;margin-bottom:0.75rem">Model Comparison</div>'
+            + '<div class="table-wrap"><table><thead><tr>'
+            + '<th>Model</th><th>Turns</th><th>Output Density</th><th>Cache Hit %</th>'
+            + '<th>Cost/Turn</th><th>Total Cost</th><th>Cache Savings</th><th>Cost Trend</th>'
+            + '</tr></thead><tbody>';
+          modelNames.forEach(function(name) {
+            var m = models[name];
+            var c = m.cost || {};
+            var t = m.trend || {};
+            table += '<tr>'
+              + '<td class="card-mono">' + esc(name) + '</td>'
+              + '<td>' + m.total_turns.toLocaleString() + '</td>'
+              + '<td>' + m.avg_output_density.toFixed(3) + '</td>'
+              + '<td>' + (m.cache_hit_rate * 100).toFixed(1) + '%</td>'
+              + '<td>$' + c.effective_per_turn.toFixed(4) + '</td>'
+              + '<td>$' + c.total.toFixed(4) + '</td>'
+              + '<td style="color:var(--success)">$' + c.cache_savings.toFixed(4) + '</td>'
+              + '<td>' + trendArrow(c.cumulative_trend) + ' ' + esc(c.cumulative_trend) + '</td>'
+              + '</tr>';
+          });
+          table += '</tbody></table></div></div>';
+        }
+
+        // Cost optimization tips
+        var tips = '<div class="card"><div style="font-weight:600;margin-bottom:0.75rem">\u26a1 Optimization Tips</div><div style="font-size:0.8125rem;color:var(--muted)">';
+        var tipList = [];
+        modelNames.forEach(function(name) {
+          var m = models[name];
+          if (m.cache_hit_rate < 0.3 && m.total_turns > 5) {
+            tipList.push('<div style="padding:0.375rem 0;border-bottom:1px solid var(--border)"><span style="color:var(--warning)">\u25cf</span> <strong>' + esc(name) + '</strong> has a low cache hit rate (' + (m.cache_hit_rate * 100).toFixed(0) + '%). Consider enabling semantic caching for repeated queries.</div>');
+          }
+          if (m.cost.effective_per_turn > 0.05) {
+            tipList.push('<div style="padding:0.375rem 0;border-bottom:1px solid var(--border)"><span style="color:var(--error)">\u25cf</span> <strong>' + esc(name) + '</strong> costs $' + m.cost.effective_per_turn.toFixed(4) + '/turn. Consider switching to a lighter model for simpler tasks.</div>');
+          }
+          if (m.avg_output_density < 0.1 && m.total_turns > 5) {
+            tipList.push('<div style="padding:0.375rem 0;border-bottom:1px solid var(--border)"><span style="color:var(--warning)">\u25cf</span> <strong>' + esc(name) + '</strong> has low output density (' + m.avg_output_density.toFixed(3) + '). Large inputs produce little output \u2014 check if context window is over-stuffed.</div>');
+          }
+          if (m.trend.cost_per_turn === 'increasing') {
+            tipList.push('<div style="padding:0.375rem 0;border-bottom:1px solid var(--border)"><span style="color:var(--error)">\u25cf</span> <strong>' + esc(name) + '</strong> cost per turn is trending up. Monitor for context window growth or pricing changes.</div>');
+          }
+        });
+        if (tipList.length === 0) {
+          tipList.push('<div style="padding:0.375rem 0;color:var(--success)">\u2714 All models are operating efficiently. No optimizations needed right now.</div>');
+        }
+        tips += tipList.join('') + '</div></div>';
+
+        return periodBar + banner + cards + tsChart + table + tips;
+      });
+    },
+
+    _recPeriod: '30d',
+    renderRecommendations: function() {
+      var self = this;
+      var period = this._recPeriod || '30d';
+      return api('/api/recommendations?period=' + encodeURIComponent(period)).then(function(data) {
+        var recs = data.recommendations || [];
+        var profile = data.profile || {};
+        var count = data.count || 0;
+
+        var periods = ['7d', '30d', 'all'];
+        var periodBar = '<div style="display:flex;gap:0.5rem;margin-bottom:1.25rem;flex-wrap:wrap;align-items:center">';
+        periodBar += '<span style="font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-right:0.5rem">Period</span>';
+        periods.forEach(function(p) {
+          var cls = p === period ? 'background:var(--accent);color:var(--bg)' : 'background:var(--surface);color:var(--muted);border:1px solid var(--border)';
+          periodBar += '<button data-rec-period="' + p + '" style="padding:0.375rem 0.875rem;border-radius:4px;font-family:var(--font);font-size:0.8125rem;cursor:pointer;border:none;' + cls + '">' + p.toUpperCase() + '</button>';
+        });
+        periodBar += '<button id="btn-deep-analysis" style="margin-left:auto;padding:0.375rem 1rem;border-radius:4px;font-family:var(--font);font-size:0.8125rem;cursor:pointer;border:1px solid var(--accent);background:var(--accent-dim);color:var(--accent)">Generate Deep Analysis</button>';
+        periodBar += '</div>';
+
+        var banner = '<div class="card" style="margin-bottom:1rem;background:linear-gradient(135deg,var(--surface) 0%,rgba(99,102,241,0.08) 100%)">'
+          + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1rem">'
+          + '<div><div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Recommendations</div><div style="font-size:1.5rem;font-weight:700;color:var(--accent)">' + count + '</div></div>'
+          + '<div><div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Total Turns</div><div style="font-size:1.5rem;font-weight:700">' + (profile.total_turns || 0).toLocaleString() + '</div></div>'
+          + '<div><div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Total Cost</div><div style="font-size:1.5rem;font-weight:700;color:var(--accent)">$' + (profile.total_cost || 0).toFixed(4) + '</div></div>'
+          + '<div><div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.25rem">Cache Hit Rate</div><div style="font-size:1.5rem;font-weight:700">' + ((profile.cache_hit_rate || 0) * 100).toFixed(1) + '%</div></div>'
+          + '</div></div>';
+
+        var priorityColor = function(p) {
+          if (p === 'High') return 'var(--error)';
+          if (p === 'Medium') return 'var(--warning)';
+          return '#6366f1';
+        };
+        var priorityBg = function(p) {
+          if (p === 'High') return 'rgba(239,68,68,0.1)';
+          if (p === 'Medium') return 'rgba(234,179,8,0.1)';
+          return 'rgba(99,102,241,0.1)';
+        };
+        var categoryIcon = function(cat) {
+          var icons = {
+            QueryCrafting: '\u270e',
+            ModelSelection: '\u2699',
+            SessionManagement: '\u{1f4ac}',
+            MemoryLeverage: '\u{1f9e0}',
+            CostOptimization: '\u{1f4b0}',
+            ToolUsage: '\u{1f527}',
+            Configuration: '\u2699'
+          };
+          return icons[cat] || '\u2139';
+        };
+
+        var cards = '';
+        if (recs.length === 0) {
+          cards = '<div class="card" style="text-align:center;padding:2rem;color:var(--muted)">'
+            + '<div style="font-size:1.5rem;margin-bottom:0.5rem">No recommendations</div>'
+            + '<div style="font-size:0.875rem">Not enough data to generate recommendations yet. Run more inference requests.</div></div>';
+        } else {
+          recs.forEach(function(rec, idx) {
+            var color = priorityColor(rec.priority);
+            var bg = priorityBg(rec.priority);
+            var icon = categoryIcon(rec.category);
+            var evidenceId = 'rec-evidence-' + idx;
+
+            cards += '<div class="card" style="border-left:3px solid ' + color + ';margin-bottom:0.75rem">'
+              + '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.5rem">'
+              + '<div style="display:flex;align-items:center;gap:0.5rem">'
+              + '<span style="font-size:1.125rem">' + icon + '</span>'
+              + '<div style="font-weight:600;font-size:0.9375rem">' + esc(rec.title) + '</div>'
+              + '</div>'
+              + '<span style="background:' + bg + ';color:' + color + ';padding:0.125rem 0.625rem;border-radius:3px;font-size:0.6875rem;font-weight:600;text-transform:uppercase;flex-shrink:0">' + esc(rec.priority) + '</span>'
+              + '</div>';
+
+            cards += '<div style="font-size:0.8125rem;color:var(--muted);margin-bottom:0.5rem">' + esc(rec.explanation) + '</div>';
+            cards += '<div style="font-size:0.8125rem;padding:0.5rem 0.75rem;background:rgba(99,102,241,0.06);border-radius:4px;margin-bottom:0.5rem"><strong style="color:var(--accent)">Action:</strong> ' + esc(rec.action) + '</div>';
+
+            if (rec.estimated_impact) {
+              var imp = rec.estimated_impact;
+              var impactParts = [];
+              if (imp.monthly_savings) impactParts.push('<span style="color:var(--success)">Est. savings: $' + imp.monthly_savings.toFixed(4) + '</span>');
+              if (imp.quality_change) impactParts.push('<span style="color:var(--accent)">' + esc(imp.quality_change) + '</span>');
+              if (impactParts.length > 0) {
+                cards += '<div style="font-size:0.75rem;display:flex;gap:1rem;margin-bottom:0.5rem">' + impactParts.join('') + '</div>';
+              }
+            }
+
+            if (rec.evidence && rec.evidence.length > 0) {
+              cards += '<div style="margin-top:0.25rem">'
+                + '<button onclick="var el=document.getElementById(\'' + evidenceId + '\');el.style.display=el.style.display===\'none\'?\'block\':\'none\'" style="background:none;border:none;color:var(--muted);font-family:var(--font);font-size:0.75rem;cursor:pointer;padding:0">\u25b6 Evidence (' + rec.evidence.length + ')</button>'
+                + '<div id="' + evidenceId + '" style="display:none;margin-top:0.375rem">';
+              rec.evidence.forEach(function(ev) {
+                cards += '<div style="font-size:0.75rem;padding:0.25rem 0;border-bottom:1px solid var(--border)">'
+                  + '<span style="color:var(--accent)">' + esc(ev.metric) + '</span>: '
+                  + '<span style="font-weight:600">' + esc(ev.value) + '</span>'
+                  + ' <span style="color:var(--muted)">(' + esc(ev.context) + ')</span></div>';
+              });
+              cards += '</div></div>';
+            }
+
+            cards += '</div>';
+          });
+        }
+
+        var deepAnalysisContainer = '<div id="deep-analysis-result" style="display:none;margin-top:1rem"></div>';
+
+        setTimeout(function() {
+          document.querySelectorAll('[data-rec-period]').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+              self._recPeriod = btn.getAttribute('data-rec-period');
+              self.navigate('recommendations');
+            });
+          });
+          var deepBtn = document.getElementById('btn-deep-analysis');
+          if (deepBtn) {
+            deepBtn.addEventListener('click', function() {
+              deepBtn.disabled = true;
+              deepBtn.textContent = 'Generating...';
+              api('/api/recommendations/generate?period=' + encodeURIComponent(self._recPeriod || '30d'), { method: 'POST' }).then(function(res) {
+                var container = document.getElementById('deep-analysis-result');
+                if (container) {
+                  container.style.display = 'block';
+                  var html = '<div class="card"><div style="font-weight:600;margin-bottom:0.75rem">Deep Analysis (Stub)</div>'
+                    + '<div style="font-size:0.8125rem;color:var(--muted);margin-bottom:0.75rem">' + esc(res.message || 'Analysis complete') + '</div>'
+                    + '<details><summary style="cursor:pointer;font-size:0.75rem;color:var(--accent)">View Generated Prompt</summary>'
+                    + '<pre style="font-size:0.6875rem;color:var(--muted);white-space:pre-wrap;margin-top:0.5rem;padding:0.75rem;background:var(--bg);border-radius:4px;max-height:400px;overflow:auto">' + esc(res.prompt || '') + '</pre>'
+                    + '</details></div>';
+                  setHtml(container, html);
+                }
+                deepBtn.disabled = false;
+                deepBtn.textContent = 'Generate Deep Analysis';
+              }).catch(function() {
+                deepBtn.disabled = false;
+                deepBtn.textContent = 'Generate Deep Analysis';
+              });
+            });
+          }
+        }, 0);
+
+        return periodBar + banner + cards + deepAnalysisContainer;
+      });
+    },
+
     _walletEditing: false,
     _TOKEN_ICONS: { ETH: '\u039e', MATIC: '\u25c6', USDC: '\u0024', USDT: '\u0024', DAI: '\u25c7', WETH: '\u039e', WBTC: '\u20bf', cbBTC: '\u20bf' },
     renderWallet: function() {
@@ -1251,7 +1627,18 @@
       'Base': { chain_id: 8453, rpc_url: 'https://mainnet.base.org' },
       'Solana': { chain_id: 0, rpc_url: 'https://api.mainnet-beta.solana.com' }
     },
-    renderRoster: function() {
+    _agentsTab: 'roster',
+    renderAgents: function() {
+      var self = this;
+      var tab = self._agentsTab || 'roster';
+      var tabs = '<div class="tabs" style="margin-bottom:1rem">'
+        + '<button class="' + (tab === 'roster' ? 'active' : '') + '" data-agents-tab="roster">Roster</button>'
+        + '<button class="' + (tab === 'list' ? 'active' : '') + '" data-agents-tab="list">List</button>'
+        + '</div>';
+      var render = tab === 'list' ? self._renderListTab() : self._renderRosterTab();
+      return render.then(function(body) { return tabs + body; });
+    },
+    _renderRosterTab: function() {
       return api('/api/roster').then(function(data) {
         var roster = data.roster || [];
         if (roster.length === 0) return '<p style="color:var(--muted)">No agents found.</p>';
@@ -1304,7 +1691,7 @@
       });
     },
     _rosterCache: null,
-    renderAgents: function() {
+    _renderListTab: function() {
       var self = this;
       return api('/api/subagents').then(function(data) {
         var agents = data.agents || [];
@@ -1485,9 +1872,10 @@
           return Promise.all([
             api('/api/turns/' + encodeURIComponent(self._ctxActiveTurn.id)).catch(function() { return null; }),
             api('/api/turns/' + encodeURIComponent(self._ctxActiveTurn.id) + '/context').catch(function() { return null; }),
-            api('/api/turns/' + encodeURIComponent(self._ctxActiveTurn.id) + '/tools').catch(function() { return { tool_calls: [] }; })
+            api('/api/turns/' + encodeURIComponent(self._ctxActiveTurn.id) + '/tools').catch(function() { return { tool_calls: [] }; }),
+            api('/api/turns/' + encodeURIComponent(self._ctxActiveTurn.id) + '/tips').catch(function() { return { tips: [] }; })
           ]).then(function(results) {
-            var turn = results[0], ctx = results[1], tools = results[2];
+            var turn = results[0], ctx = results[1], tools = results[2], tipsData = results[3];
             var detailHtml = '';
             if (ctx) {
               var budget = ctx.token_budget || 1;
@@ -1526,6 +1914,16 @@
               });
               detailHtml += '</details>';
             }
+            var turnTips = (tipsData && tipsData.tips) || [];
+            if (turnTips.length > 0) {
+              detailHtml += '<h4 style="margin:0.75rem 0 0.25rem;font-size:0.75rem;color:var(--muted)">ANALYSIS TIPS</h4>';
+              detailHtml += '<div class="ctx-tips">';
+              turnTips.forEach(function(tip) {
+                detailHtml += '<span class="ctx-tip ' + esc(tip.severity) + '" title="' + esc(tip.suggestion) + '"><span class="tip-dot"></span>' + esc(tip.message) + '</span>';
+              });
+              detailHtml += '</div>';
+            }
+            detailHtml += '<button class="btn secondary ctx-analyze-btn" data-analyze-turn="' + esc(self._ctxActiveTurn.id) + '" style="margin-top:0.75rem">Analyze (LLM)</button>';
 
             var timelineHtml = self._ctxTurns.map(function(t) {
               var isActive = t.id === self._ctxActiveTurn.id;
@@ -1538,20 +1936,40 @@
         }
 
         if (self._ctxSession) {
-          return api('/api/sessions/' + encodeURIComponent(self._ctxSession.id) + '/turns').catch(function() { return { turns: [] }; }).then(function(r) {
+          return Promise.all([
+            api('/api/sessions/' + encodeURIComponent(self._ctxSession.id) + '/turns').catch(function() { return { turns: [] }; }),
+            api('/api/sessions/' + encodeURIComponent(self._ctxSession.id) + '/insights').catch(function() { return { insights: [] }; }),
+            api('/api/sessions/' + encodeURIComponent(self._ctxSession.id) + '/feedback').catch(function() { return { feedback: [] }; })
+          ]).then(function(results) {
+            var r = results[0], insightsData = results[1], fbData = results[2];
             self._ctxTurns = r.turns || [];
+            var ctxFbMap = {};
+            (fbData.feedback || []).forEach(function(fb) { ctxFbMap[fb.turn_id] = fb; });
             if (self._ctxTurns.length === 0) {
               return '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="ctx-back-btn">\u25c0 Back</button><h3 style="margin:0">' + esc(self._ctxSession.nickname || self._ctxSession.id) + '</h3></div><div class="card"><p style="color:var(--muted)">No turns recorded for this session yet.</p></div>';
             }
             var totalCost = 0, totalTokens = 0;
             self._ctxTurns.forEach(function(t) { totalCost += t.cost || 0; totalTokens += (t.tokens_in || 0) + (t.tokens_out || 0); });
-            var summaryHtml = '<div class="ctx-stats"><div class="ctx-stat"><div class="val">' + self._ctxTurns.length + '</div><div class="lbl">Turns</div></div><div class="ctx-stat"><div class="val">' + totalTokens.toLocaleString() + '</div><div class="lbl">Total Tokens</div></div><div class="ctx-stat"><div class="val">$' + totalCost.toFixed(4) + '</div><div class="lbl">Total Cost</div></div></div>';
+            var gradedTurns = Object.keys(ctxFbMap).length;
+            var avgGrade = gradedTurns > 0 ? (Object.values(ctxFbMap).reduce(function(s, f) { return s + f.grade; }, 0) / gradedTurns).toFixed(1) : '\u2014';
+            var summaryHtml = '<div class="ctx-stats"><div class="ctx-stat"><div class="val">' + self._ctxTurns.length + '</div><div class="lbl">Turns</div></div><div class="ctx-stat"><div class="val">' + totalTokens.toLocaleString() + '</div><div class="lbl">Total Tokens</div></div><div class="ctx-stat"><div class="val">$' + totalCost.toFixed(4) + '</div><div class="lbl">Total Cost</div></div><div class="ctx-stat"><div class="val">' + avgGrade + '</div><div class="lbl">Avg Grade</div></div></div>';
+            var insights = (insightsData && insightsData.insights) || [];
+            var insightsHtml = '';
+            if (insights.length > 0) {
+              insightsHtml += '<div class="ctx-insights"><h4 style="margin:0 0 0.5rem;font-size:0.75rem;color:var(--muted)">SESSION INSIGHTS</h4><div class="ctx-tips">';
+              insights.forEach(function(tip) {
+                insightsHtml += '<span class="ctx-tip ' + esc(tip.severity) + '" title="' + esc(tip.suggestion) + '"><span class="tip-dot"></span>' + esc(tip.message) + '</span>';
+              });
+              insightsHtml += '</div></div>';
+            }
             var timelineHtml = self._ctxTurns.map(function(t) {
               var cost = t.cost != null ? '$' + t.cost.toFixed(4) : '';
               var tokens = ((t.tokens_in || 0) + (t.tokens_out || 0)).toLocaleString();
-              return '<div class="ctx-timeline-item" data-turn-id="' + esc(t.id) + '" style="cursor:pointer"><div style="font-size:0.6875rem;color:var(--muted)">' + esc(t.created_at || '') + '</div><div style="display:flex;justify-content:space-between;align-items:center"><span class="badge muted" style="font-size:0.5625rem">' + esc(t.model || '') + '</span><span style="font-size:0.6875rem">' + tokens + ' tok</span><span style="font-size:0.6875rem;color:var(--success)">' + cost + '</span></div></div>';
+              var fb = ctxFbMap[t.id];
+              var gradeBadge = fb ? '<span class="grade-badge">' + '\u2605'.repeat(fb.grade) + '</span>' : '';
+              return '<div class="ctx-timeline-item" data-turn-id="' + esc(t.id) + '" style="cursor:pointer"><div style="font-size:0.6875rem;color:var(--muted)">' + esc(t.created_at || '') + '</div><div style="display:flex;justify-content:space-between;align-items:center"><span class="badge muted" style="font-size:0.5625rem">' + esc(t.model || '') + '</span>' + gradeBadge + '<span style="font-size:0.6875rem">' + tokens + ' tok</span><span style="font-size:0.6875rem;color:var(--success)">' + cost + '</span></div></div>';
             }).join('');
-            return '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="ctx-back-btn">\u25c0 Back</button><h3 style="margin:0">' + esc(self._ctxSession.nickname || self._ctxSession.id) + '</h3></div>' + summaryHtml + '<div class="ctx-timeline">' + timelineHtml + '</div>';
+            return '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="ctx-back-btn">\u25c0 Back</button><h3 style="margin:0">' + esc(self._ctxSession.nickname || self._ctxSession.id) + '</h3></div>' + summaryHtml + insightsHtml + '<div class="ctx-timeline">' + timelineHtml + '</div>';
           });
         }
 
@@ -1604,7 +2022,8 @@
                 html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(path) + '"' + (val ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (val ? 'On' : 'Off') + '</span></div></div>';
               } else if (typeof val !== 'object') {
                 var type = typeof val === 'number' ? 'number' : 'text';
-                html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(path) + '" value="' + esc(String(val)) + '"></div>';
+                var sv = (val == null || val === '') ? '' : esc(String(val));
+                html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(path) + '" value="' + sv + '" placeholder="none"></div>';
               }
             });
             html += '</div>';
@@ -1637,7 +2056,8 @@
                   html += '<div class="settings-row"><div class="settings-label">' + esc(pKey) + '</div><span class="badge muted" style="font-size:0.6rem">' + Object.keys(pVal).length + ' entries</span></div>';
                 } else {
                   var type = typeof pVal === 'number' ? 'number' : 'text';
-                  html += '<div class="settings-row"><div class="settings-label">' + esc(pKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(pPath) + '" value="' + esc(String(pVal == null ? '' : pVal)) + '"></div>';
+                  var sv = (pVal == null || pVal === '') ? '' : esc(String(pVal));
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(pKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(pPath) + '" value="' + sv + '" placeholder="none"></div>';
                 }
               });
               if (keyStatus === 'missing') {
@@ -1675,7 +2095,9 @@
                 html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(path) + '"' + (val ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (val ? 'On' : 'Off') + '</span></div></div>';
               } else {
                 var type = typeof val === 'number' ? 'number' : 'text';
-                html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(path) + '" value="' + esc(String(val == null ? '' : val)) + '"' + (isRpc ? ' placeholder="Auto-populated from chain preset"' : '') + '></div>';
+                var sv = (val == null || val === '') ? '' : esc(String(val));
+                var ph = isRpc ? 'Auto-populated from chain preset' : 'none';
+                html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(path) + '" value="' + sv + '" placeholder="' + ph + '"></div>';
               }
             });
             html += '</div>';
@@ -1696,13 +2118,15 @@
                 if (typeof subVal === 'boolean') {
                   html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(subPath) + '"' + (subVal ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (subVal ? 'On' : 'Off') + '</span></div></div>';
                 } else {
-                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(subPath) + '" value="' + esc(String(subVal)) + '"></div>';
+                  var ssv = (subVal == null || subVal === '') ? '' : esc(String(subVal));
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(subPath) + '" value="' + ssv + '" placeholder="none"></div>';
                 }
               });
               html += '</div>';
             } else {
               var type = typeof val === 'number' ? 'number' : 'text';
-              html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(path) + '" value="' + esc(String(val)) + '"></div>';
+              var sv = (val == null || val === '') ? '' : esc(String(val));
+              html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(path) + '" value="' + sv + '" placeholder="none"></div>';
             }
           });
           html += '</div>';
@@ -1724,6 +2148,7 @@
 
   function onHash() {
     var hash = (window.location.hash || '#overview').slice(1) || 'overview';
+    if (hash === 'roster') { hash = 'agents'; App._agentsTab = 'roster'; window.location.hash = 'agents'; return; }
     if (pages.indexOf(hash) === -1) hash = 'overview';
     ensureAuth().then(function() { App.navigate(hash); });
   }
@@ -1815,27 +2240,77 @@
         if (input) { input.disabled = false; input.focus(); }
         if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send'; }
       }
-      api('/api/agent/message', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: msg, session_id: App._activeSession.id }) })
-        .then(function(r) {
-          if (r.session_id) App._activeSession.id = r.session_id;
-          if (thread && r.content) {
-            var asstBubble = document.createElement('div');
-            asstBubble.className = 'message assistant';
-            var meta = '';
-            if (r.model) meta += '<span class="badge muted" style="font-size:0.5625rem;margin-right:0.375rem">' + esc(r.model) + '</span>';
-            if (r.cached) meta += '<span class="badge success" style="font-size:0.5625rem">cached</span>';
-            setHtml(asstBubble, '<div class="message-role">assistant' + (meta ? ' ' + meta : '') + '</div><div>' + esc(r.content) + '</div>');
-            thread.appendChild(asstBubble);
-            thread.scrollTop = thread.scrollHeight;
+      (async function streamMessage() {
+        var asstBubble = null;
+        var contentEl = null;
+        var streamModel = '';
+        var accumulated = '';
+        try {
+          var resp = await fetch('/api/agent/message/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: msg, session_id: App._activeSession.id })
+          });
+          if (!resp.ok) {
+            var errBody = await resp.text();
+            try { var p = JSON.parse(errBody); throw new Error(p.error || errBody); } catch(ex) { if (ex.message) throw ex; throw new Error(errBody); }
           }
-          unlockChat();
-        })
-        .catch(function(err) {
-          var errMsg = err.message || 'Agent failed to respond';
-          try { var parsed = JSON.parse(errMsg); errMsg = parsed.error || parsed.reason || errMsg; } catch(ex) {}
-          toast(errMsg);
-          unlockChat();
-        });
+          var reader = resp.body.getReader();
+          var decoder = new TextDecoder();
+          var sseBuffer = '';
+          while (true) {
+            var result = await reader.read();
+            if (result.done) break;
+            sseBuffer += decoder.decode(result.value, { stream: true });
+            var lines = sseBuffer.split('\n');
+            sseBuffer = lines.pop() || '';
+            for (var li = 0; li < lines.length; li++) {
+              var line = lines[li].trim();
+              if (!line.startsWith('data:')) continue;
+              var payload = line.substring(5).trim();
+              if (!payload || payload === '[DONE]') continue;
+              try { var d = JSON.parse(payload); } catch(ex) { continue; }
+              if (d.type === 'stream_start') {
+                if (d.session_id) App._activeSession.id = d.session_id;
+                streamModel = d.model || '';
+                var tb2 = document.getElementById('thinking-bubble');
+                if (tb2) tb2.remove();
+                if (thread) {
+                  asstBubble = document.createElement('div');
+                  asstBubble.className = 'message assistant';
+                  var roleHtml = '<div class="message-role">assistant';
+                  if (streamModel) roleHtml += ' <span class="badge muted" style="font-size:0.5625rem;margin-right:0.375rem">' + esc(streamModel) + '</span>';
+                  roleHtml += ' <span class="badge" style="font-size:0.5rem;background:var(--accent);color:#fff">streaming</span>';
+                  roleHtml += '</div>';
+                  contentEl = document.createElement('div');
+                  contentEl.className = 'streaming-content';
+                  setHtml(asstBubble, roleHtml);
+                  asstBubble.appendChild(contentEl);
+                  thread.appendChild(asstBubble);
+                }
+              } else if (d.type === 'chunk' && d.delta) {
+                accumulated += d.delta;
+                if (contentEl) { contentEl.textContent = accumulated; thread.scrollTop = thread.scrollHeight; }
+                if (sendBtn) sendBtn.textContent = 'Streaming\u2026';
+              } else if (d.type === 'stream_end') {
+                if (asstBubble) {
+                  var endModel = d.model || streamModel;
+                  var finalMeta = '';
+                  if (endModel) finalMeta += '<span class="badge muted" style="font-size:0.5625rem;margin-right:0.375rem">' + esc(endModel) + '</span>';
+                  if (d.tokens_in || d.tokens_out) finalMeta += '<span class="badge muted" style="font-size:0.5rem;margin-right:0.375rem">' + (d.tokens_in||0) + '/' + (d.tokens_out||0) + ' tok</span>';
+                  setHtml(asstBubble, '<div class="message-role">assistant' + (finalMeta ? ' ' + finalMeta : '') + '</div><div>' + esc(accumulated) + '</div>');
+                }
+              } else if (d.type === 'error') {
+                toast(d.error || 'Stream error');
+              }
+            }
+          }
+        } catch(err) {
+          var errMsg2 = err.message || 'Agent failed to respond';
+          toast(errMsg2);
+        }
+        unlockChat();
+      })();
       return;
     }
     var rosterCard = e.target.closest('.roster-card[data-roster-id]');
@@ -2040,7 +2515,7 @@
             }).then(function(resp) {
               toast('Model changed: ' + (resp.old_model || '?') + ' \u2192 ' + resp.new_model);
               modal.style.display = 'none';
-              App.navigate('roster');
+              App.navigate('agents');
             }).catch(function(err) {
               toast(err.message || 'Failed to change model');
             });
@@ -2096,6 +2571,11 @@
     if (memCatBtn) { App._memoryCategory = memCatBtn.getAttribute('data-mem-cat'); App.navigate('memory'); return; }
     var memSessBtn = e.target.closest('[data-mem-session]');
     if (memSessBtn) { App._memorySessionId = memSessBtn.getAttribute('data-mem-session'); App.navigate('memory'); return; }
+    var effPeriodBtn = e.target.closest('[data-eff-period]');
+    if (effPeriodBtn) { App._effPeriod = effPeriodBtn.getAttribute('data-eff-period'); App.navigate('efficiency'); return; }
+
+    var agentsTab = e.target.closest('[data-agents-tab]');
+    if (agentsTab) { App._agentsTab = agentsTab.getAttribute('data-agents-tab'); App.navigate('agents'); return; }
 
     var settingsMode = e.target.closest('[data-settings-mode]');
     if (settingsMode) {
@@ -2256,6 +2736,73 @@
       App.navigate('sessions');
       return;
     }
+    // Grade stars: click to submit grade
+    var starEl = e.target.closest('.grade-stars .star');
+    if (starEl) {
+      var gradeRow = starEl.closest('.grade-stars');
+      var turnId = gradeRow.getAttribute('data-turn-id');
+      var grade = parseInt(starEl.getAttribute('data-grade'));
+      var allStars = gradeRow.querySelectorAll('.star');
+      allStars.forEach(function(s) {
+        var g = parseInt(s.getAttribute('data-grade'));
+        if (g <= grade) { s.classList.add('filled'); } else { s.classList.remove('filled'); }
+      });
+      api('/api/turns/' + encodeURIComponent(turnId) + '/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ grade: grade })
+      }).catch(function() {
+        api('/api/turns/' + encodeURIComponent(turnId) + '/feedback', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ grade: grade })
+        }).catch(function() {});
+      });
+      return;
+    }
+    // Grade comment toggle
+    var commentToggle = e.target.closest('.grade-comment-toggle');
+    if (commentToggle) {
+      var gradeRow = commentToggle.closest('.grade-stars');
+      var turnId = gradeRow.getAttribute('data-turn-id');
+      var existing = gradeRow.parentElement.querySelector('.grade-comment-row');
+      if (existing) { existing.remove(); return; }
+      var row = document.createElement('div');
+      row.className = 'grade-comment-row';
+      var inp = document.createElement('input');
+      inp.type = 'text';
+      inp.placeholder = 'Add a comment\u2026';
+      inp.className = 'grade-comment-input';
+      inp.setAttribute('data-turn-id', turnId);
+      var btn = document.createElement('button');
+      btn.className = 'grade-save-btn';
+      btn.setAttribute('data-turn-id', turnId);
+      btn.textContent = 'Save';
+      row.appendChild(inp);
+      row.appendChild(btn);
+      gradeRow.parentElement.insertBefore(row, gradeRow.nextSibling);
+      inp.focus();
+      return;
+    }
+    // Grade comment save
+    var commentSave = e.target.closest('.grade-save-btn');
+    if (commentSave) {
+      var turnId = commentSave.getAttribute('data-turn-id');
+      var input = commentSave.parentElement.querySelector('.grade-comment-input');
+      var comment = input ? input.value.trim() : '';
+      var gradeRow = commentSave.parentElement.previousElementSibling;
+      var filledStars = gradeRow ? gradeRow.querySelectorAll('.star.filled').length : 0;
+      var grade = filledStars > 0 ? filledStars : 3;
+      api('/api/turns/' + encodeURIComponent(turnId) + '/feedback', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ grade: grade, comment: comment || null })
+      }).then(function() {
+        commentSave.parentElement.remove();
+        toast('Comment saved');
+      }).catch(function() { toast('Failed to save comment'); });
+      return;
+    }
     // Context Explorer: session selection
     var ctxSessionRow = e.target.closest('tr[data-ctx-session]');
     if (ctxSessionRow) {
@@ -2298,7 +2845,11 @@
         }
         var turn = turns[asstIdx - 1];
         if (!turn) { setHtml(detailEl, '<span style="color:var(--muted);font-size:0.75rem">No turn data found.</span>'); return; }
-        return api('/api/turns/' + encodeURIComponent(turn.id) + '/context').catch(function() { return null; }).then(function(ctx) {
+        return Promise.all([
+          api('/api/turns/' + encodeURIComponent(turn.id) + '/context').catch(function() { return null; }),
+          api('/api/turns/' + encodeURIComponent(turn.id) + '/tips').catch(function() { return { tips: [] }; })
+        ]).then(function(results) {
+          var ctx = results[0], tipsData = results[1];
           var html = '';
           if (ctx) {
             var budget = ctx.token_budget || 1;
@@ -2314,10 +2865,42 @@
             html += '<span style="color:var(--muted)">No context snapshot.</span>';
           }
           if (turn.cost != null) html += '<div style="margin-top:0.25rem;font-size:0.6875rem;color:var(--success)">$' + turn.cost.toFixed(4) + ' \u2022 ' + ((turn.tokens_in || 0) + (turn.tokens_out || 0)).toLocaleString() + ' tokens</div>';
+          var tips = (tipsData && tipsData.tips) || [];
+          if (tips.length > 0) {
+            html += '<div class="ctx-tips">';
+            tips.forEach(function(tip) {
+              html += '<span class="ctx-tip ' + esc(tip.severity) + '" title="' + esc(tip.suggestion) + '"><span class="tip-dot"></span>' + esc(tip.message) + '</span>';
+            });
+            html += '</div>';
+          }
+          html += '<button class="btn secondary ctx-analyze-btn" data-analyze-turn="' + esc(turn.id) + '">Analyze (LLM)</button>';
           if (turn.thinking) html += '<details class="ctx-section"><summary>Reasoning</summary><pre>' + esc(turn.thinking) + '</pre></details>';
           setHtml(detailEl, html);
         });
       }).catch(function() { setHtml(detailEl, '<span style="color:var(--error);font-size:0.75rem">Failed to load context.</span>'); });
+      return;
+    }
+    var analyzeBtn = e.target.closest('[data-analyze-turn]');
+    if (analyzeBtn) {
+      var turnId = analyzeBtn.getAttribute('data-analyze-turn');
+      analyzeBtn.disabled = true; analyzeBtn.textContent = 'Analyzing\u2026';
+      api('/api/turns/' + encodeURIComponent(turnId) + '/analyze', { method: 'POST' }).then(function(r) {
+        analyzeBtn.textContent = 'Analyze (LLM)'; analyzeBtn.disabled = false;
+        var parent = analyzeBtn.parentElement;
+        var existing = parent.querySelector('.ctx-analyze-result');
+        if (existing) existing.remove();
+        var div = document.createElement('div');
+        div.className = 'ctx-analyze-result';
+        div.style.cssText = 'margin-top:0.375rem;padding:0.5rem;background:rgba(0,0,0,0.15);border-radius:3px;font-size:0.6875rem;border:1px solid var(--border)';
+        var inner = '<div style="color:var(--muted);margin-bottom:0.25rem">LLM Analysis Prompt (stub)</div>';
+        inner += '<pre style="white-space:pre-wrap;word-break:break-all;font-size:0.625rem;max-height:200px;overflow-y:auto;color:var(--text)">' + esc(r.prompt || '') + '</pre>';
+        if (r.note) inner += '<div style="margin-top:0.25rem;color:var(--warning);font-size:0.625rem">' + esc(r.note) + '</div>';
+        setHtml(div, inner);
+        parent.insertBefore(div, analyzeBtn.nextSibling);
+      }).catch(function(err) {
+        analyzeBtn.textContent = 'Analyze (LLM)'; analyzeBtn.disabled = false;
+        toast(err.message || 'Analysis failed');
+      });
       return;
     }
   });
@@ -2336,7 +2919,8 @@
     if (formInput) {
       var path = formInput.getAttribute('data-settings-path');
       var draft = App._getSettingsDraft();
-      var newVal = formInput.type === 'checkbox' ? formInput.checked : formInput.type === 'number' ? Number(formInput.value) : formInput.value;
+      var rawVal = formInput.value;
+      var newVal = formInput.type === 'checkbox' ? formInput.checked : formInput.type === 'number' ? Number(rawVal) : (rawVal === '' ? null : rawVal);
       App._setNestedValue(draft, path, newVal);
       App._settingsDirty = JSON.stringify(draft) !== JSON.stringify(_cachedConfig);
       App._settingsJsonText = null;
@@ -2365,7 +2949,7 @@
       if (formInput.type === 'checkbox') { newVal = formInput.checked; }
       else if (formInput.tagName === 'SELECT') { newVal = formInput.value; }
       else if (formInput.type === 'number') { newVal = Number(formInput.value); }
-      else { newVal = formInput.value; }
+      else { newVal = formInput.value === '' ? null : formInput.value; }
       App._setNestedValue(draft, path, newVal);
       App._settingsDirty = JSON.stringify(draft) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
       if (formInput.type === 'checkbox') { var lbl = formInput.closest('.settings-toggle-wrap'); if (lbl) { var span = lbl.querySelector('.settings-toggle-label'); if (span) span.textContent = newVal ? 'On' : 'Off'; } }

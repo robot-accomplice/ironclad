@@ -214,11 +214,11 @@ pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, agent_card, breaker_reset, breaker_status, browser_action, browser_start,
         browser_status, browser_stop, change_agent_model, delete_provider_key, execute_plugin_tool,
-        get_agents, get_cache_stats, get_config, get_costs, get_plugins, get_transactions, roster,
-        set_provider_key, start_agent, stop_agent, toggle_plugin, update_config, wallet_address,
-        wallet_balance, workspace_state,
+        generate_deep_analysis, get_agents, get_cache_stats, get_config, get_costs, get_efficiency,
+        get_plugins, get_recommendations, get_transactions, roster, set_provider_key, start_agent,
+        stop_agent, toggle_plugin, update_config, wallet_address, wallet_balance, workspace_state,
     };
-    use agent::{agent_message, agent_status};
+    use agent::{agent_message, agent_message_stream, agent_status};
     use channels::{
         get_channels_status, webhook_telegram, webhook_whatsapp, webhook_whatsapp_verify,
     };
@@ -229,7 +229,10 @@ pub fn build_router(state: AppState) -> Router {
         get_working_memory, get_working_memory_all, memory_search,
     };
     use sessions::{
-        backfill_nicknames, create_session, get_session, list_messages, list_sessions, post_message,
+        analyze_session, analyze_turn, backfill_nicknames, create_session, get_session,
+        get_session_feedback, get_session_insights, get_turn, get_turn_context, get_turn_feedback,
+        get_turn_tips, get_turn_tools, list_messages, list_session_turns, list_sessions,
+        post_message, post_turn_feedback, put_turn_feedback,
     };
     use skills::{get_skill, list_skills, reload_skills, toggle_skill};
     use subagents::{
@@ -253,6 +256,21 @@ pub fn build_router(state: AppState) -> Router {
             "/api/sessions/{id}/messages",
             get(list_messages).post(post_message),
         )
+        .route("/api/sessions/{id}/turns", get(list_session_turns))
+        .route("/api/sessions/{id}/insights", get(get_session_insights))
+        .route("/api/sessions/{id}/analyze", post(analyze_session))
+        .route("/api/sessions/{id}/feedback", get(get_session_feedback))
+        .route("/api/turns/{id}", get(get_turn))
+        .route("/api/turns/{id}/context", get(get_turn_context))
+        .route("/api/turns/{id}/tools", get(get_turn_tools))
+        .route("/api/turns/{id}/tips", get(get_turn_tips))
+        .route("/api/turns/{id}/analyze", post(analyze_turn))
+        .route(
+            "/api/turns/{id}/feedback",
+            get(get_turn_feedback)
+                .post(post_turn_feedback)
+                .put(put_turn_feedback),
+        )
         .route("/api/memory/working", get(get_working_memory_all))
         .route("/api/memory/working/{session_id}", get(get_working_memory))
         .route("/api/memory/episodic", get(get_episodic_memory))
@@ -271,12 +289,19 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(delete_cron_job),
         )
         .route("/api/stats/costs", get(get_costs))
+        .route("/api/stats/efficiency", get(get_efficiency))
+        .route("/api/recommendations", get(get_recommendations))
+        .route(
+            "/api/recommendations/generate",
+            post(generate_deep_analysis),
+        )
         .route("/api/stats/transactions", get(get_transactions))
         .route("/api/stats/cache", get(get_cache_stats))
         .route("/api/breaker/status", get(breaker_status))
         .route("/api/breaker/reset/{provider}", post(breaker_reset))
         .route("/api/agent/status", get(agent_status))
         .route("/api/agent/message", post(agent_message))
+        .route("/api/agent/message/stream", post(agent_message_stream))
         .route("/api/wallet/balance", get(wallet_balance))
         .route("/api/wallet/address", get(wallet_address))
         .route("/api/skills", get(list_skills))
@@ -2711,5 +2736,145 @@ primary = "ollama/qwen3:8b"
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── Slash command tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn slash_help_lists_all_commands() {
+        let state = test_state();
+        let reply = agent::handle_bot_command(&state, "/help").await.unwrap();
+        assert!(reply.contains("/status"));
+        assert!(reply.contains("/model"));
+        assert!(reply.contains("/models"));
+        assert!(reply.contains("/breaker"));
+        assert!(reply.contains("/retry"));
+        assert!(reply.contains("/help"));
+    }
+
+    #[tokio::test]
+    async fn slash_model_shows_current() {
+        let state = test_state();
+        let reply = agent::handle_bot_command(&state, "/model").await.unwrap();
+        assert!(reply.contains("ollama/qwen3:8b"));
+        assert!(reply.contains("no override set"));
+    }
+
+    #[tokio::test]
+    async fn slash_model_set_and_reset_override() {
+        let state = test_state();
+
+        let reply = agent::handle_bot_command(&state, "/model ollama/qwen3:8b")
+            .await
+            .unwrap();
+        assert!(reply.contains("override set"));
+        assert!(reply.contains("ollama/qwen3:8b"));
+
+        let reply = agent::handle_bot_command(&state, "/model").await.unwrap();
+        assert!(reply.contains("override active"));
+
+        let reply = agent::handle_bot_command(&state, "/model reset")
+            .await
+            .unwrap();
+        assert!(reply.contains("cleared"));
+
+        let reply = agent::handle_bot_command(&state, "/model").await.unwrap();
+        assert!(reply.contains("no override set"));
+    }
+
+    #[tokio::test]
+    async fn slash_model_unknown_provider_warns() {
+        let state = test_state();
+        let reply = agent::handle_bot_command(&state, "/model nonexistent/fake-model")
+            .await
+            .unwrap();
+        assert!(reply.contains("Unknown model"));
+    }
+
+    #[tokio::test]
+    async fn slash_models_lists_configured() {
+        let state = test_state();
+        let reply = agent::handle_bot_command(&state, "/models").await.unwrap();
+        assert!(reply.contains("ollama/qwen3:8b"));
+        assert!(reply.contains("primary"));
+    }
+
+    #[tokio::test]
+    async fn slash_breaker_shows_status() {
+        let state = test_state();
+        {
+            let mut llm = state.llm.write().await;
+            llm.breakers.record_credit_error("anthropic");
+        }
+        let reply = agent::handle_bot_command(&state, "/breaker").await.unwrap();
+        assert!(reply.contains("anthropic"));
+        assert!(reply.contains("Open"));
+    }
+
+    #[tokio::test]
+    async fn slash_breaker_reset_specific_provider() {
+        let state = test_state();
+        {
+            let mut llm = state.llm.write().await;
+            llm.breakers.record_credit_error("anthropic");
+        }
+        let reply = agent::handle_bot_command(&state, "/breaker reset anthropic")
+            .await
+            .unwrap();
+        assert!(reply.contains("reset"));
+        assert!(reply.contains("anthropic"));
+
+        let llm = state.llm.read().await;
+        assert_eq!(
+            llm.breakers.get_state("anthropic"),
+            ironclad_llm::CircuitState::Closed
+        );
+    }
+
+    #[tokio::test]
+    async fn slash_breaker_reset_all() {
+        let state = test_state();
+        {
+            let mut llm = state.llm.write().await;
+            llm.breakers.record_credit_error("anthropic");
+            llm.breakers.record_credit_error("openai");
+        }
+        let reply = agent::handle_bot_command(&state, "/breaker reset")
+            .await
+            .unwrap();
+        assert!(reply.contains("Reset 2"));
+
+        let llm = state.llm.read().await;
+        assert_eq!(
+            llm.breakers.get_state("anthropic"),
+            ironclad_llm::CircuitState::Closed
+        );
+        assert_eq!(
+            llm.breakers.get_state("openai"),
+            ironclad_llm::CircuitState::Closed
+        );
+    }
+
+    #[tokio::test]
+    async fn slash_breaker_reset_all_already_closed() {
+        let state = test_state();
+        let reply = agent::handle_bot_command(&state, "/breaker reset")
+            .await
+            .unwrap();
+        assert!(reply.contains("already closed"));
+    }
+
+    #[tokio::test]
+    async fn slash_unknown_command_returns_none() {
+        let state = test_state();
+        let reply = agent::handle_bot_command(&state, "/nonexistent").await;
+        assert!(reply.is_none());
+    }
+
+    #[tokio::test]
+    async fn slash_retry_returns_placeholder() {
+        let state = test_state();
+        let reply = agent::handle_bot_command(&state, "/retry").await.unwrap();
+        assert!(reply.contains("not yet implemented") || reply.contains("resend"));
     }
 }

@@ -1,3 +1,25 @@
+//! # ironclad-browser
+//!
+//! Headless browser automation via Chrome DevTools Protocol (CDP) for the
+//! Ironclad agent runtime. Provides a high-level [`Browser`] facade that
+//! manages a Chromium process, establishes a CDP WebSocket session, and
+//! exposes 12 browser actions (navigate, click, type, screenshot, etc.).
+//!
+//! ## Key Types
+//!
+//! - [`Browser`] -- High-level facade combining process, CDP session, and actions
+//! - [`SharedBrowser`] -- `Arc<Browser>` alias for thread-safe sharing
+//! - [`PageInfo`] -- Page metadata (id, url, title)
+//! - [`ScreenshotResult`] -- Base64 screenshot with format and dimensions
+//! - [`PageContent`] -- Extracted page text content
+//!
+//! ## Modules
+//!
+//! - `actions` -- `BrowserAction` enum (12 variants), `ActionExecutor`, `ActionResult`
+//! - `cdp` -- Low-level CDP HTTP client for target listing
+//! - `manager` -- Chrome/Chromium process lifecycle (start, stop, detect)
+//! - `session` -- CDP WebSocket session (connect, send command, close)
+
 pub mod actions;
 pub mod cdp;
 pub mod manager;

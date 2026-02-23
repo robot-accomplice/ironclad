@@ -1070,6 +1070,82 @@ pub async fn delete_provider_key(
     })))
 }
 
+// ── Prompt efficiency metrics ────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct EfficiencyParams {
+    pub period: Option<String>,
+    pub model: Option<String>,
+}
+
+pub async fn get_efficiency(
+    State(state): State<AppState>,
+    Query(params): Query<EfficiencyParams>,
+) -> impl IntoResponse {
+    let period = params.period.as_deref().unwrap_or("7d");
+    let model = params.model.as_deref();
+
+    match ironclad_db::efficiency::compute_efficiency(&state.db, period, model) {
+        Ok(report) => Json(serde_json::to_value(report).unwrap_or_default()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ── Behavioral Recommendations ───────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RecommendationsParams {
+    pub period: Option<String>,
+}
+
+pub async fn get_recommendations(
+    State(state): State<AppState>,
+    Query(params): Query<RecommendationsParams>,
+) -> impl IntoResponse {
+    let period = params.period.as_deref().unwrap_or("30d");
+
+    let profile = match ironclad_db::efficiency::build_user_profile(&state.db, period) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let engine = ironclad_agent::recommendations::RecommendationEngine::new();
+    let recs = engine.generate(&profile);
+
+    Json(json!({
+        "period": period,
+        "profile": profile,
+        "recommendations": recs,
+        "count": recs.len(),
+    }))
+    .into_response()
+}
+
+pub async fn generate_deep_analysis(
+    State(state): State<AppState>,
+    Query(params): Query<RecommendationsParams>,
+) -> impl IntoResponse {
+    let period = params.period.as_deref().unwrap_or("30d");
+
+    let profile = match ironclad_db::efficiency::build_user_profile(&state.db, period) {
+        Ok(p) => p,
+        Err(e) => return Err(internal_err(&e)),
+    };
+
+    let engine = ironclad_agent::recommendations::RecommendationEngine::new();
+    let recs = engine.generate(&profile);
+    let prompt =
+        ironclad_agent::recommendations::LlmRecommendationAnalyzer::build_prompt(&profile, &recs);
+
+    Ok(Json(json!({
+        "status": "stub",
+        "message": "LLM deep analysis not yet wired — prompt generated for manual review",
+        "prompt": prompt,
+        "heuristic_recommendations": recs,
+        "profile": profile,
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

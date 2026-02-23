@@ -1,3 +1,4 @@
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 # C4 Level 3: Component Diagram -- ironclad-core
 
 *Leaf crate with zero internal dependencies. Provides shared types, configuration parsing, and error definitions used by every other crate.*
@@ -14,6 +15,7 @@ flowchart TB
         TYPES["types.rs<br/>Shared Domain Types"]
         PERSONALITY["personality.rs<br/>OS/Soul/Firmware"]
         STYLE["style.rs<br/>Theme, CRT, Typewriter"]
+        KEYSTORE["keystore.rs<br/>Encrypted Credential<br/>Storage"]
     end
 
     subgraph ConfigDetail ["config.rs internals"]
@@ -79,11 +81,19 @@ flowchart TB
         IRONCLAD_ERR["IroncladError (thiserror)<br/>13 variants: Config, Channel,<br/>Database, Llm, Network, Policy,<br/>Tool, Wallet, Injection,<br/>Schedule, A2a, Io, Skill"]
     end
 
+    subgraph KeystoreDetail ["keystore.rs — Encrypted Key-Value Storage"]
+        KS_STORE["Keystore:<br/>encrypted JSON file on disk,<br/>machine-key auto-unlock"]
+        KS_OPS["get(key), set(key, value),<br/>delete(key), list_keys()"]
+        KS_UNLOCK["unlock_machine():<br/>derive key from OS<br/>machine identity"]
+        KS_PATH["default_path():<br/>~/.ironclad/keystore.json"]
+    end
+
     CONFIG --> TOML_PARSE
     TOML_PARSE --> CfgInfra
     TOML_PARSE --> CfgAI
     TOML_PARSE --> CfgFinancial
     TOML_PARSE --> CfgExtensions
+    KEYSTORE --> KS_STORE
 ```
 
 ## Module Responsibilities
@@ -95,6 +105,7 @@ flowchart TB
 | `error.rs` | Unified error type with `thiserror` derive. Each variant wraps crate-specific errors so the top-level binary can handle them uniformly. | `IroncladError` |
 | `personality.rs` | Load OS/soul/firmware/operator/directives from workspace; compose identity and firmware text. | `load_os`, `load_firmware`, `compose_identity_text` |
 | `style.rs` | Theme (CRT green/orange, terminal), typewriter effect, icons. | `Theme`, `sleep_ms`, `typewrite` |
+| `keystore.rs` | Encrypted key-value store for API keys and secrets. Machine-key auto-unlock, JSON file on disk. | `Keystore` |
 
 ## Dependencies
 

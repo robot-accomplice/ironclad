@@ -25,6 +25,7 @@ pub struct ModelRouter {
     current_index: usize,
     config: RoutingConfig,
     backend: Box<dyn RouterBackend>,
+    model_override: Option<String>,
 }
 
 impl ModelRouter {
@@ -40,6 +41,7 @@ impl ModelRouter {
             current_index: 0,
             config,
             backend,
+            model_override: None,
         }
     }
 
@@ -49,6 +51,9 @@ impl ModelRouter {
     }
 
     pub fn select_model(&self) -> &str {
+        if let Some(ref ovr) = self.model_override {
+            return ovr;
+        }
         match self.config.mode.as_str() {
             "primary" => &self.primary,
             "round-robin" => {
@@ -70,17 +75,54 @@ impl ModelRouter {
         }
     }
 
+    /// Force all future model selection to use this model until cleared.
+    pub fn set_override(&mut self, model: String) {
+        self.model_override = Some(model);
+    }
+
+    /// Remove any manual model override, returning to normal routing.
+    pub fn clear_override(&mut self) {
+        self.model_override = None;
+    }
+
+    /// Returns the current model override, if set.
+    pub fn get_override(&self) -> Option<&str> {
+        self.model_override.as_deref()
+    }
+
+    pub fn primary(&self) -> &str {
+        &self.primary
+    }
+
+    pub fn fallbacks(&self) -> &[String] {
+        &self.fallbacks
+    }
+
     /// Select a model using complexity-aware routing, consulting the provider
-    /// registry for `is_local` and the capacity tracker for throughput headroom.
+    /// registry for `is_local`, the capacity tracker for throughput headroom,
+    /// and the circuit breaker registry to skip blocked providers.
     pub fn select_for_complexity(
         &self,
         complexity: f64,
         registry: Option<&ProviderRegistry>,
         capacity: Option<&super::capacity::CapacityTracker>,
+        breakers: Option<&super::circuit::CircuitBreakerRegistry>,
     ) -> &str {
+        if let Some(ref ovr) = self.model_override {
+            return ovr;
+        }
         if self.config.mode == "primary" {
             return &self.primary;
         }
+
+        let is_provider_blocked = |model: &str| -> bool {
+            if let Some(br) = breakers {
+                let prefix = model.split('/').next().unwrap_or(model);
+                br.is_blocked(prefix)
+            } else {
+                false
+            }
+        };
 
         let primary_is_local = match registry {
             Some(reg) => reg.get_by_model(&self.primary).is_some_and(|p| p.is_local),
@@ -90,6 +132,7 @@ impl ModelRouter {
         if self.config.local_first
             && primary_is_local
             && complexity < self.config.confidence_threshold
+            && !is_provider_blocked(&self.primary)
         {
             return &self.primary;
         }
@@ -101,12 +144,23 @@ impl ModelRouter {
                 &self.primary
             };
 
+        if is_provider_blocked(selected) {
+            for fb in &self.fallbacks {
+                if !is_provider_blocked(fb) {
+                    return fb;
+                }
+            }
+            if !is_provider_blocked(&self.primary) {
+                return &self.primary;
+            }
+        }
+
         if let Some(cap) = capacity {
             let provider_name = selected.split('/').next().unwrap_or(selected);
             if cap.is_near_capacity(provider_name) {
                 for fb in &self.fallbacks {
                     let fb_provider = fb.split('/').next().unwrap_or(fb);
-                    if !cap.is_near_capacity(fb_provider) {
+                    if !cap.is_near_capacity(fb_provider) && !is_provider_blocked(fb) {
                         return fb;
                     }
                 }
@@ -116,16 +170,20 @@ impl ModelRouter {
         selected
     }
 
-    /// Select the cheapest qualified model that has capacity.
+    /// Select the cheapest qualified model that has capacity and is not blocked.
     /// Falls back to complexity-based selection if no cost data is available.
     pub fn select_cheapest_qualified(
         &self,
         complexity: f64,
         registry: &ProviderRegistry,
         capacity: Option<&super::capacity::CapacityTracker>,
+        breakers: Option<&super::circuit::CircuitBreakerRegistry>,
         estimated_input_tokens: u32,
         estimated_output_tokens: u32,
     ) -> &str {
+        if let Some(ref ovr) = self.model_override {
+            return ovr;
+        }
         let mut candidates: Vec<(&str, f64)> = Vec::new();
 
         let primary_cost = estimate_cost(
@@ -144,6 +202,14 @@ impl ModelRouter {
                 estimated_output_tokens,
             );
             candidates.push((fb, cost));
+        }
+
+        // Filter out providers with tripped circuit breakers
+        if let Some(br) = breakers {
+            candidates.retain(|(model, _)| {
+                let prefix = model.split('/').next().unwrap_or(model);
+                !br.is_blocked(prefix)
+            });
         }
 
         if let Some(cap) = capacity {
@@ -364,7 +430,7 @@ mod tests {
         );
         assert_eq!(router.select_model(), "ollama/qwen3:8b");
         assert_eq!(
-            router.select_for_complexity(0.99, None, None),
+            router.select_for_complexity(0.99, None, None, None),
             "ollama/qwen3:8b"
         );
     }
@@ -407,13 +473,13 @@ mod tests {
         );
 
         assert_eq!(
-            router.select_for_complexity(0.3, None, None),
+            router.select_for_complexity(0.3, None, None, None),
             "ollama/qwen3:8b",
             "low complexity should use local primary"
         );
 
         assert_eq!(
-            router.select_for_complexity(0.9, None, None),
+            router.select_for_complexity(0.9, None, None, None),
             "openai/gpt-4o",
             "high complexity should promote to fallback"
         );
@@ -435,7 +501,7 @@ mod tests {
         );
 
         assert_eq!(
-            router.select_for_complexity(0.4, None, None),
+            router.select_for_complexity(0.4, None, None, None),
             "ollama/local-model",
         );
     }
@@ -461,7 +527,7 @@ mod tests {
 
         // Without registry, "custom/model" is not local by heuristic
         assert_eq!(
-            router.select_for_complexity(0.3, None, None),
+            router.select_for_complexity(0.3, None, None, None),
             "custom/model"
         );
 
@@ -489,7 +555,7 @@ mod tests {
             api_key_ref: None,
         });
         assert_eq!(
-            router.select_for_complexity(0.3, Some(&reg), None),
+            router.select_for_complexity(0.3, Some(&reg), None, None),
             "custom/model",
             "registry is_local=true keeps it on primary"
         );
@@ -604,7 +670,7 @@ mod tests {
         );
         let reg = cost_test_registry();
 
-        let selected = router.select_cheapest_qualified(0.3, &reg, None, 1000, 500);
+        let selected = router.select_cheapest_qualified(0.3, &reg, None, None, 1000, 500);
         assert_eq!(
             selected, "cheap/lite-model",
             "should pick the cheaper provider for low complexity"
@@ -631,7 +697,7 @@ mod tests {
         cap.register("cheap", Some(100), None);
         cap.record("cheap", 95);
 
-        let selected = router.select_cheapest_qualified(0.3, &reg, Some(&cap), 1000, 500);
+        let selected = router.select_cheapest_qualified(0.3, &reg, Some(&cap), None, 1000, 500);
         assert_eq!(
             selected, "expensive/gpt-5",
             "should skip cheap provider when near capacity"
@@ -654,7 +720,7 @@ mod tests {
         );
         let reg = cost_test_registry();
 
-        let selected = router.select_cheapest_qualified(0.8, &reg, None, 1000, 500);
+        let selected = router.select_cheapest_qualified(0.8, &reg, None, None, 1000, 500);
         assert_eq!(
             selected, "cheap/cloud-lite",
             "high complexity should filter to cloud and pick cheapest"
@@ -676,6 +742,190 @@ mod tests {
         assert!(
             (cost - expected).abs() < f64::EPSILON,
             "cost should be {expected}, got {cost}"
+        );
+    }
+
+    #[test]
+    fn model_override_takes_precedence() {
+        let mut router = ModelRouter::new(
+            "ollama/qwen3:8b".into(),
+            vec!["openai/gpt-4o".into()],
+            test_config(),
+            Box::new(HeuristicBackend),
+        );
+        assert_eq!(router.select_model(), "ollama/qwen3:8b");
+        assert!(router.get_override().is_none());
+
+        router.set_override("anthropic/claude-sonnet".into());
+        assert_eq!(router.select_model(), "anthropic/claude-sonnet");
+        assert_eq!(router.get_override(), Some("anthropic/claude-sonnet"));
+    }
+
+    #[test]
+    fn model_override_applies_to_complexity_routing() {
+        let config = RoutingConfig {
+            mode: "ml".into(),
+            confidence_threshold: 0.5,
+            local_first: true,
+            ..Default::default()
+        };
+        let mut router = ModelRouter::new(
+            "ollama/qwen3:8b".into(),
+            vec!["openai/gpt-4o".into()],
+            config,
+            Box::new(HeuristicBackend),
+        );
+
+        router.set_override("anthropic/claude-sonnet".into());
+        assert_eq!(
+            router.select_for_complexity(0.1, None, None, None),
+            "anthropic/claude-sonnet",
+        );
+        assert_eq!(
+            router.select_for_complexity(0.99, None, None, None),
+            "anthropic/claude-sonnet",
+        );
+    }
+
+    #[test]
+    fn model_override_applies_to_cheapest_qualified() {
+        let config = RoutingConfig {
+            mode: "ml".into(),
+            confidence_threshold: 0.9,
+            local_first: false,
+            ..Default::default()
+        };
+        let mut router = ModelRouter::new(
+            "expensive/gpt-5".into(),
+            vec!["cheap/lite-model".into()],
+            config,
+            Box::new(HeuristicBackend),
+        );
+        let reg = cost_test_registry();
+
+        router.set_override("ollama/override".into());
+        assert_eq!(
+            router.select_cheapest_qualified(0.3, &reg, None, None, 1000, 500),
+            "ollama/override",
+        );
+    }
+
+    #[test]
+    fn clear_override_restores_normal_routing() {
+        let mut router = ModelRouter::new(
+            "ollama/qwen3:8b".into(),
+            vec!["openai/gpt-4o".into()],
+            test_config(),
+            Box::new(HeuristicBackend),
+        );
+
+        router.set_override("anthropic/claude-sonnet".into());
+        assert_eq!(router.select_model(), "anthropic/claude-sonnet");
+
+        router.clear_override();
+        assert_eq!(router.select_model(), "ollama/qwen3:8b");
+        assert!(router.get_override().is_none());
+    }
+
+    #[test]
+    fn primary_and_fallbacks_accessors() {
+        let router = ModelRouter::new(
+            "ollama/qwen3:8b".into(),
+            vec!["openai/gpt-4o".into(), "anthropic/claude".into()],
+            test_config(),
+            Box::new(HeuristicBackend),
+        );
+        assert_eq!(router.primary(), "ollama/qwen3:8b");
+        assert_eq!(router.fallbacks(), &["openai/gpt-4o", "anthropic/claude"]);
+    }
+
+    #[test]
+    fn complexity_routing_skips_blocked_provider() {
+        use crate::circuit::CircuitBreakerRegistry;
+        use ironclad_core::config::CircuitBreakerConfig;
+
+        let config = RoutingConfig {
+            mode: "ml".into(),
+            confidence_threshold: 0.5,
+            local_first: true,
+            ..Default::default()
+        };
+        let router = ModelRouter::new(
+            "ollama/qwen3:8b".into(),
+            vec!["openai/gpt-4o".into(), "anthropic/claude".into()],
+            config,
+            Box::new(HeuristicBackend),
+        );
+
+        let cb_config = CircuitBreakerConfig {
+            threshold: 1,
+            window_seconds: 60,
+            cooldown_seconds: 300,
+            credit_cooldown_seconds: 300,
+            max_cooldown_seconds: 900,
+        };
+        let mut breakers = CircuitBreakerRegistry::new(&cb_config);
+
+        // High complexity normally selects first fallback (openai)
+        assert_eq!(
+            router.select_for_complexity(0.9, None, None, Some(&breakers)),
+            "openai/gpt-4o"
+        );
+
+        // Block openai — should skip to anthropic
+        breakers.record_credit_error("openai");
+        assert_eq!(
+            router.select_for_complexity(0.9, None, None, Some(&breakers)),
+            "anthropic/claude"
+        );
+
+        // Block anthropic too — falls back to primary
+        breakers.record_credit_error("anthropic");
+        assert_eq!(
+            router.select_for_complexity(0.9, None, None, Some(&breakers)),
+            "ollama/qwen3:8b"
+        );
+    }
+
+    #[test]
+    fn cheapest_routing_filters_blocked_providers() {
+        use crate::circuit::CircuitBreakerRegistry;
+        use ironclad_core::config::CircuitBreakerConfig;
+
+        let config = RoutingConfig {
+            mode: "ml".into(),
+            confidence_threshold: 0.9,
+            local_first: false,
+            ..Default::default()
+        };
+        let router = ModelRouter::new(
+            "expensive/gpt-5".into(),
+            vec!["cheap/lite-model".into()],
+            config,
+            Box::new(HeuristicBackend),
+        );
+        let reg = cost_test_registry();
+
+        let cb_config = CircuitBreakerConfig {
+            threshold: 1,
+            window_seconds: 60,
+            cooldown_seconds: 300,
+            credit_cooldown_seconds: 300,
+            max_cooldown_seconds: 900,
+        };
+        let mut breakers = CircuitBreakerRegistry::new(&cb_config);
+
+        // Normally selects cheap
+        assert_eq!(
+            router.select_cheapest_qualified(0.3, &reg, None, Some(&breakers), 1000, 500),
+            "cheap/lite-model"
+        );
+
+        // Block cheap — falls back to expensive
+        breakers.record_credit_error("cheap");
+        assert_eq!(
+            router.select_cheapest_qualified(0.3, &reg, None, Some(&breakers), 1000, 500),
+            "expensive/gpt-5"
         );
     }
 }

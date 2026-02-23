@@ -112,7 +112,7 @@ pub struct UnifiedResponse {
 }
 
 /// A single chunk from a streaming LLM response.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChunk {
     pub delta: String,
     pub model: Option<String>,

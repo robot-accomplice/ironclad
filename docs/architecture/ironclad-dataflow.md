@@ -7,6 +7,7 @@
 ---
 
 ## 1. Primary Request Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 
 End-to-end path from inbound user message to delivered response, entirely within one OS process.
 
@@ -91,6 +92,7 @@ flowchart TD
 ---
 
 ## 2. Semantic Cache Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 
 Runtime cache in `ironclad-llm/cache.rs` (in-memory HashMap) with **SQLite persistence** via `ironclad-db/cache.rs`. On startup the server loads persisted entries from the `semantic_cache` table; a background task flushes in-memory entries to SQLite every 5 minutes and evicts expired rows.
 
@@ -129,8 +131,9 @@ flowchart TD
 ---
 
 ## 3. Heuristic Model Router Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 
-Implemented in `ironclad-llm/router.rs`. **No ONNX or ML** — heuristic classifier only.
+Implemented in `ironclad-llm/router.rs`. Heuristic classifier by default; `ml_router.rs` provides an alternative ONNX-based `MlBackend` when `models.routing.mode = "ml"`.
 
 ```mermaid
 flowchart TD
@@ -141,6 +144,8 @@ flowchart TD
 
     MODE -->|"heuristic / ml"| FEATURES["extract_features():<br/>message len, tool_call count, depth"]
     FEATURES --> HEURISTIC["HeuristicBackend::classify_complexity<br/>weighted sum → score 0.0–1.0"]
+    FEATURES -.->|"mode = ml"| ML_BACKEND["ml_router.rs · MlBackend<br/>ONNX classify_complexity<br/>(alternative backend)"]
+    ML_BACKEND -.-> LOCAL_FIRST
 
     subgraph ModelSelection["Model Selection"]
         HEURISTIC --> LOCAL_FIRST{"local_first &&<br/>score < threshold?"}
@@ -170,8 +175,9 @@ flowchart TD
 ---
 
 ## 4. Memory Lifecycle Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 
-5-tier memory system unified in a single SQLite DB. Ingestion in `ironclad-agent/memory.rs`, storage in `ironclad-db/memory.rs`.
+5-tier memory system unified in a single SQLite DB. Ingestion in `ironclad-agent/memory.rs`, storage in `ironclad-db/memory.rs`. The hippocampus schema map (`ironclad-db/schema_map.rs`) provides runtime introspection of memory table structures for dynamic query construction and context-aware retrieval.
 
 ```mermaid
 flowchart TD
@@ -206,7 +212,8 @@ flowchart TD
 
     subgraph Retrieval["Pre-Inference Retrieval (ironclad-agent/retrieval.rs)"]
         INFER_START["Inference call starting"]
-        INFER_START --> EMBED_QUERY_R["ironclad-llm/embedding.rs<br/>Generate query embedding"]
+        INFER_START --> SCHEMA_MAP["ironclad-db/schema_map.rs<br/>Hippocampus schema introspection<br/>(table structure, column types,<br/>index availability)"]
+        SCHEMA_MAP --> EMBED_QUERY_R["ironclad-llm/embedding.rs<br/>Generate query embedding"]
         EMBED_QUERY_R --> BUDGET["MemoryRetriever<br/>MemoryBudgetManager allocates<br/>token budget per tier:<br/>working: 30% · episodic: 25%<br/>semantic: 20% · procedural: 15%<br/>relationship: 10%<br/>(unused budget rolls over)"]
 
         BUDGET --> R_WORK["Retrieve working_memory<br/>(all entries for current session_id)"]
@@ -233,6 +240,7 @@ flowchart TD
 ---
 
 ## 5. Zero-Trust Agent-to-Agent Communication Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 
 New subsystem. Identity via `ironclad-wallet/wallet.rs`, protocol in `ironclad-channels/a2a.rs`, trust data in `relationship_memory` table.
 
@@ -286,6 +294,7 @@ flowchart TD
 ---
 
 ## 6. Multi-Layer Prompt Injection Defense Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 
 4-layer defense system spanning `ironclad-agent/injection.rs`, `ironclad-agent/prompt.rs`, and `ironclad-agent/policy.rs`.
 
@@ -355,6 +364,7 @@ flowchart TD
 ---
 
 ## 7. Financial + Yield Engine Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 
 x402 credit purchases and Aave/Compound yield generation. Core logic in `ironclad-wallet/`.
 
@@ -419,6 +429,7 @@ flowchart TD
 ---
 
 ## 8. Cron + Heartbeat Unified Scheduling Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 
 Unified scheduling system in `ironclad-schedule/`.
 
@@ -487,6 +498,7 @@ flowchart TD
 ---
 
 ## 9. Skill Execution Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 
 Dual-format extensibility system in `ironclad-agent/skills.rs` and `ironclad-agent/script_runner.rs`, with persistence in `ironclad-db/skills.rs`.
 
@@ -549,6 +561,457 @@ flowchart TD
 
 ---
 
+## 10. Approval Workflow Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Tool gating with human-in-the-loop approval for dangerous operations. `ApprovalManager` pauses the agent loop until an admin resolves the request via the dashboard WebSocket or REST API.
+
+```mermaid
+flowchart TD
+    subgraph GateCheck["① Tool Gate Check"]
+        AGENT_CALL["AgentLoop<br/>Tool call requested"]
+        AGENT_CALL --> GATE{"ApprovalManager<br/>requires_approval(tool, risk)?"}
+        GATE -->|no| DIRECT_EXEC["Execute immediately"]
+        GATE -->|yes| CREATE_REQ["ApprovalManager<br/>create_request(tool, args, context)"]
+    end
+
+    subgraph Notification["② Approval Notification"]
+        CREATE_REQ --> PERSIST_REQ["INSERT approval_requests<br/>(tool, args, status=pending,<br/>requested_at)"]
+        PERSIST_REQ --> EVENT["EventBus<br/>publish(ApprovalRequested)"]
+        EVENT --> WS_PUSH["DashboardWS<br/>push to connected clients"]
+        EVENT --> PAUSE["AgentLoop<br/>pause execution<br/>(tokio::sync::oneshot)"]
+    end
+
+    subgraph Resolution["③ Approve / Deny"]
+        WS_PUSH --> ADMIN_UI["Dashboard UI<br/>approval card rendered"]
+        ADMIN_UI --> ADMIN_ACT{"Admin action?"}
+        ADMIN_ACT -->|approve| APPROVE_API["AdminAPI<br/>POST /api/approvals/:id/approve"]
+        ADMIN_ACT -->|deny| DENY_API["AdminAPI<br/>POST /api/approvals/:id/deny"]
+        APPROVE_API --> UPDATE_APPROVED["UPDATE approval_requests<br/>SET status=approved,<br/>resolved_by, resolved_at"]
+        DENY_API --> UPDATE_DENIED["UPDATE approval_requests<br/>SET status=denied,<br/>resolved_by, resolved_at, reason"]
+    end
+
+    subgraph Resume["④ Agent Resume"]
+        UPDATE_APPROVED --> SIGNAL_OK["EventBus<br/>publish(ApprovalResolved)"]
+        UPDATE_DENIED --> SIGNAL_DENY["EventBus<br/>publish(ApprovalResolved)"]
+        SIGNAL_OK --> RESUME_EXEC["AgentLoop resumes<br/>→ execute tool"]
+        SIGNAL_DENY --> RESUME_SKIP["AgentLoop resumes<br/>→ skip tool, report denial"]
+    end
+```
+
+---
+
+## 11. Browser Tool Execution Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+CDP-based browser automation via `BrowserTool`. The `BrowserManager` maintains a pool of Chrome sessions with idle eviction.
+
+```mermaid
+flowchart TD
+    subgraph Dispatch["① Tool Dispatch"]
+        AGENT["AgentLoop<br/>tool_call: browser_action"]
+        AGENT --> REGISTRY["ToolRegistry<br/>lookup('browser_action')"]
+        REGISTRY --> BROWSER_TOOL["BrowserTool<br/>validate args (url, action, selector)"]
+    end
+
+    subgraph SessionMgmt["② CDP Session Management"]
+        BROWSER_TOOL --> MGR_CHECK{"BrowserManager<br/>active session?"}
+        MGR_CHECK -->|yes| REUSE["Reuse existing CdpSession"]
+        MGR_CHECK -->|no| LAUNCH["BrowserManager<br/>launch Chrome<br/>(--headless, --remote-debugging-port)"]
+        LAUNCH --> CDP_CONNECT["CdpSession<br/>WebSocket connect to CDP endpoint"]
+        CDP_CONNECT --> REUSE
+    end
+
+    subgraph Execution["③ Action Execution"]
+        REUSE --> ACTION_TYPE{"action type?"}
+        ACTION_TYPE -->|navigate| NAV["CdpSession<br/>Page.navigate(url)<br/>wait for load event"]
+        ACTION_TYPE -->|click| CLICK["CdpSession<br/>DOM.querySelector(selector)<br/>Input.dispatchMouseEvent"]
+        ACTION_TYPE -->|extract| EXTRACT["CdpSession<br/>Runtime.evaluate(js)<br/>extract page content"]
+        ACTION_TYPE -->|screenshot| SCREENSHOT["CdpSession<br/>Page.captureScreenshot<br/>→ base64 PNG"]
+    end
+
+    subgraph Result["④ Result Processing"]
+        NAV & CLICK & EXTRACT & SCREENSHOT --> RESULT["BrowserTool<br/>format result<br/>(content, screenshot, timing)"]
+        RESULT --> TIMEOUT_CHECK{"Exceeded<br/>timeout?"}
+        TIMEOUT_CHECK -->|yes| CLEANUP["BrowserManager<br/>kill session, report timeout"]
+        TIMEOUT_CHECK -->|no| RETURN["Return to AgentLoop"]
+    end
+
+    subgraph Lifecycle["⑤ Session Lifecycle"]
+        IDLE_CHECK["BrowserManager<br/>idle timeout monitor"]
+        IDLE_CHECK -->|"idle > 5 min"| TEARDOWN["Close CdpSession<br/>kill Chrome process"]
+        IDLE_CHECK -->|"max sessions"| EVICT_LRU["Evict LRU session"]
+    end
+```
+
+---
+
+## 12. Context Assembly & Snapshot Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Complexity-driven context assembly with progressive trimming. `ContextBuilder` allocates token budgets per tier and persists snapshots for observatory analysis.
+
+```mermaid
+flowchart TD
+    subgraph Classify["① Complexity Classification"]
+        INPUT["Incoming turn<br/>(message + tool context)"]
+        INPUT --> CLASSIFIER["ComplexityClassifier<br/>extract_features():<br/>msg length, tool count,<br/>conversation depth, topic shifts"]
+        CLASSIFIER --> SCORE["Complexity score 0.0–1.0"]
+    end
+
+    subgraph Budget["② Token Budget Allocation"]
+        SCORE --> BUDGET_MGR["BudgetManager<br/>allocate(complexity, model_limit)"]
+        BUDGET_MGR --> TIERS["Per-tier allocation:<br/>system: 15% · memories: 30%<br/>history: 40% · tools: 15%<br/>(adjusted by complexity)"]
+    end
+
+    subgraph Retrieve["③ Tiered Retrieval"]
+        TIERS --> MEM_RETRIEVE["MemoryRetriever<br/>retrieve_within_budget()"]
+        MEM_RETRIEVE --> T_WORKING["Working memory<br/>(session-scoped, all entries)"]
+        MEM_RETRIEVE --> T_EPISODIC["Episodic memory<br/>(hybrid search, ranked)"]
+        MEM_RETRIEVE --> T_SEMANTIC["Semantic memory<br/>(key-value facts)"]
+        MEM_RETRIEVE --> T_PROCEDURAL["Procedural memory<br/>(tool success rates)"]
+        MEM_RETRIEVE --> T_RELATIONSHIP["Relationship memory<br/>(entity context)"]
+    end
+
+    subgraph Assemble["④ Context Assembly"]
+        T_WORKING & T_EPISODIC & T_SEMANTIC & T_PROCEDURAL & T_RELATIONSHIP --> BUILDER["ContextBuilder<br/>assemble(system, memories,<br/>history, tool_defs)"]
+        BUILDER --> TRIM{"Within<br/>model limit?"}
+        TRIM -->|no| PROGRESSIVE["Progressive trim:<br/>reduce history → reduce memories<br/>→ condense system prompt"]
+        PROGRESSIVE --> BUILDER
+        TRIM -->|yes| ASSEMBLED["Assembled context<br/>(L0: system, L1: memories,<br/>L2: history, L3: tools)"]
+    end
+
+    subgraph Snapshot["⑤ Snapshot Persistence"]
+        ASSEMBLED --> SNAP["SnapshotDB<br/>INSERT context_snapshots<br/>(turn_id, tier_sizes,<br/>total_tokens, complexity,<br/>trimmed_flag)"]
+        SNAP --> METRICS["Context efficiency metrics<br/>(utilization %, waste,<br/>trim frequency)"]
+    end
+```
+
+---
+
+## 13. Response Transform Pipeline Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Post-LLM response processing chain: reasoning extraction, format normalization, and content guarding before the response reaches the agent loop.
+
+```mermaid
+flowchart TD
+    subgraph Receive["① Raw Response"]
+        RAW["LlmResponse<br/>(raw provider response)"]
+        RAW --> PIPELINE["Pipeline<br/>init transform chain"]
+    end
+
+    subgraph Extract["② Reasoning Extraction"]
+        PIPELINE --> REASONING["ReasoningExtractor"]
+        REASONING --> HAS_THINKING{"Contains<br/>thinking blocks?"}
+        HAS_THINKING -->|yes| SPLIT["Split thinking from content<br/>store reasoning separately"]
+        HAS_THINKING -->|no| PASS_THROUGH["Pass through unchanged"]
+        SPLIT --> STORE_REASON["Persist reasoning<br/>(turns.thinking_content)"]
+    end
+
+    subgraph Normalize["③ Format Normalization"]
+        STORE_REASON & PASS_THROUGH --> NORMALIZER["FormatNormalizer"]
+        NORMALIZER --> STRIP_PROVIDER["Strip provider-specific<br/>metadata and wrappers"]
+        STRIP_PROVIDER --> UNIFY_TOOL["Unify tool_call format<br/>(provider → internal ToolCall)"]
+        UNIFY_TOOL --> FIX_ENCODING["Fix encoding issues<br/>(NFKC normalize, trim)"]
+    end
+
+    subgraph Guard["④ Content Guard"]
+        FIX_ENCODING --> GUARD["ContentGuard"]
+        GUARD --> PII_CHECK["PII leak scan<br/>(API keys, tokens, secrets)"]
+        PII_CHECK --> INJECT_CHECK["Injection echo check<br/>(LLM parroting attack strings)"]
+        INJECT_CHECK --> SIZE_CHECK{"Response<br/>size OK?"}
+        SIZE_CHECK -->|"exceeds max"| TRUNCATE["Truncate with indicator"]
+        SIZE_CHECK -->|ok| CLEAN["Clean output"]
+        TRUNCATE --> CLEAN
+    end
+
+    CLEAN --> OUTPUT["Cleaned response<br/>→ AgentLoop"]
+```
+
+---
+
+## 14. Streaming LLM Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Token-by-token streaming from LLM provider through SSE to the dashboard. The `StreamAccumulator` buffers deltas while the `EventBus` publishes chunks to WebSocket subscribers in real time.
+
+```mermaid
+flowchart TD
+    subgraph Init["① Stream Initialization"]
+        REQ["Request<br/>(stream: true)"]
+        REQ --> CLIENT["LlmClient<br/>forward_stream(provider, payload)"]
+        CLIENT --> HTTP2["HTTP/2 POST<br/>(Accept: text/event-stream)"]
+        HTTP2 --> PROVIDER["LLM Provider<br/>begin SSE response"]
+    end
+
+    subgraph Chunks["② SSE Chunk Processing"]
+        PROVIDER --> SSE["SseStream<br/>parse event-stream"]
+        SSE --> CHUNK_LOOP["For each SSE chunk"]
+        CHUNK_LOOP --> PARSE["Parse chunk delta<br/>(content, tool_call, usage)"]
+        PARSE --> ACCUM["Accumulator<br/>append delta to buffer<br/>track token count"]
+    end
+
+    subgraph Publish["③ Real-Time Publish"]
+        ACCUM --> BUS["EventBus<br/>publish(StreamChunk)"]
+        BUS --> WS_CLIENTS["DashboardWS<br/>broadcast to subscribers"]
+        WS_CLIENTS --> RENDER["Dashboard<br/>render token-by-token"]
+    end
+
+    subgraph Finalize["④ Stream Finalization"]
+        SSE -->|"[DONE]"| FINAL["Accumulator<br/>finalize()"]
+        FINAL --> FULL_RESP["Complete response<br/>(full text, tool_calls, usage)"]
+        FULL_RESP --> BREAKER_OK["Update circuit breaker<br/>(record_success)"]
+        FULL_RESP --> COST["Record inference_costs"]
+        FULL_RESP --> CACHE_STORE["Cache store<br/>(prompt_hash → response)"]
+        FULL_RESP --> RETURN["Return to AgentLoop"]
+    end
+
+    subgraph Error["⑤ Stream Error Handling"]
+        SSE -->|error/timeout| STREAM_ERR["Stream error"]
+        STREAM_ERR --> PARTIAL{"Partial content<br/>accumulated?"}
+        PARTIAL -->|yes| USE_PARTIAL["Return partial response<br/>with truncation flag"]
+        PARTIAL -->|no| FALLBACK["Trigger fallback<br/>provider chain"]
+    end
+```
+
+---
+
+## 15. Addressability Filter Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Determines whether an inbound message is addressed to the agent. The `FilterChain` applies OR logic across mention, reply, and conversation filters — if any filter matches, the message is dispatched.
+
+```mermaid
+flowchart TD
+    subgraph Receive["① Inbound Message"]
+        MSG["InboundMsg<br/>(channel, sender, content,<br/>metadata)"]
+        MSG --> CHAIN["FilterChain<br/>evaluate(message, config)"]
+    end
+
+    subgraph Filters["② Filter Evaluation (OR logic)"]
+        CHAIN --> MENTION["MentionFilter<br/>@mention or bot name<br/>in message text"]
+        CHAIN --> REPLY["ReplyFilter<br/>reply_to_message_id<br/>matches agent's message"]
+        CHAIN --> CONV["ConversationFilter<br/>DM or active conversation<br/>window (last N minutes)"]
+    end
+
+    subgraph Decision["③ Dispatch Decision"]
+        MENTION --> OR{"Any filter<br/>matched?"}
+        REPLY --> OR
+        CONV --> OR
+        OR -->|yes| DISPATCH["Dispatch to AgentLoop<br/>set addressability_source:<br/>mention | reply | conversation"]
+        OR -->|no| DROP["Drop message<br/>(not addressed to agent)"]
+    end
+```
+
+---
+
+## 16. Context Observatory Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Background observability pipeline that records turn-level metrics, analyzes context efficiency, assigns grades, and emits tuning recommendations.
+
+```mermaid
+flowchart TD
+    subgraph Record["① Turn Recording"]
+        TURN["Turn completed"]
+        TURN --> RECORDER["TurnRecorder<br/>capture turn metrics:<br/>tokens_in, tokens_out,<br/>tool_calls, duration_ms"]
+        RECORDER --> PERSIST_TURN["INSERT turn_observations<br/>(turn_id, metrics, timestamp)"]
+    end
+
+    subgraph Snapshot["② Context Snapshot"]
+        TURN --> CAPTURE["SnapshotCapture<br/>snapshot context state:<br/>tier sizes, utilization,<br/>memory entries used"]
+        CAPTURE --> PERSIST_SNAP["INSERT context_snapshots<br/>(turn_id, snapshot_data)"]
+    end
+
+    subgraph Analyze["③ Heuristic Analysis"]
+        PERSIST_TURN & PERSIST_SNAP --> ANALYZER["Analyzer<br/>(background task)"]
+        ANALYZER --> TOKEN_RATIO["Token efficiency:<br/>output_tokens / input_tokens"]
+        ANALYZER --> CACHE_RATE["Cache hit rate:<br/>hits / total lookups"]
+        ANALYZER --> TRIM_FREQ["Trim frequency:<br/>progressive trims / turns"]
+        ANALYZER --> TOOL_EFF["Tool efficiency:<br/>successful_calls / total_calls"]
+    end
+
+    subgraph Efficiency["④ Efficiency Metrics"]
+        TOKEN_RATIO & CACHE_RATE & TRIM_FREQ & TOOL_EFF --> ENGINE["EfficiencyEngine<br/>compute composite score"]
+        ENGINE --> TREND["Trend analysis:<br/>sliding window (last 50 turns)"]
+    end
+
+    subgraph Grade["⑤ Grading"]
+        TREND --> GRADING["GradingSystem<br/>assign grade A–F"]
+        GRADING --> STORE_GRADE["INSERT observatory_grades<br/>(session_id, grade,<br/>breakdown, timestamp)"]
+    end
+
+    subgraph Recommend["⑥ Recommendations"]
+        STORE_GRADE --> REC_ENGINE["RecommendationEngine"]
+        REC_ENGINE --> REC_BUDGET["Budget: adjust tier allocations"]
+        REC_ENGINE --> REC_CACHE["Cache: tune similarity threshold"]
+        REC_ENGINE --> REC_MODEL["Model: suggest routing changes"]
+        REC_BUDGET & REC_CACHE & REC_MODEL --> EMIT["Emit recommendations<br/>(EventBus → Dashboard)"]
+    end
+```
+
+---
+
+## 17. Plugin SDK Execution Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Plugin discovery, manifest parsing, tool registration, and sandboxed execution. Plugins extend the agent's tool surface at runtime.
+
+```mermaid
+flowchart TD
+    subgraph Discover["① Plugin Discovery"]
+        SCAN["Discovery<br/>scan plugins_dir"]
+        SCAN --> FIND["Find plugin.toml manifests"]
+        FIND --> HASH["SHA-256 content hash"]
+        HASH --> CHANGED{"Hash changed<br/>since last load?"}
+        CHANGED -->|no| SKIP["Skip (unchanged)"]
+        CHANGED -->|yes| PARSE
+    end
+
+    subgraph Parse["② Manifest Parsing"]
+        PARSE["ManifestParser<br/>parse plugin.toml"]
+        PARSE --> VALIDATE["Validate manifest:<br/>name, version, entrypoint,<br/>permissions, tool_defs"]
+        VALIDATE --> VALID{"Valid?"}
+        VALID -->|no| REJECT["Reject plugin<br/>(log parse error)"]
+        VALID -->|yes| REGISTER
+    end
+
+    subgraph Register["③ Tool Registration"]
+        REGISTER["ToolDef registration"]
+        REGISTER --> FOR_EACH["For each tool_def<br/>in manifest"]
+        FOR_EACH --> BUILD_DEF["Build ToolDefinition:<br/>name, description,<br/>parameters schema,<br/>risk_level"]
+        BUILD_DEF --> INSERT_REGISTRY["Register in ToolRegistry<br/>(prefixed: plugin.name.tool)"]
+        INSERT_REGISTRY --> UPSERT_DB["Upsert plugins table<br/>(name, version, hash,<br/>tool_count, status=active)"]
+    end
+
+    subgraph Execute["④ Plugin Execution"]
+        TOOL_CALL["AgentLoop: tool call<br/>→ plugin.name.tool"]
+        TOOL_CALL --> RUNNER["PluginRunner<br/>resolve entrypoint"]
+        RUNNER --> PERM_CHECK{"Permissions<br/>satisfied?"}
+        PERM_CHECK -->|no| DENY["Deny execution"]
+        PERM_CHECK -->|yes| SPAWN["Spawn process"]
+    end
+
+    subgraph Sandbox["⑤ Sandboxed Execution"]
+        SPAWN --> SANDBOX_APPLY["Sandbox<br/>apply restrictions"]
+        SANDBOX_APPLY --> ENV_STRIP["Strip environment<br/>(allowlist only)"]
+        ENV_STRIP --> FS_RESTRICT["Filesystem restriction<br/>(plugin dir + tmp only)"]
+        FS_RESTRICT --> NET_POLICY{"Network<br/>allowed?"}
+        NET_POLICY -->|no| NO_NET["Block outbound"]
+        NET_POLICY -->|yes| ALLOW_NET["Allow (logged)"]
+        NO_NET & ALLOW_NET --> RUN["Execute with timeout"]
+        RUN --> CAPTURE["Capture stdout/stderr"]
+        CAPTURE --> PLUGIN_RESULT["PluginResult<br/>(output, exit_code, duration)"]
+    end
+```
+
+---
+
+## 18. OAuth & Credential Resolution Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Multi-strategy credential resolution: environment variables, encrypted keystore, and OAuth token refresh with automatic rotation.
+
+```mermaid
+flowchart TD
+    subgraph Resolve["① Credential Resolution"]
+        NEED["API call requires credential<br/>(provider, service)"]
+        NEED --> STRATEGY{"Resolution<br/>strategy?"}
+    end
+
+    subgraph EnvPath["② Environment Variable"]
+        STRATEGY -->|env| ENV["EnvVar<br/>std::env::var(key)"]
+        ENV --> ENV_FOUND{"Found?"}
+        ENV_FOUND -->|yes| ENV_VAL["Use env value"]
+        ENV_FOUND -->|no| FALLBACK_KS["Fall back to Keystore"]
+    end
+
+    subgraph KeystorePath["③ Keystore Lookup"]
+        STRATEGY -->|keystore| KS_DIRECT["Keystore<br/>lookup(service, key_name)"]
+        FALLBACK_KS --> KS_DIRECT
+        KS_DIRECT --> KS_DECRYPT["Decrypt value<br/>(AES-256-GCM, master key<br/>derived from wallet)"]
+        KS_DECRYPT --> KS_FOUND{"Found &<br/>not expired?"}
+        KS_FOUND -->|yes| KS_VAL["Use keystore value"]
+        KS_FOUND -->|no| OAUTH_NEEDED["Needs OAuth refresh"]
+    end
+
+    subgraph OAuthPath["④ OAuth Token Refresh"]
+        STRATEGY -->|oauth| OAUTH_DIRECT["OAuthManager<br/>get_token(service)"]
+        OAUTH_NEEDED --> OAUTH_DIRECT
+        OAUTH_DIRECT --> TOKEN_CHECK{"Cached token<br/>still valid?"}
+        TOKEN_CHECK -->|yes| USE_CACHED["Use cached token"]
+        TOKEN_CHECK -->|no| REFRESH["OAuthManager<br/>POST /oauth/token<br/>(refresh_token grant)"]
+        REFRESH --> REFRESH_OK{"Refresh<br/>succeeded?"}
+        REFRESH_OK -->|yes| STORE_TOKEN["Store new token<br/>in Keystore<br/>(encrypted, with TTL)"]
+        STORE_TOKEN --> USE_NEW["Use new token"]
+        REFRESH_OK -->|no| AUTH_FAIL["Credential error<br/>→ surface to agent"]
+    end
+
+    subgraph Inject["⑤ Credential Injection"]
+        ENV_VAL & KS_VAL & USE_CACHED & USE_NEW --> INJECT_CRED["CredentialInjection<br/>inject into request"]
+        INJECT_CRED --> HEADER["Set Authorization header<br/>or provider-specific header"]
+        HEADER --> REDACT["Redact credential from<br/>logs and tool output"]
+    end
+```
+
+---
+
+## 19. Channel Adapter Lifecycle Dataflow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Full lifecycle of a channel adapter: initialization, message reception (webhook or polling), addressability filtering, agent dispatch, response formatting, and health monitoring with auto-reconnect.
+
+```mermaid
+flowchart TD
+    subgraph Init["① Adapter Initialization"]
+        CONFIG["Config<br/>channels.adapter.enabled"]
+        CONFIG --> ADAPTER_INIT["AdapterInit<br/>validate credentials,<br/>configure webhook/polling"]
+        ADAPTER_INIT --> MODE{"Receive mode?"}
+        MODE -->|webhook| WEBHOOK["Register webhook URL<br/>with platform API"]
+        MODE -->|polling| POLL_START["Start long-poll loop<br/>(tokio::time::interval)"]
+    end
+
+    subgraph Receive["② Message Reception"]
+        WEBHOOK --> INBOUND["Receive inbound message"]
+        POLL_START --> POLL["Poll<br/>fetch new messages<br/>since last_update_id"]
+        POLL --> INBOUND
+        INBOUND --> PARSE["Parse platform payload<br/>→ InboundMessage"]
+    end
+
+    subgraph Filter["③ Addressability Check"]
+        PARSE --> FILTER["FilterChain<br/>evaluate addressability"]
+        FILTER --> ADDRESSED{"Addressed<br/>to agent?"}
+        ADDRESSED -->|no| DROP["Drop (not for agent)"]
+        ADDRESSED -->|yes| SESSION["Lookup/create session<br/>(ironclad-db)"]
+    end
+
+    subgraph Dispatch["④ Agent Dispatch"]
+        SESSION --> AGENT_DISPATCH["AgentDispatch<br/>send to AgentLoop<br/>(mpsc channel)"]
+        AGENT_DISPATCH --> PROCESS["AgentLoop processes<br/>(ReAct cycle)"]
+        PROCESS --> AGENT_RESULT["Agent response"]
+    end
+
+    subgraph Respond["⑤ Response Delivery"]
+        AGENT_RESULT --> FORMAT["Format for platform<br/>(markdown → platform markup,<br/>split long messages)"]
+        FORMAT --> SEND["Response<br/>POST to platform API"]
+        SEND --> RATE_LIMIT{"Rate limited?"}
+        RATE_LIMIT -->|yes| BACKOFF["Exponential backoff<br/>+ retry"]
+        BACKOFF --> SEND
+        RATE_LIMIT -->|no| DELIVERED["Message delivered"]
+    end
+
+    subgraph Lifecycle["⑥ Health & Reconnect"]
+        HEALTH["Periodic health check"]
+        HEALTH --> CONNECTED{"Connection<br/>healthy?"}
+        CONNECTED -->|yes| CONTINUE["Continue"]
+        CONNECTED -->|no| RECONNECT["Reconnect<br/>(exponential backoff)"]
+        RECONNECT --> ADAPTER_INIT
+    end
+```
+
+---
+
 ## Cross-Reference Tables
 
 ### Table References
@@ -564,6 +1027,16 @@ flowchart TD
 | 7. Financial | transactions, inference_costs |
 | 8. Scheduling | cron_jobs, cron_runs, sessions |
 | 9. Skills | skills, policy_decisions |
+| 10. Approval Workflow | approval_requests, policy_decisions |
+| 11. Browser Tool | (no direct DB tables; session state in-memory) |
+| 12. Context Assembly | context_snapshots, working_memory, episodic_memory, semantic_memory, procedural_memory, relationship_memory |
+| 13. Response Transform | turns (thinking_content column) |
+| 14. Streaming LLM | inference_costs, semantic_cache |
+| 15. Addressability Filter | (no direct DB tables; filter logic in-memory) |
+| 16. Context Observatory | turn_observations, context_snapshots, observatory_grades, metric_snapshots |
+| 17. Plugin SDK | plugins, policy_decisions |
+| 18. OAuth & Credentials | (keystore encrypted on-disk, tokens in-memory) |
+| 19. Channel Adapter | sessions |
 
 Tables not referenced by any diagram: `schema_version` (infrastructure-only), `tasks`, `proxy_stats`, `identity`, `soul_history` -- these are straightforward CRUD subsystems not requiring dataflow diagrams.
 
@@ -580,6 +1053,16 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `t
 | 7. Financial | ironclad-wallet, ironclad-schedule, ironclad-agent, ironclad-core |
 | 8. Scheduling | ironclad-schedule, ironclad-agent, ironclad-db |
 | 9. Skills | ironclad-agent, ironclad-db |
+| 10. Approval Workflow | ironclad-agent, ironclad-server, ironclad-db |
+| 11. Browser Tool | ironclad-agent |
+| 12. Context Assembly | ironclad-agent, ironclad-llm, ironclad-db |
+| 13. Response Transform | ironclad-llm, ironclad-agent |
+| 14. Streaming LLM | ironclad-llm, ironclad-server |
+| 15. Addressability Filter | ironclad-channels |
+| 16. Context Observatory | ironclad-agent, ironclad-db |
+| 17. Plugin SDK | ironclad-agent, ironclad-db |
+| 18. OAuth & Credentials | ironclad-wallet, ironclad-llm |
+| 19. Channel Adapter | ironclad-channels, ironclad-agent, ironclad-db |
 
 `ironclad-server` is not dataflow-diagrammed because it is the outer shell that dispatches to channel adapters and serves the dashboard.
 
@@ -596,6 +1079,16 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `t
 | 7. Financial | yield.enabled, yield.min_deposit, yield.withdrawal_threshold, yield.protocol, treasury.minimum_reserve, treasury.per_payment_cap, treasury.hourly_transfer_limit, treasury.daily_transfer_limit, treasury.daily_inference_budget, wallet.rpc_url, wallet.path |
 | 8. Scheduling | (cron_jobs in DB, not config) |
 | 9. Skills | skills.skills_dir, skills.script_timeout_seconds, skills.script_max_output_bytes, skills.allowed_interpreters, skills.sandbox_env |
+| 10. Approval Workflow | approval.enabled, approval.timeout_seconds, approval.gated_risk_levels |
+| 11. Browser Tool | browser.enabled, browser.chrome_path, browser.max_sessions, browser.idle_timeout_seconds |
+| 12. Context Assembly | context.system_budget_pct, context.memory_budget_pct, context.history_budget_pct, context.tool_budget_pct |
+| 13. Response Transform | (pipeline stages hardcoded; no user-facing config) |
+| 14. Streaming LLM | models.stream_by_default |
+| 15. Addressability Filter | channels.addressability.mention_names, channels.addressability.conversation_window_minutes |
+| 16. Context Observatory | observatory.enabled, observatory.analysis_interval_turns, observatory.window_size |
+| 17. Plugin SDK | plugins.plugins_dir, plugins.sandbox_env, plugins.allowed_network |
+| 18. OAuth & Credentials | credentials.keystore_path, credentials.oauth_providers |
+| 19. Channel Adapter | channels.telegram.enabled, channels.whatsapp.enabled, channels.telegram.polling_interval_ms |
 
 ### Differentiator Coverage
 
@@ -619,6 +1112,18 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `t
 | Binary BLOB embedding storage | 4 |
 | HNSW ANN index (instant-distance) | 4 |
 | Content chunking with overlap | 4 |
+| Human-in-the-loop approval gating | 10 |
+| CDP browser automation | 11 |
+| Complexity-driven context assembly | 12 |
+| Response transform pipeline | 13 |
+| Token-by-token SSE streaming | 14 |
+| Multi-filter addressability (OR logic) | 15 |
+| Context observatory (grading + recommendations) | 16 |
+| Plugin SDK (sandboxed execution) | 17 |
+| Multi-strategy credential resolution | 18 |
+| Channel adapter lifecycle (health + reconnect) | 19 |
+| Hippocampus schema introspection | 4 |
+| ML model routing (ONNX alternative) | 3 |
 
 ### Error/Failure Paths
 
@@ -633,6 +1138,16 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `t
 | 7. Financial | Policy deny, insufficient balance |
 | 8. Scheduling | Lease contention (skip), error status recording |
 | 9. Skills | Unlisted interpreter reject, policy deny, script timeout, no matching skills |
+| 10. Approval Workflow | Approval timeout, admin deny |
+| 11. Browser Tool | Session timeout, CDP connect failure, max sessions exceeded |
+| 12. Context Assembly | Progressive trim (over budget), model limit exceeded |
+| 13. Response Transform | PII leak detected, injection echo detected, response truncation |
+| 14. Streaming LLM | Stream error/timeout, partial response, fallback chain |
+| 15. Addressability Filter | All filters fail (message dropped) |
+| 16. Context Observatory | (no error paths; observatory is advisory-only) |
+| 17. Plugin SDK | Invalid manifest, permission denied, sandbox timeout |
+| 18. OAuth & Credentials | Env var missing, token expired, OAuth refresh failure |
+| 19. Channel Adapter | Rate limited (backoff), connection unhealthy (reconnect) |
 
 ---
 

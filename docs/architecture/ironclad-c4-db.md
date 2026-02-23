@@ -1,3 +1,4 @@
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 # C4 Level 3: Component Diagram -- ironclad-db
 
 *Database layer providing typed CRUD operations over a single unified SQLite database (rusqlite). All tables, indexes, FTS5 virtual table `memory_fts`, and triggers are defined in `schema.rs`; migrations run from `migrations/` in version order.*
@@ -21,6 +22,10 @@ flowchart TB
         ANN["ann.rs<br/>HNSW ANN Index<br/>(instant-distance)"]
         CACHE_DB["cache.rs<br/>Semantic Cache Persistence"]
         MIGRATIONS["migrations/<br/>Versioned SQL files"]
+        HIPPOCAMPUS["hippocampus.rs<br/>Long-Term Memory<br/>Consolidation"]
+        CHECKPOINT["checkpoint.rs<br/>Session Checkpoint +<br/>Restore"]
+        BACKEND["backend.rs<br/>Storage Backend<br/>Abstraction"]
+        AGENTS["agents.rs<br/>Sub-Agent Registry +<br/>Enabled Agent CRUD"]
     end
 
     subgraph SchemaDetail ["schema.rs internals"]
@@ -79,8 +84,33 @@ flowchart TB
         SOUL["soul_history table CRUD<br/>append, get_current,<br/>get_history"]
     end
 
+    subgraph HippocampusDetail ["hippocampus.rs — Memory Consolidation"]
+        HC_CONSOLIDATE["consolidate():<br/>merge short-term episodes<br/>into long-term semantic facts"]
+        HC_DECAY["decay_old_memories():<br/>reduce importance scores<br/>over time"]
+        HC_PRUNE["prune_below_threshold():<br/>remove low-value memories"]
+    end
+
+    subgraph CheckpointDetail ["checkpoint.rs"]
+        CP_SAVE["save_checkpoint():<br/>snapshot context, memory<br/>budgets, turn index"]
+        CP_RESTORE["restore_checkpoint():<br/>reload session state<br/>from context_snapshots"]
+    end
+
+    subgraph BackendDetail ["backend.rs — Storage Abstraction"]
+        BACKEND_TRAIT["StorageBackend trait:<br/>open, execute, query"]
+        SQLITE_IMPL["SqliteBackend:<br/>rusqlite implementation"]
+    end
+
+    subgraph AgentsDetail ["agents.rs"]
+        AG_LIST["list_enabled_sub_agents()"]
+        AG_REGISTER["register_sub_agent()"]
+        AG_TOGGLE["toggle_sub_agent()"]
+    end
+
     SCHEMA --> MIGRATIONS
     SCHEMA --> CONN_POOL
+    SCHEMA --> BACKEND
+    HIPPOCAMPUS --> MEMORY
+    CHECKPOINT --> SESSIONS
 ```
 
 ## Tables Managed
@@ -115,6 +145,9 @@ flowchart TB
 | `plugins` | (schema) | Plugin manifests and permissions |
 | `embeddings` | `embeddings.rs` | source_table, source_id, embedding_blob (BLOB, ~4x smaller) + embedding_json (legacy fallback); optional HNSW ANN index via `ann.rs` |
 | `skills` | `skills.rs` | Dozens |
+| `context_snapshots` | `checkpoint.rs` | Snapshots of context state at checkpoint boundaries; used for session restore |
+| `turn_feedback` | `metrics.rs` | Per-turn user feedback (thumbs up/down, corrections, rating) |
+| `sub_agents` | `agents.rs` | Registered sub-agent configurations and enabled state |
 
 ## Dependencies
 

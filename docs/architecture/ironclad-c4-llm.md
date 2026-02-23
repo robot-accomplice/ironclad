@@ -1,3 +1,4 @@
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 # C4 Level 3: Component Diagram -- ironclad-llm
 
 *LLM client layer: HTTP client (reqwest), provider translation (UnifiedRequest/UnifiedResponse), **heuristic** complexity classification and model routing, semantic cache (in-memory HashMap with SQLite persistence), circuit breaker, deduplication, and multi-provider embedding client. No ONNX or ML models.*
@@ -18,6 +19,15 @@ flowchart TB
         CLIENT["client.rs<br/>HTTP Client Pool"]
         PROVIDER["provider.rs<br/>Provider Definitions"]
         EMBEDDING["embedding.rs<br/>Multi-Provider Embedding Client"]
+        UNIROUTE["uniroute.rs<br/>Unified Routing<br/>(ModelVector + QueryRequirements)"]
+        TIERED["tiered.rs<br/>Tiered Inference<br/>(ConfidenceEvaluator + Escalation)"]
+        ML_ROUTER["ml_router.rs<br/>Logistic Backend +<br/>Preference Collector"]
+        CASCADE["cascade.rs<br/>Cascade Optimizer<br/>(CascadeStrategy)"]
+        CAPACITY["capacity.rs<br/>CapacityTracker<br/>(TPM/RPM limits)"]
+        ACCURACY["accuracy.rs<br/>QualityTracker +<br/>Quality-Target Selection"]
+        COMPRESSION["compression.rs<br/>PromptCompressor<br/>(token estimation)"]
+        OAUTH["oauth.rs<br/>OAuthManager<br/>(token refresh)"]
+        TRANSFORM["transform.rs<br/>Request/Response<br/>Transform Pipeline"]
     end
 
     subgraph CacheDetail ["cache.rs — HashMap + SQLite Persistence"]
@@ -81,13 +91,55 @@ flowchart TB
         ADAPT_T3T4["T3/T4: passthrough"]
     end
 
+    subgraph UnirouteDetail ["uniroute.rs — Unified Model Selection"]
+        MODEL_VEC["ModelVector:<br/>capability dimensions per model"]
+        VEC_REG["ModelVectorRegistry:<br/>register, score, rank models"]
+        QUERY_REQ["QueryRequirements:<br/>context length, tool support,<br/>quality target"]
+    end
+
+    subgraph TieredDetail ["tiered.rs — Tiered Inference"]
+        CONF_EVAL["ConfidenceEvaluator:<br/>score response quality"]
+        ESCALATION["EscalationTracker:<br/>promote to higher tier<br/>on low confidence"]
+        INF_TIER["InferenceTier:<br/>Fast, Standard, Premium"]
+    end
+
+    subgraph CascadeDetail ["cascade.rs — Cascade Optimizer"]
+        CASC_STRAT["CascadeStrategy:<br/>cheapest-first, fallback chain"]
+        CASC_OUTCOME["CascadeOutcome:<br/>accepted tier + cost saved"]
+    end
+
+    subgraph CapacityDetail ["capacity.rs"]
+        CAP_REG["register(provider, tpm, rpm)"]
+        CAP_CHECK["check_capacity() / record_usage()"]
+        CAP_WINDOW["Sliding window counters<br/>(60s buckets)"]
+    end
+
+    subgraph AccuracyDetail ["accuracy.rs"]
+        QUAL_TRACK["QualityTracker:<br/>per-model EMA scoring"]
+        QUAL_SELECT["select_for_quality_target():<br/>pick model meeting accuracy floor"]
+    end
+
+    subgraph CompressionDetail ["compression.rs"]
+        COMPRESS_EST["CompressionEstimate:<br/>original vs compressed tokens"]
+        PROMPT_COMP["PromptCompressor:<br/>structural dedup,<br/>reference replacement"]
+    end
+
     CACHE -.->|"hit"| CLIENT
     CACHE -.->|"miss"| ROUTER
-    ROUTER --> CIRCUIT
+    ROUTER --> UNIROUTE
+    UNIROUTE --> TIERED
+    TIERED --> CASCADE
+    CASCADE --> CIRCUIT
     CIRCUIT --> DEDUP
     DEDUP --> FORMAT
-    FORMAT --> TIER
+    FORMAT --> TRANSFORM
+    TRANSFORM --> COMPRESSION
+    COMPRESSION --> TIER
     TIER --> CLIENT
+    ROUTER --> ML_ROUTER
+    CLIENT --> CAPACITY
+    CLIENT --> OAUTH
+    ACCURACY --> ROUTER
 ```
 
 ## Request Pipeline (in order)

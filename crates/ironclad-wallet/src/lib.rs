@@ -1,3 +1,26 @@
+//! # ironclad-wallet
+//!
+//! Ethereum wallet management for the Ironclad agent runtime. Provides HD
+//! wallet generation, on-chain balance tracking, x402 payment protocol
+//! (EIP-3009), treasury policy enforcement, and DeFi yield optimization.
+//!
+//! ## Key Types
+//!
+//! - [`WalletService`] -- Top-level facade composing wallet, treasury, and yield engine
+//! - [`Wallet`] -- HD wallet with key loading/generation
+//! - [`TreasuryPolicy`] -- Spending limits and survival-tier-aware caps
+//! - [`YieldEngine`] -- DeFi yield optimization (Aave/Compound on Base)
+//! - [`X402Handler`] -- x402 payment protocol handler
+//! - [`Money`] -- USDC amount type with formatting
+//!
+//! ## Modules
+//!
+//! - `wallet` -- Wallet loading, generation, address, balance
+//! - `treasury` -- Treasury policy engine with per-payment caps and reserves
+//! - `yield_engine` -- DeFi protocol integration for idle capital
+//! - `x402` -- EIP-3009 `transferWithAuthorization` payment flow
+//! - `money` -- USDC amount type and arithmetic
+
 pub mod money;
 pub mod treasury;
 pub mod wallet;

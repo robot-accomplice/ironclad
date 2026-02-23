@@ -357,7 +357,51 @@ Query → Local Small Model (qwen3:8b, ~100ms) → Confidence Check
 
 ---
 
-## 8. Actual Technology Choices (Ironclad)
+## 8. Context Observability & Quality Optimization
+
+### 8.1 — Context Observability Approaches
+
+**Problem**: LLM-powered agents assemble context from multiple sources (system prompt, memories, conversation history, tool results) but operators have no visibility into what's being sent, how much it costs, or whether it's effective.
+
+**Commercial solutions**:
+
+| Platform | Approach | Strengths | Weaknesses |
+| --- | --- | --- | --- |
+| **LangSmith** (LangChain) | Trace-based observability for LangChain graphs. Records every chain step, prompt, and completion. | Deep integration with LangGraph. | Python-only. Requires LangChain dependency. SaaS-only production tier. |
+| **Arize Phoenix** | Open-source LLM observability. Traces, evaluations, prompt experimentation. | Self-hostable. Language-agnostic via OTLP. | Focused on evaluation rather than real-time optimization. No cost attribution at the context-component level. |
+| **Helicone** | Proxy-based logging. Sits between the app and LLM provider to capture all requests/responses. | Zero-code integration (HTTP proxy). | Cannot inspect context assembly — only sees the final prompt. No per-component attribution. |
+| **Weights & Biases Weave** | Experiment tracking adapted for LLM workflows. | Strong visualization. Experiment comparison. | Heavy infrastructure. Not designed for production real-time monitoring. |
+| **Braintrust** | Eval framework with logging. Prompt playground and scoring. | Good eval-first workflow. | Limited cost optimization. No memory/RAG effectiveness analysis. |
+
+**Ironclad's approach** (Context Observatory, 0.5.0): Embedded analytics that decompose context at the component level — system prompt, memories, history — and attribute costs to each. Turn-level outcome grading feeds quality metrics. No external dependencies. Runs inside the single binary alongside the agent. Advantages over external tools: (1) sees context before assembly, not just the final prompt, (2) can attribute costs to specific memory tiers and RAG retrievals, (3) outcome grades directly tied to the turns that produced them, (4) zero infrastructure — no proxy, no SaaS, no separate database.
+
+### 8.2 — Prompt Efficiency Research
+
+**Token-level efficiency**: Most LLM applications waste 30-60% of input tokens on boilerplate, redundant context, and low-information memories. The key insight is that not all context tokens contribute equally to output quality.
+
+**Relevant research**:
+
+- **Lost in the Middle** (Liu et al., 2024): LLMs attend most to the beginning and end of long contexts, largely ignoring middle content. Implication: position matters more than volume. Ironclad's progressive context loading (L0-L3) addresses this by placing the most relevant content first.
+- **Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks** (Lewis et al., 2020): Foundational RAG paper showing that retrieval quality dominates generation quality. Fewer, more relevant documents outperform many marginally-relevant ones. Ironclad's hybrid search (FTS5 + vector cosine) with configurable `hybrid_weight` implements this.
+- **Anthropic's prompt caching** (`cache_control` headers): Demonstrates that static context (system prompt, tool descriptions) should be cached across turns. Ironclad's tier adaptation system applies `cache_control` for T3/T4 providers and uses structural deduplication for others.
+
+**Efficiency metrics implemented**: Output density (useful tokens / total output), budget utilization (tokens used / allocated), system prompt weight (% of input consumed by static context), wasted budget cost (monetary value of unused context slots).
+
+### 8.3 — Quality-Cost Optimization Literature
+
+**The quality-cost tradeoff**: Higher-capability models produce better outputs but cost more. The optimization challenge is finding the minimum-cost configuration that meets a quality threshold for each query type.
+
+**Key findings**:
+
+- **FrugalGPT** (Chen et al., 2023): Cascading LLM APIs with learned stopping criteria. Try cheap models first; escalate only when confidence is low. Achieves 98% quality retention at 50% cost reduction. Relevant to Ironclad's heuristic router and tiered inference pipeline.
+- **Routing to the Expert** (Ong et al., 2024): Shows that routing accuracy matters more than model capability for overall system quality. A perfect router with a mix of weak/strong models outperforms always using the strong model. Validates Ironclad's investment in routing over model upgrades.
+- **Quality Diversity in LLM Outputs** (2025): Different models excel at different task types. Code generation, creative writing, and factual QA have different optimal model selections. Ironclad's Context Observatory enables this analysis by tracking quality metrics per model per complexity level.
+
+**Ironclad's approach**: The Context Observatory provides the data infrastructure to pursue quality-cost optimization. Turn feedback + efficiency metrics + cost attribution give operators the signals needed to tune routing thresholds, adjust memory budgets, and identify which context components drive quality vs. waste tokens.
+
+---
+
+## 9. Actual Technology Choices (Ironclad)
 
 What Ironclad uses in practice:
 

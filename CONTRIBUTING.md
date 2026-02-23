@@ -161,6 +161,20 @@ just test-crate agent    # runs cargo test -p ironclad-agent
 just watch-crate agent   # re-runs on file changes
 ```
 
+## Documentation Standards
+
+### Code Documentation
+- Every new public type, trait, and function must have doc comments
+- Crate-level `//!` doc comments are required in all `lib.rs` files
+- Run `cargo doc --no-deps` and fix any warnings before submitting
+
+### Architecture Documentation
+- Every new module gets added to its crate's C4 diagram
+- Every new data flow gets a corresponding flowchart in `ironclad-dataflow.md`
+- Every new API route gets documented in `docs/API.md`
+- Every new config field gets documented in `docs/CONFIGURATION.md`
+- All architecture docs must include a `<!-- last_updated: YYYY-MM-DD, version: X.Y.Z -->` header
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).

@@ -1,3 +1,37 @@
+//! # ironclad-server
+//!
+//! Top-level binary crate that assembles all Ironclad workspace crates into a
+//! single runtime. The [`bootstrap()`] function initializes the database,
+//! wallet, LLM pipeline, agent loop, channel adapters, and background daemons,
+//! then returns an axum `Router` ready to serve.
+//!
+//! ## Key Types
+//!
+//! - [`AppState`] -- Shared application state passed to all route handlers
+//! - [`PersonalityState`] -- Loaded personality files (soul, firmware, identity)
+//! - [`EventBus`] -- Tokio broadcast channel for WebSocket event push
+//!
+//! ## Modules
+//!
+//! - `api` -- REST API mount point, `build_router()`, route modules
+//! - `auth` -- API key authentication middleware layer
+//! - `rate_limit` -- Global + per-IP rate limiting (sliding window)
+//! - `dashboard` -- Embedded SPA serving (compile-time or filesystem)
+//! - `ws` -- WebSocket upgrade and event broadcasting
+//! - `cli/` -- CLI command handlers (serve, status, sessions, memory, wallet, etc.)
+//! - `daemon` -- Daemon install, status, uninstall
+//! - `migrate/` -- Migration engine, skill import/export
+//! - `plugins` -- Plugin registry initialization and loading
+//!
+//! ## Bootstrap Sequence
+//!
+//! 1. Parse CLI → load config → init DB → load wallet → generate HMAC secret
+//! 2. Init LLM client + router + embedding → load semantic cache
+//! 3. Init agent loop + tool registry + memory retriever
+//! 4. Register channel adapters (Telegram, WhatsApp, Discord, Signal)
+//! 5. Spawn background daemons (heartbeat, cron, cache flush, ANN rebuild)
+//! 6. Build axum router with auth + CORS + rate limiting
+
 pub mod api;
 pub mod auth;
 pub mod cli;

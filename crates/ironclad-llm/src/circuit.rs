@@ -19,6 +19,9 @@ struct CircuitBreaker {
     max_cooldown: Duration,
     threshold: u32,
     window: Duration,
+    /// When true, the breaker was tripped by a credit/billing error and will
+    /// NOT auto-recover to HalfOpen. It stays Open until explicitly `reset()`.
+    credit_tripped: bool,
 }
 
 impl CircuitBreaker {
@@ -31,12 +34,16 @@ impl CircuitBreaker {
             max_cooldown: Duration::from_secs(config.max_cooldown_seconds),
             threshold: config.threshold,
             window: Duration::from_secs(config.window_seconds),
+            credit_tripped: false,
         }
     }
 
     fn effective_state(&self) -> CircuitState {
         match self.state {
             CircuitState::Open => {
+                if self.credit_tripped {
+                    return CircuitState::Open;
+                }
                 if let Some(last) = self.last_failure_at
                     && last.elapsed() >= self.cooldown
                 {
@@ -128,11 +135,10 @@ impl CircuitBreakerRegistry {
     }
 
     pub fn record_credit_error(&mut self, provider: &str) {
-        let credit_cooldown = self.config.credit_cooldown_seconds;
         let cb = self.get_or_create(provider);
         cb.state = CircuitState::Open;
         cb.last_failure_at = Some(Instant::now());
-        cb.cooldown = Duration::from_secs(credit_cooldown);
+        cb.credit_tripped = true;
     }
 
     pub fn reset(&mut self, provider: &str) {
@@ -142,6 +148,14 @@ impl CircuitBreakerRegistry {
         cb.failure_count = 0;
         cb.last_failure_at = None;
         cb.cooldown = Duration::from_secs(base_cooldown);
+        cb.credit_tripped = false;
+    }
+
+    /// Returns true if the provider's breaker was tripped by a credit/billing error.
+    pub fn is_credit_tripped(&self, provider: &str) -> bool {
+        self.breakers
+            .get(provider)
+            .is_some_and(|cb| cb.credit_tripped)
     }
 
     pub fn get_state(&self, provider: &str) -> CircuitState {
@@ -254,5 +268,56 @@ mod tests {
         reg.record_failure("openai");
         // Should be Open again with doubled cooldown (1s -> 2s)
         assert_eq!(reg.get_state("openai"), CircuitState::Open);
+    }
+
+    #[test]
+    fn credit_error_never_auto_recovers() {
+        let config = CircuitBreakerConfig {
+            threshold: 1,
+            cooldown_seconds: 0,
+            credit_cooldown_seconds: 0,
+            ..test_config()
+        };
+        let mut reg = CircuitBreakerRegistry::new(&config);
+
+        reg.record_credit_error("anthropic");
+        assert_eq!(reg.get_state("anthropic"), CircuitState::Open);
+        assert!(reg.is_credit_tripped("anthropic"));
+
+        // Even with 0s cooldown, credit-tripped breakers stay Open (no HalfOpen)
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(reg.get_state("anthropic"), CircuitState::Open);
+        assert!(reg.is_blocked("anthropic"));
+    }
+
+    #[test]
+    fn credit_error_clears_on_manual_reset() {
+        let mut reg = CircuitBreakerRegistry::new(&test_config());
+        reg.record_credit_error("anthropic");
+        assert!(reg.is_credit_tripped("anthropic"));
+        assert!(reg.is_blocked("anthropic"));
+
+        reg.reset("anthropic");
+        assert!(!reg.is_credit_tripped("anthropic"));
+        assert!(!reg.is_blocked("anthropic"));
+        assert_eq!(reg.get_state("anthropic"), CircuitState::Closed);
+    }
+
+    #[test]
+    fn transient_failure_still_auto_recovers() {
+        let config = CircuitBreakerConfig {
+            threshold: 1,
+            cooldown_seconds: 0,
+            ..test_config()
+        };
+        let mut reg = CircuitBreakerRegistry::new(&config);
+
+        reg.record_failure("openai");
+        assert!(!reg.is_credit_tripped("openai"));
+
+        // With 0s cooldown, transient failures auto-recover to HalfOpen immediately
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(reg.get_state("openai"), CircuitState::HalfOpen);
+        assert!(!reg.is_blocked("openai"));
     }
 }

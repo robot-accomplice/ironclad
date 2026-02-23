@@ -8,39 +8,21 @@
 
 Capabilities where the core code exists but isn't fully connected. High impact, low-to-medium effort.
 
-### 1.1 Streaming LLM Responses
+### 1.1 Streaming LLM Responses ✅
 
-**Current state**: `LlmClient` buffers the entire LLM response before returning it. Users see nothing until the full response arrives.
-
-**Target**: Stream tokens to the user in real-time via WebSocket and channel adapters as they arrive from the provider.
-
-**Builds on**: `ironclad-llm/client.rs` (reqwest already supports streaming), `ironclad-server/ws.rs` (EventBus broadcast), channel adapters.
-
-**Scope**: Modify `forward_request()` to return a `Stream<Item = Bytes>` instead of `Value`. Propagate through the agent loop to WebSocket subscribers and channel adapters. Handle partial-response caching (only cache on completion).
+**Status**: Implemented in 0.5.0. `POST /api/agent/message/stream` returns an SSE stream of tokens as they arrive from the provider. `forward_request()` supports streaming mode via `reqwest` byte streams. Partial responses are not cached; caching occurs only on stream completion. WebSocket subscribers receive real-time token events.
 
 ---
 
-### 1.2 Approval Workflow API
+### 1.2 Approval Workflow API ✅
 
-**Current state**: `ApprovalManager` in `ironclad-agent/approvals.rs` has full lifecycle (create request, approve, deny, timeout, cleanup) with tests. No API routes expose it.
-
-**Target**: HTTP endpoints and channel-based approval prompts so operators can approve gated tool calls from Telegram, WhatsApp, or the dashboard.
-
-**Builds on**: `ApprovalManager`, channel adapters, WebSocket push.
-
-**Scope**: Add routes (`GET /api/approvals`, `POST /api/approvals/:id/approve`, `POST /api/approvals/:id/deny`). Push pending approvals via WebSocket and optionally via Telegram/WhatsApp inline keyboards. Wire the agent loop to pause on gated tools and resume on approval.
+**Status**: Implemented in 0.5.0. Routes: `GET /api/approvals`, `POST /api/approvals/:id/approve`, `POST /api/approvals/:id/deny`. Pending approvals are pushed via WebSocket. The agent loop pauses on gated tool calls and resumes on approval or denial. `approval_requests` table tracks full lifecycle with timeout enforcement.
 
 ---
 
-### 1.3 Browser as Agent Tool
+### 1.3 Browser as Agent Tool ✅
 
-**Current state**: `ironclad-browser` is a complete CDP automation crate (navigate, click, type, screenshot, evaluate, read page). It has server REST routes. But it is not registered as a `Tool` in the agent's `ToolRegistry`, so the agent cannot use it autonomously during the ReAct loop.
-
-**Target**: The agent can autonomously decide to browse the web — research, verify information, fill forms, take screenshots.
-
-**Builds on**: `ironclad-browser` crate, `ironclad-agent/tools.rs` Tool trait.
-
-**Scope**: Implement `BrowserTool` (wraps Browser actions as Tool trait methods). Register in `ToolRegistry` under the `general` category. Policy: `RiskLevel::Caution` by default, `Dangerous` for `Evaluate` (arbitrary JS execution).
+**Status**: Implemented in 0.5.0. `BrowserTool` wraps CDP actions (navigate, click, type, screenshot, evaluate) as `Tool` trait methods. Registered in `ToolRegistry` under the `general` category. Policy: `RiskLevel::Caution` by default, `Dangerous` for `Evaluate` (arbitrary JS execution). The agent can autonomously browse the web during the ReAct loop.
 
 ---
 
@@ -109,15 +91,9 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.10 Addressability Filter
+### 1.10 Addressability Filter ✅
 
-**Current state**: Channel adapters forward all inbound messages to the agent loop without filtering. In group chats, the agent processes every message regardless of whether it was addressed to the agent — wasteful and noisy.
-
-**Target**: Configurable message filtering so the agent only processes messages directed at it in group contexts, while always responding in DMs.
-
-**Builds on**: `ChannelAdapter` trait, `InboundMessage` type, agent config.
-
-**Scope**: Introduce an `AddressabilityFilter` trait with three composable implementations: `MentionFilter` (configurable name/alias patterns — e.g., `@ironclad`, custom names), `ReplyFilter` (responds when directly replied to), and `ConversationFilter` (responds in active threads where the agent has participated). Compose via `FilterChain` — an ordered list where any match triggers dispatch. Each channel adapter applies the filter chain before forwarding to the agent loop. In DMs, the filter is bypassed (always addressed). Config: `[agent.addressability]` with `mention_names`, `respond_to_replies`, `track_threads`.
+**Status**: Implemented in 0.5.0. `AddressabilityFilter` trait with three composable implementations: `MentionFilter` (configurable name/alias patterns), `ReplyFilter` (responds when directly replied to), and `ConversationFilter` (responds in active threads). Composed via `FilterChain` — any match triggers dispatch. DMs bypass filtering. Config: `[agent.addressability]` with `mention_names`, `respond_to_replies`, `track_threads`.
 
 ---
 
@@ -133,15 +109,21 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.12 Response Transform Pipeline
+### 1.12 Response Transform Pipeline ✅
 
-**Current state**: `tier.rs` adapts requests on the input side (condensing for T1 models, preamble injection for T2). No output-side processing exists — model responses pass through verbatim, including leaked reasoning tokens (`<think>` blocks), inconsistent formatting across providers, and potential reflected injection content.
+**Status**: Implemented in 0.5.0. `ResponsePipeline` with `ResponseTransform` trait. Ships three transforms: `ReasoningExtractor` (extracts `<think>`/`<reasoning>` blocks and logs them to `turns.reasoning_trace`), `FormatNormalizer` (consistent response structure across providers), and `ContentGuard` (reflected injection defense via existing output scanning). Transforms are ordered and configurable via `[models.response_pipeline]`.
 
-**Target**: A composable, configurable pipeline that transforms LLM responses before they reach the agent loop or the user.
+---
 
-**Builds on**: `ironclad-llm/src/format.rs` (response parsing), `ironclad-agent/src/injection.rs` (output scanning), `turns` table.
+### 1.14 Context Observatory ✅
 
-**Scope**: Implement a `ResponsePipeline` with a `ResponseTransform` trait. Ship three transforms: `ReasoningExtractor` (extracts `<think>`/`<reasoning>` blocks and logs them to `turns.reasoning_trace` for observability rather than discarding — reasoning traces are valuable diagnostic data), `FormatNormalizer` (ensures consistent response structure across providers), and `ContentGuard` (scans output through the existing injection defense for reflected attacks). Transforms are ordered and configurable: `[models.response_pipeline]` lists enabled transforms. New transforms can be added by implementing the trait without modifying existing code.
+**Status**: Implemented in 0.5.0. The Context Observatory provides runtime visibility into context assembly efficiency, inference cost attribution, and output quality.
+
+**Components**:
+- `ironclad-db/efficiency.rs` — per-model efficiency analytics: output density, budget utilization, memory ROI, system prompt weight, cache hit rate, context pressure rate, cost attribution (system prompt / memories / history), wasted budget tracking
+- `turn_feedback` table — stores outcome grades (thumbs up/down + comment) per turn; feeds quality metrics with complexity breakdown and memory impact analysis
+- REST API — `GET /api/stats/efficiency`, `GET /api/recommendations`, `POST /api/recommendations/generate` (LLM-powered deep analysis)
+- Trend tracking — sliding-window detection (improving/stable/declining) for cost and quality metrics
 
 ---
 
@@ -473,15 +455,9 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ---
 
-### 3.12 Flexible Network Binding
+### 3.12 Flexible Network Binding ✅
 
-**Current state**: The server binds to a configured address (loopback by default). No support for interface-specific binding, network advertisement, or mutual TLS for non-VPN deployments.
-
-**Target**: Generalized network binding that decouples Ironclad from any specific VPN or networking product. Operators specify the interface; Ironclad binds to it.
-
-**Builds on**: `ironclad-server/src/lib.rs` (server bind), `auth.rs` (API authentication).
-
-**Scope**: Add a `[network]` config section with `bind_address`, `bind_interface`, and an optional `advertise` list. Ironclad binds to whatever interface the operator specifies — loopback (default, secure), LAN interface, Tailscale interface (`tailscale0`), WireGuard interface, or `0.0.0.0`. No vendor-specific code — the interface is just a name. For remote access, the recommended path is: bind to a VPN interface + enable API auth token. Add optional mTLS (`[network.tls]` with `cert`, `key`, `ca`) for deployments where the server is exposed to untrusted networks.
+**Status**: Implemented in 0.5.0. `[network]` config section with `bind_address`, `bind_interface`, and optional `advertise` list. Ironclad binds to whatever interface the operator specifies — loopback (default), LAN, Tailscale, WireGuard, or `0.0.0.0`. Optional mTLS via `[network.tls]` with `cert`, `key`, `ca` for untrusted network deployments.
 
 ---
 
@@ -489,18 +465,19 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 | # | Item | Tier | Builds On | Effort |
 |---|------|------|-----------|--------|
-| 1.1 | Streaming LLM responses | 1 | LLM client, WebSocket, channels | Medium |
-| 1.2 | Approval workflow API | 1 | ApprovalManager (complete) | Low |
-| 1.3 | Browser as agent tool | 1 | ironclad-browser (complete) | Low |
+| 1.1 | ~~Streaming LLM responses~~ ✅ | 1 | LLM client, WebSocket, channels | ~~Medium~~ Done |
+| 1.2 | ~~Approval workflow API~~ ✅ | 1 | ApprovalManager (complete) | ~~Low~~ Done |
+| 1.3 | ~~Browser as agent tool~~ ✅ | 1 | ironclad-browser (complete) | ~~Low~~ Done |
 | 1.4 | Discord WebSocket gateway | 1 | Discord adapter (mostly done) | Low |
 | 1.5 | ~~Embedding provider integration~~ ✅ | 1 | embeddings.rs, ProviderConfig | ~~Medium~~ Done |
 | 1.6 | Multimodal messages + voice transcription | 1 | WhatsApp media parsing, format.rs, whisper-rs | Medium |
 | 1.7 | ~~Memory-augmented agent pipeline~~ ✅ | 1 | MemoryBudgetManager, build_context, hybrid_search, 1.5 | ~~High~~ Done |
 | 1.8 | Email channel adapter | 1 | ChannelAdapter trait, OAuthManager | Medium |
 | 1.9 | Session scoping and lifecycle | 1 | sessions.rs, HeartbeatTask, compaction | Medium |
-| 1.10 | Addressability filter | 1 | ChannelAdapter trait, InboundMessage | Low |
+| 1.10 | ~~Addressability filter~~ ✅ | 1 | ChannelAdapter trait, InboundMessage | ~~Low~~ Done |
 | 1.11 | Context checkpoint | 1 | schema.rs, build_context, MemoryRetriever | Medium |
-| 1.12 | Response transform pipeline | 1 | format.rs, injection defense, turns | Low-Medium |
+| 1.12 | ~~Response transform pipeline~~ ✅ | 1 | format.rs, injection defense, turns | ~~Low-Medium~~ Done |
+| 1.14 | ~~Context Observatory~~ ✅ | 1 | efficiency.rs, turn_feedback, turns, inference_costs | Done |
 | 1.13 | Capacity-aware routing | 1 | ModelRouter, CircuitBreakerRegistry | Medium |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
@@ -526,4 +503,4 @@ Ambitious capabilities that push the architecture into new territory. High effor
 | 3.9 | Storage backend trait | 3 | ironclad-db, schema.rs | High |
 | 3.10 | Cryptographic device identity | 3 | Wallet keypairs, A2A mutual auth | High |
 | 3.11 | Agent discovery protocol | 3 | Agent card, A2A handshake, DNS-SD | Medium |
-| 3.12 | Flexible network binding | 3 | Server bind, auth.rs | Low |
+| 3.12 | ~~Flexible network binding~~ ✅ | 3 | Server bind, auth.rs | ~~Low~~ Done |

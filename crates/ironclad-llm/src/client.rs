@@ -106,8 +106,14 @@ impl LlmClient {
         body: serde_json::Value,
         auth_header: &str,
         extra_headers: &HashMap<String, String>,
-    ) -> Result<impl futures::Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>>>
-    {
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures::Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>>
+                    + Send,
+            >,
+        >,
+    > {
         debug!(url, auth_header, "forwarding streaming request to provider");
 
         let auth_value = if auth_header.eq_ignore_ascii_case("authorization") {
@@ -143,7 +149,7 @@ impl LlmClient {
             )));
         }
 
-        Ok(response.bytes_stream())
+        Ok(Box::pin(response.bytes_stream()))
     }
 }
 

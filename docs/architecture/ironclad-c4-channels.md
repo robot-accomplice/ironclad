@@ -1,3 +1,4 @@
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
 # C4 Level 3: Component Diagram -- ironclad-channels
 
 *Channel adapters for user-facing chat platforms and the zero-trust agent-to-agent (A2A) communication protocol.*
@@ -15,7 +16,11 @@ flowchart TB
         WEB["web.rs<br/>WebSocket Interface"]
         A2A["a2a.rs<br/>A2A Protocol (ECDH crypto)"]
         DELIVERY["delivery.rs<br/>Delivery / notification"]
-        DISCORD["discord.rs<br/>Discord adapter"]
+        DISCORD["discord.rs<br/>Discord Gateway +<br/>Slash Commands"]
+        SIGNAL["signal.rs<br/>Signal Protocol<br/>(signal-cli daemon)"]
+        VOICE["voice.rs<br/>Voice Channel<br/>(WebRTC / STT / TTS)"]
+        EMAIL["email.rs<br/>Email Adapter<br/>(IMAP + SMTP)"]
+        FILTER["filter.rs<br/>Addressability Filter<br/>(per-channel routing rules)"]
     end
 
     subgraph TelegramDetail ["telegram.rs"]
@@ -56,7 +61,40 @@ flowchart TB
         OUTBOUND["OutboundMessage:<br/>text, attachments,<br/>reply_to, format_hints"]
     end
 
-    TELEGRAM & WHATSAPP & WEB & A2A -.-> CHANNEL_TRAIT
+    subgraph DiscordDetail ["discord.rs — Full Gateway Integration"]
+        DC_GATEWAY["Discord Gateway:<br/>WebSocket connection,<br/>heartbeat, resume"]
+        DC_PARSE["parse_inbound():<br/>extract text, embeds,<br/>guild_id, channel_id"]
+        DC_FORMAT["format_outbound():<br/>rich embeds, components,<br/>message chunking (2000 char)"]
+        DC_SEND["send_message():<br/>POST to Discord REST API"]
+        DC_SLASH["Slash commands:<br/>register, handle interactions"]
+    end
+
+    subgraph SignalDetail ["signal.rs"]
+        SIG_DAEMON["signal-cli daemon:<br/>JSON-RPC over Unix socket"]
+        SIG_PARSE["parse_inbound():<br/>extract text, attachments,<br/>sender phone number"]
+        SIG_SEND["send_message():<br/>JSON-RPC send to recipient"]
+    end
+
+    subgraph VoiceDetail ["voice.rs"]
+        VOICE_RTC["WebRTC session:<br/>audio stream capture"]
+        VOICE_STT["STT pipeline:<br/>transcribe audio to text"]
+        VOICE_TTS["TTS pipeline:<br/>synthesize response audio"]
+    end
+
+    subgraph EmailDetail ["email.rs"]
+        EMAIL_IMAP["IMAP listener:<br/>poll inbox for new messages"]
+        EMAIL_PARSE["parse_inbound():<br/>extract subject, body,<br/>sender, attachments"]
+        EMAIL_SMTP["SMTP sender:<br/>compose and send replies"]
+    end
+
+    subgraph FilterDetail ["filter.rs — Addressability Filter"]
+        ADDR_RULES["AddressabilityRules:<br/>per-channel include/exclude,<br/>keyword triggers, mention-only"]
+        FILTER_APPLY["apply_filter():<br/>evaluate inbound message<br/>against channel rules"]
+    end
+
+    TELEGRAM & WHATSAPP & WEB & A2A & DISCORD & SIGNAL & VOICE & EMAIL -.-> CHANNEL_TRAIT
+    ROUTER --> FILTER
+    FILTER --> DELIVERY
 ```
 
 ## A2A Handshake Sequence

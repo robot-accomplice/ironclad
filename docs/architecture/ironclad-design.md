@@ -1,3 +1,5 @@
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
 # Ironclad: Architecture Design Document
 
 *Complete blueprint for a Rust-native autonomous agent runtime.*
@@ -37,13 +39,14 @@ ironclad/
 │   │       ├── embeddings.rs   # Embedding storage / lookup (BLOB + JSON)
 │   │       ├── ann.rs          # HNSW ANN index (instant-distance)
 │   │       ├── cache.rs        # Semantic cache persistence
+│   │       ├── efficiency.rs   # Context Observatory analytics (0.5.0)
 │   │       └── migrations/     # SQL migration files
 │   │
 │   ├── ironclad-llm/           # LLM client + format translation
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── client.rs       # HTTP client pool (reqwest)
+│   │       ├── client.rs       # HTTP client pool (reqwest), streaming support (0.5.0)
 │   │       ├── format.rs       # API format enums + translation
 │   │       ├── provider.rs     # Provider definitions
 │   │       ├── circuit.rs      # Circuit breaker
@@ -51,6 +54,7 @@ ironclad/
 │   │       ├── tier.rs         # Tier classification + adaptation
 │   │       ├── router.rs       # Heuristic model router
 │   │       ├── cache.rs        # Semantic cache (HashMap + SQLite persist)
+│   │       ├── transform.rs    # Response transform pipeline (0.5.0)
 │   │       └── embedding.rs    # Multi-provider embedding client
 │   │
 │   ├── ironclad-agent/         # Agent loop + tools + policy
@@ -68,6 +72,8 @@ ironclad/
 │   │       ├── skills.rs       # Skill loader, registry, executor
 │   │       ├── script_runner.rs # Sandboxed external script execution
 │   │       ├── approvals.rs    # Approval flows
+│   │       ├── addressability.rs # Group chat addressability filter (0.5.0)
+│   │       ├── browser_tool.rs # Browser as agent tool (0.5.0)
 │   │       ├── interview.rs    # Personality interview
 │   │       └── subagents.rs    # Subagent registry
 │   │
@@ -116,7 +122,7 @@ ironclad/
 │   │   │   ├── main.rs         # Entry point + CLI
 │   │   │   ├── api/
 │   │   │   │   ├── mod.rs
-│   │   │   │   └── routes/     # build_router(), admin, agent, channels, cron, health, memory, sessions, skills
+│   │   │   │   └── routes/     # build_router(), admin, agent, approvals, channels, cron, health, interview, memory, sessions, skills, subagents
 │   │   │   ├── cli/            # CLI commands (admin, wallet, schedule, memory, sessions, status, ...)
 │   │   │   ├── auth.rs          # Token-based API authentication
 │   │   │   ├── daemon.rs        # System daemon management
@@ -632,6 +638,49 @@ CREATE TABLE plugins (
     permissions_json TEXT,
     installed_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Sub-agents (child agent registry) [0.5.0]
+CREATE TABLE sub_agents (
+    name TEXT PRIMARY KEY,
+    description TEXT,
+    model TEXT,
+    capabilities TEXT,          -- JSON array of capability strings
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Context checkpoints (instant boot readiness) [0.5.0]
+CREATE TABLE context_checkpoints (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    checkpoint_json TEXT NOT NULL, -- compiled system prompt, top-k summaries, task list
+    turn_number INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Hippocampus (self-describing schema map) [0.5.0]
+CREATE TABLE hippocampus (
+    table_name TEXT PRIMARY KEY,
+    description TEXT,
+    owner TEXT NOT NULL DEFAULT 'system',
+    agent_owned INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_hippocampus_agent ON hippocampus(created_by, agent_owned);
+
+-- Turn feedback (Context Observatory outcome grading) [0.5.0]
+CREATE TABLE turn_feedback (
+    id TEXT PRIMARY KEY,
+    turn_id TEXT NOT NULL REFERENCES turns(id),
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    grade INTEGER,              -- thumbs up (1) / down (-1) / neutral (0)
+    comment TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_turn_feedback_turn ON turn_feedback(turn_id);
+CREATE INDEX idx_turn_feedback_session ON turn_feedback(session_id);
 ```
 
 ## 5. Configuration (ironclad.toml)
@@ -770,3 +819,42 @@ preferred_destination = true     # steer document output to vault
 tag_boost = 0.2                  # relevance boost for tag matches in search
 ignored_folders = [".obsidian", ".trash", ".git"]
 ```
+
+See `docs/CONFIGURATION.md` for the complete configuration reference.
+
+## 6. Context Observatory (0.5.0)
+
+The Context Observatory provides runtime analytics for understanding and optimizing context assembly, inference cost, and output quality.
+
+### Architecture
+
+```
+ironclad-db/efficiency.rs ──► EfficiencyAnalyzer
+    reads: turns, inference_costs, turn_feedback, semantic_cache
+    produces: ModelEfficiency, QualityMetrics, CostAttribution, Recommendations
+
+ironclad-server/routes/admin.rs ──► REST endpoints
+    GET  /api/stats/efficiency         → per-model efficiency breakdown
+    GET  /api/recommendations          → rule-based optimization suggestions
+    POST /api/recommendations/generate → LLM-powered deep analysis
+```
+
+### Data Model
+
+| Metric | Source | Description |
+| --- | --- | --- |
+| Output density | `turns.tokens_out` / response length | Ratio of useful tokens to total output |
+| Budget utilization | `turns.tokens_in` / allocated budget | How much of the context budget was used |
+| Memory ROI | quality w/ memory vs. without | Quantifies RAG effectiveness |
+| System prompt weight | system prompt tokens / total input | Proportion of input consumed by system prompt |
+| Cache hit rate | `inference_costs.cached` | Fraction of requests served from cache |
+| Context pressure rate | turns exceeding budget / total turns | How often context overflows |
+| Cost attribution | token breakdown | Input cost split across system prompt, memories, and history |
+| Quality metrics | `turn_feedback.grade` | Average grade, cost-per-quality-point, complexity breakdown |
+
+### Turn Feedback
+
+The `turn_feedback` table stores human outcome grades per turn:
+- **grade**: `1` (thumbs up), `-1` (thumbs down), `0` (neutral)
+- **comment**: optional free-text feedback
+- Feeds into quality metrics: average grade, grade coverage, memory impact analysis, trend detection

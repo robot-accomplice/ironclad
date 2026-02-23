@@ -8,12 +8,12 @@
 [![crates.io](https://img.shields.io/crates/v/ironclad-server.svg)](https://crates.io/crates/ironclad-server)
 [![downloads](https://img.shields.io/crates/d/ironclad-server.svg)](https://crates.io/crates/ironclad-server)
 [![docs.rs](https://docs.rs/ironclad-server/badge.svg)](https://docs.rs/ironclad-server)
-[![SQLite Tables](https://img.shields.io/badge/SQLite_tables-28-informational?logo=sqlite)](#architecture)
+[![SQLite Tables](https://img.shields.io/badge/SQLite_tables-32-informational?logo=sqlite)](#architecture)
 [![Lines of Code](https://img.shields.io/badge/lines_of_code-~32k-informational)](#architecture)
 
 **Ironclad has no cryptocurrency token. Any token using this name is unaffiliated with this project.**
 
-Ironclad is an autonomous agent runtime built in Rust as a single optimized binary. It features heuristic model routing, 3-level semantic caching with SQLite persistence, hybrid RAG retrieval (FTS5 keyword + vector cosine with optional HNSW ANN indexing), multi-provider embeddings (OpenAI/Ollama/Google with n-gram fallback), zero-trust agent-to-agent communication, 4-layer prompt injection defense, a dual-format skill system, and built-in financial management with DeFi yield optimization. All eleven crates compile into one process with no IPC overhead — inter-component communication is direct async function calls on the tokio runtime, backed by a single SQLite database (28 tables including FTS5).
+Ironclad is an autonomous agent runtime built in Rust as a single optimized binary. It features streaming LLM responses, heuristic model routing, 3-level semantic caching with SQLite persistence, hybrid RAG retrieval (FTS5 keyword + vector cosine with optional HNSW ANN indexing), multi-provider embeddings (OpenAI/Ollama/Google with n-gram fallback), zero-trust agent-to-agent communication, 4-layer prompt injection defense, a dual-format skill system, human-in-the-loop approval workflow, headless browser tool integration, Context Observatory (efficiency metrics, outcome grading, cost attribution, optimization recommendations), response transform pipeline, addressability filtering for group chats, flexible network binding, and built-in financial management with DeFi yield optimization. All eleven crates compile into one process with no IPC overhead — inter-component communication is direct async function calls on the tokio runtime, backed by a single SQLite database (32 tables including FTS5).
 
 ## Installation
 
@@ -35,7 +35,7 @@ The workspace is organized as eleven crates with a strict dependency hierarchy:
 | Crate | Purpose |
 | ------- | --------- |
 | `ironclad-core` | Shared types (`SurvivalTier`, `ApiFormat`, `ModelTier`, `RiskLevel`, `SkillKind`), unified config parsing, personality system, error types |
-| `ironclad-db` | SQLite persistence via rusqlite — 28 tables (incl. FTS5), WAL mode, migration system, embedding storage (BLOB + JSON), HNSW ANN index, semantic cache persistence |
+| `ironclad-db` | SQLite persistence via rusqlite — 32 tables (incl. FTS5), WAL mode, migration system, embedding storage (BLOB + JSON), HNSW ANN index, semantic cache persistence, efficiency analytics |
 | `ironclad-llm` | LLM client pipeline — format translation (4 API formats), circuit breaker, in-flight dedup, heuristic model router, 3-level semantic cache (persistent), tier-based prompt adaptation, multi-provider embedding client |
 | `ironclad-agent` | Agent core — ReAct loop state machine, tool system (trait-based), policy engine, 4-layer injection defense, HMAC trust boundaries, 5-tier memory system, hybrid RAG retrieval, content chunking, dual-format skill loader, sandboxed script runner, Obsidian vault integration |
 | `ironclad-wallet` | Ethereum wallet (alloy-rs), x402 payment protocol (EIP-3009), treasury policy engine, DeFi yield engine (Aave/Compound on Base) |
@@ -43,7 +43,7 @@ The workspace is organized as eleven crates with a strict dependency hierarchy:
 | `ironclad-channels` | Chat adapters (Telegram Bot API, WhatsApp Cloud API, Discord, WebSocket) + zero-trust Agent-to-Agent protocol (ECDH session keys, AES-256-GCM) |
 | `ironclad-plugin-sdk` | Plugin trait, manifest parser, script runner, plugin registry with auto-discovery and hot-reload |
 | `ironclad-browser` | Headless browser automation via Chrome DevTools Protocol (CDP) — navigate, click, type, screenshot, evaluate |
-| `ironclad-server` | HTTP API (axum, 48 routes), embedded dashboard SPA, CLI (24 commands), WebSocket push, migration engine, 13-step bootstrap |
+| `ironclad-server` | HTTP API (axum, 85 routes), embedded dashboard SPA, CLI (24 commands), WebSocket push, migration engine, 13-step bootstrap |
 | `ironclad-tests` | Integration test suite covering cross-crate workflows |
 
 ### Dependency Graph
@@ -135,7 +135,7 @@ port = 18789
 primary = "ollama/qwen3:8b"
 ```
 
-Full configuration supports 23 sections: `[agent]`, `[server]`, `[database]`, `[models]`, `[providers.*]`, `[circuit_breaker]`, `[memory]`, `[cache]`, `[treasury]`, `[yield]`, `[wallet]`, `[a2a]`, `[skills]`, `[channels.*]`, `[context]`, `[approvals]`, `[plugins]`, `[browser]`, `[daemon]`, `[update]`, `[tier_adapt]`, `[personality]`, `[obsidian]`. See `docs/architecture/ironclad-design.md` §5 for all options.
+Full configuration supports 24 sections: `[agent]`, `[server]`, `[database]`, `[models]`, `[providers.*]`, `[circuit_breaker]`, `[memory]`, `[cache]`, `[treasury]`, `[yield]`, `[wallet]`, `[a2a]`, `[skills]`, `[channels.*]`, `[context]`, `[approvals]`, `[plugins]`, `[browser]`, `[daemon]`, `[update]`, `[tier_adapt]`, `[personality]`, `[obsidian]`, `[network]`. See `docs/CONFIGURATION.md` for all options.
 
 Key configuration areas:
 
@@ -242,7 +242,7 @@ Skills are loaded from `skills.skills_dir` at boot with SHA-256 change detection
 
 ## API Reference
 
-48 REST routes + WebSocket upgrade for real-time events:
+85 REST routes + WebSocket upgrade for real-time events:
 
 | Group | Method | Path | Description |
 | ------- | -------- | ------ | ------------- |
@@ -287,6 +287,15 @@ Skills are loaded from `skills.skills_dir` at boot with SHA-256 change detection
 | **Agents** | GET | `/api/agents` | List agent instances |
 | | POST | `/api/agents/:id/start` | Start an agent |
 | | POST | `/api/agents/:id/stop` | Stop an agent |
+| **Approvals** | GET | `/api/approvals` | List approval requests |
+| | POST | `/api/approvals/:id/approve` | Approve a gated tool call |
+| | POST | `/api/approvals/:id/deny` | Deny a gated tool call |
+| **Context Observatory** | GET | `/api/stats/efficiency` | Per-model efficiency metrics (output density, cache hit rate, cost attribution) |
+| | GET | `/api/recommendations` | Optimization recommendations |
+| | POST | `/api/recommendations/generate` | Generate deep analysis with LLM-powered insights |
+| **Turns** | GET | `/api/turns/:id` | Turn detail (thinking, tool calls, tokens) |
+| | GET | `/api/turns/:id/context` | Context snapshot for a turn |
+| | GET/POST/PUT | `/api/turns/:id/feedback` | Outcome grading (thumbs up/down + comment) |
 | **Workspace** | GET | `/api/workspace/state` | Workspace file/state overview |
 | **A2A** | POST | `/api/a2a/hello` | A2A handshake initiation |
 | **Webhooks** | POST | `/api/webhooks/telegram` | Telegram webhook receiver |

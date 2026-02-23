@@ -589,6 +589,306 @@ sequenceDiagram
 
 ---
 
+## 8. Approval Workflow: Gated Tool Execution
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Temporal pause/resume flow when a tool call requires human approval. The agent loop blocks on a `oneshot` channel until an admin approves, denies, or the request times out.
+
+```mermaid
+sequenceDiagram
+    participant Agent as ironclad-agent/loop.rs
+    participant Policy as ironclad-agent/policy.rs
+    participant Approval as ApprovalManager
+    participant DB as ironclad-db
+    participant Bus as EventBus
+    participant WS as Dashboard WebSocket
+    participant Admin as Dashboard / Admin User
+
+    Agent->>Policy: evaluate tool call (risk_level = Dangerous)
+    Policy->>Approval: requires_approval(tool_name, risk_level)?
+    Approval-->>Policy: yes (gated tool)
+    Policy-->>Agent: PENDING_APPROVAL
+
+    Agent->>Approval: create_request(tool, args, context)
+    Approval->>DB: INSERT approval_requests (pending)
+    DB-->>Approval: request_id
+    Approval->>Bus: publish(ApprovalRequested { request_id, tool, summary })
+    Bus->>WS: broadcast to connected dashboard clients
+    WS->>Admin: render approval card (tool name, args, risk)
+
+    Note over Agent: Agent loop paused (tokio::sync::oneshot receiver)
+
+    alt Admin approves
+        Admin->>WS: click Approve
+        WS->>Agent: POST /api/approvals/:id/approve
+        Agent->>DB: UPDATE approval_requests SET status=approved
+        Agent->>Bus: publish(ApprovalResolved { approved: true })
+        Note over Agent: oneshot sender fires → loop resumes
+        Agent->>Agent: execute tool call
+        Agent->>Agent: continue ReAct loop
+    else Admin denies
+        Admin->>WS: click Deny (with optional reason)
+        WS->>Agent: POST /api/approvals/:id/deny
+        Agent->>DB: UPDATE approval_requests SET status=denied, reason
+        Agent->>Bus: publish(ApprovalResolved { approved: false })
+        Note over Agent: oneshot sender fires → loop resumes
+        Agent->>Agent: skip tool, include denial in context
+    else Timeout (configurable, default 5 min)
+        Note over Approval: approval_timeout_seconds exceeded
+        Approval->>DB: UPDATE approval_requests SET status=timeout
+        Approval->>Bus: publish(ApprovalResolved { approved: false, reason: timeout })
+        Note over Agent: oneshot sender fires → loop resumes
+        Agent->>Agent: skip tool, report timeout
+    end
+```
+
+---
+
+## 9. Streaming Response: Token-by-Token Flow
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+SSE streaming from LLM provider through the server to a connected client. Each chunk is parsed, accumulated, and forwarded as an SSE event.
+
+```mermaid
+sequenceDiagram
+    participant Client as Dashboard / API Client
+    participant Server as ironclad-server (axum)
+    participant LLM as ironclad-llm/client.rs
+    participant Provider as LLM Provider
+
+    Client->>Server: POST /api/chat (stream: true)
+    Server->>LLM: forward_stream(payload)
+    LLM->>Provider: HTTP/2 POST (Accept: text/event-stream)
+    Provider-->>LLM: HTTP 200 (Transfer-Encoding: chunked)
+
+    Note over LLM,Provider: SSE stream begins
+
+    loop for each SSE chunk
+        Provider-->>LLM: data: {"delta": {"content": "token"}}
+        LLM->>LLM: parse chunk, append to StreamAccumulator
+        LLM->>Server: yield StreamEvent::Delta(token)
+        Server->>Client: SSE: data: {"type":"delta","content":"token"}
+        Note over Client: render token in UI
+    end
+
+    Provider-->>LLM: data: [DONE]
+    LLM->>LLM: StreamAccumulator.finalize()
+    Note over LLM: Record usage: tokens_in, tokens_out
+    LLM->>LLM: update circuit breaker (record_success)
+    LLM->>LLM: cache store (prompt_hash → complete response)
+    LLM-->>Server: StreamEvent::Done(usage)
+    Server->>Client: SSE: data: {"type":"done","usage":{...}}
+    Note over Client: finalize rendering, show usage stats
+```
+
+---
+
+## 10. Context Observatory: Turn Recording & Analysis
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Background observability pipeline that records turn metrics and context snapshots, then periodically computes efficiency grades and tuning recommendations.
+
+```mermaid
+sequenceDiagram
+    participant Provider as LLM Provider
+    participant Loop as ironclad-agent/loop.rs
+    participant Transform as TransformPipeline
+    participant Recorder as TurnRecorder
+    participant DB as ironclad-db
+    participant Analyzer as Observatory Analyzer
+    participant Bus as EventBus
+
+    Provider-->>Loop: LLM response
+    Loop->>Transform: process response (extract reasoning, normalize)
+    Transform-->>Loop: cleaned response + metrics
+
+    Note over Loop: Foreground: deliver response to user
+
+    Loop->>Recorder: record_turn(turn_id, metrics)
+    Note over Recorder: Background task (tokio::spawn)
+
+    Recorder->>Recorder: capture: tokens_in, tokens_out, duration_ms, tool_calls, cache_hit
+    Recorder->>DB: INSERT turn_observations (metrics)
+    Recorder->>Recorder: capture context snapshot: tier_sizes, utilization, trim_count
+    Recorder->>DB: INSERT context_snapshots (snapshot_data)
+
+    Note over Analyzer: Periodic analysis (every N turns or time interval)
+
+    Analyzer->>DB: SELECT recent turn_observations + context_snapshots
+    DB-->>Analyzer: observation window (last 50 turns)
+    Analyzer->>Analyzer: compute token efficiency (output/input ratio)
+    Analyzer->>Analyzer: compute cache hit rate
+    Analyzer->>Analyzer: compute trim frequency
+    Analyzer->>Analyzer: compute tool success rate
+    Analyzer->>Analyzer: trend analysis (sliding window)
+
+    Analyzer->>Analyzer: assign grade (A–F)
+    Analyzer->>DB: INSERT observatory_grades (grade, breakdown)
+
+    Analyzer->>Analyzer: generate recommendations
+    Analyzer->>Bus: publish(ObservatoryUpdate { grade, recommendations })
+    Bus->>Bus: Dashboard subscribers receive update
+```
+
+---
+
+## 11. Outcome Grading: Multi-Channel Feedback
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Three feedback channels (dashboard, Telegram reactions, REST API) converge into a single `record_feedback()` path. The `MetricEngine` aggregates feedback by model, tool, and time window.
+
+```mermaid
+sequenceDiagram
+    participant Dashboard as Dashboard UI
+    participant Telegram as Telegram Channel
+    participant API as REST API Client
+    participant Server as ironclad-server
+    participant FeedbackDB as ironclad-db (feedback)
+    participant Metrics as MetricEngine
+
+    Note over Dashboard,Metrics: Three feedback channels converge on record_feedback()
+
+    par Dashboard feedback
+        Dashboard->>Server: POST /api/feedback { turn_id, rating: 5, comment }
+        Server->>Server: validate turn_id exists
+        Server->>FeedbackDB: INSERT outcome_feedback (source=dashboard, turn_id, rating, comment)
+    and Telegram feedback
+        Telegram->>Server: reaction emoji on agent message
+        Server->>Server: map emoji to rating (thumbs_up=5, thumbs_down=1)
+        Server->>FeedbackDB: INSERT outcome_feedback (source=telegram, turn_id, rating)
+    and API feedback
+        API->>Server: POST /api/feedback { turn_id, rating: 3, tags: ["slow"] }
+        Server->>Server: validate API key + turn ownership
+        Server->>FeedbackDB: INSERT outcome_feedback (source=api, turn_id, rating, tags)
+    end
+
+    Note over FeedbackDB: All feedback now in single table
+
+    Metrics->>FeedbackDB: SELECT outcome_feedback for session/model/tool
+    FeedbackDB-->>Metrics: feedback records
+    Metrics->>Metrics: aggregate by model (avg rating per model)
+    Metrics->>Metrics: aggregate by tool (avg rating when tool used)
+    Metrics->>Metrics: aggregate by time window (trend)
+    Metrics->>Metrics: compute outcome grade for session
+    Metrics->>FeedbackDB: UPDATE metric_snapshots (outcome_grades)
+    Note over Metrics: Feeds into model routing decisions and context observatory
+```
+
+---
+
+## 12. Network Binding: TLS Handshake & Interface Resolution
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Server startup network binding: interface resolution, TCP listener creation, optional TLS configuration with rustls, and the TLS 1.3 handshake sequence for incoming clients.
+
+```mermaid
+sequenceDiagram
+    participant Config as ironclad-core/config.rs
+    participant Resolver as InterfaceResolver
+    participant TCP as TcpListener (tokio)
+    participant TLS as TlsAcceptor (rustls)
+    participant Client as Incoming Client
+
+    Config->>Resolver: resolve(server.bind, server.port)
+    Resolver->>Resolver: parse bind address
+
+    alt bind = "0.0.0.0"
+        Resolver->>Resolver: bind all interfaces
+    else bind = specific IP
+        Resolver->>Resolver: validate interface exists
+    else bind = "localhost"
+        Resolver->>Resolver: resolve to 127.0.0.1
+    end
+
+    Resolver->>TCP: TcpListener::bind(addr:port)
+    TCP-->>Resolver: bound listener
+
+    alt TLS configured (server.tls.cert_path + key_path)
+        Resolver->>TLS: load certificate chain + private key
+        TLS->>TLS: build rustls ServerConfig
+        TLS->>TLS: set ALPN protocols (h2, http/1.1)
+        TLS-->>Resolver: TlsAcceptor ready
+
+        Note over TCP,Client: Connection with TLS
+
+        Client->>TCP: TCP connect
+        TCP-->>TLS: accept connection
+        TLS->>Client: ServerHello + certificate
+        Client->>TLS: ClientKeyExchange + Finished
+        TLS->>TLS: verify handshake
+        TLS-->>Client: Finished (TLS 1.3 established)
+        Note over TLS,Client: Encrypted HTTP/2 stream ready
+    else No TLS (development mode)
+        Note over TCP,Client: Plain HTTP connection
+        Client->>TCP: TCP connect
+        TCP-->>Resolver: accepted connection
+        Note over Resolver: Pass to axum HTTP handler directly
+    end
+```
+
+---
+
+## 13. Browser Tool: CDP Session Lifecycle
+<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+
+Full lifecycle of a Chrome DevTools Protocol session: browser launch, CDP WebSocket connect, target creation, action execution, and idle-based teardown.
+
+```mermaid
+sequenceDiagram
+    participant Agent as ironclad-agent/loop.rs
+    participant Tool as BrowserTool
+    participant Manager as BrowserManager
+    participant Chrome as Chrome Process
+    participant CDP as CdpSession (WebSocket)
+
+    Agent->>Tool: execute(browser_action { url, action, selector })
+    Tool->>Manager: get_or_create_session()
+
+    alt no active session
+        Manager->>Chrome: spawn chrome --headless --remote-debugging-port=0
+        Chrome-->>Manager: process handle + debug port
+        Manager->>CDP: WebSocket connect ws://127.0.0.1:{port}
+        CDP-->>Manager: CDP session established
+        Manager->>CDP: Target.createTarget({ url: "about:blank" })
+        CDP-->>Manager: target_id
+        Manager->>CDP: Target.attachToTarget({ targetId })
+        CDP-->>Manager: session_id
+    else active session exists
+        Manager-->>Tool: reuse existing CdpSession
+    end
+
+    Tool->>CDP: Page.navigate({ url })
+    CDP->>Chrome: navigate browser tab
+    Chrome-->>CDP: Page.loadEventFired
+    CDP-->>Tool: navigation complete
+
+    alt action = "click"
+        Tool->>CDP: DOM.querySelector({ selector })
+        CDP-->>Tool: node_id
+        Tool->>CDP: DOM.getBoxModel({ nodeId })
+        CDP-->>Tool: coordinates
+        Tool->>CDP: Input.dispatchMouseEvent({ x, y, type: "click" })
+    else action = "extract"
+        Tool->>CDP: Runtime.evaluate({ expression: extractionJS })
+        CDP-->>Tool: extracted content
+    else action = "screenshot"
+        Tool->>CDP: Page.captureScreenshot({ format: "png" })
+        CDP-->>Tool: base64 image data
+    end
+
+    Tool-->>Agent: BrowserResult { content, screenshot, timing }
+
+    Note over Manager: Idle timeout monitor (background)
+
+    opt session idle > 5 minutes
+        Manager->>CDP: close WebSocket
+        Manager->>Chrome: kill process
+        Manager->>Manager: remove from session pool
+    end
+```
+
+---
+
 ## Cross-Reference Matrix
 
 | Sequence | Related Dataflow Diagrams | Related C4 Docs | Key Tables |
@@ -600,6 +900,12 @@ sequenceDiagram
 | 5. Injection Attack Blocked | Diagram 6 (Multi-Layer Injection Defense) | ironclad-c4-agent | policy_decisions, metric_snapshots |
 | 6. Skill-Triggered Script | Diagram 9 (Skill Execution) | ironclad-c4-agent, ironclad-c4-db | skills, policy_decisions |
 | 7. Cron Lease + Execution | Diagram 8 (Cron + Heartbeat Scheduling) | ironclad-c4-schedule, ironclad-c4-db | cron_jobs, cron_runs, working_memory, episodic_memory, memory_fts |
+| 8. Approval Workflow | Diagram 10 (Approval Workflow) | ironclad-c4-agent, ironclad-c4-server | approval_requests, policy_decisions |
+| 9. Streaming Response | Diagram 14 (Streaming LLM) | ironclad-c4-llm, ironclad-c4-server | inference_costs, semantic_cache |
+| 10. Context Observatory | Diagram 16 (Context Observatory), Diagram 12 (Context Assembly) | ironclad-c4-agent, ironclad-c4-db | turn_observations, context_snapshots, observatory_grades |
+| 11. Outcome Grading | Diagram 16 (Context Observatory) | ironclad-c4-server, ironclad-c4-db | outcome_feedback, metric_snapshots |
+| 12. Network Binding | (infrastructure; no dataflow diagram) | ironclad-c4-server | (no tables; network layer) |
+| 13. Browser Tool CDP | Diagram 11 (Browser Tool Execution) | ironclad-c4-agent | (no tables; session state in-memory) |
 
 ### Embedded Sequences in C4 Docs (not duplicated here)
 
