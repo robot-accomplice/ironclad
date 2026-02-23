@@ -1,34 +1,35 @@
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Timelike};
+use std::str::FromStr;
+
+use chrono::{DateTime, Duration, NaiveDateTime};
 
 /// Pure-function scheduler for cron, interval, and at-style schedule evaluation.
 /// No DB dependency — all state is passed in as arguments.
 pub struct DurableScheduler;
 
 impl DurableScheduler {
-    /// Simplified cron evaluation: "minute hour day_of_month month day_of_week".
-    /// Supports `*` (any) and specific numeric values only.
+    /// Evaluates whether a cron expression matches the current time.
+    /// Uses standard 5-field cron syntax with full support for ranges, lists, and steps.
     pub fn evaluate_cron(cron_expr: &str, _last_run: Option<&str>, now: &str) -> bool {
         let now_dt = match parse_iso(now) {
             Some(dt) => dt,
             None => return false,
         };
 
-        let fields: Vec<&str> = cron_expr.split_whitespace().collect();
-        if fields.len() != 5 {
-            return false;
-        }
+        // The `cron` crate uses 7-field syntax: sec min hour dom month dow year
+        // Convert 5-field user syntax to 7-field by prepending "0" (seconds) and appending "*" (year)
+        let full_expr = format!("0 {cron_expr} *");
+        let schedule = match cron::Schedule::from_str(&full_expr) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
 
-        let checks: [(u32, &str); 5] = [
-            (now_dt.minute(), fields[0]),
-            (now_dt.hour(), fields[1]),
-            (now_dt.day(), fields[2]),
-            (now_dt.month(), fields[3]),
-            (now_dt.weekday().num_days_from_sunday(), fields[4]),
-        ];
-
-        checks
-            .iter()
-            .all(|(actual, pattern)| match_field(*actual, pattern))
+        let now_utc = now_dt.and_utc();
+        // Check if any occurrence falls within a 60-second window around `now`
+        let window_start = now_utc - Duration::seconds(30);
+        schedule
+            .after(&window_start)
+            .take(1)
+            .any(|t| (t - now_utc).num_seconds().abs() < 60)
     }
 
     /// Returns true if enough time has elapsed since `last_run` (or if there was no previous run).
@@ -88,8 +89,11 @@ impl DurableScheduler {
                 }
             }
             "cron" => {
-                let next = now_dt + Duration::seconds(60);
-                Some(next.and_utc().to_rfc3339())
+                let expr = schedule_expr?;
+                let full_expr = format!("0 {expr} *");
+                let schedule = cron::Schedule::from_str(&full_expr).ok()?;
+                let now_utc = now_dt.and_utc();
+                schedule.after(&now_utc).next().map(|t| t.to_rfc3339())
             }
             _ => None,
         }
@@ -101,13 +105,6 @@ fn parse_iso(s: &str) -> Option<NaiveDateTime> {
         .map(|dt| dt.naive_utc())
         .ok()
         .or_else(|| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok())
-}
-
-fn match_field(actual: u32, pattern: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    pattern.parse::<u32>() == Ok(actual)
 }
 
 #[cfg(test)]

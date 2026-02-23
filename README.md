@@ -49,36 +49,61 @@ The workspace is organized as eleven crates with a strict dependency hierarchy:
 ### Dependency Graph
 
 ```mermaid
-flowchart BT
-    CORE["ironclad-core<br/>(types, config, errors)"]
+flowchart TD
+    subgraph EntryPoints ["Entry Points"]
+        SERVER["ironclad-server<br/>(HTTP, dashboard, WS)"]
+        TESTS["ironclad-tests<br/>(integration tests)"]
+    end
 
-    DB["ironclad-db<br/>(SQLite, migrations)"]
-    LLM["ironclad-llm<br/>(client, format, routing)"]
-    CHANNELS["ironclad-channels<br/>(telegram, whatsapp, web)"]
-    PLUGIN_SDK["ironclad-plugin-sdk<br/>(plugin registry)"]
-    BROWSER["ironclad-browser<br/>(CDP automation)"]
+    subgraph Orchestration ["Orchestration"]
+        SCHED["ironclad-schedule<br/>(heartbeat, cron)"]
+    end
 
-    WALLET["ironclad-wallet<br/>(ethereum, x402, yield)"]
-    AGENT["ironclad-agent<br/>(loop, tools, policy)"]
+    subgraph DomainLogic ["Domain Logic"]
+        AGENT["ironclad-agent<br/>(loop, tools, policy)"]
+        WALLET["ironclad-wallet<br/>(ethereum, x402, yield)"]
+    end
 
-    SCHED["ironclad-schedule<br/>(heartbeat, cron)"]
+    subgraph Infrastructure ["Infrastructure"]
+        DB["ironclad-db<br/>(SQLite, migrations)"]
+        LLM["ironclad-llm<br/>(client, format, routing)"]
+        CHANNELS["ironclad-channels<br/>(telegram, whatsapp, web)"]
+        PLUGIN_SDK["ironclad-plugin-sdk<br/>(plugin registry)"]
+        BROWSER["ironclad-browser<br/>(CDP automation)"]
+    end
 
-    SERVER["ironclad-server<br/>(HTTP, dashboard, WS)"]
-    TESTS["ironclad-tests<br/>(integration tests)"]
+    subgraph Foundation ["Foundation"]
+        CORE["ironclad-core<br/>(types, config, errors)"]
+    end
+
+    SERVER --> SCHED
+    SERVER --> AGENT
+    SERVER --> WALLET
+    SERVER --> LLM
+    SERVER --> CHANNELS
+    SERVER --> PLUGIN_SDK
+    SERVER --> BROWSER
+
+    TESTS --> AGENT
+    TESTS --> LLM
+    TESTS --> DB
+
+    SCHED --> AGENT
+    SCHED --> WALLET
+    SCHED --> DB
+
+    AGENT --> DB
+    AGENT --> LLM
+
+    WALLET --> DB
 
     DB --> CORE
     LLM --> CORE
     CHANNELS --> CORE
     PLUGIN_SDK --> CORE
     BROWSER --> CORE
-
-    WALLET --> CORE & DB
-    AGENT --> CORE & DB & LLM
-
-    SCHED --> CORE & DB & AGENT & WALLET
-
-    SERVER --> CORE & DB & LLM & AGENT & SCHED & WALLET & CHANNELS & PLUGIN_SDK & BROWSER
-    TESTS --> CORE & DB & LLM & AGENT
+    WALLET --> CORE
+    AGENT --> CORE
 ```
 
 ## Quick Start

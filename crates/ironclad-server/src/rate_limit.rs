@@ -40,6 +40,11 @@ impl GlobalRateLimitLayer {
             window,
         }
     }
+
+    fn evict_stale(per_ip: &mut HashMap<IpAddr, (u64, Instant)>, window: Duration) {
+        let now = Instant::now();
+        per_ip.retain(|_, (_, start)| now.duration_since(*start) < window);
+    }
 }
 
 impl<S> Layer<S> for GlobalRateLimitLayer {
@@ -120,6 +125,7 @@ where
             if now.duration_since(guard.window_start) >= window {
                 guard.window_start = now;
                 guard.count = 0;
+                GlobalRateLimitLayer::evict_stale(&mut guard.per_ip, window);
             }
             if guard.count >= capacity {
                 return Ok(too_many_requests_response());

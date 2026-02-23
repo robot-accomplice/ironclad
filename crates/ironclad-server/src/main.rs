@@ -1336,6 +1336,27 @@ async fn cmd_serve(
 
     ironclad_server::enable_stderr_logging();
     info!("Ironclad listening on http://{bind_addr}");
+
+    let shutdown_signal = async {
+        let ctrl_c = tokio::signal::ctrl_c();
+
+        #[cfg(unix)]
+        {
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to install SIGTERM handler");
+            tokio::select! {
+                _ = ctrl_c => info!("SIGINT received, shutting down gracefully"),
+                _ = sigterm.recv() => info!("SIGTERM received, shutting down gracefully"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            ctrl_c.await.ok();
+            info!("SIGINT received, shutting down gracefully");
+        }
+    };
+
     let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
@@ -1373,8 +1394,11 @@ async fn cmd_serve(
         }
         Err(e) => return Err(e.into()),
     };
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await?;
 
+    info!("Server shut down");
     Ok(())
 }
 

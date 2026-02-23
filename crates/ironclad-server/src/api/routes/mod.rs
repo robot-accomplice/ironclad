@@ -136,6 +136,7 @@ pub struct InterviewSession {
     pub history: Vec<ironclad_llm::format::UnifiedMessage>,
     pub awaiting_confirmation: bool,
     pub pending_output: Option<ironclad_core::personality::InterviewOutput>,
+    pub created_at: std::time::Instant,
 }
 
 impl Default for InterviewSession {
@@ -154,6 +155,7 @@ impl InterviewSession {
             }],
             awaiting_confirmation: false,
             pending_output: None,
+            created_at: std::time::Instant::now(),
         }
     }
 }
