@@ -213,9 +213,10 @@ impl AppState {
 pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, agent_card, breaker_reset, breaker_status, browser_action, browser_start,
-        browser_status, browser_stop, change_agent_model, execute_plugin_tool, get_agents,
-        get_cache_stats, get_config, get_costs, get_plugins, get_transactions, roster, start_agent,
-        stop_agent, toggle_plugin, update_config, wallet_address, wallet_balance, workspace_state,
+        browser_status, browser_stop, change_agent_model, delete_provider_key, execute_plugin_tool,
+        get_agents, get_cache_stats, get_config, get_costs, get_plugins, get_transactions, roster,
+        set_provider_key, start_agent, stop_agent, toggle_plugin, update_config, wallet_address,
+        wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_status};
     use channels::{
@@ -240,6 +241,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/.well-known/agent.json", get(agent_card))
         .route("/api/health", get(health))
         .route("/api/config", get(get_config).put(update_config))
+        .route(
+            "/api/providers/{name}/key",
+            put(set_provider_key).delete(delete_provider_key),
+        )
         .route("/api/logs", get(get_logs))
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/sessions/backfill-nicknames", post(backfill_nicknames))

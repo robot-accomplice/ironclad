@@ -14,6 +14,79 @@ use ironclad_core::{InputAuthority, IroncladConfig, PolicyDecision, RiskLevel, S
 
 use super::{AppState, internal_err};
 
+// ── Key resolution helper ────────────────────────────────────
+
+/// Resolve an API key for a provider using a priority cascade:
+///   1. OAuth token (if auth_mode == "oauth")
+///   2. Explicit keystore ref (api_key_ref = "keystore:name")
+///   3. Conventional keystore name ({provider_name}_api_key)
+///   4. Environment variable (api_key_env)
+pub(crate) async fn resolve_provider_key(
+    provider_name: &str,
+    auth_mode: &str,
+    api_key_ref: Option<&str>,
+    api_key_env: &str,
+    oauth: &ironclad_llm::OAuthManager,
+    keystore: &ironclad_core::keystore::Keystore,
+) -> String {
+    if auth_mode == "oauth" {
+        return oauth.resolve_token(provider_name).await.unwrap_or_default();
+    }
+
+    if let Some(ks_name) = api_key_ref.and_then(|r| r.strip_prefix("keystore:"))
+        && let Some(val) = keystore.get(ks_name)
+    {
+        return val;
+    }
+
+    let conventional = format!("{provider_name}_api_key");
+    if let Some(val) = keystore.get(&conventional)
+        && !val.is_empty()
+    {
+        return val;
+    }
+
+    std::env::var(api_key_env).unwrap_or_default()
+}
+
+/// Check whether a key is present for a provider, returning (status, source).
+pub(crate) fn check_key_status(
+    provider_name: &str,
+    is_local: bool,
+    api_key_ref: Option<&str>,
+    api_key_env: Option<&str>,
+    auth_mode: Option<&str>,
+    keystore: &ironclad_core::keystore::Keystore,
+) -> (&'static str, &'static str) {
+    if is_local {
+        return ("not_required", "local");
+    }
+
+    if auth_mode.is_some_and(|m| m == "oauth") {
+        return ("configured", "oauth");
+    }
+
+    if let Some(ks_name) = api_key_ref.and_then(|r| r.strip_prefix("keystore:"))
+        && keystore.get(ks_name).is_some()
+    {
+        return ("configured", "keystore");
+    }
+
+    let conventional = format!("{provider_name}_api_key");
+    if keystore.get(&conventional).is_some_and(|v| !v.is_empty()) {
+        return ("configured", "keystore");
+    }
+
+    if api_key_env
+        .map(|env_name| std::env::var(env_name).is_ok())
+        .unwrap_or(false)
+    {
+        return ("configured", "env");
+    }
+
+    ("missing", "none")
+}
+
 // ── Approval management routes ───────────────────────────────
 
 pub async fn list_approvals(State(state): State<AppState>) -> impl IntoResponse {
@@ -138,52 +211,18 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
         for (name, provider) in obj.iter_mut() {
             if let Some(p) = provider.as_object_mut() {
                 let is_local = p.get("is_local").and_then(|v| v.as_bool()).unwrap_or(false);
+                let api_key_ref = p.get("api_key_ref").and_then(|v| v.as_str());
+                let api_key_env = p.get("api_key_env").and_then(|v| v.as_str());
+                let auth_mode = p.get("auth_mode").and_then(|v| v.as_str());
 
-                let key_status = if is_local {
-                    "not_required"
-                } else {
-                    let has_env = p
-                        .get("api_key_env")
-                        .and_then(|v| v.as_str())
-                        .map(|env_name| std::env::var(env_name).is_ok())
-                        .unwrap_or(false);
-
-                    let has_keystore = p
-                        .get("api_key_ref")
-                        .and_then(|v| v.as_str())
-                        .and_then(|r| r.strip_prefix("keystore:"))
-                        .map(|ks_key| state.keystore.get(ks_key).is_some())
-                        .unwrap_or(false);
-
-                    let has_oauth = p
-                        .get("auth_mode")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|m| m == "oauth");
-
-                    if has_env || has_keystore || has_oauth {
-                        "configured"
-                    } else {
-                        "missing"
-                    }
-                };
-
-                let key_source = if is_local {
-                    "local"
-                } else if p
-                    .get("api_key_ref")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|r| r.starts_with("keystore:"))
-                {
-                    "keystore"
-                } else if p
-                    .get("auth_mode")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|m| m == "oauth")
-                {
-                    "oauth"
-                } else {
-                    "env"
-                };
+                let (key_status, key_source) = check_key_status(
+                    name,
+                    is_local,
+                    api_key_ref,
+                    api_key_env,
+                    auth_mode,
+                    &state.keystore,
+                );
 
                 p.insert("_key_status".into(), json!(key_status));
                 p.insert("_key_source".into(), json!(key_source));
@@ -910,6 +949,72 @@ pub async fn a2a_hello(
         "status": "ok",
         "peer_did": peer_did,
         "hello": our_hello,
+    })))
+}
+
+// ── Keystore / provider key management ───────────────────────
+
+#[derive(Deserialize)]
+pub struct SetProviderKeyRequest {
+    pub api_key: String,
+}
+
+pub async fn set_provider_key(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    axum::Json(body): axum::Json<SetProviderKeyRequest>,
+) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+    let key = body.api_key.trim();
+    if key.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "api_key cannot be empty".into()));
+    }
+
+    let config = state.config.read().await;
+    if !config.providers.contains_key(&name) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("provider '{name}' not found in config"),
+        ));
+    }
+    drop(config);
+
+    let ks_name = format!("{name}_api_key");
+    state.keystore.set(&ks_name, key).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("keystore error: {e}"),
+        )
+    })?;
+
+    tracing::info!(provider = %name, keystore_entry = %ks_name, "API key stored in keystore via dashboard");
+
+    Ok(axum::Json(json!({
+        "stored": true,
+        "provider": name,
+        "keystore_entry": ks_name,
+    })))
+}
+
+pub async fn delete_provider_key(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+    let ks_name = format!("{name}_api_key");
+    let removed = state.keystore.remove(&ks_name).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("keystore error: {e}"),
+        )
+    })?;
+
+    if removed {
+        tracing::info!(provider = %name, keystore_entry = %ks_name, "API key removed from keystore via dashboard");
+    }
+
+    Ok(axum::Json(json!({
+        "removed": removed,
+        "provider": name,
+        "keystore_entry": ks_name,
     })))
 }
 
