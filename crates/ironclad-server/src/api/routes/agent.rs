@@ -953,9 +953,19 @@ async fn infer_with_fallback(
                 });
             }
             Err(e) => {
-                tracing::warn!(model, error = %e, "inference failed, trying next fallback");
+                let is_credit = e.is_credit_error();
+                tracing::warn!(
+                    model,
+                    error = %e,
+                    is_credit,
+                    "inference failed, trying next fallback"
+                );
                 let mut llm = state.llm.write().await;
-                llm.breakers.record_failure(&provider_prefix);
+                if is_credit {
+                    llm.breakers.record_credit_error(&provider_prefix);
+                } else {
+                    llm.breakers.record_failure(&provider_prefix);
+                }
                 drop(llm);
                 last_error = e.to_string();
             }

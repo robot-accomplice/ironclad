@@ -57,6 +57,24 @@ impl From<serde_json::Error> for IroncladError {
     }
 }
 
+impl IroncladError {
+    /// Returns `true` when the error indicates a credit, billing, or
+    /// quota-exhaustion problem that won't resolve by retrying quickly.
+    pub fn is_credit_error(&self) -> bool {
+        let msg = match self {
+            Self::Llm(m) | Self::Network(m) => m,
+            _ => return false,
+        };
+        let lower = msg.to_ascii_lowercase();
+        lower.contains("402 payment required")
+            || (lower.contains("credit") && lower.contains("rate_limit"))
+            || (lower.contains("credit") && lower.contains("circuit breaker"))
+            || lower.contains("billing")
+            || lower.contains("insufficient_quota")
+            || lower.contains("exceeded your current quota")
+    }
+}
+
 pub type Result<T> = std::result::Result<T, IroncladError>;
 
 #[cfg(test)]
@@ -159,5 +177,67 @@ mod tests {
 
         let err: Result<i32> = Err(IroncladError::Config("test".into()));
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn is_credit_error_detects_proxy_circuit_breaker() {
+        let err = IroncladError::Llm(
+            r#"provider returned 429 Too Many Requests: {"error": {"message": "Rate limited — proxy circuit breaker for anthropic (credit)", "type": "rate_limit_error"}}"#.into(),
+        );
+        assert!(err.is_credit_error());
+    }
+
+    #[test]
+    fn is_credit_error_detects_402() {
+        let err = IroncladError::Llm(
+            "provider returned 402 Payment Required: insufficient credits".into(),
+        );
+        assert!(err.is_credit_error());
+    }
+
+    #[test]
+    fn is_credit_error_detects_billing() {
+        let err = IroncladError::Llm(
+            r#"provider returned 403: {"error": {"message": "Your billing account is inactive"}}"#.into(),
+        );
+        assert!(err.is_credit_error());
+    }
+
+    #[test]
+    fn is_credit_error_detects_quota_exhaustion() {
+        let err = IroncladError::Llm(
+            r#"provider returned 429: {"error": {"message": "You exceeded your current quota"}}"#.into(),
+        );
+        assert!(err.is_credit_error());
+    }
+
+    #[test]
+    fn is_credit_error_detects_insufficient_quota() {
+        let err = IroncladError::Llm(
+            r#"provider returned 429: {"error": {"type": "insufficient_quota"}}"#.into(),
+        );
+        assert!(err.is_credit_error());
+    }
+
+    #[test]
+    fn is_credit_error_false_for_transient_rate_limit() {
+        let err = IroncladError::Llm(
+            "provider returned 429 Too Many Requests: rate limited, try again".into(),
+        );
+        assert!(!err.is_credit_error());
+    }
+
+    #[test]
+    fn is_credit_error_false_for_non_llm_variants() {
+        let err = IroncladError::Config("credit billing".into());
+        assert!(!err.is_credit_error());
+    }
+
+    #[test]
+    fn is_credit_error_works_on_network_variant() {
+        let err = IroncladError::Network(
+            "provider returned 402 Payment Required: no credits".into(),
+        );
+        assert!(err.is_credit_error());
     }
 }

@@ -832,7 +832,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Daemon(sub)) => match sub {
             DaemonCmd::Install { config, start } => {
                 let binary = std::env::current_exe()?.to_string_lossy().to_string();
-                let path = ironclad_server::daemon::install_daemon(&binary, &config, 18789)?;
+                let abs_config = std::path::Path::new(&config)
+                    .canonicalize()
+                    .or_else(|_| {
+                        let home = std::env::var("HOME").unwrap_or_default();
+                        let home_cfg =
+                            std::path::PathBuf::from(home).join(".ironclad").join(&config);
+                        home_cfg.canonicalize()
+                    })
+                    .map_err(|_| {
+                        ironclad_core::IroncladError::Config(format!(
+                            "config file not found: {config}"
+                        ))
+                    })?;
+                let path = ironclad_server::daemon::install_daemon(
+                    &binary,
+                    &abs_config.to_string_lossy(),
+                    18789,
+                )?;
                 eprintln!("  Daemon installed: {}", path.display());
 
                 let should_start =
@@ -1391,6 +1408,7 @@ async fn cmd_serve(
     step_detail(t, "active", &channels.join(", "));
 
     let bind_addr = format!("{}:{}", config.server.bind, config.server.port);
+
     step(t, 12, STEPS, "HTTP server starting");
     step_detail(t, "bind", &bind_addr);
     step_detail(t, "dashboard", &format!("http://{bind_addr}"));
