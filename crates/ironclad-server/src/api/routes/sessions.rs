@@ -110,11 +110,23 @@ pub async fn list_messages(
     }
 }
 
+const ALLOWED_ROLES: &[&str] = &["user", "assistant"];
+
 pub async fn post_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
     axum::Json(body): axum::Json<PostMessageRequest>,
 ) -> impl IntoResponse {
+    if !ALLOWED_ROLES.contains(&body.role.as_str()) {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            format!(
+                "invalid role '{}': must be one of {:?}",
+                body.role, ALLOWED_ROLES
+            ),
+        ));
+    }
+
     match ironclad_db::sessions::append_message(&state.db, &id, &body.role, &body.content) {
         Ok(msg_id) => Ok(axum::Json(serde_json::json!({ "message_id": msg_id }))),
         Err(e) => Err(internal_err(&e)),

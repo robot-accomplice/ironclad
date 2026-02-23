@@ -396,13 +396,70 @@ audit:
 deps:
     cargo tree --workspace --depth 1
 
+# ── Release ────────────────────────────────────────────
+
+# Validate versions and changelog before tagging a release
+release-preflight:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ws_ver=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    echo "Workspace version: $ws_ver"
+
+    # Check all crates resolve to the same version
+    server_ver=$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
+      | jq -r '.packages[] | select(.name == "ironclad-server") | .version')
+    if [ "$server_ver" != "$ws_ver" ]; then
+        echo "✘ ironclad-server version ($server_ver) does not match workspace ($ws_ver)"
+        exit 1
+    fi
+    echo "✔ All crate versions match: $ws_ver"
+
+    # Check CHANGELOG entry exists
+    if ! grep -q "## \[$ws_ver\]" CHANGELOG.md; then
+        echo "✘ No CHANGELOG.md entry for $ws_ver"
+        exit 1
+    fi
+    echo "✔ CHANGELOG.md entry found"
+
+    # Check tag doesn't already exist
+    if git rev-parse "v$ws_ver" >/dev/null 2>&1; then
+        echo "✘ Tag v$ws_ver already exists"
+        exit 1
+    fi
+    echo "✔ Tag v$ws_ver is available"
+
+    echo ""
+    echo "Ready to release: v$ws_ver"
+    echo "  Run: just release-tag"
+
+# Create and push a release tag (triggers the release workflow)
+release-tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ver=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    just release-preflight
+    echo ""
+    read -p "Tag and push v$ver? [y/N] " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 0
+    fi
+    git tag -a "v$ver" -m "Release v$ver"
+    git push origin "v$ver"
+    echo ""
+    echo "✔ Tagged and pushed v$ver"
+    echo "  Monitor: https://github.com/robot-accomplice/ironclad/actions"
+
 # ── Git Hooks ──────────────────────────────────────────
 
-# Install git hooks (pre-push runs full CI gate before push)
+# Install git hooks (pre-commit for format, pre-push for full CI gate)
 install-hooks:
+    cp hooks/pre-commit .git/hooks/pre-commit
+    chmod +x .git/hooks/pre-commit
     cp hooks/pre-push .git/hooks/pre-push
     chmod +x .git/hooks/pre-push
-    @echo "✔ Installed pre-push hook (runs: just ci-test with mandatory coverage gates)"
+    @echo "✔ Installed pre-commit hook (format check) and pre-push hook (full CI gate)"
 
 # ── Install Dev Tools ──────────────────────────────────
 

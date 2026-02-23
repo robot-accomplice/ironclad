@@ -1211,7 +1211,15 @@ async fn cmd_serve(
 
     const STEPS: u32 = 12;
 
-    let mut config = match config_path {
+    let resolved_path = config_path.or_else(|| {
+        let home = std::env::var("HOME").ok()?;
+        let home_config = Path::new(&home).join(".ironclad").join("ironclad.toml");
+        home_config
+            .exists()
+            .then(|| home_config.to_string_lossy().into_owned())
+    });
+
+    let mut config = match resolved_path {
         Some(ref p) => {
             step(t, 1, STEPS, "Loading configuration");
             step_detail(t, "source", p);
@@ -1314,6 +1322,12 @@ async fn cmd_serve(
     if config.channels.whatsapp.is_some() {
         channels.push("whatsapp");
     }
+    if config.channels.discord.is_some() {
+        channels.push("discord");
+    }
+    if config.channels.signal.is_some() {
+        channels.push("signal");
+    }
     if config.a2a.enabled {
         channels.push("a2a");
     }
@@ -1334,8 +1348,31 @@ async fn cmd_serve(
     eprintln!();
     eprintln!();
 
-    ironclad_server::enable_stderr_logging();
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        ironclad_server::enable_stderr_logging();
+    }
     info!("Ironclad listening on http://{bind_addr}");
+
+    let shutdown_signal = async {
+        let ctrl_c = tokio::signal::ctrl_c();
+
+        #[cfg(unix)]
+        {
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to install SIGTERM handler");
+            tokio::select! {
+                _ = ctrl_c => info!("SIGINT received, shutting down gracefully"),
+                _ = sigterm.recv() => info!("SIGTERM received, shutting down gracefully"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            ctrl_c.await.ok();
+            info!("SIGINT received, shutting down gracefully");
+        }
+    };
+
     let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
@@ -1373,8 +1410,11 @@ async fn cmd_serve(
         }
         Err(e) => return Err(e.into()),
     };
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await?;
 
+    info!("Server shut down");
     Ok(())
 }
 

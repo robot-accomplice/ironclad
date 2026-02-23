@@ -281,100 +281,13 @@ pub async fn agent_message(
     drop(personality);
     drop(config);
 
-    // Check circuit breaker
-    let breaker_blocked = {
+    // Resolve tier for message adaptation
+    let tier = {
         let llm = state.llm.read().await;
-        llm.breakers.is_blocked(&provider_prefix)
-    };
-    if breaker_blocked {
-        let assistant_content = format!(
-            "I'm temporarily unable to reach the {} provider (circuit breaker open). Please try again shortly.",
-            provider_prefix
-        );
-        let asst_id = ironclad_db::sessions::append_message(
-            &state.db,
-            &session_id,
-            "assistant",
-            &assistant_content,
-        )
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": e.to_string()})),
-            )
-        })?;
-        {
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-        }
-        return Ok(axum::Json(json!({
-            "session_id": session_id,
-            "nickname": session_nickname,
-            "user_message_id": user_msg_id,
-            "assistant_message_id": asst_id,
-            "content": assistant_content,
-            "model": model,
-            "cached": false,
-            "provider_blocked": true,
-        })));
-    }
-
-    // Resolve provider from registry (config-driven, format-agnostic)
-    let (
-        provider_url,
-        api_key,
-        auth_header,
-        extra_headers,
-        format,
-        cost_in_rate,
-        cost_out_rate,
-        tier,
-    ) = {
-        let llm = state.llm.read().await;
-        match llm.providers.get_by_model(&model) {
-            Some(provider) => {
-                let url = format!("{}{}", provider.url, provider.chat_path);
-                let key = if provider.auth_mode == "oauth" {
-                    state
-                        .oauth
-                        .resolve_token(&provider.name)
-                        .await
-                        .unwrap_or_default()
-                } else if let Some(ref key_ref) = provider.api_key_ref {
-                    if let Some(name) = key_ref.strip_prefix("keystore:") {
-                        state.keystore.get(name).unwrap_or_default()
-                    } else {
-                        std::env::var(&provider.api_key_env).unwrap_or_default()
-                    }
-                } else {
-                    std::env::var(&provider.api_key_env).unwrap_or_default()
-                };
-                (
-                    Some(url),
-                    key,
-                    provider.auth_header.clone(),
-                    provider.extra_headers.clone(),
-                    provider.format,
-                    provider.cost_per_input_token,
-                    provider.cost_per_output_token,
-                    provider.tier,
-                )
-            }
-            None => {
-                let key = std::env::var(format!("{}_API_KEY", provider_prefix.to_uppercase()))
-                    .unwrap_or_default();
-                (
-                    None,
-                    key,
-                    "Authorization".to_string(),
-                    std::collections::HashMap::new(),
-                    ironclad_core::ApiFormat::OpenAiCompletions,
-                    0.0,
-                    0.0,
-                    ironclad_llm::tier::classify(&model),
-                )
-            }
-        }
+        llm.providers
+            .get_by_model(&model)
+            .map(|p| p.tier)
+            .unwrap_or_else(|| ironclad_llm::tier::classify(&model))
     };
 
     // Generate query embedding for RAG retrieval and cache L2 lookup
@@ -530,52 +443,25 @@ pub async fn agent_message(
         quality_target: None,
     };
 
-    let (assistant_content, tokens_in, tokens_out, cost) = match provider_url {
-        Some(ref url) => {
-            let llm_body = ironclad_llm::format::translate_request(&unified_req, format)
-                .unwrap_or_else(|_| serde_json::json!({}));
-
-            let llm = state.llm.read().await;
-            match llm
-                .client
-                .forward_with_provider(url, &api_key, llm_body, &auth_header, &extra_headers)
-                .await
-            {
-                Ok(resp) => {
-                    let unified_resp = ironclad_llm::format::translate_response(&resp, format)
-                        .unwrap_or_else(|_| ironclad_llm::format::UnifiedResponse {
-                            content: "(no response)".into(),
-                            model: model.clone(),
-                            tokens_in: 0,
-                            tokens_out: 0,
-                            finish_reason: None,
-                        });
-                    let tin = unified_resp.tokens_in as i64;
-                    let tout = unified_resp.tokens_out as i64;
-                    let cost = estimate_cost_from_provider(cost_in_rate, cost_out_rate, tin, tout);
-                    drop(llm);
-                    let mut llm = state.llm.write().await;
-                    llm.breakers.record_success(&provider_prefix);
-                    (unified_resp.content, tin, tout, cost)
-                }
-                Err(e) => {
-                    drop(llm);
-                    let mut llm = state.llm.write().await;
-                    llm.breakers.record_failure(&provider_prefix);
-                    let fallback = format!(
-                        "I encountered an error reaching the LLM provider: {}. Your message has been stored and I'll retry when the provider is available.",
-                        e
-                    );
-                    (fallback, 0, 0, 0.0)
-                }
-            }
-        }
-        None => {
-            let fallback = format!(
-                "No provider configured for '{}'. Configure a provider in ironclad.toml under [providers.{}].",
-                provider_prefix, provider_prefix
+    let (assistant_content, tokens_in, tokens_out, cost) = match infer_with_fallback(
+        &state,
+        &unified_req,
+        &model,
+    )
+    .await
+    {
+        Ok(result) => (
+            result.content,
+            result.tokens_in,
+            result.tokens_out,
+            result.cost,
+        ),
+        Err(last_error) => {
+            let fallback_msg = format!(
+                "I encountered an error reaching all LLM providers: {}. Your message has been stored and I'll retry when a provider is available.",
+                last_error
             );
-            (fallback, 0, 0, 0.0)
+            (fallback_msg, 0, 0, 0.0)
         }
     };
 
@@ -669,55 +555,14 @@ pub async fn agent_message(
                 quality_target: None,
             };
 
-            let follow_content = match &provider_url {
-                Some(url) => {
-                    let follow_body = ironclad_llm::format::translate_request(&follow_req, format)
-                        .unwrap_or_else(|_| serde_json::json!({}));
-
-                    let llm = state.llm.read().await;
-                    match llm
-                        .client
-                        .forward_with_provider(
-                            url,
-                            &api_key,
-                            follow_body,
-                            &auth_header,
-                            &extra_headers,
-                        )
-                        .await
-                    {
-                        Ok(resp) => {
-                            let unified_resp =
-                                ironclad_llm::format::translate_response(&resp, format)
-                                    .unwrap_or_else(|_| ironclad_llm::format::UnifiedResponse {
-                                        content: "(no response)".into(),
-                                        model: model.clone(),
-                                        tokens_in: 0,
-                                        tokens_out: 0,
-                                        finish_reason: None,
-                                    });
-                            total_tokens_in += unified_resp.tokens_in as i64;
-                            total_tokens_out += unified_resp.tokens_out as i64;
-                            total_cost += estimate_cost_from_provider(
-                                cost_in_rate,
-                                cost_out_rate,
-                                unified_resp.tokens_in as i64,
-                                unified_resp.tokens_out as i64,
-                            );
-                            drop(llm);
-                            let mut llm = state.llm.write().await;
-                            llm.breakers.record_success(&provider_prefix);
-                            unified_resp.content
-                        }
-                        Err(e) => {
-                            drop(llm);
-                            let mut llm = state.llm.write().await;
-                            llm.breakers.record_failure(&provider_prefix);
-                            format!("LLM follow-up error: {e}")
-                        }
-                    }
+            let follow_content = match infer_with_fallback(&state, &follow_req, &model).await {
+                Ok(result) => {
+                    total_tokens_in += result.tokens_in;
+                    total_tokens_out += result.tokens_out;
+                    total_cost += result.cost;
+                    result.content
                 }
-                None => break,
+                Err(e) => format!("LLM follow-up error: {e}"),
             };
 
             react_messages.push(ironclad_llm::format::UnifiedMessage {
@@ -978,6 +823,276 @@ async fn refine_session_nickname(
     Ok(())
 }
 
+struct InferenceResult {
+    content: String,
+    model: String,
+    provider: String,
+    tokens_in: i64,
+    tokens_out: i64,
+    cost: f64,
+}
+
+/// Attempt inference on the selected model, falling back through the configured
+/// chain on transient errors. Updates circuit breakers on success/failure.
+async fn infer_with_fallback(
+    state: &AppState,
+    unified_req: &ironclad_llm::format::UnifiedRequest,
+    initial_model: &str,
+) -> Result<InferenceResult, String> {
+    let config = state.config.read().await;
+    let mut candidates = vec![initial_model.to_string()];
+    for fb in &config.models.fallbacks {
+        if fb != initial_model {
+            candidates.push(fb.clone());
+        }
+    }
+    drop(config);
+
+    let mut last_error = String::new();
+
+    for model in &candidates {
+        let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
+
+        // Skip if circuit breaker is open
+        {
+            let llm = state.llm.read().await;
+            if llm.breakers.is_blocked(&provider_prefix) {
+                tracing::debug!(model, "skipping model — circuit breaker open");
+                last_error = format!("{provider_prefix} circuit breaker open");
+                continue;
+            }
+        }
+
+        let resolved = {
+            let llm = state.llm.read().await;
+            match llm.providers.get_by_model(model) {
+                Some(provider) => {
+                    let url = format!("{}{}", provider.url, provider.chat_path);
+                    let key = if provider.auth_mode == "oauth" {
+                        state
+                            .oauth
+                            .resolve_token(&provider.name)
+                            .await
+                            .unwrap_or_default()
+                    } else if let Some(ref key_ref) = provider.api_key_ref {
+                        if let Some(name) = key_ref.strip_prefix("keystore:") {
+                            state.keystore.get(name).unwrap_or_default()
+                        } else {
+                            std::env::var(&provider.api_key_env).unwrap_or_default()
+                        }
+                    } else {
+                        std::env::var(&provider.api_key_env).unwrap_or_default()
+                    };
+                    Some((
+                        url,
+                        key,
+                        provider.auth_header.clone(),
+                        provider.extra_headers.clone(),
+                        provider.format,
+                        provider.cost_per_input_token,
+                        provider.cost_per_output_token,
+                    ))
+                }
+                None => None,
+            }
+        };
+
+        let Some((url, api_key, auth_header, extra_headers, format, cost_in, cost_out)) = resolved
+        else {
+            tracing::debug!(model, "no provider found, skipping");
+            last_error = format!("no provider configured for {model}");
+            continue;
+        };
+
+        let model_for_api = model.split('/').nth(1).unwrap_or(model).to_string();
+        let mut req_clone = unified_req.clone();
+        // Ensure the request targets this model's API name
+        if !req_clone.model.is_empty() {
+            req_clone.model = model_for_api;
+        }
+
+        let llm_body = ironclad_llm::format::translate_request(&req_clone, format)
+            .unwrap_or_else(|_| serde_json::json!({}));
+
+        let llm = state.llm.read().await;
+        let result = llm
+            .client
+            .forward_with_provider(&url, &api_key, llm_body, &auth_header, &extra_headers)
+            .await;
+        drop(llm);
+
+        match result {
+            Ok(resp) => {
+                let unified_resp = ironclad_llm::format::translate_response(&resp, format)
+                    .unwrap_or_else(|_| ironclad_llm::format::UnifiedResponse {
+                        content: "(no response)".into(),
+                        model: model.clone(),
+                        tokens_in: 0,
+                        tokens_out: 0,
+                        finish_reason: None,
+                    });
+                let tin = unified_resp.tokens_in as i64;
+                let tout = unified_resp.tokens_out as i64;
+                let cost = estimate_cost_from_provider(cost_in, cost_out, tin, tout);
+
+                let mut llm = state.llm.write().await;
+                llm.breakers.record_success(&provider_prefix);
+                drop(llm);
+
+                if model != initial_model {
+                    tracing::info!(
+                        primary = initial_model,
+                        fallback = model.as_str(),
+                        "primary failed, succeeded on fallback"
+                    );
+                }
+
+                return Ok(InferenceResult {
+                    content: unified_resp.content,
+                    model: model.clone(),
+                    provider: provider_prefix,
+                    tokens_in: tin,
+                    tokens_out: tout,
+                    cost,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(model, error = %e, "inference failed, trying next fallback");
+                let mut llm = state.llm.write().await;
+                llm.breakers.record_failure(&provider_prefix);
+                drop(llm);
+                last_error = e.to_string();
+            }
+        }
+    }
+
+    Err(last_error)
+}
+
+/// Send a "typing…" indicator on the appropriate chat channel.
+/// Best-effort — failures are silently ignored so they never block processing.
+async fn send_typing_indicator(
+    state: &super::AppState,
+    platform: &str,
+    chat_id: &str,
+    metadata: Option<&serde_json::Value>,
+) {
+    match platform {
+        "telegram" => {
+            if let Some(ref tg) = state.telegram {
+                tg.send_typing(chat_id).await;
+            }
+        }
+        "whatsapp" => {
+            if let Some(ref wa) = state.whatsapp {
+                let msg_id = metadata
+                    .and_then(|m| m.pointer("/messages/0/id"))
+                    .or_else(|| metadata.and_then(|m| m.get("id")))
+                    .and_then(|v| v.as_str());
+                wa.send_typing(chat_id, msg_id).await;
+            }
+        }
+        "discord" => {
+            if let Some(ref dc) = state.discord {
+                dc.send_typing(chat_id).await;
+            }
+        }
+        "signal" => {
+            if let Some(ref sig) = state.signal {
+                sig.send_typing(chat_id).await;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Send a thinking indicator (🤖🧠…) on the appropriate chat channel.
+/// Used when estimated latency exceeds the configured threshold.
+async fn send_thinking_indicator(
+    state: &super::AppState,
+    platform: &str,
+    chat_id: &str,
+    metadata: Option<&serde_json::Value>,
+) {
+    send_typing_indicator(state, platform, chat_id, metadata).await;
+
+    match platform {
+        "telegram" => {
+            if let Some(ref tg) = state.telegram {
+                let _ = tg
+                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
+                    .await;
+            }
+        }
+        "whatsapp" => {
+            if let Some(ref wa) = state.whatsapp {
+                let _ = wa
+                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
+                    .await;
+            }
+        }
+        "discord" => {
+            if let Some(ref dc) = state.discord {
+                let _ = dc
+                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
+                    .await;
+            }
+        }
+        "signal" => {
+            if let Some(ref sig) = state.signal {
+                let _ = sig
+                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
+                    .await;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Estimate expected inference latency in seconds based on model tier, input
+/// length, and whether the primary provider's circuit breaker is tripped (which
+/// means we're falling back to slower alternatives).
+async fn estimate_inference_latency(
+    tier: ironclad_core::ModelTier,
+    input_len: usize,
+    model: &str,
+    primary_model: &str,
+    state: &super::AppState,
+) -> u64 {
+    use ironclad_core::ModelTier;
+
+    let base: u64 = match tier {
+        ModelTier::T1 => 5,
+        ModelTier::T2 => 8,
+        ModelTier::T3 => 20,
+        ModelTier::T4 => 40,
+    };
+
+    // Longer inputs take longer to process
+    let length_penalty: u64 = match input_len {
+        0..=500 => 0,
+        501..=2000 => 5,
+        2001..=5000 => 15,
+        _ => 25,
+    };
+
+    // If the primary model's breaker is open, we're falling through the chain
+    // which adds latency from failed connection attempts + slower fallbacks
+    let primary_prefix = primary_model.split('/').next().unwrap_or("unknown");
+    let fallback_penalty: u64 = {
+        let llm = state.llm.read().await;
+        if model != primary_model && llm.breakers.is_blocked(primary_prefix) {
+            15
+        } else if model != primary_model {
+            5
+        } else {
+            0
+        }
+    };
+
+    base + length_penalty + fallback_penalty
+}
+
 fn estimate_cost_from_provider(
     in_rate: f64,
     out_rate: f64,
@@ -1145,6 +1260,9 @@ pub async fn process_channel_message(
         inbound.content.clone()
     };
 
+    // Show "typing..." indicator while processing (all chat channels)
+    send_typing_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
+
     // In-flight deduplication for channel messages
     let dedup_fp = ironclad_llm::DedupTracker::fingerprint(
         &platform,
@@ -1196,98 +1314,24 @@ pub async fn process_channel_message(
     };
     drop(llm_read);
 
-    let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
     let tier_adapt = config.tier_adapt.clone();
     let agent_name = config.agent.name.clone();
     let agent_id = config.agent.id.clone();
     let primary_model = config.models.primary.clone();
+    let thinking_threshold = config.channels.thinking_threshold_seconds;
     let personality = state.personality.read().await;
     let soul_text = personality.soul_text.clone();
     let firmware_text = personality.firmware_text.clone();
     drop(personality);
     drop(config);
 
-    {
+    // Resolve tier for message adaptation
+    let tier = {
         let llm = state.llm.read().await;
-        if llm.breakers.is_blocked(&provider_prefix) {
-            drop(llm);
-            let reply = format!(
-                "I'm temporarily unable to reach the {} provider. Please try again shortly.",
-                provider_prefix
-            );
-            ironclad_db::sessions::append_message(&state.db, &session_id, "assistant", &reply)
-                .inspect_err(
-                    |e| tracing::warn!(error = %e, "failed to store circuit-breaker reply"),
-                )
-                .ok();
-            state
-                .channel_router
-                .send_reply(&platform, &chat_id, reply)
-                .await
-                .inspect_err(|e| tracing::warn!(error = %e, "failed to send circuit-breaker reply"))
-                .ok();
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-            drop(llm);
-            return Ok(());
-        }
-    }
-
-    let (
-        provider_url,
-        api_key,
-        auth_header,
-        extra_headers,
-        format,
-        cost_in_rate,
-        cost_out_rate,
-        tier,
-    ) = {
-        let llm = state.llm.read().await;
-        match llm.providers.get_by_model(&model) {
-            Some(provider) => {
-                let url = format!("{}{}", provider.url, provider.chat_path);
-                let key = if provider.auth_mode == "oauth" {
-                    state
-                        .oauth
-                        .resolve_token(&provider.name)
-                        .await
-                        .unwrap_or_default()
-                } else if let Some(ref key_ref) = provider.api_key_ref {
-                    if let Some(name) = key_ref.strip_prefix("keystore:") {
-                        state.keystore.get(name).unwrap_or_default()
-                    } else {
-                        std::env::var(&provider.api_key_env).unwrap_or_default()
-                    }
-                } else {
-                    std::env::var(&provider.api_key_env).unwrap_or_default()
-                };
-                (
-                    Some(url),
-                    key,
-                    provider.auth_header.clone(),
-                    provider.extra_headers.clone(),
-                    provider.format,
-                    provider.cost_per_input_token,
-                    provider.cost_per_output_token,
-                    provider.tier,
-                )
-            }
-            None => {
-                let key = std::env::var(format!("{}_API_KEY", provider_prefix.to_uppercase()))
-                    .unwrap_or_default();
-                (
-                    None,
-                    key,
-                    "Authorization".to_string(),
-                    std::collections::HashMap::new(),
-                    ironclad_core::ApiFormat::OpenAiCompletions,
-                    0.0,
-                    0.0,
-                    ironclad_llm::tier::classify(&model),
-                )
-            }
-        }
+        llm.providers
+            .get_by_model(&model)
+            .map(|p| p.tier)
+            .unwrap_or_else(|| ironclad_llm::tier::classify(&model))
     };
 
     // Generate query embedding for RAG retrieval
@@ -1398,68 +1442,42 @@ pub async fn process_channel_message(
         quality_target: None,
     };
 
-    let response_content = match provider_url {
-        Some(ref url) => {
-            let llm_body = ironclad_llm::format::translate_request(&unified_req, format)
-                .unwrap_or_else(|_| serde_json::json!({}));
+    // Send a thinking indicator when expected latency exceeds threshold (all chat channels)
+    {
+        let estimated_latency =
+            estimate_inference_latency(tier, user_content.len(), &model, &primary_model, state)
+                .await;
 
-            let llm = state.llm.read().await;
-            match llm
-                .client
-                .forward_with_provider(url, &api_key, llm_body, &auth_header, &extra_headers)
-                .await
-            {
-                Ok(resp) => {
-                    let unified_resp = ironclad_llm::format::translate_response(&resp, format)
-                        .unwrap_or_else(|_| ironclad_llm::format::UnifiedResponse {
-                            content: "(no response)".into(),
-                            model: model.clone(),
-                            tokens_in: 0,
-                            tokens_out: 0,
-                            finish_reason: None,
-                        });
-                    let tin = unified_resp.tokens_in as i64;
-                    let tout = unified_resp.tokens_out as i64;
-                    let cost = estimate_cost_from_provider(cost_in_rate, cost_out_rate, tin, tout);
-                    drop(llm);
-                    let mut llm = state.llm.write().await;
-                    llm.breakers.record_success(&provider_prefix);
-                    drop(llm);
-
-                    ironclad_db::metrics::record_inference_cost(
-                        &state.db,
-                        &model,
-                        &provider_prefix,
-                        tin,
-                        tout,
-                        cost,
-                        None,
-                        false,
-                    )
-                    .inspect_err(
-                        |e| tracing::warn!(error = %e, "failed to record channel inference cost"),
-                    )
-                    .ok();
-
-                    check_hmac(unified_resp.content, state.hmac_secret.as_ref())
-                }
-                Err(e) => {
-                    drop(llm);
-                    let mut llm = state.llm.write().await;
-                    llm.breakers.record_failure(&provider_prefix);
-                    drop(llm);
-
-                    format!(
-                        "I encountered an error reaching the LLM provider: {}. Please try again.",
-                        e
-                    )
-                }
-            }
+        if estimated_latency >= thinking_threshold {
+            send_thinking_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
+        } else {
+            send_typing_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
         }
-        None => format!(
-            "No provider configured for '{}'. I can't respond right now.",
-            provider_prefix
-        ),
+    }
+
+    let response_content = match infer_with_fallback(state, &unified_req, &model).await {
+        Ok(result) => {
+            ironclad_db::metrics::record_inference_cost(
+                &state.db,
+                &result.model,
+                &result.provider,
+                result.tokens_in,
+                result.tokens_out,
+                result.cost,
+                None,
+                false,
+            )
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to record channel inference cost"))
+            .ok();
+
+            check_hmac(result.content, state.hmac_secret.as_ref())
+        }
+        Err(last_error) => {
+            format!(
+                "I encountered an error reaching all LLM providers: {}. Please try again.",
+                last_error
+            )
+        }
     };
 
     let response_content = if ironclad_agent::injection::scan_output(&response_content) {
@@ -1471,10 +1489,17 @@ pub async fn process_channel_message(
 
     // ReAct loop for channel messages: execute tool calls if detected
     let channel_turn_id = uuid::Uuid::new_v4().to_string();
-    let channel_authority = if threat.is_caution() {
-        InputAuthority::External
-    } else {
-        InputAuthority::Creator
+    let channel_authority = {
+        let cfg = state.config.read().await;
+        let trusted = &cfg.channels.trusted_sender_ids;
+        let sender_trusted = !trusted.is_empty()
+            && (trusted.iter().any(|id| id == &chat_id)
+                || trusted.iter().any(|id| id == &inbound.sender_id));
+        if threat.is_caution() || !sender_trusted {
+            InputAuthority::External
+        } else {
+            InputAuthority::Creator
+        }
     };
     let mut channel_react = AgentLoop::new(10);
     let response_content = if let Some((tool_name, tool_params)) =
@@ -1516,60 +1541,35 @@ pub async fn process_channel_message(
                 break;
             }
 
-            if let Some(ref url) = provider_url {
-                let follow_req = ironclad_llm::format::UnifiedRequest {
-                    model: unified_req.model.clone(),
-                    messages: react_msgs.clone(),
-                    max_tokens: Some(2048),
-                    temperature: None,
-                    system: None,
-                    quality_target: None,
-                };
-                let follow_body = ironclad_llm::format::translate_request(&follow_req, format)
-                    .unwrap_or_else(|_| serde_json::json!({}));
-                let llm = state.llm.read().await;
-                match llm
-                    .client
-                    .forward_with_provider(url, &api_key, follow_body, &auth_header, &extra_headers)
-                    .await
-                {
-                    Ok(resp) => {
-                        let ur = ironclad_llm::format::translate_response(&resp, format)
-                            .unwrap_or_else(|_| ironclad_llm::format::UnifiedResponse {
-                                content: "(no response)".into(),
-                                model: model.clone(),
-                                tokens_in: 0,
-                                tokens_out: 0,
-                                finish_reason: None,
-                            });
-                        drop(llm);
-                        let mut llm = state.llm.write().await;
-                        llm.breakers.record_success(&provider_prefix);
-                        drop(llm);
-                        let content = check_hmac(ur.content, state.hmac_secret.as_ref());
-                        let content = if ironclad_agent::injection::scan_output(&content) {
-                            tracing::warn!(
-                                "L4 output scan flagged channel ReAct follow-up, blocking"
-                            );
-                            "[Response blocked by output safety filter]".to_string()
-                        } else {
-                            content
-                        };
-                        react_msgs.push(ironclad_llm::format::UnifiedMessage {
-                            role: "assistant".into(),
-                            content: content.clone(),
-                            parts: None,
-                        });
-                        current_tool = parse_tool_call(&content);
-                        if current_tool.is_none() {
-                            channel_react.transition(ReactAction::Finish);
-                            final_response = content;
-                        }
+            let follow_req = ironclad_llm::format::UnifiedRequest {
+                model: unified_req.model.clone(),
+                messages: react_msgs.clone(),
+                max_tokens: Some(2048),
+                temperature: None,
+                system: None,
+                quality_target: None,
+            };
+            match infer_with_fallback(state, &follow_req, &model).await {
+                Ok(result) => {
+                    let content = check_hmac(result.content, state.hmac_secret.as_ref());
+                    let content = if ironclad_agent::injection::scan_output(&content) {
+                        tracing::warn!("L4 output scan flagged channel ReAct follow-up, blocking");
+                        "[Response blocked by output safety filter]".to_string()
+                    } else {
+                        content
+                    };
+                    react_msgs.push(ironclad_llm::format::UnifiedMessage {
+                        role: "assistant".into(),
+                        content: content.clone(),
+                        parts: None,
+                    });
+                    current_tool = parse_tool_call(&content);
+                    if current_tool.is_none() {
+                        channel_react.transition(ReactAction::Finish);
+                        final_response = content;
                     }
-                    Err(_) => break,
                 }
-            } else {
-                break;
+                Err(_) => break,
             }
         }
         final_response

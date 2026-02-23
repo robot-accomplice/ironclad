@@ -39,8 +39,11 @@ use ironclad_llm::OAuthManager;
 use ironclad_wallet::WalletService;
 
 use ironclad_agent::approvals::ApprovalManager;
+use ironclad_agent::obsidian::ObsidianVault;
+use ironclad_agent::obsidian_tools::{ObsidianReadTool, ObsidianSearchTool, ObsidianWriteTool};
 use ironclad_agent::tools::{EchoTool, ScriptRunnerTool, ToolRegistry};
 use ironclad_channels::discord::DiscordAdapter;
+use ironclad_channels::signal::SignalAdapter;
 
 use rate_limit::GlobalRateLimitLayer;
 
@@ -308,6 +311,30 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
         None
     };
 
+    let signal: Option<Arc<SignalAdapter>> = if let Some(ref sig_config) = config.channels.signal {
+        if sig_config.enabled {
+            if !sig_config.phone_number.is_empty() {
+                let adapter = Arc::new(SignalAdapter::with_config(
+                    sig_config.phone_number.clone(),
+                    sig_config.daemon_url.clone(),
+                    sig_config.allowed_numbers.clone(),
+                ));
+                channel_router
+                    .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
+                    .await;
+                tracing::info!("Signal adapter registered");
+                Some(adapter)
+            } else {
+                tracing::warn!("Signal enabled but phone_number is empty");
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let hmac_secret = {
         use rand::RngCore;
         let mut buf = vec![0u8; 32];
@@ -322,6 +349,42 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
     let mut tool_registry = ToolRegistry::new();
     tool_registry.register(Box::new(EchoTool));
     tool_registry.register(Box::new(ScriptRunnerTool::new(config.skills.clone())));
+
+    // Obsidian vault integration
+    let obsidian_vault: Option<Arc<RwLock<ObsidianVault>>> = if config.obsidian.enabled {
+        match ObsidianVault::from_config(&config.obsidian) {
+            Ok(vault) => {
+                let vault = Arc::new(RwLock::new(vault));
+                tool_registry.register(Box::new(ObsidianReadTool::new(Arc::clone(&vault))));
+                tool_registry.register(Box::new(ObsidianWriteTool::new(Arc::clone(&vault))));
+                tool_registry.register(Box::new(ObsidianSearchTool::new(Arc::clone(&vault))));
+                tracing::info!("Obsidian vault integration enabled");
+                Some(vault)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to initialize Obsidian vault");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Start vault file watcher if configured
+    if let Some(ref vault) = obsidian_vault
+        && config.obsidian.watch_for_changes
+    {
+        match ironclad_agent::obsidian::watcher::VaultWatcher::start(Arc::clone(vault)) {
+            Ok(_watcher) => {
+                // watcher lives in the spawned task — drop is fine here
+                tracing::info!("Obsidian vault file watcher started");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to start Obsidian vault watcher");
+            }
+        }
+    }
+
     let tool_registry = Arc::new(tool_registry);
 
     let approvals = Arc::new(ApprovalManager::new(config.approvals.clone()));
@@ -370,8 +433,10 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
         tools: tool_registry,
         approvals,
         discord,
+        signal,
         oauth,
         keystore,
+        obsidian: obsidian_vault,
         started_at: std::time::Instant::now(),
     };
 

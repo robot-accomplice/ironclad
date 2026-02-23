@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -16,6 +17,7 @@ pub struct TelegramAdapter {
     pub poll_timeout: u64,
     pub allowed_chat_ids: Vec<i64>,
     pub webhook_secret: Option<String>,
+    message_buffer: Arc<Mutex<VecDeque<InboundMessage>>>,
 }
 
 impl TelegramAdapter {
@@ -30,6 +32,7 @@ impl TelegramAdapter {
             poll_timeout: 30,
             allowed_chat_ids: Vec::new(),
             webhook_secret: None,
+            message_buffer: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -223,6 +226,39 @@ impl TelegramAdapter {
 
         Ok(body)
     }
+
+    /// Send a "typing..." indicator to the given chat. Best-effort; errors are
+    /// silently ignored so they never block message delivery.
+    pub async fn send_typing(&self, chat_id: &str) {
+        let url = self.api_url("sendChatAction");
+        let body = json!({
+            "chat_id": chat_id,
+            "action": "typing",
+        });
+        let _ = self.client.post(&url).json(&body).send().await;
+    }
+
+    /// Send a short message and return its message_id (for later deletion).
+    pub async fn send_ephemeral(&self, chat_id: &str, text: &str) -> Option<i64> {
+        let url = self.api_url("sendMessage");
+        let body = json!({
+            "chat_id": chat_id,
+            "text": text,
+        });
+        let resp = self.client.post(&url).json(&body).send().await.ok()?;
+        let json: Value = resp.json().await.ok()?;
+        json.pointer("/result/message_id").and_then(|v| v.as_i64())
+    }
+
+    /// Delete a message by chat_id and message_id. Best-effort.
+    pub async fn delete_message(&self, chat_id: &str, message_id: i64) {
+        let url = self.api_url("deleteMessage");
+        let body = json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+        });
+        let _ = self.client.post(&url).json(&body).send().await;
+    }
 }
 
 #[async_trait]
@@ -232,6 +268,17 @@ impl ChannelAdapter for TelegramAdapter {
     }
 
     async fn recv(&self) -> Result<Option<InboundMessage>> {
+        // Return buffered messages first before polling for new ones
+        {
+            let mut buffer = self
+                .message_buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(msg) = buffer.pop_front() {
+                return Ok(Some(msg));
+            }
+        }
+
         let offset = {
             let last = self
                 .last_update_id
@@ -269,30 +316,56 @@ impl ChannelAdapter for TelegramAdapter {
             return Ok(None);
         }
 
-        let update = &updates[0];
-        if let Some(uid) = update.get("update_id").and_then(|v| v.as_i64()) {
+        // Advance last_update_id to the highest in the batch
+        if let Some(max_uid) = updates
+            .iter()
+            .filter_map(|u| u.get("update_id").and_then(|v| v.as_i64()))
+            .max()
+        {
             let mut last = self
                 .last_update_id
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            *last = uid;
+            *last = max_uid;
         }
 
-        if let Some(chat_id) = update.pointer("/message/chat/id").and_then(|v| v.as_i64())
-            && !self.is_chat_allowed(chat_id)
-        {
-            debug!(chat_id, "ignoring message from disallowed chat");
+        // Parse all valid messages from the batch
+        let mut parsed: Vec<InboundMessage> = Vec::new();
+        for update in &updates {
+            if update.get("message").is_none() {
+                continue;
+            }
+            if let Some(chat_id) = update.pointer("/message/chat/id").and_then(|v| v.as_i64())
+                && !self.is_chat_allowed(chat_id)
+            {
+                debug!(chat_id, "ignoring message from disallowed chat");
+                continue;
+            }
+            if let Ok(msg) = Self::parse_inbound(update) {
+                parsed.push(msg);
+            }
+        }
+
+        if parsed.is_empty() {
             return Ok(None);
         }
 
-        if update.get("message").is_none() {
-            return Ok(None);
+        // Return the first message, buffer the rest
+        let first = parsed.remove(0);
+        if !parsed.is_empty() {
+            let mut buffer = self
+                .message_buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            buffer.extend(parsed);
         }
 
-        Self::parse_inbound(update).map(Some)
+        Ok(Some(first))
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
+        self.send_typing(&msg.recipient_id).await;
+
         let url = self.api_url("sendMessage");
         let chunks = Self::chunk_message(&msg.content, 4096);
 

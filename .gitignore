@@ -1,12 +1,15 @@
 # Rust
 /target
-Cargo.lock
 
 # IDEs
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
+
+# Cursor rules (local agent memories)
+.cursor/rules/*.mdc
 
 # OS
 .DS_Store

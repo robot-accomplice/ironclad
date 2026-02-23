@@ -1,4 +1,5 @@
 use ironclad_core::config::MemoryConfig;
+use tracing::warn;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryBudgets {
@@ -109,19 +110,25 @@ pub fn ingest_turn(
     } else {
         assistant_msg
     };
-    ironclad_db::memory::store_working(db, session_id, "turn_summary", summary, 3).ok();
+    if let Err(e) = ironclad_db::memory::store_working(db, session_id, "turn_summary", summary, 3) {
+        warn!(error = %e, "failed to store working memory");
+    }
 
     // Episodic: record significant events (tool use, financial operations)
     match turn_type {
         TurnType::ToolUse => {
             for (tool_name, result) in tool_results {
                 let event = format!("Used tool '{tool_name}': {result}");
-                ironclad_db::memory::store_episodic(db, "tool_use", &event, 7).ok();
+                if let Err(e) = ironclad_db::memory::store_episodic(db, "tool_use", &event, 7) {
+                    warn!(error = %e, "failed to store episodic tool_use memory");
+                }
             }
         }
         TurnType::Financial => {
             let event = format!("Financial interaction: {summary}");
-            ironclad_db::memory::store_episodic(db, "financial", &event, 8).ok();
+            if let Err(e) = ironclad_db::memory::store_episodic(db, "financial", &event, 8) {
+                warn!(error = %e, "failed to store episodic financial memory");
+            }
         }
         _ => {}
     }
@@ -131,13 +138,17 @@ pub fn ingest_turn(
         && (turn_type == TurnType::Reasoning || turn_type == TurnType::Creative)
     {
         let key = format!("turn_{}", session_id.get(..8).unwrap_or("unknown"));
-        ironclad_db::memory::store_semantic(db, "learned", &key, summary, 0.6).ok();
+        if let Err(e) = ironclad_db::memory::store_semantic(db, "learned", &key, summary, 0.6) {
+            warn!(error = %e, "failed to store semantic memory");
+        }
     }
 
     // Procedural: track tool success/failure
     if turn_type == TurnType::ToolUse {
         for (tool_name, _) in tool_results {
-            ironclad_db::memory::record_procedural_success(db, tool_name).ok();
+            if let Err(e) = ironclad_db::memory::record_procedural_success(db, tool_name) {
+                warn!(error = %e, tool = %tool_name, "failed to record procedural success");
+            }
         }
     }
 }

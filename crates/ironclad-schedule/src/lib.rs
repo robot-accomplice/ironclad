@@ -62,12 +62,53 @@ pub async fn run_cron_worker(db: ironclad_db::Database, instance_id: String) {
             tracing::debug!(job = %job.name, "Executing cron job");
             let start = std::time::Instant::now();
 
-            // Job payload is JSON describing the action; log it for now
-            let result_status = "success";
+            let (result_status, error_msg) = execute_cron_job(job);
             let duration = start.elapsed().as_millis() as i64;
 
-            ironclad_db::cron::record_run(&db, &job.id, result_status, Some(duration), None).ok();
+            ironclad_db::cron::record_run(
+                &db,
+                &job.id,
+                result_status,
+                Some(duration),
+                error_msg.as_deref(),
+            )
+            .ok();
             ironclad_db::cron::release_lease(&db, &job.id).ok();
+        }
+    }
+}
+
+/// Execute a cron job based on its payload. Returns (status, optional error message).
+fn execute_cron_job(job: &ironclad_db::cron::CronJob) -> (&'static str, Option<String>) {
+    let payload: serde_json::Value = match serde_json::from_str(&job.payload_json) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(job = %job.name, error = %e, "invalid job payload JSON");
+            return ("error", Some(format!("invalid payload: {e}")));
+        }
+    };
+
+    let action = payload
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    match action {
+        "log" => {
+            let message = payload
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("cron heartbeat");
+            tracing::info!(job = %job.name, message, "cron job executed");
+            ("success", None)
+        }
+        "noop" => {
+            tracing::debug!(job = %job.name, "noop cron job");
+            ("success", None)
+        }
+        other => {
+            tracing::warn!(job = %job.name, action = other, "unknown cron action");
+            ("error", Some(format!("unknown action: {other}")))
         }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "ironclad-server"
-version = "0.2.0"
+version.workspace = true
 edition.workspace = true
 description = "Autonomous agent runtime — HTTP API, CLI, WebSocket push, and migration engine"
 license.workspace = true
@@ -18,7 +18,7 @@ path = "src/main.rs"
 ironclad-core.workspace = true
 ironclad-db.workspace = true
 ironclad-llm.workspace = true
-ironclad-agent.workspace = true
+ironclad-agent = { workspace = true, features = ["vault-watcher"] }
 ironclad-wallet.workspace = true
 ironclad-schedule.workspace = true
 ironclad-channels.workspace = true

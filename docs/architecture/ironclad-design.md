@@ -757,4 +757,16 @@ token_env = "TELEGRAM_BOT_TOKEN"
 
 [channels.whatsapp]
 enabled = false
+
+[obsidian]
+enabled = true
+vault_path = "~/Documents/MyVault"
+auto_detect = false              # scan auto_detect_paths for .obsidian dirs
+index_on_start = true            # scan vault at boot
+watch_for_changes = false        # re-index on filesystem events (requires notify)
+default_folder = "ironclad"      # where agent writes notes
+template_folder = "templates"    # Obsidian template directory
+preferred_destination = true     # steer document output to vault
+tag_boost = 0.2                  # relevance boost for tag matches in search
+ignored_folders = [".obsidian", ".trash", ".git"]
 ```

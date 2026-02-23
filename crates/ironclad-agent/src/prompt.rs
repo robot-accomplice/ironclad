@@ -36,6 +36,23 @@ pub fn build_system_prompt(
     sections.join("\n")
 }
 
+const OBSIDIAN_PREFERRED_DESTINATION: &str = "\
+## Document Output\n\
+When asked to produce documents, reports, notes, or any persistent written output, \
+prefer writing to the Obsidian vault using the obsidian_write tool. Include relevant \
+tags and wikilinks to related notes. Generate an obsidian:// URI so the user can open \
+the result directly in Obsidian.";
+
+/// Inject the Obsidian preferred-destination directive into the system prompt
+/// when the integration is enabled and configured.
+pub fn obsidian_directive(config: &ironclad_core::config::ObsidianConfig) -> Option<String> {
+    if config.enabled && config.preferred_destination {
+        Some(OBSIDIAN_PREFERRED_DESTINATION.to_string())
+    } else {
+        None
+    }
+}
+
 /// Builds a compact runtime metadata block for injection into the system prompt.
 /// This allows the agent to accurately report its version and model configuration.
 pub fn runtime_metadata_block(version: &str, primary_model: &str, active_model: &str) -> String {
@@ -211,6 +228,39 @@ mod tests {
         assert!(block.contains("anthropic/claude-sonnet-4-6"));
         assert!(block.contains("Primary model"));
         assert!(block.contains("Active model"));
+    }
+
+    #[test]
+    fn obsidian_directive_when_enabled() {
+        let config = ironclad_core::config::ObsidianConfig {
+            enabled: true,
+            preferred_destination: true,
+            ..Default::default()
+        };
+        let directive = obsidian_directive(&config);
+        assert!(directive.is_some());
+        let text = directive.unwrap();
+        assert!(text.contains("obsidian_write"));
+        assert!(text.contains("obsidian://"));
+    }
+
+    #[test]
+    fn obsidian_directive_disabled() {
+        let config = ironclad_core::config::ObsidianConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(obsidian_directive(&config).is_none());
+    }
+
+    #[test]
+    fn obsidian_directive_enabled_but_not_preferred() {
+        let config = ironclad_core::config::ObsidianConfig {
+            enabled: true,
+            preferred_destination: false,
+            ..Default::default()
+        };
+        assert!(obsidian_directive(&config).is_none());
     }
 
     #[test]

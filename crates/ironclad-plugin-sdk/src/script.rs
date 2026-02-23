@@ -64,10 +64,34 @@ impl ScriptPlugin {
             };
             let path = dir.join(&filename);
             if path.exists() && path.is_file() {
+                if let Err(e) = Self::validate_script_path(&path, dir) {
+                    warn!(tool = %tool_name, error = %e, "script path rejected");
+                    return None;
+                }
                 return Some(path);
             }
         }
         None
+    }
+
+    /// Ensures a resolved script path is contained within the plugin directory.
+    /// Prevents path traversal attacks via symlinks or `..` components.
+    fn validate_script_path(script: &Path, plugin_dir: &Path) -> Result<()> {
+        let canonical_script = script.canonicalize().map_err(|e| IroncladError::Tool {
+            tool: script.display().to_string(),
+            message: format!("cannot resolve script path: {e}"),
+        })?;
+        let canonical_dir = plugin_dir.canonicalize().map_err(|e| IroncladError::Tool {
+            tool: plugin_dir.display().to_string(),
+            message: format!("cannot resolve plugin directory: {e}"),
+        })?;
+        if !canonical_script.starts_with(&canonical_dir) {
+            return Err(IroncladError::Tool {
+                tool: script.display().to_string(),
+                message: "script path escapes plugin directory".into(),
+            });
+        }
+        Ok(())
     }
 
     fn interpreter_for(path: &Path) -> Option<(&'static str, &'static [&'static str])> {
@@ -92,6 +116,14 @@ impl ScriptPlugin {
 
     pub fn script_count(&self) -> usize {
         self.scripts.len()
+    }
+
+    pub fn is_tool_dangerous(&self, tool_name: &str) -> bool {
+        self.manifest.is_tool_dangerous(tool_name)
+    }
+
+    pub fn manifest(&self) -> &PluginManifest {
+        &self.manifest
     }
 }
 
@@ -151,10 +183,18 @@ impl Plugin for ScriptPlugin {
             tokio::process::Command::new(script_path)
         };
 
-        cmd.env("IRONCLAD_INPUT", &input_str)
+        cmd.env_clear()
+            .env("IRONCLAD_INPUT", &input_str)
             .env("IRONCLAD_TOOL", tool_name)
-            .env("IRONCLAD_PLUGIN", &self.manifest.name)
-            .current_dir(&self.dir)
+            .env("IRONCLAD_PLUGIN", &self.manifest.name);
+
+        for key in &["PATH", "HOME", "USER", "LANG", "TERM", "TMPDIR"] {
+            if let Ok(val) = std::env::var(key) {
+                cmd.env(key, val);
+            }
+        }
+
+        cmd.current_dir(&self.dir)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());

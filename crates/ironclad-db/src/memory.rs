@@ -1,5 +1,6 @@
 use crate::Database;
 use ironclad_core::{IroncladError, Result};
+use rusqlite::OptionalExtension;
 
 // ── Working memory ──────────────────────────────────────────────
 
@@ -479,20 +480,6 @@ pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<String>>
     }
 
     Ok(results)
-}
-
-trait Optional<T> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error>;
-}
-
-impl<T> Optional<T> for std::result::Result<T, rusqlite::Error> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error> {
-        match self {
-            Ok(v) => Ok(Some(v)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
 }
 
 #[cfg(test)]

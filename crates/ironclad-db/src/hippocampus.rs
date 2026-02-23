@@ -1,5 +1,6 @@
 use crate::Database;
 use ironclad_core::{IroncladError, Result};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 /// A schema map entry describing a table in the database.
@@ -385,20 +386,6 @@ pub fn seed_system_tables(db: &Database) -> Result<()> {
     }
 
     Ok(())
-}
-
-trait Optional<T> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error>;
-}
-
-impl<T> Optional<T> for std::result::Result<T, rusqlite::Error> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error> {
-        match self {
-            Ok(v) => Ok(Some(v)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
 }
 
 #[cfg(test)]

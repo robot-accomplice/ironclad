@@ -65,7 +65,7 @@ jobs:
       - name: "Run tests: ${{ matrix.crate }}"
         env:
           TEST_CRATE: ${{ matrix.crate }}
-        run: cargo test -p "$TEST_CRATE" --verbose
+        run: cargo test -p "$TEST_CRATE" --verbose --locked
 
   # ── Stage 3b: Coverage Gate ────────────────────────────
   coverage:
@@ -134,9 +134,9 @@ jobs:
           BUILD_PROFILE: ${{ matrix.profile }}
         run: |
           if [ "$BUILD_PROFILE" = "release" ]; then
-            cargo build --release --bin ironclad
+            cargo build --release --locked --bin ironclad
           else
-            cargo build --bin ironclad
+            cargo build --locked --bin ironclad
           fi
       - name: "Binary size"
         if: matrix.profile == 'release'

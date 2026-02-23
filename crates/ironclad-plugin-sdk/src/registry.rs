@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,7 +19,7 @@ pub struct PluginInfo {
 }
 
 struct PluginEntry {
-    plugin: Box<dyn Plugin>,
+    plugin: Arc<tokio::sync::Mutex<Box<dyn Plugin>>>,
     status: PluginStatus,
 }
 
@@ -59,7 +60,7 @@ impl PluginRegistry {
         debug!(name = %name, version = %plugin.version(), "registering plugin");
 
         let entry = PluginEntry {
-            plugin,
+            plugin: Arc::new(tokio::sync::Mutex::new(plugin)),
             status: PluginStatus::Loaded,
         };
 
@@ -73,7 +74,8 @@ impl PluginRegistry {
         let mut plugins = self.plugins.lock().await;
 
         for (name, entry) in plugins.iter_mut() {
-            match entry.plugin.init().await {
+            let mut plugin = entry.plugin.lock().await;
+            match plugin.init().await {
                 Ok(()) => {
                     entry.status = PluginStatus::Active;
                     debug!(name = %name, "plugin initialized");
@@ -90,22 +92,44 @@ impl PluginRegistry {
     }
 
     pub async fn execute_tool(&self, tool_name: &str, input: &Value) -> Result<ToolResult> {
-        let plugins = self.plugins.lock().await;
+        let plugin_arc = {
+            let plugins = self.plugins.lock().await;
+            let mut found = None;
+            for entry in plugins.values() {
+                if entry.status != PluginStatus::Active {
+                    continue;
+                }
+                let p = entry.plugin.lock().await;
+                if p.tools().iter().any(|t| t.name == tool_name) {
+                    drop(p);
+                    found = Some(Arc::clone(&entry.plugin));
+                    break;
+                }
+            }
+            found
+        };
 
-        for (_, entry) in plugins.iter() {
-            if entry.status != PluginStatus::Active {
-                continue;
+        match plugin_arc {
+            Some(p) => {
+                let plugin = p.lock().await;
+                plugin.execute_tool(tool_name, input).await
             }
-            let tools = entry.plugin.tools();
-            if tools.iter().any(|t| t.name == tool_name) {
-                return entry.plugin.execute_tool(tool_name, input).await;
-            }
+            None => Err(IroncladError::Tool {
+                tool: tool_name.to_string(),
+                message: "no plugin provides this tool".into(),
+            }),
         }
+    }
 
-        Err(IroncladError::Tool {
-            tool: tool_name.to_string(),
-            message: "no plugin provides this tool".into(),
-        })
+    pub async fn shutdown_all(&self) {
+        let mut plugins = self.plugins.lock().await;
+        for (name, entry) in plugins.iter_mut() {
+            let mut plugin = entry.plugin.lock().await;
+            if let Err(e) = plugin.shutdown().await {
+                warn!(name = %name, error = %e, "plugin shutdown failed");
+            }
+            entry.status = PluginStatus::Disabled;
+        }
     }
 
     pub async fn find_tool(&self, tool_name: &str) -> Option<(String, ToolDef)> {
@@ -114,7 +138,8 @@ impl PluginRegistry {
             if entry.status != PluginStatus::Active {
                 continue;
             }
-            for tool in entry.plugin.tools() {
+            let plugin = entry.plugin.lock().await;
+            for tool in plugin.tools() {
                 if tool.name == tool_name {
                     return Some((plugin_name.clone(), tool));
                 }
@@ -125,15 +150,17 @@ impl PluginRegistry {
 
     pub async fn list_plugins(&self) -> Vec<PluginInfo> {
         let plugins = self.plugins.lock().await;
-        plugins
-            .values()
-            .map(|entry| PluginInfo {
-                name: entry.plugin.name().to_string(),
-                version: entry.plugin.version().to_string(),
+        let mut result = Vec::new();
+        for entry in plugins.values() {
+            let plugin = entry.plugin.lock().await;
+            result.push(PluginInfo {
+                name: plugin.name().to_string(),
+                version: plugin.version().to_string(),
                 status: entry.status,
-                tools: entry.plugin.tools(),
-            })
-            .collect()
+                tools: plugin.tools(),
+            });
+        }
+        result
     }
 
     pub async fn list_all_tools(&self) -> Vec<(String, ToolDef)> {
@@ -143,7 +170,8 @@ impl PluginRegistry {
             if entry.status != PluginStatus::Active {
                 continue;
             }
-            for tool in entry.plugin.tools() {
+            let plugin = entry.plugin.lock().await;
+            for tool in plugin.tools() {
                 tools.push((name.clone(), tool));
             }
         }
