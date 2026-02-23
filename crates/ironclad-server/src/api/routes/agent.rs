@@ -1471,10 +1471,17 @@ pub async fn process_channel_message(
 
     // ReAct loop for channel messages: execute tool calls if detected
     let channel_turn_id = uuid::Uuid::new_v4().to_string();
-    let channel_authority = if threat.is_caution() {
-        InputAuthority::External
-    } else {
-        InputAuthority::Creator
+    let channel_authority = {
+        let cfg = state.config.read().await;
+        let trusted = &cfg.channels.trusted_sender_ids;
+        let sender_trusted = !trusted.is_empty()
+            && (trusted.iter().any(|id| id == &chat_id)
+                || trusted.iter().any(|id| id == &inbound.sender_id));
+        if threat.is_caution() || !sender_trusted {
+            InputAuthority::External
+        } else {
+            InputAuthority::Creator
+        }
     };
     let mut channel_react = AgentLoop::new(10);
     let response_content = if let Some((tool_name, tool_params)) =

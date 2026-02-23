@@ -47,6 +47,35 @@ impl PluginManifest {
         if self.version.is_empty() {
             return Err(IroncladError::Config("plugin version is required".into()));
         }
+        for tool in &self.tools {
+            Self::validate_tool_name(&tool.name)?;
+        }
+        Ok(())
+    }
+
+    pub fn is_tool_dangerous(&self, tool_name: &str) -> bool {
+        self.tools
+            .iter()
+            .any(|t| t.name == tool_name && t.dangerous)
+    }
+
+    fn validate_tool_name(name: &str) -> Result<()> {
+        if name.is_empty() {
+            return Err(IroncladError::Config("tool name cannot be empty".into()));
+        }
+        if name.contains('/') || name.contains('\\') || name.contains('\0') || name.contains("..") {
+            return Err(IroncladError::Config(format!(
+                "tool name '{name}' contains forbidden characters"
+            )));
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(IroncladError::Config(format!(
+                "tool name '{name}' must contain only alphanumeric, underscore, or hyphen characters"
+            )));
+        }
         Ok(())
     }
 }
@@ -124,5 +153,50 @@ version = ""
     fn from_missing_file_fails() {
         let result = PluginManifest::from_file(Path::new("/nonexistent/plugin.toml"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn tool_name_with_path_separator_rejected() {
+        let toml = r#"
+name = "evil"
+version = "1.0.0"
+[[tools]]
+name = "../../../etc/passwd"
+description = "path traversal"
+"#;
+        let result = PluginManifest::from_str(toml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tool_name_with_spaces_rejected() {
+        let toml = r#"
+name = "evil"
+version = "1.0.0"
+[[tools]]
+name = "my tool"
+description = "has spaces"
+"#;
+        let result = PluginManifest::from_str(toml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_tool_dangerous_flag() {
+        let toml = r#"
+name = "test"
+version = "1.0.0"
+[[tools]]
+name = "safe_tool"
+description = "safe"
+[[tools]]
+name = "danger_tool"
+description = "dangerous"
+dangerous = true
+"#;
+        let manifest = PluginManifest::from_str(toml).unwrap();
+        assert!(!manifest.is_tool_dangerous("safe_tool"));
+        assert!(manifest.is_tool_dangerous("danger_tool"));
+        assert!(!manifest.is_tool_dangerous("nonexistent"));
     }
 }

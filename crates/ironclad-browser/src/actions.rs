@@ -71,7 +71,31 @@ impl ActionExecutor {
         }
     }
 
+    const BLOCKED_URL_SCHEMES: &[&str] = &[
+        "file://",
+        "javascript:",
+        "data:",
+        "chrome://",
+        "chrome-extension://",
+        "about:",
+        "blob:",
+    ];
+
+    pub fn is_url_scheme_blocked(url: &str) -> bool {
+        let lower = url.trim().to_lowercase();
+        Self::BLOCKED_URL_SCHEMES
+            .iter()
+            .any(|scheme| lower.starts_with(scheme))
+    }
+
     async fn navigate(session: &CdpSession, url: &str) -> ActionResult {
+        if Self::is_url_scheme_blocked(url) {
+            return ActionResult::err(
+                "navigate",
+                format!("URL scheme is blocked for security: {url}"),
+            );
+        }
+
         match session
             .send_command("Page.navigate", json!({ "url": url }))
             .await
@@ -510,5 +534,38 @@ mod tests {
         assert!(back.success);
         assert_eq!(back.action, "evaluate");
         assert_eq!(back.data.unwrap()["value"], 42);
+    }
+
+    #[test]
+    fn blocked_url_schemes() {
+        assert!(ActionExecutor::is_url_scheme_blocked("file:///etc/passwd"));
+        assert!(ActionExecutor::is_url_scheme_blocked("javascript:alert(1)"));
+        assert!(ActionExecutor::is_url_scheme_blocked(
+            "data:text/html,<h1>hi</h1>"
+        ));
+        assert!(ActionExecutor::is_url_scheme_blocked("chrome://settings"));
+        assert!(ActionExecutor::is_url_scheme_blocked(
+            "chrome-extension://abc/popup.html"
+        ));
+        assert!(ActionExecutor::is_url_scheme_blocked("about:blank"));
+        assert!(ActionExecutor::is_url_scheme_blocked(
+            "blob:http://example.com/uuid"
+        ));
+        assert!(ActionExecutor::is_url_scheme_blocked(
+            "  FILE:///etc/passwd"
+        ));
+    }
+
+    #[test]
+    fn allowed_url_schemes() {
+        assert!(!ActionExecutor::is_url_scheme_blocked(
+            "https://example.com"
+        ));
+        assert!(!ActionExecutor::is_url_scheme_blocked(
+            "http://localhost:3000"
+        ));
+        assert!(!ActionExecutor::is_url_scheme_blocked(
+            "https://google.com/search?q=test"
+        ));
     }
 }

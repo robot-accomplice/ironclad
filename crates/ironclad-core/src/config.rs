@@ -1010,6 +1010,11 @@ pub struct ChannelsConfig {
     pub email: EmailConfig,
     #[serde(default)]
     pub voice: VoiceChannelConfig,
+    /// Sender IDs (chat IDs, phone numbers) trusted with Creator-level authority.
+    /// Messages from senders not in this list get External authority.
+    /// Empty list means all senders are treated as External.
+    #[serde(default)]
+    pub trusted_sender_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

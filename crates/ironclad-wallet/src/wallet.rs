@@ -156,6 +156,7 @@ impl Wallet {
             .or_else(|| {
                 std::env::var("IRONCLAD_WALLET_PASSPHRASE")
                     .ok()
+                    .filter(|p| !p.is_empty())
                     .and_then(|passphrase| {
                         decrypt_wallet_data(&raw, &passphrase)
                             .ok()
@@ -163,6 +164,12 @@ impl Wallet {
                                 serde_json::from_slice::<WalletFile>(&decrypted).ok()
                             })
                     })
+            })
+            .or_else(|| {
+                let machine_pass = Self::machine_passphrase();
+                decrypt_wallet_data(&raw, &machine_pass)
+                    .ok()
+                    .and_then(|decrypted| serde_json::from_slice::<WalletFile>(&decrypted).ok())
             });
 
             if let Some(wallet_file) = wallet_file {
@@ -209,10 +216,15 @@ impl Wallet {
                 .into_bytes();
 
             let to_write: Vec<u8> = match std::env::var("IRONCLAD_WALLET_PASSPHRASE") {
-                Ok(passphrase) => encrypt_wallet_data(&json_bytes, &passphrase),
-                Err(_) => {
-                    warn!("IRONCLAD_WALLET_PASSPHRASE not set; wallet will be stored in plaintext");
-                    json_bytes
+                Ok(passphrase) if !passphrase.is_empty() => {
+                    encrypt_wallet_data(&json_bytes, &passphrase)
+                }
+                _ => {
+                    let machine_pass = Self::machine_passphrase();
+                    warn!(
+                        "IRONCLAD_WALLET_PASSPHRASE not set; encrypting with machine-derived key"
+                    );
+                    encrypt_wallet_data(&json_bytes, &machine_pass)
                 }
             };
             tokio::fs::write(wallet_path, to_write)
@@ -531,6 +543,22 @@ impl Wallet {
                 decimals: 6,
             }],
         }
+    }
+
+    /// Derives a deterministic machine-local passphrase from hostname and username.
+    /// This is a fallback when IRONCLAD_WALLET_PASSPHRASE is not configured.
+    /// Not as secure as a user-supplied passphrase, but prevents plaintext key storage.
+    fn machine_passphrase() -> String {
+        use sha3::Digest as _;
+        let hostname = hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown-host".to_string());
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "unknown-user".to_string());
+        let input = format!("ironclad-wallet-machine-key::{hostname}::{user}");
+        let hash = Keccak256::digest(input.as_bytes());
+        hex::encode(hash)
     }
 
     pub fn test_mock() -> Self {

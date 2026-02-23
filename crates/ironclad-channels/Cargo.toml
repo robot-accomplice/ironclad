@@ -27,6 +27,8 @@ aes-gcm = "0.10"
 rand = "0.8"
 hkdf = "0.12"
 sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 
 [dev-dependencies]
