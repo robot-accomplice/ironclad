@@ -7,6 +7,9 @@
 *.swp
 *.swo
 
+# Cursor rules (local agent memories)
+.cursor/rules/*.mdc
+
 # OS
 .DS_Store
 Thumbs.db
