@@ -1782,7 +1782,9 @@ hot_reload = true
         assert!(cfg.providers.contains_key("anthropic"));
         assert!(cfg.providers.contains_key("google"));
         assert!(cfg.providers.contains_key("openrouter"));
+        assert!(cfg.providers.contains_key("moonshot"));
         assert_eq!(cfg.providers["ollama"].tier, "T1");
+        assert_eq!(cfg.providers["moonshot"].tier, "T2");
         assert_eq!(
             cfg.providers["anthropic"].format.as_deref(),
             Some("anthropic")
