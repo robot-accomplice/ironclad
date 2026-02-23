@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-02-23
+
+### Added
+
+- Signal channel adapter backed by signal-cli JSON-RPC daemon (`ironclad-channels::signal`)
+- Unified thinking indicator (🤖🧠…) for all chat channels (Telegram, WhatsApp, Discord, Signal)
+- Configurable `thinking_threshold_seconds` on `[channels]` — estimated latency gate for thinking indicator (default: 30s)
+- `send_typing` and `send_ephemeral` on WhatsApp and Discord adapters
+- Latency estimator based on model tier, input length, and circuit-breaker state
+- LLM fallback chain: `infer_with_fallback` helper retries across configured providers on transient errors
+- Permanent error detection in delivery queue — 403/401/400 and "bot blocked" errors dead-letter immediately
+- Config auto-discovery: `ironclad start` checks `~/.ironclad/ironclad.toml` when no `--config` flag is given
+- Obsidian vault integration module with read, search, and write tools
+- GitHub Actions release workflow for cross-platform binaries and crates.io publishing
+
+### Changed
+
+- `thinking_threshold_seconds` moved from per-channel (`TelegramConfig`) to `ChannelsConfig` level
+- Channel message processing is now platform-agnostic via `send_typing_indicator` / `send_thinking_indicator` helpers
+- Delivery queue `mark_failed` checks for permanent errors before scheduling retries
+- Channel router `send_to` and `drain_retry_queue` skip retry enqueue for permanent errors
+- Circuit breaker test updated to reflect fallback-first behavior
+
+### Fixed
+
+- LLM inference no longer returns a static error when the primary provider is down — falls through to configured fallbacks
+- Telegram bot no longer retries messages to chats it was removed from (permanent error dead-lettering)
+
 ## [0.3.0] - 2026-02-23
 
 ### Security

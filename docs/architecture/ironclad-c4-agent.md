@@ -80,6 +80,15 @@ flowchart TB
         SK_INSTRUCTION["InstructionSkillExecutor:<br/>inject .md body into system prompt,<br/>LLM interprets instructions"]
     end
 
+    subgraph ObsidianDetail ["obsidian.rs + obsidian_tools.rs - Vault Integration"]
+        VAULT["ObsidianVault:<br/>scanner, name_index, backlink_index,<br/>wikilink resolver, template engine"]
+        NOTE["ObsidianNote:<br/>path, title, content, frontmatter,<br/>tags, outgoing_links"]
+        OBS_SOURCE["ObsidianSource:<br/>impl KnowledgeSource<br/>tag-boosted + backlink-weighted search"]
+        OBS_READ["ObsidianReadTool:<br/>RiskLevel::Safe<br/>read by path or title"]
+        OBS_WRITE["ObsidianWriteTool:<br/>RiskLevel::Caution<br/>write + frontmatter + URI"]
+        OBS_SEARCH["ObsidianSearchTool:<br/>RiskLevel::Safe<br/>query, tag, folder filter"]
+    end
+
     subgraph ScriptRunDetail ["script_runner.rs - Sandboxed Execution"]
         EXEC["ScriptRunner::execute():<br/>spawn process via tokio::process,<br/>capture stdout/stderr"]
         SANDBOX["Sandbox controls:<br/>- script_timeout_seconds (kill on timeout)<br/>- script_max_output_bytes (truncate)<br/>- allowed_interpreters (whitelist)<br/>- sandbox_env (strip env, pass only<br/>  PATH, HOME, IRONCLAD_SESSION_ID,<br/>  IRONCLAD_AGENT_ID)"]
@@ -95,6 +104,16 @@ flowchart TB
     LOOP --> INJECTION
     LOOP --> MEMORY
     LOOP --> RETRIEVAL
+
+    VAULT --> NOTE
+    OBS_SOURCE --> VAULT
+    OBS_READ --> VAULT
+    OBS_WRITE --> VAULT
+    OBS_SEARCH --> VAULT
+    RETRIEVAL --> OBS_SOURCE
+    TOOLS --> OBS_READ
+    TOOLS --> OBS_WRITE
+    TOOLS --> OBS_SEARCH
 ```
 
 ## Module Interactions
@@ -149,7 +168,7 @@ sequenceDiagram
 
 ## Dependencies
 
-**External crates**: `async-trait`, `serde_json`, `regex`, `hmac`, `sha2`, `tokio` (process, io)
+**External crates**: `async-trait`, `serde_json`, `serde_yaml`, `regex`, `hmac`, `sha2`, `tokio` (process, io), `urlencoding`, `notify` (optional, `vault-watcher` feature)
 
 **Internal crates**: `ironclad-core`, `ironclad-db`, `ironclad-llm`
 

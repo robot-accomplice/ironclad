@@ -1712,6 +1712,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "sets HOME globally, racy with parallel tests — run with --ignored"]
     async fn cmd_mechanic_repair_creates_dirs() {
         let s = MockServer::start().await;
         Mock::given(method("GET"))

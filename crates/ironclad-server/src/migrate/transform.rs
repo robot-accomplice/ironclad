@@ -539,6 +539,60 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
         toml.push(String::new());
     }
 
+    // [channels.*] — include channel config so ironclad.toml is serve-ready
+    if let Some(channels) = &oc_cfg.channels {
+        if let Some(tg) = &channels.telegram {
+            toml.push("[channels.telegram]".into());
+            toml.push(format!("enabled = {}", tg.enabled.unwrap_or(false)));
+            if let Some(token) = &tg.token {
+                match store_in_keystore("telegram_bot_token", token) {
+                    Ok(()) => {
+                        toml.push("token_ref = \"keystore:telegram_bot_token\"".into());
+                        warnings.push(
+                            "Telegram token stored in encrypted keystore as \"telegram_bot_token\""
+                                .into(),
+                        );
+                    }
+                    Err(e) => {
+                        toml.push("token_env = \"TELEGRAM_BOT_TOKEN\"".into());
+                        warnings.push(format!(
+                            "Keystore unavailable ({e}); set env var TELEGRAM_BOT_TOKEN=<token>"
+                        ));
+                    }
+                }
+            }
+            toml.push("poll_timeout_seconds = 30".into());
+            toml.push("allowed_chat_ids = []".into());
+            toml.push("webhook_mode = false".into());
+            toml.push(String::new());
+        }
+        if let Some(wa) = &channels.whatsapp {
+            toml.push("[channels.whatsapp]".into());
+            toml.push(format!("enabled = {}", wa.enabled.unwrap_or(false)));
+            if let Some(token) = &wa.token {
+                match store_in_keystore("whatsapp_token", token) {
+                    Ok(()) => {
+                        toml.push("token_ref = \"keystore:whatsapp_token\"".into());
+                        warnings.push(
+                            "WhatsApp token stored in encrypted keystore as \"whatsapp_token\""
+                                .into(),
+                        );
+                    }
+                    Err(e) => {
+                        toml.push("token_env = \"WHATSAPP_TOKEN\"".into());
+                        warnings.push(format!(
+                            "Keystore unavailable ({e}); set env var WHATSAPP_TOKEN=<token>"
+                        ));
+                    }
+                }
+            }
+            if let Some(phone) = &wa.phone_id {
+                toml.push(format!("phone_number_id = {}", qt(phone)));
+            }
+            toml.push(String::new());
+        }
+    }
+
     if let Err(e) = fs::create_dir_all(ic_root) {
         return err(
             MigrationArea::Config,
@@ -2207,6 +2261,11 @@ mod tests {
         let content = fs::read_to_string(ic.path().join("ironclad.toml")).unwrap();
         assert!(content.contains("Duncan Idaho"));
         assert!(content.contains("gpt-4"));
+        assert!(
+            content.contains("[channels.telegram]"),
+            "ironclad.toml must include channel config"
+        );
+        assert!(content.contains("enabled = true"));
     }
 
     #[test]

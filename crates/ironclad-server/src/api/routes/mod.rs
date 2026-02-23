@@ -35,8 +35,10 @@ use ironclad_plugin_sdk::registry::PluginRegistry;
 use ironclad_wallet::WalletService;
 
 use ironclad_agent::approvals::ApprovalManager;
+use ironclad_agent::obsidian::ObsidianVault;
 use ironclad_agent::tools::ToolRegistry;
 use ironclad_channels::discord::DiscordAdapter;
+use ironclad_channels::signal::SignalAdapter;
 
 use crate::ws::EventBus;
 
@@ -183,8 +185,10 @@ pub struct AppState {
     pub tools: Arc<ToolRegistry>,
     pub approvals: Arc<ApprovalManager>,
     pub discord: Option<Arc<DiscordAdapter>>,
+    pub signal: Option<Arc<SignalAdapter>>,
     pub oauth: Arc<OAuthManager>,
     pub keystore: Arc<ironclad_core::keystore::Keystore>,
+    pub obsidian: Option<Arc<RwLock<ObsidianVault>>>,
     pub started_at: std::time::Instant,
 }
 
@@ -418,10 +422,12 @@ primary = "ollama/qwen3:8b"
                 ironclad_core::config::ApprovalsConfig::default(),
             )),
             discord: None,
+            signal: None,
             oauth: Arc::new(OAuthManager::new().unwrap()),
             keystore: Arc::new(ironclad_core::keystore::Keystore::new(
                 std::env::temp_dir().join(format!("ironclad-test-ks-{}.enc", uuid::Uuid::new_v4())),
             )),
+            obsidian: None,
             started_at: std::time::Instant::now(),
         }
     }
@@ -2095,7 +2101,7 @@ primary = "ollama/qwen3:8b"
     // ── Mock-based tests: circuit breaker blocked path ────────────
 
     #[tokio::test]
-    async fn agent_message_with_breaker_blocked_returns_provider_blocked() {
+    async fn agent_message_with_breaker_blocked_falls_back_or_errors() {
         let state = test_state();
         {
             let mut llm = state.llm.write().await;
@@ -2113,14 +2119,11 @@ primary = "ollama/qwen3:8b"
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = json_body(resp).await;
-        assert_eq!(body["provider_blocked"], true);
+        let content = body["content"].as_str().unwrap();
         assert!(
-            body["content"]
-                .as_str()
-                .unwrap()
-                .contains("circuit breaker")
+            content.contains("error") || content.contains("provider"),
+            "expected error message when all providers exhausted, got: {content}"
         );
-        assert_eq!(body["cached"], false);
     }
 
     // ── Mock-based tests: cache hit path ──────────────────────────

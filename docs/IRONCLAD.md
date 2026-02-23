@@ -131,6 +131,18 @@ ironclad-tests       Integration test suite
 - **Session management** -- start/stop headless Chrome instances
 - **REST API integration** -- `/api/browser/*` endpoints for remote control
 
+### Obsidian Integration
+
+- **Bidirectional knowledge store** -- agent reads vault content via `KnowledgeSource` trait, writes documents via `Tool` implementations
+- **Full Obsidian support** -- YAML frontmatter parsing, wikilink resolution (case-insensitive), backlink index, inline `#tag` extraction
+- **Three agent tools** -- `obsidian_read` (Safe), `obsidian_write` (Caution), `obsidian_search` (Safe)
+- **Preferred destination** -- when enabled, the system prompt directs the agent to write persistent documents to the vault
+- **Template engine** -- `{{variable}}` substitution with built-in `{{date}}` and `{{time}}`
+- **`obsidian://` URI generation** -- clickable links to open notes in Obsidian
+- **Auto-detect** -- opt-in scanning of specified paths for `.obsidian` directories
+- **File watching** (optional, `notify` crate) -- re-indexes vault on filesystem changes with 500ms debounce
+- **Config** -- `[obsidian]` section in `ironclad.toml` with `vault_path`, `default_folder`, `tag_boost`, `ignored_folders`
+
 ### Skill System
 
 Two formats, both loaded from a configurable skills directory:

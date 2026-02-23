@@ -8,7 +8,7 @@ use tracing::{debug, error, warn};
 
 use ironclad_core::{IroncladError, Result};
 
-use crate::delivery::DeliveryQueue;
+use crate::delivery::{DeliveryItem, DeliveryQueue};
 use crate::{ChannelAdapter, InboundMessage, OutboundMessage};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,18 +115,27 @@ impl ChannelRouter {
                 }
             }
             Err(e) => {
-                warn!(
-                    channel = %channel_name,
-                    error = %e,
-                    "send failed, queuing for retry"
-                );
+                let err_str = e.to_string();
                 let mut channels = self.channels.lock().await;
                 if let Some(entry) = channels.get_mut(channel_name) {
-                    entry.status.last_error = Some(e.to_string());
+                    entry.status.last_error = Some(err_str.clone());
                 }
-                self.delivery_queue
-                    .enqueue(channel_name.to_string(), queued_msg)
-                    .await;
+                if DeliveryItem::is_permanent_error(&err_str) {
+                    warn!(
+                        channel = %channel_name,
+                        error = %err_str,
+                        "send failed with permanent error, not retrying"
+                    );
+                } else {
+                    warn!(
+                        channel = %channel_name,
+                        error = %err_str,
+                        "send failed, queuing for retry"
+                    );
+                    self.delivery_queue
+                        .enqueue(channel_name.to_string(), queued_msg)
+                        .await;
+                }
             }
         }
 
@@ -180,20 +189,28 @@ impl ChannelRouter {
                     }
                 }
                 Err(e) => {
-                    warn!(
-                        id = %item.id,
-                        channel = %item.channel,
-                        error = %e,
-                        attempt = item.attempts + 1,
-                        "retry failed, requeuing"
-                    );
+                    let err_str = e.to_string();
                     let mut channels = self.channels.lock().await;
                     if let Some(entry) = channels.get_mut(&item.channel) {
-                        entry.status.last_error = Some(e.to_string());
+                        entry.status.last_error = Some(err_str.clone());
                     }
-                    self.delivery_queue
-                        .requeue_failed(item, e.to_string())
-                        .await;
+                    if DeliveryItem::is_permanent_error(&err_str) {
+                        warn!(
+                            id = %item.id,
+                            channel = %item.channel,
+                            error = %err_str,
+                            "permanent error, dead-lettering"
+                        );
+                    } else {
+                        warn!(
+                            id = %item.id,
+                            channel = %item.channel,
+                            error = %err_str,
+                            attempt = item.attempts + 1,
+                            "retry failed, requeuing"
+                        );
+                    }
+                    self.delivery_queue.requeue_failed(item, err_str).await;
                 }
             }
         }

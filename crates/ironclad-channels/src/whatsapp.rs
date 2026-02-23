@@ -258,6 +258,39 @@ impl WhatsAppAdapter {
         Ok(())
     }
 
+    /// Best-effort "typing" indicator. WhatsApp Cloud API doesn't expose a
+    /// typing action, so we mark the inbound message as read (shows blue ticks)
+    /// to acknowledge receipt.
+    pub async fn send_typing(&self, _recipient: &str, message_id: Option<&str>) {
+        if let Some(mid) = message_id {
+            let _ = self.mark_as_read(mid).await;
+        }
+    }
+
+    /// Send a short ephemeral text message and return its WAM ID (for later
+    /// reference). Best-effort; returns None on failure.
+    pub async fn send_ephemeral(&self, recipient: &str, text: &str) -> Option<String> {
+        let url = self.api_url("messages");
+        let body = json!({
+            "messaging_product": "whatsapp",
+            "to": recipient,
+            "type": "text",
+            "text": { "body": text },
+        });
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()
+            .await
+            .ok()?;
+        let json: Value = resp.json().await.ok()?;
+        json.pointer("/messages/0/id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
     async fn handle_api_response(&self, resp: reqwest::Response) -> Result<Value> {
         let status = resp.status();
 

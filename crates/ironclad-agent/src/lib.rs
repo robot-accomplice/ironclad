@@ -12,6 +12,8 @@ pub mod knowledge;
 pub mod manifest;
 pub mod mcp;
 pub mod memory;
+pub mod obsidian;
+pub mod obsidian_tools;
 pub mod orchestration;
 pub mod policy;
 pub mod prompt;

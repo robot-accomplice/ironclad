@@ -155,6 +155,8 @@ pub struct IroncladConfig {
     pub devices: DeviceConfig,
     #[serde(default)]
     pub discovery: DiscoveryConfig,
+    #[serde(default)]
+    pub obsidian: ObsidianConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +187,66 @@ impl Default for DiscoveryConfig {
             service_name: default_service_name(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObsidianConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub vault_path: Option<PathBuf>,
+    #[serde(default)]
+    pub auto_detect: bool,
+    #[serde(default)]
+    pub auto_detect_paths: Vec<PathBuf>,
+    #[serde(default = "default_true")]
+    pub index_on_start: bool,
+    #[serde(default)]
+    pub watch_for_changes: bool,
+    #[serde(default = "default_obsidian_ignored_folders")]
+    pub ignored_folders: Vec<String>,
+    #[serde(default = "default_obsidian_template_folder")]
+    pub template_folder: String,
+    #[serde(default = "default_obsidian_default_folder")]
+    pub default_folder: String,
+    #[serde(default = "default_true")]
+    pub preferred_destination: bool,
+    #[serde(default = "default_obsidian_tag_boost")]
+    pub tag_boost: f64,
+}
+
+impl Default for ObsidianConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            vault_path: None,
+            auto_detect: false,
+            auto_detect_paths: Vec::new(),
+            index_on_start: true,
+            watch_for_changes: false,
+            ignored_folders: default_obsidian_ignored_folders(),
+            template_folder: default_obsidian_template_folder(),
+            default_folder: default_obsidian_default_folder(),
+            preferred_destination: true,
+            tag_boost: default_obsidian_tag_boost(),
+        }
+    }
+}
+
+fn default_obsidian_ignored_folders() -> Vec<String> {
+    vec![".obsidian".into(), ".trash".into(), ".git".into()]
+}
+
+fn default_obsidian_template_folder() -> String {
+    "templates".into()
+}
+
+fn default_obsidian_default_folder() -> String {
+    "ironclad".into()
+}
+
+fn default_obsidian_tag_boost() -> f64 {
+    0.2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,6 +324,15 @@ impl IroncladConfig {
         config.plugins.dir = expand_tilde(&config.plugins.dir);
         config.browser.profile_dir = expand_tilde(&config.browser.profile_dir);
         config.daemon.pid_file = expand_tilde(&config.daemon.pid_file);
+        if let Some(ref vp) = config.obsidian.vault_path {
+            config.obsidian.vault_path = Some(expand_tilde(vp));
+        }
+        config.obsidian.auto_detect_paths = config
+            .obsidian
+            .auto_detect_paths
+            .iter()
+            .map(|p| expand_tilde(p))
+            .collect();
         config.merge_bundled_providers();
         config.validate()?;
         Ok(config)
@@ -998,7 +1069,7 @@ pub struct VoiceChannelConfig {
     pub tts_voice: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelsConfig {
     #[serde(default)]
     pub telegram: Option<TelegramConfig>,
@@ -1006,6 +1077,8 @@ pub struct ChannelsConfig {
     pub whatsapp: Option<WhatsAppConfig>,
     #[serde(default)]
     pub discord: Option<DiscordConfig>,
+    #[serde(default)]
+    pub signal: Option<SignalConfig>,
     #[serde(default)]
     pub email: EmailConfig,
     #[serde(default)]
@@ -1015,6 +1088,26 @@ pub struct ChannelsConfig {
     /// Empty list means all senders are treated as External.
     #[serde(default)]
     pub trusted_sender_ids: Vec<String>,
+    /// Estimated latency threshold (in seconds) above which a thinking indicator
+    /// (🤖🧠…) is sent before LLM inference on any chat channel. Set to 0 to
+    /// always send, or a very large value to effectively disable. Default: 30.
+    #[serde(default = "default_thinking_threshold")]
+    pub thinking_threshold_seconds: u64,
+}
+
+impl Default for ChannelsConfig {
+    fn default() -> Self {
+        Self {
+            telegram: None,
+            whatsapp: None,
+            discord: None,
+            signal: None,
+            email: EmailConfig::default(),
+            voice: VoiceChannelConfig::default(),
+            trusted_sender_ids: Vec::new(),
+            thinking_threshold_seconds: default_thinking_threshold(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1035,6 +1128,10 @@ pub struct TelegramConfig {
     pub webhook_path: Option<String>,
     #[serde(default)]
     pub webhook_secret: Option<String>,
+}
+
+fn default_thinking_threshold() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1068,6 +1165,27 @@ pub struct DiscordConfig {
     pub application_id: String,
     #[serde(default)]
     pub allowed_guild_ids: Vec<String>,
+}
+
+/// Signal channel adapter configuration. Uses signal-cli's JSON-RPC daemon
+/// as a local relay for sending and receiving messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Phone number registered with signal-cli (e.g. "+15551234567").
+    #[serde(default)]
+    pub phone_number: String,
+    /// Base URL of the signal-cli JSON-RPC daemon (default: http://127.0.0.1:8080).
+    #[serde(default = "default_signal_daemon_url")]
+    pub daemon_url: String,
+    /// Contacts (phone numbers) allowed to talk to the agent. Empty = allow all.
+    #[serde(default)]
+    pub allowed_numbers: Vec<String>,
+}
+
+fn default_signal_daemon_url() -> String {
+    "http://127.0.0.1:8080".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1827,6 +1945,63 @@ primary = "ollama/qwen3:8b"
             cfg.database.path, expected,
             "~/.ironclad/state.db should expand to $HOME/.ironclad/state.db"
         );
+    }
+
+    #[test]
+    fn obsidian_config_defaults() {
+        let cfg = ObsidianConfig::default();
+        assert!(!cfg.enabled);
+        assert!(cfg.vault_path.is_none());
+        assert!(!cfg.auto_detect);
+        assert!(cfg.auto_detect_paths.is_empty());
+        assert!(cfg.index_on_start);
+        assert!(!cfg.watch_for_changes);
+        assert_eq!(cfg.ignored_folders, vec![".obsidian", ".trash", ".git"]);
+        assert_eq!(cfg.template_folder, "templates");
+        assert_eq!(cfg.default_folder, "ironclad");
+        assert!(cfg.preferred_destination);
+        assert!((cfg.tag_boost - 0.2).abs() < f64::EPSILON);
+
+        let full = IroncladConfig::from_str(minimal_toml()).unwrap();
+        assert!(!full.obsidian.enabled);
+        assert!(full.obsidian.vault_path.is_none());
+    }
+
+    #[test]
+    fn obsidian_config_from_toml() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[obsidian]
+enabled = true
+vault_path = "~/Documents/MyVault"
+default_folder = "agent-notes"
+tag_boost = 0.3
+ignored_folders = [".obsidian", ".git"]
+"#;
+        let cfg = IroncladConfig::from_str(toml).unwrap();
+        assert!(cfg.obsidian.enabled);
+        assert!(cfg.obsidian.vault_path.is_some());
+        let vp = cfg.obsidian.vault_path.unwrap();
+        assert!(
+            !vp.to_str().unwrap().starts_with("~"),
+            "tilde should be expanded"
+        );
+        assert!(vp.to_str().unwrap().contains("Documents/MyVault"));
+        assert_eq!(cfg.obsidian.default_folder, "agent-notes");
+        assert!((cfg.obsidian.tag_boost - 0.3).abs() < f64::EPSILON);
+        assert_eq!(cfg.obsidian.ignored_folders.len(), 2);
     }
 
     #[test]

@@ -3,6 +3,7 @@ pub mod delivery;
 pub mod discord;
 pub mod email;
 pub mod router;
+pub mod signal;
 pub mod telegram;
 pub mod voice;
 pub mod web;
