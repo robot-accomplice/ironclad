@@ -110,13 +110,15 @@ pub async fn interview_turn(
             let url = format!("{}{}", p.url, p.chat_path);
             let key = super::admin::resolve_provider_key(
                 &p.name,
+                p.is_local,
                 &p.auth_mode,
                 p.api_key_ref.as_deref(),
                 &p.api_key_env,
                 &state.oauth,
                 &state.keystore,
             )
-            .await;
+            .await
+            .unwrap_or_default();
             (
                 url,
                 key,

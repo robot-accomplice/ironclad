@@ -2123,7 +2123,7 @@
     var nickEl = e.target.closest('.session-nick[data-copy-id]');
     if (nickEl) {
       var copyId = nickEl.getAttribute('data-copy-id');
-      navigator.clipboard.writeText(copyId).then(function() { toast('Session ID copied'); }).catch(function() {});
+      navigator.clipboard.writeText(copyId).then(function() { toast('Session ID copied'); }).catch(function() { toast('Copy failed \u2014 try HTTPS'); });
       return;
     }
     var row = e.target.closest('tbody tr[data-id]');

@@ -769,13 +769,15 @@ async fn refine_session_nickname(
         Some(p) => {
             let key = super::admin::resolve_provider_key(
                 &p.name,
+                p.is_local,
                 &p.auth_mode,
                 p.api_key_ref.as_deref(),
                 &p.api_key_env,
                 oauth,
                 keystore,
             )
-            .await;
+            .await
+            .unwrap_or_default();
             (
                 format!("{}{}", p.url, p.chat_path),
                 key,
@@ -868,13 +870,15 @@ async fn infer_with_fallback(
                     let url = format!("{}{}", provider.url, provider.chat_path);
                     let key = super::admin::resolve_provider_key(
                         &provider.name,
+                        provider.is_local,
                         &provider.auth_mode,
                         provider.api_key_ref.as_deref(),
                         &provider.api_key_env,
                         &state.oauth,
                         &state.keystore,
                     )
-                    .await;
+                    .await
+                    .unwrap_or_default();
                     Some((
                         url,
                         key,
@@ -1171,7 +1175,7 @@ async fn build_status_reply(state: &AppState) -> String {
 
     let mut lines = vec![
         format!("🤖 {} ({})", config.agent.name, config.agent.id),
-        format!("  state: running"),
+        "  state: running".to_string(),
         format!("  primary: {primary}"),
     ];
     if current != primary {
