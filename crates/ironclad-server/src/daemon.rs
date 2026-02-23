@@ -96,101 +96,135 @@ pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result
 
 pub fn start_daemon() -> Result<()> {
     let os = std::env::consts::OS;
-    let status = match os {
-        "macos" => std::process::Command::new("launchctl")
-            .args(["load", "-w"])
-            .arg(plist_path())
-            .status(),
-        "linux" => std::process::Command::new("systemctl")
-            .args(["--user", "daemon-reload"])
-            .status()
-            .and_then(|_| {
-                std::process::Command::new("systemctl")
-                    .args(["--user", "enable", "--now", "ironclad.service"])
-                    .status()
-            }),
-        other => {
-            return Err(IroncladError::Config(format!(
-                "daemon start not supported on {other}"
-            )));
-        }
-    };
+    match os {
+        "macos" => {
+            let output = std::process::Command::new("launchctl")
+                .args(["load", "-w"])
+                .arg(plist_path())
+                .output()
+                .map_err(|e| IroncladError::Config(format!("failed to run launchctl: {e}")))?;
 
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(IroncladError::Config(format!(
-            "service manager exited with {}",
-            s.code().unwrap_or(-1)
-        ))),
-        Err(e) => Err(IroncladError::Config(format!(
-            "failed to start service: {e}"
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !output.status.success() {
+                return Err(IroncladError::Config(format!(
+                    "launchctl load failed (exit {}): {}",
+                    output.status.code().unwrap_or(-1),
+                    stderr.trim()
+                )));
+            }
+
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            verify_launchd_running()?;
+            Ok(())
+        }
+        "linux" => {
+            run_cmd("systemctl", &["--user", "daemon-reload"])?;
+            run_cmd("systemctl", &["--user", "enable", "--now", "ironclad.service"])
+        }
+        other => Err(IroncladError::Config(format!(
+            "daemon start not supported on {other}"
         ))),
     }
 }
 
 pub fn stop_daemon() -> Result<()> {
     let os = std::env::consts::OS;
-    let status = match os {
-        "macos" => std::process::Command::new("launchctl")
-            .args(["unload"])
-            .arg(plist_path())
-            .status(),
-        "linux" => std::process::Command::new("systemctl")
-            .args(["--user", "stop", "ironclad.service"])
-            .status(),
-        other => {
-            return Err(IroncladError::Config(format!(
-                "daemon stop not supported on {other}"
-            )));
-        }
-    };
-
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(IroncladError::Config(format!(
-            "service manager exited with {}",
-            s.code().unwrap_or(-1)
-        ))),
-        Err(e) => Err(IroncladError::Config(format!(
-            "failed to stop service: {e}"
+    match os {
+        "macos" => run_cmd("launchctl", &["unload", &plist_path().to_string_lossy()]),
+        "linux" => run_cmd("systemctl", &["--user", "stop", "ironclad.service"]),
+        other => Err(IroncladError::Config(format!(
+            "daemon stop not supported on {other}"
         ))),
     }
 }
 
 pub fn restart_daemon() -> Result<()> {
     let os = std::env::consts::OS;
-    let status = match os {
+    match os {
         "macos" => {
-            let path = plist_path();
-            let _ = std::process::Command::new("launchctl")
-                .args(["unload"])
-                .arg(&path)
-                .status();
-            std::process::Command::new("launchctl")
-                .args(["load", "-w"])
-                .arg(&path)
-                .status()
+            let _ = stop_daemon();
+            start_daemon()
         }
-        "linux" => std::process::Command::new("systemctl")
-            .args(["--user", "restart", "ironclad.service"])
-            .status(),
-        other => {
-            return Err(IroncladError::Config(format!(
-                "daemon restart not supported on {other}"
-            )));
-        }
-    };
-
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(IroncladError::Config(format!(
-            "service manager exited with {}",
-            s.code().unwrap_or(-1)
-        ))),
-        Err(e) => Err(IroncladError::Config(format!(
-            "failed to restart service: {e}"
+        "linux" => run_cmd("systemctl", &["--user", "restart", "ironclad.service"]),
+        other => Err(IroncladError::Config(format!(
+            "daemon restart not supported on {other}"
         ))),
     }
+}
+
+const LAUNCHD_LABEL: &str = "com.ironclad.agent";
+
+fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| IroncladError::Config(format!("failed to run {program}: {e}")))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(IroncladError::Config(format!(
+            "{program} failed (exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        )))
+    }
+}
+
+fn verify_launchd_running() -> Result<()> {
+    let output = std::process::Command::new("launchctl")
+        .args(["list", LAUNCHD_LABEL])
+        .output()
+        .map_err(|e| IroncladError::Config(format!("failed to query launchctl: {e}")))?;
+
+    if !output.status.success() {
+        return Err(IroncladError::Config(
+            "daemon service is not loaded — check the plist path and binary".into(),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("\"LastExitStatus\"") {
+            let code = rest
+                .trim_start_matches(|c: char| !c.is_ascii_digit() && c != '-')
+                .trim_end_matches(';')
+                .trim();
+            if code != "0" {
+                let stderr_path = PathBuf::from(
+                    std::env::var("HOME").unwrap_or_default(),
+                )
+                .join(".ironclad/logs/ironclad.stderr.log");
+                let hint = if stderr_path.exists() {
+                    format!(" (see {})", stderr_path.display())
+                } else {
+                    String::new()
+                };
+                return Err(IroncladError::Config(format!(
+                    "daemon exited immediately with code {code}{hint}"
+                )));
+            }
+        }
+    }
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("\"PID\"") {
+            let pid = rest
+                .trim_start_matches(|c: char| !c.is_ascii_digit())
+                .trim_end_matches(';')
+                .trim();
+            if !pid.is_empty() {
+                return Ok(());
+            }
+        }
+    }
+
+    Err(IroncladError::Config(
+        "daemon loaded but no PID found — service may have crashed on startup".into(),
+    ))
 }
 
 pub fn is_installed() -> bool {
