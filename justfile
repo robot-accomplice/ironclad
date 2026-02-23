@@ -367,13 +367,10 @@ ci-test:
         echo "  ✔ CI PASSED"
     fi
 
-    if [ -n "$COVERAGE_PCT" ]; then
-        old="none"
-        if [ -f .coverage-baseline ]; then
-            old=$(tr -d '[:space:]' < .coverage-baseline)
-        fi
-        echo "$COVERAGE_PCT" > .coverage-baseline
-        echo "  Ratcheted .coverage-baseline: ${old}% → ${COVERAGE_PCT}%"
+    if [ -n "$COVERAGE_PCT" ] && [ -f .coverage-baseline ]; then
+        old=$(tr -d '[:space:]' < .coverage-baseline)
+        echo "  Coverage: ${COVERAGE_PCT}% (baseline: ${old}%)"
+        echo "  Note: baseline is CI-authoritative. Use 'just coverage-update-baseline' to update manually."
     fi
 
 # ── Clean ──────────────────────────────────────────────

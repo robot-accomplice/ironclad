@@ -109,8 +109,11 @@ jobs:
           fi
           baseline=$(tr -d '[:space:]' < .coverage-baseline)
           echo "Baseline: ${baseline}%  →  Current: ${COVERAGE_PCT}%"
-          if (( $(echo "$COVERAGE_PCT < $baseline" | bc -l) )); then
-            echo "::error::Coverage regressed: ${COVERAGE_PCT}% < baseline ${baseline}%"
+          # Allow 0.5% tolerance for cross-platform measurement variance
+          # (macOS ARM vs Linux x86_64 produce slightly different coverage numbers)
+          threshold=$(echo "$baseline - 0.5" | bc -l)
+          if (( $(echo "$COVERAGE_PCT < $threshold" | bc -l) )); then
+            echo "::error::Coverage regressed: ${COVERAGE_PCT}% < baseline ${baseline}% (with 0.5% tolerance)"
             exit 1
           fi
           echo "No coverage regression detected"
