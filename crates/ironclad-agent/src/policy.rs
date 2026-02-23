@@ -5,6 +5,23 @@ use serde_json::Value;
 
 use ironclad_core::{InputAuthority, PolicyDecision, RiskLevel, SurvivalTier};
 
+fn collect_string_values(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => out.push(s.clone()),
+        Value::Array(arr) => {
+            for v in arr {
+                collect_string_values(v, out);
+            }
+        }
+        Value::Object(map) => {
+            for v in map.values() {
+                collect_string_values(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub trait PolicyRule: Send + Sync {
     fn name(&self) -> &str;
     fn priority(&self) -> u32;
@@ -242,23 +259,6 @@ impl PathProtectionRule {
         Self { protected }
     }
 
-    fn collect_string_values(value: &Value, out: &mut Vec<String>) {
-        match value {
-            Value::String(s) => out.push(s.clone()),
-            Value::Array(arr) => {
-                for v in arr {
-                    Self::collect_string_values(v, out);
-                }
-            }
-            Value::Object(map) => {
-                for v in map.values() {
-                    Self::collect_string_values(v, out);
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn matches_protected(&self, s: &str) -> Option<&str> {
         let s_lower = s.to_lowercase();
         for pattern in &self.protected {
@@ -282,7 +282,7 @@ impl PolicyRule for PathProtectionRule {
 
     fn evaluate(&self, call: &ToolCallRequest, _ctx: &PolicyContext) -> PolicyDecision {
         let mut strings = Vec::new();
-        Self::collect_string_values(&call.params, &mut strings);
+        collect_string_values(&call.params, &mut strings);
         for s in &strings {
             if let Some(pattern) = self.matches_protected(s) {
                 return PolicyDecision::Deny {
@@ -363,23 +363,6 @@ impl ValidationRule {
         value.to_string().len()
     }
 
-    fn collect_string_values(value: &Value, out: &mut Vec<String>) {
-        match value {
-            Value::String(s) => out.push(s.clone()),
-            Value::Array(arr) => {
-                for v in arr {
-                    Self::collect_string_values(v, out);
-                }
-            }
-            Value::Object(map) => {
-                for v in map.values() {
-                    Self::collect_string_values(v, out);
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn looks_malicious(s: &str) -> bool {
         let s_lower = s.to_lowercase();
         // Shell injection
@@ -419,7 +402,7 @@ impl PolicyRule for ValidationRule {
             };
         }
         let mut strings = Vec::new();
-        Self::collect_string_values(&call.params, &mut strings);
+        collect_string_values(&call.params, &mut strings);
         for s in &strings {
             if Self::looks_malicious(s) {
                 return PolicyDecision::Deny {

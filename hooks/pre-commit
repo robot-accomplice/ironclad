@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo ""
+echo "┌──────────────────────────────────────────────────┐"
+echo "│           Pre-Commit: Format Check                │"
+echo "└──────────────────────────────────────────────────┘"
+echo ""
+
+if ! cargo fmt --all -- --check 2>/dev/null; then
+    echo ""
+    echo "✘ Formatting errors detected. Run 'cargo fmt --all' to fix."
+    exit 1
+fi
+
+echo "  ✔ Format check passed"
