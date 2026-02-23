@@ -108,6 +108,16 @@ impl PluginRegistry {
         })
     }
 
+    pub async fn shutdown_all(&self) {
+        let mut plugins = self.plugins.lock().await;
+        for (name, entry) in plugins.iter_mut() {
+            if let Err(e) = entry.plugin.shutdown().await {
+                warn!(name = %name, error = %e, "plugin shutdown failed");
+            }
+            entry.status = PluginStatus::Disabled;
+        }
+    }
+
     pub async fn find_tool(&self, tool_name: &str) -> Option<(String, ToolDef)> {
         let plugins = self.plugins.lock().await;
         for (plugin_name, entry) in plugins.iter() {

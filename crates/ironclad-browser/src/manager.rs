@@ -64,6 +64,10 @@ impl BrowserManager {
             "--no-first-run".to_string(),
             "--no-default-browser-check".to_string(),
             "--disable-background-networking".to_string(),
+            "--disable-extensions".to_string(),
+            "--disable-plugins".to_string(),
+            "--disable-popup-blocking".to_string(),
+            "--disable-component-update".to_string(),
         ];
 
         if self.config.headless {

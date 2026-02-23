@@ -4,17 +4,15 @@ use std::process::Command;
 use assert_cmd::Command as AssertCmd;
 use predicates::str::contains as pred_contains;
 
-/// Path to the ironclad-server binary (Cargo sets CARGO_BIN_EXE_ironclad-server when running integration tests).
+/// Path to the ironclad binary (Cargo sets CARGO_BIN_EXE_ironclad when running integration tests).
 fn ironclad_bin() -> PathBuf {
-    std::env::var("CARGO_BIN_EXE_ironclad-server")
-        .or_else(|_| std::env::var("CARGO_BIN_EXE_ironclad_server"))
+    std::env::var("CARGO_BIN_EXE_ironclad")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            // Fallback: same dir as test runner, binary name ironclad-server
             let mut exe = std::env::current_exe().expect("current exe");
             exe.pop(); // deps
             exe.pop(); // debug
-            exe.push("ironclad-server");
+            exe.push("ironclad");
             exe
         })
 }
@@ -169,5 +167,5 @@ fn cli_version_shows_version() {
         .arg("version")
         .assert()
         .success()
-        .stderr(predicates::str::contains("0.1.0"));
+        .stderr(predicates::str::contains("0.2.0"));
 }

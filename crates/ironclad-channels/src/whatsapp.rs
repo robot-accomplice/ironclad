@@ -1,9 +1,13 @@
 use async_trait::async_trait;
 use chrono::Utc;
+use hmac::{Hmac, Mac};
 use ironclad_core::{IroncladError, Result};
 use serde_json::{Value, json};
+use sha2::Sha256;
 use tracing::{debug, error, warn};
 use uuid::Uuid;
+
+type HmacSha256 = Hmac<Sha256>;
 
 use crate::{ChannelAdapter, InboundMessage, OutboundMessage};
 
@@ -146,6 +150,46 @@ impl WhatsAppAdapter {
             timestamp: Utc::now(),
             metadata: Some(webhook.clone()),
         })
+    }
+
+    /// Verifies the X-Hub-Signature-256 HMAC from Meta webhook payloads.
+    /// Returns Ok(()) if verification passes, Err if the signature is invalid.
+    /// Skips verification if no app_secret is configured (with a warning).
+    pub fn verify_webhook_signature(
+        &self,
+        raw_body: &[u8],
+        signature_header: Option<&str>,
+    ) -> Result<()> {
+        let secret = match &self.app_secret {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                warn!(
+                    "WhatsApp app_secret not configured; skipping webhook signature verification"
+                );
+                return Ok(());
+            }
+        };
+
+        let sig_header = signature_header
+            .ok_or_else(|| IroncladError::Network("missing X-Hub-Signature-256 header".into()))?;
+
+        let hex_sig = sig_header.strip_prefix("sha256=").ok_or_else(|| {
+            IroncladError::Network("X-Hub-Signature-256 header missing sha256= prefix".into())
+        })?;
+
+        let expected_bytes = hex::decode(hex_sig).map_err(|e| {
+            IroncladError::Network(format!("invalid hex in X-Hub-Signature-256: {e}"))
+        })?;
+
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+            .map_err(|e| IroncladError::Network(format!("HMAC init failed: {e}")))?;
+        mac.update(raw_body);
+
+        mac.verify_slice(&expected_bytes)
+            .map_err(|_| IroncladError::Network("webhook signature verification failed".into()))?;
+
+        debug!("WhatsApp webhook signature verified");
+        Ok(())
     }
 
     pub fn process_webhook(&self, body: &Value) -> Result<Option<InboundMessage>> {
@@ -678,5 +722,61 @@ mod tests {
         });
         let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
         assert!(msg.content.contains("image:img999"));
+    }
+
+    #[test]
+    fn verify_webhook_signature_valid() {
+        use hmac::Mac;
+        let secret = "test_app_secret";
+        let body = br#"{"entry": []}"#;
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let sig = hex::encode(mac.finalize().into_bytes());
+
+        let adapter = WhatsAppAdapter::with_config(
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
+            vec![],
+            Some(secret.into()),
+        );
+        let result = adapter.verify_webhook_signature(body, Some(&format!("sha256={sig}")));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn verify_webhook_signature_invalid() {
+        let adapter = WhatsAppAdapter::with_config(
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
+            vec![],
+            Some("real_secret".into()),
+        );
+        let result = adapter.verify_webhook_signature(
+            b"some body",
+            Some("sha256=0000000000000000000000000000000000000000000000000000000000000000"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_webhook_signature_missing_header() {
+        let adapter = WhatsAppAdapter::with_config(
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
+            vec![],
+            Some("secret".into()),
+        );
+        let result = adapter.verify_webhook_signature(b"body", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_webhook_signature_no_secret_skips() {
+        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into());
+        let result = adapter.verify_webhook_signature(b"body", None);
+        assert!(result.is_ok());
     }
 }
