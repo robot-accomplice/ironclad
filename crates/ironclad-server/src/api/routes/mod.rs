@@ -213,9 +213,10 @@ impl AppState {
 pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, agent_card, breaker_reset, breaker_status, browser_action, browser_start,
-        browser_status, browser_stop, change_agent_model, execute_plugin_tool, get_agents,
-        get_cache_stats, get_config, get_costs, get_plugins, get_transactions, roster, start_agent,
-        stop_agent, toggle_plugin, update_config, wallet_address, wallet_balance, workspace_state,
+        browser_status, browser_stop, change_agent_model, delete_provider_key, execute_plugin_tool,
+        get_agents, get_cache_stats, get_config, get_costs, get_plugins, get_transactions, roster,
+        set_provider_key, start_agent, stop_agent, toggle_plugin, update_config, wallet_address,
+        wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_status};
     use channels::{
@@ -240,6 +241,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/.well-known/agent.json", get(agent_card))
         .route("/api/health", get(health))
         .route("/api/config", get(get_config).put(update_config))
+        .route(
+            "/api/providers/{name}/key",
+            put(set_provider_key).delete(delete_provider_key),
+        )
         .route("/api/logs", get(get_logs))
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/sessions/backfill-nicknames", post(backfill_nicknames))
@@ -1367,7 +1372,7 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn webhook_whatsapp_parses_real_payload_fixture() {
-        let secret = "my-app-secret";
+        let secret = "test-whatsapp-hmac-key";
         let state = test_state_with_whatsapp_app_secret(secret);
         let app = build_router(state);
         let body = serde_json::json!({
@@ -1416,7 +1421,7 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn webhook_whatsapp_rejects_invalid_signature() {
-        let state = test_state_with_whatsapp_app_secret("my-app-secret");
+        let state = test_state_with_whatsapp_app_secret("test-whatsapp-hmac-key");
         let app = build_router(state);
         let body_bytes = br#"{"object":"whatsapp_business_account","entry":[]}"#;
         let response = app
@@ -1526,7 +1531,7 @@ primary = "ollama/qwen3:8b"
     async fn protected_route_returns_401_without_api_key() {
         use crate::auth::ApiKeyLayer;
         let state = test_state();
-        let app = build_router(state).layer(ApiKeyLayer::new(Some("my-secret".into())));
+        let app = build_router(state).layer(ApiKeyLayer::new(Some("test-api-key-401".into())));
         let req = Request::builder()
             .uri("/api/sessions")
             .body(Body::empty())
@@ -1539,10 +1544,10 @@ primary = "ollama/qwen3:8b"
     async fn protected_route_returns_ok_with_correct_api_key() {
         use crate::auth::ApiKeyLayer;
         let state = test_state();
-        let app = build_router(state).layer(ApiKeyLayer::new(Some("my-secret".into())));
+        let app = build_router(state).layer(ApiKeyLayer::new(Some("test-api-key-200".into())));
         let req = Request::builder()
             .uri("/api/sessions")
-            .header("x-api-key", "my-secret")
+            .header("x-api-key", "test-api-key-200")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

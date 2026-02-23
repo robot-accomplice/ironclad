@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn build_embedding_url_query_auth() {
-        unsafe { std::env::set_var("TEST_QUERY_KEY", "my-secret") };
+        unsafe { std::env::set_var("TEST_QUERY_KEY", "test-dummy-key-not-real") };
         let cfg = EmbeddingConfig {
             base_url: "https://api.example.com".into(),
             embedding_path: "/v1/embeddings".into(),
@@ -647,7 +647,7 @@ mod tests {
             extra_headers: HashMap::new(),
         };
         let url = build_embedding_url(&cfg, 1);
-        assert!(url.contains("api_key=my-secret"));
+        assert!(url.contains("api_key=test-dummy-key-not-real"));
         unsafe { std::env::remove_var("TEST_QUERY_KEY") };
     }
 

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-02-23
+
+### Added
+
+- `ironclad daemon start|stop|restart` subcommands for full daemon lifecycle management
+- Interactive prompt after `ironclad daemon install` asking whether to start immediately
+- `--start` flag on `ironclad daemon install` for non-interactive use
+
+### Fixed
+
+- Replaced stale `[providers.local]` (localhost:8080) with `[providers.moonshot]` in bundled and registry provider configs
+- Added `moonshot/kimi-k2.5` to dashboard known-models list for settings autocomplete
+- `ironclad daemon install` now actually offers to load the service (previously only wrote the plist/unit file)
+- `ironclad daemon uninstall` now stops the running service before removing the file
+- `ironclad daemon status` distinguishes between "not installed" and "installed but not running"
+
 ## [0.4.0] - 2026-02-23
 
 ### Added

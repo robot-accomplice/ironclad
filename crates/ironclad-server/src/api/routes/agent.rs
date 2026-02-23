@@ -767,17 +767,17 @@ async fn refine_session_nickname(
     let provider = llm_read.providers.get_by_model(&model_id);
     let (url, api_key, auth_header, format, extra_headers) = match provider {
         Some(p) => {
-            let key = if p.auth_mode == "oauth" {
-                oauth.resolve_token(&p.name).await.unwrap_or_default()
-            } else if let Some(ref key_ref) = p.api_key_ref {
-                if let Some(name) = key_ref.strip_prefix("keystore:") {
-                    keystore.get(name).unwrap_or_default()
-                } else {
-                    std::env::var(&p.api_key_env).unwrap_or_default()
-                }
-            } else {
-                std::env::var(&p.api_key_env).unwrap_or_default()
-            };
+            let key = super::admin::resolve_provider_key(
+                &p.name,
+                p.is_local,
+                &p.auth_mode,
+                p.api_key_ref.as_deref(),
+                &p.api_key_env,
+                oauth,
+                keystore,
+            )
+            .await
+            .unwrap_or_default();
             (
                 format!("{}{}", p.url, p.chat_path),
                 key,
@@ -868,21 +868,17 @@ async fn infer_with_fallback(
             match llm.providers.get_by_model(model) {
                 Some(provider) => {
                     let url = format!("{}{}", provider.url, provider.chat_path);
-                    let key = if provider.auth_mode == "oauth" {
-                        state
-                            .oauth
-                            .resolve_token(&provider.name)
-                            .await
-                            .unwrap_or_default()
-                    } else if let Some(ref key_ref) = provider.api_key_ref {
-                        if let Some(name) = key_ref.strip_prefix("keystore:") {
-                            state.keystore.get(name).unwrap_or_default()
-                        } else {
-                            std::env::var(&provider.api_key_env).unwrap_or_default()
-                        }
-                    } else {
-                        std::env::var(&provider.api_key_env).unwrap_or_default()
-                    };
+                    let key = super::admin::resolve_provider_key(
+                        &provider.name,
+                        provider.is_local,
+                        &provider.auth_mode,
+                        provider.api_key_ref.as_deref(),
+                        &provider.api_key_env,
+                        &state.oauth,
+                        &state.keystore,
+                    )
+                    .await
+                    .unwrap_or_default();
                     Some((
                         url,
                         key,
@@ -1178,8 +1174,8 @@ async fn build_status_reply(state: &AppState) -> String {
         .collect();
 
     let mut lines = vec![
-        format!("⚙ {} ({})", config.agent.name, config.agent.id),
-        format!("  state: running"),
+        format!("🤖 {} ({})", config.agent.name, config.agent.id),
+        "  state: running".to_string(),
         format!("  primary: {primary}"),
     ];
     if current != primary {

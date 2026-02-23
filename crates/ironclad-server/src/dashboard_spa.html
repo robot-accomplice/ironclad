@@ -110,6 +110,8 @@
     .card-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.5rem; }
     .card-value { font-size: 1.25rem; font-weight: 600; }
     .card-mono { font-family: var(--font-mono); font-size: 0.8125rem; }
+    .session-nick { cursor: copy; border-bottom: 1px dashed var(--border); transition: color 0.15s; }
+    .session-nick:hover { color: var(--accent); }
     .badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.75rem; font-weight: 500; }
     .badge.success { background: rgba(34, 197, 94, 0.2); color: var(--success); }
     .badge.error { background: rgba(239, 68, 68, 0.2); color: var(--error); }
@@ -231,6 +233,15 @@
     .settings-provider-name { font-size: 0.8125rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
     .settings-provider-add { display: flex; align-items: center; gap: 0.375rem; padding: 0.5rem 0.75rem; background: none; border: 1px dashed var(--border); border-radius: 4px; color: var(--muted); font-family: var(--font); font-size: 0.75rem; cursor: pointer; width: 100%; justify-content: center; transition: all 0.15s; }
     .settings-provider-add:hover { border-color: var(--accent); color: var(--accent); }
+    .key-manage-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px dashed var(--border); }
+    .key-manage-row input { flex: 1; font-family: var(--font); font-size: 0.75rem; padding: 0.3rem 0.5rem; background: var(--panel); border: 1px solid var(--border); border-radius: 3px; color: var(--fg); }
+    .key-manage-row input:focus { outline: none; border-color: var(--accent); }
+    .key-manage-btn { font-family: var(--font); font-size: 0.675rem; padding: 0.25rem 0.625rem; border-radius: 3px; cursor: pointer; border: 1px solid; transition: all 0.15s; white-space: nowrap; }
+    .key-manage-btn.save { background: var(--success); border-color: var(--success); color: #fff; }
+    .key-manage-btn.save:hover { opacity: 0.85; }
+    .key-manage-btn.remove { background: none; border-color: var(--error); color: var(--error); }
+    .key-manage-btn.remove:hover { background: var(--error); color: #fff; }
+    .key-manage-msg { font-size: 0.675rem; margin-left: 0.25rem; }
     .session-chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 56px - 3rem); min-height: 0; }
     .session-chat-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 0; border-bottom: 1px solid var(--border); margin-bottom: 0.75rem; flex-shrink: 0; }
     .session-chat-input { display: flex; gap: 0.5rem; flex-shrink: 0; padding-top: 0.75rem; border-top: 1px solid var(--border); margin-top: auto; }
@@ -782,14 +793,16 @@
               var side = m.role === 'user' ? 'user' : 'assistant';
               return '<div class="message ' + side + '"><div class="message-role">' + esc(m.role || '') + '</div><div>' + esc(m.content || '') + '</div></div>';
             }).join('') || '<p style="color:var(--muted);padding:1rem">Send a message to begin the conversation.</p>';
-            return '<div class="session-chat-wrap"><div class="session-chat-header"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="btn-back-sessions">\u25c0 Back</button><span style="font-weight:600">' + esc(self._activeSession.agent_id || 'default') + '</span><span class="card-mono" style="color:var(--muted);font-size:0.75rem">' + esc(truncate(self._activeSession.id, 16)) + '</span></div><div class="message-thread">' + msgs + '</div><div class="session-chat-input"><input type="text" id="session-msg-input" placeholder="Type a message\u2026" autocomplete="off"><button class="btn" id="btn-send-msg">Send</button></div></div>';
+            var chatLabel = self._activeSession.nickname || truncate(self._activeSession.id, 16);
+            return '<div class="session-chat-wrap"><div class="session-chat-header"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="btn-back-sessions">\u25c0 Back</button><span style="font-weight:600">' + esc(self._activeSession.agent_id || 'default') + '</span><span class="session-nick" data-copy-id="' + esc(self._activeSession.id) + '" title="' + esc(self._activeSession.id) + '" style="color:var(--muted);font-size:0.75rem">' + esc(chatLabel) + '</span></div><div class="message-thread">' + msgs + '</div><div class="session-chat-input"><input type="text" id="session-msg-input" placeholder="Type a message\u2026" autocomplete="off"><button class="btn" id="btn-send-msg">Send</button></div></div>';
           });
         }
 
         var rows = sessions.map(function(s) {
-          return '<tr data-id="' + esc(s.id || '') + '" style="cursor:pointer"><td class="card-mono">' + esc(truncate(s.id, 16)) + '</td><td>' + esc(s.agent_id || '') + '</td><td>' + esc(s.created_at || '') + '</td><td>' + esc(s.updated_at || '') + '</td></tr>';
+          var label = s.nickname || truncate(s.id, 16);
+          return '<tr data-id="' + esc(s.id || '') + '" style="cursor:pointer" title="' + esc(s.id || '') + '"><td><span class="session-nick" data-copy-id="' + esc(s.id || '') + '">' + esc(label) + '</span></td><td>' + esc(s.agent_id || '') + '</td><td>' + esc(s.created_at || '') + '</td><td>' + esc(s.updated_at || '') + '</td></tr>';
         }).join('');
-        return '<div style="display:flex;gap:0.75rem;align-items:center"><button class="btn" id="btn-new-session">New session</button><span style="font-size:0.8125rem;color:var(--muted)">' + sessions.length + ' session' + (sessions.length !== 1 ? 's' : '') + '</span></div><div class="table-wrap" style="margin-top:1rem;max-height:calc(100vh - 56px - 8rem);overflow-y:auto"><table><thead><tr><th>ID</th><th>Agent</th><th>Created</th><th>Updated</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+        return '<div style="display:flex;gap:0.75rem;align-items:center"><button class="btn" id="btn-new-session">New session</button><span style="font-size:0.8125rem;color:var(--muted)">' + sessions.length + ' session' + (sessions.length !== 1 ? 's' : '') + '</span></div><div class="table-wrap" style="margin-top:1rem;max-height:calc(100vh - 56px - 8rem);overflow-y:auto"><table><thead><tr><th>Topic</th><th>Agent</th><th>Created</th><th>Updated</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
       });
     },
 
@@ -1198,7 +1211,7 @@
       if (!this._settingsDraft && _cachedConfig) this._settingsDraft = JSON.parse(JSON.stringify(_cachedConfig));
       return this._settingsDraft || {};
     },
-    _KNOWN_MODELS: ['claude-sonnet-4-20250514','claude-3.5-sonnet','claude-3-opus','gpt-4o','gpt-4o-mini','gpt-4-turbo','gemini-2.0-flash','gemini-1.5-pro','llama-3.1-70b','mistral-large'],
+    _KNOWN_MODELS: ['claude-sonnet-4-20250514','claude-3.5-sonnet','claude-3-opus','gpt-4o','gpt-4o-mini','gpt-4-turbo','gemini-2.0-flash','gemini-1.5-pro','moonshot/kimi-k2.5','llama-3.1-70b','mistral-large'],
     _CHAIN_PRESETS: {
       'Ethereum': { chain_id: 1, rpc_url: 'https://eth.llamarpc.com' },
       'Sepolia': { chain_id: 11155111, rpc_url: 'https://rpc.sepolia.org' },
@@ -1507,6 +1520,17 @@
                   html += '<div class="settings-row"><div class="settings-label">' + esc(pKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(pPath) + '" value="' + esc(String(pVal == null ? '' : pVal)) + '"></div>';
                 }
               });
+              if (keyStatus === 'missing') {
+                html += '<div class="key-manage-row" data-provider="' + esc(pName) + '">'
+                  + '<input type="password" placeholder="Paste API key\u2026" class="key-input" autocomplete="off">'
+                  + '<button class="key-manage-btn save" data-action="save-key">Save to keystore</button>'
+                  + '<span class="key-manage-msg"></span></div>';
+              } else if (keyStatus === 'configured' && keySource === 'keystore') {
+                html += '<div class="key-manage-row" data-provider="' + esc(pName) + '">'
+                  + '<span style="font-size:0.7rem;color:var(--muted)">Key stored in encrypted keystore</span>'
+                  + '<button class="key-manage-btn remove" data-action="remove-key">Remove</button>'
+                  + '<span class="key-manage-msg"></span></div>';
+              }
               html += '</div>';
             });
             html += '<button class="settings-provider-add" id="add-provider">+ Add Provider</button></div>';
@@ -2002,6 +2026,42 @@
       App.navigate('settings');
       return;
     }
+    var keyBtn = e.target.closest('[data-action="save-key"]') || e.target.closest('[data-action="remove-key"]');
+    if (keyBtn) {
+      var row = keyBtn.closest('.key-manage-row');
+      var provName = row && row.getAttribute('data-provider');
+      var msgEl = row && row.querySelector('.key-manage-msg');
+      if (!provName) return;
+      var action = keyBtn.getAttribute('data-action');
+      if (action === 'save-key') {
+        var inp = row.querySelector('.key-input');
+        var val = inp && inp.value.trim();
+        if (!val) { toast('Paste an API key first'); return; }
+        keyBtn.disabled = true; keyBtn.textContent = 'Saving\u2026';
+        api('/api/providers/' + encodeURIComponent(provName) + '/key', {
+          method: 'PUT', body: JSON.stringify({ api_key: val })
+        }).then(function() {
+          toast('Key saved for ' + provName);
+          App._settingsCache = null; App.navigate('settings');
+        }).catch(function(err) {
+          if (msgEl) { msgEl.textContent = err.message || 'Save failed'; msgEl.style.color = 'var(--error)'; }
+          keyBtn.disabled = false; keyBtn.textContent = 'Save to keystore';
+        });
+      } else if (action === 'remove-key') {
+        if (!confirm('Remove ' + provName + ' API key from keystore?')) return;
+        keyBtn.disabled = true; keyBtn.textContent = 'Removing\u2026';
+        api('/api/providers/' + encodeURIComponent(provName) + '/key', {
+          method: 'DELETE'
+        }).then(function() {
+          toast('Key removed for ' + provName);
+          App._settingsCache = null; App.navigate('settings');
+        }).catch(function(err) {
+          if (msgEl) { msgEl.textContent = err.message || 'Remove failed'; msgEl.style.color = 'var(--error)'; }
+          keyBtn.disabled = false; keyBtn.textContent = 'Remove';
+        });
+      }
+      return;
+    }
 
     var calNav = e.target.closest('[data-cal-nav]');
     if (calNav) {
@@ -2060,11 +2120,19 @@
     var calDay = e.target.closest('.cal-day[data-date]');
     if (calDay) { var date = calDay.getAttribute('data-date'); App._calSelected = App._calSelected === date ? null : date; App.navigate('scheduler'); return; }
 
+    var nickEl = e.target.closest('.session-nick[data-copy-id]');
+    if (nickEl) {
+      var copyId = nickEl.getAttribute('data-copy-id');
+      navigator.clipboard.writeText(copyId).then(function() { toast('Session ID copied'); }).catch(function() { toast('Copy failed \u2014 try HTTPS'); });
+      return;
+    }
     var row = e.target.closest('tbody tr[data-id]');
     if (row) {
       var id = row.getAttribute('data-id');
-      var agentTd = row.querySelectorAll('td')[1];
-      App._activeSession = { id: id, agent_id: agentTd ? agentTd.textContent : 'default' };
+      var tds = row.querySelectorAll('td');
+      var nickTd = tds[0]; var agentTd = tds[1];
+      var nick = nickTd ? nickTd.textContent.trim() : '';
+      App._activeSession = { id: id, agent_id: agentTd ? agentTd.textContent : 'default', nickname: nick !== id ? nick : null };
       App.navigate('sessions');
       return;
     }
