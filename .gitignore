@@ -25,3 +25,7 @@ ironclad.db-shm
 
 # Logs
 *.log
+
+# Phantom files (do not exist, stop recreating them)
+registry/CNAME
+.github/workflows/deploy-registry.yml
