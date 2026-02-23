@@ -299,7 +299,11 @@ jobs:
 
           echo "$payload" | jq .
 
-          gh api repos/robot-accomplice/ironclad.ai/dispatches \
+          dispatch=$(jq -n \
+            --arg event_type "release-sync" \
+            --argjson client_payload "$payload" \
+            '{event_type: $event_type, client_payload: $client_payload}')
+
+          gh api repos/robot-accomplice/ironclad-site/dispatches \
             --method POST \
-            -f event_type=release-sync \
-            --input <(echo "{\"client_payload\": $payload}")
+            --input <(echo "$dispatch")
