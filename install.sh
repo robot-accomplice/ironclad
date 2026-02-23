@@ -280,7 +280,7 @@ cat <<DONE
   Get started:
     $(bold "ironclad setup")       Interactive configuration wizard
     $(bold "ironclad serve")       Start the agent runtime
-    $(bold "ironclad dashboard")   Open the web dashboard
+    $(bold "ironclad mechanic")    Run diagnostics and self-repair
     $(bold "ironclad --help")      Show all commands
 
 DONE

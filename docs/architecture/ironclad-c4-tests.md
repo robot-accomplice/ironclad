@@ -26,6 +26,7 @@ Tests are split into domain-specific files under `crates/ironclad-tests/src/`:
 | `skill_hot_reload` | Reload skills from disk and re-register |
 | `server_api` | REST API routes (sessions, memory, cron, plugins, browser, health, etc.) |
 | `memory_integration` | 5-tier memory (working, episodic, semantic, procedural, relationship) and FTS |
+| `rag_pipeline` | End-to-end RAG: embedding roundtrip, ingestion, hybrid search, ANN search, context budget, cache persistence |
 | `yield_flow` | Yield/treasury flows |
 | `treasury_integration` | Treasury and wallet integration |
 | `personality_integration` | Soul/personality and agent behavior |

@@ -10,12 +10,96 @@ pub struct UnifiedRequest {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f64>,
     pub system: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_target: Option<f64>,
+}
+
+/// Represents a content part in a multimodal message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { url: String, detail: Option<String> },
+    ImageBase64 { media_type: String, data: String },
+    AudioTranscription { text: String, source: String },
+}
+
+impl ContentPart {
+    pub fn text(s: &str) -> Self {
+        ContentPart::Text {
+            text: s.to_string(),
+        }
+    }
+
+    pub fn image_url(url: &str) -> Self {
+        ContentPart::ImageUrl {
+            url: url.to_string(),
+            detail: None,
+        }
+    }
+
+    pub fn image_base64(media_type: &str, data: &str) -> Self {
+        ContentPart::ImageBase64 {
+            media_type: media_type.to_string(),
+            data: data.to_string(),
+        }
+    }
+
+    pub fn audio_transcription(text: &str, source: &str) -> Self {
+        ContentPart::AudioTranscription {
+            text: text.to_string(),
+            source: source.to_string(),
+        }
+    }
+
+    pub fn to_text(&self) -> String {
+        match self {
+            ContentPart::Text { text } => text.clone(),
+            ContentPart::ImageUrl { url, .. } => format!("[Image: {url}]"),
+            ContentPart::ImageBase64 { media_type, .. } => format!("[Image: {media_type}]"),
+            ContentPart::AudioTranscription { text, source } => {
+                format!("[Audio from {source}]: {text}")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UnifiedMessage {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<Vec<ContentPart>>,
+}
+
+impl UnifiedMessage {
+    pub fn text(role: &str, content: &str) -> Self {
+        Self {
+            role: role.to_string(),
+            content: content.to_string(),
+            parts: None,
+        }
+    }
+
+    pub fn multimodal(role: &str, parts: Vec<ContentPart>) -> Self {
+        let text_content = parts
+            .iter()
+            .map(|p| p.to_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        Self {
+            role: role.to_string(),
+            content: text_content,
+            parts: Some(parts),
+        }
+    }
+
+    pub fn is_multimodal(&self) -> bool {
+        self.parts.as_ref().is_some_and(|p| {
+            p.iter()
+                .any(|part| !matches!(part, ContentPart::Text { .. }))
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +109,145 @@ pub struct UnifiedResponse {
     pub tokens_in: u32,
     pub tokens_out: u32,
     pub finish_reason: Option<String>,
+}
+
+/// A single chunk from a streaming LLM response.
+#[derive(Debug, Clone)]
+pub struct StreamChunk {
+    pub delta: String,
+    pub model: Option<String>,
+    pub finish_reason: Option<String>,
+    pub tokens_in: Option<u32>,
+    pub tokens_out: Option<u32>,
+}
+
+/// Accumulates chunks into a final UnifiedResponse.
+#[derive(Debug, Default)]
+pub struct StreamAccumulator {
+    content: String,
+    model: Option<String>,
+    tokens_in: u32,
+    tokens_out: u32,
+    finish_reason: Option<String>,
+}
+
+impl StreamAccumulator {
+    pub fn push(&mut self, chunk: &StreamChunk) {
+        self.content.push_str(&chunk.delta);
+        if let Some(ref m) = chunk.model {
+            self.model = Some(m.clone());
+        }
+        if let Some(t) = chunk.tokens_in {
+            self.tokens_in = t;
+        }
+        if let Some(t) = chunk.tokens_out {
+            self.tokens_out = t;
+        }
+        if chunk.finish_reason.is_some() {
+            self.finish_reason = chunk.finish_reason.clone();
+        }
+    }
+
+    pub fn finalize(self) -> UnifiedResponse {
+        UnifiedResponse {
+            content: self.content,
+            model: self.model.unwrap_or_default(),
+            tokens_in: self.tokens_in,
+            tokens_out: self.tokens_out,
+            finish_reason: self.finish_reason,
+        }
+    }
+}
+
+/// Parse a single SSE data line into a StreamChunk.
+/// Handles OpenAI-format and provider-specific SSE events (`data: {...}`).
+pub fn parse_sse_chunk(data: &str, format: &ApiFormat) -> Option<StreamChunk> {
+    let data = data.strip_prefix("data: ")?.trim();
+    if data == "[DONE]" {
+        return None;
+    }
+
+    let json: Value = serde_json::from_str(data).ok()?;
+
+    match format {
+        ApiFormat::OpenAiCompletions | ApiFormat::OpenAiResponses => {
+            let choice = json.get("choices")?.get(0)?;
+            let delta = choice.get("delta")?;
+            Some(StreamChunk {
+                delta: delta.get("content")?.as_str()?.to_string(),
+                model: json
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                finish_reason: choice
+                    .get("finish_reason")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                tokens_in: json
+                    .get("usage")
+                    .and_then(|u| u.get("prompt_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32),
+                tokens_out: json
+                    .get("usage")
+                    .and_then(|u| u.get("completion_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32),
+            })
+        }
+        ApiFormat::AnthropicMessages => {
+            let delta = json.get("delta")?;
+            Some(StreamChunk {
+                delta: delta
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                model: None,
+                finish_reason: delta
+                    .get("stop_reason")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                tokens_in: json
+                    .get("usage")
+                    .and_then(|u| u.get("input_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32),
+                tokens_out: json
+                    .get("usage")
+                    .and_then(|u| u.get("output_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32),
+            })
+        }
+        ApiFormat::GoogleGenerativeAi => {
+            let candidate = json.get("candidates")?.get(0)?;
+            let content = candidate.get("content")?;
+            let parts = content.get("parts")?.get(0)?;
+            Some(StreamChunk {
+                delta: parts
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                model: None,
+                finish_reason: candidate
+                    .get("finishReason")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                tokens_in: json
+                    .get("usageMetadata")
+                    .and_then(|u| u.get("promptTokenCount"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32),
+                tokens_out: json
+                    .get("usageMetadata")
+                    .and_then(|u| u.get("candidatesTokenCount"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32),
+            })
+        }
+    }
 }
 
 pub fn translate_request(request: &UnifiedRequest, format: ApiFormat) -> Result<Value> {
@@ -42,9 +265,13 @@ fn translate_anthropic(req: &UnifiedRequest) -> Result<Value> {
         .iter()
         .filter(|m| m.role != "system")
         .map(|m| {
+            let content = match &m.parts {
+                Some(parts) if m.is_multimodal() => parts_to_anthropic(parts),
+                _ => serde_json::json!(m.content),
+            };
             serde_json::json!({
                 "role": m.role,
-                "content": m.content,
+                "content": content,
             })
         })
         .collect();
@@ -81,9 +308,13 @@ fn translate_openai_completions(req: &UnifiedRequest) -> Result<Value> {
     }
 
     for m in &req.messages {
+        let content = match &m.parts {
+            Some(parts) if m.is_multimodal() => parts_to_openai(parts),
+            _ => serde_json::json!(m.content),
+        };
         messages.push(serde_json::json!({
             "role": m.role,
-            "content": m.content,
+            "content": content,
         }));
     }
 
@@ -153,6 +384,70 @@ fn translate_google(req: &UnifiedRequest) -> Result<Value> {
     });
 
     Ok(body)
+}
+
+/// Convert multimodal parts to OpenAI-format content blocks.
+pub fn parts_to_openai(parts: &[ContentPart]) -> Value {
+    let blocks: Vec<Value> = parts
+        .iter()
+        .map(|p| match p {
+            ContentPart::Text { text } => serde_json::json!({
+                "type": "text",
+                "text": text,
+            }),
+            ContentPart::ImageUrl { url, detail } => serde_json::json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": url,
+                    "detail": detail.as_deref().unwrap_or("auto"),
+                }
+            }),
+            ContentPart::ImageBase64 { media_type, data } => serde_json::json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": format!("data:{media_type};base64,{data}"),
+                }
+            }),
+            ContentPart::AudioTranscription { text, .. } => serde_json::json!({
+                "type": "text",
+                "text": text,
+            }),
+        })
+        .collect();
+    Value::Array(blocks)
+}
+
+/// Convert multimodal parts to Anthropic-format content blocks.
+pub fn parts_to_anthropic(parts: &[ContentPart]) -> Value {
+    let blocks: Vec<Value> = parts
+        .iter()
+        .map(|p| match p {
+            ContentPart::Text { text } => serde_json::json!({
+                "type": "text",
+                "text": text,
+            }),
+            ContentPart::ImageUrl { url, .. } => serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "url",
+                    "url": url,
+                }
+            }),
+            ContentPart::ImageBase64 { media_type, data } => serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": data,
+                }
+            }),
+            ContentPart::AudioTranscription { text, .. } => serde_json::json!({
+                "type": "text",
+                "text": text,
+            }),
+        })
+        .collect();
+    Value::Array(blocks)
 }
 
 pub fn translate_response(body: &Value, format: ApiFormat) -> Result<UnifiedResponse> {
@@ -279,19 +574,23 @@ mod tests {
                 UnifiedMessage {
                     role: "user".into(),
                     content: "Hello".into(),
+                    parts: None,
                 },
                 UnifiedMessage {
                     role: "assistant".into(),
                     content: "Hi there".into(),
+                    parts: None,
                 },
                 UnifiedMessage {
                     role: "user".into(),
                     content: "How are you?".into(),
+                    parts: None,
                 },
             ],
             max_tokens: Some(1024),
             temperature: Some(0.7),
             system: Some("You are helpful.".into()),
+            quality_target: None,
         }
     }
 
@@ -415,5 +714,192 @@ mod tests {
         assert_eq!(resp.tokens_in, 20);
         assert_eq!(resp.tokens_out, 6);
         assert_eq!(resp.finish_reason.as_deref(), Some("STOP"));
+    }
+
+    #[test]
+    fn stream_accumulator_empty() {
+        let acc = StreamAccumulator::default();
+        let resp = acc.finalize();
+        assert_eq!(resp.content, "");
+        assert_eq!(resp.model, "");
+        assert_eq!(resp.tokens_in, 0);
+        assert_eq!(resp.tokens_out, 0);
+        assert!(resp.finish_reason.is_none());
+    }
+
+    #[test]
+    fn stream_accumulator_pushes_deltas() {
+        let mut acc = StreamAccumulator::default();
+        for text in ["Hello", ", ", "world!"] {
+            acc.push(&StreamChunk {
+                delta: text.into(),
+                model: None,
+                finish_reason: None,
+                tokens_in: None,
+                tokens_out: None,
+            });
+        }
+        let resp = acc.finalize();
+        assert_eq!(resp.content, "Hello, world!");
+    }
+
+    #[test]
+    fn stream_accumulator_captures_model() {
+        let mut acc = StreamAccumulator::default();
+        acc.push(&StreamChunk {
+            delta: "hi".into(),
+            model: Some("gpt-4o".into()),
+            finish_reason: None,
+            tokens_in: None,
+            tokens_out: None,
+        });
+        let resp = acc.finalize();
+        assert_eq!(resp.model, "gpt-4o");
+    }
+
+    #[test]
+    fn stream_accumulator_captures_tokens_from_last() {
+        let mut acc = StreamAccumulator::default();
+        acc.push(&StreamChunk {
+            delta: "a".into(),
+            model: None,
+            finish_reason: None,
+            tokens_in: Some(5),
+            tokens_out: Some(1),
+        });
+        acc.push(&StreamChunk {
+            delta: "b".into(),
+            model: None,
+            finish_reason: Some("stop".into()),
+            tokens_in: Some(10),
+            tokens_out: Some(2),
+        });
+        let resp = acc.finalize();
+        assert_eq!(resp.tokens_in, 10);
+        assert_eq!(resp.tokens_out, 2);
+        assert_eq!(resp.finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn parse_sse_done_returns_none() {
+        let result = parse_sse_chunk("data: [DONE]", &ApiFormat::OpenAiCompletions);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_sse_openai_chunk() {
+        let line = r#"data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}],"model":"gpt-4o","usage":{"prompt_tokens":12,"completion_tokens":1}}"#;
+        let chunk = parse_sse_chunk(line, &ApiFormat::OpenAiCompletions).unwrap();
+        assert_eq!(chunk.delta, "Hi");
+        assert_eq!(chunk.model.as_deref(), Some("gpt-4o"));
+        assert!(chunk.finish_reason.is_none());
+        assert_eq!(chunk.tokens_in, Some(12));
+        assert_eq!(chunk.tokens_out, Some(1));
+    }
+
+    #[test]
+    fn parse_sse_non_data_line_returns_none() {
+        let result = parse_sse_chunk("event: message", &ApiFormat::OpenAiCompletions);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn content_part_text_to_text() {
+        let part = ContentPart::text("hello");
+        assert_eq!(part.to_text(), "hello");
+    }
+
+    #[test]
+    fn content_part_image_url_to_text() {
+        let part = ContentPart::image_url("https://example.com/img.png");
+        assert_eq!(part.to_text(), "[Image: https://example.com/img.png]");
+    }
+
+    #[test]
+    fn content_part_audio_to_text() {
+        let part = ContentPart::audio_transcription("Hello world", "whatsapp");
+        assert_eq!(part.to_text(), "[Audio from whatsapp]: Hello world");
+    }
+
+    #[test]
+    fn unified_message_text_helper() {
+        let msg = UnifiedMessage::text("user", "hi there");
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.content, "hi there");
+        assert!(msg.parts.is_none());
+    }
+
+    #[test]
+    fn unified_message_multimodal_helper() {
+        let msg = UnifiedMessage::multimodal(
+            "user",
+            vec![
+                ContentPart::text("Look at this:"),
+                ContentPart::image_url("https://example.com/photo.jpg"),
+            ],
+        );
+        assert_eq!(msg.role, "user");
+        assert!(msg.parts.is_some());
+        assert_eq!(msg.parts.as_ref().unwrap().len(), 2);
+        assert!(msg.content.contains("Look at this:"));
+        assert!(
+            msg.content
+                .contains("[Image: https://example.com/photo.jpg]")
+        );
+    }
+
+    #[test]
+    fn unified_message_is_multimodal_false_for_text() {
+        let msg = UnifiedMessage::text("user", "plain text");
+        assert!(!msg.is_multimodal());
+    }
+
+    #[test]
+    fn unified_message_is_multimodal_true_with_image() {
+        let msg = UnifiedMessage::multimodal(
+            "user",
+            vec![
+                ContentPart::text("describe this"),
+                ContentPart::image_url("https://example.com/cat.jpg"),
+            ],
+        );
+        assert!(msg.is_multimodal());
+    }
+
+    #[test]
+    fn parts_to_openai_text_only() {
+        let parts = vec![ContentPart::text("hello")];
+        let result = parts_to_openai(&parts);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(arr[0]["text"], "hello");
+    }
+
+    #[test]
+    fn parts_to_openai_with_image() {
+        let parts = vec![
+            ContentPart::text("What is in this image?"),
+            ContentPart::image_url("https://example.com/img.png"),
+        ];
+        let result = parts_to_openai(&parts);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(arr[1]["type"], "image_url");
+        assert_eq!(arr[1]["image_url"]["url"], "https://example.com/img.png");
+        assert_eq!(arr[1]["image_url"]["detail"], "auto");
+    }
+
+    #[test]
+    fn parts_to_anthropic_base64_image() {
+        let parts = vec![ContentPart::image_base64("image/png", "iVBOR...")];
+        let result = parts_to_anthropic(&parts);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "image");
+        assert_eq!(arr[0]["source"]["type"], "base64");
+        assert_eq!(arr[0]["source"]["media_type"], "image/png");
+        assert_eq!(arr[0]["source"]["data"], "iVBOR...");
     }
 }

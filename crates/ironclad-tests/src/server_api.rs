@@ -8,6 +8,7 @@ use ironclad_channels::a2a::A2aProtocol;
 use ironclad_core::IroncladConfig;
 use ironclad_db::Database;
 use ironclad_llm::LlmService;
+use ironclad_llm::OAuthManager;
 use ironclad_plugin_sdk::registry::PluginRegistry;
 use ironclad_server::{AppState, EventBus, PersonalityState, build_router};
 use ironclad_wallet::{TreasuryPolicy, WalletService, YieldEngine};
@@ -48,6 +49,9 @@ primary = "ollama/qwen3:8b"
     let registry = Arc::new(SubagentRegistry::new(4, vec![]));
     let event_bus = EventBus::new(16);
     let channel_router = Arc::new(ironclad_channels::router::ChannelRouter::new());
+    let retriever = Arc::new(ironclad_agent::retrieval::MemoryRetriever::new(
+        config.memory.clone(),
+    ));
     AppState {
         db,
         config: Arc::new(RwLock::new(config)),
@@ -64,6 +68,17 @@ primary = "ollama/qwen3:8b"
         channel_router,
         telegram: None,
         whatsapp: None,
+        retriever,
+        ann_index: ironclad_db::ann::AnnIndex::new(false),
+        tools: Arc::new(ironclad_agent::tools::ToolRegistry::new()),
+        approvals: Arc::new(ironclad_agent::approvals::ApprovalManager::new(
+            ironclad_core::config::ApprovalsConfig::default(),
+        )),
+        discord: None,
+        oauth: Arc::new(OAuthManager::new().unwrap()),
+        keystore: Arc::new(ironclad_core::keystore::Keystore::new(
+            std::env::temp_dir().join(format!("ironclad-test-ks-{}.enc", uuid::Uuid::new_v4())),
+        )),
         started_at: std::time::Instant::now(),
         policy_engine: {
             let mut engine = ironclad_agent::policy::PolicyEngine::new();
@@ -131,7 +146,8 @@ async fn session_create_and_list() {
 #[tokio::test]
 async fn message_post_and_retrieve() {
     let state = test_state();
-    let session_id = ironclad_db::sessions::find_or_create(&state.db, "msg-test-agent").unwrap();
+    let session_id =
+        ironclad_db::sessions::find_or_create(&state.db, "msg-test-agent", None).unwrap();
 
     let app = build_router(state.clone());
     let req = Request::builder()

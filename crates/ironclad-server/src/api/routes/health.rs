@@ -16,10 +16,26 @@ pub struct LogEntry {
 }
 
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let config = state.config.read().await;
+    let primary_model = config.models.primary.clone();
+    let fallbacks = config.models.fallbacks.clone();
+    let agent_name = config.agent.name.clone();
+    drop(config);
+
+    let llm = state.llm.read().await;
+    let current_model = llm.router.select_model().to_string();
+    drop(llm);
+
     axum::Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
+        "agent": agent_name,
         "uptime_seconds": state.started_at.elapsed().as_secs(),
+        "models": {
+            "primary": primary_model,
+            "current": current_model,
+            "fallbacks": fallbacks,
+        },
     }))
 }
 

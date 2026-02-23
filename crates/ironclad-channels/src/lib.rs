@@ -1,8 +1,10 @@
 pub mod a2a;
 pub mod delivery;
 pub mod discord;
+pub mod email;
 pub mod router;
 pub mod telegram;
+pub mod voice;
 pub mod web;
 pub mod whatsapp;
 

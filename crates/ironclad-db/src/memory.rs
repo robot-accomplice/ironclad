@@ -67,6 +67,32 @@ pub fn retrieve_working(db: &Database, session_id: &str) -> Result<Vec<WorkingEn
         .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
+pub fn retrieve_working_all(db: &Database, limit: i64) -> Result<Vec<WorkingEntry>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_id, entry_type, content, importance, created_at \
+             FROM working_memory ORDER BY importance DESC, created_at DESC LIMIT ?1",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([limit], |row| {
+            Ok(WorkingEntry {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                entry_type: row.get(2)?,
+                content: row.get(3)?,
+                importance: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
 // ── Episodic memory ─────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -187,6 +213,52 @@ pub fn retrieve_semantic(db: &Database, category: &str) -> Result<Vec<SemanticEn
 
     let rows = stmt
         .query_map([category], |row| {
+            Ok(SemanticEntry {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                key: row.get(2)?,
+                value: row.get(3)?,
+                confidence: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
+pub fn list_semantic_categories(db: &Database) -> Result<Vec<(String, i64)>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT category, COUNT(*) as cnt FROM semantic_memory \
+             GROUP BY category ORDER BY cnt DESC",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
+pub fn retrieve_semantic_all(db: &Database, limit: i64) -> Result<Vec<SemanticEntry>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, category, key, value, confidence, created_at, updated_at \
+             FROM semantic_memory ORDER BY confidence DESC, updated_at DESC LIMIT ?1",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([limit], |row| {
             Ok(SemanticEntry {
                 id: row.get(0)?,
                 category: row.get(1)?,

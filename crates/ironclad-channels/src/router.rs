@@ -4,10 +4,11 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use ironclad_core::{IroncladError, Result};
 
+use crate::delivery::DeliveryQueue;
 use crate::{ChannelAdapter, InboundMessage, OutboundMessage};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,12 +28,14 @@ struct ChannelEntry {
 
 pub struct ChannelRouter {
     channels: Mutex<HashMap<String, ChannelEntry>>,
+    delivery_queue: DeliveryQueue,
 }
 
 impl ChannelRouter {
     pub fn new() -> Self {
         Self {
             channels: Mutex::new(HashMap::new()),
+            delivery_queue: DeliveryQueue::new(),
         }
     }
 
@@ -101,13 +104,30 @@ impl ChannelRouter {
                 })?
         };
 
-        adapter.send(msg).await?;
-
-        let mut channels = self.channels.lock().await;
-        if let Some(entry) = channels.get_mut(channel_name) {
-            entry.status.messages_sent += 1;
-            entry.status.last_activity = Some(Utc::now());
-            entry.status.last_error = None;
+        let queued_msg = msg.clone();
+        match adapter.send(msg).await {
+            Ok(()) => {
+                let mut channels = self.channels.lock().await;
+                if let Some(entry) = channels.get_mut(channel_name) {
+                    entry.status.messages_sent += 1;
+                    entry.status.last_activity = Some(Utc::now());
+                    entry.status.last_error = None;
+                }
+            }
+            Err(e) => {
+                warn!(
+                    channel = %channel_name,
+                    error = %e,
+                    "send failed, queuing for retry"
+                );
+                let mut channels = self.channels.lock().await;
+                if let Some(entry) = channels.get_mut(channel_name) {
+                    entry.status.last_error = Some(e.to_string());
+                }
+                self.delivery_queue
+                    .enqueue(channel_name.to_string(), queued_msg)
+                    .await;
+            }
         }
 
         Ok(())
@@ -125,6 +145,62 @@ impl ChannelRouter {
             metadata: None,
         };
         self.send_to(platform, msg).await
+    }
+
+    pub async fn drain_retry_queue(&self) {
+        while let Some(item) = self.delivery_queue.next_ready().await {
+            let adapter = {
+                let channels = self.channels.lock().await;
+                channels.get(&item.channel).map(|e| Arc::clone(&e.adapter))
+            };
+
+            let Some(adapter) = adapter else {
+                warn!(channel = %item.channel, id = %item.id, "channel gone, dead-lettering item");
+                self.delivery_queue
+                    .requeue_failed(item, "channel no longer registered".into())
+                    .await;
+                continue;
+            };
+
+            let msg = OutboundMessage {
+                content: item.content.clone(),
+                recipient_id: item.recipient_id.clone(),
+                metadata: None,
+            };
+
+            match adapter.send(msg).await {
+                Ok(()) => {
+                    debug!(id = %item.id, channel = %item.channel, "retry delivered");
+                    self.delivery_queue.mark_success(&item.id).await;
+                    let mut channels = self.channels.lock().await;
+                    if let Some(entry) = channels.get_mut(&item.channel) {
+                        entry.status.messages_sent += 1;
+                        entry.status.last_activity = Some(Utc::now());
+                        entry.status.last_error = None;
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        id = %item.id,
+                        channel = %item.channel,
+                        error = %e,
+                        attempt = item.attempts + 1,
+                        "retry failed, requeuing"
+                    );
+                    let mut channels = self.channels.lock().await;
+                    if let Some(entry) = channels.get_mut(&item.channel) {
+                        entry.status.last_error = Some(e.to_string());
+                    }
+                    self.delivery_queue
+                        .requeue_failed(item, e.to_string())
+                        .await;
+                }
+            }
+        }
+    }
+
+    pub fn delivery_queue(&self) -> &DeliveryQueue {
+        &self.delivery_queue
     }
 
     pub async fn channel_status(&self) -> Vec<ChannelStatus> {

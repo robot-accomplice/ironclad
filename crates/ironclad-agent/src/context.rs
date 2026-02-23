@@ -22,10 +22,10 @@ pub fn determine_level(complexity_score: f64) -> ComplexityLevel {
 
 pub fn token_budget(level: ComplexityLevel) -> usize {
     match level {
-        ComplexityLevel::L0 => 2_000,
-        ComplexityLevel::L1 => 4_000,
-        ComplexityLevel::L2 => 8_000,
-        ComplexityLevel::L3 => 16_000,
+        ComplexityLevel::L0 => 4_000,
+        ComplexityLevel::L1 => 8_000,
+        ComplexityLevel::L2 => 16_000,
+        ComplexityLevel::L3 => 32_000,
     }
 }
 
@@ -45,11 +45,14 @@ pub fn build_context(
     let mut used = 0usize;
     let mut messages = Vec::new();
 
+    // System prompt is always included — it defines the agent's identity.
+    // History and memories get trimmed if the budget is tight.
     let sys_tokens = estimate_tokens(system_prompt);
     if sys_tokens <= budget {
         messages.push(UnifiedMessage {
             role: "system".into(),
             content: system_prompt.to_string(),
+            parts: None,
         });
         used += sys_tokens;
     }
@@ -60,6 +63,7 @@ pub fn build_context(
             messages.push(UnifiedMessage {
                 role: "system".into(),
                 content: memories.to_string(),
+                parts: None,
             });
             used += mem_tokens;
         }
@@ -218,6 +222,7 @@ pub fn insert_compaction_summary(messages: &mut Vec<UnifiedMessage>, summary: St
         UnifiedMessage {
             role: "system".into(),
             content: format!("[Conversation Summary] {summary}"),
+            parts: None,
         },
     );
 }
@@ -240,10 +245,10 @@ mod tests {
 
     #[test]
     fn budget_values() {
-        assert_eq!(token_budget(ComplexityLevel::L0), 2_000);
-        assert_eq!(token_budget(ComplexityLevel::L1), 4_000);
-        assert_eq!(token_budget(ComplexityLevel::L2), 8_000);
-        assert_eq!(token_budget(ComplexityLevel::L3), 16_000);
+        assert_eq!(token_budget(ComplexityLevel::L0), 4_000);
+        assert_eq!(token_budget(ComplexityLevel::L1), 8_000);
+        assert_eq!(token_budget(ComplexityLevel::L2), 16_000);
+        assert_eq!(token_budget(ComplexityLevel::L3), 32_000);
     }
 
     #[test]
@@ -254,10 +259,12 @@ mod tests {
             UnifiedMessage {
                 role: "user".into(),
                 content: "Hello".into(),
+                parts: None,
             },
             UnifiedMessage {
                 role: "assistant".into(),
                 content: "Hi there!".into(),
+                parts: None,
             },
         ];
 
@@ -281,10 +288,12 @@ mod tests {
             UnifiedMessage {
                 role: "user".into(),
                 content: big_msg,
+                parts: None,
             },
             UnifiedMessage {
                 role: "user".into(),
                 content: "recent message".into(),
+                parts: None,
             },
         ];
 
@@ -307,6 +316,7 @@ mod tests {
         let msgs = vec![UnifiedMessage {
             role: "user".into(),
             content: "hello world".into(),
+            parts: None,
         }];
         let tokens = count_tokens(&msgs);
         assert!(tokens > 0);
@@ -318,6 +328,7 @@ mod tests {
         let msgs = vec![UnifiedMessage {
             role: "user".into(),
             content: "short".into(),
+            parts: None,
         }];
         let cfg = PruningConfig::default();
         assert!(!needs_pruning(&msgs, &cfg));
@@ -329,6 +340,7 @@ mod tests {
         let msgs = vec![UnifiedMessage {
             role: "user".into(),
             content: big,
+            parts: None,
         }];
         let cfg = PruningConfig::default();
         assert!(needs_pruning(&msgs, &cfg));
@@ -340,11 +352,13 @@ mod tests {
         msgs.push(UnifiedMessage {
             role: "system".into(),
             content: "sys".into(),
+            parts: None,
         });
         for i in 0..20 {
             msgs.push(UnifiedMessage {
                 role: if i % 2 == 0 { "user" } else { "assistant" }.into(),
                 content: format!("message {i}"),
+                parts: None,
             });
         }
 
@@ -368,11 +382,13 @@ mod tests {
         msgs.push(UnifiedMessage {
             role: "system".into(),
             content: "sys".into(),
+            parts: None,
         });
         for i in 0..10 {
             msgs.push(UnifiedMessage {
                 role: "user".into(),
                 content: format!("msg {i}"),
+                parts: None,
             });
         }
 
@@ -391,10 +407,12 @@ mod tests {
             UnifiedMessage {
                 role: "user".into(),
                 content: "hi".into(),
+                parts: None,
             },
             UnifiedMessage {
                 role: "assistant".into(),
                 content: "hello".into(),
+                parts: None,
             },
         ];
         let prompt = build_compaction_prompt(&msgs);
@@ -409,10 +427,12 @@ mod tests {
             UnifiedMessage {
                 role: "system".into(),
                 content: "sys".into(),
+                parts: None,
             },
             UnifiedMessage {
                 role: "user".into(),
                 content: "hi".into(),
+                parts: None,
             },
         ];
         insert_compaction_summary(&mut msgs, "summary here".into());

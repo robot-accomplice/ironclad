@@ -13,13 +13,18 @@ pub use dashboard::{build_dashboard_html, dashboard_handler};
 pub use ws::{EventBus, ws_route};
 
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 
 use auth::ApiKeyLayer;
-use ironclad_agent::policy::{AuthorityRule, CommandSafetyRule, PolicyEngine};
+use ironclad_agent::policy::{
+    AuthorityRule, CommandSafetyRule, FinancialRule, PathProtectionRule, PolicyEngine,
+    RateLimitRule, ValidationRule,
+};
 use ironclad_agent::subagents::SubagentRegistry;
 use ironclad_browser::Browser;
 use ironclad_channels::ChannelAdapter;
@@ -30,11 +35,26 @@ use ironclad_channels::whatsapp::WhatsAppAdapter;
 use ironclad_core::IroncladConfig;
 use ironclad_db::Database;
 use ironclad_llm::LlmService;
+use ironclad_llm::OAuthManager;
 use ironclad_wallet::WalletService;
+
+use ironclad_agent::approvals::ApprovalManager;
+use ironclad_agent::tools::{EchoTool, ScriptRunnerTool, ToolRegistry};
+use ironclad_channels::discord::DiscordAdapter;
+
 use rate_limit::GlobalRateLimitLayer;
+
+static STDERR_ENABLED: AtomicBool = AtomicBool::new(false);
+static LOG_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
+
+pub fn enable_stderr_logging() {
+    STDERR_ENABLED.store(true, Ordering::Release);
+}
 
 fn init_logging(config: &IroncladConfig) {
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::filter::filter_fn;
     use tracing_subscriber::fmt;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -42,20 +62,22 @@ fn init_logging(config: &IroncladConfig) {
     let level = config.agent.log_level.as_str();
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
+    let stderr_gate = filter_fn(|_| STDERR_ENABLED.load(Ordering::Acquire));
+
     let log_dir = &config.server.log_dir;
     if std::fs::create_dir_all(log_dir).is_ok() {
         let file_appender = tracing_appender::rolling::daily(log_dir, "ironclad.log");
-        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-
-        // Leak the guard so it lives for the entire process
-        std::mem::forget(_guard);
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        let _ = LOG_GUARD.set(guard);
 
         let file_layer = fmt::layer()
             .with_writer(non_blocking)
             .with_ansi(false)
             .json();
 
-        let stderr_layer = fmt::layer().with_writer(std::io::stderr);
+        let stderr_layer = fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(stderr_gate);
 
         let _ = tracing_subscriber::registry()
             .with(filter)
@@ -63,7 +85,9 @@ fn init_logging(config: &IroncladConfig) {
             .with(file_layer)
             .try_init();
     } else {
-        let stderr_layer = fmt::layer().with_writer(std::io::stderr);
+        let stderr_layer = fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(stderr_gate);
         let _ = tracing_subscriber::registry()
             .with(filter)
             .with(stderr_layer)
@@ -96,6 +120,26 @@ fn cleanup_old_logs(log_dir: &std::path::Path, max_days: u32) {
     }
 }
 
+/// Resolve a channel token: keystore reference first, then env var fallback.
+fn resolve_token(
+    token_ref: &Option<String>,
+    token_env: &str,
+    keystore: &ironclad_core::Keystore,
+) -> String {
+    if let Some(r) = token_ref
+        && let Some(name) = r.strip_prefix("keystore:")
+    {
+        if let Some(val) = keystore.get(name) {
+            return val;
+        }
+        tracing::warn!(key = %name, "keystore reference not found, falling back to env var");
+    }
+    if !token_env.is_empty() {
+        return std::env::var(token_env).unwrap_or_default();
+    }
+    String::new()
+}
+
 /// Builds the application state and router from config. Used by the binary and by tests.
 pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn std::error::Error>> {
     init_logging(&config);
@@ -114,6 +158,11 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
 
     let db_path = config.database.path.to_string_lossy().to_string();
     let db = Database::new(&db_path)?;
+    match ironclad_db::sessions::backfill_nicknames(&db) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(count = n, "Backfilled session nicknames"),
+        Err(e) => tracing::warn!(error = %e, "Failed to backfill session nicknames"),
+    }
     let llm = LlmService::new(&config)?;
     let wallet = WalletService::new(&config).await?;
     let a2a = A2aProtocol::new(config.a2a.clone());
@@ -121,16 +170,52 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
     let mut policy_engine = PolicyEngine::new();
     policy_engine.add_rule(Box::new(AuthorityRule));
     policy_engine.add_rule(Box::new(CommandSafetyRule));
+    policy_engine.add_rule(Box::new(FinancialRule::new(
+        config.treasury.per_payment_cap,
+    )));
+    policy_engine.add_rule(Box::new(PathProtectionRule::default()));
+    policy_engine.add_rule(Box::new(RateLimitRule::default()));
+    policy_engine.add_rule(Box::new(ValidationRule));
     let policy_engine = Arc::new(policy_engine);
     let browser = Arc::new(Browser::new(config.browser.clone()));
     let registry = Arc::new(SubagentRegistry::new(4, vec![]));
+
+    if let Ok(sub_agents) = ironclad_db::agents::list_enabled_sub_agents(&db) {
+        for sa in &sub_agents {
+            let agent_config = ironclad_agent::subagents::AgentInstanceConfig {
+                id: sa.name.clone(),
+                name: sa.display_name.clone().unwrap_or_else(|| sa.name.clone()),
+                model: sa.model.clone(),
+                skills: vec![],
+                allowed_subagents: vec![],
+                max_concurrent: 4,
+            };
+            if let Err(e) = registry.register(agent_config).await {
+                tracing::warn!(agent = %sa.name, err = %e, "failed to register sub-agent");
+            }
+        }
+        if !sub_agents.is_empty() {
+            tracing::info!(
+                count = sub_agents.len(),
+                "registered sub-agents from database"
+            );
+        }
+    }
+
     let event_bus = EventBus::new(256);
+
+    let keystore =
+        ironclad_core::keystore::Keystore::new(ironclad_core::keystore::Keystore::default_path());
+    if let Err(e) = keystore.unlock_machine() {
+        tracing::warn!("keystore auto-unlock failed: {e}");
+    }
+    let keystore = Arc::new(keystore);
 
     let channel_router = Arc::new(ChannelRouter::new());
     let telegram: Option<Arc<TelegramAdapter>> =
         if let Some(ref tg_config) = config.channels.telegram {
             if tg_config.enabled {
-                let token = std::env::var(&tg_config.token_env).unwrap_or_default();
+                let token = resolve_token(&tg_config.token_ref, &tg_config.token_env, &keystore);
                 if !token.is_empty() {
                     let adapter = Arc::new(TelegramAdapter::with_config(
                         token,
@@ -151,7 +236,7 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
                 } else {
                     tracing::warn!(
                         token_env = %tg_config.token_env,
-                        "Telegram enabled but token env var is empty"
+                        "Telegram enabled but token is empty"
                     );
                     None
                 }
@@ -165,7 +250,7 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
     let whatsapp: Option<Arc<WhatsAppAdapter>> =
         if let Some(ref wa_config) = config.channels.whatsapp {
             if wa_config.enabled {
-                let token = std::env::var(&wa_config.token_env).unwrap_or_default();
+                let token = resolve_token(&wa_config.token_ref, &wa_config.token_env, &keystore);
                 if !token.is_empty() && !wa_config.phone_number_id.is_empty() {
                     let adapter = Arc::new(WhatsAppAdapter::with_config(
                         token,
@@ -195,12 +280,73 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
             None
         };
 
+    let discord: Option<Arc<DiscordAdapter>> = if let Some(ref dc_config) = config.channels.discord
+    {
+        if dc_config.enabled {
+            let token = resolve_token(&dc_config.token_ref, &dc_config.token_env, &keystore);
+            if !token.is_empty() {
+                let adapter = Arc::new(DiscordAdapter::with_config(
+                    token,
+                    dc_config.allowed_guild_ids.clone(),
+                ));
+                channel_router
+                    .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
+                    .await;
+                tracing::info!("Discord adapter registered");
+                Some(adapter)
+            } else {
+                tracing::warn!(
+                    token_env = %dc_config.token_env,
+                    "Discord enabled but token env var is empty"
+                );
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let hmac_secret = {
         use rand::RngCore;
         let mut buf = vec![0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut buf);
         buf
     };
+
+    let retriever = Arc::new(ironclad_agent::retrieval::MemoryRetriever::new(
+        config.memory.clone(),
+    ));
+
+    let mut tool_registry = ToolRegistry::new();
+    tool_registry.register(Box::new(EchoTool));
+    tool_registry.register(Box::new(ScriptRunnerTool::new(config.skills.clone())));
+    let tool_registry = Arc::new(tool_registry);
+
+    let approvals = Arc::new(ApprovalManager::new(config.approvals.clone()));
+
+    let oauth = Arc::new(OAuthManager::new()?);
+
+    let ann_index = ironclad_db::ann::AnnIndex::new(config.memory.ann_index);
+    if config.memory.ann_index {
+        match ann_index.build_from_db(&db) {
+            Ok(count) => {
+                if ann_index.is_built() {
+                    tracing::info!(count, "ANN index built from database");
+                } else {
+                    tracing::info!(
+                        count,
+                        min = ann_index.min_entries_for_index,
+                        "ANN index below threshold, brute-force search will be used"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to build ANN index, falling back to brute-force");
+            }
+        }
+    }
 
     let state = AppState {
         db,
@@ -219,8 +365,126 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
         channel_router,
         telegram,
         whatsapp,
+        retriever,
+        ann_index,
+        tools: tool_registry,
+        approvals,
+        discord,
+        oauth,
+        keystore,
         started_at: std::time::Instant::now(),
     };
+
+    // Periodic ANN index rebuild (every 10 minutes)
+    if config.memory.ann_index {
+        let ann_db = state.db.clone();
+        let ann_idx = state.ann_index.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                match ann_idx.rebuild(&ann_db) {
+                    Ok(count) => {
+                        tracing::debug!(count, "ANN index rebuilt");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ANN index rebuild failed");
+                    }
+                }
+            }
+        });
+        tracing::info!("ANN index rebuild daemon spawned (10min interval)");
+    }
+
+    // Load persisted semantic cache
+    {
+        let loaded = ironclad_db::cache::load_cache_entries(&state.db).unwrap_or_default();
+        if !loaded.is_empty() {
+            let imported: Vec<(String, ironclad_llm::ExportedCacheEntry)> = loaded
+                .into_iter()
+                .map(|(id, pe)| {
+                    let ttl = pe
+                        .expires_at
+                        .and_then(|e| {
+                            chrono::NaiveDateTime::parse_from_str(&e, "%Y-%m-%dT%H:%M:%S")
+                                .ok()
+                                .or_else(|| {
+                                    chrono::NaiveDateTime::parse_from_str(&e, "%Y-%m-%d %H:%M:%S")
+                                        .ok()
+                                })
+                        })
+                        .map(|exp| {
+                            let now = chrono::Utc::now().naive_utc();
+                            if exp > now {
+                                (exp - now).num_seconds().max(0) as u64
+                            } else {
+                                0
+                            }
+                        })
+                        .unwrap_or(3600);
+
+                    (
+                        id,
+                        ironclad_llm::ExportedCacheEntry {
+                            content: pe.response,
+                            model: pe.model,
+                            tokens_saved: pe.tokens_saved,
+                            hits: pe.hit_count,
+                            involved_tools: false,
+                            embedding: pe.embedding,
+                            ttl_remaining_secs: ttl,
+                        },
+                    )
+                })
+                .collect();
+            let count = imported.len();
+            let mut llm = state.llm.write().await;
+            llm.cache.import_entries(imported);
+            tracing::info!(count, "Loaded semantic cache from database");
+        }
+    }
+
+    // Periodic cache flush (every 5 minutes)
+    {
+        let flush_db = state.db.clone();
+        let flush_llm = Arc::clone(&state.llm);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                let entries = {
+                    let llm = flush_llm.read().await;
+                    llm.cache.export_entries()
+                };
+                for (hash, entry) in &entries {
+                    let expires = chrono::Utc::now()
+                        + chrono::Duration::seconds(entry.ttl_remaining_secs as i64);
+                    let pe = ironclad_db::cache::PersistedCacheEntry {
+                        prompt_hash: hash.clone(),
+                        response: entry.content.clone(),
+                        model: entry.model.clone(),
+                        tokens_saved: entry.tokens_saved,
+                        hit_count: entry.hits,
+                        embedding: entry.embedding.clone(),
+                        created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+                        expires_at: Some(expires.format("%Y-%m-%dT%H:%M:%S").to_string()),
+                    };
+                    ironclad_db::cache::save_cache_entry(&flush_db, hash, &pe)
+                        .inspect_err(
+                            |e| tracing::warn!(error = %e, hash, "failed to persist cache entry"),
+                        )
+                        .ok();
+                }
+                ironclad_db::cache::evict_expired_cache(&flush_db)
+                    .inspect_err(|e| tracing::warn!(error = %e, "failed to evict expired cache"))
+                    .ok();
+                tracing::debug!(count = entries.len(), "Flushed semantic cache to database");
+            }
+        });
+        tracing::info!("Cache flush daemon spawned (5min interval)");
+    }
 
     // Start heartbeat daemon
     {
@@ -231,6 +495,20 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
             ironclad_schedule::run_heartbeat(daemon, hb_wallet, hb_db).await;
         });
         tracing::info!("Heartbeat daemon spawned (60s interval)");
+    }
+
+    // Delivery retry queue drain (every 30 seconds)
+    {
+        let drain_router = Arc::clone(&state.channel_router);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                drain_router.drain_retry_queue().await;
+            }
+        });
+        tracing::info!("Delivery retry queue drain daemon spawned (30s interval)");
     }
 
     // Start cron worker
@@ -297,7 +575,10 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
         .route("/ws", ws_route(event_bus.clone()))
         .layer(auth_layer)
         .layer(cors)
-        .layer(GlobalRateLimitLayer::new(100, Duration::from_secs(60)));
+        .layer(GlobalRateLimitLayer::new(
+            u64::from(config.server.rate_limit_requests),
+            Duration::from_secs(config.server.rate_limit_window_secs),
+        ));
     Ok(app)
 }
 

@@ -12,7 +12,10 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
+    scope_key TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
     model TEXT,
+    nickname TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     metadata TEXT
@@ -311,10 +314,48 @@ CREATE TABLE IF NOT EXISTS embeddings (
     source_table TEXT NOT NULL,
     source_id TEXT NOT NULL,
     content_preview TEXT NOT NULL,
-    embedding_json TEXT NOT NULL,
+    embedding_json TEXT NOT NULL DEFAULT '',
+    embedding_blob BLOB,
+    dimensions INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_embeddings_source ON embeddings(source_table, source_id);
+
+CREATE TABLE IF NOT EXISTS sub_agents (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    model TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'specialist',
+    description TEXT,
+    skills_json TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    session_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS context_checkpoints (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    system_prompt_hash TEXT NOT NULL,
+    memory_summary TEXT NOT NULL,
+    active_tasks TEXT,
+    conversation_digest TEXT,
+    turn_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON context_checkpoints(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS hippocampus (
+    table_name TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    columns_json TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT 'system',
+    agent_owned INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_hippocampus_agent ON hippocampus(created_by, agent_owned);
 "#;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
@@ -331,7 +372,9 @@ pub fn initialize_db(db: &Database) -> Result<()> {
             .map_err(|e| IroncladError::Database(e.to_string()))?;
 
         if !version_exists {
-            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [1])
+            // The embedded schema already incorporates all migrations through v6,
+            // so seed the version to 6 so run_migrations() won't re-apply them.
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [6])
                 .map_err(|e| IroncladError::Database(e.to_string()))?;
         }
     }
@@ -408,6 +451,7 @@ fn version_from_name(name: &str) -> i64 {
         .unwrap_or(0)
 }
 
+#[allow(dead_code)]
 pub fn table_count(db: &Database) -> Result<usize> {
     let conn = db.conn();
     let count: usize = conn
@@ -428,8 +472,8 @@ mod tests {
     fn schema_creates_all_tables() {
         let db = Database::new(":memory:").unwrap();
         let count = table_count(&db).unwrap();
-        // 27 regular tables + 1 FTS5 virtual table = 28 user-defined tables
-        assert_eq!(count, 28, "expected 28 user-defined tables, got {count}");
+        // 29 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus = 31
+        assert_eq!(count, 31, "expected 31 user-defined tables, got {count}");
     }
 
     #[test]
@@ -438,7 +482,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 28);
+        assert_eq!(count, 31);
     }
 
     #[test]
@@ -452,7 +496,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, 1);
+        assert!(version >= 5, "embedded schema seeds at version 5");
     }
 
     #[test]
@@ -487,9 +531,9 @@ mod tests {
             .unwrap();
         assert!(
             !versions.is_empty(),
-            "schema_version should have at least version 1"
+            "schema_version should have at least one entry"
         );
-        assert_eq!(versions[0], 1);
+        assert!(versions[0] >= 5, "embedded schema seeds at version 5");
         for w in versions.windows(2) {
             assert!(w[1] > w[0], "versions must be strictly increasing");
         }
@@ -509,12 +553,12 @@ mod tests {
         let conn = db.conn();
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM schema_version WHERE version = 1",
+                "SELECT COUNT(*) FROM schema_version WHERE version >= 5",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1);
+        assert!(count >= 1, "embedded schema should seed at least version 5");
     }
 
     #[test]

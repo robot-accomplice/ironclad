@@ -5,7 +5,7 @@ use ironclad_db::Database;
 #[test]
 fn store_and_retrieve_all_memory_tiers() {
     let db = Database::new(":memory:").unwrap();
-    let session_id = ironclad_db::sessions::find_or_create(&db, "memory-test-agent").unwrap();
+    let session_id = ironclad_db::sessions::find_or_create(&db, "memory-test-agent", None).unwrap();
 
     ironclad_db::memory::store_working(&db, &session_id, "goal", "complete integration tests", 9)
         .unwrap();
@@ -54,6 +54,7 @@ fn budget_allocation_matches_config() {
         embedding_provider: None,
         embedding_model: None,
         hybrid_weight: 0.5,
+        ann_index: false,
     };
 
     let manager = MemoryBudgetManager::new(config);
@@ -84,6 +85,7 @@ fn budget_rollover_assigned_to_working() {
         embedding_provider: None,
         embedding_model: None,
         hybrid_weight: 0.5,
+        ann_index: false,
     };
 
     let manager = MemoryBudgetManager::new(config);
@@ -100,7 +102,7 @@ fn budget_rollover_assigned_to_working() {
 #[test]
 fn full_text_search_across_tiers() {
     let db = Database::new(":memory:").unwrap();
-    let session_id = ironclad_db::sessions::find_or_create(&db, "fts-test-agent").unwrap();
+    let session_id = ironclad_db::sessions::find_or_create(&db, "fts-test-agent", None).unwrap();
 
     ironclad_db::memory::store_working(&db, &session_id, "note", "the quick brown fox", 5).unwrap();
     ironclad_db::memory::store_episodic(&db, "event", "a lazy dog appeared", 5).unwrap();
@@ -122,7 +124,7 @@ fn full_text_search_across_tiers() {
 #[test]
 fn memory_ingestion_after_ingest_turn_tiers() {
     let db = Database::new(":memory:").unwrap();
-    let session_id = ironclad_db::sessions::find_or_create(&db, "ingest-test").unwrap();
+    let session_id = ironclad_db::sessions::find_or_create(&db, "ingest-test", None).unwrap();
 
     ironclad_agent::memory::ingest_turn(
         &db,

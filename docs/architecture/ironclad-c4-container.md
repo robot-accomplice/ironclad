@@ -18,15 +18,15 @@ C4Container
 
         Container(channels, "ironclad-channels", "Rust", "Telegram, WhatsApp, WebSocket,<br/>Agent-to-Agent (A2A)")
 
-        Container(agent, "ironclad-agent", "Rust", "ReAct loop, tools, policy engine (6 rules),<br/>injection defense (4 layers), prompt builder,<br/>context assembly, memory retrieval,<br/>skills (TOML + MD), script runner")
+        Container(agent, "ironclad-agent", "Rust", "ReAct loop, tools, policy engine (6 rules),<br/>injection defense (4 layers), prompt builder,<br/>context assembly, hybrid RAG retrieval,<br/>content chunking, skills (TOML + MD), script runner")
 
-        Container(llm, "ironclad-llm", "Rust / reqwest", "LLM client: provider registry,<br/>format translation, heuristic model router,<br/>in-memory semantic cache (HashMap),<br/>circuit breaker, tier adaptation")
+        Container(llm, "ironclad-llm", "Rust / reqwest", "LLM client: provider registry,<br/>format translation, heuristic model router,<br/>semantic cache (HashMap + SQLite persist),<br/>circuit breaker, tier adaptation,<br/>multi-provider embedding client")
 
         Container(schedule, "ironclad-schedule", "Rust / tokio", "Heartbeat daemon,<br/>cron worker (DB-backed, leased)")
 
         Container(wallet, "ironclad-wallet", "Rust / alloy", "Ethereum wallet, treasury,<br/>yield (e.g. Aave V3 on Base)")
 
-        Container(db, "ironclad-db", "Rust / rusqlite", "SQLite: sessions, messages, turns,<br/>5-tier memory, memory_fts (FTS5),<br/>cron jobs/runs, transactions, costs, skills, identity")
+        Container(db, "ironclad-db", "Rust / rusqlite", "SQLite: sessions, messages, turns,<br/>5-tier memory, memory_fts (FTS5),<br/>embeddings (BLOB), ANN index (HNSW),<br/>semantic cache persistence,<br/>cron jobs/runs, transactions, costs, skills, identity")
 
         Container(core, "ironclad-core", "Rust", "Config, types, errors, personality")
 
@@ -64,9 +64,9 @@ C4Container
 | Crate | Role | Depends On |
 |-------|------|------------|
 | `ironclad-core` | Config, types, errors, personality | — |
-| `ironclad-db` | SQLite schema, migrations, sessions, memory, FTS, cron, skills, metrics | `ironclad-core` |
-| `ironclad-llm` | LLM client, heuristic router, in-memory semantic cache, circuit breaker | `ironclad-core` |
-| `ironclad-agent` | Agent loop, tools, policy (6 rules), injection defense, skills | `ironclad-core`, `ironclad-db`, `ironclad-llm` |
+| `ironclad-db` | SQLite schema, migrations, sessions, memory, FTS, embeddings (BLOB), ANN index, cache persistence, cron, skills, metrics | `ironclad-core` |
+| `ironclad-llm` | LLM client, heuristic router, semantic cache (persistent), circuit breaker, embedding client | `ironclad-core` |
+| `ironclad-agent` | Agent loop, tools, policy (6 rules), injection defense, hybrid RAG retrieval, chunking, skills | `ironclad-core`, `ironclad-db`, `ironclad-llm` |
 | `ironclad-wallet` | Wallet, treasury, yield (Base, Aave V3) | `ironclad-core`, `ironclad-db` |
 | `ironclad-schedule` | Heartbeat daemon, cron worker | `ironclad-core`, `ironclad-db`, `ironclad-agent`, `ironclad-wallet` |
 | `ironclad-channels` | Telegram, WhatsApp, WebSocket, A2A | `ironclad-core` |
@@ -80,7 +80,7 @@ The diagram includes `Rel(schedule, wallet, "In-process: heartbeat")`: ironclad-
 ## Implementation Notes
 
 - **Routing**: Heuristic classifier in `ironclad-llm/src/router.rs` (weighted message length, tool calls, depth). No ONNX or ML models. Config `mode` default is `"heuristic"`; `"ml"` is a backward-compat alias for complexity-aware routing.
-- **Cache**: In-memory `SemanticCache` in `ironclad-llm/src/cache.rs` (HashMap, L1 exact / L2 semantic n-gram / L3 tool TTL). Not SQLite-backed at runtime.
+- **Cache**: `SemanticCache` in `ironclad-llm/src/cache.rs` (HashMap, L1 exact / L2 semantic cosine / L3 tool TTL). Persisted to SQLite via `ironclad-db/src/cache.rs` — loaded on boot, flushed every 5 minutes.
 - **Policy rules**: Six rules in `ironclad-agent/src/policy.rs`: AuthorityRule, CommandSafetyRule, FinancialRule, PathProtectionRule, RateLimitRule, ValidationRule. Server bootstrap wires AuthorityRule and CommandSafetyRule by default.
 - **FTS**: `memory_fts` FTS5 virtual table with columns `content`, `category`, `source_table`, `source_id`. Synced via trigger for episodic; working and semantic inserts in `ironclad-db/src/memory.rs`.
 

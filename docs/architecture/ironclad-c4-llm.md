@@ -1,6 +1,6 @@
 # C4 Level 3: Component Diagram -- ironclad-llm
 
-*LLM client layer: HTTP client (reqwest), provider translation (UnifiedRequest/UnifiedResponse), **heuristic** complexity classification and model routing, **in-memory** semantic cache (HashMap), circuit breaker, and deduplication. No ONNX or ML models.*
+*LLM client layer: HTTP client (reqwest), provider translation (UnifiedRequest/UnifiedResponse), **heuristic** complexity classification and model routing, semantic cache (in-memory HashMap with SQLite persistence), circuit breaker, deduplication, and multi-provider embedding client. No ONNX or ML models.*
 
 ---
 
@@ -9,7 +9,7 @@
 ```mermaid
 flowchart TB
     subgraph IroncladLlm ["ironclad-llm"]
-        CACHE["cache.rs<br/>In-Memory SemanticCache<br/>(HashMap)"]
+        CACHE["cache.rs<br/>SemanticCache<br/>(HashMap + SQLite persist)"]
         ROUTER["router.rs<br/>Heuristic Model Router"]
         CIRCUIT["circuit.rs<br/>Circuit Breaker"]
         DEDUP["dedup.rs<br/>In-Flight Dedup"]
@@ -17,15 +17,24 @@ flowchart TB
         TIER["tier.rs<br/>Tier Adaptation"]
         CLIENT["client.rs<br/>HTTP Client Pool"]
         PROVIDER["provider.rs<br/>Provider Definitions"]
+        EMBEDDING["embedding.rs<br/>Multi-Provider Embedding Client"]
     end
 
-    subgraph CacheDetail ["cache.rs — In-Memory Only (HashMap)"]
+    subgraph CacheDetail ["cache.rs — HashMap + SQLite Persistence"]
         direction LR
         L1["L1: Exact hash<br/>SHA-256(system|msgs|user)"]
-        L2["L2: Semantic n-gram<br/>cosine > threshold"]
+        L2["L2: Semantic cosine<br/>(real embeddings or n-gram)"]
         L3["L3: Tool TTL<br/>shorter TTL for tools"]
         STORE["store() / store_with_embedding()"]
         EVICT["evict_expired() · evict_lfu()"]
+        PERSIST_C["In-memory: export_entries() / import_entries()<br/>DB layer: save_cache_entry() / load_cache_entries()<br/>(ironclad-db/cache.rs)"]
+    end
+
+    subgraph EmbeddingDetail ["embedding.rs — Multi-Provider Embedding"]
+        EMBED_CFG["EmbeddingConfig:<br/>base_url, embedding_path, model,<br/>dimensions, format, api_key_env,<br/>auth_header, extra_headers"]
+        EMBED_BATCH["embed() / embed_single():<br/>batch to provider endpoint"]
+        EMBED_FORMATS["Format translation:<br/>OpenAI, Ollama, Google"]
+        EMBED_FALLBACK["fallback_ngram():<br/>char 3-gram hash when<br/>no provider configured"]
     end
 
     subgraph RouterDetail ["router.rs"]
@@ -83,7 +92,7 @@ flowchart TB
 
 ## Request Pipeline (in order)
 
-1. **Cache check** (`cache.rs`) — in-memory 3-level lookup (exact hash → tool TTL → semantic n-gram), return on hit
+1. **Cache check** (`cache.rs`) — 3-level lookup (exact hash → tool TTL → semantic cosine), return on hit
 2. **Routing** (`router.rs`) — heuristic `classify_complexity(features)`; `select_for_complexity()` with optional `ProviderRegistry` for `is_local`
 3. **Circuit breaker** (`circuit.rs`) — per-provider state (Closed/Open/HalfOpen), configurable threshold/window/cooldown
 4. **Dedup** (`dedup.rs`) — in-flight duplicate detection
@@ -91,7 +100,14 @@ flowchart TB
 6. **Tier adaptation** (`tier.rs`) — tier-based prompt adaptation (T1 strip/condense, T2 preamble, T3/T4 passthrough)
 7. **Forward** (`client.rs`) — `forward_request` / `forward_with_provider` (reqwest POST, auth + extra headers)
 8. **Response** — back-translate, update breaker, record cost
-9. **Cache store** (`cache.rs`) — `store` or `store_with_embedding` in HashMap
+9. **Cache store** (`cache.rs`) — `store` or `store_with_embedding` in HashMap; periodically flushed to SQLite
+
+## Embedding Pipeline (used by ironclad-agent for RAG)
+
+1. **Config resolution** (`lib.rs`) — `resolve_embedding_config()` matches `memory.embedding_provider` to a provider with `embedding_path`
+2. **Batch embed** (`embedding.rs`) — `embed()` / `embed_single()` send texts to provider (OpenAI/Ollama/Google) or fall back to n-gram
+3. **Format translation** (`embedding.rs`) — builds provider-specific request body, parses response (OpenAI `data[].embedding`, Ollama `embeddings[]`, Google `embeddings[].values`)
+4. **Graceful fallback** — on network error or missing provider, `fallback_ngram()` produces deterministic char-3-gram hash vectors
 
 ## Dependencies
 
