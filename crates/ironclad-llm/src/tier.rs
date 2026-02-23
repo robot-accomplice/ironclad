@@ -30,6 +30,7 @@ pub fn classify(model_name: &str) -> ModelTier {
         || lower.contains("gpt-4")
         || lower.contains("codex")
         || lower.contains("gemini-2")
+        || lower.contains("gemini-3")
     {
         ModelTier::T3
     } else {
@@ -107,6 +108,9 @@ mod tests {
         assert_eq!(classify("openai/gpt-5.3-codex"), ModelTier::T4);
         assert_eq!(classify("openai/codex-mini"), ModelTier::T2);
         assert_eq!(classify("gemini-2.5-pro"), ModelTier::T3);
+        assert_eq!(classify("gemini-3-pro-preview"), ModelTier::T3);
+        assert_eq!(classify("gemini-3-flash-preview"), ModelTier::T2);
+        assert_eq!(classify("gemini-3.1-pro-preview"), ModelTier::T3);
 
         assert_eq!(classify("claude-opus-5"), ModelTier::T4);
         assert_eq!(classify("gpt-5-turbo"), ModelTier::T4);

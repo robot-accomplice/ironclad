@@ -46,6 +46,15 @@ api_key_env = "GOOGLE_API_KEY"
 cost_per_input_token = 0.0000025
 cost_per_output_token = 0.00001
 
+[providers.moonshot]
+url = "https://api.moonshot.ai"
+tier = "T2"
+format = "openai"
+chat_path = "/v1/chat/completions"
+api_key_env = "MOONSHOT_API_KEY"
+cost_per_input_token = 0.000001
+cost_per_output_token = 0.000002
+
 [providers.openrouter]
 url = "https://openrouter.ai/api"
 tier = "T2"
