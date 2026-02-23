@@ -1170,7 +1170,7 @@ async fn build_status_reply(state: &AppState) -> String {
         .collect();
 
     let mut lines = vec![
-        format!("⚙ {} ({})", config.agent.name, config.agent.id),
+        format!("🤖 {} ({})", config.agent.name, config.agent.id),
         format!("  state: running"),
         format!("  primary: {primary}"),
     ];
