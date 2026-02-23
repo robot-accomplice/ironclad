@@ -380,7 +380,7 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default = "default_bind")]
     pub bind: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub api_key: Option<String>,
     #[serde(default = "default_log_dir")]
     pub log_dir: PathBuf,

@@ -1,5 +1,6 @@
 use crate::Database;
 use ironclad_core::{IroncladError, Result};
+use rusqlite::OptionalExtension;
 
 #[derive(Debug, Clone)]
 pub struct SkillRecord {
@@ -172,20 +173,6 @@ fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillRecord> {
         last_loaded_at: row.get(11)?,
         created_at: row.get(12)?,
     })
-}
-
-trait Optional<T> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error>;
-}
-
-impl<T> Optional<T> for std::result::Result<T, rusqlite::Error> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error> {
-        match self {
-            Ok(v) => Ok(Some(v)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
 }
 
 #[cfg(test)]

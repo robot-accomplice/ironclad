@@ -157,18 +157,19 @@ fn homoglyph_fold(s: &str) -> String {
     out
 }
 
+static HEX_ENTITY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"&#x([0-9a-fA-F]+);").unwrap());
+static DEC_ENTITY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&#(\d+);").unwrap());
+
 /// Decodes common encoding bypasses: HTML entities, percent-encoding, and strips zero-width chars.
 fn decode_common_encodings(s: &str) -> String {
-    // Patterns are compile-time constants; unwrap is safe.
-    let hex_re = Regex::new(r"&#x([0-9a-fA-F]+);").unwrap();
-    let dec_re = Regex::new(r"&#(\d+);").unwrap();
-    let mut out = hex_re
+    let mut out = HEX_ENTITY_RE
         .replace_all(s, |caps: &regex::Captures<'_>| {
             let n = u32::from_str_radix(caps.get(1).unwrap().as_str(), 16).unwrap_or(0);
             char::from_u32(n).unwrap_or('\u{FFFD}').to_string()
         })
         .to_string();
-    out = dec_re
+    out = DEC_ENTITY_RE
         .replace_all(&out, |caps: &regex::Captures<'_>| {
             let n = caps.get(1).unwrap().as_str().parse::<u32>().unwrap_or(0);
             char::from_u32(n).unwrap_or('\u{FFFD}').to_string()

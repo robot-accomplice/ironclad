@@ -1,3 +1,4 @@
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::Database;
@@ -17,6 +18,65 @@ impl SessionScope {
             Self::Agent => "agent".to_string(),
             Self::Peer { peer_id, channel } => format!("peer:{channel}:{peer_id}"),
             Self::Group { group_id, channel } => format!("group:{channel}:{group_id}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionStatus {
+    Active,
+    Archived,
+    Expired,
+}
+
+impl std::fmt::Display for SessionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::Archived => write!(f, "archived"),
+            Self::Expired => write!(f, "expired"),
+        }
+    }
+}
+
+impl SessionStatus {
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "archived" => Self::Archived,
+            "expired" => Self::Expired,
+            _ => Self::Active,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageRole {
+    User,
+    Assistant,
+    System,
+    Tool,
+}
+
+impl std::fmt::Display for MessageRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::User => write!(f, "user"),
+            Self::Assistant => write!(f, "assistant"),
+            Self::System => write!(f, "system"),
+            Self::Tool => write!(f, "tool"),
+        }
+    }
+}
+
+impl MessageRole {
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "assistant" => Self::Assistant,
+            "system" => Self::System,
+            "tool" => Self::Tool,
+            _ => Self::User,
         }
     }
 }
@@ -437,20 +497,6 @@ pub fn message_count(db: &Database, session_id: &str) -> Result<i64> {
         |row| row.get(0),
     )
     .map_err(|e| IroncladError::Database(e.to_string()))
-}
-
-trait Optional<T> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error>;
-}
-
-impl<T> Optional<T> for std::result::Result<T, rusqlite::Error> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error> {
-        match self {
-            Ok(v) => Ok(Some(v)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
 }
 
 #[cfg(test)]

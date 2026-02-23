@@ -121,6 +121,7 @@ pub struct Wallet {
     private_key_path: PathBuf,
     chain_id: u64,
     rpc_url: String,
+    http: reqwest::Client,
 }
 
 fn eth_address_from_public_key(signing_key: &SigningKey) -> String {
@@ -191,6 +192,7 @@ impl Wallet {
                     private_key_path: wallet_path.clone(),
                     chain_id: config.chain_id,
                     rpc_url: config.rpc_url.clone(),
+                    http: reqwest::Client::new(),
                 });
             }
 
@@ -246,6 +248,7 @@ impl Wallet {
                 private_key_path: wallet_path.clone(),
                 chain_id: config.chain_id,
                 rpc_url: config.rpc_url.clone(),
+                http: reqwest::Client::new(),
             })
         }
     }
@@ -298,8 +301,8 @@ impl Wallet {
             "id": 1,
         });
 
-        let client = reqwest::Client::new();
-        let resp = client
+        let resp = self
+            .http
             .post(&self.rpc_url)
             .json(&rpc_body)
             .send()
@@ -344,8 +347,8 @@ impl Wallet {
             "id": 1,
         });
 
-        let client = reqwest::Client::new();
-        let resp = client
+        let resp = self
+            .http
             .post(&self.rpc_url)
             .json(&rpc_body)
             .send()
@@ -571,6 +574,7 @@ impl Wallet {
             private_key_path: PathBuf::from("/dev/null"),
             chain_id: 8453,
             rpc_url: "https://mainnet.base.org".to_string(),
+            http: reqwest::Client::new(),
         }
     }
 }

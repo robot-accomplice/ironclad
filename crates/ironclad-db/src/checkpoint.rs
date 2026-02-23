@@ -1,5 +1,6 @@
 use crate::Database;
 use ironclad_core::{IroncladError, Result};
+use rusqlite::OptionalExtension;
 
 #[derive(Debug, Clone)]
 pub struct ContextCheckpoint {
@@ -77,20 +78,6 @@ pub fn count_checkpoints(db: &Database, session_id: &str) -> Result<i64> {
         |row| row.get(0),
     )
     .map_err(|e| IroncladError::Database(e.to_string()))
-}
-
-trait Optional<T> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error>;
-}
-
-impl<T> Optional<T> for std::result::Result<T, rusqlite::Error> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error> {
-        match self {
-            Ok(v) => Ok(Some(v)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
 }
 
 #[cfg(test)]
