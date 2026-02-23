@@ -71,17 +71,20 @@ pub fn read_log_entries(
     lines: usize,
     level_filter: Option<&str>,
 ) -> Result<Vec<LogEntry>, String> {
-    let mut log_files: Vec<std::path::PathBuf> = std::fs::read_dir(log_dir)
-        .map_err(|e| format!("failed to read log directory: {}", e))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("ironclad.log") || n.ends_with(".log"))
-        })
-        .collect();
+    let mut log_files: Vec<std::path::PathBuf> = match std::fs::read_dir(log_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(format!("failed to read log directory: {}", e)),
+    }
+    .filter_map(|e| e.ok())
+    .map(|e| e.path())
+    .filter(|p| {
+        p.is_file()
+            && p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("ironclad.log") || n.ends_with(".log"))
+    })
+    .collect();
     if log_files.is_empty() {
         return Ok(vec![]);
     }
