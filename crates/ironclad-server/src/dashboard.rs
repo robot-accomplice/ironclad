@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn dashboard_never_injects_api_key() {
-        let html = build_dashboard_html(Some("my-secret-key"));
+        let html = build_dashboard_html(Some("test-dashboard-key"));
         assert!(
             html.contains("API_KEY = null"),
             "API key must never be embedded"

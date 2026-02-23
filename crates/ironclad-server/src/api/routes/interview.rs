@@ -108,17 +108,17 @@ pub async fn interview_turn(
     let (url, key, auth_header, extra_headers, format) = match provider {
         Some(p) => {
             let url = format!("{}{}", p.url, p.chat_path);
-            let key = if p.auth_mode == "oauth" {
-                state.oauth.resolve_token(&p.name).await.unwrap_or_default()
-            } else if let Some(ref key_ref) = p.api_key_ref {
-                if let Some(name) = key_ref.strip_prefix("keystore:") {
-                    state.keystore.get(name).unwrap_or_default()
-                } else {
-                    std::env::var(&p.api_key_env).unwrap_or_default()
-                }
-            } else {
-                std::env::var(&p.api_key_env).unwrap_or_default()
-            };
+            let key = super::admin::resolve_provider_key(
+                &p.name,
+                p.is_local,
+                &p.auth_mode,
+                p.api_key_ref.as_deref(),
+                &p.api_key_env,
+                &state.oauth,
+                &state.keystore,
+            )
+            .await
+            .unwrap_or_default();
             (
                 url,
                 key,
