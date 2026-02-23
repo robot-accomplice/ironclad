@@ -35,7 +35,6 @@ impl KeySource {
             Self::Missing => ("missing", "none"),
         }
     }
-
 }
 
 /// Determine the source and value of a provider's API key using a priority
@@ -120,8 +119,15 @@ pub(crate) fn check_key_status(
     auth_mode: Option<&str>,
     keystore: &ironclad_core::keystore::Keystore,
 ) -> (&'static str, &'static str) {
-    resolve_key_source(provider_name, is_local, api_key_ref, api_key_env, auth_mode, keystore)
-        .status_pair()
+    resolve_key_source(
+        provider_name,
+        is_local,
+        api_key_ref,
+        api_key_env,
+        auth_mode,
+        keystore,
+    )
+    .status_pair()
 }
 
 // ── Approval management routes ───────────────────────────────

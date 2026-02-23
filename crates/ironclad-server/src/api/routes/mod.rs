@@ -1372,7 +1372,7 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn webhook_whatsapp_parses_real_payload_fixture() {
-        let secret = "my-app-secret";
+        let secret = "test-whatsapp-hmac-key";
         let state = test_state_with_whatsapp_app_secret(secret);
         let app = build_router(state);
         let body = serde_json::json!({
@@ -1421,7 +1421,7 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn webhook_whatsapp_rejects_invalid_signature() {
-        let state = test_state_with_whatsapp_app_secret("my-app-secret");
+        let state = test_state_with_whatsapp_app_secret("test-whatsapp-hmac-key");
         let app = build_router(state);
         let body_bytes = br#"{"object":"whatsapp_business_account","entry":[]}"#;
         let response = app
@@ -1531,7 +1531,7 @@ primary = "ollama/qwen3:8b"
     async fn protected_route_returns_401_without_api_key() {
         use crate::auth::ApiKeyLayer;
         let state = test_state();
-        let app = build_router(state).layer(ApiKeyLayer::new(Some("my-secret".into())));
+        let app = build_router(state).layer(ApiKeyLayer::new(Some("test-api-key-401".into())));
         let req = Request::builder()
             .uri("/api/sessions")
             .body(Body::empty())
@@ -1544,10 +1544,10 @@ primary = "ollama/qwen3:8b"
     async fn protected_route_returns_ok_with_correct_api_key() {
         use crate::auth::ApiKeyLayer;
         let state = test_state();
-        let app = build_router(state).layer(ApiKeyLayer::new(Some("my-secret".into())));
+        let app = build_router(state).layer(ApiKeyLayer::new(Some("test-api-key-200".into())));
         let req = Request::builder()
             .uri("/api/sessions")
-            .header("x-api-key", "my-secret")
+            .header("x-api-key", "test-api-key-200")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

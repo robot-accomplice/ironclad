@@ -144,10 +144,10 @@ mod tests {
     #[test]
     fn extract_x_api_key_header() {
         let req = Request::builder()
-            .header("x-api-key", "my-secret")
+            .header("x-api-key", "test-key-789")
             .body(Body::empty())
             .unwrap();
-        assert_eq!(extract_api_key(&req).as_deref(), Some("my-secret"));
+        assert_eq!(extract_api_key(&req).as_deref(), Some("test-key-789"));
     }
 
     #[test]
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn layer_some_key_creates_middleware() {
-        let layer = ApiKeyLayer::new(Some("secret".into()));
-        assert_eq!(layer.key.as_deref(), Some("secret"));
+        let layer = ApiKeyLayer::new(Some("test-layer-key".into()));
+        assert_eq!(layer.key.as_deref(), Some("test-layer-key"));
     }
 }
