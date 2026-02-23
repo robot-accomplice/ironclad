@@ -3,11 +3,11 @@
   "packs": {
     "providers": {
       "sha256": "9404884a09ea9822d3487f246b504503412bcdfcabbf54097caa7f29ba05043d",
-      "path": "registry/providers.toml"
+      "path": "providers.toml"
     },
     "skills": {
       "sha256": null,
-      "path": "registry/skills/",
+      "path": "skills/",
       "files": {
         "hello.md": "1c9e6f0fb1d0beb9451a716b631a6bf3ad1decd882ba304db062ba4a3585539d",
         "summarize.md": "cd11b2ecb572628bc2c2cb5b84f8f2e2f4c31babb72247cdb27cf12e0be0bda1",

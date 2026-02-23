@@ -2370,13 +2370,14 @@ primary = "ollama/qwen3:8b"
     }
 
     #[test]
-    fn read_log_entries_missing_dir_returns_error() {
+    fn read_log_entries_missing_dir_returns_empty() {
         let result = health::read_log_entries(
             std::path::Path::new("/tmp/nonexistent-ironclad-logs"),
             10,
             None,
         );
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 
     // ── Mock-based tests: WhatsApp webhook verify ─────────────────
