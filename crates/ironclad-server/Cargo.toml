@@ -1,6 +1,6 @@
 [package]
 name = "ironclad-server"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 description = "Autonomous agent runtime — HTTP API, CLI, WebSocket push, and migration engine"
 license.workspace = true
