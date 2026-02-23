@@ -2,7 +2,7 @@
   "version": "0.1.0",
   "packs": {
     "providers": {
-      "sha256": "9404884a09ea9822d3487f246b504503412bcdfcabbf54097caa7f29ba05043d",
+      "sha256": "67379dd3a0a5a678ec25318135a0a4513a7d4bf49ea0d9ecaf9cc9b434574171",
       "path": "providers.toml"
     },
     "skills": {
