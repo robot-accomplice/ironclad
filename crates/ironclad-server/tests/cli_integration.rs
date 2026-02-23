@@ -167,5 +167,5 @@ fn cli_version_shows_version() {
         .arg("version")
         .assert()
         .success()
-        .stderr(predicates::str::contains("0.2.0"));
+        .stderr(predicates::str::contains(env!("CARGO_PKG_VERSION")));
 }
