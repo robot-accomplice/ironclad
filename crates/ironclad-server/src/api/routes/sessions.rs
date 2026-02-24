@@ -422,6 +422,19 @@ pub async fn analyze_turn(
     } else {
         "Turn context looks healthy; no major optimization flags."
     };
+    let prompt = format!(
+        "Analyze this agent turn and provide concrete, actionable guidance.\n\
+         Return concise markdown with:\n\
+         1) Key issues\n\
+         2) Likely root causes\n\
+         3) Top 3 remediation steps\n\
+         4) Risk level (low/medium/high)\n\n\
+         Turn summary: {summary}\n\
+         Critical findings: {critical_count}\n\
+         Warning findings: {warning_count}\n\
+         Heuristic tips:\n{}",
+        serde_json::to_string_pretty(&tips).unwrap_or_else(|_| "[]".to_string())
+    );
 
     let llm = run_llm_analysis(&state, &prompt, Some(1200), Some(0.2)).await?;
 
@@ -485,6 +498,23 @@ pub async fn analyze_session(
         .take(3)
         .map(|t| t.suggestion.clone())
         .collect();
+    let prompt = format!(
+        "Analyze this session and provide strategic optimization guidance.\n\
+         Return concise markdown with:\n\
+         1) Session-level bottlenecks\n\
+         2) Pattern diagnosis\n\
+         3) Prioritized remediation plan\n\
+         4) Expected impact\n\n\
+         Session ID: {id}\n\
+         Turn count: {}\n\
+         Critical findings: {critical_count}\n\
+         Warning findings: {warning_count}\n\
+         Top actions: {}\n\
+         Heuristic insights:\n{}",
+        turns.len(),
+        top_actions.join("; "),
+        serde_json::to_string_pretty(&insights).unwrap_or_else(|_| "[]".to_string())
+    );
 
     let llm = run_llm_analysis(&state, &prompt, Some(1800), Some(0.2)).await?;
 

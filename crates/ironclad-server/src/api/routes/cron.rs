@@ -78,10 +78,15 @@ pub async fn create_cron_job(
     let payload = body.payload_json.as_deref().unwrap_or("{}");
     let schedule_kind = normalize_schedule_kind(&body.schedule_kind).to_string();
     let schedule_expr = normalize_schedule_expr(&schedule_kind, body.schedule_expr.as_deref());
+    let default_agent_id = {
+        let cfg = state.config.read().await;
+        cfg.agent.id.clone()
+    };
+    let agent_id = body.agent_id.as_deref().unwrap_or(default_agent_id.as_str());
     match ironclad_db::cron::create_job(
         &state.db,
         &body.name,
-        &body.agent_id,
+        agent_id,
         &schedule_kind,
         schedule_expr.as_deref(),
         payload,

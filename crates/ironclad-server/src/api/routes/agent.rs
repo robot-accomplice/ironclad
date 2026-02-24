@@ -1901,15 +1901,16 @@ async fn infer_with_fallback(
                     });
                 let tin = unified_resp.tokens_in as i64;
                 let tout = unified_resp.tokens_out as i64;
-                let cost = estimate_cost_from_provider(cost_in, cost_out, tin, tout);
+                let cost =
+                    estimate_cost_from_provider(resolved.cost_in, resolved.cost_out, tin, tout);
                 let total_tokens = tin.max(0) as u64 + tout.max(0) as u64;
 
                 let mut llm = state.llm.write().await;
-                llm.breakers.record_success(&provider_prefix);
-                llm.capacity.record(&provider_prefix, total_tokens);
-                let pressured = llm.capacity.is_sustained_hot(&provider_prefix);
+                llm.breakers.record_success(&resolved.provider_prefix);
+                llm.capacity.record(&resolved.provider_prefix, total_tokens);
+                let pressured = llm.capacity.is_sustained_hot(&resolved.provider_prefix);
                 llm.breakers
-                    .set_capacity_pressure(&provider_prefix, pressured);
+                    .set_capacity_pressure(&resolved.provider_prefix, pressured);
                 drop(llm);
 
                 if model != initial_model {
@@ -1943,7 +1944,8 @@ async fn infer_with_fallback(
                 } else {
                     llm.breakers.record_failure(&resolved.provider_prefix);
                 }
-                llm.breakers.set_capacity_pressure(&provider_prefix, false);
+                llm.breakers
+                    .set_capacity_pressure(&resolved.provider_prefix, false);
                 drop(llm);
                 last_error = e.to_string();
             }
