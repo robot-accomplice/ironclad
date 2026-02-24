@@ -553,7 +553,9 @@ async fn agent_message_requires_peer_identity_in_peer_scope_mode() {
         .method("POST")
         .uri("/api/agent/message")
         .header("content-type", "application/json")
-        .body(Body::from(r#"{"content":"hello from anonymous peer mode"}"#))
+        .body(Body::from(
+            r#"{"content":"hello from anonymous peer mode"}"#,
+        ))
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
