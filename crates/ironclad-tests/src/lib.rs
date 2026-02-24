@@ -15,6 +15,8 @@ mod rag_pipeline;
 #[cfg(test)]
 mod round_trip;
 #[cfg(test)]
+mod router_integration;
+#[cfg(test)]
 mod server_api;
 #[cfg(test)]
 mod skill_hot_reload;
