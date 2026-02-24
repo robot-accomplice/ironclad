@@ -429,7 +429,10 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
                 if path_contains_dir(dir) {
                     println!("  {OK} Go bin path status: on PATH ({})", dir.display());
                 } else {
-                    println!("  {WARN} Go bin path status: missing from PATH ({})", dir.display());
+                    println!(
+                        "  {WARN} Go bin path status: missing from PATH ({})",
+                        dir.display()
+                    );
                 }
             } else {
                 println!(
