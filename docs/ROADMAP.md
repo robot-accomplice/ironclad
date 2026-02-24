@@ -127,6 +127,30 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
+### 1.15 Sessions Chat Markdown Rendering
+
+**Current state**: The sessions chat UI renders assistant/user messages as plain text. Markdown syntax (headings, lists, code fences, links, inline code, blockquotes) appears unformatted, which reduces readability for long-form answers and technical responses.
+
+**Target**: First-class Markdown rendering in Sessions chat with safe HTML sanitization and readable defaults for prose and code blocks.
+
+**Builds on**: `crates/ironclad-server/src/dashboard_spa.html`, session message APIs, existing chat rendering flow.
+
+**Scope**: Add a Markdown parser + sanitizer in the dashboard chat pipeline. Render common Markdown constructs (headings, emphasis, lists, links, tables, blockquotes, fenced code blocks) and preserve plain-text fallback for malformed input. Add syntax highlighting for code fences and copy-to-clipboard actions per code block. Ensure external links use safe target/rel attributes and that raw HTML/script content is never executed.
+
+**Implementation checklist**:
+- **Libraries**: Evaluate and lock a parser/sanitizer pair (`marked` + `DOMPurify` or `markdown-it` + `sanitize-html`) plus lightweight syntax highlighting for fenced code blocks.
+- **Security constraints**: Strip or escape all raw HTML by default, forbid inline event handlers/scripts, enforce safe link policies (`target="_blank"` + `rel="noopener noreferrer"`), and keep protocol allowlists to `https:`, `http:`, and `mailto:`.
+- **Rendering behavior**: Support headings, emphasis, ordered/unordered lists, blockquotes, tables, inline code, and fenced code blocks; retain plaintext fallback when parsing fails.
+- **UX polish**: Add copy-to-clipboard on code blocks, preserve line breaks where expected, and ensure dark/light theme readability for rendered Markdown elements.
+- **Acceptance criteria**: Markdown test fixtures render correctly in Sessions chat, malicious payload fixtures are neutralized, no regression in existing chat message loading/perf, and snapshot/UI tests cover key Markdown constructs.
+
+**Phased delivery**:
+- **Phase A (MVP, M)**: Markdown parse + sanitize + render for core elements (headings, lists, links, inline/fenced code, blockquotes) with plaintext fallback.
+- **Phase B (Code UX, S)**: Syntax highlighting and copy-to-clipboard for fenced code blocks, plus visual polish for dark/light themes.
+- **Phase C (Hardening, M)**: Security regression fixtures (XSS/script/link payloads), rendering snapshot tests, and performance checks on long chat transcripts.
+
+---
+
 ### 1.13 Capacity-Aware Routing
 
 **Current state**: Token counts are tracked per turn (`tokens_in`/`tokens_out` in `format.rs`, stored in `turns`). Per-IP API rate limiting exists (`rate_limit.rs`). But there is no per-provider token-rate tracking — the router has no visibility into provider saturation and cannot pre-route around congestion. Hitting a 429 triggers the circuit breaker reactively.
@@ -461,7 +485,21 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ---
 
+### 3.13 Zero-Trust Global Remote UI Access
+
+**Current state**: The dashboard can be exposed on non-loopback interfaces (`3.12`) and API auth exists, but remote access is still mostly perimeter-based. There is no dedicated zero-trust access layer for secure global UI access with strong identity, device trust, and session-hardening defaults.
+
+**Target**: Secure global remote access to the Ironclad UI by default. Treat every network as untrusted and require cryptographic identity, strong authentication, hardened sessions, and explicit authorization for all UI/API traffic.
+
+**Builds on**: `3.12 Flexible Network Binding`, API auth/session routes, TLS support, existing policy and audit infrastructure.
+
+**Scope**: Add a dedicated remote access security layer with defense-in-depth: mandatory TLS (with optional mTLS for operator/admin roles), OIDC/SAML SSO + enforced MFA + short-lived tokens, device trust (key-bound sessions and optional passkey/WebAuthn), per-route RBAC for dashboard/API actions, IP reputation + geo-anomaly detection with adaptive challenge/deny, rate-limit and WAF hooks for auth surfaces, strict CSRF/CORS/cookie hardening, signed session rotation and revocation, comprehensive audit trails for auth/admin actions, and a "remote-lockdown" mode that defaults to deny-by-default except explicit allowlists. Ship with threat-model documentation, security runbooks, and hardened production presets.
+
+---
+
 ## Summary
+
+Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 
 | # | Item | Tier | Builds On | Effort |
 |---|------|------|-----------|--------|
@@ -478,6 +516,7 @@ Ambitious capabilities that push the architecture into new territory. High effor
 | 1.11 | Context checkpoint | 1 | schema.rs, build_context, MemoryRetriever | Medium |
 | 1.12 | ~~Response transform pipeline~~ ✅ | 1 | format.rs, injection defense, turns | ~~Low-Medium~~ Done |
 | 1.14 | ~~Context Observatory~~ ✅ | 1 | efficiency.rs, turn_feedback, turns, inference_costs | Done |
+| 1.15 | Sessions chat Markdown rendering | 1 | dashboard_spa.html, session message rendering | Low |
 | 1.13 | Capacity-aware routing | 1 | ModelRouter, CircuitBreakerRegistry | Medium |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
@@ -504,3 +543,4 @@ Ambitious capabilities that push the architecture into new territory. High effor
 | 3.10 | Cryptographic device identity | 3 | Wallet keypairs, A2A mutual auth | High |
 | 3.11 | Agent discovery protocol | 3 | Agent card, A2A handshake, DNS-SD | Medium |
 | 3.12 | ~~Flexible network binding~~ ✅ | 3 | Server bind, auth.rs | ~~Low~~ Done |
+| 3.13 | Zero-trust global remote UI access | 3 | 3.12, auth/session stack, policy/audit infra | High |

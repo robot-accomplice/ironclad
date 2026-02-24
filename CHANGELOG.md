@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-02-24
+
+### Fixed
+
+- Unified policy surface across inference paths: streaming and interview routes now use the same router selection + bounded fallback behavior as standard agent inference.
+- Added explicit runtime synchronization between config model mutations and active `ModelRouter` state for both `PUT /api/config` and `PUT /api/roster/{name}/model`.
+- Corrected CLI circuit reset flow to match server API contracts by enumerating providers from breaker status and resetting via per-provider endpoints.
+- Strengthened integration coverage for hotfix paths: stream fallback surface, interview fallback surface, runtime config/router synchronization, and roster model sync.
+
 ## [0.5.0] - 2026-02-23
 
 ### Added

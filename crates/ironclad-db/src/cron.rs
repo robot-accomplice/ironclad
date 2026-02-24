@@ -28,6 +28,16 @@ pub struct CronJob {
     pub lease_expires_at: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CronRun {
+    pub id: String,
+    pub job_id: String,
+    pub status: String,
+    pub duration_ms: Option<i64>,
+    pub error: Option<String>,
+    pub created_at: String,
+}
+
 pub fn create_job(
     db: &Database,
     name: &str,
@@ -138,9 +148,63 @@ pub fn get_job(db: &Database, id: &str) -> Result<Option<CronJob>> {
 }
 
 pub fn delete_job(db: &Database, id: &str) -> Result<bool> {
+    fn quote_ident(s: &str) -> String {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    }
+
     let conn = db.conn();
-    let changed = conn
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    // Delete dependent rows from every table that has an FK to cron_jobs.
+    // This keeps delete robust across schema versions/custom local tables.
+    let mut table_stmt = tx
+        .prepare(
+            "SELECT name FROM sqlite_master \
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let table_names = table_stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    drop(table_stmt);
+
+    for table in table_names {
+        let pragma_sql = format!("PRAGMA foreign_key_list({})", quote_ident(&table));
+        let mut fk_stmt = tx
+            .prepare(&pragma_sql)
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        let fk_cols = fk_stmt
+            .query_map([], |row| {
+                let ref_table: String = row.get(2)?;
+                let from_col: String = row.get(3)?;
+                Ok((ref_table, from_col))
+            })
+            .map_err(|e| IroncladError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        drop(fk_stmt);
+
+        for (ref_table, from_col) in fk_cols {
+            if ref_table == "cron_jobs" {
+                let delete_sql = format!(
+                    "DELETE FROM {} WHERE {} = ?1",
+                    quote_ident(&table),
+                    quote_ident(&from_col)
+                );
+                tx.execute(&delete_sql, [id])
+                    .map_err(|e| IroncladError::Database(e.to_string()))?;
+            }
+        }
+    }
+
+    let changed = tx
         .execute("DELETE FROM cron_jobs WHERE id = ?1", [id])
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.commit()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(changed > 0)
 }
@@ -262,6 +326,40 @@ pub fn record_run(
     tx.commit()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
+}
+
+pub fn list_runs(
+    db: &Database,
+    from: Option<&str>,
+    to: Option<&str>,
+    job_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<CronRun>> {
+    let conn = db.conn();
+    let sql = "SELECT id, job_id, status, duration_ms, error, created_at
+               FROM cron_runs
+               WHERE (?1 IS NULL OR created_at >= ?1)
+                 AND (?2 IS NULL OR created_at <= ?2)
+                 AND (?3 IS NULL OR job_id = ?3)
+               ORDER BY created_at DESC
+               LIMIT ?4";
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map(rusqlite::params![from, to, job_id, limit], |row| {
+            Ok(CronRun {
+                id: row.get(0)?,
+                job_id: row.get(1)?,
+                status: row.get(2)?,
+                duration_ms: row.get(3)?,
+                error: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
 #[cfg(test)]

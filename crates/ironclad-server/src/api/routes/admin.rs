@@ -299,6 +299,19 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     axum::Json(cfg)
 }
 
+pub async fn get_config_capabilities() -> impl IntoResponse {
+    axum::Json(json!({
+        "immutable_sections": ["server", "treasury", "a2a", "wallet"],
+        "mutable_sections": ["agent", "models", "memory", "channels", "providers", "circuit_breaker", "obsidian", "approvals", "plugins", "browser", "interview"],
+        "notes": {
+            "server": "requires file edit + restart",
+            "treasury": "requires file edit + restart",
+            "a2a": "requires file edit + restart",
+            "wallet": "requires file edit + restart"
+        }
+    }))
+}
+
 pub async fn update_config(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<UpdateConfigRequest>,
@@ -327,7 +340,18 @@ pub async fn update_config(
         .validate()
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("validation failed: {e}")))?;
 
-    *config = updated;
+    *config = updated.clone();
+    drop(config);
+
+    // Keep active router in sync with runtime config mutations.
+    {
+        let mut llm = state.llm.write().await;
+        llm.router.sync_runtime(
+            updated.models.primary.clone(),
+            updated.models.fallbacks.clone(),
+            updated.models.routing.clone(),
+        );
+    }
 
     Ok::<_, (StatusCode, String)>(axum::Json(json!({
         "updated": true,
@@ -362,6 +386,160 @@ pub async fn get_costs(State(state): State<AppState>) -> impl IntoResponse {
 
     let costs: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
     Ok::<_, (StatusCode, String)>(axum::Json(json!({ "costs": costs })))
+}
+
+#[derive(Deserialize)]
+pub struct TimeSeriesQuery {
+    pub hours: Option<i64>,
+}
+
+pub async fn get_overview_timeseries(
+    State(state): State<AppState>,
+    Query(params): Query<TimeSeriesQuery>,
+) -> impl IntoResponse {
+    let hours = params.hours.unwrap_or(24).clamp(1, 168) as usize;
+    let conn = state.db.conn();
+    let now = chrono::Utc::now().naive_utc();
+    let mut labels = Vec::with_capacity(hours);
+    let mut cost_per_hour = vec![0.0f64; hours];
+    let mut tokens_per_hour = vec![0.0f64; hours];
+    let mut sessions_per_hour = vec![0i64; hours];
+    let mut latency_samples: Vec<Vec<i64>> = (0..hours).map(|_| Vec::new()).collect();
+    let mut cron_success = vec![0.0f64; hours];
+    let mut cron_total = vec![0i64; hours];
+    let mut cron_ok = vec![0i64; hours];
+
+    for i in 0..hours {
+        let hr = (now - chrono::Duration::hours((hours - 1 - i) as i64))
+            .format("%H:00")
+            .to_string();
+        labels.push(hr);
+    }
+
+    let parse_ts = |s: &str| -> Option<chrono::NaiveDateTime> {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()
+    };
+    let bucket_for = |ts: chrono::NaiveDateTime| -> Option<usize> {
+        let age = now - ts;
+        let mins = age.num_minutes();
+        if mins < 0 {
+            return None;
+        }
+        let idx_from_end = (mins / 60) as usize;
+        if idx_from_end >= hours {
+            None
+        } else {
+            Some(hours - 1 - idx_from_end)
+        }
+    };
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT cost, tokens_in, tokens_out, created_at FROM inference_costs
+         WHERE created_at >= datetime('now', ?1)",
+    ) {
+        let window = format!("-{} hours", hours);
+        if let Ok(rows) = stmt.query_map([window], |row| {
+            Ok((
+                row.get::<_, f64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        }) {
+            for (cost, tin, tout, created_at) in rows.flatten() {
+                if let Some(ts) = parse_ts(&created_at)
+                    && let Some(idx) = bucket_for(ts)
+                {
+                    cost_per_hour[idx] += cost;
+                    tokens_per_hour[idx] += (tin + tout) as f64;
+                }
+            }
+        }
+    }
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT created_at FROM sessions
+         WHERE created_at >= datetime('now', ?1)",
+    ) {
+        let window = format!("-{} hours", hours);
+        if let Ok(rows) = stmt.query_map([window], |row| row.get::<_, String>(0)) {
+            for created_at in rows.flatten() {
+                if let Some(ts) = parse_ts(&created_at)
+                    && let Some(idx) = bucket_for(ts)
+                {
+                    sessions_per_hour[idx] += 1;
+                }
+            }
+        }
+    }
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT duration_ms, created_at FROM tool_calls
+         WHERE created_at >= datetime('now', ?1) AND duration_ms IS NOT NULL",
+    ) {
+        let window = format!("-{} hours", hours);
+        if let Ok(rows) = stmt.query_map([window], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        }) {
+            for (dur, created_at) in rows.flatten() {
+                if let Some(ts) = parse_ts(&created_at)
+                    && let Some(idx) = bucket_for(ts)
+                {
+                    latency_samples[idx].push(dur);
+                }
+            }
+        }
+    }
+
+    let mut latency_p50 = vec![0.0f64; hours];
+    for i in 0..hours {
+        if latency_samples[i].is_empty() {
+            continue;
+        }
+        latency_samples[i].sort_unstable();
+        let mid = latency_samples[i].len() / 2;
+        latency_p50[i] = latency_samples[i][mid] as f64;
+    }
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT status, created_at FROM cron_runs
+         WHERE created_at >= datetime('now', ?1)",
+    ) {
+        let window = format!("-{} hours", hours);
+        if let Ok(rows) = stmt.query_map([window], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) {
+            for (status, created_at) in rows.flatten() {
+                if let Some(ts) = parse_ts(&created_at)
+                    && let Some(idx) = bucket_for(ts)
+                {
+                    cron_total[idx] += 1;
+                    if status == "success" {
+                        cron_ok[idx] += 1;
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..hours {
+        cron_success[i] = if cron_total[i] > 0 {
+            cron_ok[i] as f64 / cron_total[i] as f64
+        } else {
+            1.0
+        };
+    }
+
+    Ok::<_, (StatusCode, String)>(axum::Json(json!({
+        "hours": hours,
+        "labels": labels,
+        "series": {
+            "cost_per_hour": cost_per_hour,
+            "tokens_per_hour": tokens_per_hour,
+            "sessions_per_hour": sessions_per_hour,
+            "latency_p50_ms": latency_p50,
+            "cron_success_rate": cron_success
+        }
+    })))
 }
 
 pub async fn get_transactions(
@@ -718,6 +896,7 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
         json!({ "id": "blockchain", "name": "Blockchain",      "kind": "Blockchain",  "x": 0.82, "y": 0.78 }),
         json!({ "id": "web",        "name": "Web / APIs",      "kind": "Tool",        "x": 0.50, "y": 0.12 }),
         json!({ "id": "files",      "name": "File System",     "kind": "Tool",        "x": 0.50, "y": 0.88 }),
+        json!({ "id": "standby",    "name": "Standby Bay",     "kind": "Standby",     "x": 0.08, "y": 0.50 }),
     ];
 
     let skills = ironclad_db::skills::list_skills(&state.db).unwrap_or_default();
@@ -732,6 +911,12 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
         .enumerate()
         .map(|(i, a)| {
             let color = WORKSPACE_PALETTE[(i + 1) % WORKSPACE_PALETTE.len()];
+            let state_lower = format!("{:?}", a.state).to_lowercase();
+            let workstation = if state_lower == "running" {
+                Some("llm")
+            } else {
+                None
+            };
             json!({
                 "id": a.id,
                 "name": a.name,
@@ -739,8 +924,10 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
                 "state": a.state,
                 "color": color,
                 "model": a.model,
-                "current_workstation": null,
+                "current_workstation": workstation,
+                "activity": if workstation.is_some() { "inference" } else { "idle" },
                 "active_skill": null,
+                "updated_at": chrono::Utc::now().to_rfc3339(),
                 "subordinates": [],
                 "supervisor": config.agent.id,
             })
@@ -754,9 +941,11 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
         "state": "Running",
         "color": WORKSPACE_PALETTE[0],
         "model": config.models.primary,
-        "current_workstation": null,
-        "active_skill": null,
+        "current_workstation": "llm",
+        "activity": "inference",
+        "active_skill": enabled_skills.first().cloned(),
         "skills": enabled_skills,
+        "updated_at": chrono::Utc::now().to_rfc3339(),
         "subordinates": agent_list.iter()
             .filter(|a| a["role"] == "specialist")
             .map(|a| a["id"].clone())
@@ -931,6 +1120,15 @@ pub async fn change_agent_model(
         let mut config = state.config.write().await;
         old_model = config.models.primary.clone();
         config.models.primary = model.clone();
+        let models = config.models.clone();
+        drop(config);
+
+        // Synchronize active router immediately for commander model changes.
+        {
+            let mut llm = state.llm.write().await;
+            llm.router
+                .sync_runtime(models.primary, models.fallbacks, models.routing);
+        }
         Ok(axum::Json(json!({
             "updated": true,
             "agent": agent_name,
@@ -1161,13 +1359,33 @@ pub async fn generate_deep_analysis(
 
     let engine = ironclad_agent::recommendations::RecommendationEngine::new();
     let recs = engine.generate(&profile);
-    let prompt =
-        ironclad_agent::recommendations::LlmRecommendationAnalyzer::build_prompt(&profile, &recs);
+    let top_actions: Vec<String> = recs
+        .iter()
+        .take(5)
+        .map(|r| format!("{}: {}", r.title, r.action))
+        .collect();
+    let monthly_savings = recs
+        .iter()
+        .filter_map(|r| r.estimated_impact.as_ref().and_then(|i| i.monthly_savings))
+        .sum::<f64>();
+    let narrative = if top_actions.is_empty() {
+        "No high-signal recommendations were generated for the selected period.".to_string()
+    } else {
+        format!(
+            "Identified {} actionable recommendations. Estimated monthly savings from quantified recommendations: ${:.4}.",
+            top_actions.len(),
+            monthly_savings
+        )
+    };
 
     Ok(Json(json!({
-        "status": "stub",
-        "message": "LLM deep analysis not yet wired — prompt generated for manual review",
-        "prompt": prompt,
+        "status": "ok",
+        "message": narrative,
+        "summary": {
+            "recommendation_count": recs.len(),
+            "estimated_monthly_savings": monthly_savings,
+        },
+        "actions": top_actions,
         "heuristic_recommendations": recs,
         "profile": profile,
     })))
