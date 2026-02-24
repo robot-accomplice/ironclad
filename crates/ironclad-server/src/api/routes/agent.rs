@@ -581,26 +581,21 @@ pub async fn agent_message(
         quality_target: None,
     };
 
-    let (assistant_content, tokens_in, tokens_out, cost) = match infer_with_fallback(
-        &state,
-        &unified_req,
-        &model,
-    )
-    .await
-    {
-        Ok(result) => (
-            result.content,
-            result.tokens_in,
-            result.tokens_out,
-            result.cost,
-        ),
-        Err(last_error) => (
-            provider_failure_user_message(&last_error.to_string(), true),
-            0,
-            0,
-            0.0,
-        ),
-    };
+    let (assistant_content, tokens_in, tokens_out, cost) =
+        match infer_with_fallback(&state, &unified_req, &model).await {
+            Ok(result) => (
+                result.content,
+                result.tokens_in,
+                result.tokens_out,
+                result.cost,
+            ),
+            Err(last_error) => (
+                provider_failure_user_message(&last_error.to_string(), true),
+                0,
+                0,
+                0.0,
+            ),
+        };
 
     // Check for HMAC boundary tampering in model output — strip forged boundaries
     let assistant_content = if assistant_content.contains("<<<TRUST_BOUNDARY:") {
