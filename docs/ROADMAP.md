@@ -461,6 +461,18 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ---
 
+### 3.13 Zero-Trust Global Remote UI Access
+
+**Current state**: The dashboard can be exposed on non-loopback interfaces (`3.12`) and API auth exists, but remote access is still mostly perimeter-based. There is no dedicated zero-trust access layer for secure global UI access with strong identity, device trust, and session-hardening defaults.
+
+**Target**: Secure global remote access to the Ironclad UI by default. Treat every network as untrusted and require cryptographic identity, strong authentication, hardened sessions, and explicit authorization for all UI/API traffic.
+
+**Builds on**: `3.12 Flexible Network Binding`, API auth/session routes, TLS support, existing policy and audit infrastructure.
+
+**Scope**: Add a dedicated remote access security layer with defense-in-depth: mandatory TLS (with optional mTLS for operator/admin roles), OIDC/SAML SSO + enforced MFA + short-lived tokens, device trust (key-bound sessions and optional passkey/WebAuthn), per-route RBAC for dashboard/API actions, IP reputation + geo-anomaly detection with adaptive challenge/deny, rate-limit and WAF hooks for auth surfaces, strict CSRF/CORS/cookie hardening, signed session rotation and revocation, comprehensive audit trails for auth/admin actions, and a "remote-lockdown" mode that defaults to deny-by-default except explicit allowlists. Ship with threat-model documentation, security runbooks, and hardened production presets.
+
+---
+
 ## Summary
 
 | # | Item | Tier | Builds On | Effort |
@@ -504,3 +516,4 @@ Ambitious capabilities that push the architecture into new territory. High effor
 | 3.10 | Cryptographic device identity | 3 | Wallet keypairs, A2A mutual auth | High |
 | 3.11 | Agent discovery protocol | 3 | Agent card, A2A handshake, DNS-SD | Medium |
 | 3.12 | ~~Flexible network binding~~ ✅ | 3 | Server bind, auth.rs | ~~Low~~ Done |
+| 3.13 | Zero-trust global remote UI access | 3 | 3.12, auth/session stack, policy/audit infra | High |

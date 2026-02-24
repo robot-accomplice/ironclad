@@ -141,6 +141,26 @@ async fn execute_tool_call(
         authority,
     };
 
+    state.event_bus.publish(
+        serde_json::json!({
+            "type": "agent_working",
+            "agent_id": "ironclad",
+            "workstation": "exec",
+            "activity": format!("tool:{tool_name}"),
+            "turn_id": turn_id,
+        })
+        .to_string(),
+    );
+    state.event_bus.publish(
+        serde_json::json!({
+            "type": "skill_activated",
+            "agent_id": "ironclad",
+            "skill": tool_name,
+            "turn_id": turn_id,
+        })
+        .to_string(),
+    );
+
     let start = std::time::Instant::now();
     let timeout_duration = std::time::Duration::from_secs(120);
     let result =
@@ -181,6 +201,16 @@ async fn execute_tool_call(
     )
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record tool call"))
     .ok();
+
+    state.event_bus.publish(
+        serde_json::json!({
+            "type": "agent_idle",
+            "agent_id": "ironclad",
+            "workstation": "exec",
+            "turn_id": turn_id,
+        })
+        .to_string(),
+    );
 
     result.map(|_| output).map_err(|e| e.message)
 }
@@ -1204,6 +1234,17 @@ pub async fn agent_message_stream(
             "model": model_clone,
         });
         yield Ok(Event::default().data(open.to_string()));
+        event_bus.publish(
+            json!({
+                "type": "agent_working",
+                "agent_id": "ironclad",
+                "workstation": "llm",
+                "activity": "inference",
+                "session_id": session_id_clone,
+                "model": model_clone,
+            })
+            .to_string(),
+        );
 
         let mut accumulator = ironclad_llm::format::StreamAccumulator::default();
         let mut stream = std::pin::pin!(chunk_stream);
@@ -1316,6 +1357,15 @@ pub async fn agent_message_stream(
             "session_id": session_id_clone,
         });
         event_bus.publish(done_event.to_string());
+        event_bus.publish(
+            json!({
+                "type": "agent_idle",
+                "agent_id": "ironclad",
+                "workstation": "llm",
+                "session_id": session_id_clone,
+            })
+            .to_string(),
+        );
 
         let final_event = json!({
             "type": "stream_end",

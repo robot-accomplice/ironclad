@@ -153,6 +153,23 @@ pub fn find_or_create(
     Ok(id)
 }
 
+/// Always creates a new active session for `agent_id` (optionally scoped).
+pub fn create_new(
+    db: &Database,
+    agent_id: &str,
+    scope: Option<&SessionScope>,
+) -> Result<String> {
+    let conn = db.conn();
+    let scope_key = scope.map(|s| s.scope_key());
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",
+        rusqlite::params![id, agent_id, scope_key],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(id)
+}
+
 pub fn get_session(db: &Database, id: &str) -> Result<Option<Session>> {
     let conn = db.conn();
     conn.query_row(

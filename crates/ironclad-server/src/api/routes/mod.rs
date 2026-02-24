@@ -214,13 +214,17 @@ pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, breaker_reset, breaker_status, browser_action, browser_start, browser_status,
         browser_stop, change_agent_model, delete_provider_key, execute_plugin_tool,
-        generate_deep_analysis, get_agents, get_cache_stats, get_config, get_costs, get_efficiency,
-        get_plugins, get_recommendations, get_transactions, roster, set_provider_key, start_agent,
-        stop_agent, toggle_plugin, update_config, wallet_address, wallet_balance, workspace_state,
+        generate_deep_analysis, get_agents, get_cache_stats, get_config, get_config_capabilities,
+        get_costs, get_efficiency, get_overview_timeseries, get_plugins, get_recommendations,
+        get_transactions, roster, set_provider_key, start_agent, stop_agent, toggle_plugin,
+        update_config, wallet_address, wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::get_channels_status;
-    use cron::{create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs, update_cron_job};
+    use cron::{
+        create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs, list_cron_runs,
+        update_cron_job,
+    };
     use health::{get_logs, health};
     use memory::{
         get_episodic_memory, get_semantic_categories, get_semantic_memory, get_semantic_memory_all,
@@ -241,6 +245,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", get(crate::dashboard::dashboard_handler))
         .route("/api/health", get(health))
         .route("/api/config", get(get_config).put(update_config))
+        .route("/api/config/capabilities", get(get_config_capabilities))
         .route(
             "/api/providers/{name}/key",
             put(set_provider_key).delete(delete_provider_key),
@@ -279,6 +284,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/memory/semantic/{category}", get(get_semantic_memory))
         .route("/api/memory/search", get(memory_search))
         .route("/api/cron/jobs", get(list_cron_jobs).post(create_cron_job))
+        .route("/api/cron/runs", get(list_cron_runs))
         .route(
             "/api/cron/jobs/{id}",
             get(get_cron_job)
@@ -286,6 +292,7 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(delete_cron_job),
         )
         .route("/api/stats/costs", get(get_costs))
+        .route("/api/stats/timeseries", get(get_overview_timeseries))
         .route("/api/stats/efficiency", get(get_efficiency))
         .route("/api/recommendations", get(get_recommendations))
         .route(
