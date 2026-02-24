@@ -996,29 +996,109 @@
       });
     },
 
-    _DEFAULT_SKILLS: [
-      { id: 'web-search', name: 'Web Search', kind: 'tool', description: 'Search the web for real-time information using configured search providers.', enabled: true },
-      { id: 'code-execution', name: 'Code Execution', kind: 'tool', description: 'Execute code snippets in sandboxed environments (Python, JavaScript, Shell).', enabled: true },
-      { id: 'file-operations', name: 'File Operations', kind: 'tool', description: 'Read, write, and manage files within the agent workspace directory.', enabled: true },
-      { id: 'memory-recall', name: 'Memory Recall', kind: 'cognitive', description: 'Retrieve and synthesize information from episodic, semantic, and working memory stores.', enabled: true },
-      { id: 'task-planning', name: 'Task Planning', kind: 'cognitive', description: 'Decompose complex goals into ordered subtasks with dependency tracking.', enabled: true },
-      { id: 'self-reflection', name: 'Self-Reflection', kind: 'cognitive', description: 'Evaluate own outputs for quality, accuracy, and alignment with user intent.', enabled: true },
-      { id: 'summarization', name: 'Summarization', kind: 'format', description: 'Condense long documents, conversations, or data sets into concise summaries.', enabled: true },
-      { id: 'data-analysis', name: 'Data Analysis', kind: 'tool', description: 'Parse, transform, and analyze structured data (CSV, JSON, SQL results).', enabled: true },
-      { id: 'api-integration', name: 'API Integration', kind: 'tool', description: 'Make authenticated HTTP requests to external APIs and process responses.', enabled: false },
-      { id: 'image-analysis', name: 'Image Analysis', kind: 'multimodal', description: 'Analyze and describe images, extract text (OCR), and identify visual elements.', enabled: false }
-    ],
     renderSkills: function() {
       var self = this;
       return api('/api/skills').then(function(data) {
         var skills = data.skills || [];
-        if (skills.length === 0) skills = self._DEFAULT_SKILLS;
+        if (skills.length === 0) {
+          return '<div style="display:flex;align-items:center;gap:1rem"><button class="btn" id="btn-reload-skills">Reload skills</button><span style="font-size:0.8125rem;color:var(--muted)">0 / 0 enabled</span></div><div class="card" style="margin-top:1rem;color:var(--muted)">No skills registered. Add skills on disk and click Reload skills.</div>';
+        }
         var enabledCount = skills.filter(function(s) { return s.enabled; }).length;
         var cards = skills.map(function(s) {
           var kindColor = s.kind === 'tool' ? 'var(--accent)' : s.kind === 'cognitive' ? 'var(--success)' : s.kind === 'multimodal' ? 'var(--warning)' : 'var(--muted)';
-          return '<div class="card skill-card" data-id="' + esc(s.id || '') + '"><div class="skill-header"><div class="skill-info"><div class="card-title" style="color:' + kindColor + '">' + esc(s.kind || '') + '</div><div class="card-value">' + esc(s.name || '') + '</div></div><label class="toggle"><input type="checkbox" data-skill-toggle="' + esc(s.id || '') + '"' + (s.enabled ? ' checked' : '') + '><span class="toggle-track"></span></label></div><p style="font-size:0.8125rem;color:var(--muted);margin-top:0.5rem">' + esc(s.description || '') + '</p></div>';
+          var actions = '';
+          if (s.id) {
+            actions = '<div style="display:flex;justify-content:flex-end;margin-top:0.75rem"><button class="btn secondary" data-skill-delete="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '" style="border-color:var(--error);color:var(--error);font-size:0.75rem;padding:0.25rem 0.6rem">Delete</button></div>';
+          }
+          return '<div class="card skill-card" data-id="' + esc(s.id || '') + '"><div class="skill-header"><div class="skill-info"><div class="card-title" style="color:' + kindColor + '">' + esc(s.kind || '') + '</div><div class="card-value">' + esc(s.name || '') + '</div></div><label class="toggle"><input type="checkbox" data-skill-toggle="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '"' + (s.enabled ? ' checked' : '') + '><span class="toggle-track"></span></label></div><p style="font-size:0.8125rem;color:var(--muted);margin-top:0.5rem">' + esc(s.description || '') + '</p>' + actions + '</div>';
         }).join('');
         return '<div style="display:flex;align-items:center;gap:1rem"><button class="btn" id="btn-reload-skills">Reload skills</button><span style="font-size:0.8125rem;color:var(--muted)">' + enabledCount + ' / ' + skills.length + ' enabled</span></div><div class="skills-grid" style="margin-top:1rem">' + cards + '</div>';
+      });
+    },
+
+    _closeSkillDeleteModal: function() {
+      var modal = document.getElementById('skill-delete-modal');
+      if (modal) modal.remove();
+    },
+
+    _openSkillDeleteModal: function(skillId, skillName) {
+      var self = this;
+      self._closeSkillDeleteModal();
+      var modal = document.createElement('div');
+      modal.id = 'skill-delete-modal';
+      modal.style.position = 'fixed';
+      modal.style.inset = '0';
+      modal.style.zIndex = '1000';
+      modal.style.background = 'rgba(0,0,0,0.65)';
+      modal.style.display = 'flex';
+      modal.style.alignItems = 'center';
+      modal.style.justifyContent = 'center';
+      modal.style.padding = '1.5rem';
+
+      var html = ''
+        + '<div style="width:min(520px, 100%);background:var(--bg);border:1px solid var(--border);border-radius:8px;box-shadow:0 20px 40px rgba(0,0,0,0.45)">'
+        + '  <div style="padding:1rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:1rem">'
+        + '    <div style="font-weight:700">Delete Skill</div>'
+        + '    <button class="btn secondary" data-skill-delete-cancel style="padding:0.25rem 0.6rem">Close</button>'
+        + '  </div>'
+        + '  <div style="padding:1rem 1.25rem;color:var(--muted);font-size:0.9rem;line-height:1.45">'
+        + '    This action permanently removes the skill record from the runtime database.'
+        + '  </div>'
+        + '  <div style="padding:0 1.25rem 1rem 1.25rem">'
+        + '    <div style="margin-bottom:0.45rem;font-size:0.75rem;text-transform:uppercase;color:var(--muted);letter-spacing:0.05em">Confirm skill name</div>'
+        + '    <div style="margin-bottom:0.6rem;font-family:var(--font-mono);font-size:0.9rem;color:var(--text)">' + esc(skillName) + '</div>'
+        + '    <input id="skill-delete-confirm-input" type="text" placeholder="Type exact skill name"'
+        + '      style="width:100%;padding:0.55rem 0.7rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--font-mono)">'
+        + '    <div id="skill-delete-confirm-hint" style="margin-top:0.5rem;font-size:0.75rem;color:var(--muted)">Type the exact name to enable deletion.</div>'
+        + '  </div>'
+        + '  <div style="padding:0.9rem 1.25rem;border-top:1px solid var(--border);display:flex;gap:0.6rem;justify-content:flex-end">'
+        + '    <button class="btn secondary" data-skill-delete-cancel>Cancel</button>'
+        + '    <button class="btn" id="skill-delete-confirm-btn" disabled style="border-color:var(--error);color:var(--error);opacity:0.45;pointer-events:none">Delete Skill</button>'
+        + '  </div>'
+        + '</div>';
+      setHtml(modal, html);
+      document.body.appendChild(modal);
+
+      var input = document.getElementById('skill-delete-confirm-input');
+      var btn = document.getElementById('skill-delete-confirm-btn');
+      var hint = document.getElementById('skill-delete-confirm-hint');
+      if (input) input.focus();
+
+      function syncState() {
+        if (!input || !btn) return;
+        var matches = input.value === skillName;
+        btn.disabled = !matches;
+        btn.style.opacity = matches ? '' : '0.45';
+        btn.style.pointerEvents = matches ? '' : 'none';
+        if (hint) {
+          hint.style.color = matches ? 'var(--success)' : 'var(--muted)';
+          hint.textContent = matches ? 'Name matches. You can delete this skill.' : 'Type the exact name to enable deletion.';
+        }
+      }
+
+      if (input) {
+        input.addEventListener('input', syncState);
+        input.addEventListener('keydown', function(ev) {
+          if (ev.key === 'Enter' && btn && !btn.disabled) btn.click();
+        });
+      }
+
+      modal.addEventListener('click', function(ev) {
+        if (ev.target === modal || ev.target.closest('[data-skill-delete-cancel]')) {
+          self._closeSkillDeleteModal();
+          return;
+        }
+        if (ev.target.closest('#skill-delete-confirm-btn')) {
+          api('/api/skills/' + encodeURIComponent(skillId), { method: 'DELETE' })
+            .then(function(resp) {
+              self._closeSkillDeleteModal();
+              toast('Deleted skill: ' + (resp.name || skillName));
+              App.navigate('skills');
+            })
+            .catch(function(err) {
+              toast(err.message || 'Failed to delete skill');
+            });
+        }
       });
     },
 
@@ -2529,8 +2609,44 @@
       api('/api/skills/reload', { method: 'POST' }).then(function() { toast('Skills reloaded'); App.navigate('skills'); }).catch(function(err) { toast(err.message || 'Failed'); });
       return;
     }
+    var skillDelete = e.target.closest('[data-skill-delete]');
+    if (skillDelete) {
+      var skillId = skillDelete.getAttribute('data-skill-delete');
+      var skillName = skillDelete.getAttribute('data-skill-name') || '';
+      if (!skillId || !skillName) { toast('Missing skill metadata'); return; }
+      App._openSkillDeleteModal(skillId, skillName);
+      return;
+    }
     var skillToggle = e.target.closest('[data-skill-toggle]');
-    if (skillToggle) { toast(skillToggle.checked ? 'Skill enabled' : 'Skill disabled'); return; }
+    if (skillToggle) {
+      var skillIdToggle = skillToggle.getAttribute('data-skill-toggle') || '';
+      var skillNameToggle = skillToggle.getAttribute('data-skill-name') || skillIdToggle;
+      var nextChecked = !!skillToggle.checked;
+      var prevChecked = !nextChecked;
+      if (!skillIdToggle) {
+        skillToggle.checked = prevChecked;
+        toast('Missing skill id');
+        return;
+      }
+      if (skillToggle.getAttribute('data-skill-pending') === '1') return;
+      skillToggle.setAttribute('data-skill-pending', '1');
+      skillToggle.disabled = true;
+      api('/api/skills/' + encodeURIComponent(skillIdToggle) + '/toggle', { method: 'PUT' })
+        .then(function(resp) {
+          skillToggle.checked = !!resp.enabled;
+          toast((resp.enabled ? 'Skill enabled: ' : 'Skill disabled: ') + skillNameToggle);
+          App.navigate('skills');
+        })
+        .catch(function(err) {
+          skillToggle.checked = prevChecked;
+          toast(err.message || 'Failed to toggle skill');
+        })
+        .finally(function() {
+          skillToggle.removeAttribute('data-skill-pending');
+          skillToggle.disabled = false;
+        });
+      return;
+    }
     if (e.target.closest('#copy-address')) {
       var pre = document.getElementById('wallet-addr');
       if (pre && pre.textContent) navigator.clipboard.writeText(pre.textContent).then(function() { toast('Address copied'); });

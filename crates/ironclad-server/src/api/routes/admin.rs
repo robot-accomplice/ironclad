@@ -327,7 +327,18 @@ pub async fn update_config(
         .validate()
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("validation failed: {e}")))?;
 
-    *config = updated;
+    *config = updated.clone();
+    drop(config);
+
+    // Keep active router in sync with runtime config mutations.
+    {
+        let mut llm = state.llm.write().await;
+        llm.router.sync_runtime(
+            updated.models.primary.clone(),
+            updated.models.fallbacks.clone(),
+            updated.models.routing.clone(),
+        );
+    }
 
     Ok::<_, (StatusCode, String)>(axum::Json(json!({
         "updated": true,
@@ -931,6 +942,15 @@ pub async fn change_agent_model(
         let mut config = state.config.write().await;
         old_model = config.models.primary.clone();
         config.models.primary = model.clone();
+        let models = config.models.clone();
+        drop(config);
+
+        // Synchronize active router immediately for commander model changes.
+        {
+            let mut llm = state.llm.write().await;
+            llm.router
+                .sync_runtime(models.primary, models.fallbacks, models.routing);
+        }
         Ok(axum::Json(json!({
             "updated": true,
             "agent": agent_name,
