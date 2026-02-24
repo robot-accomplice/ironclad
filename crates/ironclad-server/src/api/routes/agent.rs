@@ -1540,7 +1540,7 @@ async fn infer_with_fallback(
         {
             let llm = state.llm.read().await;
             let provider_prefix = model.split('/').next().unwrap_or("unknown");
-            if llm.breakers.is_blocked(&provider_prefix) {
+            if llm.breakers.is_blocked(provider_prefix) {
                 tracing::debug!(model, "skipping model — circuit breaker open");
                 last_error = format!("{provider_prefix} circuit breaker open");
                 continue;
