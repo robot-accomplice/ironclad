@@ -12,7 +12,7 @@ use ironclad_agent::agent_loop::{AgentLoop, ReactAction, ReactState};
 use ironclad_agent::tools::ToolContext;
 use ironclad_channels::ChannelAdapter;
 use ironclad_core::InputAuthority;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::AppState;
@@ -229,25 +229,168 @@ async fn execute_tool_call(
     result.map(|_| output).map_err(|e| e.message)
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct RuntimeDiagnostics {
+    uptime_seconds: u64,
+    primary_model: String,
+    active_model: String,
+    primary_provider: String,
+    primary_provider_state: String,
+    breaker_open_count: usize,
+    breaker_half_open_count: usize,
+    cache_entries: usize,
+    cache_hit_rate_pct: f64,
+    pending_approvals: usize,
+    subagents_total: usize,
+    subagents_enabled: usize,
+    subagents_running: usize,
+    subagents_error: usize,
+    channels_total: usize,
+    channels_with_errors: usize,
+}
+
+fn sanitize_diag_token(raw: &str, max_len: usize) -> String {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | '.' | ':'))
+        .collect();
+    let trimmed = cleaned.trim_matches(|c| c == '-' || c == '_' || c == ':' || c == '/');
+    trimmed.chars().take(max_len).collect()
+}
+
+async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiagnostics {
+    let (
+        primary_model,
+        active_model,
+        primary_provider,
+        primary_provider_state,
+        cache_entries,
+        cache_hit_rate_pct,
+        breaker_open_count,
+        breaker_half_open_count,
+    ) = {
+        let config = state.config.read().await;
+        let llm = state.llm.read().await;
+        let primary_model = sanitize_diag_token(&config.models.primary, 120);
+        let active_model = sanitize_diag_token(llm.router.select_model(), 120);
+        let primary_provider = sanitize_diag_token(
+            config.models.primary.split('/').next().unwrap_or("unknown"),
+            40,
+        );
+        let primary_provider_state =
+            format!("{:?}", llm.breakers.get_state(&primary_provider)).to_lowercase();
+        let providers = llm.breakers.list_providers();
+        let breaker_open_count = providers
+            .iter()
+            .filter(|(_, s)| *s == ironclad_llm::CircuitState::Open)
+            .count();
+        let breaker_half_open_count = providers
+            .iter()
+            .filter(|(_, s)| *s == ironclad_llm::CircuitState::HalfOpen)
+            .count();
+        let cache_entries = llm.cache.size();
+        let hits = llm.cache.hit_count();
+        let misses = llm.cache.miss_count();
+        let cache_hit_rate_pct = if hits + misses > 0 {
+            (hits as f64 / (hits + misses) as f64) * 100.0
+        } else {
+            0.0
+        };
+        (
+            primary_model,
+            active_model,
+            primary_provider,
+            primary_provider_state,
+            cache_entries,
+            cache_hit_rate_pct,
+            breaker_open_count,
+            breaker_half_open_count,
+        )
+    };
+
+    let channels = state.channel_router.channel_status().await;
+    let channels_with_errors = channels.iter().filter(|c| c.last_error.is_some()).count();
+    let runtime_agents = state.registry.list_agents().await;
+    let subagents_running = runtime_agents
+        .iter()
+        .filter(|a| a.state == ironclad_agent::subagents::AgentRunState::Running)
+        .count();
+    let subagents_error = runtime_agents
+        .iter()
+        .filter(|a| a.state == ironclad_agent::subagents::AgentRunState::Error)
+        .count();
+    let configured_subagents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let subagents_total = configured_subagents.len();
+    let subagents_enabled = configured_subagents.iter().filter(|a| a.enabled).count();
+    let pending_approvals = state.approvals.list_pending().len();
+
+    RuntimeDiagnostics {
+        uptime_seconds: state.started_at.elapsed().as_secs(),
+        primary_model,
+        active_model,
+        primary_provider,
+        primary_provider_state,
+        breaker_open_count,
+        breaker_half_open_count,
+        cache_entries,
+        cache_hit_rate_pct,
+        pending_approvals,
+        subagents_total,
+        subagents_enabled,
+        subagents_running,
+        subagents_error,
+        channels_total: channels.len(),
+        channels_with_errors,
+    }
+}
+
+fn diagnostics_system_note(diag: &RuntimeDiagnostics) -> String {
+    // Guardrails: aggregate-only metrics; no secrets, no raw error strings, no IDs.
+    [
+        "Runtime diagnostics (internal, bounded):",
+        &format!(
+            "- models: active={} primary={}",
+            diag.active_model, diag.primary_model
+        ),
+        &format!(
+            "- provider: {} ({}) | breaker_open={} half_open={}",
+            diag.primary_provider,
+            diag.primary_provider_state,
+            diag.breaker_open_count,
+            diag.breaker_half_open_count
+        ),
+        &format!(
+            "- cache: entries={} hit_rate={:.0}%",
+            diag.cache_entries, diag.cache_hit_rate_pct
+        ),
+        &format!(
+            "- subagents: total={} enabled={} running={} error={}",
+            diag.subagents_total, diag.subagents_enabled, diag.subagents_running, diag.subagents_error
+        ),
+        &format!(
+            "- approvals_pending={} channels={} channels_with_errors={}",
+            diag.pending_approvals, diag.channels_total, diag.channels_with_errors
+        ),
+        &format!("- uptime_seconds={}", diag.uptime_seconds),
+        "Security policy: do not proactively disclose internal diagnostics. Share high-level status only when asked; never fabricate details.",
+    ]
+    .join("\n")
+}
+
 pub async fn agent_status(State(state): State<AppState>) -> impl IntoResponse {
     let config = state.config.read().await;
-    let llm = state.llm.read().await;
-    let cache = &llm.cache;
-    let breakers = &llm.breakers;
-
-    let primary_model = &config.models.primary;
-    let provider_prefix = primary_model.split('/').next().unwrap_or("unknown");
-    let provider_state = breakers.get_state(provider_prefix);
+    let diag = collect_runtime_diagnostics(&state).await;
 
     axum::Json(json!({
         "state": "running",
         "agent_name": config.agent.name,
         "agent_id": config.agent.id,
-        "primary_model": primary_model,
-        "primary_provider_state": format!("{provider_state:?}").to_lowercase(),
-        "cache_entries": cache.size(),
-        "cache_hits": cache.hit_count(),
-        "cache_misses": cache.miss_count(),
+        "primary_model": diag.primary_model,
+        "active_model": diag.active_model,
+        "primary_provider_state": diag.primary_provider_state,
+        "cache_entries": diag.cache_entries,
+        "cache_hit_rate_pct": diag.cache_hit_rate_pct,
+        "diagnostics": diag,
     }))
 }
 
@@ -256,6 +399,54 @@ pub struct AgentMessageRequest {
     content: String,
     #[serde(default)]
     session_id: Option<String>,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    sender_id: Option<String>,
+    #[serde(default)]
+    peer_id: Option<String>,
+    #[serde(default)]
+    group_id: Option<String>,
+    #[serde(default)]
+    is_group: Option<bool>,
+}
+
+fn resolve_web_scope(
+    cfg: &ironclad_core::IroncladConfig,
+    body: &AgentMessageRequest,
+) -> Result<ironclad_db::sessions::SessionScope, &'static str> {
+    let channel = body
+        .channel
+        .as_deref()
+        .unwrap_or("web")
+        .trim()
+        .to_lowercase();
+    let peer_id = body
+        .peer_id
+        .clone()
+        .or_else(|| body.sender_id.clone())
+        .and_then(|id| {
+            let trimmed = id.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+    let mode = cfg.session.scope_mode.as_str();
+    if (mode == "group"
+        || (mode != "agent" && body.is_group == Some(true) && body.group_id.is_some()))
+        && let Some(group_id) = body.group_id.clone().filter(|s| !s.trim().is_empty())
+    {
+        return Ok(ironclad_db::sessions::SessionScope::Group { group_id, channel });
+    }
+    if mode == "peer" || mode == "group" {
+        let Some(peer_id) = peer_id else {
+            return Err("peer_id or sender_id is required when session.scope_mode is peer/group");
+        };
+        return Ok(ironclad_db::sessions::SessionScope::Peer { peer_id, channel });
+    }
+    Ok(ironclad_db::sessions::SessionScope::Agent)
 }
 
 pub async fn agent_message(
@@ -352,19 +543,30 @@ pub async fn agent_message(
                 ));
             }
         },
-        None => match ironclad_db::sessions::find_or_create(&state.db, &agent_id, None) {
-            Ok(sid) => sid,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to create session");
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-                drop(llm);
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(json!({"error": "internal server error"})),
-                ));
+        None => {
+            let scope = match resolve_web_scope(&config, &body) {
+                Ok(scope) => scope,
+                Err(msg) => {
+                    let mut llm = state.llm.write().await;
+                    llm.dedup.release(&dedup_fp);
+                    drop(llm);
+                    return Err((StatusCode::BAD_REQUEST, axum::Json(json!({"error": msg}))));
+                }
+            };
+            match ironclad_db::sessions::find_or_create(&state.db, &agent_id, Some(&scope)) {
+                Ok(sid) => sid,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to create session");
+                    let mut llm = state.llm.write().await;
+                    llm.dedup.release(&dedup_fp);
+                    drop(llm);
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(json!({"error": "internal server error"})),
+                    ));
+                }
             }
-        },
+        }
     };
 
     // Set nickname on first message in a session
@@ -563,6 +765,12 @@ pub async fn agent_message(
         &memories,
         &history,
     );
+    let runtime_diag = collect_runtime_diagnostics(&state).await;
+    messages.push(ironclad_llm::format::UnifiedMessage {
+        role: "system".into(),
+        content: diagnostics_system_note(&runtime_diag),
+        parts: None,
+    });
     if messages.last().is_none_or(|m| m.content != user_content) {
         messages.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
@@ -966,19 +1174,30 @@ pub async fn agent_message_stream(
                 ));
             }
         },
-        None => match ironclad_db::sessions::find_or_create(&state.db, &agent_id, None) {
-            Ok(sid) => sid,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to create session");
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-                drop(llm);
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(json!({"error": "internal server error"})),
-                ));
+        None => {
+            let scope = match resolve_web_scope(&config, &body) {
+                Ok(scope) => scope,
+                Err(msg) => {
+                    let mut llm = state.llm.write().await;
+                    llm.dedup.release(&dedup_fp);
+                    drop(llm);
+                    return Err((StatusCode::BAD_REQUEST, axum::Json(json!({"error": msg}))));
+                }
+            };
+            match ironclad_db::sessions::find_or_create(&state.db, &agent_id, Some(&scope)) {
+                Ok(sid) => sid,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to create session");
+                    let mut llm = state.llm.write().await;
+                    llm.dedup.release(&dedup_fp);
+                    drop(llm);
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        axum::Json(json!({"error": "internal server error"})),
+                    ));
+                }
             }
-        },
+        }
     };
 
     match ironclad_db::sessions::append_message(&state.db, &session_id, "user", &body.content) {
@@ -1094,6 +1313,12 @@ pub async fn agent_message_stream(
         &memories,
         &history,
     );
+    let runtime_diag = collect_runtime_diagnostics(&state).await;
+    messages.push(ironclad_llm::format::UnifiedMessage {
+        role: "system".into(),
+        content: diagnostics_system_note(&runtime_diag),
+        parts: None,
+    });
     if messages.last().is_none_or(|m| m.content != user_content) {
         messages.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
@@ -1280,6 +1505,11 @@ pub async fn agent_message_stream(
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "streaming chunk error from provider");
+                    {
+                        let mut llm = llm_arc.write().await;
+                        llm.breakers.record_failure(&provider_prefix);
+                        llm.breakers.set_capacity_pressure(&provider_prefix, false);
+                    }
                     let err_data = json!({"type": "error", "error": "upstream provider error"});
                     yield Ok(Event::default().data(err_data.to_string()));
                     break;
@@ -1355,7 +1585,19 @@ pub async fn agent_message_stream(
                 embedding: None,
             };
             let mut llm = llm_arc.write().await;
+            llm.breakers.record_success(&provider_prefix);
+            let total_tokens = unified_resp.tokens_in + unified_resp.tokens_out;
+            llm.capacity.record(&provider_prefix, total_tokens as u64);
+            let pressured = llm.capacity.is_sustained_hot(&provider_prefix);
+            llm.breakers.set_capacity_pressure(&provider_prefix, pressured);
             llm.cache.store_with_embedding(&cache_hash, &user_content_clone, cached_entry);
+        } else {
+            let mut llm = llm_arc.write().await;
+            llm.breakers.record_success(&provider_prefix);
+            let total_tokens = unified_resp.tokens_in + unified_resp.tokens_out;
+            llm.capacity.record(&provider_prefix, total_tokens as u64);
+            let pressured = llm.capacity.is_sustained_hot(&provider_prefix);
+            llm.breakers.set_capacity_pressure(&provider_prefix, pressured);
         }
 
         let done_event = json!({
@@ -1661,9 +1903,14 @@ async fn infer_with_fallback(
                 let tout = unified_resp.tokens_out as i64;
                 let cost =
                     estimate_cost_from_provider(resolved.cost_in, resolved.cost_out, tin, tout);
+                let total_tokens = tin.max(0) as u64 + tout.max(0) as u64;
 
                 let mut llm = state.llm.write().await;
                 llm.breakers.record_success(&resolved.provider_prefix);
+                llm.capacity.record(&resolved.provider_prefix, total_tokens);
+                let pressured = llm.capacity.is_sustained_hot(&resolved.provider_prefix);
+                llm.breakers
+                    .set_capacity_pressure(&resolved.provider_prefix, pressured);
                 drop(llm);
 
                 if model != initial_model {
@@ -1697,6 +1944,8 @@ async fn infer_with_fallback(
                 } else {
                     llm.breakers.record_failure(&resolved.provider_prefix);
                 }
+                llm.breakers
+                    .set_capacity_pressure(&resolved.provider_prefix, false);
                 drop(llm);
                 last_error = e.to_string();
             }
@@ -1879,7 +2128,11 @@ pub fn check_tool_policy(
 
 // ── Group 8: Wallet ───────────────────────────────────────────
 
-pub(crate) async fn handle_bot_command(state: &AppState, command: &str) -> Option<String> {
+pub(crate) async fn handle_bot_command(
+    state: &AppState,
+    command: &str,
+    inbound: Option<&ironclad_channels::InboundMessage>,
+) -> Option<String> {
     let (cmd, args) = command
         .split_once(|c: char| c.is_whitespace())
         .unwrap_or((command, ""));
@@ -1891,7 +2144,7 @@ pub(crate) async fn handle_bot_command(state: &AppState, command: &str) -> Optio
         "/model" => Some(handle_model_command(state, args).await),
         "/models" => Some(handle_models_list(state).await),
         "/breaker" => Some(handle_breaker_command(state, args).await),
-        "/retry" => Some("Retry is not yet implemented — please resend your message.".into()),
+        "/retry" => Some(handle_retry_command(state, inbound).await),
         "/help" => Some(HELP_TEXT.into()),
         _ => None,
     }
@@ -1905,9 +2158,43 @@ const HELP_TEXT: &str = "\
 /models  — list primary + fallback models\n\
 /breaker — show circuit breaker status\n\
 /breaker reset [provider] — reset tripped breakers\n\
-/retry   — retry last failed message\n\
+/retry   — show last assistant response in this chat\n\
 /help    — show this message\n\n\
 Anything else is sent to the LLM.";
+
+async fn handle_retry_command(
+    state: &AppState,
+    inbound: Option<&ironclad_channels::InboundMessage>,
+) -> String {
+    let Some(inbound) = inbound else {
+        return "Retry requires a channel context. Send /retry in the target chat.".into();
+    };
+
+    let chat_id = resolve_channel_chat_id(inbound);
+    let cfg = state.config.read().await;
+    let scope = resolve_channel_scope(&cfg, inbound, &chat_id);
+    let agent_id = cfg.agent.id.clone();
+    drop(cfg);
+
+    let session_id = match ironclad_db::sessions::find_or_create(&state.db, &agent_id, Some(&scope))
+    {
+        Ok(id) => id,
+        Err(e) => return format!("Retry failed: {e}"),
+    };
+    let messages = match ironclad_db::sessions::list_messages(&state.db, &session_id, Some(100)) {
+        Ok(m) => m,
+        Err(e) => return format!("Retry failed: {e}"),
+    };
+    let target = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant" && !m.content.trim().is_empty())
+        .map(|m| m.content.clone());
+    let Some(content) = target else {
+        return "No prior assistant response found to retry in this chat.".into();
+    };
+    content
+}
 
 async fn handle_model_command(state: &AppState, args: &str) -> String {
     if args.is_empty() {
@@ -2037,27 +2324,19 @@ async fn handle_breaker_command(state: &AppState, args: &str) -> String {
 
 async fn build_status_reply(state: &AppState) -> String {
     let config = state.config.read().await;
-    let llm = state.llm.read().await;
-    let cache = &llm.cache;
-    let breakers = &llm.breakers;
-
-    let primary = &config.models.primary;
-    let current = llm.router.select_model();
-    let provider_prefix = primary.split('/').next().unwrap_or("unknown");
-    let provider_state = format!("{:?}", breakers.get_state(provider_prefix)).to_lowercase();
+    let diag = collect_runtime_diagnostics(state).await;
     let balance = state.wallet.wallet.get_usdc_balance().await.unwrap_or(0.0);
     let channels = state.channel_router.channel_status().await;
     let channel_summary: Vec<String> = channels
         .iter()
         .map(|c| {
-            let err = c
-                .last_error
-                .as_deref()
-                .map(|e| format!(" (err: {e})"))
-                .unwrap_or_default();
+            let err = if c.last_error.is_some() { " (err)" } else { "" };
             format!(
                 "  {} — rx:{} tx:{}{}",
-                c.name, c.messages_received, c.messages_sent, err
+                sanitize_diag_token(&c.name, 32),
+                c.messages_received,
+                c.messages_sent,
+                err
             )
         })
         .collect();
@@ -2065,22 +2344,37 @@ async fn build_status_reply(state: &AppState) -> String {
     let mut lines = vec![
         format!("🤖 {} ({})", config.agent.name, config.agent.id),
         "  state: running".to_string(),
-        format!("  primary: {primary}"),
+        format!("  primary: {}", diag.primary_model),
     ];
-    if current != primary {
-        lines.push(format!("  current: {current}"));
+    if diag.active_model != diag.primary_model {
+        lines.push(format!("  current: {}", diag.active_model));
     }
     lines.extend([
-        format!("  provider: {provider_prefix} ({provider_state})"),
+        format!(
+            "  provider: {} ({})",
+            diag.primary_provider, diag.primary_provider_state
+        ),
         format!(
             "  cache: {} entries, {:.0}% hit rate",
-            cache.size(),
-            if cache.hit_count() + cache.miss_count() > 0 {
-                cache.hit_count() as f64 / (cache.hit_count() + cache.miss_count()) as f64 * 100.0
-            } else {
-                0.0
-            }
+            diag.cache_entries, diag.cache_hit_rate_pct
         ),
+        format!(
+            "  subagents: total={} enabled={} running={} error={}",
+            diag.subagents_total,
+            diag.subagents_enabled,
+            diag.subagents_running,
+            diag.subagents_error
+        ),
+        format!(
+            "  breakers: {} open, {} half-open",
+            diag.breaker_open_count, diag.breaker_half_open_count
+        ),
+        format!("  approvals: {} pending", diag.pending_approvals),
+        format!(
+            "  channels: {} total, {} with errors",
+            diag.channels_total, diag.channels_with_errors
+        ),
+        format!("  uptime: {}s", diag.uptime_seconds),
         format!("  wallet: {balance:.2} USDC"),
     ]);
 
@@ -2094,17 +2388,69 @@ async fn build_status_reply(state: &AppState) -> String {
 
 // ── Channel message processing ────────────────────────────────
 
+fn metadata_str(meta: Option<&serde_json::Value>, ptr: &str) -> Option<String> {
+    meta.and_then(|m| m.pointer(ptr)).and_then(|v| {
+        v.as_str()
+            .map(|s| s.to_string())
+            .or_else(|| v.as_i64().map(|n| n.to_string()))
+            .or_else(|| v.as_u64().map(|n| n.to_string()))
+    })
+}
+
+fn resolve_channel_chat_id(inbound: &ironclad_channels::InboundMessage) -> String {
+    let meta = inbound.metadata.as_ref();
+    metadata_str(meta, "/chat_id")
+        .or_else(|| metadata_str(meta, "/channel_id"))
+        .or_else(|| metadata_str(meta, "/thread_id"))
+        .or_else(|| metadata_str(meta, "/conversation_id"))
+        .or_else(|| metadata_str(meta, "/group_id"))
+        .or_else(|| metadata_str(meta, "/message/chat/id"))
+        .or_else(|| metadata_str(meta, "/messages/0/chat/id"))
+        .or_else(|| metadata_str(meta, "/messages/0/channel_id"))
+        .unwrap_or_else(|| inbound.sender_id.clone())
+}
+
+fn resolve_channel_is_group(inbound: &ironclad_channels::InboundMessage) -> bool {
+    let meta = inbound.metadata.as_ref();
+    if let Some(v) = meta
+        .and_then(|m| m.get("is_group"))
+        .and_then(|v| v.as_bool())
+    {
+        return v;
+    }
+    if let Some(kind) = metadata_str(meta, "/message/chat/type") {
+        return matches!(kind.as_str(), "group" | "supergroup");
+    }
+    false
+}
+
+fn resolve_channel_scope(
+    cfg: &ironclad_core::IroncladConfig,
+    inbound: &ironclad_channels::InboundMessage,
+    chat_id: &str,
+) -> ironclad_db::sessions::SessionScope {
+    let mode = cfg.session.scope_mode.as_str();
+    let channel = inbound.platform.to_lowercase();
+    if mode == "group" && resolve_channel_is_group(inbound) {
+        return ironclad_db::sessions::SessionScope::Group {
+            group_id: chat_id.to_string(),
+            channel,
+        };
+    }
+    if mode == "peer" || mode == "group" {
+        return ironclad_db::sessions::SessionScope::Peer {
+            peer_id: inbound.sender_id.clone(),
+            channel,
+        };
+    }
+    ironclad_db::sessions::SessionScope::Agent
+}
+
 pub async fn process_channel_message(
     state: &AppState,
     inbound: ironclad_channels::InboundMessage,
 ) -> Result<(), String> {
-    let chat_id = inbound
-        .metadata
-        .as_ref()
-        .and_then(|m| m.pointer("/message/chat/id"))
-        .and_then(|v| v.as_i64())
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| inbound.sender_id.clone());
+    let chat_id = resolve_channel_chat_id(&inbound);
     let platform = inbound.platform.clone();
 
     if inbound.content.trim().is_empty() {
@@ -2136,7 +2482,7 @@ pub async fn process_channel_message(
     }
 
     if inbound.content.starts_with('/')
-        && let Some(reply) = handle_bot_command(state, &inbound.content).await
+        && let Some(reply) = handle_bot_command(state, &inbound.content, Some(&inbound)).await
     {
         state
             .channel_router
@@ -2173,8 +2519,9 @@ pub async fn process_channel_message(
     send_typing_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
 
     // In-flight deduplication for channel messages
+    let dedup_scope = format!("{}:{}", platform, chat_id);
     let dedup_fp = ironclad_llm::DedupTracker::fingerprint(
-        &platform,
+        &dedup_scope,
         &[ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
             content: user_content.clone(),
@@ -2189,8 +2536,12 @@ pub async fn process_channel_message(
         }
     }
 
-    let session_key = format!("{}:{}", platform, inbound.sender_id);
-    let session_id = match ironclad_db::sessions::find_or_create(&state.db, &session_key, None) {
+    let config = state.config.read().await;
+    let agent_id = config.agent.id.clone();
+    let scope = resolve_channel_scope(&config, &inbound, &chat_id);
+    drop(config);
+    let session_id = match ironclad_db::sessions::find_or_create(&state.db, &agent_id, Some(&scope))
+    {
         Ok(id) => id,
         Err(e) => {
             let mut llm = state.llm.write().await;
@@ -2309,6 +2660,12 @@ pub async fn process_channel_message(
         &memories,
         &history,
     );
+    let runtime_diag = collect_runtime_diagnostics(state).await;
+    messages.push(ironclad_llm::format::UnifiedMessage {
+        role: "system".into(),
+        content: diagnostics_system_note(&runtime_diag),
+        parts: None,
+    });
     if messages.last().is_none_or(|m| m.content != user_content) {
         messages.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
@@ -2568,9 +2925,140 @@ pub async fn telegram_poll_loop(state: AppState) {
     }
 }
 
+pub async fn discord_poll_loop(state: AppState) {
+    static CHANNEL_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+        std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(8)));
+    let adapter = match &state.discord {
+        Some(a) => a.clone(),
+        None => return,
+    };
+    tracing::info!("Discord inbound loop started");
+    loop {
+        match adapter.recv().await {
+            Ok(Some(inbound)) => {
+                let state = state.clone();
+                let semaphore = Arc::clone(&CHANNEL_SEMAPHORE);
+                tokio::spawn(async move {
+                    let _permit = match semaphore.acquire_owned().await {
+                        Ok(p) => p,
+                        Err(_) => return,
+                    };
+                    if let Err(e) = process_channel_message(&state, inbound).await {
+                        tracing::error!(error = %e, "Discord message processing failed");
+                    }
+                });
+            }
+            Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(300)).await,
+            Err(e) => {
+                tracing::error!(error = %e, "Discord inbound loop error, backing off 5s");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
+    }
+}
+
+pub async fn signal_poll_loop(state: AppState) {
+    static CHANNEL_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+        std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(8)));
+    let adapter = match &state.signal {
+        Some(a) => a.clone(),
+        None => return,
+    };
+    tracing::info!("Signal inbound loop started");
+    loop {
+        match adapter.recv().await {
+            Ok(Some(inbound)) => {
+                let state = state.clone();
+                let semaphore = Arc::clone(&CHANNEL_SEMAPHORE);
+                tokio::spawn(async move {
+                    let _permit = match semaphore.acquire_owned().await {
+                        Ok(p) => p,
+                        Err(_) => return,
+                    };
+                    if let Err(e) = process_channel_message(&state, inbound).await {
+                        tracing::error!(error = %e, "Signal message processing failed");
+                    }
+                });
+            }
+            Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(300)).await,
+            Err(e) => {
+                tracing::error!(error = %e, "Signal inbound loop error, backing off 5s");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
+    }
+}
+
+pub async fn email_poll_loop(state: AppState) {
+    static CHANNEL_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+        std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(8)));
+    let adapter = match &state.email {
+        Some(a) => a.clone(),
+        None => return,
+    };
+    tracing::info!("Email inbound loop started");
+    loop {
+        match adapter.recv().await {
+            Ok(Some(inbound)) => {
+                let state = state.clone();
+                let semaphore = Arc::clone(&CHANNEL_SEMAPHORE);
+                tokio::spawn(async move {
+                    let _permit = match semaphore.acquire_owned().await {
+                        Ok(p) => p,
+                        Err(_) => return,
+                    };
+                    if let Err(e) = process_channel_message(&state, inbound).await {
+                        tracing::error!(error = %e, "Email message processing failed");
+                    }
+                });
+            }
+            Ok(None) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+            Err(e) => {
+                tracing::error!(error = %e, "Email inbound loop error, backing off 5s");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+
+    fn test_config_with_scope(scope_mode: &str) -> ironclad_core::IroncladConfig {
+        ironclad_core::IroncladConfig::from_str(&format!(
+            r#"
+[agent]
+name = "TestBot"
+id = "test-agent"
+
+[server]
+port = 0
+
+[database]
+path = ":memory:"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[session]
+scope_mode = "{scope_mode}"
+"#
+        ))
+        .unwrap()
+    }
+
+    fn inbound_with_meta(meta: serde_json::Value) -> ironclad_channels::InboundMessage {
+        ironclad_channels::InboundMessage {
+            id: "msg-1".into(),
+            platform: "telegram".into(),
+            sender_id: "sender-1".into(),
+            content: "hello".into(),
+            timestamp: Utc::now(),
+            metadata: Some(meta),
+        }
+    }
 
     #[test]
     fn parse_tool_call_valid() {
@@ -2721,5 +3209,181 @@ mod tests {
     fn estimate_cost_zero_rates() {
         let cost = estimate_cost_from_provider(0.0, 0.0, 1000, 2000);
         assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn sanitize_diag_token_removes_unsafe_chars_and_limits_len() {
+        let token = sanitize_diag_token("  !!openai/gpt-4o:mini??\n\t", 10);
+        assert_eq!(token, "openai/gpt");
+    }
+
+    #[test]
+    fn diagnostics_system_note_contains_expected_sections() {
+        let diag = RuntimeDiagnostics {
+            uptime_seconds: 42,
+            primary_model: "ollama/qwen3:8b".into(),
+            active_model: "ollama/qwen3:8b".into(),
+            primary_provider: "ollama".into(),
+            primary_provider_state: "closed".into(),
+            breaker_open_count: 0,
+            breaker_half_open_count: 0,
+            cache_entries: 3,
+            cache_hit_rate_pct: 50.0,
+            pending_approvals: 1,
+            subagents_total: 2,
+            subagents_enabled: 1,
+            subagents_running: 1,
+            subagents_error: 0,
+            channels_total: 2,
+            channels_with_errors: 0,
+        };
+        let note = diagnostics_system_note(&diag);
+        assert!(note.contains("Runtime diagnostics"));
+        assert!(note.contains("models:"));
+        assert!(note.contains("provider:"));
+        assert!(note.contains("cache:"));
+        assert!(note.contains("approvals_pending"));
+    }
+
+    #[test]
+    fn metadata_str_reads_strings_and_numbers() {
+        let meta = serde_json::json!({
+            "chat_id": "chat-1",
+            "channel_id": 123,
+            "thread_id": 456u64
+        });
+        assert_eq!(
+            metadata_str(Some(&meta), "/chat_id").as_deref(),
+            Some("chat-1")
+        );
+        assert_eq!(
+            metadata_str(Some(&meta), "/channel_id").as_deref(),
+            Some("123")
+        );
+        assert_eq!(
+            metadata_str(Some(&meta), "/thread_id").as_deref(),
+            Some("456")
+        );
+        assert!(metadata_str(Some(&meta), "/missing").is_none());
+    }
+
+    #[test]
+    fn resolve_channel_chat_id_uses_priority_and_fallback() {
+        let inbound = inbound_with_meta(serde_json::json!({"chat_id": "chat-xyz"}));
+        assert_eq!(resolve_channel_chat_id(&inbound), "chat-xyz");
+
+        let inbound = inbound_with_meta(serde_json::json!({"message": {"chat": {"id": 777}}}));
+        assert_eq!(resolve_channel_chat_id(&inbound), "777");
+
+        let inbound = ironclad_channels::InboundMessage {
+            id: "msg-2".into(),
+            platform: "telegram".into(),
+            sender_id: "sender-fallback".into(),
+            content: "hi".into(),
+            timestamp: Utc::now(),
+            metadata: None,
+        };
+        assert_eq!(resolve_channel_chat_id(&inbound), "sender-fallback");
+    }
+
+    #[test]
+    fn resolve_channel_is_group_detects_flags_and_chat_type() {
+        let inbound = inbound_with_meta(serde_json::json!({"is_group": true}));
+        assert!(resolve_channel_is_group(&inbound));
+
+        let inbound =
+            inbound_with_meta(serde_json::json!({"message": {"chat": {"type": "supergroup"}}}));
+        assert!(resolve_channel_is_group(&inbound));
+
+        let inbound =
+            inbound_with_meta(serde_json::json!({"message": {"chat": {"type": "private"}}}));
+        assert!(!resolve_channel_is_group(&inbound));
+    }
+
+    #[test]
+    fn resolve_channel_scope_respects_config_mode() {
+        let cfg_group = test_config_with_scope("group");
+        let inbound_group = inbound_with_meta(serde_json::json!({"is_group": true}));
+        let scope = resolve_channel_scope(&cfg_group, &inbound_group, "group-chat");
+        assert_eq!(
+            scope,
+            ironclad_db::sessions::SessionScope::Group {
+                group_id: "group-chat".into(),
+                channel: "telegram".into()
+            }
+        );
+
+        let cfg_peer = test_config_with_scope("peer");
+        let inbound_peer = inbound_with_meta(serde_json::json!({}));
+        let scope = resolve_channel_scope(&cfg_peer, &inbound_peer, "ignored");
+        assert_eq!(
+            scope,
+            ironclad_db::sessions::SessionScope::Peer {
+                peer_id: "sender-1".into(),
+                channel: "telegram".into()
+            }
+        );
+
+        let cfg_agent = test_config_with_scope("agent");
+        let inbound_agent = inbound_with_meta(serde_json::json!({"is_group": true}));
+        let scope = resolve_channel_scope(&cfg_agent, &inbound_agent, "group-chat");
+        assert_eq!(scope, ironclad_db::sessions::SessionScope::Agent);
+    }
+
+    #[test]
+    fn resolve_web_scope_respects_group_peer_and_agent_modes() {
+        let mut req = AgentMessageRequest {
+            content: "hello".into(),
+            session_id: None,
+            channel: Some("web".into()),
+            sender_id: Some("user-1".into()),
+            peer_id: None,
+            group_id: Some("room-9".into()),
+            is_group: Some(true),
+        };
+
+        let cfg_group = test_config_with_scope("group");
+        let scope = resolve_web_scope(&cfg_group, &req).expect("group scope");
+        assert_eq!(
+            scope,
+            ironclad_db::sessions::SessionScope::Group {
+                group_id: "room-9".into(),
+                channel: "web".into()
+            }
+        );
+
+        let cfg_peer = test_config_with_scope("peer");
+        req.group_id = None;
+        let scope = resolve_web_scope(&cfg_peer, &req).expect("peer scope");
+        assert_eq!(
+            scope,
+            ironclad_db::sessions::SessionScope::Peer {
+                peer_id: "user-1".into(),
+                channel: "web".into()
+            }
+        );
+
+        let cfg_agent = test_config_with_scope("agent");
+        let scope = resolve_web_scope(&cfg_agent, &req).expect("agent scope");
+        assert_eq!(scope, ironclad_db::sessions::SessionScope::Agent);
+    }
+
+    #[test]
+    fn resolve_web_scope_rejects_missing_principal_in_peer_or_group_modes() {
+        let req = AgentMessageRequest {
+            content: "hello".into(),
+            session_id: None,
+            channel: Some("web".into()),
+            sender_id: None,
+            peer_id: None,
+            group_id: None,
+            is_group: Some(false),
+        };
+
+        let cfg_peer = test_config_with_scope("peer");
+        assert!(resolve_web_scope(&cfg_peer, &req).is_err());
+
+        let cfg_group = test_config_with_scope("group");
+        assert!(resolve_web_scope(&cfg_group, &req).is_err());
     }
 }

@@ -312,6 +312,186 @@ pub async fn get_config_capabilities() -> impl IntoResponse {
     }))
 }
 
+#[derive(Deserialize, Default)]
+pub struct AvailableModelsQuery {
+    pub provider: Option<String>,
+}
+
+pub async fn get_available_models(
+    State(state): State<AppState>,
+    Query(query): Query<AvailableModelsQuery>,
+) -> impl IntoResponse {
+    let provider_filter = query.provider.map(|p| p.to_lowercase());
+    let providers = {
+        let config = state.config.read().await;
+        config.providers.clone()
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(json!({
+                "models": [],
+                "count": 0,
+                "providers": {},
+                "error": format!("failed to initialize HTTP client: {e}"),
+            }));
+        }
+    };
+
+    let mut all_models = std::collections::BTreeSet::<String>::new();
+    let mut provider_reports = serde_json::Map::new();
+
+    for (name, provider_cfg) in providers {
+        if let Some(filter) = provider_filter.as_deref()
+            && name.to_lowercase() != filter
+        {
+            continue;
+        }
+
+        let url = provider_cfg.url.trim().trim_end_matches('/').to_string();
+        if url.is_empty() {
+            provider_reports.insert(
+                name.clone(),
+                json!({
+                    "status": "skipped",
+                    "reason": "missing_url",
+                    "models": [],
+                    "count": 0,
+                }),
+            );
+            continue;
+        }
+
+        let lower_url = url.to_lowercase();
+        let localish = provider_cfg.is_local.unwrap_or(false)
+            || lower_url.contains("localhost")
+            || lower_url.contains("127.0.0.1")
+            || lower_url.contains("11434")
+            || name.to_lowercase().contains("ollama");
+
+        let models_url = if localish {
+            format!("{url}/api/tags")
+        } else {
+            format!("{url}/v1/models")
+        };
+
+        let auth_mode = provider_cfg.auth_mode.as_deref().unwrap_or("api_key");
+        let api_key_env = provider_cfg.api_key_env.as_deref().unwrap_or("");
+        let api_key_ref = provider_cfg.api_key_ref.as_deref();
+        let api_key = resolve_provider_key(
+            &name,
+            localish,
+            auth_mode,
+            api_key_ref,
+            api_key_env,
+            &state.oauth,
+            &state.keystore,
+        )
+        .await;
+
+        let mut req = client.get(&models_url);
+        if let Some(k) = api_key
+            && !k.is_empty()
+        {
+            let auth_header_name = provider_cfg
+                .auth_header
+                .as_deref()
+                .unwrap_or("Authorization")
+                .trim();
+            if auth_header_name.eq_ignore_ascii_case("authorization") {
+                req = req.header(auth_header_name, format!("Bearer {k}"));
+            } else {
+                req = req.header(auth_header_name, k);
+            }
+        }
+        if let Some(extra) = &provider_cfg.extra_headers {
+            for (k, v) in extra {
+                req = req.header(k, v);
+            }
+        }
+
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let body: serde_json::Value = match resp.json().await {
+                    Ok(v) => v,
+                    Err(_) => json!({}),
+                };
+                let mut models: Vec<String> =
+                    if let Some(arr) = body.get("models").and_then(|v| v.as_array()) {
+                        arr.iter()
+                            .filter_map(|m| {
+                                m.get("name")
+                                    .or_else(|| m.get("model"))
+                                    .and_then(|v| v.as_str())
+                            })
+                            .map(|m| m.to_string())
+                            .collect()
+                    } else if let Some(arr) = body.get("data").and_then(|v| v.as_array()) {
+                        arr.iter()
+                            .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
+                            .map(|m| m.to_string())
+                            .collect()
+                    } else {
+                        vec![]
+                    };
+
+                for model in &mut models {
+                    if !model.contains('/') {
+                        *model = format!("{name}/{model}");
+                    }
+                }
+
+                models.sort();
+                models.dedup();
+                for m in &models {
+                    all_models.insert(m.clone());
+                }
+                provider_reports.insert(
+                    name.clone(),
+                    json!({
+                        "status": "ok",
+                        "models": models,
+                        "count": models.len(),
+                    }),
+                );
+            }
+            Ok(resp) => {
+                provider_reports.insert(
+                    name.clone(),
+                    json!({
+                        "status": "error",
+                        "error": format!("http {}", resp.status()),
+                        "models": [],
+                        "count": 0,
+                    }),
+                );
+            }
+            Err(e) => {
+                provider_reports.insert(
+                    name.clone(),
+                    json!({
+                        "status": "unreachable",
+                        "error": e.to_string(),
+                        "models": [],
+                        "count": 0,
+                    }),
+                );
+            }
+        }
+    }
+
+    let models: Vec<String> = all_models.into_iter().collect();
+    Json(json!({
+        "models": models,
+        "count": models.len(),
+        "providers": provider_reports,
+    }))
+}
+
 pub async fn update_config(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<UpdateConfigRequest>,
@@ -588,6 +768,29 @@ pub async fn get_cache_stats(State(state): State<AppState>) -> impl IntoResponse
         "entries": entries,
         "hit_rate": hit_rate,
     }))
+}
+
+pub async fn get_capacity_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let llm = state.llm.read().await;
+    let mut providers = serde_json::Map::new();
+    for (name, stats) in llm.capacity.list_stats() {
+        let sustained_hot = llm.capacity.is_sustained_hot(&name);
+        providers.insert(
+            name,
+            json!({
+                "headroom": stats.headroom,
+                "near_capacity": stats.near_capacity,
+                "sustained_hot": sustained_hot,
+                "tokens_used": stats.tokens_used,
+                "requests_used": stats.requests_used,
+                "tpm_limit": stats.tpm_limit,
+                "rpm_limit": stats.rpm_limit,
+                "token_utilization": stats.token_utilization,
+                "request_utilization": stats.request_utilization,
+            }),
+        );
+    }
+    axum::Json(json!({ "providers": Value::Object(providers) }))
 }
 
 pub async fn breaker_status(State(state): State<AppState>) -> impl IntoResponse {
@@ -1359,36 +1562,385 @@ pub async fn generate_deep_analysis(
 
     let engine = ironclad_agent::recommendations::RecommendationEngine::new();
     let recs = engine.generate(&profile);
-    let top_actions: Vec<String> = recs
-        .iter()
-        .take(5)
-        .map(|r| format!("{}: {}", r.title, r.action))
-        .collect();
-    let monthly_savings = recs
-        .iter()
-        .filter_map(|r| r.estimated_impact.as_ref().and_then(|i| i.monthly_savings))
-        .sum::<f64>();
-    let narrative = if top_actions.is_empty() {
-        "No high-signal recommendations were generated for the selected period.".to_string()
-    } else {
-        format!(
-            "Identified {} actionable recommendations. Estimated monthly savings from quantified recommendations: ${:.4}.",
-            top_actions.len(),
-            monthly_savings
-        )
-    };
+    let prompt =
+        ironclad_agent::recommendations::LlmRecommendationAnalyzer::build_prompt(&profile, &recs);
+    let llm = run_llm_recommendation_analysis(&state, &prompt).await?;
 
     Ok(Json(json!({
-        "status": "ok",
-        "message": narrative,
-        "summary": {
-            "recommendation_count": recs.len(),
-            "estimated_monthly_savings": monthly_savings,
-        },
-        "actions": top_actions,
+        "status": "complete",
         "heuristic_recommendations": recs,
+        "deep_analysis": llm["content"],
+        "analysis_model": llm["model"],
+        "tokens_in": llm["tokens_in"],
+        "tokens_out": llm["tokens_out"],
+        "cost": llm["cost"],
         "profile": profile,
     })))
+}
+
+async fn run_llm_recommendation_analysis(
+    state: &AppState,
+    prompt: &str,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let model = {
+        let llm = state.llm.read().await;
+        llm.router.select_model().to_string()
+    };
+    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let req = ironclad_llm::format::UnifiedRequest {
+        model: model_for_api,
+        messages: vec![ironclad_llm::format::UnifiedMessage {
+            role: "user".into(),
+            content: prompt.to_string(),
+            parts: None,
+        }],
+        max_tokens: Some(2200),
+        temperature: Some(0.2),
+        system: None,
+        quality_target: None,
+    };
+
+    let llm = state.llm.read().await;
+    let provider = match llm.providers.get_by_model(&model) {
+        Some(p) => p.clone(),
+        None => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("no provider configured for model {model}"),
+            ));
+        }
+    };
+    drop(llm);
+
+    let key = resolve_provider_key(
+        &provider.name,
+        provider.is_local,
+        &provider.auth_mode,
+        provider.api_key_ref.as_deref(),
+        &provider.api_key_env,
+        &state.oauth,
+        &state.keystore,
+    )
+    .await
+    .unwrap_or_default();
+    if !provider.is_local && key.is_empty() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("missing API key for provider {}", provider.name),
+        ));
+    }
+
+    let url = format!("{}{}", provider.url, provider.chat_path);
+    let body = ironclad_llm::format::translate_request(&req, provider.format)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let llm = state.llm.read().await;
+    let resp = llm
+        .client
+        .forward_with_provider(
+            &url,
+            &key,
+            body,
+            &provider.auth_header,
+            &provider.extra_headers,
+        )
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("analysis provider call failed: {e}"),
+            )
+        })?;
+    drop(llm);
+
+    let unified =
+        ironclad_llm::format::translate_response(&resp, provider.format).unwrap_or_else(|_| {
+            ironclad_llm::format::UnifiedResponse {
+                content: "(no response)".into(),
+                model: model.clone(),
+                tokens_in: 0,
+                tokens_out: 0,
+                finish_reason: None,
+            }
+        });
+    let tin = unified.tokens_in as i64;
+    let tout = unified.tokens_out as i64;
+    let cost = (tin.max(0) as f64 * provider.cost_per_input_token)
+        + (tout.max(0) as f64 * provider.cost_per_output_token);
+    ironclad_db::metrics::record_inference_cost(
+        &state.db,
+        &model,
+        &provider.name,
+        tin,
+        tout,
+        cost,
+        Some("recommendations"),
+        false,
+    )
+    .ok();
+
+    Ok(json!({
+        "content": unified.content,
+        "model": model,
+        "provider": provider.name,
+        "tokens_in": tin,
+        "tokens_out": tout,
+        "cost": cost,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct RegisterDiscoveredAgentRequest {
+    pub agent_id: String,
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct PairDeviceRequest {
+    pub device_id: String,
+    pub public_key_hex: String,
+    pub device_name: String,
+}
+
+pub async fn get_runtime_surfaces(State(state): State<AppState>) -> impl IntoResponse {
+    let discovery = state.discovery.read().await;
+    let devices = state.devices.read().await;
+    let mcp_clients = state.mcp_clients.read().await;
+    let mcp_server = state.mcp_server.read().await;
+    Json(json!({
+        "discovery": {
+            "count": discovery.count(),
+            "verified_count": discovery.verified_agents().len(),
+        },
+        "devices": {
+            "device_id": devices.identity().device_id,
+            "fingerprint": devices.identity().fingerprint(),
+            "paired_count": devices.paired_count(),
+            "trusted_count": devices.trusted_devices().len(),
+        },
+        "mcp": {
+            "server_enabled": true,
+            "tools_exposed": mcp_server.tool_count(),
+            "resources_exposed": mcp_server.resource_count(),
+            "client_total": mcp_clients.total_count(),
+            "client_connected": mcp_clients.connected_count(),
+        }
+    }))
+}
+
+pub async fn list_discovered_agents(State(state): State<AppState>) -> impl IntoResponse {
+    let discovery = state.discovery.read().await;
+    let agents: Vec<_> = discovery
+        .all_agents()
+        .iter()
+        .map(|a| {
+            json!({
+                "agent_id": a.agent_id,
+                "name": a.name,
+                "url": a.url,
+                "capabilities": a.capabilities,
+                "verified": a.verified,
+                "discovery_method": format!("{}", a.discovery_method),
+                "last_seen": a.last_seen,
+            })
+        })
+        .collect();
+    Json(json!({ "agents": agents, "count": agents.len() }))
+}
+
+pub async fn register_discovered_agent(
+    State(state): State<AppState>,
+    Json(body): Json<RegisterDiscoveredAgentRequest>,
+) -> impl IntoResponse {
+    let mut discovery = state.discovery.write().await;
+    discovery.register(ironclad_agent::discovery::DiscoveredAgent {
+        agent_id: body.agent_id.clone(),
+        name: body.name,
+        url: body.url,
+        capabilities: body.capabilities,
+        verified: false,
+        discovered_at: chrono::Utc::now(),
+        last_seen: chrono::Utc::now(),
+        discovery_method: ironclad_agent::discovery::DiscoveryMethod::Manual,
+    });
+    Json(json!({ "ok": true, "agent_id": body.agent_id }))
+}
+
+pub async fn verify_discovered_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> impl IntoResponse {
+    let mut discovery = state.discovery.write().await;
+    match discovery.verify(&agent_id) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "agent_id": agent_id })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "ok": false, "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn list_paired_devices(State(state): State<AppState>) -> impl IntoResponse {
+    let devices = state.devices.read().await;
+    let device_list: Vec<_> = devices
+        .all_devices()
+        .iter()
+        .map(|d| {
+            json!({
+                "device_id": d.device_id,
+                "device_name": d.device_name,
+                "state": format!("{:?}", d.state).to_lowercase(),
+                "paired_at": d.paired_at,
+                "last_seen": d.last_seen,
+            })
+        })
+        .collect();
+    Json(json!({
+        "identity": {
+            "device_id": devices.identity().device_id,
+            "public_key_hex": devices.identity().public_key_hex,
+            "fingerprint": devices.identity().fingerprint(),
+        },
+        "devices": device_list,
+    }))
+}
+
+pub async fn pair_device(
+    State(state): State<AppState>,
+    Json(body): Json<PairDeviceRequest>,
+) -> impl IntoResponse {
+    let mut devices = state.devices.write().await;
+    match devices.initiate_pairing(&body.device_id, &body.public_key_hex, &body.device_name) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({"ok": true, "device_id": body.device_id})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn verify_paired_device(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+) -> impl IntoResponse {
+    let mut devices = state.devices.write().await;
+    match devices.verify_pairing(&device_id) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({"ok": true, "device_id": device_id})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn unpair_device(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+) -> impl IntoResponse {
+    let mut devices = state.devices.write().await;
+    match devices.unpair(&device_id) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({"ok": true, "device_id": device_id})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn get_mcp_runtime(State(state): State<AppState>) -> impl IntoResponse {
+    let clients = state.mcp_clients.read().await;
+    let server = state.mcp_server.read().await;
+    let connections: Vec<_> = clients
+        .list_connections()
+        .iter()
+        .map(|c| {
+            json!({
+                "name": c.name,
+                "url": c.url,
+                "connected": c.connected,
+                "tools": c.available_tools.len(),
+                "resources": c.available_resources.len(),
+            })
+        })
+        .collect();
+    let tools: Vec<_> = server
+        .list_tools()
+        .iter()
+        .map(|t| json!({"name": t.name, "description": t.description}))
+        .collect();
+    let resources: Vec<_> = server
+        .list_resources()
+        .iter()
+        .map(|r| json!({"uri": r.uri, "name": r.name}))
+        .collect();
+    Json(json!({
+        "connections": connections,
+        "connected_count": clients.connected_count(),
+        "exposed_tools": tools,
+        "exposed_resources": resources,
+    }))
+}
+
+pub async fn mcp_client_discover(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let mut clients = state.mcp_clients.write().await;
+    match clients.get_connection_mut(&name) {
+        Some(conn) => match conn.discover() {
+            Ok(()) => (StatusCode::OK, Json(json!({"ok": true, "name": name}))).into_response(),
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"ok": false, "error": e.to_string()})),
+            )
+                .into_response(),
+        },
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "mcp client not found"})),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn mcp_client_disconnect(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let mut clients = state.mcp_clients.write().await;
+    match clients.get_connection_mut(&name) {
+        Some(conn) => {
+            conn.disconnect();
+            (StatusCode::OK, Json(json!({"ok": true, "name": name}))).into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "mcp client not found"})),
+        )
+            .into_response(),
+    }
 }
 
 #[cfg(test)]

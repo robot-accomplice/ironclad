@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
-    scope_key TEXT,
+    scope_key TEXT NOT NULL DEFAULT 'agent',
     status TEXT NOT NULL DEFAULT 'active',
     model TEXT,
     nickname TEXT,
@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     metadata TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_sessions_scope ON sessions(agent_id, scope_key, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_active_scope_unique ON sessions(agent_id, scope_key) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_sessions_status_updated ON sessions(status, updated_at);
 
 CREATE TABLE IF NOT EXISTS session_messages (
     id TEXT PRIMARY KEY,

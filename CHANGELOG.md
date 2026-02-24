@@ -5,14 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.1] - 2026-02-24
+## [0.6.1] - 2026-02-24
 
 ### Fixed
 
-- Unified policy surface across inference paths: streaming and interview routes now use the same router selection + bounded fallback behavior as standard agent inference.
-- Added explicit runtime synchronization between config model mutations and active `ModelRouter` state for both `PUT /api/config` and `PUT /api/roster/{name}/model`.
-- Corrected CLI circuit reset flow to match server API contracts by enumerating providers from breaker status and resetting via per-provider endpoints.
-- Strengthened integration coverage for hotfix paths: stream fallback surface, interview fallback surface, runtime config/router synchronization, and roster model sync.
+- **Release integrity follow-up**: Merged post-tag regression fixes from the 0.6.0 release branch into `develop`, including web peer-scope identity validation, dashboard WebSocket token encoding, and release-gate compile/test stabilization.
+- **Session creation stability**: Restored explicit default agent scope behavior in DB session creation paths to avoid `500` failures in session lifecycle APIs/tests.
+- **Routing test alignment**: Updated router integration expectations to reflect current fallback behavior when primary providers are breaker-blocked.
+
+## [0.6.0] - 2026-02-24
+
+### Added
+
+- **Capacity headroom telemetry**: New `GET /api/stats/capacity` endpoint exposes per-provider headroom, utilization, and sustained-pressure flags for operator visibility.
+- **Capacity-aware circuit preemption**: Circuit breakers now accept soft capacity pressure signals and expose preemptive `half_open` state before hard failure trips.
+- **Session scope backfill migration**: Added `012_session_scope_backfill_unique.sql` to normalize legacy sessions to explicit scope and enforce unique active scoped sessions.
+- **Safe markdown rendering in dashboard sessions**: Session chat and Context Explorer now render markdown with strict URL sanitization and no raw HTML execution.
+
+### Changed
+
+- **Routing quality now capacity-weighted**: `select_for_complexity()` scores candidates by model quality and provider headroom, rather than binary near-capacity fallback behavior.
+- **Inference feedback loop now records capacity usage**: both non-stream and stream response paths record provider token/request usage and update capacity pressure signals.
+- **Session scoping defaults to explicit agent scope**: `find_or_create()` now uses `agent` scope by default and channel/web paths pass scoped keys for peer/group isolation.
+- **Channel session affinity**: Channel dedup and session selection now use resolved chat/channel identity instead of platform-only sender affinity.
+- **Heartbeat now runs SessionGovernor**: stale sessions are expired with compaction draft capture; optional hourly rotation is triggered when `session.reset_schedule` is configured.
 
 ## [0.5.0] - 2026-02-23
 

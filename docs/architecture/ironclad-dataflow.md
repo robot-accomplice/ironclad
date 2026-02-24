@@ -7,9 +7,14 @@
 ---
 
 ## 1. Primary Request Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-24, version: 0.6.0 -->
 
 End-to-end path from inbound user message to delivered response, entirely within one OS process.
+
+0.6.0 targeted additions reflected in the runtime:
+- Capacity-aware model selection now records per-provider throughput and feeds headroom + preemptive breaker pressure.
+- Session lookup/create is scope-aware (`agent`, `peer`, `group`) in web and channel paths.
+- Session and context UI rendering supports sanitized markdown in dashboard views.
 
 ```mermaid
 flowchart TD

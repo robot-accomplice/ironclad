@@ -18,6 +18,12 @@ This guide covers deploying Ironclad in production environments.
 cargo install ironclad
 ```
 
+### Install on Windows (PowerShell)
+
+```powershell
+irm https://roboticus.ai/install.ps1 | iex
+```
+
 ### Initialize a workspace
 
 ```bash
@@ -101,7 +107,7 @@ This checks file permissions, API key presence, wallet encryption, bind address 
 
 ## Daemon Service
 
-Ironclad can run as a persistent background service using launchd (macOS) or systemd (Linux).
+Ironclad can run as a persistent background service using launchd (macOS) or systemd (Linux). Native Windows service integration is not currently provided by `ironclad daemon`; on Windows, run `ironclad serve` directly or manage it with Task Scheduler/NSSM.
 
 ### Install as a Daemon
 

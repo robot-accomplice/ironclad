@@ -81,13 +81,13 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.9 Session Scoping and Lifecycle
 
-**Current state**: Sessions are keyed solely by `agent_id` — one session per agent via `find_or_create()`. No peer isolation (all Telegram users share the same session), no group-vs-DM distinction, no auto-expiry or scheduled rotation. Stale sessions accumulate indefinitely.
+**Status**: Implemented in 0.6.0. Scoped sessions now support `Agent`, `Peer`, and `Group` keys with lifecycle controls. Runtime paths (web, stream, channel) resolve scope before `find_or_create()`, stale sessions are expired by `SessionGovernor`, and optional scheduled rotation is wired through heartbeat when `session.reset_schedule` is set.
 
 **Target**: Per-peer and per-group session isolation with configurable lifecycle policies. Cross-channel identity linking via shared peer IDs.
 
 **Builds on**: `sessions.rs`, `schema.rs`, `HeartbeatTask` enum, `context.rs` compaction pipeline.
 
-**Scope**: Introduce a type-safe `SessionScope` enum (`Agent`, `Peer { peer_id, channel }`, `Group { group_id, channel }`) as a composite key in the `sessions` table via migration `004_session_scoping.sql`. Update `find_or_create()` to scope by peer — the same Telegram user and WhatsApp user get separate sessions, but the memory system links them via the shared `peer_id` for cross-channel recall. Add a `SessionGovernor` heartbeat task: configurable TTL per scope type, compaction-on-archive (runs `build_compaction_prompt()` before marking inactive rather than discarding context), and scheduled rotation. Config: `[session]` section with `ttl`, `reset_schedule`, and `scope_mode`.
+**Scope**: `SessionScope` is active in runtime routing, dedup is chat-aware in channel paths, and migration `012_session_scope_backfill_unique.sql` normalizes legacy unscoped rows (`scope_key IS NULL`) to explicit `agent` scope while enforcing one active session per `(agent_id, scope_key)`.
 
 ---
 
@@ -153,13 +153,19 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.13 Capacity-Aware Routing
 
-**Current state**: Token counts are tracked per turn (`tokens_in`/`tokens_out` in `format.rs`, stored in `turns`). Per-IP API rate limiting exists (`rate_limit.rs`). But there is no per-provider token-rate tracking — the router has no visibility into provider saturation and cannot pre-route around congestion. Hitting a 429 triggers the circuit breaker reactively.
+**Status**: Implemented in 0.6.0. Capacity usage is now recorded on inference success, routing uses headroom-weighted selection, sustained pressure can preemptively mark providers `half_open`, and operators can inspect capacity via `GET /api/stats/capacity` plus dashboard metrics UI.
 
 **Target**: Proactive capacity-aware routing that deprioritizes saturated providers before hitting rate limits, distributing traffic to providers with available headroom.
 
 **Builds on**: `ironclad-llm/src/router.rs`, `ironclad-llm/src/circuit.rs`, `ProviderConfig`.
 
-**Scope**: Add a `CapacityTracker` per provider with sliding-window TPM (tokens-per-minute) and RPM (requests-per-minute) counters. Each tracker exposes a `headroom()` score (0.0 = saturated, 1.0 = idle). Integrate as a `CapacitySignal` in the `ModelRouter` — `select_for_complexity()` multiplies the quality score by headroom so saturated providers are deprioritized before hitting 429. Traffic naturally flows to providers with capacity. The `CapacityTracker` also feeds the existing `CircuitBreakerRegistry` — a provider at >90% capacity for a sustained period gets a preemptive half-open state. Config: `[models.capacity]` with per-provider `tpm_limit` and `rpm_limit`.
+**Scope**: `CapacityTracker` now emits provider stats (`headroom`, utilization, near-capacity, sustained-hot), router scoring multiplies quality by headroom, and breaker pressure signaling allows proactive lane-shifting before hard failure.
+
+---
+
+### 1.15 Sessions Markdown Rendering ✅
+
+**Status**: Implemented in 0.6.0. Sessions and Context Explorer render markdown via a safe client-side renderer with strict URL sanitization (`http`, `https`, `mailto`, relative/hash only), no raw HTML execution, and preserved fallback behavior for blocked links.
 
 ---
 
@@ -511,13 +517,13 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 1.6 | Multimodal messages + voice transcription | 1 | WhatsApp media parsing, format.rs, whisper-rs | Medium |
 | 1.7 | ~~Memory-augmented agent pipeline~~ ✅ | 1 | MemoryBudgetManager, build_context, hybrid_search, 1.5 | ~~High~~ Done |
 | 1.8 | Email channel adapter | 1 | ChannelAdapter trait, OAuthManager | Medium |
-| 1.9 | Session scoping and lifecycle | 1 | sessions.rs, HeartbeatTask, compaction | Medium |
+| 1.9 | ~~Session scoping and lifecycle~~ ✅ | 1 | sessions.rs, HeartbeatTask, compaction | ~~Medium~~ Done |
 | 1.10 | ~~Addressability filter~~ ✅ | 1 | ChannelAdapter trait, InboundMessage | ~~Low~~ Done |
 | 1.11 | Context checkpoint | 1 | schema.rs, build_context, MemoryRetriever | Medium |
 | 1.12 | ~~Response transform pipeline~~ ✅ | 1 | format.rs, injection defense, turns | ~~Low-Medium~~ Done |
 | 1.14 | ~~Context Observatory~~ ✅ | 1 | efficiency.rs, turn_feedback, turns, inference_costs | Done |
-| 1.15 | Sessions chat Markdown rendering | 1 | dashboard_spa.html, session message rendering | Low |
-| 1.13 | Capacity-aware routing | 1 | ModelRouter, CircuitBreakerRegistry | Medium |
+| 1.15 | ~~Sessions markdown rendering~~ ✅ | 1 | dashboard SPA rendering, session/context views | ~~Low-Medium~~ Done |
+| 1.13 | ~~Capacity-aware routing~~ ✅ | 1 | ModelRouter, CircuitBreakerRegistry | ~~Medium~~ Done |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
 | 2.3 | Tiered inference pipeline | 2 | Fallback chain, local model config | Medium |

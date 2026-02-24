@@ -21,6 +21,12 @@ Ironclad is an autonomous agent runtime built in Rust as a single optimized bina
 cargo install ironclad-server
 ```
 
+Windows (PowerShell):
+
+```powershell
+irm https://roboticus.ai/install.ps1 | iex
+```
+
 Then initialize and start:
 
 ```bash
