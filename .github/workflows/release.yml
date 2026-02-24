@@ -161,15 +161,27 @@ jobs:
     name: Publish Crates
     needs: [preflight, integration-tests, build]
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
       - name: Publish level 0
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p ironclad-core --locked
+        run: |
+          set -euo pipefail
+          crate="ironclad-core"
+          if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+            echo "::notice::${crate} v${VERSION} already published, skipping"
+          else
+            cargo publish -p "${crate}" --locked
+          fi
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -178,10 +190,15 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          set -euo pipefail
           for crate in ironclad-db ironclad-llm ironclad-channels ironclad-browser ironclad-plugin-sdk; do
-            echo "Publishing $crate..."
-            cargo publish -p "$crate" --locked
-            sleep 10
+            if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+              echo "::notice::${crate} v${VERSION} already published, skipping"
+            else
+              echo "Publishing $crate..."
+              cargo publish -p "$crate" --locked
+              sleep 10
+            fi
           done
 
       - name: Wait for crates.io index
@@ -191,10 +208,15 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          set -euo pipefail
           for crate in ironclad-agent ironclad-wallet; do
-            echo "Publishing $crate..."
-            cargo publish -p "$crate" --locked
-            sleep 10
+            if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+              echo "::notice::${crate} v${VERSION} already published, skipping"
+            else
+              echo "Publishing $crate..."
+              cargo publish -p "$crate" --locked
+              sleep 10
+            fi
           done
 
       - name: Wait for crates.io index
@@ -203,7 +225,14 @@ jobs:
       - name: Publish level 3
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p ironclad-schedule --locked
+        run: |
+          set -euo pipefail
+          crate="ironclad-schedule"
+          if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+            echo "::notice::${crate} v${VERSION} already published, skipping"
+          else
+            cargo publish -p "${crate}" --locked
+          fi
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -211,7 +240,14 @@ jobs:
       - name: Publish level 4
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p ironclad-server --locked
+        run: |
+          set -euo pipefail
+          crate="ironclad-server"
+          if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+            echo "::notice::${crate} v${VERSION} already published, skipping"
+          else
+            cargo publish -p "${crate}" --locked
+          fi
 
   # ── Release: GitHub Release with binaries ──────────────
   release:
@@ -263,10 +299,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          gh release create "v${VERSION}" \
-            --title "v${VERSION}" \
-            --notes-file release-notes.md \
-            release-assets/*
+          set -euo pipefail
+          tag="v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::notice::Release ${tag} already exists, updating"
+            gh release edit "$tag" \
+              --title "$tag" \
+              --notes-file release-notes.md
+            gh release upload "$tag" release-assets/* --clobber
+          else
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes-file release-notes.md \
+              release-assets/*
+          fi
 
   # ── Sync Site: dispatch to ironclad.ai ─────────────────
   sync-site:
