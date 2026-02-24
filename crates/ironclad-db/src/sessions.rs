@@ -150,7 +150,9 @@ pub fn find_or_create(
 /// Always creates a new active session for `agent_id` (optionally scoped).
 pub fn create_new(db: &Database, agent_id: &str, scope: Option<&SessionScope>) -> Result<String> {
     let conn = db.conn();
-    let scope_key = scope.map(|s| s.scope_key());
+    let scope_key = scope
+        .map(|s| s.scope_key())
+        .unwrap_or_else(|| SessionScope::Agent.scope_key());
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",

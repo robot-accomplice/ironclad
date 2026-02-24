@@ -82,7 +82,10 @@ pub async fn create_cron_job(
         let cfg = state.config.read().await;
         cfg.agent.id.clone()
     };
-    let agent_id = body.agent_id.as_deref().unwrap_or(default_agent_id.as_str());
+    let agent_id = body
+        .agent_id
+        .as_deref()
+        .unwrap_or(default_agent_id.as_str());
     match ironclad_db::cron::create_job(
         &state.db,
         &body.name,

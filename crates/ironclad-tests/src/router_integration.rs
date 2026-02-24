@@ -91,10 +91,10 @@ fn router_skips_blocked_first_choice() {
     );
     let reg = mk_registry();
     let mut breakers = mk_breakers();
-    breakers.record_credit_error("anthropic");
+    breakers.record_credit_error("moonshot");
 
     let selected = router.select_for_complexity(0.95, Some(&reg), None, Some(&breakers));
-    assert_eq!(selected, "ollama/qwen3:14b");
+    assert_eq!(selected, "anthropic/claude-sonnet-4-6");
 }
 
 #[test]
