@@ -5,12 +5,13 @@ use axum::http::{Request, StatusCode};
 use ironclad_agent::subagents::SubagentRegistry;
 use ironclad_browser::Browser;
 use ironclad_channels::a2a::A2aProtocol;
+use ironclad_channels::telegram::TelegramAdapter;
 use ironclad_core::IroncladConfig;
 use ironclad_db::Database;
 use ironclad_llm::LlmService;
 use ironclad_llm::OAuthManager;
 use ironclad_plugin_sdk::registry::PluginRegistry;
-use ironclad_server::{AppState, EventBus, PersonalityState, build_router};
+use ironclad_server::{AppState, EventBus, PersonalityState, build_public_router, build_router};
 use ironclad_wallet::{TreasuryPolicy, WalletService, YieldEngine};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
@@ -100,6 +101,18 @@ primary = "ollama/qwen3:8b"
             Arc::new(engine)
         },
     }
+}
+
+fn test_state_with_telegram_webhook_secret(secret: &str) -> AppState {
+    let mut state = test_state();
+    let adapter = TelegramAdapter::with_config(
+        "test-bot-token".into(),
+        30,
+        vec![8086033392],
+        Some(secret.to_string()),
+    );
+    state.telegram = Some(Arc::new(adapter));
+    state
 }
 
 async fn json_body(resp: axum::http::Response<Body>) -> serde_json::Value {
