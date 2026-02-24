@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-02-24
+
+### Fixed
+
+- **Release integrity follow-up**: Merged post-tag regression fixes from the 0.6.0 release branch into `develop`, including web peer-scope identity validation, dashboard WebSocket token encoding, and release-gate compile/test stabilization.
+- **Session creation stability**: Restored explicit default agent scope behavior in DB session creation paths to avoid `500` failures in session lifecycle APIs/tests.
+- **Routing test alignment**: Updated router integration expectations to reflect current fallback behavior when primary providers are breaker-blocked.
+
 ## [0.6.0] - 2026-02-24
 
 ### Added
