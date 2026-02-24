@@ -6,19 +6,25 @@ use serde_json::Value;
 
 use super::{AppState, internal_err};
 
+fn is_builtin_skill(s: &ironclad_db::skills::SkillRecord) -> bool {
+    s.kind.eq_ignore_ascii_case("builtin")
+}
+
 pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
     match ironclad_db::skills::list_skills(&state.db) {
         Ok(skills) => {
             let items: Vec<Value> = skills
                 .into_iter()
                 .map(|s| {
+                    let built_in = is_builtin_skill(&s);
                     serde_json::json!({
                         "id": s.id,
                         "name": s.name,
                         "kind": s.kind,
                         "description": s.description,
                         "source_path": s.source_path,
-                        "enabled": s.enabled,
+                        "enabled": s.enabled || built_in,
+                        "built_in": built_in,
                         "last_loaded_at": s.last_loaded_at,
                         "created_at": s.created_at,
                     })
@@ -32,21 +38,25 @@ pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
 
 pub async fn get_skill(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     match ironclad_db::skills::get_skill(&state.db, &id) {
-        Ok(Some(s)) => Ok(axum::Json(serde_json::json!({
-            "id": s.id,
-            "name": s.name,
-            "kind": s.kind,
-            "description": s.description,
-            "source_path": s.source_path,
-            "content_hash": s.content_hash,
-            "triggers_json": s.triggers_json,
-            "tool_chain_json": s.tool_chain_json,
-            "policy_overrides_json": s.policy_overrides_json,
-            "script_path": s.script_path,
-            "enabled": s.enabled,
-            "last_loaded_at": s.last_loaded_at,
-            "created_at": s.created_at,
-        }))),
+        Ok(Some(s)) => {
+            let built_in = is_builtin_skill(&s);
+            Ok(axum::Json(serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "kind": s.kind,
+                "description": s.description,
+                "source_path": s.source_path,
+                "content_hash": s.content_hash,
+                "triggers_json": s.triggers_json,
+                "tool_chain_json": s.tool_chain_json,
+                "policy_overrides_json": s.policy_overrides_json,
+                "script_path": s.script_path,
+                "enabled": s.enabled || built_in,
+                "built_in": built_in,
+                "last_loaded_at": s.last_loaded_at,
+                "created_at": s.created_at,
+            })))
+        }
         Ok(None) => Err((
             axum::http::StatusCode::NOT_FOUND,
             format!("skill {id} not found"),
@@ -127,6 +137,15 @@ pub async fn toggle_skill(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+    let existing = ironclad_db::skills::get_skill(&state.db, &id).map_err(|e| internal_err(&e))?;
+    if let Some(s) = existing.as_ref() {
+        if is_builtin_skill(s) {
+            return Err((
+                axum::http::StatusCode::FORBIDDEN,
+                format!("skill {} is built-in and cannot be disabled", s.name),
+            ));
+        }
+    }
     match ironclad_db::skills::toggle_skill_enabled(&state.db, &id) {
         Ok(Some(new_enabled)) => Ok(axum::Json(serde_json::json!({
             "id": id,
