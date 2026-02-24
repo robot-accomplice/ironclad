@@ -1074,15 +1074,37 @@ mod tests {
     #[tokio::test]
     async fn cmd_circuit_reset_success() {
         let s = MockServer::start().await;
-        mock_post(&s, "/api/breaker/reset", serde_json::json!({"ok": true})).await;
+        mock_get(
+            &s,
+            "/api/breaker/status",
+            serde_json::json!({
+                "providers": {
+                    "ollama": {"state": "open"},
+                    "moonshot": {"state": "open"}
+                }
+            }),
+        )
+        .await;
+        mock_post(
+            &s,
+            "/api/breaker/reset/ollama",
+            serde_json::json!({"ok": true}),
+        )
+        .await;
+        mock_post(
+            &s,
+            "/api/breaker/reset/moonshot",
+            serde_json::json!({"ok": true}),
+        )
+        .await;
         super::cmd_circuit_reset(&s.uri()).await.unwrap();
     }
 
     #[tokio::test]
     async fn cmd_circuit_reset_server_error() {
         let s = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/breaker/reset"))
+        Mock::given(method("GET"))
+            .and(path("/api/breaker/status"))
             .respond_with(ResponseTemplate::new(500))
             .mount(&s)
             .await;

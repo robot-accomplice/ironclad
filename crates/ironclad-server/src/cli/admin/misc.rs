@@ -136,20 +136,65 @@ pub async fn cmd_circuit_reset(url: &str) -> Result<(), Box<dyn std::error::Erro
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let client = reqwest::Client::new();
-    let resp = client
-        .post(format!("{url}/api/breaker/reset"))
+    let status = client
+        .get(format!("{url}/api/breaker/status"))
         .send()
         .await
-        .inspect_err(|e| {
+        .inspect_err(|_| {
             eprintln!("  {ERR} Cannot reach gateway at {url}");
         })?;
 
     heading("Circuit Breaker Reset");
 
-    if resp.status().is_success() {
-        eprintln!("    {OK} All circuit breakers reset to closed state");
+    if !status.status().is_success() {
+        eprintln!("    {WARN} Status returned HTTP {}", status.status());
+        eprintln!();
+        return Ok(());
+    }
+
+    let body: serde_json::Value = status.json().await.unwrap_or_default();
+    let providers: Vec<String> = body
+        .get("providers")
+        .and_then(|v| v.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+
+    if providers.is_empty() {
+        eprintln!("    {WARN} No providers reported by gateway");
+        eprintln!();
+        return Ok(());
+    }
+
+    let mut reset_ok = 0usize;
+    for provider in &providers {
+        let resp = client
+            .post(format!("{url}/api/breaker/reset/{provider}"))
+            .send()
+            .await;
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                reset_ok += 1;
+            }
+            Ok(r) => {
+                eprintln!("    {WARN} reset {} returned HTTP {}", provider, r.status());
+            }
+            Err(e) => {
+                eprintln!("    {WARN} reset {} failed: {}", provider, e);
+            }
+        }
+    }
+
+    if reset_ok == providers.len() {
+        eprintln!(
+            "    {OK} Reset {} providers to closed state",
+            providers.len()
+        );
     } else {
-        eprintln!("    {WARN} Reset returned status {}", resp.status());
+        eprintln!(
+            "    {WARN} Reset {}/{} providers",
+            reset_ok,
+            providers.len()
+        );
     }
 
     eprintln!();

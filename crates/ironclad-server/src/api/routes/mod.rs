@@ -232,7 +232,10 @@ pub fn build_router(state: AppState) -> Router {
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::get_channels_status;
-    use cron::{create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs, update_cron_job};
+    use cron::{
+        create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs, list_cron_runs,
+        update_cron_job,
+    };
     use health::{get_logs, health};
     use memory::{
         get_episodic_memory, get_semantic_categories, get_semantic_memory, get_semantic_memory_all,
@@ -244,7 +247,7 @@ pub fn build_router(state: AppState) -> Router {
         get_turn_tips, get_turn_tools, list_messages, list_session_turns, list_sessions,
         post_message, post_turn_feedback, put_turn_feedback,
     };
-    use skills::{get_skill, list_skills, reload_skills, toggle_skill};
+    use skills::{delete_skill, get_skill, list_skills, reload_skills, toggle_skill};
     use subagents::{
         create_sub_agent, delete_sub_agent, list_sub_agents, toggle_sub_agent, update_sub_agent,
     };
@@ -292,6 +295,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/memory/semantic/{category}", get(get_semantic_memory))
         .route("/api/memory/search", get(memory_search))
         .route("/api/cron/jobs", get(list_cron_jobs).post(create_cron_job))
+        .route("/api/cron/runs", get(list_cron_runs))
         .route(
             "/api/cron/jobs/{id}",
             get(get_cron_job)
@@ -299,6 +303,7 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(delete_cron_job),
         )
         .route("/api/stats/costs", get(get_costs))
+        .route("/api/stats/timeseries", get(get_overview_timeseries))
         .route("/api/stats/efficiency", get(get_efficiency))
         .route("/api/recommendations", get(get_recommendations))
         .route(
@@ -317,7 +322,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/wallet/balance", get(wallet_balance))
         .route("/api/wallet/address", get(wallet_address))
         .route("/api/skills", get(list_skills))
-        .route("/api/skills/{id}", get(get_skill))
+        .route("/api/skills/{id}", get(get_skill).delete(delete_skill))
         .route("/api/skills/reload", post(reload_skills))
         .route("/api/skills/{id}/toggle", put(toggle_skill))
         .route("/api/plugins", get(get_plugins))
@@ -1346,6 +1351,57 @@ primary = "ollama/qwen3:8b"
         let req = Request::builder()
             .method("PUT")
             .uri("/api/skills/nonexistent-id/toggle")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_skill_removes_record() {
+        let state = test_state();
+        let skill_id = ironclad_db::skills::register_skill(
+            &state.db,
+            "delete-me",
+            "instruction",
+            Some("To be deleted"),
+            "/skills/delete-me",
+            "abc123",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/skills/{skill_id}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert_eq!(body["id"], skill_id);
+        assert_eq!(body["name"], "delete-me");
+        assert_eq!(body["deleted"], true);
+
+        let missing = ironclad_db::skills::get_skill(&state.db, &skill_id)
+            .unwrap()
+            .is_none();
+        assert!(missing);
+    }
+
+    #[tokio::test]
+    async fn delete_skill_returns_404_for_missing() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/skills/nonexistent-id")
             .body(Body::empty())
             .unwrap();
 

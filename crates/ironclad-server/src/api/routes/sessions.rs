@@ -11,7 +11,7 @@ pub struct FeedbackRequest {
     pub comment: Option<String>,
 }
 
-use ironclad_agent::analyzer::{ContextAnalyzer, LlmAnalyzer, SessionData, TurnData};
+use ironclad_agent::analyzer::{ContextAnalyzer, SessionData, TurnData};
 
 use super::{AppState, internal_err};
 
@@ -30,8 +30,9 @@ pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     let conn = state.db.conn();
     let mut stmt = conn
         .prepare(
-            "SELECT id, agent_id, scope_key, status, model, nickname, created_at, updated_at, metadata \
-             FROM sessions ORDER BY created_at DESC LIMIT 200",
+            "SELECT s.id, s.agent_id, s.scope_key, s.status, s.model, s.nickname, s.created_at, s.updated_at, s.metadata, \
+                    (SELECT COUNT(1) FROM turns t WHERE t.session_id = s.id) AS turn_count \
+             FROM sessions s ORDER BY s.created_at DESC LIMIT 200",
         )
         .map_err(|e| internal_err(&e))?;
 
@@ -47,6 +48,7 @@ pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
                 "created_at": row.get::<_, String>(6)?,
                 "updated_at": row.get::<_, String>(7)?,
                 "metadata": row.get::<_, Option<String>>(8)?,
+                "turn_count": row.get::<_, i64>(9)?,
             }))
         })
         .map_err(|e| internal_err(&e))?;
@@ -62,7 +64,7 @@ pub async fn create_session(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
-    match ironclad_db::sessions::find_or_create(&state.db, &body.agent_id, None) {
+    match ironclad_db::sessions::create_new(&state.db, &body.agent_id, None) {
         Ok(id) => Ok(axum::Json(serde_json::json!({ "session_id": id }))),
         Err(e) => Err(internal_err(&e)),
     }
@@ -405,7 +407,21 @@ pub async fn analyze_turn(
 
     let analyzer = ContextAnalyzer::new();
     let tips = analyzer.analyze_turn(&turn_data, None);
-    let prompt = LlmAnalyzer::build_analysis_prompt(&turn_data, &tips);
+    let critical_count = tips
+        .iter()
+        .filter(|t| matches!(t.severity, ironclad_agent::analyzer::Severity::Critical))
+        .count();
+    let warning_count = tips
+        .iter()
+        .filter(|t| matches!(t.severity, ironclad_agent::analyzer::Severity::Warning))
+        .count();
+    let summary = if critical_count > 0 {
+        "High-risk context issues detected. Address critical guidance first."
+    } else if warning_count > 0 {
+        "Turn has optimization opportunities based on context heuristics."
+    } else {
+        "Turn context looks healthy; no major optimization flags."
+    };
 
     let llm = run_llm_analysis(&state, &prompt, Some(1200), Some(0.2)).await?;
 
@@ -456,7 +472,19 @@ pub async fn analyze_session(
 
     let analyzer = ContextAnalyzer::new();
     let insights = analyzer.analyze_session(&session_data);
-    let prompt = LlmAnalyzer::build_session_prompt(&session_data, &insights);
+    let critical_count = insights
+        .iter()
+        .filter(|t| matches!(t.severity, ironclad_agent::analyzer::Severity::Critical))
+        .count();
+    let warning_count = insights
+        .iter()
+        .filter(|t| matches!(t.severity, ironclad_agent::analyzer::Severity::Warning))
+        .count();
+    let top_actions: Vec<String> = insights
+        .iter()
+        .take(3)
+        .map(|t| t.suggestion.clone())
+        .collect();
 
     let llm = run_llm_analysis(&state, &prompt, Some(1800), Some(0.2)).await?;
 

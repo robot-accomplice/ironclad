@@ -130,6 +130,10 @@
     .cc-delta.up { color: var(--success); background: rgba(34,197,94,0.12); }
     .cc-delta.down { color: var(--error); background: rgba(239,68,68,0.12); }
     .cc-delta.flat { color: var(--muted); background: rgba(113,113,122,0.12); }
+    .cc-chart-wrap { position: relative; }
+    .cc-chart-axis { position: absolute; right: 0.5rem; font-size: 0.625rem; color: var(--muted); font-family: var(--font-mono); line-height: 1; pointer-events: none; user-select: none; }
+    .cc-chart-axis.top { top: 0.35rem; }
+    .cc-chart-axis.bottom { bottom: 0.2rem; }
     .cc-chart { width: 100%; height: 64px; display: block; margin-top: 0.5rem; }
     .cc-footer { display: flex; gap: 1rem; padding: 0.625rem 1.25rem; border-top: 1px solid var(--border); background: rgba(0,0,0,0.15); }
     .cc-stat { display: flex; flex-direction: column; }
@@ -273,6 +277,16 @@
     .settings-input.warn { border-color: var(--error); background: rgba(239,68,68,0.06); }
     .settings-label.warn { color: var(--error); }
     .settings-warn-icon { color: var(--error); font-size: 0.75rem; margin-left: 0.25rem; }
+    .model-order-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .model-order-item { display: grid; grid-template-columns: 16px minmax(160px,1fr) auto auto auto; gap: 0.5rem; align-items: center; padding: 0.45rem 0.5rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
+    .model-order-item.dragging { opacity: 0.55; border-style: dashed; }
+    .model-order-item.drop-target { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim) inset; }
+    .model-order-handle { color: var(--muted); cursor: grab; user-select: none; font-size: 0.75rem; letter-spacing: -1px; text-align: center; }
+    .model-order-name { font-family: var(--font-mono); font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .model-order-actions { display: flex; gap: 0.35rem; align-items: center; }
+    .model-order-btn { font-size: 0.65rem; padding: 0.2rem 0.45rem; border: 1px solid var(--border); border-radius: 3px; background: transparent; color: var(--muted); cursor: pointer; }
+    .model-order-btn:hover { color: var(--text); border-color: var(--accent); }
+    .model-order-add { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; align-items: center; }
     .settings-provider-card { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.75rem; margin-bottom: 0.75rem; }
     .settings-provider-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; padding-bottom: 0.375rem; border-bottom: 1px solid var(--border); }
     .settings-provider-name { font-size: 0.8125rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
@@ -343,8 +357,7 @@
     .cal-evt { font-size: 0.5625rem; padding: 1px 4px; border-radius: 2px; color: #fff; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; flex-shrink: 0; transition: filter 0.15s; }
     .cal-evt:hover { filter: brightness(1.2); }
     .cal-evt.fail { box-shadow: inset 0 0 0 1px rgba(239,68,68,0.6); }
-    .cal-evt.past { opacity: 0.6; cursor: default; position: relative; }
-    .cal-evt.past::after { content: '\2713'; position: absolute; right: 3px; top: 0; font-size: 0.5rem; opacity: 0.7; }
+    .cal-evt.past { opacity: 0.75; cursor: default; }
     .cal-evt.past:hover { filter: none; }
     .cal-edit-info { font-size: 0.6875rem; color: var(--muted); background: rgba(99,102,241,0.08); border: 1px solid var(--border); border-radius: 4px; padding: 0.5rem 0.625rem; line-height: 1.4; }
     .cal-edit-info strong { color: var(--text); font-weight: 600; }
@@ -471,8 +484,8 @@
         <a href="#efficiency" data-page="efficiency"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M8 1v6l4.2 2.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1" fill="currentColor"/></svg><span class="nav-label">Efficiency</span></a>
         <a href="#recommendations" data-page="recommendations"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M8 1l2 4h4l-3 3 1 4-4-2-4 2 1-4-3-3h4z" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="3" y1="14" x2="13" y2="14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span class="nav-label">Recommendations</span></a>
         <a href="#wallet" data-page="wallet"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1" y="3" width="14" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M1 3V2.5A1.5 1.5 0 012.5 1h9L14 3" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="10" y="7" width="5" height="3" rx="1" fill="currentColor"/><circle cx="12.5" cy="8.5" r=".8" fill="var(--bg)"/></svg><span class="nav-label">Wallet</span></a>
-        <a href="#settings" data-page="settings"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M6.5 1h3l.3 2.1a5.5 5.5 0 011.3.7L13 2.7l1.5 2.6-1.8 1.2a5.5 5.5 0 010 1.5l1.8 1.2-1.5 2.6-1.9-1.1a5.5 5.5 0 01-1.3.7L9.5 13.5h-3l-.3-2.1a5.5 5.5 0 01-1.3-.7L3 11.8l-1.5-2.6 1.8-1.2a5.5 5.5 0 010-1.5L1.5 5.3 3 2.7l1.9 1.1a5.5 5.5 0 011.3-.7L6.5 1zM8 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z" fill="currentColor"/></svg><span class="nav-label">Settings</span></a>
         <a href="#workspace" data-page="workspace"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="5.5" r="1.5" fill="currentColor"/><circle cx="11" cy="5.5" r="1.5" fill="currentColor"/><circle cx="8" cy="11" r="1.5" fill="currentColor"/><line x1="5" y1="7" x2="8" y2="9.5" stroke="currentColor" stroke-width="1" opacity=".5"/><line x1="11" y1="7" x2="8" y2="9.5" stroke="currentColor" stroke-width="1" opacity=".5"/></svg><span class="nav-label">Workspace</span></a>
+        <a href="#settings" data-page="settings"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M6.5 1h3l.3 2.1a5.5 5.5 0 011.3.7L13 2.7l1.5 2.6-1.8 1.2a5.5 5.5 0 010 1.5l1.8 1.2-1.5 2.6-1.9-1.1a5.5 5.5 0 01-1.3.7L9.5 13.5h-3l-.3-2.1a5.5 5.5 0 01-1.3-.7L3 11.8l-1.5-2.6 1.8-1.2a5.5 5.5 0 010-1.5L1.5 5.3 3 2.7l1.9 1.1a5.5 5.5 0 011.3-.7L6.5 1zM8 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z" fill="currentColor"/></svg><span class="nav-label">Settings</span></a>
       </nav>
       <button class="sidebar-collapse-btn" id="sidebar-collapse" title="Collapse sidebar">
         <svg class="collapse-icon" viewBox="0 0 16 16"><path d="M10.3 2.3L4.6 8l5.7 5.7 1.1-1.1L6.8 8l4.6-4.6z" fill="currentColor"/></svg>
@@ -517,8 +530,8 @@
     <a href="#efficiency" data-page="efficiency">Efficiency</a>
     <a href="#recommendations" data-page="recommendations">Recommendations</a>
     <a href="#wallet" data-page="wallet">Wallet</a>
-    <a href="#settings" data-page="settings">Settings</a>
     <a href="#workspace" data-page="workspace">Workspace</a>
+    <a href="#settings" data-page="settings">Settings</a>
   </nav>
   <script>
 (function() {
@@ -621,7 +634,7 @@
     });
   }
 
-  function constantSeries(count, value) {
+  function repeatedSeries(count, value) {
     var pts = []; for (var i = 0; i < count; i++) pts.push(value); return pts;
   }
 
@@ -636,6 +649,8 @@
     var fillFrom = opts.fillFrom != null ? opts.fillFrom : 0.25;
     var lineWidth = opts.lineWidth || 2;
     var height = opts.height || 64;
+    var axisTopLabel = opts.axisTopLabel || null;
+    var axisBottomLabel = opts.axisBottomLabel || null;
     setTimeout(function() {
       var canvas = document.getElementById(id); if (!canvas) return;
       var dpr = window.devicePixelRatio || 1;
@@ -644,10 +659,19 @@
       canvas.width = W * dpr; canvas.height = H * dpr;
       canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
       var ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      var min = Math.min.apply(null, series), max = Math.max.apply(null, series);
+      var min = opts.min != null ? Number(opts.min) : Math.min.apply(null, series);
+      var max = opts.max != null ? Number(opts.max) : Math.max.apply(null, series);
+      if (!isFinite(min)) min = 0;
+      if (!isFinite(max)) max = 1;
+      if (max < min) { var t = max; max = min; min = t; }
       var range = max - min || 1; var padTop = 6, padBot = 4, usableH = H - padTop - padBot;
       function toX(i) { return (i / (series.length - 1)) * W; }
-      function toY(v) { return padTop + usableH - ((v - min) / range) * usableH; }
+      function toY(v) {
+        var n = (v - min) / range;
+        if (n < 0) n = 0;
+        if (n > 1) n = 1;
+        return padTop + usableH - n * usableH;
+      }
       var grad = ctx.createLinearGradient(0, padTop, 0, H);
       grad.addColorStop(0, color + Math.round(fillFrom * 255).toString(16).padStart(2, '0'));
       grad.addColorStop(1, color + '00');
@@ -667,6 +691,11 @@
       ctx.fillStyle = color; ctx.beginPath(); ctx.arc(lastX, lastY, 3, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#0a0b0f'; ctx.beginPath(); ctx.arc(lastX, lastY, 1.5, 0, Math.PI * 2); ctx.fill();
     }, 0);
+    if (axisTopLabel || axisBottomLabel) {
+      var top = axisTopLabel ? '<span class="cc-chart-axis top">' + esc(axisTopLabel) + '</span>' : '';
+      var bottom = axisBottomLabel ? '<span class="cc-chart-axis bottom">' + esc(axisBottomLabel) + '</span>' : '';
+      return '<div class="cc-chart-wrap"><canvas id="' + id + '" class="cc-chart"></canvas>' + top + bottom + '</div>';
+    }
     return '<canvas id="' + id + '" class="cc-chart"></canvas>';
   }
 
@@ -760,9 +789,21 @@
 
   var App = {
     page: 'overview',
+    _activeAgentId: null,
     _memoryTab: 'episodic',
     _memorySessionId: '',
     ws: null,
+    _resolveActiveAgentId: function() {
+      var self = this;
+      if (self._activeAgentId) return Promise.resolve(self._activeAgentId);
+      return api('/api/agent/status')
+        .then(function(s) {
+          var aid = (s && s.agent_id) ? String(s.agent_id) : 'default';
+          self._activeAgentId = aid;
+          return aid;
+        })
+        .catch(function() { return 'default'; });
+    },
     setPage: function(p) {
       this.page = p;
       document.querySelectorAll('.sidebar-nav a, .mobile-nav a').forEach(function(a) {
@@ -790,6 +831,17 @@
         });
       }
     },
+    refreshSkills: function() {
+      if (this.page !== 'skills') return;
+      var content = document.getElementById('content');
+      if (!content) return;
+      setHtml(content, '<div class="skeleton" style="height:200px"></div>');
+      this.renderSkills().then(function(html) {
+        setHtml(content, html);
+      }).catch(function(e) {
+        setHtml(content, '<div class="card"><p style="color:var(--error)">' + esc(e.message || 'Failed to load skills') + '</p></div>');
+      });
+    },
 
     renderOverview: function() {
       return Promise.all([
@@ -799,6 +851,7 @@
         api('/api/skills').catch(function() { return { skills: [] }; }),
         api('/api/cron/jobs').catch(function() { return { jobs: [] }; }),
         api('/api/stats/cache').catch(function() { return { hit_rate: 0 }; }),
+        api('/api/stats/timeseries?hours=24').catch(function() { return { series: {}, labels: [] }; }),
         api('/api/wallet/balance').catch(function() { return {}; }),
         api('/api/breaker/status').catch(function() { return {}; }),
         api('/api/workspace/state').catch(function() { return { agents: [] }; }),
@@ -806,11 +859,12 @@
       ]).then(function(arr) {
         sparklineId = 0; stackedId = 0;
         var agent = arr[0], health = arr[1], sessions = arr[2], skills = arr[3];
-        var cron = arr[4], cache = arr[5], wallet = arr[6], breaker = arr[7];
-        var wsState = arr[8], costData = arr[9];
+        var cron = arr[4], cache = arr[5], timeseries = arr[6], wallet = arr[7], breaker = arr[8];
+        var wsState = arr[9], costData = arr[10];
         _cachedWorkspace = wsState;
 
         var state = (agent.state || 'unknown').toLowerCase();
+        if (agent.agent_id) App._activeAgentId = String(agent.agent_id);
         var dotEl = document.getElementById('agent-dot');
         if (dotEl) dotEl.className = 'status-dot' + (state === 'running' ? '' : state === 'sleeping' ? ' warning' : ' error');
         var stateEl = document.getElementById('agent-state'); if (stateEl) stateEl.textContent = state;
@@ -828,28 +882,48 @@
         var totalTokens = costs.reduce(function(s, c) { return s + (Number(c.tokens_in) || 0) + (Number(c.tokens_out) || 0); }, 0);
         var cronErrors = (cron.jobs || []).reduce(function(s, j) { return s + (j.consecutive_errors || 0); }, 0);
         var agents = wsState.agents || [];
+        function agentActivityScore(a) {
+          var activity = (a.activity || '').toString().toLowerCase();
+          var state = (a.state || '').toString().toLowerCase();
+          if (activity === 'idle' || activity === 'standby') return 0;
+          if (activity === 'inference' || activity === 'working' || activity === 'tool_execution' || activity === 'tooling') return 1;
+          if (activity === 'walking' || activity === 'moving' || activity === 'talking') return 0.5;
+          if (state === 'running' && activity) return 0.6;
+          return 0;
+        }
         var agentRunning = agents.filter(function(a) { return (a.state || '').toLowerCase() === 'running'; });
+        var agentActivity = {};
+        agents.forEach(function(a) { agentActivity[a.name || a.id] = agentActivityScore(a); });
+        var agentActiveNow = Object.keys(agentActivity).filter(function(k) { return (agentActivity[k] || 0) > 0; }).length;
 
         var costPerHr = totalCost > 0 ? totalCost / 24 : 0;
         var tokPerHr = totalTokens > 0 ? totalTokens / 24 : 0;
-        var agentLoadVal = agents.length > 0 ? agentRunning.length / agents.length : 0;
+        var agentLoadVal = agents.length > 0
+          ? agents.reduce(function(sum, a) { return sum + agentActivityScore(a); }, 0) / agents.length
+          : 0;
         var cronSuccessVal = cronErrors > 0 ? 0.9 : (jobCount > 0 ? 1.0 : 0);
+        var s = (timeseries && timeseries.series) || {};
+        var buckets = (timeseries && timeseries.labels && timeseries.labels.length) ? timeseries.labels.length : 24;
         var TS = {
-          costPerHour: constantSeries(24, costPerHr),
-          tokensPerHour: constantSeries(24, tokPerHr),
-          cacheHitRate: constantSeries(24, hitRate || 0),
-          walletBalance: constantSeries(24, balance || 0),
-          requestLatency: constantSeries(24, 0),
-          sessionsPerHour: constantSeries(24, sessionCount),
-          memoryEntries: constantSeries(24, 0),
-          cronSuccess: constantSeries(24, cronSuccessVal),
-          breakerFailures: constantSeries(24, 0),
-          agentLoad: constantSeries(24, agentLoadVal),
+          costPerHour: (s.cost_per_hour || []).map(Number),
+          tokensPerHour: (s.tokens_per_hour || []).map(Number),
+          cacheHitRate: repeatedSeries(buckets, hitRate || 0),
+          walletBalance: repeatedSeries(buckets, balance || 0),
+          requestLatency: (s.latency_p50_ms || []).map(Number),
+          sessionsPerHour: (s.sessions_per_hour || []).map(Number),
+          memoryEntries: repeatedSeries(buckets, 0),
+          cronSuccess: (s.cron_success_rate || []).map(Number),
+          breakerFailures: repeatedSeries(buckets, 0),
+          agentLoad: repeatedSeries(buckets, agentLoadVal),
         };
+        if (TS.costPerHour.length === 0) TS.costPerHour = repeatedSeries(buckets, costPerHr);
+        if (TS.tokensPerHour.length === 0) TS.tokensPerHour = repeatedSeries(buckets, tokPerHr);
+        if (TS.requestLatency.length === 0) TS.requestLatency = repeatedSeries(buckets, 0);
+        if (TS.sessionsPerHour.length === 0) TS.sessionsPerHour = repeatedSeries(buckets, sessionCount);
+        if (TS.cronSuccess.length === 0) TS.cronSuccess = repeatedSeries(buckets, cronSuccessVal);
         TS.agentLoadByAgent = {};
         agents.forEach(function(a) {
-          var w = agentLoadVal / Math.max(1, agents.length);
-          TS.agentLoadByAgent[a.name || a.id] = constantSeries(24, w);
+          TS.agentLoadByAgent[a.name || a.id] = repeatedSeries(buckets, agentActivity[a.name || a.id] || 0);
         });
 
         var costLast = seriesLast(TS.costPerHour), costPrev = seriesPrev(TS.costPerHour);
@@ -869,15 +943,19 @@
         cards += '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">System Health</div><div class="cc-value"><span class="badge success">' + esc(health.status || 'ok') + '</span></div><div class="cc-sub">uptime ' + (health.uptime_seconds != null ? health.uptime_seconds + 's' : '\u2014') + '</div></div><div class="cc-right"><span class="cc-delta up">' + (seriesLast(TS.cronSuccess) * 100).toFixed(0) + '% cron</span></div></div>' + renderSparkCanvas(TS.cronSuccess, { color: '#22c55e' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Breaker</div><div class="cc-stat-value"><span class="badge success" style="font-size:0.6875rem">' + esc(breaker.note || 'closed') + '</span></div></div><div class="cc-stat"><div class="cc-stat-label">Cron errors</div><div class="cc-stat-value">' + cronErrors + '</div></div></div></div>';
 
         if (agents.length > 0) {
-          var fleetKeys = agents.map(function(a) { return a.name || a.id; });
-          var fleetColors = {}; agents.forEach(function(a) { fleetColors[a.name || a.id] = a.color || '#6366f1'; });
           var fleetLegend = agents.map(function(a) {
             var k = a.name || a.id;
             var stDot = (a.state || '').toLowerCase() === 'running' ? 'var(--success)' : 'var(--warning)';
             var lastVal = TS.agentLoadByAgent[k] ? seriesLast(TS.agentLoadByAgent[k]) : 0;
-            return '<div class="metrics-legend-item"><div class="metrics-legend-dot" style="background:' + (a.color || '#6366f1') + '"></div>' + esc(k) + '<span class="metrics-legend-val" style="margin-left:auto">' + (lastVal * 100).toFixed(0) + '%</span><div style="width:6px;height:6px;border-radius:50%;background:' + stDot + ';flex-shrink:0"></div></div>';
+            var stateLabel = (a.activity || a.state || 'idle').toString().toLowerCase();
+            return '<div class="metrics-legend-item" style="display:grid;grid-template-columns:minmax(120px,1fr) 1fr auto auto;align-items:center;gap:0.5rem">' +
+              '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(k) + '</div>' +
+              '<div style="height:6px;background:rgba(255,255,255,0.09);border-radius:999px;overflow:hidden"><div style="height:100%;width:' + Math.max(0, Math.min(100, lastVal * 100)).toFixed(0) + '%;background:var(--accent);border-radius:999px"></div></div>' +
+              '<span class="metrics-legend-val" style="margin-left:0.25rem">' + (lastVal * 100).toFixed(0) + '%</span>' +
+              '<div title="' + esc(stateLabel) + '" style="width:6px;height:6px;border-radius:50%;background:' + stDot + ';flex-shrink:0"></div>' +
+            '</div>';
           }).join('');
-          cards += '<div class="card composite-card" style="grid-column: 1 / -1"><div class="cc-header"><div class="cc-left"><div class="cc-label">Agent Fleet</div><div class="cc-value">' + agentRunning.length + ' / ' + agents.length + ' running</div></div><div class="cc-right">' + deltaHtml(seriesLast(TS.agentLoad), seriesPrev(TS.agentLoad)) + '</div></div>' + renderStackedArea(TS.agentLoadByAgent, fleetKeys, fleetColors, { height: 120, yAxis: true, yFormat: function(v) { return (v * 100).toFixed(0) + '%'; } }) + '<div class="metrics-legend" style="padding:0.5rem 1rem 0.75rem">' + fleetLegend + '</div></div>';
+          cards += '<div class="card composite-card" style="grid-column: 1 / -1"><div class="cc-header"><div class="cc-left"><div class="cc-label">Agent Fleet Activity</div><div class="cc-value">' + (seriesLast(TS.agentLoad) * 100).toFixed(0) + '% active load</div><div class="cc-sub">' + agentActiveNow + ' / ' + agents.length + ' agents active now</div></div><div class="cc-right">' + deltaHtml(seriesLast(TS.agentLoad), seriesPrev(TS.agentLoad)) + '</div></div>' + renderSparkCanvas(TS.agentLoad, { color: '#6366f1', min: 0, max: 1, axisTopLabel: '100%', axisBottomLabel: '0%' }) + '<div class="metrics-legend" style="padding:0.5rem 1rem 0.75rem">' + fleetLegend + '</div></div>';
         }
 
         return '<div class="overview-grid">' + cards + '</div>';
@@ -1042,29 +1120,114 @@
       });
     },
 
-    _DEFAULT_SKILLS: [
-      { id: 'web-search', name: 'Web Search', kind: 'tool', description: 'Search the web for real-time information using configured search providers.', enabled: true },
-      { id: 'code-execution', name: 'Code Execution', kind: 'tool', description: 'Execute code snippets in sandboxed environments (Python, JavaScript, Shell).', enabled: true },
-      { id: 'file-operations', name: 'File Operations', kind: 'tool', description: 'Read, write, and manage files within the agent workspace directory.', enabled: true },
-      { id: 'memory-recall', name: 'Memory Recall', kind: 'cognitive', description: 'Retrieve and synthesize information from episodic, semantic, and working memory stores.', enabled: true },
-      { id: 'task-planning', name: 'Task Planning', kind: 'cognitive', description: 'Decompose complex goals into ordered subtasks with dependency tracking.', enabled: true },
-      { id: 'self-reflection', name: 'Self-Reflection', kind: 'cognitive', description: 'Evaluate own outputs for quality, accuracy, and alignment with user intent.', enabled: true },
-      { id: 'summarization', name: 'Summarization', kind: 'format', description: 'Condense long documents, conversations, or data sets into concise summaries.', enabled: true },
-      { id: 'data-analysis', name: 'Data Analysis', kind: 'tool', description: 'Parse, transform, and analyze structured data (CSV, JSON, SQL results).', enabled: true },
-      { id: 'api-integration', name: 'API Integration', kind: 'tool', description: 'Make authenticated HTTP requests to external APIs and process responses.', enabled: false },
-      { id: 'image-analysis', name: 'Image Analysis', kind: 'multimodal', description: 'Analyze and describe images, extract text (OCR), and identify visual elements.', enabled: false }
-    ],
     renderSkills: function() {
       var self = this;
       return api('/api/skills').then(function(data) {
         var skills = data.skills || [];
-        if (skills.length === 0) skills = self._DEFAULT_SKILLS;
+        if (skills.length === 0) {
+          return '<div style="display:flex;align-items:center;gap:1rem"><button class="btn" id="btn-reload-skills">Reload skills</button><span style="font-size:0.8125rem;color:var(--muted)">0 / 0 enabled</span></div><div class="card" style="margin-top:1rem;color:var(--muted)">No skills registered. Add skills on disk and click Reload skills.</div>';
+        }
         var enabledCount = skills.filter(function(s) { return s.enabled; }).length;
         var cards = skills.map(function(s) {
           var kindColor = s.kind === 'tool' ? 'var(--accent)' : s.kind === 'cognitive' ? 'var(--success)' : s.kind === 'multimodal' ? 'var(--warning)' : 'var(--muted)';
-          return '<div class="card skill-card" data-id="' + esc(s.id || '') + '"><div class="skill-header"><div class="skill-info"><div class="card-title" style="color:' + kindColor + '">' + esc(s.kind || '') + '</div><div class="card-value">' + esc(s.name || '') + '</div></div><label class="toggle"><input type="checkbox" data-skill-toggle="' + esc(s.id || '') + '"' + (s.enabled ? ' checked' : '') + '><span class="toggle-track"></span></label></div><p style="font-size:0.8125rem;color:var(--muted);margin-top:0.5rem">' + esc(s.description || '') + '</p></div>';
+          var actions = '';
+          var builtIn = !!s.built_in || String(s.kind || '').toLowerCase() === 'builtin';
+          var kindLabel = builtIn ? 'builtin' : (s.kind || '');
+          var builtInBadge = builtIn ? '<span class="badge muted" style="font-size:0.6rem;padding:0.08rem 0.35rem;margin-left:0.35rem">built-in</span>' : '';
+          var toggleDisabled = builtIn ? ' disabled' : '';
+          var toggleTitle = builtIn ? ' title="Built-in skills are always enabled"' : '';
+          if (s.id && !builtIn) {
+            actions = '<div style="display:flex;justify-content:flex-end;margin-top:0.75rem"><button class="btn secondary" data-skill-delete="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '" style="border-color:var(--error);color:var(--error);font-size:0.75rem;padding:0.25rem 0.6rem">Delete</button></div>';
+          }
+          return '<div class="card skill-card" data-id="' + esc(s.id || '') + '"><div class="skill-header"><div class="skill-info"><div class="card-title" style="color:' + kindColor + '">' + esc(kindLabel) + builtInBadge + '</div><div class="card-value">' + esc(s.name || '') + '</div></div><label class="toggle"><input type="checkbox" data-skill-toggle="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '"' + (s.enabled ? ' checked' : '') + toggleDisabled + toggleTitle + '><span class="toggle-track"></span></label></div><p style="font-size:0.8125rem;color:var(--muted);margin-top:0.5rem">' + esc(s.description || '') + '</p>' + actions + '</div>';
         }).join('');
         return '<div style="display:flex;align-items:center;gap:1rem"><button class="btn" id="btn-reload-skills">Reload skills</button><span style="font-size:0.8125rem;color:var(--muted)">' + enabledCount + ' / ' + skills.length + ' enabled</span></div><div class="skills-grid" style="margin-top:1rem">' + cards + '</div>';
+      });
+    },
+
+    _closeSkillDeleteModal: function() {
+      var modal = document.getElementById('skill-delete-modal');
+      if (modal) modal.remove();
+    },
+
+    _openSkillDeleteModal: function(skillId, skillName) {
+      var self = this;
+      self._closeSkillDeleteModal();
+      var modal = document.createElement('div');
+      modal.id = 'skill-delete-modal';
+      modal.style.position = 'fixed';
+      modal.style.inset = '0';
+      modal.style.zIndex = '1000';
+      modal.style.background = 'rgba(0,0,0,0.65)';
+      modal.style.display = 'flex';
+      modal.style.alignItems = 'center';
+      modal.style.justifyContent = 'center';
+      modal.style.padding = '1.5rem';
+
+      var html = ''
+        + '<div style="width:min(520px, 100%);background:var(--bg);border:1px solid var(--border);border-radius:8px;box-shadow:0 20px 40px rgba(0,0,0,0.45)">'
+        + '  <div style="padding:1rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:1rem">'
+        + '    <div style="font-weight:700">Delete Skill</div>'
+        + '    <button class="btn secondary" data-skill-delete-cancel style="padding:0.25rem 0.6rem">Close</button>'
+        + '  </div>'
+        + '  <div style="padding:1rem 1.25rem;color:var(--muted);font-size:0.9rem;line-height:1.45">'
+        + '    This action permanently removes the skill record from the runtime database.'
+        + '  </div>'
+        + '  <div style="padding:0 1.25rem 1rem 1.25rem">'
+        + '    <div style="margin-bottom:0.45rem;font-size:0.75rem;text-transform:uppercase;color:var(--muted);letter-spacing:0.05em">Confirm skill name</div>'
+        + '    <div style="margin-bottom:0.6rem;font-family:var(--font-mono);font-size:0.9rem;color:var(--text)">' + esc(skillName) + '</div>'
+        + '    <input id="skill-delete-confirm-input" type="text" placeholder="Type exact skill name"'
+        + '      style="width:100%;padding:0.55rem 0.7rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--font-mono)">'
+        + '    <div id="skill-delete-confirm-hint" style="margin-top:0.5rem;font-size:0.75rem;color:var(--muted)">Type the exact name to enable deletion.</div>'
+        + '  </div>'
+        + '  <div style="padding:0.9rem 1.25rem;border-top:1px solid var(--border);display:flex;gap:0.6rem;justify-content:flex-end">'
+        + '    <button class="btn secondary" data-skill-delete-cancel>Cancel</button>'
+        + '    <button class="btn" id="skill-delete-confirm-btn" disabled style="border-color:var(--error);color:var(--error);opacity:0.45;pointer-events:none">Delete Skill</button>'
+        + '  </div>'
+        + '</div>';
+      setHtml(modal, html);
+      document.body.appendChild(modal);
+
+      var input = document.getElementById('skill-delete-confirm-input');
+      var btn = document.getElementById('skill-delete-confirm-btn');
+      var hint = document.getElementById('skill-delete-confirm-hint');
+      if (input) input.focus();
+
+      function syncState() {
+        if (!input || !btn) return;
+        var matches = input.value === skillName;
+        btn.disabled = !matches;
+        btn.style.opacity = matches ? '' : '0.45';
+        btn.style.pointerEvents = matches ? '' : 'none';
+        if (hint) {
+          hint.style.color = matches ? 'var(--success)' : 'var(--muted)';
+          hint.textContent = matches ? 'Name matches. You can delete this skill.' : 'Type the exact name to enable deletion.';
+        }
+      }
+
+      if (input) {
+        input.addEventListener('input', syncState);
+        input.addEventListener('keydown', function(ev) {
+          if (ev.key === 'Enter' && btn && !btn.disabled) btn.click();
+        });
+      }
+
+      modal.addEventListener('click', function(ev) {
+        if (ev.target === modal || ev.target.closest('[data-skill-delete-cancel]')) {
+          self._closeSkillDeleteModal();
+          return;
+        }
+        if (ev.target.closest('#skill-delete-confirm-btn')) {
+          api('/api/skills/' + encodeURIComponent(skillId), { method: 'DELETE' })
+            .then(function(resp) {
+              self._closeSkillDeleteModal();
+              toast('Deleted skill: ' + (resp.name || skillName));
+              App.navigate('skills');
+            })
+            .catch(function(err) {
+              toast(err.message || 'Failed to delete skill');
+            });
+        }
       });
     },
 
@@ -1074,6 +1237,12 @@
     _calEditJob: null,
     _calModalMode: null,
     _JOB_COLORS: ['#6366f1','#22c55e','#06b6d4','#f59e0b','#ec4899','#8b5cf6','#ef4444','#14b8a6','#f97316','#a855f7'],
+    _colorForJob: function(jobId) {
+      if (!jobId) return this._JOB_COLORS[0];
+      var h = 0;
+      for (var i = 0; i < jobId.length; i++) h = ((h << 5) - h) + jobId.charCodeAt(i);
+      return this._JOB_COLORS[Math.abs(h) % this._JOB_COLORS.length];
+    },
     _parseCronToSched: function(kind, expr) {
       var s = { freq: 'daily', interval: 5, intervalUnit: 'minutes', hour: '02', minute: '00', days: [1,2,3,4,5,6,0] };
       if (kind === 'interval') {
@@ -1114,12 +1283,17 @@
 
     renderScheduler: function() {
       var self = this;
-      return api('/api/cron/jobs').then(function(data) {
-        var jobs = data.jobs || [];
-        jobs.forEach(function(j, i) { if (!j.color) j.color = self._JOB_COLORS[i % self._JOB_COLORS.length]; });
+      var year = self._calYear, month = self._calMonth;
+      var monthStart = year + '-' + String(month + 1).padStart(2, '0') + '-01 00:00:00';
+      var monthEnd = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(new Date(year, month + 1, 0).getDate()).padStart(2, '0') + ' 23:59:59';
+      return Promise.all([
+        api('/api/cron/jobs'),
+        api('/api/cron/runs?from=' + encodeURIComponent(monthStart) + '&to=' + encodeURIComponent(monthEnd) + '&limit=5000').catch(function() { return { runs: [] }; })
+      ]).then(function(arr) {
+        var jobs = (arr[0] && arr[0].jobs) || [];
+        var runs = (arr[1] && arr[1].runs) || [];
+        jobs.forEach(function(j) { j.color = self._colorForJob(j.id || j.name || 'job'); });
         _cachedCronJobs = jobs;
-
-        var year = self._calYear, month = self._calMonth;
         var now = new Date();
         var todayKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
         var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1132,21 +1306,35 @@
         var today = now.getDate();
 
         var cronRuns = {};
-        for (var d = 1; d <= daysInMonth; d++) {
-          var key = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
-          var dayRuns = [];
-          if (d <= today && year === now.getFullYear() && month === now.getMonth()) {
-            jobs.forEach(function(j) {
-              var count = j.schedule_kind === 'interval' ? 2880 : 24;
-              var st = (j.last_status || 'success').toLowerCase();
-              if (d === today && j.consecutive_errors > 0) st = 'error';
-              dayRuns.push({ job: j.name, count: count, status: st });
-            });
-          }
-          cronRuns[key] = dayRuns;
-        }
+        runs.forEach(function(r) {
+          var day = r.day || (r.created_at ? r.created_at.split(' ')[0] : '');
+          if (!day) return;
+          if (!cronRuns[day]) cronRuns[day] = [];
+          cronRuns[day].push({
+            job: r.job_name,
+            job_id: r.job_id,
+            status: (r.status || 'unknown').toLowerCase()
+          });
+        });
+        Object.keys(cronRuns).forEach(function(day) {
+          var grouped = {};
+          cronRuns[day].forEach(function(r) {
+            var key = r.job_id || r.job;
+            if (!grouped[key]) grouped[key] = { job: r.job, job_id: r.job_id, count: 0, success_count: 0, error_count: 0, status: 'success' };
+            grouped[key].count += 1;
+            if (r.status === 'error') grouped[key].error_count += 1;
+            else grouped[key].success_count += 1;
+          });
+          Object.keys(grouped).forEach(function(k) {
+            var g = grouped[k];
+            if (g.error_count > 0 && g.success_count > 0) g.status = 'mixed';
+            else if (g.error_count > 0) g.status = 'error';
+            else g.status = 'success';
+          });
+          cronRuns[day] = Object.keys(grouped).map(function(k) { return grouped[k]; });
+        });
 
-        var jobMap = {}; jobs.forEach(function(j) { jobMap[j.name] = j; });
+        var jobMap = {}; jobs.forEach(function(j) { jobMap[j.name] = j; if (j.id) jobMap[j.id] = j; });
         var calCells = '';
         var totalCells = Math.ceil((startDow + daysInMonth) / 7) * 7;
         for (var i = 0; i < totalCells; i++) {
@@ -1161,7 +1349,7 @@
           var evtHtml = '';
           if (dayRuns.length > 0) {
             evtHtml = '<div class="cal-events">';
-            dayRuns.forEach(function(r) { var job = jobMap[r.job]; var color = job ? job.color : '#71717a'; var failCls = r.status === 'error' ? ' fail' : ''; var pastCls = isPast ? ' past' : ''; var pastAttr = isPast ? ' data-past="true"' : ''; evtHtml += '<div class="cal-evt' + failCls + pastCls + '" style="background:' + color + '" title="' + esc(r.job) + ' (' + r.count + ' runs, ' + r.status + ')' + (isPast ? ' [completed]' : '') + '"' + pastAttr + ' data-evt-job="' + esc(r.job) + '">' + esc(r.job) + '</div>'; });
+            dayRuns.forEach(function(r) { var job = jobMap[r.job_id || r.job]; var color = job ? job.color : '#71717a'; var failCls = r.status === 'error' ? ' fail' : ''; var pastCls = isPast ? ' past' : ''; var pastAttr = isPast ? ' data-past="true"' : ''; evtHtml += '<div class="cal-evt' + failCls + pastCls + '" style="background:' + color + '" title="' + esc(r.job) + ' (' + r.count + ' runs, status: ' + r.status + ')' + '"' + pastAttr + ' data-evt-job="' + esc(r.job) + '">' + esc(r.job) + '</div>'; });
             evtHtml += '</div>';
           }
           calCells += '<div class="' + cls + '" data-date="' + dateKey + '"><div class="cal-day-num">' + dayNum + '</div>' + evtHtml + '</div>';
@@ -1178,17 +1366,16 @@
           var selIsPast = self._calSelected < todayKey;
           var selRuns = cronRuns[self._calSelected] || [];
           if (selRuns.length > 0) {
-            var histLabel = selIsPast ? '<div style="font-size:0.625rem;color:var(--muted);margin-bottom:0.375rem;text-transform:uppercase;letter-spacing:0.06em">\ud83d\udcbe Historical Record (read-only)</div>' : '';
-            var runItems = selRuns.map(function(r) { var job = jobMap[r.job]; var color = job ? job.color : '#71717a'; var stCls = r.status === 'error' ? 'error' : 'success'; return '<div class="cal-detail-run"><div class="cal-detail-dot" style="background:' + color + '"></div><span style="flex:1">' + esc(r.job) + '</span><span class="card-mono" style="color:var(--muted)">' + r.count + 'x</span><span class="badge ' + stCls + '" style="font-size:0.5625rem">' + r.status + '</span></div>'; }).join('');
+            var histLabel = selIsPast ? '<div style="font-size:0.625rem;color:var(--muted);margin-bottom:0.375rem;text-transform:uppercase;letter-spacing:0.06em">Historical runs</div>' : '';
+            var runItems = selRuns.map(function(r) { var job = jobMap[r.job_id || r.job]; var color = job ? job.color : '#71717a'; var stCls = r.status === 'error' ? 'error' : 'success'; return '<div class="cal-detail-run"><div class="cal-detail-dot" style="background:' + color + '"></div><span style="flex:1">' + esc(r.job) + '</span><span class="card-mono" style="color:var(--muted)">' + r.count + 'x</span><span class="badge ' + stCls + '" style="font-size:0.5625rem">' + r.status + '</span></div>'; }).join('');
             detail = '<div class="cal-detail"><div class="cal-detail-title">' + esc(self._calSelected) + '</div>' + histLabel + runItems + '</div>';
           } else { detail = '<div class="cal-detail"><div class="cal-detail-title">' + esc(self._calSelected) + '</div><div style="color:var(--muted);font-size:0.75rem">No runs on this day</div></div>'; }
         }
 
         var modal = '';
         if (self._calModalMode) {
-          var job = self._calEditJob || { name: '', schedule_kind: 'cron', schedule_expr: '', color: self._JOB_COLORS[jobs.length % self._JOB_COLORS.length] };
+          var job = self._calEditJob || { name: '', schedule_kind: 'cron', schedule_expr: '' };
           var titleText = self._calModalMode === 'add' ? 'New Scheduled Job' : 'Edit Job';
-          var swatches = self._JOB_COLORS.map(function(c) { return '<div class="cal-color-swatch' + (c === job.color ? ' active' : '') + '" style="background:' + c + '" data-cal-color="' + c + '"></div>'; }).join('');
           var sched = self._parseCronToSched(job.schedule_kind, job.schedule_expr);
           var freqOpts = [['interval','Repeating'],['hourly','Hourly'],['daily','Daily'],['weekly','Weekly']];
           var freqSelect = '<select class="cal-modal-select" id="cal-sched-freq">' + freqOpts.map(function(f) { return '<option value="' + f[0] + '"' + (sched.freq === f[0] ? ' selected' : '') + '>' + f[1] + '</option>'; }).join('') + '</select>';
@@ -1202,7 +1389,7 @@
           var summary = self._schedSummary(sched);
           var editNotice = '';
           if (self._calModalMode === 'edit') { editNotice = '<div class="cal-edit-info"><strong>Note:</strong> Changes to the schedule will only apply to <strong>future</strong> executions. Historical run records are preserved as-is and cannot be modified.</div>'; }
-          modal = '<div class="cal-modal-overlay" data-cal-overlay><div class="cal-modal"><div class="cal-modal-header"><h3>' + titleText + '</h3><button class="cal-modal-close" data-cal-modal-close>\u00d7</button></div><div class="cal-modal-body">' + editNotice + '<div class="cal-modal-row"><label class="cal-modal-label">Name</label><input class="cal-modal-input" id="cal-job-name" value="' + esc(job.name) + '" placeholder="e.g. health-check"></div><div class="cal-modal-row"><label class="cal-modal-label">Recurrence</label>' + freqSelect + '</div>' + intervalRow + timeRow + daysRow + '<div class="cal-sched-summary" id="cal-sched-summary">' + esc(summary) + '</div><div class="cal-modal-row"><label class="cal-modal-label">Color</label><div class="cal-color-row">' + swatches + '</div></div></div><div class="cal-modal-footer"><button class="btn secondary" data-cal-modal-close>Cancel</button><button class="btn" id="cal-modal-save">' + (self._calModalMode === 'add' ? 'Add Job' : 'Save') + '</button></div></div></div>';
+          modal = '<div class="cal-modal-overlay" data-cal-overlay><div class="cal-modal"><div class="cal-modal-header"><h3>' + titleText + '</h3><button class="cal-modal-close" data-cal-modal-close>\u00d7</button></div><div class="cal-modal-body">' + editNotice + '<div class="cal-modal-row"><label class="cal-modal-label">Name</label><input class="cal-modal-input" id="cal-job-name" value="' + esc(job.name) + '" placeholder="e.g. health-check"></div><div class="cal-modal-row"><label class="cal-modal-label">Recurrence</label>' + freqSelect + '</div>' + intervalRow + timeRow + daysRow + '<div class="cal-sched-summary" id="cal-sched-summary">' + esc(summary) + '</div></div><div class="cal-modal-footer"><button class="btn secondary" data-cal-modal-close>Cancel</button><button class="btn" id="cal-modal-save">' + (self._calModalMode === 'add' ? 'Add Job' : 'Save') + '</button></div></div></div>';
         }
 
         return '<div class="cal-wrap"><div class="cal-header"><div class="cal-header-left"><div class="cal-title">' + months[month] + ' ' + year + '</div><div class="cal-nav"><button data-cal-nav="prev">\u25c0</button><button data-cal-nav="today">\u25cf</button><button data-cal-nav="next">\u25b6</button></div></div><div class="cal-header-right"><button class="btn" style="font-size:0.75rem;padding:0.3rem 0.75rem" data-cal-add>+ Add Job</button></div></div><div class="cal-body"><div class="cal-grid-wrap"><div class="cal-dow-row">' + dowHeaders + '</div><div class="cal-grid">' + calCells + '</div></div><div class="cal-sidebar"><div class="cal-sidebar-section"><div class="cal-sidebar-title">Scheduled Jobs (' + jobs.length + ')</div>' + legend + '</div>' + (detail ? '<div class="cal-sidebar-section">' + detail + '</div>' : '') + '</div></div>' + modal + '</div>';
@@ -1578,11 +1765,13 @@
                 var container = document.getElementById('deep-analysis-result');
                 if (container) {
                   container.style.display = 'block';
-                  var html = '<div class="card"><div style="font-weight:600;margin-bottom:0.75rem">Deep Analysis (Stub)</div>'
-                    + '<div style="font-size:0.8125rem;color:var(--muted);margin-bottom:0.75rem">' + esc(res.message || 'Analysis complete') + '</div>'
-                    + '<details><summary style="cursor:pointer;font-size:0.75rem;color:var(--accent)">View Generated Prompt</summary>'
-                    + '<pre style="font-size:0.6875rem;color:var(--muted);white-space:pre-wrap;margin-top:0.5rem;padding:0.75rem;background:var(--bg);border-radius:4px;max-height:400px;overflow:auto">' + esc(res.prompt || '') + '</pre>'
-                    + '</details></div>';
+                  var actions = (res.actions || []).map(function(a) { return '<li style="margin:0.25rem 0">' + esc(a) + '</li>'; }).join('');
+                  var savings = (res.summary && res.summary.estimated_monthly_savings != null) ? '$' + Number(res.summary.estimated_monthly_savings).toFixed(4) : '—';
+                  var html = '<div class="card"><div style="font-weight:600;margin-bottom:0.75rem">Deep Analysis</div>'
+                    + '<div style="font-size:0.8125rem;color:var(--muted);margin-bottom:0.5rem">' + esc(res.message || 'Analysis complete') + '</div>'
+                    + '<div style="font-size:0.75rem;color:var(--text);margin-bottom:0.75rem"><strong>Estimated monthly savings:</strong> ' + esc(savings) + '</div>'
+                    + (actions ? '<div style="font-size:0.75rem;margin-bottom:0.375rem;color:var(--muted)">Prioritized actions</div><ol style="margin:0;padding-left:1rem;font-size:0.75rem">' + actions + '</ol>' : '<div style="font-size:0.75rem;color:var(--muted)">No prioritized actions returned.</div>')
+                    + '</div>';
                   setHtml(container, html);
                 }
                 deepBtn.disabled = false;
@@ -1599,7 +1788,6 @@
       });
     },
 
-    _walletEditing: false,
     _TOKEN_ICONS: { ETH: '\u039e', MATIC: '\u25c6', USDC: '\u0024', USDT: '\u0024', DAI: '\u25c7', WETH: '\u039e', WBTC: '\u20bf', cbBTC: '\u20bf' },
     renderWallet: function() {
       var self = this;
@@ -1628,12 +1816,7 @@
 
         // Network & address card
         var networkBadge = '<span class="badge success" style="font-size:0.625rem;vertical-align:middle">' + esc(network) + '</span>';
-        var addrSection;
-        if (self._walletEditing) {
-          addrSection = '<div class="card" style="margin-bottom:1rem"><div class="card-title">Wallet ' + networkBadge + '</div><div style="font-size:0.6875rem;color:var(--muted);margin-bottom:0.5rem">Chain ID: ' + chainId + '</div><input class="settings-input" type="text" id="wallet-addr-input" value="' + esc(addrStr) + '" placeholder="Enter wallet address (0x\u2026)" style="margin-bottom:0.5rem;font-family:var(--font-mono)"><div style="display:flex;gap:0.5rem"><button class="btn" id="wallet-addr-save" style="font-size:0.75rem;padding:0.3rem 0.75rem">Save</button><button class="btn secondary" id="wallet-addr-cancel" style="font-size:0.75rem;padding:0.3rem 0.75rem">Cancel</button></div><p style="font-size:0.6875rem;color:var(--muted);margin-top:0.5rem">The address was auto-generated during initialization. You can replace it with your own.</p></div>';
-        } else {
-          addrSection = '<div class="card" style="margin-bottom:1rem"><div class="card-title">Wallet ' + networkBadge + '</div><div style="font-size:0.6875rem;color:var(--muted);margin-bottom:0.5rem">Chain ID: ' + chainId + '</div><div class="card-mono" style="word-break:break-all" id="wallet-addr">' + esc(addrStr) + '</div><div style="display:flex;gap:0.5rem;margin-top:8px"><button class="btn secondary" id="copy-address" style="font-size:0.75rem;padding:0.3rem 0.75rem">Copy</button><button class="btn secondary" id="edit-address" style="font-size:0.75rem;padding:0.3rem 0.75rem">Replace</button></div></div>';
-        }
+        var addrSection = '<div class="card" style="margin-bottom:1rem"><div class="card-title">Wallet ' + networkBadge + '</div><div style="font-size:0.6875rem;color:var(--muted);margin-bottom:0.5rem">Chain ID: ' + chainId + '</div><div class="card-mono" style="word-break:break-all" id="wallet-addr">' + esc(addrStr) + '</div><div style="display:flex;gap:0.5rem;margin-top:8px"><button class="btn secondary" id="copy-address" style="font-size:0.75rem;padding:0.3rem 0.75rem">Copy</button></div><p style="font-size:0.6875rem;color:var(--muted);margin-top:0.5rem">Wallet settings are immutable at runtime. Update `ironclad.toml` and restart to change address or chain.</p></div>';
 
         // Token balances card
         var tokenRows = '';
@@ -1675,11 +1858,36 @@
 
     _settingsMode: 'form',
     _settingsDraft: null,
+    _settingsModelOrder: null,
+    _settingsDragModelIndex: null,
     _settingsJsonText: null,
     _settingsDirty: false,
     _getSettingsDraft: function() {
       if (!this._settingsDraft && _cachedConfig) this._settingsDraft = JSON.parse(JSON.stringify(_cachedConfig));
       return this._settingsDraft || {};
+    },
+    _initModelOrderFromDraft: function() {
+      var draft = this._getSettingsDraft();
+      if (!draft.models || typeof draft.models !== 'object') draft.models = {};
+      var order = [];
+      function pushUnique(v) {
+        var s = String(v || '').trim();
+        if (!s) return;
+        if (order.indexOf(s) === -1) order.push(s);
+      }
+      pushUnique(draft.models.primary);
+      var fb = Array.isArray(draft.models.fallbacks) ? draft.models.fallbacks : [];
+      fb.forEach(pushUnique);
+      this._settingsModelOrder = order;
+    },
+    _syncModelOrderToDraft: function() {
+      var draft = this._getSettingsDraft();
+      if (!draft.models || typeof draft.models !== 'object') draft.models = {};
+      var order = (this._settingsModelOrder || []).map(function(v) { return String(v || '').trim(); }).filter(Boolean);
+      draft.models.primary = order[0] || '';
+      draft.models.fallbacks = order.slice(1);
+      this._settingsDirty = JSON.stringify(draft) !== JSON.stringify(_cachedConfig);
+      this._settingsJsonText = null;
     },
     _KNOWN_MODELS: ['claude-sonnet-4-20250514','claude-3.5-sonnet','claude-3-opus','gpt-4o','gpt-4o-mini','gpt-4-turbo','gemini-2.0-flash','gemini-1.5-pro','moonshot/kimi-k2.5','llama-3.1-70b','mistral-large'],
     _CHAIN_PRESETS: {
@@ -2051,18 +2259,29 @@
           });
         }
 
-        var rows = sessions.map(function(s) {
+        var visibleSessions = sessions.filter(function(s) { return (s.turn_count || 0) > 0; });
+        var rows = visibleSessions.map(function(s) {
           var nick = s.nickname || truncate(s.id, 16);
           var agentLabel = sessionAssistantLabel(s, s.agent_id || 'default');
           return '<tr data-ctx-session=\'' + esc(JSON.stringify(s)) + '\' style="cursor:pointer"><td>' + esc(nick) + '</td><td><span class="badge muted" style="font-size:0.5625rem">' + esc(agentLabel) + '</span></td><td style="font-size:0.75rem;color:var(--muted)">' + esc(s.created_at || '') + '</td></tr>';
         }).join('');
+        if (!rows) {
+          return '<h3>Context Explorer</h3><p style="color:var(--muted);font-size:0.875rem;margin-bottom:1rem">Select a session to inspect turn-by-turn context allocation, token budgets, and reasoning traces.</p><div class="card"><p style="color:var(--muted)">No sessions with recorded turns yet.</p></div>';
+        }
         return '<h3>Context Explorer</h3><p style="color:var(--muted);font-size:0.875rem;margin-bottom:1rem">Select a session to inspect turn-by-turn context allocation, token budgets, and reasoning traces.</p><div class="table-wrap"><table><thead><tr><th>Session</th><th>Agent</th><th>Created</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
       });
     },
 
     renderSettings: function() {
       var self = this;
-      return api('/api/config').then(function(cfg) {
+      return Promise.all([
+        api('/api/config'),
+        api('/api/config/capabilities').catch(function() { return { immutable_sections: ['server', 'treasury', 'a2a', 'wallet'] }; })
+      ]).then(function(arr) {
+        var cfg = arr[0] || {};
+        var caps = arr[1] || {};
+        var immutableSet = {};
+        (caps.immutable_sections || []).forEach(function(s) { immutableSet[s] = true; });
         _cachedConfig = cfg;
         if (!self._settingsDraft) self._settingsDraft = JSON.parse(JSON.stringify(cfg));
         var mode = self._settingsMode;
@@ -2070,7 +2289,7 @@
         var dirty = self._settingsDirty;
         var dirtyDot = dirty ? '<span class="settings-dirty-dot" title="Unsaved changes"></span>' : '';
 
-        var tabs = '<div class="tabs" style="margin-bottom:1rem"><button class="' + (mode === 'form' ? 'active' : '') + '" data-settings-mode="form">Form</button><button class="' + (mode === 'json' ? 'active' : '') + '" data-settings-mode="json">JSON</button></div>';
+        var tabs = '<div class="tabs" style="margin-bottom:1rem"><button class="' + (mode === 'form' ? 'active' : '') + '" data-settings-mode="form">Form</button><button class="' + (mode === 'models' ? 'active' : '') + '" data-settings-mode="models">Model Order</button><button class="' + (mode === 'json' ? 'active' : '') + '" data-settings-mode="json">JSON</button></div>';
         var actions = '<div class="settings-actions"><button class="btn" id="settings-save" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Save</button><button class="btn secondary" id="settings-apply" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Apply</button><button class="btn secondary" id="settings-cancel" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Cancel</button>' + dirtyDot + '</div>';
 
         if (mode === 'json') {
@@ -2080,12 +2299,54 @@
           return tabs + '<div class="settings-editor"><textarea id="settings-json-editor" spellcheck="false">' + esc(jsonText) + '</textarea><div class="settings-lint ' + lintCls + '">' + esc(lintMsg) + '</div></div>' + actions;
         }
 
+        if (mode === 'models') {
+          if (!self._settingsModelOrder) self._initModelOrderFromDraft();
+          var modelOrder = (self._settingsModelOrder || []).slice();
+          var modelsImmutable = !!immutableSet.models;
+          var modelRows = modelOrder.map(function(name, idx) {
+            var roleBadge = idx === 0
+              ? '<span class="badge success" style="font-size:0.6rem">Primary</span>'
+              : '<span class="badge muted" style="font-size:0.6rem">Fallback ' + idx + '</span>';
+            var makePrimaryBtn = idx === 0 ? '' : '<button class="model-order-btn" data-model-order-make-primary="' + idx + '">Make primary</button>';
+            var removeBtn = '<button class="model-order-btn" data-model-order-remove="' + idx + '">Remove</button>';
+            var dragAttrs = modelsImmutable ? '' : (' draggable="true" data-model-order-item="' + idx + '"');
+            return '<div class="model-order-item"' + dragAttrs + '>'
+              + '<div class="model-order-handle" title="' + (modelsImmutable ? 'Read only' : 'Drag to reorder') + '">\u22ee\u22ee</div>'
+              + '<div class="model-order-name" title="' + esc(name) + '">' + esc(name) + '</div>'
+              + roleBadge
+              + '<div class="model-order-actions">' + makePrimaryBtn + '</div>'
+              + (modelsImmutable ? '' : removeBtn)
+              + '</div>';
+          }).join('');
+          if (!modelRows) modelRows = '<div class="card" style="padding:0.75rem;color:var(--muted)">No models configured. Add one below to set a primary model.</div>';
+          var knownModelOptions = self._KNOWN_MODELS.map(function(m) { return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join('');
+          var immutableNote = modelsImmutable
+            ? '<div style="font-size:0.75rem;color:var(--muted);margin:0.35rem 0 0.85rem">Model order is immutable at runtime for this instance. Edit `ironclad.toml` and restart.</div>'
+            : '<div style="font-size:0.75rem;color:var(--muted);margin:0.35rem 0 0.85rem">Drag rows to reorder preference. Top row is primary; all others are fallback order.</div>';
+          var addRow = modelsImmutable ? '' : ('<div class="model-order-add"><input id="model-order-add-input" class="settings-input" list="model-order-known-list" type="text" placeholder="Add model (provider/name)"><datalist id="model-order-known-list">' + knownModelOptions + '</datalist><button class="btn secondary" id="model-order-add-btn">Add model</button></div>');
+          return tabs
+            + '<div class="settings-form"><div class="settings-section"><div class="settings-section-title">Model Order</div>'
+            + immutableNote
+            + '<div class="model-order-list" id="model-order-list">' + modelRows + '</div>'
+            + addRow
+            + '</div></div>'
+            + actions;
+        }
+
         var html = tabs + '<div class="settings-form">';
         var specialSections = ['models', 'providers', 'wallet'];
         var sections = Object.keys(draft);
         sections.forEach(function(section) {
           var sectionData = draft[section];
           if (typeof sectionData !== 'object' || sectionData === null) return;
+          var isImmutableSection = !!immutableSet[section];
+
+          if (isImmutableSection) {
+            html += '<div class="settings-section"><div class="settings-section-title">' + esc(section) + ' <span class="badge muted" style="font-size:0.6rem">restart required</span></div>'
+              + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.5rem">This section is immutable at runtime. Edit `ironclad.toml` and restart.</div>'
+              + '<pre class="card-mono" style="white-space:pre-wrap">' + esc(JSON.stringify(sectionData, null, 2)) + '</pre></div>';
+            return;
+          }
 
           if (section === 'models') {
             html += '<div class="settings-section"><div class="settings-section-title">Models</div>';
@@ -2281,11 +2542,13 @@
       App._activeSession = null; App.navigate('sessions'); return;
     }
     if (e.target.closest('#btn-new-session')) {
-      api('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: 'default' }) }).then(function(r) {
-        var sid = r.session_id || r.id;
-        App._activeSession = { id: sid, agent_id: 'default' };
-        toast('Session created');
-        App.navigate('sessions');
+      App._resolveActiveAgentId().then(function(agentId) {
+        return api('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: agentId }) }).then(function(r) {
+          var sid = r.session_id || r.id;
+          App._activeSession = { id: sid, agent_id: agentId };
+          toast('Session created');
+          App.navigate('sessions');
+        });
       }).catch(function(err) { toast(err.message || 'Failed'); });
       return;
     }
@@ -2624,34 +2887,50 @@
       return;
     }
     if (e.target.closest('#btn-reload-skills')) {
-      api('/api/skills/reload', { method: 'POST' }).then(function() { toast('Skills reloaded'); App.navigate('skills'); }).catch(function(err) { toast(err.message || 'Failed'); });
+      api('/api/skills/reload', { method: 'POST' }).then(function() { toast('Skills reloaded'); App.refreshSkills(); }).catch(function(err) { toast(err.message || 'Failed'); });
+      return;
+    }
+    var skillDelete = e.target.closest('[data-skill-delete]');
+    if (skillDelete) {
+      var skillId = skillDelete.getAttribute('data-skill-delete');
+      var skillName = skillDelete.getAttribute('data-skill-name') || '';
+      if (!skillId || !skillName) { toast('Missing skill metadata'); return; }
+      App._openSkillDeleteModal(skillId, skillName);
       return;
     }
     var skillToggle = e.target.closest('[data-skill-toggle]');
-    if (skillToggle) { toast(skillToggle.checked ? 'Skill enabled' : 'Skill disabled'); return; }
+    if (skillToggle) {
+      var skillIdToggle = skillToggle.getAttribute('data-skill-toggle') || '';
+      var skillNameToggle = skillToggle.getAttribute('data-skill-name') || skillIdToggle;
+      var nextChecked = !!skillToggle.checked;
+      var prevChecked = !nextChecked;
+      if (!skillIdToggle) {
+        skillToggle.checked = prevChecked;
+        toast('Missing skill id');
+        return;
+      }
+      if (skillToggle.getAttribute('data-skill-pending') === '1') return;
+      skillToggle.setAttribute('data-skill-pending', '1');
+      skillToggle.disabled = true;
+      api('/api/skills/' + encodeURIComponent(skillIdToggle) + '/toggle', { method: 'PUT' })
+        .then(function(resp) {
+          skillToggle.checked = !!resp.enabled;
+          toast((resp.enabled ? 'Skill enabled: ' : 'Skill disabled: ') + skillNameToggle);
+          App.navigate('skills');
+        })
+        .catch(function(err) {
+          skillToggle.checked = prevChecked;
+          toast(err.message || 'Failed to toggle skill');
+        })
+        .finally(function() {
+          skillToggle.removeAttribute('data-skill-pending');
+          skillToggle.disabled = false;
+        });
+      return;
+    }
     if (e.target.closest('#copy-address')) {
       var pre = document.getElementById('wallet-addr');
       if (pre && pre.textContent) navigator.clipboard.writeText(pre.textContent).then(function() { toast('Address copied'); });
-      return;
-    }
-    if (e.target.closest('#edit-address')) {
-      App._walletEditing = true; App.navigate('wallet'); return;
-    }
-    if (e.target.closest('#wallet-addr-cancel')) {
-      App._walletEditing = false; App.navigate('wallet'); return;
-    }
-    if (e.target.closest('#wallet-addr-save')) {
-      var input = document.getElementById('wallet-addr-input');
-      var newAddr = input ? input.value.trim() : '';
-      if (!newAddr) { toast('Address cannot be empty'); return; }
-      var draft = App._getSettingsDraft();
-      App._setNestedValue(draft, 'wallet.address', newAddr);
-      api('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft) }).then(function() {
-        _cachedConfig = JSON.parse(JSON.stringify(draft));
-        App._walletEditing = false;
-        toast('Wallet address updated');
-        App.navigate('wallet');
-      }).catch(function(err) { toast(err.message || 'Failed to save'); });
       return;
     }
     if (e.target.closest('#memory-search-btn')) {
@@ -2679,9 +2958,40 @@
     var settingsMode = e.target.closest('[data-settings-mode]');
     if (settingsMode) {
       var newMode = settingsMode.getAttribute('data-settings-mode');
-      if (newMode === 'json' && App._settingsMode === 'form') App._settingsJsonText = JSON.stringify(App._getSettingsDraft(), null, 2);
-      if (newMode === 'form' && App._settingsMode === 'json' && App._settingsJsonText) { try { App._settingsDraft = JSON.parse(App._settingsJsonText); } catch(ex) {} }
+      if (newMode === 'json' && App._settingsMode !== 'json') App._settingsJsonText = JSON.stringify(App._getSettingsDraft(), null, 2);
+      if (App._settingsMode === 'json' && newMode !== 'json' && App._settingsJsonText) { try { App._settingsDraft = JSON.parse(App._settingsJsonText); } catch(ex) {} }
+      if (newMode === 'models') App._initModelOrderFromDraft();
       App._settingsMode = newMode; App.navigate('settings'); return;
+    }
+    if (e.target.closest('#model-order-add-btn')) {
+      var addInput = document.getElementById('model-order-add-input');
+      var modelName = (addInput && addInput.value || '').trim();
+      if (!modelName) { toast('Enter a model name'); return; }
+      if (!App._settingsModelOrder) App._initModelOrderFromDraft();
+      if (App._settingsModelOrder.indexOf(modelName) !== -1) { toast('Model already in order list'); return; }
+      App._settingsModelOrder.push(modelName);
+      App._syncModelOrderToDraft();
+      App.navigate('settings');
+      return;
+    }
+    var modelPrimaryBtn = e.target.closest('[data-model-order-make-primary]');
+    if (modelPrimaryBtn) {
+      var pIdx = Number(modelPrimaryBtn.getAttribute('data-model-order-make-primary'));
+      if (!App._settingsModelOrder || pIdx <= 0 || pIdx >= App._settingsModelOrder.length) return;
+      var primaryName = App._settingsModelOrder.splice(pIdx, 1)[0];
+      App._settingsModelOrder.unshift(primaryName);
+      App._syncModelOrderToDraft();
+      App.navigate('settings');
+      return;
+    }
+    var modelRemoveBtn = e.target.closest('[data-model-order-remove]');
+    if (modelRemoveBtn) {
+      var rIdx = Number(modelRemoveBtn.getAttribute('data-model-order-remove'));
+      if (!App._settingsModelOrder || rIdx < 0 || rIdx >= App._settingsModelOrder.length) return;
+      App._settingsModelOrder.splice(rIdx, 1);
+      App._syncModelOrderToDraft();
+      App.navigate('settings');
+      return;
     }
     if (e.target.closest('#settings-save') || e.target.closest('#settings-apply')) {
       var isApply = !!e.target.closest('#settings-apply');
@@ -2774,25 +3084,26 @@
     var editBtn = e.target.closest('[data-cal-edit]');
     if (editBtn) {
       var idx = Number(editBtn.getAttribute('data-cal-edit')); var j = _cachedCronJobs[idx];
-      if (j) { App._calModalMode = 'edit'; App._calEditJob = { name: j.name, schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, color: j.color, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
+      if (j) { App._calModalMode = 'edit'; App._calEditJob = { name: j.name, schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
       return;
     }
     var delBtn = e.target.closest('[data-cal-delete]');
     if (delBtn) {
       var idx = Number(delBtn.getAttribute('data-cal-delete')); var j = _cachedCronJobs[idx];
-      if (j) { api('/api/cron/jobs/' + encodeURIComponent(j.id), { method: 'DELETE' }).then(function() { toast('Deleted "' + j.name + '"'); App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Delete failed'); App.navigate('scheduler'); }); }
+      if (j) {
+        if (!confirm('Delete scheduled job "' + j.name + '" and its run history?')) return;
+        api('/api/cron/jobs/' + encodeURIComponent(j.id), { method: 'DELETE' }).then(function() { toast('Deleted "' + j.name + '"'); App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Delete failed'); App.navigate('scheduler'); });
+      }
       return;
     }
     if (e.target.closest('[data-cal-modal-close]') || (e.target.closest('[data-cal-overlay]') && e.target.hasAttribute('data-cal-overlay'))) { App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); return; }
     var dayBtn = e.target.closest('[data-cal-day]');
     if (dayBtn) { dayBtn.classList.toggle('active'); var sched = App._readSchedFromUI(); var sumEl = document.getElementById('cal-sched-summary'); if (sumEl) sumEl.textContent = App._schedSummary(sched); return; }
-    var swatch = e.target.closest('[data-cal-color]');
-    if (swatch) { var color = swatch.getAttribute('data-cal-color'); if (!App._calEditJob) App._calEditJob = { name: '', schedule_kind: 'cron', schedule_expr: '', color: color }; else App._calEditJob.color = color; document.querySelectorAll('.cal-color-swatch').forEach(function(s) { s.classList.toggle('active', s.getAttribute('data-cal-color') === color); }); return; }
     if (e.target.closest('#cal-modal-save')) {
       var nameEl = document.getElementById('cal-job-name'); var name = (nameEl && nameEl.value || '').trim();
       if (!name) { toast('Name is required'); return; }
       var sched = App._readSchedFromUI(); var cron = App._schedToCron(sched);
-      var jobData = { name: name, schedule_kind: cron.kind, schedule_expr: cron.expr };
+      var jobData = { name: name, schedule_kind: cron.kind, schedule_expr: cron.expr, agent_id: 'ironclad' };
       if (App._calModalMode === 'add') {
         api('/api/cron/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jobData) }).then(function() { toast('Added "' + name + '"'); App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Add failed'); });
       } else {
@@ -2813,7 +3124,7 @@
       }
       var jobName = evtChip.getAttribute('data-evt-job');
       var idx = _cachedCronJobs.findIndex(function(j) { return j.name === jobName; });
-      if (idx >= 0) { var j = _cachedCronJobs[idx]; App._calModalMode = 'edit'; App._calEditJob = { name: j.name, schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, color: j.color, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
+      if (idx >= 0) { var j = _cachedCronJobs[idx]; App._calModalMode = 'edit'; App._calEditJob = { name: j.name, schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
       return;
     }
     var calDay = e.target.closest('.cal-day[data-date]');
@@ -2991,9 +3302,18 @@
         var div = document.createElement('div');
         div.className = 'ctx-analyze-result';
         div.style.cssText = 'margin-top:0.375rem;padding:0.5rem;background:rgba(0,0,0,0.15);border-radius:3px;font-size:0.6875rem;border:1px solid var(--border)';
-        var inner = '<div style="color:var(--muted);margin-bottom:0.25rem">LLM Analysis Prompt (stub)</div>';
-        inner += '<pre style="white-space:pre-wrap;word-break:break-all;font-size:0.625rem;max-height:200px;overflow-y:auto;color:var(--text)">' + esc(r.prompt || '') + '</pre>';
-        if (r.note) inner += '<div style="margin-top:0.25rem;color:var(--warning);font-size:0.625rem">' + esc(r.note) + '</div>';
+        var inner = '<div style="color:var(--muted);margin-bottom:0.25rem">Turn analysis</div>';
+        inner += '<div style="margin-bottom:0.35rem;color:var(--text)">' + esc(r.summary || 'No summary') + '</div>';
+        var tips = r.tips || [];
+        if (tips.length > 0) {
+          inner += '<ul style="margin:0;padding-left:1rem">';
+          tips.forEach(function(t) {
+            inner += '<li style="margin:0.18rem 0"><strong>' + esc(t.rule_name || 'tip') + ':</strong> ' + esc(t.suggestion || t.message || '') + '</li>';
+          });
+          inner += '</ul>';
+        } else {
+          inner += '<div style="color:var(--muted)">No additional recommendations.</div>';
+        }
         setHtml(div, inner);
         parent.insertBefore(div, analyzeBtn.nextSibling);
       }).catch(function(err) {
@@ -3028,13 +3348,55 @@
       return;
     }
   });
+  if (content) content.addEventListener('dragstart', function(e) {
+    var item = e.target.closest('[data-model-order-item]');
+    if (!item || App._settingsMode !== 'models') return;
+    App._settingsDragModelIndex = Number(item.getAttribute('data-model-order-item'));
+    item.classList.add('dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(App._settingsDragModelIndex));
+    }
+  });
+  if (content) content.addEventListener('dragover', function(e) {
+    var item = e.target.closest('[data-model-order-item]');
+    if (!item || App._settingsMode !== 'models') return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.model-order-item.drop-target').forEach(function(el) { el.classList.remove('drop-target'); });
+    item.classList.add('drop-target');
+  });
+  if (content) content.addEventListener('dragleave', function(e) {
+    var item = e.target.closest('[data-model-order-item]');
+    if (!item) return;
+    item.classList.remove('drop-target');
+  });
+  if (content) content.addEventListener('drop', function(e) {
+    var item = e.target.closest('[data-model-order-item]');
+    if (!item || App._settingsMode !== 'models') return;
+    e.preventDefault();
+    var fromIdx = App._settingsDragModelIndex;
+    var toIdx = Number(item.getAttribute('data-model-order-item'));
+    document.querySelectorAll('.model-order-item.drop-target,.model-order-item.dragging').forEach(function(el) { el.classList.remove('drop-target'); el.classList.remove('dragging'); });
+    App._settingsDragModelIndex = null;
+    if (!App._settingsModelOrder || fromIdx == null || fromIdx === toIdx || fromIdx < 0 || toIdx < 0) return;
+    var moved = App._settingsModelOrder.splice(fromIdx, 1)[0];
+    App._settingsModelOrder.splice(toIdx, 0, moved);
+    App._syncModelOrderToDraft();
+    App.navigate('settings');
+  });
+  if (content) content.addEventListener('dragend', function() {
+    document.querySelectorAll('.model-order-item.drop-target,.model-order-item.dragging').forEach(function(el) { el.classList.remove('drop-target'); el.classList.remove('dragging'); });
+    App._settingsDragModelIndex = null;
+  });
   if (content) content.addEventListener('keydown', function(e) {
     if (e.target.id === 'session-msg-input' && e.key === 'Enter') { e.preventDefault(); if (App._sendingMessage) return; var btn = document.getElementById('btn-send-msg'); if (btn && !btn.disabled) btn.click(); return; }
+    if (e.target.id === 'model-order-add-input' && e.key === 'Enter') { e.preventDefault(); var addBtn = document.getElementById('model-order-add-btn'); if (addBtn) addBtn.click(); return; }
     if (e.target.id === 'settings-json-editor' && e.key === 'Tab') { e.preventDefault(); var ta = e.target; var start = ta.selectionStart, end = ta.selectionEnd; ta.value = ta.value.substring(0, start) + '  ' + ta.value.substring(end); ta.selectionStart = ta.selectionEnd = start + 2; ta.dispatchEvent(new Event('input', { bubbles: true })); }
   });
   if (content) content.addEventListener('change', function(e) {
     if (e.target.id === 'cal-sched-freq') {
-      var job = App._calEditJob || { name: '', schedule_kind: 'cron', schedule_expr: '', color: App._JOB_COLORS[_cachedCronJobs.length % App._JOB_COLORS.length] };
+      var job = App._calEditJob || { name: '', schedule_kind: 'cron', schedule_expr: '' };
       var nameEl = document.getElementById('cal-job-name'); if (nameEl) job.name = nameEl.value;
       var freq = e.target.value;
       var defaults = { interval: { kind: 'cron', expr: '*/5 * * * *' }, hourly: { kind: 'cron', expr: '0 * * * *' }, daily: { kind: 'cron', expr: '0 2 * * *' }, weekly: { kind: 'cron', expr: '0 9 * * 1,2,3,4,5' } };
@@ -3063,8 +3425,13 @@
     this.canvas = canvas; this.ctx = canvas.getContext('2d');
     this.running = false; this.animId = 0; this.time = 0;
     this.bots = []; this.stations = []; this.tethers = []; this.interactions = []; this.dataStreams = [];
+    this.selectedBotId = null;
     this.dpr = window.devicePixelRatio || 1;
     var self = this;
+    this._onCanvasClick = function(e) { self.onCanvasClick(e); };
+    this._onCanvasMove = function(e) { self.onCanvasMove(e); };
+    this.canvas.addEventListener('click', this._onCanvasClick);
+    this.canvas.addEventListener('mousemove', this._onCanvasMove);
     this._resizeObs = new ResizeObserver(function() { self.resize(); });
     this._resizeObs.observe(canvas.parentElement);
     this.initData(data);
@@ -3081,15 +3448,11 @@
         { id: 'exec', name: 'Code Execution', kind: 'Execution', x: 0.18, y: 0.78 },
         { id: 'blockchain', name: 'Blockchain', kind: 'Blockchain', x: 0.82, y: 0.78 },
         { id: 'web', name: 'Web / APIs', kind: 'Tool', x: 0.50, y: 0.12 },
-        { id: 'files', name: 'File System', kind: 'Tool', x: 0.50, y: 0.88 }
+        { id: 'files', name: 'File System', kind: 'Tool', x: 0.50, y: 0.88 },
+        { id: 'standby', name: 'Standby Bay', kind: 'Standby', x: 0.08, y: 0.50 }
       ];
     }
     var self = this;
-    var _skillPool = [
-      'conway-security','self-funding','ethereum-funding','audit-service','postgres-memory',
-      'context-continuity','model-management','local-subagents','cost-monitoring','web-search',
-      'morning-briefing','lead-hunter','revenue-tracker','geopolitical-monitor'
-    ];
     this.bots = agents.map(function(a, idx) {
       var cx = 0.5, cy = 0.5;
       if (agents.length > 1) {
@@ -3102,18 +3465,25 @@
         id: a.id, name: a.name, role: a.role || 'specialist',
         model: a.model || '', state: (a.state || 'Idle').toString(), color: a.color || '#6366f1',
         subordinates: a.subordinates || [], supervisor: a.supervisor || null,
-        skills: a.skills || [], activeSkill: null, skillFade: 0,
-        x: cx + (Math.random() - 0.5) * 0.04, y: cy + (Math.random() - 0.5) * 0.04,
+        skills: a.skills || [], activeSkill: a.active_skill || null, skillFade: 0,
+        x: cx, y: cy,
         targetX: cx, targetY: cy, vx: 0, vy: 0,
-        animState: 'idle', animFrame: 0, animTimer: Math.random() * 6,
-        headAngle: 0, headTarget: 0, headTimer: Math.random() * 4,
-        lights: [1, 0.5, 0.2], lightTimer: Math.random() * 2,
-        blinkTimer: 3 + Math.random() * 5, blinking: false,
-        workTimer: 0, currentStation: null,
-        _skillPool: _skillPool.slice().sort(function() { return Math.random() - 0.5; }),
-        _skillIdx: 0
+        animState: (a.activity && a.activity !== 'idle') ? 'working' : 'idle', animFrame: 0, animTimer: 0,
+        headAngle: 0, headTarget: 0, headTimer: 2 + idx * 0.15,
+        lights: [0.6, 0.6, 0.8], lightTimer: 0.5,
+        blinkTimer: 3 + idx * 0.2, blinking: false,
+        workTimer: 0, currentStation: a.current_workstation || null
       };
     });
+    this.bots.forEach(function(bot) {
+      if (!bot.currentStation) return;
+      var st = self.stations.find(function(s) { return s.id === bot.currentStation; });
+      if (st) {
+        bot.targetX = st.x;
+        bot.targetY = st.y + 0.10;
+      }
+    });
+    this.layoutStandby();
     this.tethers = [];
     for (var i = 0; i < this.bots.length; i++) {
       var bot = this.bots[i];
@@ -3123,6 +3493,31 @@
           if (sub) this.tethers.push({ from: bot, to: sub, color: bot.color });
         }
       }
+    }
+  };
+
+  WorkspaceEngine.prototype.layoutStandby = function() {
+    var standby = this.stations.find(function(s) {
+      var k = (s.kind || '').toLowerCase();
+      return s.id === 'standby' || k === 'standby';
+    });
+    if (!standby) return;
+    var idleBots = this.bots.filter(function(b) {
+      return !b.activeSkill && (b.animState === 'idle' || b.animState === 'walking');
+    });
+    var cols = 2;
+    var xGap = 0.03;
+    var yGap = 0.06;
+    for (var i = 0; i < idleBots.length; i++) {
+      var b = idleBots[i];
+      if (b.currentStation && b.currentStation !== 'standby') continue;
+      var col = i % cols;
+      var row = Math.floor(i / cols);
+      var x = standby.x + (col === 0 ? -xGap : xGap);
+      var y = standby.y - 0.06 + row * yGap;
+      b.targetX = Math.max(0.05, Math.min(0.18, x));
+      b.targetY = Math.max(0.2, Math.min(0.85, y));
+      b.currentStation = 'standby';
     }
   };
 
@@ -3149,11 +3544,108 @@
 
   WorkspaceEngine.prototype.stop = function() {
     this.running = false; cancelAnimationFrame(this.animId);
+    if (this._onCanvasClick) this.canvas.removeEventListener('click', this._onCanvasClick);
+    if (this._onCanvasMove) this.canvas.removeEventListener('mousemove', this._onCanvasMove);
     if (this._resizeObs) this._resizeObs.disconnect();
   };
 
+  WorkspaceEngine.prototype._botAtScreenPoint = function(x, y) {
+    var sorted = this.bots.slice().sort(function(a, b) { return b.y - a.y; });
+    for (var i = 0; i < sorted.length; i++) {
+      var bot = sorted[i];
+      var isAgent = bot.role === 'agent';
+      var radius = isAgent ? 34 : 28;
+      var dx = x - (bot.x * this.W);
+      var dy = y - (bot.y * this.H);
+      if ((dx * dx + dy * dy) <= radius * radius) return bot;
+    }
+    return null;
+  };
+
+  WorkspaceEngine.prototype.onCanvasClick = function(evt) {
+    if (!this.W || !this.H) return;
+    var rect = this.canvas.getBoundingClientRect();
+    var x = evt.clientX - rect.left;
+    var y = evt.clientY - rect.top;
+    var hit = this._botAtScreenPoint(x, y);
+    this.selectedBotId = hit ? hit.id : null;
+  };
+
+  WorkspaceEngine.prototype.onCanvasMove = function(evt) {
+    if (!this.W || !this.H) return;
+    var rect = this.canvas.getBoundingClientRect();
+    var x = evt.clientX - rect.left;
+    var y = evt.clientY - rect.top;
+    var hit = this._botAtScreenPoint(x, y);
+    this.canvas.style.cursor = hit ? 'pointer' : 'default';
+  };
+
+  WorkspaceEngine.prototype.describeBotTask = function(bot) {
+    if (!bot) return '';
+    if (bot.animState === 'working' && bot.activeSkill) return 'Working on ' + bot.activeSkill + '.';
+    if (bot.animState === 'working' && bot.currentStation) {
+      var ws = this.stations.find(function(s) { return s.id === bot.currentStation; });
+      return ws ? ('Working at ' + ws.name + '.') : 'Working on a task.';
+    }
+    if (bot.currentStation === 'standby') return 'Idle in the standby bay, waiting for work.';
+    if (bot.animState === 'walking') return 'Moving to the next workstation.';
+    return 'Idle and waiting for the next task.';
+  };
+
+  WorkspaceEngine.prototype.drawTaskBubble = function(ctx, bot, W, H) {
+    var tc = this._themeColors || { surface: '#1e2030', text: '#e4e4e7', aR: 99, aG: 102, aB: 241 };
+    var text = this.describeBotTask(bot);
+    if (!text) return;
+    var px = bot.x * W;
+    var py = bot.y * H - 56;
+    ctx.save();
+    ctx.font = '10px ' + getComputedStyle(document.body).fontFamily;
+    var maxW = 240;
+    var words = text.split(' ');
+    var lines = [];
+    var current = '';
+    for (var i = 0; i < words.length; i++) {
+      var testLine = current ? (current + ' ' + words[i]) : words[i];
+      if (ctx.measureText(testLine).width > maxW && current) {
+        lines.push(current);
+        current = words[i];
+      } else {
+        current = testLine;
+      }
+    }
+    if (current) lines.push(current);
+    var bubbleW = 0;
+    for (var li = 0; li < lines.length; li++) bubbleW = Math.max(bubbleW, ctx.measureText(lines[li]).width);
+    bubbleW += 14;
+    var lineH = 12;
+    var bubbleH = lines.length * lineH + 10;
+    var bx = Math.max(10, Math.min(W - bubbleW - 10, px - bubbleW / 2));
+    var by = Math.max(8, py - bubbleH);
+    ctx.fillStyle = tc.surface;
+    ctx.globalAlpha = 0.96;
+    ctx.beginPath(); ctx.roundRect(bx, by, bubbleW, bubbleH, 8); ctx.fill();
+    ctx.strokeStyle = 'rgba(' + tc.aR + ',' + tc.aG + ',' + tc.aB + ',0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(bx, by, bubbleW, bubbleH, 8); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(px - 5, by + bubbleH);
+    ctx.lineTo(px, by + bubbleH + 8);
+    ctx.lineTo(px + 5, by + bubbleH);
+    ctx.closePath();
+    ctx.fillStyle = tc.surface;
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = tc.text;
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
+    for (var t = 0; t < lines.length; t++) ctx.fillText(lines[t], bx + 7, by + 14 + t * lineH);
+    ctx.restore();
+  };
+
   WorkspaceEngine.prototype.update = function(dt) {
-    var self = this;
+    if (this.selectedBotId && !this.bots.some(function(b) { return b.id === this.selectedBotId; }, this)) {
+      this.selectedBotId = null;
+    }
     this.bots.forEach(function(bot) {
       var dx = bot.targetX - bot.x, dy = bot.targetY - bot.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
@@ -3163,56 +3655,21 @@
         bot.animState = 'walking';
       } else {
         bot.x = bot.targetX; bot.y = bot.targetY;
-        if (bot.animState === 'walking') bot.animState = 'idle';
+        if (bot.animState === 'walking') bot.animState = bot.activeSkill ? 'working' : 'idle';
       }
       bot.headTimer -= dt;
-      if (bot.headTimer <= 0) { bot.headTarget = (Math.random() - 0.5) * 0.6; bot.headTimer = 2 + Math.random() * 4; }
+      if (bot.headTimer <= 0) { bot.headTarget = Math.sin(bot.animFrame * 0.9) * 0.35; bot.headTimer = 2.8; }
       bot.headAngle += (bot.headTarget - bot.headAngle) * 2 * dt;
       bot.lightTimer -= dt;
-      if (bot.lightTimer <= 0) { bot.lights = [Math.random(), Math.random(), Math.random()]; bot.lightTimer = 0.3 + Math.random() * 0.8; }
+      if (bot.lightTimer <= 0) { bot.lights = bot.activeSkill ? [0.9, 0.6, 0.2] : [0.25, 0.45, 0.7]; bot.lightTimer = 0.5; }
       bot.blinkTimer -= dt;
-      if (bot.blinkTimer <= 0) { bot.blinking = !bot.blinking; bot.blinkTimer = bot.blinking ? 0.12 : (2.5 + Math.random() * 4); }
+      if (bot.blinkTimer <= 0) { bot.blinking = !bot.blinking; bot.blinkTimer = bot.blinking ? 0.12 : 3.2; }
       bot.animTimer += dt;
       if (bot.animTimer > 0.18) { bot.animFrame = (bot.animFrame + 1) % 4; bot.animTimer = 0; }
 
       if (bot.activeSkill) { bot.skillFade = Math.min(1, bot.skillFade + dt * 3); }
       else { bot.skillFade = Math.max(0, bot.skillFade - dt * 2); }
-
-      if (bot.animState === 'working') {
-        bot.workTimer += dt;
-        if (bot.workTimer > 5) {
-          bot.animState = 'idle'; bot.workTimer = 0; bot.activeSkill = null;
-        }
-      }
-
-      if (bot.animState === 'idle' && Math.random() < 0.004) {
-        var s = self.stations[Math.floor(Math.random() * self.stations.length)];
-        if (s) {
-          bot.targetX = s.x + (Math.random() - 0.5) * 0.06;
-          bot.targetY = s.y + 0.10 + (Math.random() - 0.5) * 0.03;
-          bot.currentStation = s.id;
-        }
-      }
-
-      if (bot.animState === 'idle' && dist < 0.01 && Math.random() < 0.006) {
-        bot.animState = 'working'; bot.workTimer = 0;
-        var pool = bot._skillPool || [];
-        if (pool.length > 0) {
-          bot.activeSkill = pool[bot._skillIdx % pool.length];
-          bot._skillIdx = (bot._skillIdx + 1) % pool.length;
-        }
-        if (bot.currentStation) {
-          var tgt = self.stations.find(function(st) { return st.id === bot.currentStation; });
-          var streamLabel = '';
-          if (bot.currentStation === 'llm' && bot.model) {
-            streamLabel = bot.model;
-          }
-          self.dataStreams.push({
-            fromX: bot.x, fromY: bot.y, toX: tgt.x, toY: tgt.y,
-            color: bot.color, timer: 1.8, progress: 0, label: streamLabel
-          });
-        }
-      }
+      if (bot.animState !== 'walking') bot.animState = bot.activeSkill ? 'working' : 'idle';
     });
 
     for (var i = this.dataStreams.length - 1; i >= 0; i--) {
@@ -3220,21 +3677,6 @@
       ds.progress += dt * 1.5;
       ds.timer -= dt;
       if (ds.timer <= 0) this.dataStreams.splice(i, 1);
-    }
-
-    if (this.bots.length > 1 && this.interactions.length === 0 && Math.random() < 0.0015) {
-      var a = Math.floor(Math.random() * this.bots.length);
-      var b = (a + 1 + Math.floor(Math.random() * (this.bots.length - 1))) % this.bots.length;
-      var botA = this.bots[a], botB = this.bots[b];
-      var meetX = (botA.x + botB.x) / 2 + (Math.random() - 0.5) * 0.05;
-      var meetY = (botA.y + botB.y) / 2 + (Math.random() - 0.5) * 0.05;
-      meetX = Math.max(0.1, Math.min(0.9, meetX)); meetY = Math.max(0.15, Math.min(0.85, meetY));
-      botA._savedTarget = { x: botA.targetX, y: botA.targetY };
-      botB._savedTarget = { x: botB.targetX, y: botB.targetY };
-      botA.targetX = meetX - 0.03; botA.targetY = meetY;
-      botB.targetX = meetX + 0.03; botB.targetY = meetY;
-      botA.animState = 'talking'; botB.animState = 'talking';
-      this.interactions.push({ botA: botA, botB: botB, timer: 3.5 + Math.random() * 3, phase: 0, bubbleTimer: 0 });
     }
 
     for (var i = this.interactions.length - 1; i >= 0; i--) {
@@ -3248,6 +3690,7 @@
         this.interactions.splice(i, 1);
       }
     }
+    this.layoutStandby();
   };
 
   function parseThemeColors() {
@@ -3303,6 +3746,15 @@
         ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-22, -18, 44, 34, 4); ctx.fill(); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.12)'; ctx.fillRect(-22, -18, 44, 8); ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(-16, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#eab308'; ctx.beginPath(); ctx.arc(-10, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(-4, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.6)'; ctx.font = 'bold 8px monospace'; ctx.textAlign = 'left'; ctx.fillText('$_', -17, -2); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.25)'; ctx.fillRect(-8, -6, 20 * pulse, 2); ctx.fillRect(-17, 3, 26, 1.5); ctx.fillRect(-17, 8, 18, 1.5); if (Math.sin(self.time * 4) > 0) { ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.8)'; ctx.fillRect(-10, -6, 6, 8); }
       } else if (kind === 'blockchain') {
         ctx.save(); var hexR = 16; ctx.beginPath(); for (var hi = 0; hi < 6; hi++) { var angle = Math.PI / 6 + hi * Math.PI / 3; var hx = Math.cos(angle) * hexR, hy = Math.sin(angle) * hexR; if (hi === 0) ctx.moveTo(hx, hy); else ctx.lineTo(hx, hy); } ctx.closePath(); ctx.fillStyle = tc.surface; ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.35 + 0.15 * pulse) + ')'; ctx.lineWidth = 1.5; ctx.stroke(); var innerR = 10; ctx.beginPath(); for (var hi = 0; hi < 6; hi++) { var angle = Math.PI / 6 + hi * Math.PI / 3; ctx.lineTo(Math.cos(angle) * innerR, Math.sin(angle) * innerR); } ctx.closePath(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.2)'; ctx.lineWidth = 1; ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.5 + 0.3 * pulse) + ')'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('\u25c8', 0, 0); ctx.restore();
+      } else if (kind === 'standby') {
+        ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.35)'; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.roundRect(-24, -12, 48, 24, 6); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.16)';
+        ctx.fillRect(-22, -10, 44, 7);
+        ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.45)';
+        ctx.beginPath(); ctx.arc(-10, 2, 3, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(0, 2, 3, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(10, 2, 3, 0, Math.PI * 2); ctx.fill();
       } else {
         ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.3)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-22, -18, 44, 34, 4); ctx.fill(); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.1)'; ctx.fillRect(-22, -18, 44, 9); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.25)'; ctx.beginPath(); ctx.arc(-17, -13.5, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(-12, -13.5, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.3 + 0.15 * pulse) + ')'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 3, 9, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.ellipse(0, 3, 4, 9, 0, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-9, 3); ctx.lineTo(9, 3); ctx.stroke();
       }
@@ -3398,6 +3850,10 @@
 
     var sortedBots = this.bots.slice().sort(function(a, b) { return a.y - b.y; });
     sortedBots.forEach(function(bot) { self.drawBot(ctx, bot, W, H); });
+    if (this.selectedBotId) {
+      var selected = this.bots.find(function(b) { return b.id === self.selectedBotId; });
+      if (selected) this.drawTaskBubble(ctx, selected, W, H);
+    }
   };
 
   WorkspaceEngine.prototype.drawBot = function(ctx, bot, W, H) {
@@ -3408,6 +3864,13 @@
     var bodyW = isAgent ? 20 : 14, bodyH = isAgent ? 24 : 18;
     var walkBob = (bot.animState === 'walking') ? Math.sin(t * 12) * 2 : 0;
     ctx.save(); ctx.translate(px, py + walkBob); ctx.scale(scale, scale);
+    if (this.selectedBotId === bot.id) {
+      ctx.strokeStyle = 'rgba(' + tc.aR + ',' + tc.aG + ',' + tc.aB + ',0.65)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(0, bodyH + 4, bodyW * 0.95, 6, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
 
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
     ctx.beginPath(); ctx.ellipse(0, bodyH + 4, bodyW * 0.6, 3.5, 0, 0, Math.PI * 2); ctx.fill();
@@ -3439,7 +3902,17 @@
       ctx.save(); ctx.translate(bodyW + 2, 0); ctx.rotate(-0.5 + armAngle);
       ctx.fillStyle = bot.color + 'cc'; ctx.fillRect(0, -2, 14, 4);
       ctx.fillStyle = '#eab308'; ctx.beginPath(); ctx.arc(14, 0, 3, 0, Math.PI * 2); ctx.fill();
-      if (frame % 2 === 0) { ctx.fillStyle = '#eab308'; ctx.globalAlpha = 0.7; for (var si = 0; si < 3; si++) { var sa = Math.random() * Math.PI * 2; ctx.beginPath(); ctx.arc(14 + Math.cos(sa) * 5, Math.sin(sa) * 5, 1.5, 0, Math.PI * 2); ctx.fill(); } ctx.globalAlpha = 1; }
+      if (frame % 2 === 0) {
+        ctx.fillStyle = '#eab308';
+        ctx.globalAlpha = 0.7;
+        for (var si = 0; si < 3; si++) {
+          var sa = ((frame + si * 5) * 0.9) % (Math.PI * 2);
+          ctx.beginPath();
+          ctx.arc(14 + Math.cos(sa) * 5, Math.sin(sa) * 5, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
       ctx.restore();
     }
 
@@ -3509,6 +3982,12 @@
   WorkspaceEngine.prototype.handleEvent = function(ev) {
     if (!ev || !ev.type) return;
     var self = this;
+    function primaryBot() {
+      return self.bots.find(function(b) { return b.role === 'agent'; }) || self.bots[0] || null;
+    }
+    function llmStation() {
+      return self.stations.find(function(s) { return s.id === 'llm'; }) || null;
+    }
     if (ev.type === 'agent_started' || ev.type === 'agent_stopped' || ev.type === 'agent_error') {
       var bot = this.bots.find(function(b) { return b.id === ev.agent_id; });
       if (bot) { bot.state = ev.type === 'agent_started' ? 'Running' : (ev.type === 'agent_stopped' ? 'Stopped' : 'Error'); }
@@ -3516,15 +3995,27 @@
     if (ev.type === 'agent_moved') {
       var bot = this.bots.find(function(b) { return b.id === ev.agent_id; });
       var station = this.stations.find(function(s) { return s.id === ev.workstation; });
-      if (bot && station) { bot.targetX = station.x + (Math.random() - 0.5) * 0.04; bot.targetY = station.y + 0.10; bot.currentStation = station.id; }
+      if (bot && station) { bot.targetX = station.x; bot.targetY = station.y + 0.10; bot.currentStation = station.id; }
     }
     if (ev.type === 'agent_working') {
       var bot = this.bots.find(function(b) { return b.id === ev.agent_id; });
-      if (bot) { bot.animState = 'working'; bot.workTimer = 0; if (ev.skill) bot.activeSkill = ev.skill; }
+      if (bot) {
+        if (ev.workstation) {
+          var st = this.stations.find(function(s) { return s.id === ev.workstation; });
+          if (st) { bot.targetX = st.x; bot.targetY = st.y + 0.10; bot.currentStation = st.id; }
+        }
+        bot.animState = 'working';
+        if (ev.skill) bot.activeSkill = ev.skill;
+      }
+    }
+    if (ev.type === 'agent_idle') {
+      var bot = this.bots.find(function(b) { return b.id === ev.agent_id; });
+      if (bot) { bot.animState = 'idle'; bot.activeSkill = null; bot.currentStation = 'standby'; }
+      this.layoutStandby();
     }
     if (ev.type === 'skill_activated') {
       var bot = this.bots.find(function(b) { return b.id === ev.agent_id; });
-      if (bot) { bot.activeSkill = ev.skill_name; bot.animState = 'working'; bot.workTimer = 0; }
+      if (bot) { bot.activeSkill = ev.skill || ev.skill_name; bot.animState = 'working'; }
     }
     if (ev.type === 'a2a_interaction') {
       var botA = this.bots.find(function(b) { return b.id === ev.agent_a; });
@@ -3538,6 +4029,35 @@
         botA.animState = 'talking'; botB.animState = 'talking';
         self.interactions.push({ botA: botA, botB: botB, timer: ev.duration || 4, phase: 0, bubbleTimer: 0 });
       }
+    }
+    if (ev.type === 'stream_start') {
+      var bot = primaryBot();
+      var st = llmStation();
+      if (bot) {
+        if (st) { bot.targetX = st.x; bot.targetY = st.y + 0.10; bot.currentStation = st.id; }
+        bot.animState = 'working';
+        bot.activeSkill = ev.model || 'inference';
+      }
+    }
+    if (ev.type === 'stream_chunk') {
+      var bot = primaryBot();
+      var st = llmStation();
+      if (bot && st) {
+        self.dataStreams.push({
+          fromX: bot.x, fromY: bot.y, toX: st.x, toY: st.y,
+          color: bot.color, timer: 0.8, progress: 0, label: ''
+        });
+      }
+      if (ev.done) {
+        var b = primaryBot();
+        if (b) { b.animState = 'idle'; b.activeSkill = null; b.currentStation = 'standby'; }
+        this.layoutStandby();
+      }
+    }
+    if (ev.type === 'stream_end') {
+      var bot = primaryBot();
+      if (bot) { bot.animState = 'idle'; bot.activeSkill = null; bot.currentStation = 'standby'; }
+      this.layoutStandby();
     }
   };
 

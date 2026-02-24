@@ -1,8 +1,8 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::IntoResponse,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{AppState, internal_err};
@@ -10,10 +10,30 @@ use super::{AppState, internal_err};
 #[derive(Deserialize)]
 pub struct CreateCronJobRequest {
     pub name: String,
-    pub agent_id: String,
+    pub agent_id: Option<String>,
     pub schedule_kind: String,
     pub schedule_expr: Option<String>,
     pub payload_json: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CronRunsQuery {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub job_id: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CronRunItem {
+    pub id: String,
+    pub job_id: String,
+    pub job_name: String,
+    pub status: String,
+    pub duration_ms: Option<i64>,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub day: String,
 }
 
 #[derive(Deserialize)]
@@ -67,6 +87,50 @@ pub async fn create_cron_job(
         payload,
     ) {
         Ok(id) => Ok(axum::Json(serde_json::json!({ "job_id": id }))),
+        Err(e) => Err(internal_err(&e)),
+    }
+}
+
+pub async fn list_cron_runs(
+    State(state): State<AppState>,
+    Query(params): Query<CronRunsQuery>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(1000).clamp(1, 5000);
+    let jobs = match ironclad_db::cron::list_jobs(&state.db) {
+        Ok(j) => j,
+        Err(e) => return Err(internal_err(&e)),
+    };
+    let job_name_by_id: std::collections::HashMap<String, String> =
+        jobs.into_iter().map(|j| (j.id, j.name)).collect();
+    match ironclad_db::cron::list_runs(
+        &state.db,
+        params.from.as_deref(),
+        params.to.as_deref(),
+        params.job_id.as_deref(),
+        limit,
+    ) {
+        Ok(runs) => {
+            let items: Vec<CronRunItem> = runs
+                .into_iter()
+                .map(|r| {
+                    let day = r.created_at.split(' ').next().unwrap_or("").to_string();
+                    CronRunItem {
+                        id: r.id,
+                        job_id: r.job_id.clone(),
+                        job_name: job_name_by_id
+                            .get(&r.job_id)
+                            .cloned()
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        status: r.status,
+                        duration_ms: r.duration_ms,
+                        error: r.error,
+                        created_at: r.created_at,
+                        day,
+                    }
+                })
+                .collect();
+            Ok(axum::Json(serde_json::json!({ "runs": items })))
+        }
         Err(e) => Err(internal_err(&e)),
     }
 }
