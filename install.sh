@@ -8,6 +8,9 @@
 # Non-interactive (skip all prompts):
 #   curl -fsSL ... | IRONCLAD_YES=1 bash
 #
+# Native Windows (PowerShell):
+#   irm https://roboticus.ai/install.ps1 | iex
+#
 # Environment variables:
 #   IRONCLAD_VERSION  Specific version to install (default: latest)
 #   IRONCLAD_NO_INIT  Skip "ironclad init" after install (set to 1)

@@ -1,4 +1,101 @@
 use super::*;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+fn prompt_yes_no(question: &str) -> bool {
+    // In non-interactive contexts, default to "no" to avoid surprise installs.
+    if std::env::var("IRONCLAD_YES")
+        .ok()
+        .as_deref()
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    print!("{question} [y/N] ");
+    let _ = io::stdout().flush();
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+fn path_contains_dir(dir: &Path) -> bool {
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path_var).any(|p| {
+        #[cfg(windows)]
+        {
+            p.to_string_lossy().to_ascii_lowercase() == dir.to_string_lossy().to_ascii_lowercase()
+        }
+        #[cfg(not(windows))]
+        {
+            p == dir
+        }
+    })
+}
+
+fn go_bin_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+
+    if let Ok(gopath) = std::env::var("GOPATH") {
+        out.push(PathBuf::from(gopath).join("bin"));
+    }
+
+    #[cfg(windows)]
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        out.push(PathBuf::from(profile).join("go").join("bin"));
+    }
+
+    #[cfg(not(windows))]
+    if let Ok(home) = std::env::var("HOME") {
+        out.push(PathBuf::from(home).join("go").join("bin"));
+    }
+
+    out
+}
+
+fn find_gosh_in_go_bins() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let gosh_name = "gosh.exe";
+    #[cfg(not(windows))]
+    let gosh_name = "gosh";
+
+    go_bin_candidates()
+        .into_iter()
+        .map(|d| d.join(gosh_name))
+        .find(|p| p.is_file())
+}
+
+#[cfg(windows)]
+fn add_dir_to_user_path_windows(dir: &Path) -> Result<(), String> {
+    let dir_str = dir.display().to_string().replace('\'', "''");
+    let script = format!(
+        "$dir='{dir_str}'; \
+         $current=[Environment]::GetEnvironmentVariable('Path','User'); \
+         if ([string]::IsNullOrWhiteSpace($current)) {{ \
+             [Environment]::SetEnvironmentVariable('Path',$dir,'User'); exit 0 \
+         }}; \
+         $parts=$current -split ';' | Where-Object {{ -not [string]::IsNullOrWhiteSpace($_) }}; \
+         $exists=$false; \
+         foreach ($p in $parts) {{ if ($p.Trim().ToLowerInvariant() -eq $dir.Trim().ToLowerInvariant()) {{ $exists=$true; break }} }}; \
+         if (-not $exists) {{ [Environment]::SetEnvironmentVariable('Path', ($current.TrimEnd(';') + ';' + $dir), 'User') }}"
+    );
+
+    let status = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .status()
+        .map_err(|e| format!("failed to launch PowerShell: {e}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err("PowerShell failed to update user PATH".to_string())
+    }
+}
 
 // ── Circuit breaker ───────────────────────────────────────────
 
@@ -243,7 +340,8 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
     }
 
     // Check Go toolchain
-    match which_binary("go") {
+    let mut go_bin = which_binary("go");
+    match go_bin.as_ref() {
         Some(path) => {
             let ver = std::process::Command::new("go")
                 .arg("version")
@@ -256,7 +354,89 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
         }
         None => {
             println!("  {RED}{ERR}{RESET} Go not found (required for gosh plugin engine)");
+            #[cfg(target_os = "windows")]
+            println!(
+                "         Install from https://go.dev/dl/ or: winget install -e --id GoLang.Go"
+            );
+            #[cfg(target_os = "macos")]
             println!("         Install from https://go.dev/dl/ or: brew install go");
+            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+            println!("         Install from https://go.dev/dl/ (or your distro package manager)");
+
+            if repair && prompt_yes_no("  Attempt automatic Go installation now?") {
+                #[cfg(target_os = "windows")]
+                let install_result = std::process::Command::new("winget")
+                    .args([
+                        "install",
+                        "-e",
+                        "--id",
+                        "GoLang.Go",
+                        "--accept-package-agreements",
+                        "--accept-source-agreements",
+                    ])
+                    .status();
+
+                #[cfg(target_os = "macos")]
+                let install_result = std::process::Command::new("brew")
+                    .args(["install", "go"])
+                    .status();
+
+                #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+                let install_result = {
+                    if which_binary("apt-get").is_some() {
+                        std::process::Command::new("sudo")
+                            .args(["apt-get", "install", "-y", "golang-go"])
+                            .status()
+                    } else if which_binary("dnf").is_some() {
+                        std::process::Command::new("sudo")
+                            .args(["dnf", "install", "-y", "golang"])
+                            .status()
+                    } else {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "no supported package manager found",
+                        ))
+                    }
+                };
+
+                match install_result {
+                    Ok(status) if status.success() => {
+                        go_bin = which_binary("go");
+                        if let Some(path) = go_bin.as_ref() {
+                            println!("  {ACTION} Go installed: {path}");
+                            fixed += 1;
+                        } else {
+                            println!(
+                                "  {WARN} Go install may have succeeded, but `go` is not on PATH yet. Open a new shell and re-run `ironclad mechanic --repair`."
+                            );
+                        }
+                    }
+                    _ => {
+                        println!("  {RED}{ERR}{RESET} Automatic Go install failed.");
+                    }
+                }
+            }
+        }
+    }
+
+    // Report Go bin PATH status explicitly so users can see why gosh may not resolve.
+    let go_bin_dirs = go_bin_candidates();
+    if go_bin_dirs.is_empty() {
+        println!("  {WARN} Go bin path status: no candidate bin directory found");
+    } else {
+        for dir in &go_bin_dirs {
+            if dir.exists() {
+                if path_contains_dir(dir) {
+                    println!("  {OK} Go bin path status: on PATH ({})", dir.display());
+                } else {
+                    println!("  {WARN} Go bin path status: missing from PATH ({})", dir.display());
+                }
+            } else {
+                println!(
+                    "  {WARN} Go bin path status: candidate directory not found ({})",
+                    dir.display()
+                );
+            }
         }
     }
 
@@ -266,31 +446,108 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
             println!("  {OK} gosh scripting engine: {path}");
         }
         None if repair => {
-            if which_binary("go").is_some() {
-                println!("  {ACTION} Installing gosh...");
-                let result = std::process::Command::new("go")
-                    .args(["install", "github.com/drewwalton19216801/gosh@latest"])
-                    .status();
-                match result {
-                    Ok(s) if s.success() => {
-                        println!("  {ACTION} gosh installed via go install");
-                        fixed += 1;
+            if go_bin.is_some() {
+                if prompt_yes_no("  Install gosh now via `go install`?") {
+                    println!("  {ACTION} Installing gosh...");
+                    let result = std::process::Command::new("go")
+                        .args(["install", "github.com/drewwalton19216801/gosh@latest"])
+                        .status();
+                    match result {
+                        Ok(s) if s.success() => {
+                            if let Some(path) = which_binary("gosh") {
+                                println!("  {ACTION} gosh installed: {path}");
+                                fixed += 1;
+                            } else if let Some(gosh_path) = find_gosh_in_go_bins() {
+                                println!(
+                                    "  {WARN} gosh installed at {} but not on PATH.",
+                                    gosh_path.display()
+                                );
+                                if let Some(go_bin_dir) = gosh_path.parent() {
+                                    if prompt_yes_no(&format!(
+                                        "  Add {} to your PATH now?",
+                                        go_bin_dir.display()
+                                    )) {
+                                        #[cfg(windows)]
+                                        {
+                                            match add_dir_to_user_path_windows(go_bin_dir) {
+                                                Ok(()) => {
+                                                    println!(
+                                                        "  {ACTION} Added {} to user PATH",
+                                                        go_bin_dir.display()
+                                                    );
+                                                    println!(
+                                                        "         Open a new shell and re-run `ironclad mechanic --repair` to verify."
+                                                    );
+                                                    fixed += 1;
+                                                }
+                                                Err(e) => {
+                                                    println!(
+                                                        "  {RED}{ERR}{RESET} Failed to update PATH automatically: {e}"
+                                                    );
+                                                    println!(
+                                                        "         Add this directory manually: {}",
+                                                        go_bin_dir.display()
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        #[cfg(not(windows))]
+                                        {
+                                            println!(
+                                                "  {WARN} Automatic PATH updates are only implemented on Windows."
+                                            );
+                                            println!(
+                                                "         Add this directory manually: {}",
+                                                go_bin_dir.display()
+                                            );
+                                        }
+                                    } else {
+                                        println!("  {WARN} PATH update skipped by user.");
+                                    }
+                                }
+                            } else {
+                                println!(
+                                    "  {WARN} go install succeeded but `gosh` is not on PATH."
+                                );
+                                println!(
+                                    "         Add your Go bin directory to PATH, then re-run mechanic."
+                                );
+                                #[cfg(target_os = "windows")]
+                                println!("         Typical path: %USERPROFILE%\\go\\bin");
+                                #[cfg(not(target_os = "windows"))]
+                                println!("         Typical path: $HOME/go/bin");
+                            }
+                        }
+                        _ => {
+                            println!("  {RED}{ERR}{RESET} Failed to install gosh. Try manually:");
+                            println!(
+                                "         go install github.com/drewwalton19216801/gosh@latest"
+                            );
+                        }
                     }
-                    _ => {
-                        println!("  {RED}{ERR}{RESET} Failed to install gosh. Try manually:");
-                        println!("         go install github.com/drewwalton19216801/gosh@latest");
-                    }
+                } else {
+                    println!("  {WARN} gosh not installed (skipped by user)");
                 }
             } else {
-                println!(
-                    "  {WARN} gosh not found (install Go first, then: go install github.com/drewwalton19216801/gosh@latest)"
-                );
+                println!("  {WARN} gosh not found (Go is required first)");
             }
         }
         None => {
             println!(
                 "  {WARN} gosh not found (use --repair to install, or: go install github.com/drewwalton19216801/gosh@latest)"
             );
+            if let Some(gosh_path) = find_gosh_in_go_bins() {
+                println!(
+                    "         Found gosh at {} but that directory is not on PATH.",
+                    gosh_path.display()
+                );
+                if let Some(dir) = gosh_path.parent()
+                    && !path_contains_dir(dir)
+                {
+                    #[cfg(target_os = "windows")]
+                    println!("         Run `ironclad mechanic --repair` to add it with approval.");
+                }
+            }
         }
     }
 

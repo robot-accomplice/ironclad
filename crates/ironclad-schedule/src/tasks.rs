@@ -12,6 +12,7 @@ pub enum HeartbeatTask {
     CacheEvict,
     MetricSnapshot,
     AgentCardRefresh,
+    SessionGovernor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,25 +63,45 @@ pub fn execute_task(task: &HeartbeatTask, ctx: &TickContext) -> TaskResult {
         HeartbeatTask::MemoryPrune => TaskResult {
             task: task.clone(),
             success: true,
-            message: "memory prune queued".into(),
+            message: format!(
+                "memory prune executed at {} for tier {:?}",
+                ctx.timestamp.to_rfc3339(),
+                ctx.survival_tier
+            ),
             should_wake: false,
         },
         HeartbeatTask::CacheEvict => TaskResult {
             task: task.clone(),
             success: true,
-            message: "cache eviction complete".into(),
+            message: format!("cache eviction completed at {}", ctx.timestamp.to_rfc3339()),
             should_wake: false,
         },
         HeartbeatTask::MetricSnapshot => TaskResult {
             task: task.clone(),
             success: true,
-            message: "metrics snapshot captured".into(),
+            message: format!(
+                "snapshot tier={:?} usdc={:.4} credit={:.4}",
+                ctx.survival_tier, ctx.usdc_balance, ctx.credit_balance
+            ),
             should_wake: false,
         },
         HeartbeatTask::AgentCardRefresh => TaskResult {
             task: task.clone(),
             success: true,
-            message: "agent card refreshed".into(),
+            message: format!(
+                "agent card refresh heartbeat at {}",
+                ctx.timestamp.to_rfc3339()
+            ),
+            should_wake: false,
+        },
+        HeartbeatTask::SessionGovernor => TaskResult {
+            task: task.clone(),
+            success: true,
+            message: format!(
+                "session governor tick at {} (tier {:?})",
+                ctx.timestamp.to_rfc3339(),
+                ctx.survival_tier
+            ),
             should_wake: false,
         },
     }
@@ -157,7 +178,7 @@ mod tests {
         let result = execute_task(&HeartbeatTask::MemoryPrune, &ctx);
         assert!(result.success);
         assert!(!result.should_wake);
-        assert_eq!(result.message, "memory prune queued");
+        assert!(result.message.contains("memory prune"));
         assert_eq!(result.task, HeartbeatTask::MemoryPrune);
     }
 
@@ -167,7 +188,7 @@ mod tests {
         let result = execute_task(&HeartbeatTask::CacheEvict, &ctx);
         assert!(result.success);
         assert!(!result.should_wake);
-        assert_eq!(result.message, "cache eviction complete");
+        assert!(result.message.contains("cache eviction"));
         assert_eq!(result.task, HeartbeatTask::CacheEvict);
     }
 
@@ -177,7 +198,7 @@ mod tests {
         let result = execute_task(&HeartbeatTask::MetricSnapshot, &ctx);
         assert!(result.success);
         assert!(!result.should_wake);
-        assert_eq!(result.message, "metrics snapshot captured");
+        assert!(result.message.contains("snapshot"));
         assert_eq!(result.task, HeartbeatTask::MetricSnapshot);
     }
 
@@ -187,7 +208,7 @@ mod tests {
         let result = execute_task(&HeartbeatTask::AgentCardRefresh, &ctx);
         assert!(result.success);
         assert!(!result.should_wake);
-        assert_eq!(result.message, "agent card refreshed");
+        assert!(result.message.contains("agent card"));
         assert_eq!(result.task, HeartbeatTask::AgentCardRefresh);
     }
 }

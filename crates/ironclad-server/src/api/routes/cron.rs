@@ -56,12 +56,14 @@ pub async fn create_cron_job(
     axum::Json(body): axum::Json<CreateCronJobRequest>,
 ) -> impl IntoResponse {
     let payload = body.payload_json.as_deref().unwrap_or("{}");
+    let schedule_kind = normalize_schedule_kind(&body.schedule_kind).to_string();
+    let schedule_expr = normalize_schedule_expr(&schedule_kind, body.schedule_expr.as_deref());
     match ironclad_db::cron::create_job(
         &state.db,
         &body.name,
         &body.agent_id,
-        &body.schedule_kind,
-        body.schedule_expr.as_deref(),
+        &schedule_kind,
+        schedule_expr.as_deref(),
         payload,
     ) {
         Ok(id) => Ok(axum::Json(serde_json::json!({ "job_id": id }))),
@@ -108,12 +110,24 @@ pub async fn update_cron_job(
     Path(id): Path<String>,
     axum::Json(body): axum::Json<UpdateCronJobRequest>,
 ) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+    let schedule_kind = body
+        .schedule_kind
+        .as_deref()
+        .map(normalize_schedule_kind)
+        .map(str::to_string);
+    let schedule_expr = normalize_schedule_expr(
+        schedule_kind
+            .as_deref()
+            .or(body.schedule_kind.as_deref())
+            .unwrap_or("cron"),
+        body.schedule_expr.as_deref(),
+    );
     match ironclad_db::cron::update_job(
         &state.db,
         &id,
         body.name.as_deref(),
-        body.schedule_kind.as_deref(),
-        body.schedule_expr.as_deref(),
+        schedule_kind.as_deref(),
+        schedule_expr.as_deref(),
         body.enabled,
     ) {
         Ok(true) => Ok(axum::Json(serde_json::json!({ "updated": true, "id": id }))),
@@ -137,4 +151,27 @@ pub async fn delete_cron_job(
         )),
         Err(e) => Err(internal_err(&e)),
     }
+}
+
+fn normalize_schedule_kind(kind: &str) -> &str {
+    match kind {
+        "interval" => "every",
+        _ => kind,
+    }
+}
+
+fn normalize_schedule_expr(kind: &str, expr: Option<&str>) -> Option<String> {
+    let expr = expr?.trim();
+    if expr.is_empty() {
+        return None;
+    }
+    if kind == "every" || kind == "interval" {
+        if expr.ends_with('s') || expr.ends_with('m') || expr.ends_with('h') {
+            return Some(expr.to_string());
+        }
+        if let Ok(n) = expr.parse::<u64>() {
+            return Some(format!("{n}s"));
+        }
+    }
+    Some(expr.to_string())
 }

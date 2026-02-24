@@ -35,6 +35,18 @@ test-crate crate:
 test-integration:
     cargo test -p ironclad-tests
 
+# Run server API integration tests (used by CI)
+test-integration-api:
+    cargo test -p ironclad-tests server_api::
+
+# Run integration smoke checks against a live server
+# Usage:
+#   just smoke
+#   BASE_URL=http://127.0.0.1:8787 just smoke
+#   API_KEY=... just smoke
+smoke:
+    bash scripts/run-smoke.sh
+
 # Run tests matching a name filter
 test-filter filter:
     cargo test --workspace -- {{filter}}

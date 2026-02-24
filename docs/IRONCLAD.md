@@ -296,6 +296,12 @@ ironclad serve
 ironclad dashboard
 ```
 
+Windows (PowerShell):
+
+```powershell
+irm https://roboticus.ai/install.ps1 | iex
+```
+
 ## Developer Quick Start
 
 ```bash

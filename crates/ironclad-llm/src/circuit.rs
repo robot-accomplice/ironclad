@@ -22,6 +22,9 @@ struct CircuitBreaker {
     /// When true, the breaker was tripped by a credit/billing error and will
     /// NOT auto-recover to HalfOpen. It stays Open until explicitly `reset()`.
     credit_tripped: bool,
+    /// Soft-pressure signal from capacity monitoring; used to deprioritize a
+    /// provider before hard failures occur.
+    preemptive_half_open: bool,
 }
 
 impl CircuitBreaker {
@@ -35,6 +38,7 @@ impl CircuitBreaker {
             threshold: config.threshold,
             window: Duration::from_secs(config.window_seconds),
             credit_tripped: false,
+            preemptive_half_open: false,
         }
     }
 
@@ -51,6 +55,7 @@ impl CircuitBreaker {
                 }
                 CircuitState::Open
             }
+            CircuitState::Closed if self.preemptive_half_open => CircuitState::HalfOpen,
             other => other,
         }
     }
@@ -97,6 +102,10 @@ impl CircuitBreakerRegistry {
         let cb = self.get_or_create(provider);
         match cb.effective_state() {
             CircuitState::HalfOpen => {
+                if cb.preemptive_half_open {
+                    cb.failure_count = 0;
+                    return;
+                }
                 cb.state = CircuitState::Closed;
                 cb.failure_count = 0;
                 cb.cooldown = Duration::from_secs(base_cooldown);
@@ -149,6 +158,7 @@ impl CircuitBreakerRegistry {
         cb.last_failure_at = None;
         cb.cooldown = Duration::from_secs(base_cooldown);
         cb.credit_tripped = false;
+        cb.preemptive_half_open = false;
     }
 
     /// Returns true if the provider's breaker was tripped by a credit/billing error.
@@ -170,6 +180,15 @@ impl CircuitBreakerRegistry {
             .iter()
             .map(|(name, cb)| (name.clone(), cb.effective_state()))
             .collect()
+    }
+
+    /// Toggle soft capacity pressure state for a provider.
+    pub fn set_capacity_pressure(&mut self, provider: &str, pressured: bool) {
+        let cb = self.get_or_create(provider);
+        if cb.credit_tripped || cb.state == CircuitState::Open {
+            return;
+        }
+        cb.preemptive_half_open = pressured;
     }
 }
 
@@ -318,6 +337,18 @@ mod tests {
         // With 0s cooldown, transient failures auto-recover to HalfOpen immediately
         std::thread::sleep(Duration::from_millis(5));
         assert_eq!(reg.get_state("openai"), CircuitState::HalfOpen);
+        assert!(!reg.is_blocked("openai"));
+    }
+
+    #[test]
+    fn capacity_pressure_sets_half_open_without_blocking() {
+        let mut reg = CircuitBreakerRegistry::new(&test_config());
+        reg.set_capacity_pressure("openai", true);
+        assert_eq!(reg.get_state("openai"), CircuitState::HalfOpen);
+        assert!(!reg.is_blocked("openai"));
+
+        reg.set_capacity_pressure("openai", false);
+        assert_eq!(reg.get_state("openai"), CircuitState::Closed);
         assert!(!reg.is_blocked("openai"));
     }
 }

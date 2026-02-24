@@ -42,6 +42,8 @@ pub struct SpawnedAgent {
     pub parent_id: String,
     pub name: String,
     pub task: String,
+    #[serde(default)]
+    pub model_preference: Option<String>,
     /// Budget threshold in USDC. Uses f64 for planning/threshold purposes;
     /// exact decimal arithmetic should be used for production financial accounting.
     pub budget_usdc: f64,
@@ -125,6 +127,7 @@ impl SpawnManager {
             parent_id: config.parent_id,
             name: config.child_name,
             task: config.task_description,
+            model_preference: config.model_preference,
             budget_usdc: config.budget_usdc,
             spent_usdc: 0.0,
             status: SpawnStatus::Provisioning,
@@ -332,6 +335,7 @@ mod tests {
         assert!(child.child_id.contains("parent-1"));
         assert_eq!(child.status, SpawnStatus::Provisioning);
         assert!(child.wallet_address.is_some());
+        assert_eq!(child.model_preference.as_deref(), Some("openai/gpt-4o"));
     }
 
     #[test]

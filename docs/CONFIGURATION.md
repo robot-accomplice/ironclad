@@ -440,6 +440,11 @@ Session management.
 | `scope_mode` | `String` | `"agent"` | Session scoping: `agent` (one per agent), `peer` (one per peer), `group` (shared) |
 | `reset_schedule` | `String?` | `None` | Cron expression for periodic session reset (e.g., `"0 0 * * *"`) |
 
+Notes:
+- `scope_mode` is applied by web and channel message handlers when auto-creating sessions.
+- `ttl_seconds` is enforced by the heartbeat `SessionGovernor` task.
+- When `reset_schedule` is set, the governor performs hourly boundary checks and rotates agent-scope sessions.
+
 ---
 
 ## `[digest]`

@@ -529,6 +529,49 @@
 
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
   function truncate(s, n) { return (s && s.length > n) ? s.slice(0, n) + '\u2026' : (s || ''); }
+  function sessionAssistantLabel(session, fallback) {
+    var fallbackLabel = fallback || 'assistant';
+    if (!session) return fallbackLabel;
+    var candidate = (session.agent_name || session.agent_id || '').toString().trim();
+    if (!candidate) return fallbackLabel;
+    if (candidate.toLowerCase() === 'default') return fallbackLabel;
+    return candidate;
+  }
+  function sanitizeMarkdownUrl(url) {
+    var raw = String(url || '').trim();
+    if (!raw) return null;
+    var lowered = raw.toLowerCase();
+    if (lowered.indexOf('javascript:') === 0 || lowered.indexOf('data:') === 0 || lowered.indexOf('vbscript:') === 0) return null;
+    if (lowered.indexOf('http://') === 0 || lowered.indexOf('https://') === 0 || lowered.indexOf('mailto:') === 0) return raw;
+    if (raw.charAt(0) === '/' || raw.charAt(0) === '#') return raw;
+    return null;
+  }
+  function renderSafeMarkdown(input) {
+    var src = String(input || '');
+    if (!src) return '';
+    var codeBlocks = [];
+    src = src.replace(/```([\s\S]*?)```/g, function(_, code) {
+      var token = '__MD_CODE_BLOCK_' + codeBlocks.length + '__';
+      codeBlocks.push('<pre><code>' + esc(code) + '</code></pre>');
+      return token;
+    });
+    var html = esc(src);
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, label, url) {
+      var safe = sanitizeMarkdownUrl(url);
+      var safeLabel = esc(label);
+      if (!safe) return safeLabel;
+      return '<a href="' + esc(safe) + '" target="_blank" rel="noopener noreferrer">' + safeLabel + '</a>';
+    });
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    html = html.replace(/\n/g, '<br>');
+    html = html.replace(/__MD_CODE_BLOCK_(\d+)__/g, function(_, idx) {
+      var n = Number(idx);
+      return codeBlocks[n] || '';
+    });
+    return html;
+  }
   function toast(msg) {
     var c = document.getElementById('toasts'); if (!c) return;
     var el = document.createElement('div'); el.className = 'toast'; el.textContent = msg;
@@ -862,6 +905,9 @@
             var asstCount = 0;
             var msgs = self._sessionMessages.map(function(m, idx) {
               var side = m.role === 'user' ? 'user' : 'assistant';
+              var roleLabel = side === 'assistant'
+                ? sessionAssistantLabel(self._activeSession, m.role || 'assistant')
+                : (m.role || 'user');
               var expandBtn = side === 'assistant' ? '<button class="ctx-expand-btn" data-msg-idx="' + idx + '" data-session-id="' + esc(self._activeSession.id) + '">ctx</button>' : '';
               var gradeHtml = '';
               if (side === 'assistant') {
@@ -881,7 +927,7 @@
                   }
                 }
               }
-              return '<div class="message ' + side + '" id="msg-' + idx + '"><div class="message-role">' + esc(m.role || '') + expandBtn + '</div><div>' + esc(m.content || '') + '</div>' + gradeHtml + '<div class="ctx-detail" id="ctx-detail-' + idx + '" style="display:none"></div></div>';
+              return '<div class="message ' + side + '" id="msg-' + idx + '"><div class="message-role">' + esc(roleLabel) + expandBtn + '</div><div>' + renderSafeMarkdown(m.content || '') + '</div>' + gradeHtml + '<div class="ctx-detail" id="ctx-detail-' + idx + '" style="display:none"></div></div>';
             }).join('') || '<p style="color:var(--muted);padding:1rem">Send a message to begin the conversation.</p>';
             var chatLabel = self._activeSession.nickname || truncate(self._activeSession.id, 16);
             return '<div class="session-chat-wrap"><div class="session-chat-header"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="btn-back-sessions">\u25c0 Back</button><span style="font-weight:600">' + esc(self._activeSession.agent_id || 'default') + '</span><span class="session-nick" data-copy-id="' + esc(self._activeSession.id) + '" title="' + esc(self._activeSession.id) + '" style="color:var(--muted);font-size:0.75rem">' + esc(chatLabel) + '</span></div><div class="message-thread">' + msgs + '</div><div class="session-chat-input"><input type="text" id="session-msg-input" placeholder="Type a message\u2026" autocomplete="off"><button class="btn" id="btn-send-msg">Send</button></div></div>';
@@ -1164,9 +1210,13 @@
     },
 
     renderMetrics: function() {
-      return Promise.all([api('/api/stats/costs'), api('/api/stats/transactions?hours=24')]).then(function(arr) {
+      return Promise.all([
+        api('/api/stats/costs'),
+        api('/api/stats/transactions?hours=24'),
+        api('/api/stats/capacity').catch(function() { return { providers: {} }; })
+      ]).then(function(arr) {
         stackedId = 0;
-        var costs = arr[0].costs || []; var txs = arr[1].transactions || [];
+        var costs = arr[0].costs || []; var txs = arr[1].transactions || []; var capacity = arr[2].providers || {};
         var providerCosts = {}; var providerTokens = {};
         PROVIDERS.forEach(function(p) { providerCosts[p] = []; providerTokens[p] = []; });
         var now = new Date(); var xLabels = [];
@@ -1212,8 +1262,21 @@
 
         var txRows = txs.map(function(t) { return '<tr><td class="card-mono">' + esc(t.tx_type || '') + '</td><td>' + esc((t.amount || '') + ' ' + (t.currency || '')) + '</td><td>' + esc(t.counterparty || '') + '</td><td>' + esc(t.created_at || '') + '</td></tr>'; }).join('');
         var costRows = costs.slice(0, 20).map(function(c) { var pColor = PROVIDER_COLORS[(c.provider || '').toLowerCase()] || '#71717a'; return '<tr><td class="card-mono">' + esc(truncate(c.id, 10)) + '</td><td>' + esc(c.model || '') + '</td><td><span style="color:' + pColor + '">' + esc(c.provider || '') + '</span></td><td>' + (c.tokens_in || 0) + '</td><td>' + (c.tokens_out || 0) + '</td><td>$' + (c.cost || 0) + '</td><td>' + esc(c.created_at || '') + '</td></tr>'; }).join('');
+        var capNames = Object.keys(capacity).sort();
+        var capRows = capNames.map(function(name) {
+          var p = capacity[name] || {};
+          var headroom = Number(p.headroom || 0);
+          var pressure = p.sustained_hot ? '<span class="badge error">hot</span>' : (p.near_capacity ? '<span class="badge warning">near cap</span>' : '<span class="badge success">healthy</span>');
+          var tpm = p.tpm_limit ? (Math.round((p.token_utilization || 0) * 100) + '% (' + (p.tokens_used || 0).toLocaleString() + '/' + (p.tpm_limit || 0).toLocaleString() + ')') : 'n/a';
+          var rpm = p.rpm_limit ? (Math.round((p.request_utilization || 0) * 100) + '% (' + (p.requests_used || 0).toLocaleString() + '/' + (p.rpm_limit || 0).toLocaleString() + ')') : 'n/a';
+          return '<tr><td class="card-mono">' + esc(name) + '</td><td>' + Math.round(headroom * 100) + '%</td><td>' + pressure + '</td><td>' + esc(tpm) + '</td><td>' + esc(rpm) + '</td></tr>';
+        }).join('');
+        var capacityTable = '<p style="margin:1.25rem 0 0.5rem;color:var(--muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.06em">Capacity & Headroom</p>'
+          + '<div class="table-wrap" style="margin-bottom:1.25rem"><table><thead><tr><th>Provider</th><th>Headroom</th><th>State</th><th>TPM Utilization</th><th>RPM Utilization</th></tr></thead><tbody>'
+          + (capRows || '<tr><td colspan="5" style="color:var(--muted)">No capacity limits configured.</td></tr>')
+          + '</tbody></table></div>';
 
-        return costChart + tokenChart + statGrid +
+        return costChart + tokenChart + statGrid + capacityTable +
           '<p style="margin:1.25rem 0 0.5rem;color:var(--muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.06em">Transactions</p><div class="table-wrap" style="margin-bottom:1.25rem"><table><thead><tr><th>Type</th><th>Amount</th><th>Counterparty</th><th>Time</th></tr></thead><tbody>' + txRows + '</tbody></table></div>' +
           '<p style="margin-bottom:0.5rem;color:var(--muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.06em">Request log</p><div class="table-wrap"><table><thead><tr><th>ID</th><th>Model</th><th>Provider</th><th>In</th><th>Out</th><th>Cost</th><th>Time</th></tr></thead><tbody>' + costRows + '</tbody></table></div>';
       });
@@ -1641,8 +1704,8 @@
     },
     _renderRosterTab: function() {
       return api('/api/roster').then(function(data) {
-        var roster = data.roster || [];
-        if (roster.length === 0) return '<p style="color:var(--muted)">No agents found.</p>';
+        var roster = (data.roster || []).filter(function(a) { return a.role !== 'model-proxy'; });
+        if (roster.length === 0) return '<p style="color:var(--muted)">No taskable agents found.</p>';
 
         var grid = roster.map(function(agent) {
           var isCmd = agent.role === 'commander';
@@ -1655,9 +1718,9 @@
           var skillCount = (agent.skills || []).length;
           var sessionCount = agent.session_count != null ? agent.session_count : '—';
 
-          var roleLabel = isCmd ? 'COMMANDER' : (agent.role === 'model-proxy' ? 'MODEL PROXY' : 'SPECIALIST');
-          var roleBg = isCmd ? 'rgba(234,179,8,0.15)' : (agent.role === 'model-proxy' ? 'rgba(113,113,122,0.15)' : 'rgba(99,102,241,0.15)');
-          var roleColor = isCmd ? '#eab308' : (agent.role === 'model-proxy' ? '#71717a' : borderColor);
+          var roleLabel = isCmd ? 'COMMANDER' : 'SPECIALIST';
+          var roleBg = isCmd ? 'rgba(234,179,8,0.15)' : 'rgba(99,102,241,0.15)';
+          var roleColor = isCmd ? '#eab308' : borderColor;
 
           var card = '<div class="card roster-card" data-roster-id="' + esc(agent.name || agent.id) + '" style="cursor:pointer;border-left:3px solid ' + borderColor + ';padding:1rem;transition:transform 0.15s,box-shadow 0.15s' + (!agent.enabled ? ';opacity:0.5' : '') + '">'
             + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">'
@@ -1678,12 +1741,10 @@
 
         var cmdCount = roster.filter(function(a) { return a.role === 'commander'; }).length;
         var specCount = roster.filter(function(a) { return a.role === 'specialist'; }).length;
-        var proxyCount = roster.filter(function(a) { return a.role === 'model-proxy'; }).length;
         var header = '<div style="display:flex;align-items:baseline;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">'
-          + '<span style="font-size:0.8125rem;color:var(--muted)">' + roster.length + ' agents total</span>'
+          + '<span style="font-size:0.8125rem;color:var(--muted)">' + roster.length + ' taskable agents</span>'
           + '<span class="badge">' + cmdCount + ' commander</span>'
           + '<span class="badge">' + specCount + ' specialists</span>'
-          + '<span class="badge muted">' + proxyCount + ' proxies</span>'
           + '</div>';
 
         return header
@@ -1694,18 +1755,36 @@
     _rosterCache: null,
     _renderListTab: function() {
       var self = this;
-      return api('/api/subagents').then(function(data) {
+      return Promise.all([
+        api('/api/subagents'),
+        api('/api/models/available').catch(function() { return { models: [] }; })
+      ]).then(function(arr) {
+        var data = arr[0] || {};
+        var discoveredModels = (arr[1] && arr[1].models) || [];
         var agents = data.agents || [];
         var specialists = agents.filter(function(a) { return a.role === 'specialist'; });
-        var proxies = agents.filter(function(a) { return a.role !== 'specialist'; });
-        var enabledCount = agents.filter(function(a) { return a.enabled; }).length;
+        var proxies = agents.filter(function(a) { return a.role === 'model-proxy'; });
+        var enabledCount = specialists.filter(function(a) { return a.enabled; }).length;
+        var modelSet = {};
+        discoveredModels.forEach(function(m) { if (m) modelSet[String(m)] = true; });
+        (self._KNOWN_MODELS || []).forEach(function(m) { if (m) modelSet[String(m)] = true; });
+        specialists.forEach(function(a) { if (a && a.model) modelSet[String(a.model)] = true; });
+        var modelOptions = Object.keys(modelSet).sort().map(function(m) {
+          return '<option value="' + esc(m) + '">' + esc(m) + '</option>';
+        }).join('');
 
         var html = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem"><div>';
-        html += '<span style="font-size:1.5rem;font-weight:700;color:var(--text)">' + agents.length + ' Sub-Agents</span>';
+        html += '<span style="font-size:1.5rem;font-weight:700;color:var(--text)">' + specialists.length + ' Sub-Agents</span>';
         html += '<span style="margin-left:0.75rem;font-size:0.8125rem;color:var(--muted)">' + enabledCount + ' enabled</span>';
         html += '</div>';
         html += '<button class="btn" id="sa-add-btn" style="font-size:0.75rem;padding:0.4rem 1rem">+ Add Agent</button>';
         html += '</div>';
+        if (proxies.length > 0) {
+          html += '<div class="card" style="margin-bottom:0.75rem;padding:0.75rem 1rem;font-size:0.75rem;color:var(--muted)">'
+            + proxies.length + ' model prox' + (proxies.length === 1 ? 'y is' : 'ies are')
+            + ' hidden from this taskable sub-agent list.'
+            + '</div>';
+        }
 
         function agentCard(a) {
           var c = '';
@@ -1745,14 +1824,9 @@
           specialists.forEach(function(a) { html += agentCard(a); });
         }
 
-        if (proxies.length > 0) {
-          html += '<div style="font-size:0.8125rem;font-weight:600;color:var(--text);margin:1rem 0 0.5rem;text-transform:uppercase;letter-spacing:0.05em">Model Proxies</div>';
-          proxies.forEach(function(a) { html += agentCard(a); });
-        }
-
-        if (agents.length === 0) {
+        if (specialists.length === 0) {
           html += '<div class="card" style="text-align:center;padding:3rem"><div style="font-size:2rem;margin-bottom:0.5rem">\uD83E\uDD16</div>';
-          html += '<div style="color:var(--muted)">No sub-agents configured</div>';
+          html += '<div style="color:var(--muted)">No taskable sub-agents configured</div>';
           html += '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Run <code style="background:var(--surface);padding:0.1rem 0.4rem;border-radius:4px">ironclad migrate import ~/.openclaw --areas agents</code> or add one below</div>';
           html += '</div>';
         }
@@ -1765,9 +1839,10 @@
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Display Name</label>';
         html += '<input class="settings-input" id="sa-m-display" placeholder="e.g. Data Analyst" style="margin-bottom:0.75rem">';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Model</label>';
-        html += '<input class="settings-input" id="sa-m-model" placeholder="e.g. anthropic/claude-sonnet-4-6" style="margin-bottom:0.75rem;font-family:var(--font-mono)">';
+        html += '<input class="settings-input" id="sa-m-model" list="sa-model-options" placeholder="e.g. ollama/qwen3:8b" style="margin-bottom:0.75rem;font-family:var(--font-mono)">';
+        html += '<datalist id="sa-model-options">' + modelOptions + '</datalist>';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Role</label>';
-        html += '<select class="settings-input" id="sa-m-role" style="margin-bottom:0.75rem"><option value="specialist">specialist</option><option value="model-proxy">model-proxy</option></select>';
+        html += '<select class="settings-input" id="sa-m-role" style="margin-bottom:0.75rem"><option value="specialist">specialist</option></select>';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Description</label>';
         html += '<textarea class="settings-input" id="sa-m-desc" rows="2" placeholder="What does this agent do?" style="margin-bottom:1rem;resize:vertical"></textarea>';
         html += '<div style="display:flex;gap:0.5rem;justify-content:flex-end">';
@@ -1901,7 +1976,7 @@
               detailHtml += '<p style="color:var(--muted)">No context snapshot recorded for this turn.</p>';
             }
             if (turn && turn.thinking) {
-              detailHtml += '<details class="ctx-section"><summary>Reasoning Trace</summary><pre>' + esc(turn.thinking) + '</pre></details>';
+              detailHtml += '<details class="ctx-section"><summary>Reasoning Trace</summary><div>' + renderSafeMarkdown(turn.thinking) + '</div></details>';
             }
             var toolCalls = (tools && tools.tool_calls) || [];
             if (toolCalls.length > 0) {
@@ -1929,7 +2004,8 @@
             var timelineHtml = self._ctxTurns.map(function(t) {
               var isActive = t.id === self._ctxActiveTurn.id;
               var cost = t.cost != null ? '$' + t.cost.toFixed(4) : '';
-              return '<div class="ctx-timeline-item' + (isActive ? ' active' : '') + '" data-turn-id="' + esc(t.id) + '"><div style="font-size:0.6875rem;color:var(--muted)">' + esc(t.created_at || '') + '</div><div style="display:flex;justify-content:space-between;align-items:center"><span class="badge muted" style="font-size:0.5625rem">' + esc(t.model || '') + '</span><span style="font-size:0.6875rem;color:var(--success)">' + cost + '</span></div></div>';
+              var turnLabel = sessionAssistantLabel(self._ctxSession, 'assistant');
+              return '<div class="ctx-timeline-item' + (isActive ? ' active' : '') + '" data-turn-id="' + esc(t.id) + '"><div style="font-size:0.6875rem;color:var(--muted)">' + esc(t.created_at || '') + '</div><div style="display:flex;justify-content:space-between;align-items:center;gap:0.25rem"><span class="badge muted" style="font-size:0.5625rem">' + esc(turnLabel) + '</span><span class="badge muted" style="font-size:0.5625rem">' + esc(t.model || '') + '</span><span style="font-size:0.6875rem;color:var(--success);margin-left:auto">' + cost + '</span></div></div>';
             }).join('');
 
             return '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="ctx-back-btn">\u25c0 Back</button><h3 style="margin:0">Turn Detail</h3></div><div class="ctx-explorer-grid"><div class="ctx-timeline">' + timelineHtml + '</div><div class="ctx-turn-detail">' + detailHtml + '</div></div>';
@@ -1968,7 +2044,8 @@
               var tokens = ((t.tokens_in || 0) + (t.tokens_out || 0)).toLocaleString();
               var fb = ctxFbMap[t.id];
               var gradeBadge = fb ? '<span class="grade-badge">' + '\u2605'.repeat(fb.grade) + '</span>' : '';
-              return '<div class="ctx-timeline-item" data-turn-id="' + esc(t.id) + '" style="cursor:pointer"><div style="font-size:0.6875rem;color:var(--muted)">' + esc(t.created_at || '') + '</div><div style="display:flex;justify-content:space-between;align-items:center"><span class="badge muted" style="font-size:0.5625rem">' + esc(t.model || '') + '</span>' + gradeBadge + '<span style="font-size:0.6875rem">' + tokens + ' tok</span><span style="font-size:0.6875rem;color:var(--success)">' + cost + '</span></div></div>';
+              var turnLabel = sessionAssistantLabel(self._ctxSession, 'assistant');
+              return '<div class="ctx-timeline-item" data-turn-id="' + esc(t.id) + '" style="cursor:pointer"><div style="font-size:0.6875rem;color:var(--muted)">' + esc(t.created_at || '') + '</div><div style="display:flex;justify-content:space-between;align-items:center;gap:0.25rem"><span class="badge muted" style="font-size:0.5625rem">' + esc(turnLabel) + '</span><span class="badge muted" style="font-size:0.5625rem">' + esc(t.model || '') + '</span>' + gradeBadge + '<span style="font-size:0.6875rem">' + tokens + ' tok</span><span style="font-size:0.6875rem;color:var(--success)">' + cost + '</span></div></div>';
             }).join('');
             return '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="ctx-back-btn">\u25c0 Back</button><h3 style="margin:0">' + esc(self._ctxSession.nickname || self._ctxSession.id) + '</h3></div>' + summaryHtml + insightsHtml + '<div class="ctx-timeline">' + timelineHtml + '</div>';
           });
@@ -1976,7 +2053,8 @@
 
         var rows = sessions.map(function(s) {
           var nick = s.nickname || truncate(s.id, 16);
-          return '<tr data-ctx-session=\'' + esc(JSON.stringify(s)) + '\' style="cursor:pointer"><td>' + esc(nick) + '</td><td><span class="badge muted" style="font-size:0.5625rem">' + esc(s.agent_id) + '</span></td><td style="font-size:0.75rem;color:var(--muted)">' + esc(s.created_at || '') + '</td></tr>';
+          var agentLabel = sessionAssistantLabel(s, s.agent_id || 'default');
+          return '<tr data-ctx-session=\'' + esc(JSON.stringify(s)) + '\' style="cursor:pointer"><td>' + esc(nick) + '</td><td><span class="badge muted" style="font-size:0.5625rem">' + esc(agentLabel) + '</span></td><td style="font-size:0.75rem;color:var(--muted)">' + esc(s.created_at || '') + '</td></tr>';
         }).join('');
         return '<h3>Context Explorer</h3><p style="color:var(--muted);font-size:0.875rem;margin-bottom:1rem">Select a session to inspect turn-by-turn context allocation, token budgets, and reasoning traces.</p><div class="table-wrap"><table><thead><tr><th>Session</th><th>Agent</th><th>Created</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
       });
@@ -2225,7 +2303,7 @@
       if (thread) {
         var userBubble = document.createElement('div');
         userBubble.className = 'message user';
-        setHtml(userBubble, '<div class="message-role">user</div><div>' + esc(msg) + '</div>');
+        setHtml(userBubble, '<div class="message-role">user</div><div>' + renderSafeMarkdown(msg) + '</div>');
         thread.appendChild(userBubble);
         var thinkEl = document.createElement('div');
         thinkEl.className = 'thinking-indicator';
@@ -2279,7 +2357,8 @@
                 if (thread) {
                   asstBubble = document.createElement('div');
                   asstBubble.className = 'message assistant';
-                  var roleHtml = '<div class="message-role">assistant';
+                  var assistantLabel = sessionAssistantLabel(App._activeSession, 'assistant');
+                  var roleHtml = '<div class="message-role">' + esc(assistantLabel);
                   if (streamModel) roleHtml += ' <span class="badge muted" style="font-size:0.5625rem;margin-right:0.375rem">' + esc(streamModel) + '</span>';
                   roleHtml += ' <span class="badge" style="font-size:0.5rem;background:var(--accent);color:#fff">streaming</span>';
                   roleHtml += '</div>';
@@ -2291,7 +2370,7 @@
                 }
               } else if (d.type === 'chunk' && d.delta) {
                 accumulated += d.delta;
-                if (contentEl) { contentEl.textContent = accumulated; thread.scrollTop = thread.scrollHeight; }
+                if (contentEl) { setHtml(contentEl, renderSafeMarkdown(accumulated)); thread.scrollTop = thread.scrollHeight; }
                 if (sendBtn) sendBtn.textContent = 'Streaming\u2026';
               } else if (d.type === 'stream_end') {
                 if (asstBubble) {
@@ -2299,7 +2378,8 @@
                   var finalMeta = '';
                   if (endModel) finalMeta += '<span class="badge muted" style="font-size:0.5625rem;margin-right:0.375rem">' + esc(endModel) + '</span>';
                   if (d.tokens_in || d.tokens_out) finalMeta += '<span class="badge muted" style="font-size:0.5rem;margin-right:0.375rem">' + (d.tokens_in||0) + '/' + (d.tokens_out||0) + ' tok</span>';
-                  setHtml(asstBubble, '<div class="message-role">assistant' + (finalMeta ? ' ' + finalMeta : '') + '</div><div>' + esc(accumulated) + '</div>');
+                  var assistantLabelFinal = sessionAssistantLabel(App._activeSession, 'assistant');
+                  setHtml(asstBubble, '<div class="message-role">' + esc(assistantLabelFinal) + (finalMeta ? ' ' + finalMeta : '') + '</div><div>' + renderSafeMarkdown(accumulated) + '</div>');
                 }
               } else if (d.type === 'error') {
                 toast(d.error || 'Stream error');
@@ -2317,7 +2397,14 @@
     var rosterCard = e.target.closest('.roster-card[data-roster-id]');
     if (rosterCard) {
       var agentId = rosterCard.getAttribute('data-roster-id');
-      api('/api/roster').then(function(data) {
+      Promise.all([
+        api('/api/roster'),
+        api('/api/models/available').catch(function() { return { models: [] }; }),
+        api('/api/config').catch(function() { return { models: {} }; })
+      ]).then(function(arr) {
+        var data = arr[0] || { roster: [] };
+        var availableModels = (arr[1] && arr[1].models) || [];
+        var cfgModels = (arr[2] && arr[2].models) || {};
         var agent = (data.roster || []).find(function(a) { return (a.name || a.id) === agentId; });
         if (!agent) return;
         var modal = document.getElementById('roster-modal');
@@ -2423,6 +2510,14 @@
         }
 
         var subordinates = agent.subordinates || [];
+        var proxyLookup = {};
+        (data.roster || []).forEach(function(a) {
+          if (a && a.role === 'model-proxy') {
+            if (a.id) proxyLookup[String(a.id)] = true;
+            if (a.name) proxyLookup[String(a.name)] = true;
+          }
+        });
+        subordinates = subordinates.filter(function(sid) { return !proxyLookup[String(sid)]; });
         var subsHtml = '';
         if (subordinates.length > 0) {
           subsHtml = '<div style="margin-top:1rem"><div style="font-size:0.75rem;font-weight:600;color:var(--muted);letter-spacing:0.05em;margin-bottom:0.5rem">SUBORDINATES (' + subordinates.length + ')</div>'
@@ -2450,7 +2545,10 @@
           + (function() {
             var allModels = {};
             (data.roster || []).forEach(function(a) { if (a.model) allModels[a.model] = true; });
-            ['anthropic/claude-sonnet-4-20250514','anthropic/claude-sonnet-4-6','anthropic/claude-opus-4','openai/gpt-4o','openai/gpt-4o-mini','google/gemini-2.0-flash','google/gemini-2.5-pro','google/gemini-3-pro-preview','google/gemini-3-flash-preview','google/gemini-3.1-pro-preview','moonshot/kimi-k2.5','ollama/phi4-mini','ollama/qwen3:8b','ollama/llama3.1:8b'].forEach(function(m) { allModels[m] = true; });
+            (App._KNOWN_MODELS || []).forEach(function(m) { if (m) allModels[m] = true; });
+            availableModels.forEach(function(m) { if (m) allModels[m] = true; });
+            if (cfgModels.primary) allModels[String(cfgModels.primary)] = true;
+            (cfgModels.fallbacks || []).forEach(function(m) { if (m) allModels[String(m)] = true; });
             var sorted = Object.keys(allModels).sort();
             var opts = sorted.map(function(m) {
               var sel = m === (agent.model || '') ? ' selected' : '';
@@ -2875,7 +2973,7 @@
             html += '</div>';
           }
           html += '<button class="btn secondary ctx-analyze-btn" data-analyze-turn="' + esc(turn.id) + '">Analyze (LLM)</button>';
-          if (turn.thinking) html += '<details class="ctx-section"><summary>Reasoning</summary><pre>' + esc(turn.thinking) + '</pre></details>';
+          if (turn.thinking) html += '<details class="ctx-section"><summary>Reasoning</summary><div>' + renderSafeMarkdown(turn.thinking) + '</div></details>';
           setHtml(detailEl, html);
         });
       }).catch(function() { setHtml(detailEl, '<span style="color:var(--error);font-size:0.75rem">Failed to load context.</span>'); });
@@ -3446,6 +3544,7 @@
   try {
     var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     var wsUrl = proto + '//' + window.location.host + '/ws';
+    if (API_KEY) wsUrl += '?token=' + API_KEY;
     App.ws = new WebSocket(wsUrl);
     App.ws.onopen = function() { var d = document.getElementById('ws-dot'); if (d) d.classList.remove('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'Connected'; };
     App.ws.onclose = App.ws.onerror = function() { var d = document.getElementById('ws-dot'); if (d) d.classList.add('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'Disconnected'; };

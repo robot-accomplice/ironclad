@@ -407,11 +407,17 @@ pub async fn analyze_turn(
     let tips = analyzer.analyze_turn(&turn_data, None);
     let prompt = LlmAnalyzer::build_analysis_prompt(&turn_data, &tips);
 
+    let llm = run_llm_analysis(&state, &prompt, Some(1200), Some(0.2)).await?;
+
     Ok(axum::Json(serde_json::json!({
         "turn_id": id,
-        "status": "stub",
-        "prompt": prompt,
-        "note": "LLM analysis not yet wired — this returns the prompt that would be sent.",
+        "status": "complete",
+        "heuristic_tips": tips,
+        "analysis": llm["content"],
+        "analysis_model": llm["model"],
+        "tokens_in": llm["tokens_in"],
+        "tokens_out": llm["tokens_out"],
+        "cost": llm["cost"],
     })))
 }
 
@@ -452,12 +458,131 @@ pub async fn analyze_session(
     let insights = analyzer.analyze_session(&session_data);
     let prompt = LlmAnalyzer::build_session_prompt(&session_data, &insights);
 
+    let llm = run_llm_analysis(&state, &prompt, Some(1800), Some(0.2)).await?;
+
     Ok(axum::Json(serde_json::json!({
         "session_id": id,
-        "status": "stub",
-        "prompt": prompt,
-        "note": "LLM analysis not yet wired — this returns the prompt that would be sent.",
+        "status": "complete",
+        "heuristic_insights": insights,
+        "analysis": llm["content"],
+        "analysis_model": llm["model"],
+        "tokens_in": llm["tokens_in"],
+        "tokens_out": llm["tokens_out"],
+        "cost": llm["cost"],
     })))
+}
+
+async fn run_llm_analysis(
+    state: &AppState,
+    prompt: &str,
+    max_tokens: Option<u32>,
+    temperature: Option<f64>,
+) -> Result<serde_json::Value, (axum::http::StatusCode, String)> {
+    let model = {
+        let llm = state.llm.read().await;
+        llm.router.select_model().to_string()
+    };
+    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let req = ironclad_llm::format::UnifiedRequest {
+        model: model_for_api,
+        messages: vec![ironclad_llm::format::UnifiedMessage {
+            role: "user".into(),
+            content: prompt.to_string(),
+            parts: None,
+        }],
+        max_tokens,
+        temperature,
+        system: None,
+        quality_target: None,
+    };
+
+    let llm = state.llm.read().await;
+    let provider = match llm.providers.get_by_model(&model) {
+        Some(p) => p.clone(),
+        None => {
+            return Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!("no provider configured for model {model}"),
+            ));
+        }
+    };
+    drop(llm);
+
+    let url = format!("{}{}", provider.url, provider.chat_path);
+    let key = super::admin::resolve_provider_key(
+        &provider.name,
+        provider.is_local,
+        &provider.auth_mode,
+        provider.api_key_ref.as_deref(),
+        &provider.api_key_env,
+        &state.oauth,
+        &state.keystore,
+    )
+    .await
+    .unwrap_or_default();
+    if !provider.is_local && key.is_empty() {
+        return Err((
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            format!("missing API key for provider {}", provider.name),
+        ));
+    }
+
+    let body = ironclad_llm::format::translate_request(&req, provider.format)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let llm = state.llm.read().await;
+    let resp = llm
+        .client
+        .forward_with_provider(
+            &url,
+            &key,
+            body,
+            &provider.auth_header,
+            &provider.extra_headers,
+        )
+        .await
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::BAD_GATEWAY,
+                format!("analysis provider call failed: {e}"),
+            )
+        })?;
+    drop(llm);
+
+    let unified =
+        ironclad_llm::format::translate_response(&resp, provider.format).unwrap_or_else(|_| {
+            ironclad_llm::format::UnifiedResponse {
+                content: "(no response)".into(),
+                model: model.clone(),
+                tokens_in: 0,
+                tokens_out: 0,
+                finish_reason: None,
+            }
+        });
+
+    let tin = unified.tokens_in as i64;
+    let tout = unified.tokens_out as i64;
+    let cost = (tin.max(0) as f64 * provider.cost_per_input_token)
+        + (tout.max(0) as f64 * provider.cost_per_output_token);
+    ironclad_db::metrics::record_inference_cost(
+        &state.db,
+        &model,
+        &provider.name,
+        tin,
+        tout,
+        cost,
+        Some("analysis"),
+        false,
+    )
+    .ok();
+
+    Ok(serde_json::json!({
+        "content": unified.content,
+        "model": model,
+        "provider": provider.name,
+        "tokens_in": tin,
+        "tokens_out": tout,
+        "cost": cost,
+    }))
 }
 
 // ── Turn feedback endpoints ─────────────────────────────────────

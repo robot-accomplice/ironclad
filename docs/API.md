@@ -31,7 +31,7 @@ Returns server health status.
 ```json
 {
   "status": "ok",
-  "version": "0.4.3",
+  "version": "0.6.0",
   "agent": "MyAgent",
   "uptime_seconds": 3600,
   "models": {
@@ -154,7 +154,10 @@ Send a message to the agent and receive a response.
   "content": "What is the weather today?",
   "session_id": "optional-session-id",
   "channel": "web",
-  "sender_id": "user-123"
+  "sender_id": "user-123",
+  "peer_id": "optional-peer-id",
+  "group_id": "optional-group-id",
+  "is_group": false
 }
 ```
 
@@ -164,6 +167,9 @@ Send a message to the agent and receive a response.
 | `session_id` | `String` | No | Existing session ID (auto-created if omitted) |
 | `channel` | `String` | No | Source channel identifier |
 | `sender_id` | `String` | No | Sender identifier |
+| `peer_id` | `String` | No | Explicit peer scope key for session auto-create |
+| `group_id` | `String` | No | Explicit group scope key for session auto-create |
+| `is_group` | `bool` | No | Hint for scope resolver when `scope_mode` is group-aware |
 
 **Response:**
 
@@ -212,7 +218,7 @@ List all sessions.
     {
       "id": "abc-123",
       "agent_id": "my-agent",
-      "scope_key": null,
+      "scope_key": "agent",
       "status": "active",
       "model": "ollama/qwen3:8b",
       "nickname": "Weather Chat",
@@ -595,6 +601,30 @@ Get semantic cache statistics.
   "misses": 158,
   "entries": 200,
   "hit_rate": 0.21
+}
+```
+
+### `GET /api/stats/capacity`
+
+Get per-provider capacity/headroom telemetry used by routing decisions.
+
+**Response:**
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "headroom": 0.92,
+      "near_capacity": false,
+      "sustained_hot": false,
+      "tokens_used": 14321,
+      "requests_used": 21,
+      "tpm_limit": 200000,
+      "rpm_limit": 120,
+      "token_utilization": 0.07,
+      "request_utilization": 0.18
+    }
+  }
 }
 ```
 

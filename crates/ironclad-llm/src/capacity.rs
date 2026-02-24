@@ -2,6 +2,18 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone)]
+pub struct ProviderCapacityStats {
+    pub tpm_limit: Option<u64>,
+    pub rpm_limit: Option<u64>,
+    pub tokens_used: u64,
+    pub requests_used: u64,
+    pub token_utilization: f64,
+    pub request_utilization: f64,
+    pub headroom: f64,
+    pub near_capacity: bool,
+}
+
 /// Tracks per-provider token and request throughput using a sliding window.
 #[derive(Debug)]
 pub struct CapacityTracker {
@@ -106,6 +118,59 @@ impl CapacityTracker {
     /// Returns true if a provider is above 90% utilization.
     pub fn is_near_capacity(&self, provider: &str) -> bool {
         self.headroom(provider) < 0.1
+    }
+
+    /// Returns true when a provider is under sustained load pressure.
+    ///
+    /// Sustained pressure means utilization is high and non-trivial traffic has
+    /// been observed in the active window (avoids tripping on sparse samples).
+    pub fn is_sustained_hot(&self, provider: &str) -> bool {
+        self.stats(provider).is_some_and(|s| {
+            let high_pressure = s.token_utilization >= 0.9 || s.request_utilization >= 0.9;
+            let enough_samples = s.requests_used >= 3 || s.tokens_used >= 1024;
+            high_pressure && enough_samples
+        })
+    }
+
+    pub fn stats(&self, provider: &str) -> Option<ProviderCapacityStats> {
+        let mut providers = self.providers.lock().expect("mutex poisoned");
+        let cap = providers.get_mut(provider)?;
+        let cutoff = Instant::now() - self.window;
+        cap.prune(cutoff);
+        let tokens_used = cap.tokens_in_window(cutoff);
+        let requests_used = cap.requests_in_window(cutoff);
+        let token_utilization = match cap.tpm_limit {
+            Some(limit) if limit > 0 => (tokens_used as f64 / limit as f64).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        let request_utilization = match cap.rpm_limit {
+            Some(limit) if limit > 0 => (requests_used as f64 / limit as f64).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        let headroom = (1.0 - token_utilization)
+            .min(1.0 - request_utilization)
+            .clamp(0.0, 1.0);
+        Some(ProviderCapacityStats {
+            tpm_limit: cap.tpm_limit,
+            rpm_limit: cap.rpm_limit,
+            tokens_used,
+            requests_used,
+            token_utilization,
+            request_utilization,
+            headroom,
+            near_capacity: headroom < 0.1,
+        })
+    }
+
+    pub fn list_stats(&self) -> Vec<(String, ProviderCapacityStats)> {
+        let names: Vec<String> = {
+            let providers = self.providers.lock().expect("mutex poisoned");
+            providers.keys().cloned().collect()
+        };
+        names
+            .into_iter()
+            .filter_map(|name| self.stats(&name).map(|stats| (name, stats)))
+            .collect()
     }
 }
 
