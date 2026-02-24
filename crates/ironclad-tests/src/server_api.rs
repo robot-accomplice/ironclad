@@ -541,6 +541,32 @@ async fn agent_pipeline_suspicious_input_blocked() {
 }
 
 #[tokio::test]
+async fn agent_message_requires_peer_identity_in_peer_scope_mode() {
+    let state = test_state();
+    {
+        let mut cfg = state.config.write().await;
+        cfg.session.scope_mode = "peer".to_string();
+    }
+
+    let app = build_router(state);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/agent/message")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"content":"hello from anonymous peer mode"}"#))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        error.contains("peer_id or sender_id is required"),
+        "unexpected error payload: {body:?}"
+    );
+}
+
+#[tokio::test]
 async fn session_turn_and_context_endpoints_work() {
     let state = test_state();
     let session_id =

@@ -370,7 +370,7 @@ pub struct AgentMessageRequest {
 fn resolve_web_scope(
     cfg: &ironclad_core::IroncladConfig,
     body: &AgentMessageRequest,
-) -> ironclad_db::sessions::SessionScope {
+) -> Result<ironclad_db::sessions::SessionScope, &'static str> {
     let channel = body
         .channel
         .as_deref()
@@ -381,18 +381,28 @@ fn resolve_web_scope(
         .peer_id
         .clone()
         .or_else(|| body.sender_id.clone())
-        .unwrap_or_else(|| "web-user".to_string());
+        .and_then(|id| {
+            let trimmed = id.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
     let mode = cfg.session.scope_mode.as_str();
     if (mode == "group"
         || (mode != "agent" && body.is_group == Some(true) && body.group_id.is_some()))
         && let Some(group_id) = body.group_id.clone().filter(|s| !s.trim().is_empty())
     {
-        return ironclad_db::sessions::SessionScope::Group { group_id, channel };
+        return Ok(ironclad_db::sessions::SessionScope::Group { group_id, channel });
     }
     if mode == "peer" || mode == "group" {
-        return ironclad_db::sessions::SessionScope::Peer { peer_id, channel };
+        let Some(peer_id) = peer_id else {
+            return Err("peer_id or sender_id is required when session.scope_mode is peer/group");
+        };
+        return Ok(ironclad_db::sessions::SessionScope::Peer { peer_id, channel });
     }
-    ironclad_db::sessions::SessionScope::Agent
+    Ok(ironclad_db::sessions::SessionScope::Agent)
 }
 
 pub async fn agent_message(
@@ -490,7 +500,15 @@ pub async fn agent_message(
             }
         },
         None => {
-            let scope = resolve_web_scope(&config, &body);
+            let scope = match resolve_web_scope(&config, &body) {
+                Ok(scope) => scope,
+                Err(msg) => {
+                    let mut llm = state.llm.write().await;
+                    llm.dedup.release(&dedup_fp);
+                    drop(llm);
+                    return Err((StatusCode::BAD_REQUEST, axum::Json(json!({"error": msg}))));
+                }
+            };
             match ironclad_db::sessions::find_or_create(&state.db, &agent_id, Some(&scope)) {
                 Ok(sid) => sid,
                 Err(e) => {
@@ -1145,7 +1163,15 @@ pub async fn agent_message_stream(
             }
         },
         None => {
-            let scope = resolve_web_scope(&config, &body);
+            let scope = match resolve_web_scope(&config, &body) {
+                Ok(scope) => scope,
+                Err(msg) => {
+                    let mut llm = state.llm.write().await;
+                    llm.dedup.release(&dedup_fp);
+                    drop(llm);
+                    return Err((StatusCode::BAD_REQUEST, axum::Json(json!({"error": msg}))));
+                }
+            };
             match ironclad_db::sessions::find_or_create(&state.db, &agent_id, Some(&scope)) {
                 Ok(sid) => sid,
                 Err(e) => {
@@ -2036,7 +2062,7 @@ const HELP_TEXT: &str = "\
 /models  — list primary + fallback models\n\
 /breaker — show circuit breaker status\n\
 /breaker reset [provider] — reset tripped breakers\n\
-/retry   — retry last failed message\n\
+/retry   — show last assistant response in this chat\n\
 /help    — show this message\n\n\
 Anything else is sent to the LLM.";
 
@@ -3238,7 +3264,7 @@ scope_mode = "{scope_mode}"
         };
 
         let cfg_group = test_config_with_scope("group");
-        let scope = resolve_web_scope(&cfg_group, &req);
+        let scope = resolve_web_scope(&cfg_group, &req).expect("group scope");
         assert_eq!(
             scope,
             ironclad_db::sessions::SessionScope::Group {
@@ -3249,7 +3275,7 @@ scope_mode = "{scope_mode}"
 
         let cfg_peer = test_config_with_scope("peer");
         req.group_id = None;
-        let scope = resolve_web_scope(&cfg_peer, &req);
+        let scope = resolve_web_scope(&cfg_peer, &req).expect("peer scope");
         assert_eq!(
             scope,
             ironclad_db::sessions::SessionScope::Peer {
@@ -3259,7 +3285,26 @@ scope_mode = "{scope_mode}"
         );
 
         let cfg_agent = test_config_with_scope("agent");
-        let scope = resolve_web_scope(&cfg_agent, &req);
+        let scope = resolve_web_scope(&cfg_agent, &req).expect("agent scope");
         assert_eq!(scope, ironclad_db::sessions::SessionScope::Agent);
+    }
+
+    #[test]
+    fn resolve_web_scope_rejects_missing_principal_in_peer_or_group_modes() {
+        let req = AgentMessageRequest {
+            content: "hello".into(),
+            session_id: None,
+            channel: Some("web".into()),
+            sender_id: None,
+            peer_id: None,
+            group_id: None,
+            is_group: Some(false),
+        };
+
+        let cfg_peer = test_config_with_scope("peer");
+        assert!(resolve_web_scope(&cfg_peer, &req).is_err());
+
+        let cfg_group = test_config_with_scope("group");
+        assert!(resolve_web_scope(&cfg_group, &req).is_err());
     }
 }

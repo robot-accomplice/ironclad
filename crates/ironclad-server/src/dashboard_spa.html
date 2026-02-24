@@ -3544,7 +3544,7 @@
   try {
     var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     var wsUrl = proto + '//' + window.location.host + '/ws';
-    if (API_KEY) wsUrl += '?token=' + API_KEY;
+    if (API_KEY) wsUrl += '?token=' + encodeURIComponent(API_KEY);
     App.ws = new WebSocket(wsUrl);
     App.ws.onopen = function() { var d = document.getElementById('ws-dot'); if (d) d.classList.remove('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'Connected'; };
     App.ws.onclose = App.ws.onerror = function() { var d = document.getElementById('ws-dot'); if (d) d.classList.add('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'Disconnected'; };
