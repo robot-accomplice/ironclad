@@ -499,6 +499,8 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ## Summary
 
+Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
+
 | # | Item | Tier | Builds On | Effort |
 |---|------|------|-----------|--------|
 | 1.1 | ~~Streaming LLM responses~~ ✅ | 1 | LLM client, WebSocket, channels | ~~Medium~~ Done |

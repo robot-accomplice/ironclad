@@ -1515,38 +1515,45 @@ fn fallback_candidates(config: &ironclad_core::IroncladConfig, initial_model: &s
     candidates
 }
 
-pub(crate) async fn select_routed_model(state: &AppState, user_content: &str) -> String {
-    let routing_config = {
-        let config = state.config.read().await;
-        config.models.routing.clone()
-    };
-    let features = ironclad_llm::extract_features(user_content, 0, 1);
-    let complexity = ironclad_llm::classify_complexity(&features);
+pub(crate) async fn select_routed_model(state: &AppState, _user_content: &str) -> String {
+    let config = state.config.read().await;
+    let primary = config.models.primary.clone();
+    let mut ordered_models = vec![primary.clone()];
+    for fb in &config.models.fallbacks {
+        if !fb.is_empty() && !ordered_models.iter().any(|m| m == fb) {
+            ordered_models.push(fb.clone());
+        }
+    }
+    drop(config);
+
     let llm_read = state.llm.read().await;
 
-    if routing_config.cost_aware {
-        llm_read
-            .router
-            .select_cheapest_qualified(
-                complexity,
-                &llm_read.providers,
-                Some(&llm_read.capacity),
-                Some(&llm_read.breakers),
-                (user_content.len() as u32 / 4).max(1),
-                routing_config.estimated_output_tokens,
-            )
-            .to_string()
-    } else {
-        llm_read
-            .router
-            .select_for_complexity(
-                complexity,
-                Some(&llm_read.providers),
-                Some(&llm_read.capacity),
-                Some(&llm_read.breakers),
-            )
-            .to_string()
+    let is_usable = |model: &str| {
+        if llm_read.providers.get_by_model(model).is_none() {
+            return false;
+        }
+        let provider_prefix = model.split('/').next().unwrap_or("unknown");
+        !llm_read.breakers.is_blocked(provider_prefix)
+    };
+
+    if let Some(ovr) = llm_read.router.get_override() {
+        if is_usable(ovr) {
+            return ovr.to_string();
+        }
+        tracing::warn!(
+            model = ovr,
+            "configured override is not usable (missing provider or breaker open), falling back to ordered models"
+        );
     }
+
+    for model in &ordered_models {
+        if is_usable(model) {
+            return model.clone();
+        }
+    }
+
+    // Last resort: return configured primary even if provider is degraded/unavailable.
+    primary
 }
 
 async fn resolve_inference_provider(
