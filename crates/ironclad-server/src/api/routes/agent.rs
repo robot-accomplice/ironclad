@@ -67,6 +67,20 @@ fn parse_tool_call(response: &str) -> Option<(String, serde_json::Value)> {
     Some((name, params))
 }
 
+fn provider_failure_user_message(last_error: &str, message_already_stored: bool) -> String {
+    if message_already_stored {
+        format!(
+            "I encountered an error reaching all LLM providers: {}. Your message has been stored and I'll retry when a provider is available.",
+            last_error
+        )
+    } else {
+        format!(
+            "I encountered an error reaching all LLM providers: {}. Please try again.",
+            last_error
+        )
+    }
+}
+
 /// Execute a tool call through the ToolRegistry, enforcing policy and recording audit trails.
 async fn execute_tool_call(
     state: &AppState,
@@ -580,13 +594,12 @@ pub async fn agent_message(
             result.tokens_out,
             result.cost,
         ),
-        Err(last_error) => {
-            let fallback_msg = format!(
-                "I encountered an error reaching all LLM providers: {}. Your message has been stored and I'll retry when a provider is available.",
-                last_error
-            );
-            (fallback_msg, 0, 0, 0.0)
-        }
+        Err(last_error) => (
+            provider_failure_user_message(&last_error.to_string(), true),
+            0,
+            0,
+            0.0,
+        ),
     };
 
     // Check for HMAC boundary tampering in model output — strip forged boundaries
@@ -2095,6 +2108,19 @@ pub async fn process_channel_message(
     if inbound.content.trim().is_empty() {
         return Ok(());
     }
+    if inbound.content.len() > 32_768 {
+        state
+            .channel_router
+            .send_reply(
+                &platform,
+                &chat_id,
+                "Message is too long (max 32768 bytes). Please shorten and try again.".into(),
+            )
+            .await
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to send oversize message reply"))
+            .ok();
+        return Ok(());
+    }
 
     // Addressability filter: in group chats, only respond when explicitly addressed
     {
@@ -2343,12 +2369,7 @@ pub async fn process_channel_message(
 
             check_hmac(result.content, state.hmac_secret.as_ref())
         }
-        Err(last_error) => {
-            format!(
-                "I encountered an error reaching all LLM providers: {}. Please try again.",
-                last_error
-            )
-        }
+        Err(last_error) => provider_failure_user_message(&last_error.to_string(), true),
     };
 
     let response_content = if ironclad_agent::injection::scan_output(&response_content) {
