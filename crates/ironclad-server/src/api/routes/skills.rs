@@ -139,3 +139,24 @@ pub async fn toggle_skill(
         Err(e) => Err(internal_err(&e)),
     }
 }
+
+pub async fn delete_skill(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+    match ironclad_db::skills::get_skill(&state.db, &id) {
+        Ok(Some(skill)) => {
+            ironclad_db::skills::delete_skill(&state.db, &id).map_err(|e| internal_err(&e))?;
+            Ok(axum::Json(serde_json::json!({
+                "id": id,
+                "name": skill.name,
+                "deleted": true,
+            })))
+        }
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("skill {id} not found"),
+        )),
+        Err(e) => Err(internal_err(&e)),
+    }
+}

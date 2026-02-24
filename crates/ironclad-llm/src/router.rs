@@ -270,6 +270,15 @@ impl ModelRouter {
     pub fn config(&self) -> &RoutingConfig {
         &self.config
     }
+
+    /// Synchronize router runtime state with updated config models/routing.
+    /// Keeps any explicit model override intact.
+    pub fn sync_runtime(&mut self, primary: String, fallbacks: Vec<String>, config: RoutingConfig) {
+        self.primary = primary;
+        self.fallbacks = fallbacks;
+        self.config = config;
+        self.current_index = 0;
+    }
 }
 
 /// Estimate the cost of a request for a given model.

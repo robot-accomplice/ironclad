@@ -67,6 +67,7 @@ pub async fn interview_turn(
     axum::Json(body): axum::Json<InterviewTurnRequest>,
 ) -> impl IntoResponse {
     // Acquire write lock, push user message, clone history, then release
+    let user_content = body.content.clone();
     let history = {
         let mut interviews = state.interviews.write().await;
         let session = match interviews.get_mut(&body.session_key) {
@@ -83,100 +84,28 @@ pub async fn interview_turn(
 
         session.history.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
-            content: body.content,
+            content: user_content.clone(),
             parts: None,
         });
         session.history.clone()
     }; // write lock dropped — LLM call below won't serialize other interview traffic
 
-    let config = state.config.read().await;
-    let model = config.models.primary.clone();
-    drop(config);
-
-    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let model = super::agent::select_routed_model(&state, &user_content).await;
     let req = ironclad_llm::format::UnifiedRequest {
-        model: model_for_api,
+        model: model.split('/').nth(1).unwrap_or(&model).to_string(),
         messages: history,
         max_tokens: Some(4096),
         temperature: None,
         system: None,
         quality_target: None,
     };
-
-    let llm_read = state.llm.read().await;
-    let provider = llm_read.providers.get_by_model(&model);
-    let (url, key, auth_header, extra_headers, format) = match provider {
-        Some(p) => {
-            let url = format!("{}{}", p.url, p.chat_path);
-            let key = super::admin::resolve_provider_key(
-                &p.name,
-                p.is_local,
-                &p.auth_mode,
-                p.api_key_ref.as_deref(),
-                &p.api_key_env,
-                &state.oauth,
-                &state.keystore,
-            )
-            .await
-            .unwrap_or_default();
-            (
-                url,
-                key,
-                p.auth_header.clone(),
-                p.extra_headers.clone(),
-                p.format,
-            )
-        }
-        None => {
-            let prefix = model.split('/').next().unwrap_or("unknown");
-            let key =
-                std::env::var(format!("{}_API_KEY", prefix.to_uppercase())).unwrap_or_default();
-            (
-                String::new(),
-                key,
-                "Authorization".to_string(),
-                std::collections::HashMap::new(),
-                ironclad_core::ApiFormat::OpenAiCompletions,
-            )
-        }
-    };
-    drop(llm_read);
-
-    if url.is_empty() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({"error": "no provider configured for interview model"})),
-        ));
-    }
-
-    let llm_body = ironclad_llm::format::translate_request(&req, format)
-        .unwrap_or_else(|_| serde_json::json!({}));
-
-    let llm_read = state.llm.read().await;
-    let response = llm_read
-        .client
-        .forward_with_provider(&url, &key, llm_body, &auth_header, &extra_headers)
-        .await;
-    drop(llm_read);
-
-    match response {
-        Ok(resp) => {
-            let unified =
-                ironclad_llm::format::translate_response(&resp, format).unwrap_or_else(|_| {
-                    ironclad_llm::format::UnifiedResponse {
-                        content: "(no response)".into(),
-                        model: model.clone(),
-                        tokens_in: 0,
-                        tokens_out: 0,
-                        finish_reason: None,
-                    }
-                });
-
+    match super::agent::infer_content_with_fallback(&state, &req, &model).await {
+        Ok(content) => {
             let mut interviews = state.interviews.write().await;
             if let Some(session) = interviews.get_mut(&body.session_key) {
                 session.history.push(ironclad_llm::format::UnifiedMessage {
                     role: "assistant".into(),
-                    content: unified.content.clone(),
+                    content: content.clone(),
                     parts: None,
                 });
             }
@@ -187,7 +116,7 @@ pub async fn interview_turn(
 
             Ok(axum::Json(json!({
                 "session_key": body.session_key,
-                "content": unified.content,
+                "content": content,
                 "turn": turn_count,
             })))
         }
