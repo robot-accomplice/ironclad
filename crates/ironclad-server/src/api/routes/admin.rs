@@ -1366,11 +1366,7 @@ pub async fn generate_deep_analysis(
         .collect();
     let monthly_savings = recs
         .iter()
-        .filter_map(|r| {
-            r.estimated_impact
-                .as_ref()
-                .and_then(|i| i.monthly_savings)
-        })
+        .filter_map(|r| r.estimated_impact.as_ref().and_then(|i| i.monthly_savings))
         .sum::<f64>();
     let narrative = if top_actions.is_empty() {
         "No high-signal recommendations were generated for the selected period.".to_string()

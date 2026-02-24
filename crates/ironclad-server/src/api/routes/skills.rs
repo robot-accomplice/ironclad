@@ -138,13 +138,13 @@ pub async fn toggle_skill(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
     let existing = ironclad_db::skills::get_skill(&state.db, &id).map_err(|e| internal_err(&e))?;
-    if let Some(s) = existing.as_ref() {
-        if is_builtin_skill(s) {
-            return Err((
-                axum::http::StatusCode::FORBIDDEN,
-                format!("skill {} is built-in and cannot be disabled", s.name),
-            ));
-        }
+    if let Some(s) = existing.as_ref()
+        && is_builtin_skill(s)
+    {
+        return Err((
+            axum::http::StatusCode::FORBIDDEN,
+            format!("skill {} is built-in and cannot be disabled", s.name),
+        ));
     }
     match ironclad_db::skills::toggle_skill_enabled(&state.db, &id) {
         Ok(Some(new_enabled)) => Ok(axum::Json(serde_json::json!({

@@ -2794,16 +2794,6 @@
     }
     var skillDelete = e.target.closest('[data-skill-delete]');
     if (skillDelete) {
-      var skillDeleteId = skillDelete.getAttribute('data-skill-delete');
-      if (!skillDeleteId) { toast('Missing skill id'); return; }
-      api('/api/skills/' + encodeURIComponent(skillDeleteId), { method: 'DELETE' }).then(function() {
-        toast('Skill deleted');
-        App.refreshSkills();
-      }).catch(function(err) { toast(err.message || 'Delete failed'); });
-      return;
-    }
-    var skillDelete = e.target.closest('[data-skill-delete]');
-    if (skillDelete) {
       var skillId = skillDelete.getAttribute('data-skill-delete');
       var skillName = skillDelete.getAttribute('data-skill-name') || '';
       if (!skillId || !skillName) { toast('Missing skill metadata'); return; }

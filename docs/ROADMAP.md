@@ -127,6 +127,30 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
+### 1.15 Sessions Chat Markdown Rendering
+
+**Current state**: The sessions chat UI renders assistant/user messages as plain text. Markdown syntax (headings, lists, code fences, links, inline code, blockquotes) appears unformatted, which reduces readability for long-form answers and technical responses.
+
+**Target**: First-class Markdown rendering in Sessions chat with safe HTML sanitization and readable defaults for prose and code blocks.
+
+**Builds on**: `crates/ironclad-server/src/dashboard_spa.html`, session message APIs, existing chat rendering flow.
+
+**Scope**: Add a Markdown parser + sanitizer in the dashboard chat pipeline. Render common Markdown constructs (headings, emphasis, lists, links, tables, blockquotes, fenced code blocks) and preserve plain-text fallback for malformed input. Add syntax highlighting for code fences and copy-to-clipboard actions per code block. Ensure external links use safe target/rel attributes and that raw HTML/script content is never executed.
+
+**Implementation checklist**:
+- **Libraries**: Evaluate and lock a parser/sanitizer pair (`marked` + `DOMPurify` or `markdown-it` + `sanitize-html`) plus lightweight syntax highlighting for fenced code blocks.
+- **Security constraints**: Strip or escape all raw HTML by default, forbid inline event handlers/scripts, enforce safe link policies (`target="_blank"` + `rel="noopener noreferrer"`), and keep protocol allowlists to `https:`, `http:`, and `mailto:`.
+- **Rendering behavior**: Support headings, emphasis, ordered/unordered lists, blockquotes, tables, inline code, and fenced code blocks; retain plaintext fallback when parsing fails.
+- **UX polish**: Add copy-to-clipboard on code blocks, preserve line breaks where expected, and ensure dark/light theme readability for rendered Markdown elements.
+- **Acceptance criteria**: Markdown test fixtures render correctly in Sessions chat, malicious payload fixtures are neutralized, no regression in existing chat message loading/perf, and snapshot/UI tests cover key Markdown constructs.
+
+**Phased delivery**:
+- **Phase A (MVP, M)**: Markdown parse + sanitize + render for core elements (headings, lists, links, inline/fenced code, blockquotes) with plaintext fallback.
+- **Phase B (Code UX, S)**: Syntax highlighting and copy-to-clipboard for fenced code blocks, plus visual polish for dark/light themes.
+- **Phase C (Hardening, M)**: Security regression fixtures (XSS/script/link payloads), rendering snapshot tests, and performance checks on long chat transcripts.
+
+---
+
 ### 1.13 Capacity-Aware Routing
 
 **Current state**: Token counts are tracked per turn (`tokens_in`/`tokens_out` in `format.rs`, stored in `turns`). Per-IP API rate limiting exists (`rate_limit.rs`). But there is no per-provider token-rate tracking — the router has no visibility into provider saturation and cannot pre-route around congestion. Hitting a 429 triggers the circuit breaker reactively.
@@ -490,6 +514,7 @@ Ambitious capabilities that push the architecture into new territory. High effor
 | 1.11 | Context checkpoint | 1 | schema.rs, build_context, MemoryRetriever | Medium |
 | 1.12 | ~~Response transform pipeline~~ ✅ | 1 | format.rs, injection defense, turns | ~~Low-Medium~~ Done |
 | 1.14 | ~~Context Observatory~~ ✅ | 1 | efficiency.rs, turn_feedback, turns, inference_costs | Done |
+| 1.15 | Sessions chat Markdown rendering | 1 | dashboard_spa.html, session message rendering | Low |
 | 1.13 | Capacity-aware routing | 1 | ModelRouter, CircuitBreakerRegistry | Medium |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
