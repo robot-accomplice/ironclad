@@ -112,27 +112,21 @@ pub fn find_or_create(
     scope: Option<&SessionScope>,
 ) -> Result<String> {
     let conn = db.conn();
-    let scope_key = scope.map(|s| s.scope_key());
+    let scope_key = scope
+        .map(|s| s.scope_key())
+        .unwrap_or_else(|| SessionScope::Agent.scope_key());
 
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
-    let existing: Option<String> = if let Some(ref key) = scope_key {
-        tx.query_row(
+    let existing: Option<String> = tx
+        .query_row(
             "SELECT id FROM sessions WHERE agent_id = ?1 AND scope_key = ?2 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
-            rusqlite::params![agent_id, key],
+            rusqlite::params![agent_id, &scope_key],
             |row| row.get(0),
         )
-        .ok()
-    } else {
-        tx.query_row(
-            "SELECT id FROM sessions WHERE agent_id = ?1 AND scope_key IS NULL AND status = 'active' ORDER BY created_at DESC LIMIT 1",
-            [agent_id],
-            |row| row.get(0),
-        )
-        .ok()
-    };
+        .ok();
 
     if let Some(id) = existing {
         tx.commit()
@@ -143,7 +137,7 @@ pub fn find_or_create(
     let id = uuid::Uuid::new_v4().to_string();
     tx.execute(
         "INSERT INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",
-        rusqlite::params![id, agent_id, scope_key],
+        rusqlite::params![id, agent_id, &scope_key],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -156,7 +150,9 @@ pub fn find_or_create(
 /// Always creates a new active session for `agent_id` (optionally scoped).
 pub fn create_new(db: &Database, agent_id: &str, scope: Option<&SessionScope>) -> Result<String> {
     let conn = db.conn();
-    let scope_key = scope.map(|s| s.scope_key());
+    let scope_key = scope
+        .map(|s| s.scope_key())
+        .unwrap_or_else(|| SessionScope::Agent.scope_key());
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",
@@ -327,6 +323,37 @@ pub fn expire_stale_sessions(db: &Database, max_age_seconds: u64) -> Result<usiz
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(expired)
+}
+
+pub fn list_stale_active_session_ids(db: &Database, max_age_seconds: u64) -> Result<Vec<String>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id FROM sessions WHERE status = 'active' \
+             AND (julianday('now') - julianday(updated_at)) * 86400 > ?1",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map(rusqlite::params![max_age_seconds as f64], |row| row.get(0))
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
+pub fn set_session_status(db: &Database, session_id: &str, status: SessionStatus) -> Result<()> {
+    let conn = db.conn();
+    let changed = conn
+        .execute(
+            "UPDATE sessions SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
+            rusqlite::params![status.to_string(), session_id],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    if changed == 0 {
+        return Err(IroncladError::Database(format!(
+            "session not found: {session_id}"
+        )));
+    }
+    Ok(())
 }
 
 /// List all active sessions, optionally filtered by agent_id.

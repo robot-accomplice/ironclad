@@ -77,7 +77,9 @@ use ironclad_agent::obsidian::ObsidianVault;
 use ironclad_agent::obsidian_tools::{ObsidianReadTool, ObsidianSearchTool, ObsidianWriteTool};
 use ironclad_agent::tools::{EchoTool, ScriptRunnerTool, ToolRegistry};
 use ironclad_channels::discord::DiscordAdapter;
+use ironclad_channels::email::EmailAdapter;
 use ironclad_channels::signal::SignalAdapter;
+use ironclad_channels::voice::{VoiceConfig, VoicePipeline};
 
 use rate_limit::GlobalRateLimitLayer;
 
@@ -369,6 +371,65 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
         None
     };
 
+    let email: Option<Arc<EmailAdapter>> = if config.channels.email.enabled {
+        let email_cfg = &config.channels.email;
+        let password = if email_cfg.password_env.is_empty() {
+            String::new()
+        } else {
+            std::env::var(&email_cfg.password_env).unwrap_or_default()
+        };
+        if email_cfg.smtp_host.is_empty()
+            || email_cfg.username.is_empty()
+            || password.is_empty()
+            || email_cfg.from_address.is_empty()
+        {
+            tracing::warn!("Email enabled but SMTP credentials are incomplete");
+            None
+        } else {
+            let adapter = Arc::new(
+                EmailAdapter::new(
+                    email_cfg.from_address.clone(),
+                    email_cfg.smtp_host.clone(),
+                    email_cfg.smtp_port,
+                    email_cfg.imap_host.clone(),
+                    email_cfg.imap_port,
+                    email_cfg.username.clone(),
+                    password,
+                )
+                .with_allowed_senders(email_cfg.allowed_senders.clone()),
+            );
+            channel_router
+                .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
+                .await;
+            tracing::info!("Email adapter registered");
+            Some(adapter)
+        }
+    } else {
+        None
+    };
+
+    let voice: Option<Arc<RwLock<VoicePipeline>>> = if config.channels.voice.enabled {
+        let mut voice_config = VoiceConfig::default();
+        if let Some(stt) = &config.channels.voice.stt_model {
+            voice_config.stt_model = stt.clone();
+        }
+        if let Some(tts) = &config.channels.voice.tts_model {
+            voice_config.tts_model = tts.clone();
+        }
+        if let Some(v) = &config.channels.voice.tts_voice {
+            voice_config.tts_voice = v.clone();
+        }
+        if let Ok(key) = std::env::var("OPENAI_API_KEY")
+            && !key.is_empty()
+        {
+            voice_config.api_key = Some(key);
+        }
+        tracing::info!("Voice pipeline initialized");
+        Some(Arc::new(RwLock::new(VoicePipeline::new(voice_config))))
+    } else {
+        None
+    };
+
     let hmac_secret = {
         use rand::RngCore;
         let mut buf = vec![0u8; 32];
@@ -425,6 +486,53 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
 
     let oauth = Arc::new(OAuthManager::new()?);
 
+    let discovery_registry = Arc::new(RwLock::new(
+        ironclad_agent::discovery::DiscoveryRegistry::new(),
+    ));
+    let device_manager = Arc::new(RwLock::new(ironclad_agent::device::DeviceManager::new(
+        ironclad_agent::device::DeviceIdentity::generate(&config.agent.id),
+        config.devices.max_paired_devices,
+    )));
+
+    let mut mcp_clients = ironclad_agent::mcp::McpClientManager::new();
+    for c in &config.mcp.clients {
+        let mut conn = ironclad_agent::mcp::McpClientConnection::new(c.name.clone(), c.url.clone());
+        let _ = conn.discover();
+        mcp_clients.add_connection(conn);
+    }
+    let mcp_clients = Arc::new(RwLock::new(mcp_clients));
+
+    let mut mcp_server_registry = ironclad_agent::mcp::McpServerRegistry::new();
+    let exported = ironclad_agent::mcp::export_tools_as_mcp(
+        &tool_registry
+            .list()
+            .iter()
+            .map(|t| {
+                (
+                    t.name().to_string(),
+                    t.description().to_string(),
+                    t.parameters_schema(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    for tool in exported {
+        mcp_server_registry.register_tool(tool);
+    }
+    mcp_server_registry.register_resource(ironclad_agent::mcp::McpResource {
+        uri: "ironclad://sessions/active".to_string(),
+        name: "Active Sessions".to_string(),
+        description: "Active sessions in the local runtime".to_string(),
+        mime_type: "application/json".to_string(),
+    });
+    mcp_server_registry.register_resource(ironclad_agent::mcp::McpResource {
+        uri: "ironclad://metrics/capacity".to_string(),
+        name: "Provider Capacity Stats".to_string(),
+        description: "Current provider utilization and headroom".to_string(),
+        mime_type: "application/json".to_string(),
+    });
+    let mcp_server_registry = Arc::new(RwLock::new(mcp_server_registry));
+
     let ann_index = ironclad_db::ann::AnnIndex::new(config.memory.ann_index);
     if config.memory.ann_index {
         match ann_index.build_from_db(&db) {
@@ -468,6 +576,12 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
         approvals,
         discord,
         signal,
+        email,
+        voice,
+        discovery: discovery_registry,
+        devices: device_manager,
+        mcp_clients,
+        mcp_server: mcp_server_registry,
         oauth,
         keystore,
         obsidian: obsidian_vault,
@@ -589,9 +703,12 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
     {
         let hb_wallet = Arc::clone(&state.wallet);
         let hb_db = state.db.clone();
+        let hb_session_cfg = config.session.clone();
+        let hb_agent_id = config.agent.id.clone();
         let daemon = ironclad_schedule::HeartbeatDaemon::new(60_000);
         tokio::spawn(async move {
-            ironclad_schedule::run_heartbeat(daemon, hb_wallet, hb_db).await;
+            ironclad_schedule::run_heartbeat(daemon, hb_wallet, hb_db, hb_session_cfg, hb_agent_id)
+                .await;
         });
         tracing::info!("Heartbeat daemon spawned (60s interval)");
     }
@@ -633,6 +750,24 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
                 api::telegram_poll_loop(poll_state).await;
             });
         }
+    }
+    if state.discord.is_some() {
+        let poll_state = state.clone();
+        tokio::spawn(async move {
+            api::discord_poll_loop(poll_state).await;
+        });
+    }
+    if state.signal.is_some() {
+        let poll_state = state.clone();
+        tokio::spawn(async move {
+            api::signal_poll_loop(poll_state).await;
+        });
+    }
+    if state.email.is_some() {
+        let poll_state = state.clone();
+        tokio::spawn(async move {
+            api::email_poll_loop(poll_state).await;
+        });
     }
 
     let auth_layer = ApiKeyLayer::new(config.server.api_key.clone());

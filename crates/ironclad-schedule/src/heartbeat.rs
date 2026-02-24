@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use ironclad_core::SurvivalTier;
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +65,7 @@ pub fn default_tasks() -> Vec<crate::tasks::HeartbeatTask> {
         HeartbeatTask::MemoryPrune,
         HeartbeatTask::CacheEvict,
         HeartbeatTask::MetricSnapshot,
+        HeartbeatTask::SessionGovernor,
     ]
 }
 
@@ -74,6 +75,8 @@ pub async fn run(
     mut daemon: HeartbeatDaemon,
     wallet: std::sync::Arc<ironclad_wallet::WalletService>,
     db: ironclad_db::Database,
+    session_config: ironclad_core::config::SessionConfig,
+    agent_id: String,
 ) {
     use crate::tasks::{HeartbeatTask, execute_task};
     use std::time::Duration;
@@ -82,6 +85,8 @@ pub async fn run(
     let tasks = default_tasks();
     let mut interval = tokio::time::interval(Duration::from_millis(daemon.interval_ms));
     let mut last_atoken_balance: Option<f64> = None;
+    let governor = ironclad_agent::governor::SessionGovernor::new(session_config.clone());
+    let mut last_rotation_hour: Option<String> = None;
 
     tracing::info!(interval_ms = daemon.interval_ms, "Heartbeat loop started");
 
@@ -149,6 +154,35 @@ pub async fn run(
                 ironclad_db::metrics::record_metric_snapshot(&db, &snapshot.to_string())
                     .inspect_err(|e| tracing::warn!(error = %e, "failed to record metric snapshot"))
                     .ok();
+            }
+            if *task == HeartbeatTask::SessionGovernor {
+                match governor.tick(&db) {
+                    Ok(expired) => {
+                        if expired > 0 {
+                            tracing::info!(expired, "session governor expired stale sessions");
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "session governor tick failed"),
+                }
+                if session_config.reset_schedule.is_some() {
+                    let stamp = chrono::Utc::now().format("%Y-%m-%dT%H").to_string();
+                    if chrono::Utc::now().minute() == 0
+                        && last_rotation_hour.as_deref() != Some(&stamp)
+                    {
+                        match governor.rotate_agent_scope_sessions(&db, &agent_id) {
+                            Ok(rotated) => {
+                                if rotated > 0 {
+                                    tracing::info!(
+                                        rotated,
+                                        "session governor rotated agent sessions"
+                                    );
+                                }
+                            }
+                            Err(e) => tracing::warn!(error = %e, "session rotation failed"),
+                        }
+                        last_rotation_hour = Some(stamp);
+                    }
+                }
             }
             ironclad_db::cron::record_run(
                 &db,
@@ -246,13 +280,14 @@ mod tests {
     fn default_tasks_returns_expected_set() {
         use crate::tasks::HeartbeatTask;
         let tasks = default_tasks();
-        assert_eq!(tasks.len(), 6);
+        assert_eq!(tasks.len(), 7);
         assert_eq!(tasks[0], HeartbeatTask::SurvivalCheck);
         assert_eq!(tasks[1], HeartbeatTask::UsdcMonitor);
         assert_eq!(tasks[2], HeartbeatTask::YieldTask);
         assert_eq!(tasks[3], HeartbeatTask::MemoryPrune);
         assert_eq!(tasks[4], HeartbeatTask::CacheEvict);
         assert_eq!(tasks[5], HeartbeatTask::MetricSnapshot);
+        assert_eq!(tasks[6], HeartbeatTask::SessionGovernor);
     }
 
     // Phase 4I: HeartbeatDaemon::new creates with correct interval

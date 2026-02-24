@@ -305,12 +305,38 @@ pub(crate) fn urlencoding(s: &str) -> String {
 }
 
 pub(crate) fn which_binary(name: &str) -> Option<String> {
-    std::env::var("PATH")
-        .unwrap_or_default()
-        .split(':')
-        .map(|dir| std::path::PathBuf::from(dir).join(name))
-        .find(|p| p.is_file())
-        .map(|p| p.display().to_string())
+    let path_var = std::env::var_os("PATH")?;
+    let candidates: Vec<String> = {
+        #[cfg(windows)]
+        {
+            let mut c = vec![name.to_string()];
+            let pathext = std::env::var("PATHEXT")
+                .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+                .to_ascii_lowercase();
+            let has_ext = std::path::Path::new(name).extension().is_some();
+            if !has_ext {
+                for ext in pathext.split(';').filter(|e| !e.is_empty()) {
+                    c.push(format!("{name}{ext}"));
+                }
+            }
+            c
+        }
+        #[cfg(not(windows))]
+        {
+            vec![name.to_string()]
+        }
+    };
+
+    for dir in std::env::split_paths(&path_var) {
+        for candidate in &candidates {
+            let p = dir.join(candidate);
+            if p.is_file() {
+                return Some(p.display().to_string());
+            }
+        }
+    }
+
+    None
 }
 
 mod admin;

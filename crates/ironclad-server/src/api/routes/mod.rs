@@ -38,7 +38,9 @@ use ironclad_agent::approvals::ApprovalManager;
 use ironclad_agent::obsidian::ObsidianVault;
 use ironclad_agent::tools::ToolRegistry;
 use ironclad_channels::discord::DiscordAdapter;
+use ironclad_channels::email::EmailAdapter;
 use ironclad_channels::signal::SignalAdapter;
+use ironclad_channels::voice::VoicePipeline;
 
 use crate::ws::EventBus;
 
@@ -186,6 +188,12 @@ pub struct AppState {
     pub approvals: Arc<ApprovalManager>,
     pub discord: Option<Arc<DiscordAdapter>>,
     pub signal: Option<Arc<SignalAdapter>>,
+    pub email: Option<Arc<EmailAdapter>>,
+    pub voice: Option<Arc<RwLock<VoicePipeline>>>,
+    pub discovery: Arc<RwLock<ironclad_agent::discovery::DiscoveryRegistry>>,
+    pub devices: Arc<RwLock<ironclad_agent::device::DeviceManager>>,
+    pub mcp_clients: Arc<RwLock<ironclad_agent::mcp::McpClientManager>>,
+    pub mcp_server: Arc<RwLock<ironclad_agent::mcp::McpServerRegistry>>,
     pub oauth: Arc<OAuthManager>,
     pub keystore: Arc<ironclad_core::keystore::Keystore>,
     pub obsidian: Option<Arc<RwLock<ObsidianVault>>>,
@@ -214,10 +222,14 @@ pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, breaker_reset, breaker_status, browser_action, browser_start, browser_status,
         browser_stop, change_agent_model, delete_provider_key, execute_plugin_tool,
-        generate_deep_analysis, get_agents, get_cache_stats, get_config, get_config_capabilities,
-        get_costs, get_efficiency, get_overview_timeseries, get_plugins, get_recommendations,
-        get_transactions, roster, set_provider_key, start_agent, stop_agent, toggle_plugin,
-        update_config, wallet_address, wallet_balance, workspace_state,
+        generate_deep_analysis, get_agents, get_available_models, get_cache_stats,
+        get_capacity_stats, get_config, get_config_capabilities, get_costs, get_efficiency,
+        get_mcp_runtime, get_overview_timeseries, get_plugins, get_recommendations,
+        get_runtime_surfaces, get_transactions, list_discovered_agents, list_paired_devices,
+        mcp_client_disconnect, mcp_client_discover, pair_device, register_discovered_agent, roster,
+        set_provider_key, start_agent, stop_agent, toggle_plugin, unpair_device, update_config,
+        verify_discovered_agent, verify_paired_device, wallet_address, wallet_balance,
+        workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::get_channels_status;
@@ -301,6 +313,8 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/stats/transactions", get(get_transactions))
         .route("/api/stats/cache", get(get_cache_stats))
+        .route("/api/stats/capacity", get(get_capacity_stats))
+        .route("/api/models/available", get(get_available_models))
         .route("/api/breaker/status", get(breaker_status))
         .route("/api/breaker/reset/{provider}", post(breaker_reset))
         .route("/api/agent/status", get(agent_status))
@@ -339,6 +353,34 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/roster/{name}/model", put(change_agent_model))
         .route("/api/a2a/hello", post(a2a_hello))
         .route("/api/channels/status", get(get_channels_status))
+        .route("/api/runtime/surfaces", get(get_runtime_surfaces))
+        .route(
+            "/api/runtime/discovery",
+            get(list_discovered_agents).post(register_discovered_agent),
+        )
+        .route(
+            "/api/runtime/discovery/{id}/verify",
+            post(verify_discovered_agent),
+        )
+        .route("/api/runtime/devices", get(list_paired_devices))
+        .route("/api/runtime/devices/pair", post(pair_device))
+        .route(
+            "/api/runtime/devices/{id}/verify",
+            post(verify_paired_device),
+        )
+        .route(
+            "/api/runtime/devices/{id}",
+            axum::routing::delete(unpair_device),
+        )
+        .route("/api/runtime/mcp", get(get_mcp_runtime))
+        .route(
+            "/api/runtime/mcp/clients/{name}/discover",
+            post(mcp_client_discover),
+        )
+        .route(
+            "/api/runtime/mcp/clients/{name}/disconnect",
+            post(mcp_client_disconnect),
+        )
         .route("/api/approvals", get(admin::list_approvals))
         .route("/api/approvals/{id}/approve", post(admin::approve_request))
         .route("/api/approvals/{id}/deny", post(admin::deny_request))
@@ -369,7 +411,7 @@ pub fn build_public_router(state: AppState) -> Router {
 
 // ── Re-exports for api.rs and lib.rs ────────────────────────────
 
-pub use agent::telegram_poll_loop;
+pub use agent::{discord_poll_loop, email_poll_loop, signal_poll_loop, telegram_poll_loop};
 pub use health::LogEntry;
 
 // ── Tests ─────────────────────────────────────────────────────
@@ -468,6 +510,17 @@ primary = "ollama/qwen3:8b"
             )),
             discord: None,
             signal: None,
+            email: None,
+            voice: None,
+            discovery: Arc::new(RwLock::new(
+                ironclad_agent::discovery::DiscoveryRegistry::new(),
+            )),
+            devices: Arc::new(RwLock::new(ironclad_agent::device::DeviceManager::new(
+                ironclad_agent::device::DeviceIdentity::generate("test-device"),
+                5,
+            ))),
+            mcp_clients: Arc::new(RwLock::new(ironclad_agent::mcp::McpClientManager::new())),
+            mcp_server: Arc::new(RwLock::new(ironclad_agent::mcp::McpServerRegistry::new())),
             oauth: Arc::new(OAuthManager::new().unwrap()),
             keystore: Arc::new(ironclad_core::keystore::Keystore::new(
                 std::env::temp_dir().join(format!("ironclad-test-ks-{}.enc", uuid::Uuid::new_v4())),
@@ -2813,7 +2866,9 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn slash_help_lists_all_commands() {
         let state = test_state();
-        let reply = agent::handle_bot_command(&state, "/help").await.unwrap();
+        let reply = agent::handle_bot_command(&state, "/help", None)
+            .await
+            .unwrap();
         assert!(reply.contains("/status"));
         assert!(reply.contains("/model"));
         assert!(reply.contains("/models"));
@@ -2825,7 +2880,9 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn slash_model_shows_current() {
         let state = test_state();
-        let reply = agent::handle_bot_command(&state, "/model").await.unwrap();
+        let reply = agent::handle_bot_command(&state, "/model", None)
+            .await
+            .unwrap();
         assert!(reply.contains("ollama/qwen3:8b"));
         assert!(reply.contains("no override set"));
     }
@@ -2834,28 +2891,32 @@ primary = "ollama/qwen3:8b"
     async fn slash_model_set_and_reset_override() {
         let state = test_state();
 
-        let reply = agent::handle_bot_command(&state, "/model ollama/qwen3:8b")
+        let reply = agent::handle_bot_command(&state, "/model ollama/qwen3:8b", None)
             .await
             .unwrap();
         assert!(reply.contains("override set"));
         assert!(reply.contains("ollama/qwen3:8b"));
 
-        let reply = agent::handle_bot_command(&state, "/model").await.unwrap();
+        let reply = agent::handle_bot_command(&state, "/model", None)
+            .await
+            .unwrap();
         assert!(reply.contains("override active"));
 
-        let reply = agent::handle_bot_command(&state, "/model reset")
+        let reply = agent::handle_bot_command(&state, "/model reset", None)
             .await
             .unwrap();
         assert!(reply.contains("cleared"));
 
-        let reply = agent::handle_bot_command(&state, "/model").await.unwrap();
+        let reply = agent::handle_bot_command(&state, "/model", None)
+            .await
+            .unwrap();
         assert!(reply.contains("no override set"));
     }
 
     #[tokio::test]
     async fn slash_model_unknown_provider_warns() {
         let state = test_state();
-        let reply = agent::handle_bot_command(&state, "/model nonexistent/fake-model")
+        let reply = agent::handle_bot_command(&state, "/model nonexistent/fake-model", None)
             .await
             .unwrap();
         assert!(reply.contains("Unknown model"));
@@ -2864,7 +2925,9 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn slash_models_lists_configured() {
         let state = test_state();
-        let reply = agent::handle_bot_command(&state, "/models").await.unwrap();
+        let reply = agent::handle_bot_command(&state, "/models", None)
+            .await
+            .unwrap();
         assert!(reply.contains("ollama/qwen3:8b"));
         assert!(reply.contains("primary"));
     }
@@ -2876,7 +2939,9 @@ primary = "ollama/qwen3:8b"
             let mut llm = state.llm.write().await;
             llm.breakers.record_credit_error("anthropic");
         }
-        let reply = agent::handle_bot_command(&state, "/breaker").await.unwrap();
+        let reply = agent::handle_bot_command(&state, "/breaker", None)
+            .await
+            .unwrap();
         assert!(reply.contains("anthropic"));
         assert!(reply.contains("Open"));
     }
@@ -2888,7 +2953,7 @@ primary = "ollama/qwen3:8b"
             let mut llm = state.llm.write().await;
             llm.breakers.record_credit_error("anthropic");
         }
-        let reply = agent::handle_bot_command(&state, "/breaker reset anthropic")
+        let reply = agent::handle_bot_command(&state, "/breaker reset anthropic", None)
             .await
             .unwrap();
         assert!(reply.contains("reset"));
@@ -2909,7 +2974,7 @@ primary = "ollama/qwen3:8b"
             llm.breakers.record_credit_error("anthropic");
             llm.breakers.record_credit_error("openai");
         }
-        let reply = agent::handle_bot_command(&state, "/breaker reset")
+        let reply = agent::handle_bot_command(&state, "/breaker reset", None)
             .await
             .unwrap();
         assert!(reply.contains("Reset 2"));
@@ -2928,7 +2993,7 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn slash_breaker_reset_all_already_closed() {
         let state = test_state();
-        let reply = agent::handle_bot_command(&state, "/breaker reset")
+        let reply = agent::handle_bot_command(&state, "/breaker reset", None)
             .await
             .unwrap();
         assert!(reply.contains("already closed"));
@@ -2937,14 +3002,16 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn slash_unknown_command_returns_none() {
         let state = test_state();
-        let reply = agent::handle_bot_command(&state, "/nonexistent").await;
+        let reply = agent::handle_bot_command(&state, "/nonexistent", None).await;
         assert!(reply.is_none());
     }
 
     #[tokio::test]
-    async fn slash_retry_returns_placeholder() {
+    async fn slash_retry_without_context_returns_guidance() {
         let state = test_state();
-        let reply = agent::handle_bot_command(&state, "/retry").await.unwrap();
-        assert!(reply.contains("not yet implemented") || reply.contains("resend"));
+        let reply = agent::handle_bot_command(&state, "/retry", None)
+            .await
+            .unwrap();
+        assert!(reply.contains("requires a channel context"));
     }
 }

@@ -1,5 +1,6 @@
 use ironclad_core::config::SessionConfig;
 use ironclad_db::Database;
+use ironclad_llm::format::UnifiedMessage;
 
 pub struct SessionGovernor {
     config: SessionConfig,
@@ -13,7 +14,18 @@ impl SessionGovernor {
     /// Run a single maintenance tick: expire stale sessions based on TTL.
     /// Returns the number of sessions expired.
     pub fn tick(&self, db: &Database) -> ironclad_core::Result<usize> {
-        ironclad_db::sessions::expire_stale_sessions(db, self.config.ttl_seconds)
+        let stale =
+            ironclad_db::sessions::list_stale_active_session_ids(db, self.config.ttl_seconds)?;
+        for session_id in &stale {
+            self.compact_before_archive(db, session_id).ok();
+            ironclad_db::sessions::set_session_status(
+                db,
+                session_id,
+                ironclad_db::sessions::SessionStatus::Expired,
+            )
+            .ok();
+        }
+        Ok(stale.len())
     }
 
     /// Spawn a new scoped session for the given agent, returning the session id.
@@ -24,6 +36,59 @@ impl SessionGovernor {
         scope: Option<&ironclad_db::sessions::SessionScope>,
     ) -> ironclad_core::Result<String> {
         ironclad_db::sessions::find_or_create(db, agent_id, scope)
+    }
+
+    /// Rotate active agent-scope sessions by archiving them and creating a new
+    /// active session for the same agent.
+    pub fn rotate_agent_scope_sessions(
+        &self,
+        db: &Database,
+        agent_id: &str,
+    ) -> ironclad_core::Result<usize> {
+        let sessions = ironclad_db::sessions::list_active_sessions(db, Some(agent_id))?;
+        let mut rotated = 0usize;
+        for s in sessions {
+            if s.scope_key.as_deref() == Some("agent") {
+                self.compact_before_archive(db, &s.id).ok();
+                ironclad_db::sessions::archive_session(db, &s.id)?;
+                rotated += 1;
+            }
+        }
+        if rotated > 0 {
+            let _ = self.spawn(
+                db,
+                agent_id,
+                Some(&ironclad_db::sessions::SessionScope::Agent),
+            )?;
+        }
+        Ok(rotated)
+    }
+
+    fn compact_before_archive(&self, db: &Database, session_id: &str) -> ironclad_core::Result<()> {
+        let msgs = ironclad_db::sessions::list_messages(db, session_id, Some(20))?;
+        if msgs.len() < 4 {
+            return Ok(());
+        }
+        let keep_recent = 4usize;
+        let trim_end = msgs.len().saturating_sub(keep_recent);
+        let trimmed: Vec<UnifiedMessage> = msgs[..trim_end]
+            .iter()
+            .map(|m| UnifiedMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
+                parts: None,
+            })
+            .collect();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let prompt = crate::context::build_compaction_prompt(&trimmed);
+        let digest = format!(
+            "[Conversation Summary Draft]\n{}",
+            prompt.chars().take(2_000).collect::<String>()
+        );
+        ironclad_db::sessions::append_message(db, session_id, "system", &digest)?;
+        Ok(())
     }
 }
 

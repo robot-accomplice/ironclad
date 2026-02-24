@@ -30,6 +30,8 @@ pub struct Subtask {
     pub id: String,
     pub description: String,
     pub required_capabilities: Vec<String>,
+    #[serde(default)]
+    pub model_preference: Option<String>,
     pub assigned_agent: Option<String>,
     pub status: SubtaskStatus,
     pub result: Option<String>,
@@ -100,6 +102,7 @@ impl Orchestrator {
                 id: format!("{}_task_{}", workflow_id, i),
                 description: desc,
                 required_capabilities: caps,
+                model_preference: None,
                 assigned_agent: None,
                 status: SubtaskStatus::Pending,
                 result: None,
@@ -119,6 +122,53 @@ impl Orchestrator {
         };
 
         info!(id = %workflow_id, name, pattern = %pattern, tasks = workflow.subtasks.len(), "created workflow");
+        self.workflows.insert(workflow_id.clone(), workflow);
+        workflow_id
+    }
+
+    /// Create a workflow where each task can optionally request a model.
+    pub fn create_workflow_with_model_preferences(
+        &mut self,
+        name: &str,
+        pattern: OrchestrationPattern,
+        subtasks: Vec<(String, Vec<String>, Option<String>)>,
+    ) -> String {
+        self.workflow_counter += 1;
+        let workflow_id = format!("wf_{}", self.workflow_counter);
+
+        let tasks: Vec<Subtask> = subtasks
+            .into_iter()
+            .enumerate()
+            .map(|(i, (desc, caps, model_pref))| Subtask {
+                id: format!("{}_task_{}", workflow_id, i),
+                description: desc,
+                required_capabilities: caps,
+                model_preference: model_pref,
+                assigned_agent: None,
+                status: SubtaskStatus::Pending,
+                result: None,
+                created_at: Utc::now(),
+                completed_at: None,
+            })
+            .collect();
+
+        let workflow = Workflow {
+            id: workflow_id.clone(),
+            name: name.to_string(),
+            pattern,
+            subtasks: tasks,
+            status: WorkflowStatus::Created,
+            created_at: Utc::now(),
+            completed_at: None,
+        };
+
+        info!(
+            id = %workflow_id,
+            name,
+            pattern = %pattern,
+            tasks = workflow.subtasks.len(),
+            "created workflow with model preferences"
+        );
         self.workflows.insert(workflow_id.clone(), workflow);
         workflow_id
     }
@@ -143,6 +193,25 @@ impl Orchestrator {
             agent = agent_id,
             "agent assigned"
         );
+        Ok(())
+    }
+
+    /// Set or clear a model preference for a specific task.
+    pub fn set_task_model_preference(
+        &mut self,
+        workflow_id: &str,
+        task_id: &str,
+        model_preference: Option<String>,
+    ) -> Result<()> {
+        let workflow = self.workflows.get_mut(workflow_id).ok_or_else(|| {
+            IroncladError::Config(format!("workflow '{}' not found", workflow_id))
+        })?;
+        let task = workflow
+            .subtasks
+            .iter_mut()
+            .find(|t| t.id == task_id)
+            .ok_or_else(|| IroncladError::Config(format!("task '{}' not found", task_id)))?;
+        task.model_preference = model_preference;
         Ok(())
     }
 
@@ -328,6 +397,30 @@ mod tests {
         let wf = orch.get_workflow(&id).unwrap();
         assert_eq!(wf.subtasks.len(), 3);
         assert_eq!(wf.status, WorkflowStatus::Created);
+        assert!(wf.subtasks.iter().all(|t| t.model_preference.is_none()));
+    }
+
+    #[test]
+    fn create_workflow_with_model_preferences() {
+        let mut orch = Orchestrator::new();
+        let id = orch.create_workflow_with_model_preferences(
+            "Model Aware Flow",
+            OrchestrationPattern::Parallel,
+            vec![
+                (
+                    "Draft summary".into(),
+                    vec!["summarization".into()],
+                    Some("ollama/qwen3:8b".into()),
+                ),
+                ("Review output".into(), vec!["review".into()], None),
+            ],
+        );
+        let wf = orch.get_workflow(&id).unwrap();
+        assert_eq!(
+            wf.subtasks[0].model_preference.as_deref(),
+            Some("ollama/qwen3:8b")
+        );
+        assert!(wf.subtasks[1].model_preference.is_none());
     }
 
     #[test]
@@ -347,6 +440,21 @@ mod tests {
             orch.get_workflow(&wf_id).unwrap().subtasks[0].status,
             SubtaskStatus::Running
         );
+    }
+
+    #[test]
+    fn set_task_model_preference_updates_task() {
+        let mut orch = Orchestrator::new();
+        let wf_id = orch.create_workflow(
+            "Model Edit",
+            OrchestrationPattern::Sequential,
+            simple_tasks(),
+        );
+        let task_id = orch.get_workflow(&wf_id).unwrap().subtasks[0].id.clone();
+        orch.set_task_model_preference(&wf_id, &task_id, Some("openai/gpt-4o".into()))
+            .unwrap();
+        let task = &orch.get_workflow(&wf_id).unwrap().subtasks[0];
+        assert_eq!(task.model_preference.as_deref(), Some("openai/gpt-4o"));
     }
 
     #[test]

@@ -126,50 +126,51 @@ impl ModelRouter {
             }
         };
 
-        let primary_is_local = match registry {
-            Some(reg) => reg.get_by_model(&self.primary).is_some_and(|p| p.is_local),
-            None => is_local_model_heuristic(&self.primary),
-        };
+        let mut candidates: Vec<&str> = Vec::with_capacity(self.fallbacks.len() + 1);
+        candidates.push(&self.primary);
+        for fb in &self.fallbacks {
+            if !candidates.contains(&fb.as_str()) {
+                candidates.push(fb);
+            }
+        }
+        candidates.retain(|m| !is_provider_blocked(m));
 
-        if self.config.local_first
-            && primary_is_local
-            && complexity < self.config.confidence_threshold
-            && !is_provider_blocked(&self.primary)
-        {
+        if candidates.is_empty() {
             return &self.primary;
         }
 
-        let selected =
-            if complexity >= self.config.confidence_threshold && !self.fallbacks.is_empty() {
-                &self.fallbacks[0]
-            } else {
-                &self.primary
+        // Route using a quality-vs-capacity weighted score:
+        // score = base_quality(model, complexity) * provider_headroom(model).
+        let mut best_model = candidates[0];
+        let mut best_score = f64::MIN;
+        for candidate in candidates {
+            let is_local = match registry {
+                Some(reg) => reg.get_by_model(candidate).is_some_and(|p| p.is_local),
+                None => is_local_model_heuristic(candidate),
             };
-
-        if is_provider_blocked(selected) {
-            for fb in &self.fallbacks {
-                if !is_provider_blocked(fb) {
-                    return fb;
-                }
-            }
-            if !is_provider_blocked(&self.primary) {
-                return &self.primary;
-            }
-        }
-
-        if let Some(cap) = capacity {
-            let provider_name = selected.split('/').next().unwrap_or(selected);
-            if cap.is_near_capacity(provider_name) {
-                for fb in &self.fallbacks {
-                    let fb_provider = fb.split('/').next().unwrap_or(fb);
-                    if !cap.is_near_capacity(fb_provider) && !is_provider_blocked(fb) {
-                        return fb;
-                    }
-                }
+            let base_quality = if complexity >= self.config.confidence_threshold {
+                if is_local { 0.72 } else { 1.0 }
+            } else if self.config.local_first {
+                if is_local { 1.0 } else { 0.88 }
+            } else if is_local {
+                0.9
+            } else {
+                1.0
+            };
+            let headroom = capacity
+                .map(|cap| {
+                    let provider_name = candidate.split('/').next().unwrap_or(candidate);
+                    cap.headroom(provider_name)
+                })
+                .unwrap_or(1.0);
+            let score = base_quality * headroom;
+            if score > best_score {
+                best_score = score;
+                best_model = candidate;
             }
         }
 
-        selected
+        best_model
     }
 
     /// Select the cheapest qualified model that has capacity and is not blocked.

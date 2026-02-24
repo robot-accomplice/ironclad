@@ -34,6 +34,12 @@ Part of the [Ironclad](https://github.com/robot-accomplice/ironclad) workspace.
 cargo install ironclad-server
 ```
 
+Windows (PowerShell):
+
+```powershell
+irm https://roboticus.ai/install.ps1 | iex
+```
+
 ## Usage
 
 ```bash
