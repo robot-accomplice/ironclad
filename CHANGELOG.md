@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-02-25
+
 ### Fixed
 
 - **Windows daemon startup reliability**: Replaced the broken `sc.exe` service launch path (which caused `StartService FAILED 1053`) with a managed detached user-process daemon flow on Windows.
@@ -14,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dashboard JS bleed-through**: Dashboard HTML rendering now trims to the canonical document boundary, preventing stray trailing script bytes from being rendered in the UI.
 - **Internal proxy regression lock-down**: Ironclad now migrates legacy `127.0.0.1:8788/<provider>` URLs to canonical in-process routing targets at startup, persists the migration safely, and removes runtime dependence on an external loopback proxy listener.
 - **Dashboard/provider boundary hardening**: `/api/models/available` now reports explicit in-process proxy mode metadata so the dashboard remains server-mediated and does not rely on direct local proxy access.
+- **Loopback proxy deprecation gate**: `0.7.x` now emits explicit deprecation guidance when migrating legacy `127.0.0.1:8788/<provider>` URLs, and `0.8.0+` is wired to fail fast on legacy loopback provider URLs with upgrade guidance.
+- **v0.8.0 release definition**: Added `docs/releases/v0.8.0.md` gate coverage for removing legacy loopback proxy support from runtime behavior and shipped examples.
 - **Telegram silent no-reply hardening**: Channel ingress now records receive/error telemetry in dedicated poll/webhook paths, and Telegram processing failures proactively trigger a user-visible fallback reply instead of failing silently.
 
 ## [0.7.0] - 2026-02-25
