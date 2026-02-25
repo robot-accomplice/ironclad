@@ -16,7 +16,7 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.2 Approval Workflow API ✅
 
-**Status**: Implemented in 0.5.0. Routes: `GET /api/approvals`, `POST /api/approvals/:id/approve`, `POST /api/approvals/:id/deny`. Pending approvals are pushed via WebSocket. The agent loop pauses on gated tool calls and resumes on approval or denial. `approval_requests` table tracks full lifecycle with timeout enforcement.
+**Status**: Implemented in 0.5.0. Routes: `GET /api/approvals`, `POST /api/approvals/{id}/approve`, `POST /api/approvals/{id}/deny`. Pending approvals are pushed via WebSocket. The agent loop pauses on gated tool calls and resumes on approval or denial. `approval_requests` table tracks full lifecycle with timeout enforcement.
 
 ---
 
@@ -79,7 +79,7 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.9 Session Scoping and Lifecycle
+### 1.9 Session Scoping and Lifecycle ✅
 
 **Status**: Implemented in 0.6.0. Scoped sessions now support `Agent`, `Peer`, and `Group` keys with lifecycle controls. Runtime paths (web, stream, channel) resolve scope before `find_or_create()`, stale sessions are expired by `SessionGovernor`, and optional scheduled rotation is wired through heartbeat when `session.reset_schedule` is set.
 
@@ -93,7 +93,7 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.10 Addressability Filter ✅
 
-**Status**: Implemented in 0.5.0. `AddressabilityFilter` trait with three composable implementations: `MentionFilter` (configurable name/alias patterns), `ReplyFilter` (responds when directly replied to), and `ConversationFilter` (responds in active threads). Composed via `FilterChain` — any match triggers dispatch. DMs bypass filtering. Config: `[agent.addressability]` with `mention_names`, `respond_to_replies`, `track_threads`.
+**Status**: Implemented in 0.5.0. `MessageFilter` trait with `MentionFilter`, `ReplyFilter`, and `ConversationFilter` composed through `FilterChain`. Runtime uses `default_addressability_chain(agent_name)` in channel paths; DMs bypass filtering.
 
 ---
 
@@ -111,11 +111,11 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.12 Response Transform Pipeline ✅
 
-**Status**: Implemented in 0.5.0. `ResponsePipeline` with `ResponseTransform` trait. Ships three transforms: `ReasoningExtractor` (extracts `<think>`/`<reasoning>` blocks and logs them to `turns.reasoning_trace`), `FormatNormalizer` (consistent response structure across providers), and `ContentGuard` (reflected injection defense via existing output scanning). Transforms are ordered and configurable via `[models.response_pipeline]`.
+**Status**: Implemented in 0.5.0. `ResponsePipeline` with `ResponseTransform` trait. Ships three transforms: `ReasoningExtractor` (extracts `<think>`/`<reasoning>` blocks and logs them to `turns.reasoning_trace`), `FormatNormalizer` (consistent response structure across providers), and `ContentGuard` (reflected injection defense via existing output scanning). Transforms are currently applied through the default pipeline wiring.
 
 ---
 
-### 1.14 Context Observatory ✅
+### 1.13 Context Observatory ✅
 
 **Status**: Implemented in 0.5.0. The Context Observatory provides runtime visibility into context assembly efficiency, inference cost attribution, and output quality.
 
@@ -127,31 +127,7 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.15 Sessions Chat Markdown Rendering
-
-**Current state**: The sessions chat UI renders assistant/user messages as plain text. Markdown syntax (headings, lists, code fences, links, inline code, blockquotes) appears unformatted, which reduces readability for long-form answers and technical responses.
-
-**Target**: First-class Markdown rendering in Sessions chat with safe HTML sanitization and readable defaults for prose and code blocks.
-
-**Builds on**: `crates/ironclad-server/src/dashboard_spa.html`, session message APIs, existing chat rendering flow.
-
-**Scope**: Add a Markdown parser + sanitizer in the dashboard chat pipeline. Render common Markdown constructs (headings, emphasis, lists, links, tables, blockquotes, fenced code blocks) and preserve plain-text fallback for malformed input. Add syntax highlighting for code fences and copy-to-clipboard actions per code block. Ensure external links use safe target/rel attributes and that raw HTML/script content is never executed.
-
-**Implementation checklist**:
-- **Libraries**: Evaluate and lock a parser/sanitizer pair (`marked` + `DOMPurify` or `markdown-it` + `sanitize-html`) plus lightweight syntax highlighting for fenced code blocks.
-- **Security constraints**: Strip or escape all raw HTML by default, forbid inline event handlers/scripts, enforce safe link policies (`target="_blank"` + `rel="noopener noreferrer"`), and keep protocol allowlists to `https:`, `http:`, and `mailto:`.
-- **Rendering behavior**: Support headings, emphasis, ordered/unordered lists, blockquotes, tables, inline code, and fenced code blocks; retain plaintext fallback when parsing fails.
-- **UX polish**: Add copy-to-clipboard on code blocks, preserve line breaks where expected, and ensure dark/light theme readability for rendered Markdown elements.
-- **Acceptance criteria**: Markdown test fixtures render correctly in Sessions chat, malicious payload fixtures are neutralized, no regression in existing chat message loading/perf, and snapshot/UI tests cover key Markdown constructs.
-
-**Phased delivery**:
-- **Phase A (MVP, M)**: Markdown parse + sanitize + render for core elements (headings, lists, links, inline/fenced code, blockquotes) with plaintext fallback.
-- **Phase B (Code UX, S)**: Syntax highlighting and copy-to-clipboard for fenced code blocks, plus visual polish for dark/light themes.
-- **Phase C (Hardening, M)**: Security regression fixtures (XSS/script/link payloads), rendering snapshot tests, and performance checks on long chat transcripts.
-
----
-
-### 1.13 Capacity-Aware Routing
+### 1.14 Capacity-Aware Routing ✅
 
 **Status**: Implemented in 0.6.0. Capacity usage is now recorded on inference success, routing uses headroom-weighted selection, sustained pressure can preemptively mark providers `half_open`, and operators can inspect capacity via `GET /api/stats/capacity` plus dashboard metrics UI.
 
@@ -166,6 +142,42 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 ### 1.15 Sessions Markdown Rendering ✅
 
 **Status**: Implemented in 0.6.0. Sessions and Context Explorer render markdown via a safe client-side renderer with strict URL sanitization (`http`, `https`, `mailto`, relative/hash only), no raw HTML execution, and preserved fallback behavior for blocked links.
+
+---
+
+### 1.16 Durable Channel Delivery Queue
+
+**Current state**: Channel retry handling is primarily process-memory based. Retries can be lost during crash/restart windows and operators lack a durable backlog for forensic replay.
+
+**Target**: Durable outbound delivery with persisted retry queue, dead-letter handling, and boot-time recovery replay.
+
+**Builds on**: `ironclad-channels` delivery router/retry flow, existing SQLite persistence, channel health metrics.
+
+**Scope**: Persist retryable outbound events to DB with attempt count, next-attempt timestamp, and terminal failure reason. Add dead-letter queue inspection endpoint/CLI command, replay controls, and idempotent delivery keys to avoid duplicate sends after recovery.
+
+---
+
+### 1.17 Production-Grade Abuse Protection
+
+**Current state**: Global rate limiting exists, but trusted proxy boundaries and distributed enforcement are not first-class across all deployment topologies.
+
+**Target**: Hardened anti-abuse controls for internet-facing deployments with trusted proxy semantics, actor-aware quotas, and horizontally safe limit enforcement.
+
+**Builds on**: global rate limiter middleware, auth layer, deployment/network configuration.
+
+**Scope**: Add explicit trusted-proxy CIDR handling for client IP extraction, token/user-level quotas alongside IP limits, optional shared limiter backend for multi-instance deployments, and dashboard/API observability for throttle events and top offenders.
+
+---
+
+### 1.18 Cron-Conformant Session Rotation
+
+**Current state**: Session lifecycle controls exist, but reset scheduling semantics should strictly match configured cron intent in all cases.
+
+**Target**: True cron-conformant rotation behavior with clear operator guarantees and test coverage.
+
+**Builds on**: session governor, scheduler heartbeat tasks, `session.reset_schedule` contract.
+
+**Scope**: Evaluate reset schedules using the configured cron expression directly, add conformance tests for edge schedules/timezones, and document migration notes for any behavior change from legacy timing semantics.
 
 ---
 
@@ -248,15 +260,9 @@ Features that require significant new code but have clear implementation paths. 
 
 ---
 
-### 2.7 WASM Plugin Runtime
+### 2.7 WASM Plugin Runtime ✅
 
-**Current state**: Plugin SDK uses script-based execution (spawn process, capture stdout). Functional but each tool call pays process-spawn overhead and has limited sandboxing.
-
-**Target**: Plugins compiled to WASM run in a `wasmtime` sandbox with memory limits, capability restrictions, and zero process-spawn overhead.
-
-**Research basis**: Section 7.2 of research-alternatives.md.
-
-**Scope**: Add `wasmtime` dependency. Define a WASM ABI for tool execution (JSON in, JSON out). `WasmPlugin` implements the `Plugin` trait. Maintain script-based plugins as a fallback for tools that need filesystem or network access (WASM sandbox restricts these by default).
+**Status**: Implemented. `ironclad-agent/src/wasm.rs` provides a capability-gated WASM runtime with module load/compile validation, memory limits, JSON-oriented execution, and sandboxed plugin lifecycle management.
 
 ---
 
@@ -272,46 +278,21 @@ Features that require significant new code but have clear implementation paths. 
 
 ---
 
-### 2.9 Declarative Agent Manifests
+### 2.9 Declarative Agent Manifests ✅
 
-**Current state**: `SubagentRegistry` tracks child agent metadata (name, capabilities, status) but has no mechanism for defining what a specialist agent is — its personality, allowed tools, model preferences, or scheduling rules. Defining a new specialist requires code changes.
-
-**Target**: Specialist agents defined as TOML manifest files — declarative, validated at boot, extensible without code changes. Users create new specialists by writing a config file.
-
-**Builds on**: `ironclad-core/src/config.rs` (TOML parsing, validation), `ironclad-agent/src/skills.rs` (`SkillLoader` pattern), `SubagentRegistry`, `ToolRegistry`.
-
-**Scope**: Define an `AgentManifest` schema: personality fields, capability declarations, model tier preferences, tool scope restrictions (whitelist), memory budget overrides, and optional cron triggers. Implement `ManifestLoader` (analogous to `SkillLoader`) with schema validation and SHA-256 change detection for hot-reload. Each specialist gets a scoped `SessionScope::Agent` session and a restricted `ToolRegistry` containing only the tools listed in its manifest. Manifests live in a configurable `agents/` directory. Example: `agents/morning-briefing.toml` declares capabilities `["summarization", "scheduling"]`, preferred model tier `T2`, and a cron trigger. Wire to the orchestration system (3.3) for coordinator-driven dispatch.
+**Status**: Implemented. `ironclad-agent/src/manifest.rs` includes `ManifestLoader` with schema validation and hot-reload/hash tracking for TOML-defined specialist manifests.
 
 ---
 
-### 2.10 Structured Workspace System
+### 2.10 Structured Workspace System ✅
 
-**Current state**: The personality system provides 4 TOML files (OS/FIRMWARE/OPERATOR/DIRECTIVES) that define the agent's identity and behavioral rules. No structured mechanism exists for operational context — goals, security boundaries, integration metadata, or task tracking state.
-
-**Target**: A structured, validated, version-tracked workspace that gives the agent persistent operational context beyond personality. Separates structured state (validated TOML) from unstructured reference material (indexed documents).
-
-**Builds on**: `ironclad-core/src/personality.rs`, `soul_history` table, config validation.
-
-**Scope**: Extend the personality system with a `[workspace]` config section pointing to a workspace directory. Define TOML schemas for workspace document types: `goals.toml` (short/medium/long-term goals with status tracking), `security.toml` (red lines, sensitive paths, breach protocols), `integrations.toml` (platform connections, data flows — validated at boot). Documents are versioned in the `soul_history` table so changes are tracked. On boot, the system diffs current vs. previous workspace state and surfaces changes to the agent. Unstructured documents (markdown notes, reference material) go in a `workspace/docs/` subdirectory and are indexed by the knowledge source system (2.11) for RAG retrieval.
+**Status**: Implemented. Workspace state APIs and runtime context plumbing are in place (`/api/workspace/state` plus workspace metadata integration), giving operators and the dashboard a structured workspace view.
 
 ---
 
-### 2.11 Knowledge Source Trait
+### 2.11 Knowledge Source Trait ✅
 
-**Current state**: The RAG pipeline retrieves from internal memory tiers only (episodic, semantic, procedural, relationship, working). No mechanism exists to ingest or query external knowledge — filesystem documents, git repositories, vector databases, or graph stores are invisible to the agent.
-
-**Target**: A trait-based knowledge source system that integrates external data into the existing RAG pipeline. Local sources are indexed into Ironclad's storage; remote sources are queried federatively at retrieval time. The `MemoryRetriever` treats external knowledge as another tier alongside internal memory.
-
-**Builds on**: `ironclad-agent/src/retrieval.rs` (chunking, hybrid search), `ironclad-llm/src/embedding.rs`, `ironclad-db/src/embeddings.rs`, `ironclad-db/src/ann.rs` (HNSW index).
-
-**Scope**: Define a `KnowledgeSource` trait with methods `scan()`, `ingest()`, `watch()`, and `query()`. Ship four implementations:
-
-- **`DirectorySource`** — watches a filesystem directory for markdown/text/code files, incrementally indexes new and changed files via inotify/kqueue. Content is chunked via `chunk_text()`, embedded via `EmbeddingClient`, and stored in the `embeddings` table with source metadata.
-- **`GitSource`** — indexes a git repository, re-indexes on new commits. Tracks file history for provenance metadata on retrieved chunks.
-- **`VectorDbSource`** — connects to external vector databases (Qdrant, Weaviate, Milvus, Chroma) as federated retrieval backends. Queries are dispatched at retrieval time alongside the local HNSW index, with results merged by score. Enables purpose-built vector infrastructure for large corpora (millions of embeddings) where the local index would bottleneck.
-- **`GraphSource`** — connects to graph databases (Neo4j, SurrealDB, or any Bolt/HTTP-compatible store) for relationship-aware knowledge retrieval. Supports Cypher queries for traversal-based context assembly — "what entities are related to X within N hops?" Enriches RAG results with structural context: related entities, dependency chains, and causal relationships that flat vector similarity cannot capture.
-
-Local sources (Directory, Git) ingest into Ironclad's own storage. Remote sources (VectorDb, Graph) are queried federatively at retrieval time and merged into `MemoryRetriever` scoring. Config: `[knowledge.sources]` array of `{ type, path/url, pattern, poll_interval, auth }`.
+**Status**: Implemented. `ironclad-agent/src/knowledge.rs` defines `KnowledgeSource` plus concrete sources (`DirectorySource`, `GitSource`, `VectorDbSource`, `GraphSource`) with registry integration; `ironclad-agent/src/obsidian.rs` also implements `KnowledgeSource` for vault-backed retrieval.
 
 ---
 
@@ -352,6 +333,30 @@ On first boot, `initialize_db()` populates the hippocampus with all system table
 
 ---
 
+### 2.14 Skills Catalog (CLI + Dashboard)
+
+**Current state**: Skills are loaded from local directories and managed via direct file operations, API calls, and ad hoc toggles. There is no first-party catalog UX for browsing Ironclad-produced skills or batch-installing curated sets.
+
+**Target**: A first-party skills catalog for both CLI and dashboard that lets users browse published Ironclad skills, multi-select items, and perform one-shot download, install, and activation workflows.
+
+**Builds on**: `SkillLoader`/reload pipeline, existing skills API routes, plugin/skill toggle flows, dashboard SPA controls.
+
+**Scope**: Add a signed catalog manifest endpoint (or bundled index) containing skill metadata (name, description, version, tags, compatibility, checksums). Implement CLI flows such as `ironclad skills catalog list`, `search`, and multi-select install/activate (`--select` / interactive prompt). Add dashboard catalog UI with filters, multi-select, and a single "Install + Activate" action. Enforce integrity verification before install (checksum/signature), idempotent installs, explicit upgrade prompts, and rollback on partial failure. Persist install status in the skills registry and surface activation state consistently across CLI and dashboard.
+
+---
+
+### 2.15 Ops Telemetry + Release Provenance Gate
+
+**Current state**: Runtime visibility and model-level efficiency analytics are strong, but release readiness and platform-level observability remain partly workflow-driven.
+
+**Target**: Ship-grade operational telemetry and release provenance by default.
+
+**Builds on**: CI pipelines, smoke tests, existing logging/health APIs, release workflows.
+
+**Scope**: Add mandatory release smoke gates, structured deployment readiness checks, artifact provenance/signing metadata, and operator-facing telemetry exports suitable for SLO monitoring. Include runbook-level verification criteria before tag/publish.
+
+---
+
 ## Tier 3 — Frontier
 
 Ambitious capabilities that push the architecture into new territory. High effort, high potential.
@@ -368,13 +373,9 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ---
 
-### 3.2 MCP (Model Context Protocol) Integration
+### 3.2 MCP (Model Context Protocol) Integration ✅
 
-**Current state**: No MCP support. Custom A2A protocol exists for agent-to-agent communication.
-
-**Target**: Expose Ironclad's tools and resources via MCP, and consume external MCP servers as tool providers. Makes Ironclad interoperable with the MCP ecosystem (IDE integrations, external data sources, third-party tools).
-
-**Scope**: Implement MCP server mode (expose tool registry, memory search, session management as MCP resources and tools). Implement MCP client mode (discover and call tools from configured MCP servers). Add to config: `[mcp]` section with server/client settings.
+**Status**: Implemented. `ironclad-agent/src/mcp.rs` provides MCP server/client primitives; server runtime exposes MCP endpoints under `/api/runtime/mcp` with client discovery/disconnect controls and tool/resource export wiring.
 
 ---
 
@@ -487,7 +488,7 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ### 3.12 Flexible Network Binding ✅
 
-**Status**: Implemented in 0.5.0. `[network]` config section with `bind_address`, `bind_interface`, and optional `advertise` list. Ironclad binds to whatever interface the operator specifies — loopback (default), LAN, Tailscale, WireGuard, or `0.0.0.0`. Optional mTLS via `[network.tls]` with `cert`, `key`, `ca` for untrusted network deployments.
+**Status**: Implemented in 0.5.0. Operators can bind the server to localhost, LAN, overlay network interfaces, or `0.0.0.0` via server bind configuration (`[server].bind`) with authentication safeguards for non-loopback exposure.
 
 ---
 
@@ -500,6 +501,29 @@ Ambitious capabilities that push the architecture into new territory. High effor
 **Builds on**: `3.12 Flexible Network Binding`, API auth/session routes, TLS support, existing policy and audit infrastructure.
 
 **Scope**: Add a dedicated remote access security layer with defense-in-depth: mandatory TLS (with optional mTLS for operator/admin roles), OIDC/SAML SSO + enforced MFA + short-lived tokens, device trust (key-bound sessions and optional passkey/WebAuthn), per-route RBAC for dashboard/API actions, IP reputation + geo-anomaly detection with adaptive challenge/deny, rate-limit and WAF hooks for auth surfaces, strict CSRF/CORS/cookie hardening, signed session rotation and revocation, comprehensive audit trails for auth/admin actions, and a "remote-lockdown" mode that defaults to deny-by-default except explicit allowlists. Ship with threat-model documentation, security runbooks, and hardened production presets.
+
+---
+
+## Next Significant Release Selection (Kickoff)
+
+Targeting a **0.8.0 candidate slate** with a bias toward reliability, operability, and user-facing distribution.
+
+### Selection Criteria
+
+- Must close a visible user workflow gap or high-impact reliability risk.
+- Must be testable with clear acceptance criteria in one release cycle.
+- Must avoid deep architectural rewrites that would starve release throughput.
+
+### Proposed 0.8.0 Candidate Set
+
+1. **2.14 Skills Catalog (CLI + Dashboard)** — marquee UX feature (browse, multi-select, install, activate).
+2. **1.16 Durable Channel Delivery Queue** — message reliability and restart safety.
+3. **1.17 Production-Grade Abuse Protection** — hardening for internet-facing deployments.
+4. **1.18 Cron-Conformant Session Rotation** — eliminate lifecycle surprise/ambiguity.
+
+### Stretch Candidate (if capacity permits)
+
+- **2.15 Ops Telemetry + Release Provenance Gate** (land at least smoke gating + provenance baseline).
 
 ---
 
@@ -521,24 +545,29 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 1.10 | ~~Addressability filter~~ ✅ | 1 | ChannelAdapter trait, InboundMessage | ~~Low~~ Done |
 | 1.11 | Context checkpoint | 1 | schema.rs, build_context, MemoryRetriever | Medium |
 | 1.12 | ~~Response transform pipeline~~ ✅ | 1 | format.rs, injection defense, turns | ~~Low-Medium~~ Done |
-| 1.14 | ~~Context Observatory~~ ✅ | 1 | efficiency.rs, turn_feedback, turns, inference_costs | Done |
+| 1.13 | ~~Context Observatory~~ ✅ | 1 | efficiency.rs, turn_feedback, turns, inference_costs | Done |
+| 1.14 | ~~Capacity-aware routing~~ ✅ | 1 | ModelRouter, CircuitBreakerRegistry | ~~Medium~~ Done |
 | 1.15 | ~~Sessions markdown rendering~~ ✅ | 1 | dashboard SPA rendering, session/context views | ~~Low-Medium~~ Done |
-| 1.13 | ~~Capacity-aware routing~~ ✅ | 1 | ModelRouter, CircuitBreakerRegistry | ~~Medium~~ Done |
+| 1.16 | Durable channel delivery queue | 1 | channels delivery router, DB persistence | Medium |
+| 1.17 | Production-grade abuse protection | 1 | rate limiter, auth, deployment config | Medium |
+| 1.18 | Cron-conformant session rotation | 1 | SessionGovernor, scheduler heartbeat | Medium |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
 | 2.3 | Tiered inference pipeline | 2 | Fallback chain, local model config | Medium |
 | 2.4 | Speculative execution | 2 | Tool registry, tokio tasks | Medium |
 | 2.5 | Service revenue & inbound payments | 2 | Wallet, treasury, A2A | High |
 | 2.6 | Multi-provider cost arbitrage | 2 | ProviderConfig, router | Medium |
-| 2.7 | WASM plugin runtime | 2 | Plugin SDK, ToolDef | High |
+| 2.7 | ~~WASM plugin runtime~~ ✅ | 2 | Plugin SDK, ToolDef | ~~High~~ Done |
 | 2.8 | Prompt compression | 2 | Context assembly, tier.rs | Medium |
-| 2.9 | Declarative agent manifests | 2 | Config, SkillLoader, SubagentRegistry | High |
-| 2.10 | Structured workspace system | 2 | personality.rs, soul_history | Medium |
-| 2.11 | Knowledge source trait | 2 | retrieval.rs, EmbeddingClient, HNSW | High |
+| 2.9 | ~~Declarative agent manifests~~ ✅ | 2 | Config, SkillLoader, SubagentRegistry | ~~High~~ Done |
+| 2.10 | ~~Structured workspace system~~ ✅ | 2 | personality.rs, soul_history | ~~Medium~~ Done |
+| 2.11 | ~~Knowledge source trait~~ ✅ | 2 | retrieval.rs, EmbeddingClient, HNSW | ~~High~~ Done |
 | 2.12 | Episodic digest system | 2 | memory.rs, compaction, retrieval | Medium |
 | 2.13 | Hippocampus — self-describing schema map | 2 | schema.rs, Tool trait, policy engine | High |
+| 2.14 | Skills catalog (CLI + dashboard) | 2 | SkillLoader, skills API, dashboard SPA | Medium |
+| 2.15 | Ops telemetry + release provenance gate | 2 | CI workflows, smoke tests, release pipeline | Medium |
 | 3.1 | Compile-time agent safety | 3 | Agent loop, policy engine | High |
-| 3.2 | MCP integration | 3 | Tool registry, config | High |
+| 3.2 | ~~MCP integration~~ ✅ | 3 | Tool registry, config | ~~High~~ Done |
 | 3.3 | Multi-agent orchestration | 3 | SubagentRegistry, A2A, 2.9 | High |
 | 3.4 | Agent spawning + wallet provisioning | 3 | SubagentRegistry, wallet | High |
 | 3.5 | Advanced RAG infrastructure (4/5 done ✅) | 3 | 1.5, 1.7, embeddings.rs | ~~High~~ Remaining: doc ingestion |

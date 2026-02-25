@@ -213,3 +213,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial release with core agent runtime, memory tiers, wallet integration,
 channel adapters, browser automation, plugin SDK, and scheduling.
+
+## [0.1.0] - 2026-02-22
+
+### Added
+
+- Initial Project Roboticus baseline for Ironclad.
+- Multi-crate Rust workspace foundation (runtime crates + integration test crate).
+- Core SQLite persistence layer with schema/migrations and operational defaults.
+- Early HTTP API, CLI surface, and embedded dashboard scaffolding.
+- Initial architecture and reference documentation set.
+
+### Changed
+
+- Prepared packaging/publish metadata for early release workflows.
+
+### Fixed
+
+- Early release stabilization fixes for binary packaging, startup wiring, and quality gates.
