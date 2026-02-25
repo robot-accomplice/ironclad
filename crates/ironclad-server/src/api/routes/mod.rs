@@ -428,11 +428,11 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use axum::Json;
     use axum::body::Body;
     use axum::extract::{Query, State as AxumState};
     use axum::http::{Request, StatusCode};
     use axum::routing::get;
-    use axum::Json;
     use ironclad_agent::policy::{AuthorityRule, CommandSafetyRule, PolicyEngine};
     use ironclad_agent::subagents::SubagentRegistry;
     use ironclad_browser::Browser;
@@ -2443,7 +2443,9 @@ params = { path = "README.md" }
         let html = text_body(resp).await;
         let lower = html.to_ascii_lowercase();
         assert_eq!(lower.matches("</html>").count(), 1);
-        let idx = lower.rfind("</html>").expect("document must contain </html>");
+        let idx = lower
+            .rfind("</html>")
+            .expect("document must contain </html>");
         assert!(
             html[idx + "</html>".len()..].trim().is_empty(),
             "dashboard HTML should not have trailing bytes after </html>"
@@ -2462,16 +2464,13 @@ params = { path = "README.md" }
                      uri: axum::http::Uri,
                      Query(query): Query<HashMap<String, String>>| async move {
                         hits.lock().await.push(uri.to_string());
-                        if query.get("key").is_none() {
+                        if !query.contains_key("key") {
                             return (
                                 StatusCode::UNAUTHORIZED,
                                 Json(json!({"error":"missing key query param"})),
                             );
                         }
-                        (
-                            StatusCode::OK,
-                            Json(json!({"data":[{"id":"test-model"}]})),
-                        )
+                        (StatusCode::OK, Json(json!({"data":[{"id":"test-model"}]})))
                     },
                 ),
             )
@@ -2562,7 +2561,10 @@ params = { path = "README.md" }
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
-        assert_eq!(body["providers"]["anthropic"]["status"], "proxy_unreachable");
+        assert_eq!(
+            body["providers"]["anthropic"]["status"],
+            "proxy_unreachable"
+        );
         assert!(
             body["providers"]["anthropic"]["hint"]
                 .as_str()
@@ -2607,7 +2609,10 @@ params = { path = "README.md" }
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
-        assert_eq!(body["providers"]["anthropic"]["status"], "proxy_misconfigured");
+        assert_eq!(
+            body["providers"]["anthropic"]["status"],
+            "proxy_misconfigured"
+        );
         assert!(
             body["providers"]["anthropic"]["hint"]
                 .as_str()

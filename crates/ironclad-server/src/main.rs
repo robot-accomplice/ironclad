@@ -1302,10 +1302,8 @@ async fn cmd_serve(
         config.server.bind = b;
     }
 
-    let migrations = migrate_legacy_proxy_urls(
-        &mut config,
-        resolved_path.as_deref().map(Path::new),
-    )?;
+    let migrations =
+        migrate_legacy_proxy_urls(&mut config, resolved_path.as_deref().map(Path::new))?;
     if !migrations.is_empty() {
         step_warn(
             t,
@@ -1511,7 +1509,10 @@ async fn cmd_serve(
     Ok(())
 }
 
-fn provider_requires_internal_proxy(name: &str, cfg: &ironclad_core::config::ProviderConfig) -> bool {
+fn provider_requires_internal_proxy(
+    name: &str,
+    cfg: &ironclad_core::config::ProviderConfig,
+) -> bool {
     if cfg.is_local.unwrap_or(false) {
         return false;
     }
@@ -1523,10 +1524,14 @@ fn provider_requires_internal_proxy(name: &str, cfg: &ironclad_core::config::Pro
         Ok(u) => u,
         Err(_) => return false,
     };
-    match parsed.host_str().unwrap_or_default().to_ascii_lowercase().as_str() {
-        "127.0.0.1" | "localhost" | "::1" => true,
-        _ => false,
-    }
+    matches!(
+        parsed
+        .host_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str(),
+        "127.0.0.1" | "localhost" | "::1"
+    )
 }
 
 fn tcp_endpoint_reachable(host: &str, port: u16) -> bool {
@@ -1693,7 +1698,9 @@ fn migrate_legacy_proxy_urls(
     Ok(migrations)
 }
 
-fn ensure_internal_proxies_reachable(config: &IroncladConfig) -> Result<(), ironclad_core::IroncladError> {
+fn ensure_internal_proxies_reachable(
+    config: &IroncladConfig,
+) -> Result<(), ironclad_core::IroncladError> {
     let mut required = Vec::<(String, String, u16)>::new();
     for (name, provider) in &config.providers {
         if !provider_requires_internal_proxy(name, provider) {

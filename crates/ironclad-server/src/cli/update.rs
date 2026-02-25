@@ -318,7 +318,9 @@ async fn apply_binary_update(yes: bool) -> Result<bool, Box<dyn std::error::Erro
 
     if should_skip_inplace_binary_update(std::env::consts::OS) {
         println!("    {WARN} In-place self-update is disabled on Windows");
-        println!("    {DETAIL} Windows locks running executables, so `cargo install` cannot replace `ironclad.exe` while this process is active.");
+        println!(
+            "    {DETAIL} Windows locks running executables, so `cargo install` cannot replace `ironclad.exe` while this process is active."
+        );
         println!("    {DETAIL} Upgrade manually from a fresh PowerShell session:");
         println!("      1) ironclad daemon stop");
         println!("      2) cargo install {CRATE_NAME} --locked --force");

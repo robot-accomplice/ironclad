@@ -163,10 +163,16 @@ fn windows_pid_running(pid: u32) -> Result<bool> {
 
 fn spawn_windows_daemon_process(install: &WindowsDaemonInstall) -> Result<u32> {
     let mut cmd = std::process::Command::new(&install.binary);
-    cmd.args(["serve", "-c", &install.config, "-p", &install.port.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+    cmd.args([
+        "serve",
+        "-c",
+        &install.config,
+        "-p",
+        &install.port.to_string(),
+    ])
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -683,8 +689,7 @@ mod tests {
 
     #[test]
     fn parse_windows_daemon_marker_basic() {
-        let input =
-            "name=IroncladAgent\nmode=user_process\nbinary=C:\\x\\ironclad.exe\nconfig=C:\\x\\ironclad.toml\nport=18789\npid=1234\n";
+        let input = "name=IroncladAgent\nmode=user_process\nbinary=C:\\x\\ironclad.exe\nconfig=C:\\x\\ironclad.toml\nport=18789\npid=1234\n";
         let parsed = parse_windows_daemon_marker(input).unwrap();
         assert_eq!(parsed.binary, "C:\\x\\ironclad.exe");
         assert_eq!(parsed.config, "C:\\x\\ironclad.toml");
@@ -694,8 +699,7 @@ mod tests {
 
     #[test]
     fn parse_windows_daemon_marker_without_pid() {
-        let input =
-            "name=IroncladAgent\nmode=user_process\nbinary=C:\\x\\ironclad.exe\nconfig=C:\\x\\ironclad.toml\nport=18789\n";
+        let input = "name=IroncladAgent\nmode=user_process\nbinary=C:\\x\\ironclad.exe\nconfig=C:\\x\\ironclad.toml\nport=18789\n";
         let parsed = parse_windows_daemon_marker(input).unwrap();
         assert_eq!(parsed.binary, "C:\\x\\ironclad.exe");
         assert_eq!(parsed.config, "C:\\x\\ironclad.toml");

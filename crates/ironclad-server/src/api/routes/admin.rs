@@ -323,7 +323,11 @@ pub struct AvailableModelsQuery {
     pub validation_level: Option<String>,
 }
 
-fn model_discovery_mode(provider_name: &str, provider_url: &str, is_local_flag: bool) -> (bool, String) {
+fn model_discovery_mode(
+    provider_name: &str,
+    provider_url: &str,
+    is_local_flag: bool,
+) -> (bool, String) {
     let name_l = provider_name.to_ascii_lowercase();
     let url_l = provider_url.to_ascii_lowercase();
     // Only Ollama-style providers should be probed with /api/tags.
@@ -499,7 +503,8 @@ pub async fn get_available_models(
                     );
                     continue;
                 }
-                let mut models: Vec<String> = if let Some(arr) = body.get("models").and_then(|v| v.as_array()) {
+                let mut models: Vec<String> =
+                    if let Some(arr) = body.get("models").and_then(|v| v.as_array()) {
                         arr.iter()
                             .filter_map(|m| {
                                 m.get("name")
@@ -550,13 +555,8 @@ pub async fn get_available_models(
             }
             Err(e) => {
                 let err = e.to_string();
-                let (status, hint) = classify_provider_connectivity_status(
-                    &name,
-                    &url,
-                    &models_url,
-                    &err,
-                    localish,
-                );
+                let (status, hint) =
+                    classify_provider_connectivity_status(&name, &url, &models_url, &err, localish);
                 provider_reports.insert(
                     name.clone(),
                     json!({
@@ -2511,7 +2511,10 @@ mod tests {
         let built = apply_provider_auth(req, "query:key", "secret")
             .build()
             .expect("request builds");
-        assert_eq!(built.url().as_str(), "http://example.test/v1/models?key=secret");
+        assert_eq!(
+            built.url().as_str(),
+            "http://example.test/v1/models?key=secret"
+        );
     }
 
     #[test]
