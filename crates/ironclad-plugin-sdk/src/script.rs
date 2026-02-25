@@ -153,7 +153,7 @@ impl Plugin for ScriptPlugin {
                 risk_level: if t.dangerous {
                     ironclad_core::RiskLevel::Dangerous
                 } else {
-                    ironclad_core::RiskLevel::Safe
+                    ironclad_core::RiskLevel::Caution
                 },
                 permissions: self.manifest.permissions.clone(),
             })

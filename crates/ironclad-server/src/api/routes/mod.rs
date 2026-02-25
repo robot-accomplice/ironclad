@@ -249,7 +249,7 @@ pub fn build_router(state: AppState) -> Router {
         list_model_selection_events, list_session_turns, list_sessions, post_message,
         post_turn_feedback, put_turn_feedback,
     };
-    use skills::{delete_skill, get_skill, list_skills, reload_skills, toggle_skill};
+    use skills::{audit_skills, delete_skill, get_skill, list_skills, reload_skills, toggle_skill};
     use subagents::{
         create_sub_agent, delete_sub_agent, list_sub_agents, toggle_sub_agent, update_sub_agent,
     };
@@ -329,6 +329,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/wallet/balance", get(wallet_balance))
         .route("/api/wallet/address", get(wallet_address))
         .route("/api/skills", get(list_skills))
+        .route("/api/skills/audit", get(audit_skills))
         .route("/api/skills/{id}", get(get_skill).delete(delete_skill))
         .route("/api/skills/reload", post(reload_skills))
         .route("/api/skills/{id}/toggle", put(toggle_skill))
@@ -1332,6 +1333,62 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn reload_skills_rejects_unsupported_tool_chain() {
+        let state = test_state();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("bad.toml"),
+            r#"
+name = "bad_chain"
+description = "unsupported chain"
+kind = "Structured"
+risk_level = "Caution"
+
+[triggers]
+keywords = ["bad"]
+
+[[tool_chain]]
+tool_name = "read_file"
+params = { path = "README.md" }
+"#,
+        )
+        .unwrap();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.skills.skills_dir = dir.path().to_path_buf();
+        }
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/skills/reload")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["rejected"], 1);
+        let issues = body["issues"].as_array().unwrap();
+        assert!(!issues.is_empty());
+    }
+
+    #[tokio::test]
+    async fn skills_audit_returns_capability_and_drift_payload() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/skills/audit")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["summary"]["db_skills"].is_number());
+        assert!(body["summary"]["disk_skills"].is_number());
+        assert!(body["runtime"]["registered_tools"].is_array());
+        assert!(body["runtime"]["capabilities"].is_array());
+        assert!(body["skills"].is_array());
+    }
+
+    #[tokio::test]
     async fn toggle_skill_flips_enabled() {
         let state = test_state();
         let skill_id = ironclad_db::skills::register_skill(
@@ -1866,6 +1923,125 @@ primary = "ollama/qwen3:8b"
         let err = result.unwrap_err();
         assert!(
             err.contains("denies External authority"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_script_disabled_skill_blocks_creator_execution() {
+        let mut state = test_state();
+        let skills_dir = tempfile::tempdir().unwrap();
+        let script = skills_dir.path().join("disabled.sh");
+        std::fs::write(&script, "#!/bin/bash\necho disabled").unwrap();
+        let script_canonical = std::fs::canonicalize(&script).unwrap();
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.skills.skills_dir = skills_dir.path().to_path_buf();
+        }
+
+        let skill_id = ironclad_db::skills::register_skill_full(
+            &state.db,
+            "disabled-skill",
+            "structured",
+            Some("disabled skill must never execute"),
+            &script_canonical.to_string_lossy(),
+            "hash-disabled",
+            Some(r#"{"keywords":["disabled"]}"#),
+            None,
+            None,
+            Some(&script_canonical.to_string_lossy()),
+            "Safe",
+        )
+        .unwrap();
+        let toggled = ironclad_db::skills::toggle_skill_enabled(&state.db, &skill_id).unwrap();
+        assert_eq!(toggled, Some(false));
+
+        let mut registry = ToolRegistry::new();
+        let skills_cfg = {
+            let cfg = state.config.read().await;
+            cfg.skills.clone()
+        };
+        registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
+            skills_cfg,
+        )));
+        state.tools = Arc::new(registry);
+
+        let sid =
+            ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
+        let turn_id =
+            ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None).unwrap();
+
+        let result = agent::execute_tool_call(
+            &state,
+            "run_script",
+            &serde_json::json!({ "path": "disabled.sh" }),
+            &turn_id,
+            InputAuthority::Creator,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("is disabled"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn run_script_malformed_policy_override_fails_closed() {
+        let mut state = test_state();
+        let skills_dir = tempfile::tempdir().unwrap();
+        let script = skills_dir.path().join("malformed.sh");
+        std::fs::write(&script, "#!/bin/bash\necho malformed").unwrap();
+        let script_canonical = std::fs::canonicalize(&script).unwrap();
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.skills.skills_dir = skills_dir.path().to_path_buf();
+        }
+
+        ironclad_db::skills::register_skill_full(
+            &state.db,
+            "malformed-override",
+            "structured",
+            Some("invalid override JSON should block"),
+            &script_canonical.to_string_lossy(),
+            "hash-malformed",
+            Some(r#"{"keywords":["malformed"]}"#),
+            None,
+            Some(r#"{"deny_external":true"#),
+            Some(&script_canonical.to_string_lossy()),
+            "Safe",
+        )
+        .unwrap();
+
+        let mut registry = ToolRegistry::new();
+        let skills_cfg = {
+            let cfg = state.config.read().await;
+            cfg.skills.clone()
+        };
+        registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
+            skills_cfg,
+        )));
+        state.tools = Arc::new(registry);
+
+        let sid =
+            ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
+        let turn_id =
+            ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None).unwrap();
+
+        let result = agent::execute_tool_call(
+            &state,
+            "run_script",
+            &serde_json::json!({ "path": "malformed.sh" }),
+            &turn_id,
+            InputAuthority::Creator,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Policy override parse failed"),
             "unexpected error: {err}"
         );
     }

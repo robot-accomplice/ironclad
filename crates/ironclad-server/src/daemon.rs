@@ -106,7 +106,7 @@ pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result
         "linux" => (systemd_unit(binary_path, config_path, port), systemd_path()),
         "windows" => {
             let bin_path = windows_service_bin_path(binary_path, config_path, port);
-            if windows_service_exists() {
+            if windows_service_exists()? {
                 run_cmd(
                     "sc.exe",
                     &[
@@ -216,12 +216,16 @@ pub fn restart_daemon() -> Result<()> {
     let os = std::env::consts::OS;
     match os {
         "macos" => {
-            let _ = stop_daemon();
+            if let Err(e) = stop_daemon() && !is_benign_stop_error(&e) {
+                return Err(e);
+            }
             start_daemon()
         }
         "linux" => run_cmd("systemctl", &["--user", "restart", "ironclad.service"]),
         "windows" => {
-            let _ = stop_daemon();
+            if let Err(e) = stop_daemon() && !is_benign_stop_error(&e) {
+                return Err(e);
+            }
             start_daemon()
         }
         other => Err(IroncladError::Config(format!(
@@ -263,14 +267,12 @@ fn command_output(program: &str, args: &[&str]) -> Result<std::process::Output> 
         .map_err(|e| IroncladError::Config(format!("failed to run {program}: {e}")))
 }
 
-fn windows_service_exists() -> bool {
+fn windows_service_exists() -> Result<bool> {
     if std::env::consts::OS != "windows" {
-        return false;
+        return Ok(false);
     }
-    match command_output("sc.exe", &["query", WINDOWS_SERVICE_NAME]) {
-        Ok(out) => out.status.success(),
-        Err(_) => false,
-    }
+    let out = command_output("sc.exe", &["query", WINDOWS_SERVICE_NAME])?;
+    Ok(out.status.success())
 }
 
 fn parse_windows_sc_state(output: &str) -> Option<&'static str> {
@@ -319,7 +321,7 @@ pub fn daemon_status() -> Result<String> {
             }
         }
         "windows" => {
-            if !is_installed() {
+            if !windows_service_exists()? {
                 return Ok("Daemon not installed".into());
             }
             let out = command_output("sc.exe", &["query", WINDOWS_SERVICE_NAME])?;
@@ -394,7 +396,16 @@ fn verify_launchd_running() -> Result<()> {
     ))
 }
 
-pub fn is_installed() -> bool {
+fn is_benign_stop_error(e: &IroncladError) -> bool {
+    let msg = e.to_string().to_ascii_lowercase();
+    msg.contains("1062")
+        || msg.contains("service has not been started")
+        || msg.contains("the service has not been started")
+        || msg.contains("inactive")
+        || msg.contains("not loaded")
+}
+
+fn is_installed_result() -> Result<bool> {
     let os = std::env::consts::OS;
     if os == "windows" {
         return windows_service_exists();
@@ -402,21 +413,34 @@ pub fn is_installed() -> bool {
     let path = match os {
         "macos" => plist_path(),
         "linux" => systemd_path(),
-        _ => return false,
+        _ => return Ok(false),
     };
-    path.exists()
+    Ok(path.exists())
+}
+
+pub fn is_installed() -> bool {
+    is_installed_result().unwrap_or(false)
 }
 
 pub fn uninstall_daemon() -> Result<()> {
-    if !is_installed() {
+    if !is_installed_result()? {
         return Ok(());
     }
-    let _ = stop_daemon();
+    if let Err(e) = stop_daemon() && !is_benign_stop_error(&e) {
+        return Err(e);
+    }
     if std::env::consts::OS == "windows" {
         run_cmd("sc.exe", &["delete", WINDOWS_SERVICE_NAME])?;
         let marker = windows_service_marker_path();
         if marker.exists() {
-            let _ = std::fs::remove_file(marker);
+            if let Err(e) = std::fs::remove_file(&marker)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(IroncladError::Config(format!(
+                    "failed to remove windows service marker {}: {e}",
+                    marker.display()
+                )));
+            }
         }
         return Ok(());
     }

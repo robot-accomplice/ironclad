@@ -64,22 +64,8 @@ pub async fn create_session(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
-    // Keep "New session" semantics while respecting the unique active-session
-    // constraint per (agent_id, scope_key=agent).
-    match ironclad_db::sessions::list_active_sessions(&state.db, Some(&body.agent_id)) {
-        Ok(active) => {
-            for session in active {
-                if session.scope_key.as_deref() == Some("agent")
-                    && let Err(e) = ironclad_db::sessions::archive_session(&state.db, &session.id)
-                {
-                    return Err(internal_err(&e));
-                }
-            }
-        }
-        Err(e) => return Err(internal_err(&e)),
-    }
-
-    match ironclad_db::sessions::create_new(&state.db, &body.agent_id, None) {
+    // Keep "New session" semantics while preserving active-session consistency.
+    match ironclad_db::sessions::rotate_agent_session(&state.db, &body.agent_id) {
         Ok(id) => Ok(axum::Json(serde_json::json!({ "session_id": id }))),
         Err(e) => Err(internal_err(&e)),
     }

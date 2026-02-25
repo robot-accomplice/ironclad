@@ -90,12 +90,13 @@ pub(crate) async fn execute_tool_call(
     turn_id: &str,
     authority: InputAuthority,
 ) -> Result<String, String> {
-    fn parse_risk_level(raw: &str) -> ironclad_core::RiskLevel {
+    fn parse_risk_level(raw: &str) -> Result<ironclad_core::RiskLevel, String> {
         match raw.to_ascii_lowercase().as_str() {
-            "safe" => ironclad_core::RiskLevel::Safe,
-            "dangerous" => ironclad_core::RiskLevel::Dangerous,
-            "forbidden" => ironclad_core::RiskLevel::Forbidden,
-            _ => ironclad_core::RiskLevel::Caution,
+            "safe" => Ok(ironclad_core::RiskLevel::Safe),
+            "caution" => Ok(ironclad_core::RiskLevel::Caution),
+            "dangerous" => Ok(ironclad_core::RiskLevel::Dangerous),
+            "forbidden" => Ok(ironclad_core::RiskLevel::Forbidden),
+            _ => Err(format!("invalid skill risk_level '{raw}'")),
         }
     }
     fn resolve_script_audit_path(skills_dir: &std::path::Path, script_arg: &str) -> Option<String> {
@@ -129,50 +130,69 @@ pub(crate) async fn execute_tool_call(
         let maybe_script_path = resolve_script_audit_path(&config.skills.skills_dir, script_arg);
         drop(config);
 
-        if let Some(script_path) = maybe_script_path
-            && let Ok(Some(skill)) =
-                ironclad_db::skills::find_enabled_skill_by_script_path(&state.db, &script_path)
-        {
-            effective_risk = parse_risk_level(&skill.risk_level);
-            matched_skill = Some((
-                skill.id.clone(),
-                skill.name.clone(),
-                skill.content_hash.clone(),
-            ));
-
-            if let Some(overrides_raw) = skill.policy_overrides_json.as_deref()
-                && let Ok(overrides) = serde_json::from_str::<serde_json::Value>(overrides_raw)
-            {
-                let require_creator = overrides
-                    .get("require_creator")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let deny_external = overrides
-                    .get("deny_external")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let disabled = overrides
-                    .get("disabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-
-                if disabled {
+        if let Some(script_path) = maybe_script_path {
+            let skill = ironclad_db::skills::find_skill_by_script_path(&state.db, &script_path)
+                .map_err(|e| format!("Skill policy lookup failed: {e}"))?;
+            if let Some(skill) = skill {
+                if !skill.enabled {
                     return Err(format!(
                         "Policy override denied: skill '{}' is disabled",
                         skill.name
                     ));
                 }
-                if require_creator && authority != ironclad_core::InputAuthority::Creator {
-                    return Err(format!(
-                        "Policy override denied: skill '{}' requires Creator authority",
-                        skill.name
-                    ));
-                }
-                if deny_external && authority == ironclad_core::InputAuthority::External {
-                    return Err(format!(
-                        "Policy override denied: skill '{}' denies External authority",
-                        skill.name
-                    ));
+
+                effective_risk = parse_risk_level(&skill.risk_level).map_err(|e| {
+                    format!(
+                        "Policy override denied: skill '{}' has {}",
+                        skill.name, e
+                    )
+                })?;
+                matched_skill = Some((
+                    skill.id.clone(),
+                    skill.name.clone(),
+                    skill.content_hash.clone(),
+                ));
+
+                if let Some(overrides_raw) = skill.policy_overrides_json.as_deref() {
+                    let overrides = serde_json::from_str::<serde_json::Value>(overrides_raw)
+                        .map_err(|e| {
+                            format!(
+                                "Policy override parse failed for skill '{}': {e}",
+                                skill.name
+                            )
+                        })?;
+
+                    let require_creator = overrides
+                        .get("require_creator")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let deny_external = overrides
+                        .get("deny_external")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let disabled = overrides
+                        .get("disabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    if disabled {
+                        return Err(format!(
+                            "Policy override denied: skill '{}' is disabled",
+                            skill.name
+                        ));
+                    }
+                    if require_creator && authority != ironclad_core::InputAuthority::Creator {
+                        return Err(format!(
+                            "Policy override denied: skill '{}' requires Creator authority",
+                            skill.name
+                        ));
+                    }
+                    if deny_external && authority == ironclad_core::InputAuthority::External {
+                        return Err(format!(
+                            "Policy override denied: skill '{}' denies External authority",
+                            skill.name
+                        ));
+                    }
                 }
             }
         }

@@ -237,6 +237,20 @@ pub fn find_enabled_skill_by_script_path(
     .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
+pub fn find_skill_by_script_path(db: &Database, script_path: &str) -> Result<Option<SkillRecord>> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT id, name, kind, description, source_path, content_hash, \
+         triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
+         enabled, last_loaded_at, created_at \
+         FROM skills WHERE script_path = ?1 LIMIT 1",
+        [script_path],
+        row_to_skill,
+    )
+    .optional()
+    .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
 fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillRecord> {
     Ok(SkillRecord {
         id: row.get(0)?,

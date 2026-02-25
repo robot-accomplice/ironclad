@@ -41,7 +41,7 @@ pub struct ToolDef {
 }
 
 fn default_tool_risk_level() -> RiskLevel {
-    RiskLevel::Safe
+    RiskLevel::Caution
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +85,13 @@ mod tests {
         let json = serde_json::to_string(&tool).unwrap();
         let back: ToolDef = serde_json::from_str(&json).unwrap();
         assert_eq!(back.name, "test_tool");
+    }
+
+    #[test]
+    fn tool_def_defaults_to_caution_when_risk_missing() {
+        let raw = r#"{"name":"t","description":"d","parameters":{"type":"object"}}"#;
+        let back: ToolDef = serde_json::from_str(raw).unwrap();
+        assert_eq!(back.risk_level, RiskLevel::Caution);
     }
 
     #[test]

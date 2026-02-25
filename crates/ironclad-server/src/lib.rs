@@ -89,6 +89,10 @@ use rate_limit::GlobalRateLimitLayer;
 static STDERR_ENABLED: AtomicBool = AtomicBool::new(false);
 static LOG_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
+fn is_taskable_subagent_role(role: &str) -> bool {
+    role.eq_ignore_ascii_case("subagent") || role.eq_ignore_ascii_case("specialist")
+}
+
 pub fn enable_stderr_logging() {
     STDERR_ENABLED.store(true, Ordering::Release);
 }
@@ -224,6 +228,9 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
 
     if let Ok(sub_agents) = ironclad_db::agents::list_enabled_sub_agents(&db) {
         for sa in &sub_agents {
+            if !is_taskable_subagent_role(&sa.role) {
+                continue;
+            }
             let resolved_model = match sa.model.trim().to_ascii_lowercase().as_str() {
                 "auto" | "commander" => llm.router.select_model().to_string(),
                 _ => sa.model.clone(),
@@ -900,5 +907,13 @@ primary = "ollama/qwen3:8b"
     fn cleanup_old_logs_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
         cleanup_old_logs(dir.path(), 1);
+    }
+
+    #[test]
+    fn taskable_subagent_roles_are_strict() {
+        assert!(is_taskable_subagent_role("subagent"));
+        assert!(is_taskable_subagent_role("specialist"));
+        assert!(is_taskable_subagent_role("SubAgent"));
+        assert!(!is_taskable_subagent_role("model-proxy"));
     }
 }
