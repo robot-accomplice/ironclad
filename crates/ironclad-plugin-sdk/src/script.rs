@@ -95,10 +95,15 @@ impl ScriptPlugin {
     }
 
     fn interpreter_for(path: &Path) -> Option<(&'static str, &'static [&'static str])> {
+        #[cfg(windows)]
+        const PYTHON_BIN: &str = "python";
+        #[cfg(not(windows))]
+        const PYTHON_BIN: &str = "python3";
+
         match path.extension().and_then(|e| e.to_str()) {
             Some("gosh") => Some(("gosh", &[])),
             Some("go") => Some(("go", &["run"])),
-            Some("py") => Some(("python3", &[])),
+            Some("py") => Some((PYTHON_BIN, &[])),
             Some("rb") => Some(("ruby", &[])),
             Some("js") => Some(("node", &[])),
             Some("sh") => Some(("sh", &[])),
@@ -145,6 +150,12 @@ impl Plugin for ScriptPlugin {
                 name: t.name.clone(),
                 description: t.description.clone(),
                 parameters: json!({"type": "object"}),
+                risk_level: if t.dangerous {
+                    ironclad_core::RiskLevel::Dangerous
+                } else {
+                    ironclad_core::RiskLevel::Caution
+                },
+                permissions: self.manifest.permissions.clone(),
             })
             .collect()
     }
@@ -334,9 +345,13 @@ mod tests {
             ScriptPlugin::interpreter_for(Path::new("x.go")),
             Some(("go", ["run"].as_slice()))
         );
+        #[cfg(windows)]
+        let expected_python = Some(("python", [].as_slice()));
+        #[cfg(not(windows))]
+        let expected_python = Some(("python3", [].as_slice()));
         assert_eq!(
             ScriptPlugin::interpreter_for(Path::new("x.py")),
-            Some(("python3", [].as_slice()))
+            expected_python
         );
         assert_eq!(
             ScriptPlugin::interpreter_for(Path::new("x.sh")),

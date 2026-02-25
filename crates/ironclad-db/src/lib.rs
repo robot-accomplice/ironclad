@@ -30,6 +30,7 @@
 
 pub mod agents;
 pub mod ann;
+pub mod approvals;
 pub mod backend;
 pub mod cache;
 pub mod checkpoint;
@@ -39,6 +40,7 @@ pub mod embeddings;
 pub mod hippocampus;
 pub mod memory;
 pub mod metrics;
+pub mod model_selection;
 pub mod policy;
 pub mod schema;
 pub mod sessions;

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::IntoResponse,
 };
 use serde::Deserialize;
@@ -64,7 +64,8 @@ pub async fn create_session(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
-    match ironclad_db::sessions::create_new(&state.db, &body.agent_id, None) {
+    // Keep "New session" semantics while preserving active-session consistency.
+    match ironclad_db::sessions::rotate_agent_session(&state.db, &body.agent_id) {
         Ok(id) => Ok(axum::Json(serde_json::json!({ "session_id": id }))),
         Err(e) => Err(internal_err(&e)),
     }
@@ -210,6 +211,82 @@ pub async fn get_turn(State(state): State<AppState>, Path(id): Path<String>) -> 
     }
 }
 
+pub async fn get_turn_model_selection(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match ironclad_db::model_selection::get_model_selection_by_turn_id(&state.db, &id) {
+        Ok(Some(row)) => {
+            let candidates: Vec<serde_json::Value> =
+                serde_json::from_str(&row.candidates_json).unwrap_or_default();
+            Ok(axum::Json(serde_json::json!({
+                "event_id": row.id,
+                "turn_id": row.turn_id,
+                "session_id": row.session_id,
+                "agent_id": row.agent_id,
+                "channel": row.channel,
+                "selected_model": row.selected_model,
+                "strategy": row.strategy,
+                "primary_model": row.primary_model,
+                "override_model": row.override_model,
+                "complexity": row.complexity,
+                "user_excerpt": row.user_excerpt,
+                "candidates": candidates,
+                "created_at": row.created_at,
+            })))
+        }
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            format!("no model selection trace for turn {id}"),
+        )),
+        Err(e) => Err(internal_err(&e)),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ModelSelectionListQuery {
+    pub limit: Option<usize>,
+}
+
+pub async fn list_model_selection_events(
+    State(state): State<AppState>,
+    Query(query): Query<ModelSelectionListQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    match ironclad_db::model_selection::list_model_selection_events(&state.db, limit) {
+        Ok(rows) => {
+            let events: Vec<Value> = rows
+                .into_iter()
+                .map(|row| {
+                    let candidates: Vec<serde_json::Value> =
+                        serde_json::from_str(&row.candidates_json).unwrap_or_default();
+                    serde_json::json!({
+                        "event_id": row.id,
+                        "turn_id": row.turn_id,
+                        "session_id": row.session_id,
+                        "agent_id": row.agent_id,
+                        "channel": row.channel,
+                        "selected_model": row.selected_model,
+                        "strategy": row.strategy,
+                        "primary_model": row.primary_model,
+                        "override_model": row.override_model,
+                        "complexity": row.complexity,
+                        "user_excerpt": row.user_excerpt,
+                        "candidates": candidates,
+                        "created_at": row.created_at,
+                    })
+                })
+                .collect();
+            let count = events.len();
+            Ok(axum::Json(serde_json::json!({
+                "events": events,
+                "count": count,
+            })))
+        }
+        Err(e) => Err(internal_err(&e)),
+    }
+}
+
 pub async fn get_turn_context(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -254,6 +331,9 @@ pub async fn get_turn_tools(
                     serde_json::json!({
                         "id": tc.id,
                         "tool_name": tc.tool_name,
+                        "skill_id": tc.skill_id,
+                        "skill_name": tc.skill_name,
+                        "skill_hash": tc.skill_hash,
                         "status": tc.status,
                         "duration_ms": tc.duration_ms,
                         "created_at": tc.created_at,
@@ -540,7 +620,11 @@ async fn run_llm_analysis(
         let llm = state.llm.read().await;
         llm.router.select_model().to_string()
     };
-    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let model_for_api = model
+        .split_once('/')
+        .map(|(_, m)| m)
+        .unwrap_or(&model)
+        .to_string();
     let req = ironclad_llm::format::UnifiedRequest {
         model: model_for_api,
         messages: vec![ironclad_llm::format::UnifiedMessage {

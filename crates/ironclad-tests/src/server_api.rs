@@ -10,7 +10,10 @@ use ironclad_db::Database;
 use ironclad_llm::LlmService;
 use ironclad_llm::OAuthManager;
 use ironclad_plugin_sdk::registry::PluginRegistry;
-use ironclad_server::{AppState, EventBus, PersonalityState, build_router};
+use ironclad_server::AppState;
+use ironclad_server::EventBus;
+use ironclad_server::PersonalityState;
+use ironclad_server::build_router;
 use ironclad_wallet::{TreasuryPolicy, WalletService, YieldEngine};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
@@ -142,6 +145,23 @@ async fn session_create_and_list() {
     let session_id = body["session_id"].as_str().unwrap().to_string();
     assert!(!session_id.is_empty());
 
+    // Creating again for same agent should rotate the active agent-scope
+    // session instead of failing on uniqueness constraints.
+    let app = build_router(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/sessions")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"agent_id":"test-agent"}"#))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let session_id_2 = body["session_id"].as_str().unwrap().to_string();
+    assert!(!session_id_2.is_empty());
+    assert_ne!(session_id_2, session_id);
+
     let app = build_router(state.clone());
     let req = Request::builder()
         .uri("/api/sessions")
@@ -152,8 +172,15 @@ async fn session_create_and_list() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
     let sessions = body["sessions"].as_array().unwrap();
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0]["agent_id"], "test-agent");
+    assert_eq!(sessions.len(), 2);
+    assert!(sessions.iter().all(|s| s["agent_id"] == "test-agent"));
+    let active_count = sessions.iter().filter(|s| s["status"] == "active").count();
+    let archived_count = sessions
+        .iter()
+        .filter(|s| s["status"] == "archived")
+        .count();
+    assert_eq!(active_count, 1);
+    assert_eq!(archived_count, 1);
 }
 
 #[tokio::test]
@@ -193,7 +220,7 @@ async fn message_post_and_retrieve() {
 }
 
 #[tokio::test]
-async fn skills_list_initially_empty() {
+async fn skills_list_includes_built_ins() {
     let app = build_router(test_state());
     let req = Request::builder()
         .uri("/api/skills")
@@ -205,7 +232,17 @@ async fn skills_list_initially_empty() {
 
     let body = json_body(resp).await;
     let skills = body["skills"].as_array().unwrap();
-    assert!(skills.is_empty());
+    assert!(!skills.is_empty());
+    assert!(
+        skills
+            .iter()
+            .any(|s| s["name"].as_str() == Some("supervisor-protocol"))
+    );
+    assert!(
+        skills
+            .iter()
+            .all(|s| s["enabled"].as_bool().unwrap_or(false))
+    );
 }
 
 #[tokio::test]
@@ -602,6 +639,25 @@ async fn session_turn_and_context_endpoints_work() {
         Some(12),
     )
     .unwrap();
+    ironclad_db::model_selection::record_model_selection_event(
+        &state.db,
+        &ironclad_db::model_selection::ModelSelectionEventRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            turn_id: turn_id.clone(),
+            session_id: session_id.clone(),
+            agent_id: "turn-test-agent".to_string(),
+            channel: "api".to_string(),
+            selected_model: "claude-3-7-sonnet".to_string(),
+            strategy: "primary_usable".to_string(),
+            primary_model: "claude-3-7-sonnet".to_string(),
+            override_model: None,
+            complexity: Some("L1".to_string()),
+            user_excerpt: "test prompt".to_string(),
+            candidates_json: r#"[{"model":"claude-3-7-sonnet","source":"primary_ordered","provider_available":true,"breaker_blocked":false,"usable":true,"note":"usable"}]"#.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        },
+    )
+    .unwrap();
 
     let app = build_router(state.clone());
     let resp = app
@@ -677,6 +733,35 @@ async fn session_turn_and_context_endpoints_work() {
     let body = json_body(resp).await;
     assert_eq!(body["turn_id"], turn_id);
     assert!(body["tip_count"].as_u64().is_some());
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/turns/{turn_id}/model-selection"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["turn_id"], turn_id);
+    assert!(body["candidates"].as_array().is_some());
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/models/selections?limit=5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert!(!body["events"].as_array().unwrap().is_empty());
 
     let app = build_router(state);
     let resp = app
@@ -1327,7 +1412,23 @@ async fn admin_model_and_provider_key_endpoints_cover_branches() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    assert!(body["roster"].as_array().unwrap().len() >= 2);
+    let roster = body["roster"].as_array().unwrap();
+    assert!(roster.len() >= 2);
+    let commander = roster
+        .iter()
+        .find(|a| a["role"] == "commander")
+        .expect("commander must be present");
+    assert_eq!(
+        commander["skills"].as_array().unwrap().len(),
+        0,
+        "commander should not claim global skill ownership in roster"
+    );
+    let sub = roster
+        .iter()
+        .find(|a| a["name"] == "spec-1")
+        .expect("subagent must be present");
+    assert_eq!(sub["role"], "subagent");
+    assert!(body["model_proxies"].is_array());
 
     let app = build_router(state.clone());
     let resp = app
@@ -1403,4 +1504,143 @@ async fn admin_model_and_provider_key_endpoints_cover_branches() {
         "unexpected recommendations generate status: {}",
         resp.status()
     );
+}
+
+#[tokio::test]
+async fn subagent_contract_validation_enforced() {
+    let state = test_state();
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/subagents")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"researcher","model":"auto","role":"subagent","skills":["research","summary"]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/subagents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let agent = body["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "researcher")
+        .expect("created subagent must be listed");
+    assert_eq!(agent["role"], "subagent");
+    assert_eq!(agent["model"], "auto");
+    assert_eq!(agent["skills"].as_array().unwrap().len(), 2);
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/subagents")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"triage","model":"commander","role":"subagent","skills":["triage"]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/subagents")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"legacy-no-model","role":"subagent","skills":[]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/subagents")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"legacy-extra-field","model":"auto","role":"subagent","skills":[],"legacy_client_extra":"x"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/subagents")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"persona-leak","model":"ollama/qwen3:8b","role":"subagent","skills":[],"personality":{"tone":"friendly"}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let app = build_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/subagents")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"proxy-with-skills","model":"openai/gpt-4o-mini","role":"model-proxy","skills":["tooling"]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let app = build_router(test_state());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/subagents")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"proxy-auto","model":"auto","role":"model-proxy","skills":[]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Subagent contract enforcement**: Added explicit `subagent` vs `model-proxy` role validation, fixed-skills persistence/validation, and strict rejection of personality payloads for taskable subagents.
+- **Model-selection forensics pipeline**: Added persistent `model_selection_events` storage, turn-linked forensics APIs (`GET /api/turns/{id}/model-selection`, `GET /api/models/selections`), and live dashboard views for candidate evaluation details.
+- **Streaming turn traceability**: `POST /api/agent/message/stream` now emits stable `turn_id` values from stream start through completion and records per-turn model-selection audits for streamed responses.
+- **Subagent ubiquitous-language architecture doc**: Added `docs/architecture/subagent-ubiquitous-language.md` with canonical terminology, gap audit, and dataflow diagrams.
+
+### Changed
+
+- **Roster and status semantics**: `/api/roster`, `/api/agent/status`, and dashboard agent views now distinguish taskable subagents from model proxies and report taskable counts with clearer operator-facing terminology.
+- **Subagent model assignment options**: Added support for `auto` (router-controlled) and `commander` (primary-agent-assigned) model modes for taskable subagents, including runtime model resolution behavior.
+- **Context forensics UX**: Context Explorer now supports live stream-turn handoff and direct forensic drill-down using active `turn_id` metadata.
+
 ## [0.6.1] - 2026-02-24
 
 ### Fixed

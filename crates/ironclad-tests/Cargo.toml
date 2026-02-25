@@ -27,3 +27,4 @@ hyper = "1"
 [lib]
 name = "ironclad_tests"
 path = "src/lib.rs"
+doctest = false

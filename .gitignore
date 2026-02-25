@@ -25,6 +25,7 @@ ironclad.db-shm
 
 # Logs
 *.log
+.tmp_audit_results.json
 
 # Phantom files (do not exist, stop recreating them)
 registry/CNAME

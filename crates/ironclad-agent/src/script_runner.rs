@@ -23,12 +23,13 @@ impl ScriptRunner {
     }
 
     pub async fn execute(&self, script_path: &Path, args: &[&str]) -> Result<ScriptResult> {
-        let interpreter = check_interpreter(script_path, &self.config.allowed_interpreters)?;
+        let script_path = self.resolve_script_path(script_path)?;
+        let interpreter = check_interpreter(&script_path, &self.config.allowed_interpreters)?;
 
         let working_dir = script_path.parent().unwrap_or(Path::new("."));
 
         let mut cmd = Command::new(&interpreter);
-        cmd.arg(script_path);
+        cmd.arg(&script_path);
         cmd.args(args);
         cmd.current_dir(working_dir);
 
@@ -37,8 +38,13 @@ impl ScriptRunner {
             if let Ok(path) = std::env::var("PATH") {
                 cmd.env("PATH", path);
             }
-            if let Ok(home) = std::env::var("HOME") {
+            if let Some(home) = default_home_env() {
                 cmd.env("HOME", home);
+            }
+            for key in ["USERPROFILE", "TMPDIR", "TMP", "TEMP", "LANG", "TERM"] {
+                if let Ok(val) = std::env::var(key) {
+                    cmd.env(key, val);
+                }
             }
         }
 
@@ -88,6 +94,46 @@ impl ScriptRunner {
             duration_ms,
         })
     }
+
+    /// Resolve a requested script path under the configured skills root.
+    ///
+    /// This canonicalizes both root and script path and enforces containment.
+    pub fn resolve_script_path(&self, requested: &Path) -> Result<std::path::PathBuf> {
+        let root =
+            std::fs::canonicalize(&self.config.skills_dir).map_err(|e| IroncladError::Tool {
+                tool: "script_runner".into(),
+                message: format!(
+                    "failed to resolve skills_dir '{}': {e}",
+                    self.config.skills_dir.display()
+                ),
+            })?;
+        let joined = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            root.join(requested)
+        };
+        let canonical = std::fs::canonicalize(&joined).map_err(|e| IroncladError::Tool {
+            tool: "script_runner".into(),
+            message: format!("failed to resolve script path '{}': {e}", joined.display()),
+        })?;
+        if !canonical.starts_with(&root) {
+            return Err(IroncladError::Tool {
+                tool: "script_runner".into(),
+                message: format!(
+                    "script path '{}' escapes skills_dir '{}'",
+                    canonical.display(),
+                    root.display()
+                ),
+            });
+        }
+        if !canonical.is_file() {
+            return Err(IroncladError::Tool {
+                tool: "script_runner".into(),
+                message: format!("script path '{}' is not a file", canonical.display()),
+            });
+        }
+        Ok(canonical)
+    }
 }
 
 fn truncate_str(s: &str, max_bytes: usize) -> String {
@@ -99,6 +145,23 @@ fn truncate_str(s: &str, max_bytes: usize) -> String {
             end -= 1;
         }
         s[..end].to_string()
+    }
+}
+
+fn default_home_env() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+}
+
+fn default_python_interpreter() -> &'static str {
+    #[cfg(windows)]
+    {
+        "python"
+    }
+    #[cfg(not(windows))]
+    {
+        "python3"
     }
 }
 
@@ -140,7 +203,7 @@ pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<Strin
         .unwrap_or("");
 
     let inferred = match ext {
-        "py" => "python3",
+        "py" => default_python_interpreter(),
         "sh" | "bash" => "bash",
         "js" => "node",
         _ => {
@@ -184,8 +247,10 @@ mod tests {
         fs::write(&script, "#!/bin/bash\necho \"hello from script\"").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let runner = ScriptRunner::new(test_config());
-        let result = runner.execute(&script, &[]).await.unwrap();
+        let mut cfg = test_config();
+        cfg.skills_dir = dir.path().to_path_buf();
+        let runner = ScriptRunner::new(cfg);
+        let result = runner.execute(Path::new("test.sh"), &[]).await.unwrap();
 
         assert_eq!(result.exit_code, 0);
         assert!(result.stdout.contains("hello from script"));
@@ -213,13 +278,32 @@ mod tests {
 
         let mut config = test_config();
         config.script_timeout_seconds = 1;
+        config.skills_dir = dir.path().to_path_buf();
 
         let runner = ScriptRunner::new(config);
-        let result = runner.execute(&script, &[]).await;
+        let result = runner.execute(Path::new("slow.sh"), &[]).await;
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn rejects_script_outside_skills_dir() {
+        let skills_dir = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let script = outside_dir.path().join("escape.sh");
+        fs::write(&script, "#!/bin/bash\necho hi").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config();
+        cfg.skills_dir = skills_dir.path().to_path_buf();
+
+        let runner = ScriptRunner::new(cfg);
+        let result = runner.execute(&script, &[]).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("escapes skills_dir"));
     }
 
     #[test]
@@ -229,7 +313,22 @@ mod tests {
         let py_script = dir.path().join("test.py");
         fs::write(&py_script, "print('hi')").unwrap();
 
-        let allowed = vec!["bash".into(), "python3".into(), "node".into()];
+        #[cfg(windows)]
+        let allowed = vec![
+            "bash".to_string(),
+            "python".to_string(),
+            "python3".to_string(),
+            "node".to_string(),
+        ];
+        #[cfg(not(windows))]
+        let allowed = vec![
+            "bash".to_string(),
+            "python3".to_string(),
+            "node".to_string(),
+        ];
+        #[cfg(windows)]
+        assert_eq!(check_interpreter(&py_script, &allowed).unwrap(), "python");
+        #[cfg(not(windows))]
         assert_eq!(check_interpreter(&py_script, &allowed).unwrap(), "python3");
 
         let sh_script = dir.path().join("test.sh");

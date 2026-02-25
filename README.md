@@ -131,8 +131,8 @@ Minimal `ironclad.toml`:
 
 ```toml
 [agent]
-name = "MyAgent"
-id = "my-agent"
+name = "Roboticus"
+id = "roboticus"
 
 [server]
 port = 18789

@@ -1,5 +1,6 @@
 //! Agent message, channel processing, and Telegram poll.
 
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -9,6 +10,7 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::StreamExt;
 use ironclad_agent::agent_loop::{AgentLoop, ReactAction, ReactState};
+use ironclad_agent::script_runner::ScriptRunner;
 use ironclad_agent::tools::ToolContext;
 use ironclad_channels::ChannelAdapter;
 use ironclad_core::InputAuthority;
@@ -82,17 +84,114 @@ fn provider_failure_user_message(last_error: &str, message_already_stored: bool)
 }
 
 /// Execute a tool call through the ToolRegistry, enforcing policy and recording audit trails.
-async fn execute_tool_call(
+pub(crate) async fn execute_tool_call(
     state: &AppState,
     tool_name: &str,
     params: &serde_json::Value,
     turn_id: &str,
     authority: InputAuthority,
 ) -> Result<String, String> {
+    fn parse_risk_level(raw: &str) -> Result<ironclad_core::RiskLevel, String> {
+        match raw.to_ascii_lowercase().as_str() {
+            "safe" => Ok(ironclad_core::RiskLevel::Safe),
+            "caution" => Ok(ironclad_core::RiskLevel::Caution),
+            "dangerous" => Ok(ironclad_core::RiskLevel::Dangerous),
+            "forbidden" => Ok(ironclad_core::RiskLevel::Forbidden),
+            _ => Err(format!("invalid skill risk_level '{raw}'")),
+        }
+    }
     let balance = state.wallet.wallet.get_usdc_balance().await.unwrap_or(0.0);
     let tier = ironclad_core::SurvivalTier::from_balance(balance, 0.0);
+    let tool = match state.tools.get(tool_name) {
+        Some(t) => t,
+        None => return Err(format!("Unknown tool: {tool_name}")),
+    };
+    let mut effective_risk = tool.risk_level();
+    let mut matched_skill: Option<(String, String, String)> = None;
 
-    let policy_result = check_tool_policy(&state.policy_engine, tool_name, params, authority, tier);
+    if tool_name == "run_script" {
+        let script_arg = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let config = state.config.read().await;
+        let runner = ScriptRunner::new(config.skills.clone());
+        let maybe_script_path = runner
+            .resolve_script_path(std::path::Path::new(script_arg))
+            .ok()
+            .map(|p| p.to_string_lossy().to_string());
+        drop(config);
+
+        if let Some(script_path) = maybe_script_path {
+            let skill = ironclad_db::skills::find_skill_by_script_path(&state.db, &script_path)
+                .map_err(|e| format!("Skill policy lookup failed: {e}"))?;
+            if let Some(skill) = skill {
+                if !skill.enabled {
+                    return Err(format!(
+                        "Policy override denied: skill '{}' is disabled",
+                        skill.name
+                    ));
+                }
+
+                effective_risk = parse_risk_level(&skill.risk_level).map_err(|e| {
+                    format!("Policy override denied: skill '{}' has {}", skill.name, e)
+                })?;
+                matched_skill = Some((
+                    skill.id.clone(),
+                    skill.name.clone(),
+                    skill.content_hash.clone(),
+                ));
+
+                if let Some(overrides_raw) = skill.policy_overrides_json.as_deref() {
+                    let overrides = serde_json::from_str::<serde_json::Value>(overrides_raw)
+                        .map_err(|e| {
+                            format!(
+                                "Policy override parse failed for skill '{}': {e}",
+                                skill.name
+                            )
+                        })?;
+
+                    let require_creator = overrides
+                        .get("require_creator")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let deny_external = overrides
+                        .get("deny_external")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let disabled = overrides
+                        .get("disabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    if disabled {
+                        return Err(format!(
+                            "Policy override denied: skill '{}' is disabled",
+                            skill.name
+                        ));
+                    }
+                    if require_creator && authority != ironclad_core::InputAuthority::Creator {
+                        return Err(format!(
+                            "Policy override denied: skill '{}' requires Creator authority",
+                            skill.name
+                        ));
+                    }
+                    if deny_external && authority == ironclad_core::InputAuthority::External {
+                        return Err(format!(
+                            "Policy override denied: skill '{}' denies External authority",
+                            skill.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let policy_result = check_tool_policy(
+        &state.policy_engine,
+        tool_name,
+        params,
+        authority,
+        tier,
+        effective_risk,
+    );
 
     let (decision_str, rule_name, reason) = match &policy_result {
         Ok(()) => ("allow".to_string(), None, None),
@@ -125,6 +224,17 @@ async fn execute_tool_call(
                 .approvals
                 .request_approval(tool_name, &params.to_string(), Some(turn_id))
                 .map_err(|e| format!("Approval error: {e}"))?;
+            ironclad_db::approvals::record_approval_request(
+                &state.db,
+                &request.id,
+                &request.tool_name,
+                &request.tool_input,
+                request.session_id.as_deref(),
+                "pending",
+                &request.timeout_at.to_rfc3339(),
+            )
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to persist approval request"))
+            .ok();
             state.event_bus.publish(
                 serde_json::json!({
                     "type": "pending_approval",
@@ -144,15 +254,15 @@ async fn execute_tool_call(
         Ok(_) => {}
     }
 
-    let tool = match state.tools.get(tool_name) {
-        Some(t) => t,
-        None => return Err(format!("Unknown tool: {tool_name}")),
+    let workspace_root = {
+        let cfg = state.config.read().await;
+        cfg.agent.workspace.clone()
     };
-
     let ctx = ToolContext {
         session_id: turn_id.to_string(),
         agent_id: "ironclad".to_string(),
         authority,
+        workspace_root,
     };
 
     state.event_bus.publish(
@@ -165,15 +275,18 @@ async fn execute_tool_call(
         })
         .to_string(),
     );
-    state.event_bus.publish(
-        serde_json::json!({
-            "type": "skill_activated",
-            "agent_id": "ironclad",
-            "skill": tool_name,
-            "turn_id": turn_id,
-        })
-        .to_string(),
-    );
+    if let Some((_, skill_name, _)) = matched_skill.as_ref() {
+        state.event_bus.publish(
+            serde_json::json!({
+                "type": "skill_activated",
+                "agent_id": "ironclad",
+                "skill": skill_name,
+                "tool_name": tool_name,
+                "turn_id": turn_id,
+            })
+            .to_string(),
+        );
+    }
 
     let start = std::time::Instant::now();
     let timeout_duration = std::time::Duration::from_secs(120);
@@ -189,7 +302,7 @@ async fn execute_tool_call(
     const MAX_TOOL_OUTPUT: usize = 16_384;
     let (output, status) = match &result {
         Ok(r) => {
-            let out = if r.output.len() > MAX_TOOL_OUTPUT {
+            let mut out = if r.output.len() > MAX_TOOL_OUTPUT {
                 let boundary = r.output.floor_char_boundary(MAX_TOOL_OUTPUT);
                 format!(
                     "{}...\n[truncated: {} bytes total]",
@@ -199,12 +312,27 @@ async fn execute_tool_call(
             } else {
                 r.output.clone()
             };
-            (out, "success")
+            let mut status = "success";
+            if let Some(unreadable) = r
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("unreadable_files"))
+                .and_then(|v| v.as_u64())
+                && unreadable > 0
+            {
+                status = "partial_success";
+                out = format!("{out}\n\n[warning] Search skipped {unreadable} unreadable file(s).");
+            }
+            (out, status)
         }
         Err(e) => (e.message.clone(), "error"),
     };
 
-    ironclad_db::tools::record_tool_call(
+    let (skill_id, skill_name, skill_hash) = match matched_skill.as_ref() {
+        Some((id, name, hash)) => (Some(id.as_str()), Some(name.as_str()), Some(hash.as_str())),
+        None => (None, None, None),
+    };
+    ironclad_db::tools::record_tool_call_with_skill(
         &state.db,
         turn_id,
         tool_name,
@@ -212,6 +340,9 @@ async fn execute_tool_call(
         Some(&output),
         status,
         Some(duration_ms),
+        skill_id,
+        skill_name,
+        skill_hash,
     )
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record tool call"))
     .ok();
@@ -241,10 +372,10 @@ struct RuntimeDiagnostics {
     cache_entries: usize,
     cache_hit_rate_pct: f64,
     pending_approvals: usize,
-    subagents_total: usize,
-    subagents_enabled: usize,
-    subagents_running: usize,
-    subagents_error: usize,
+    taskable_subagents_total: usize,
+    taskable_subagents_enabled: usize,
+    taskable_subagents_running: usize,
+    taskable_subagents_error: usize,
     channels_total: usize,
     channels_with_errors: usize,
 }
@@ -256,6 +387,10 @@ fn sanitize_diag_token(raw: &str, max_len: usize) -> String {
         .collect();
     let trimmed = cleaned.trim_matches(|c| c == '-' || c == '_' || c == ':' || c == '/');
     trimmed.chars().take(max_len).collect()
+}
+
+fn is_model_proxy_role(role: &str) -> bool {
+    role.eq_ignore_ascii_case("model-proxy")
 }
 
 async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiagnostics {
@@ -311,17 +446,30 @@ async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiagnostics {
     let channels = state.channel_router.channel_status().await;
     let channels_with_errors = channels.iter().filter(|c| c.last_error.is_some()).count();
     let runtime_agents = state.registry.list_agents().await;
-    let subagents_running = runtime_agents
+    let configured_subagents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let model_proxy_names: HashSet<String> = configured_subagents
         .iter()
+        .filter(|a| is_model_proxy_role(&a.role))
+        .map(|a| a.name.to_ascii_lowercase())
+        .collect();
+    let taskable_subagents_running = runtime_agents
+        .iter()
+        .filter(|a| !model_proxy_names.contains(&a.id.to_ascii_lowercase()))
         .filter(|a| a.state == ironclad_agent::subagents::AgentRunState::Running)
         .count();
-    let subagents_error = runtime_agents
+    let taskable_subagents_error = runtime_agents
         .iter()
+        .filter(|a| !model_proxy_names.contains(&a.id.to_ascii_lowercase()))
         .filter(|a| a.state == ironclad_agent::subagents::AgentRunState::Error)
         .count();
-    let configured_subagents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
-    let subagents_total = configured_subagents.len();
-    let subagents_enabled = configured_subagents.iter().filter(|a| a.enabled).count();
+    let taskable_subagents_total = configured_subagents
+        .iter()
+        .filter(|a| !is_model_proxy_role(&a.role))
+        .count();
+    let taskable_subagents_enabled = configured_subagents
+        .iter()
+        .filter(|a| !is_model_proxy_role(&a.role) && a.enabled)
+        .count();
     let pending_approvals = state.approvals.list_pending().len();
 
     RuntimeDiagnostics {
@@ -335,10 +483,10 @@ async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiagnostics {
         cache_entries,
         cache_hit_rate_pct,
         pending_approvals,
-        subagents_total,
-        subagents_enabled,
-        subagents_running,
-        subagents_error,
+        taskable_subagents_total,
+        taskable_subagents_enabled,
+        taskable_subagents_running,
+        taskable_subagents_error,
         channels_total: channels.len(),
         channels_with_errors,
     }
@@ -364,8 +512,11 @@ fn diagnostics_system_note(diag: &RuntimeDiagnostics) -> String {
             diag.cache_entries, diag.cache_hit_rate_pct
         ),
         &format!(
-            "- subagents: total={} enabled={} running={} error={}",
-            diag.subagents_total, diag.subagents_enabled, diag.subagents_running, diag.subagents_error
+            "- taskable_subagents: total={} enabled={} running={} error={}",
+            diag.taskable_subagents_total,
+            diag.taskable_subagents_enabled,
+            diag.taskable_subagents_running,
+            diag.taskable_subagents_error
         ),
         &format!(
             "- approvals_pending={} channels={} channels_with_errors={}",
@@ -600,10 +751,24 @@ pub async fn agent_message(
         }
     };
 
+    // Create a turn ID early so model-selection audit can be tied to this task.
+    let turn_id = uuid::Uuid::new_v4().to_string();
     // Use the ModelRouter to select a model based on complexity
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
-    let model = select_routed_model(&state, &user_content).await;
+    let model_audit = select_routed_model_with_audit(&state, &user_content).await;
+    let model = model_audit.selected_model.clone();
+    let complexity_label = format!("{complexity:?}");
+    persist_model_selection_audit(
+        &state,
+        &turn_id,
+        &session_id,
+        "api",
+        Some(&complexity_label),
+        &user_content,
+        &model_audit,
+    )
+    .await;
 
     let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
     let tier_adapt = config.tier_adapt.clone();
@@ -722,7 +887,11 @@ pub async fn agent_message(
         })
         .collect();
 
-    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let model_for_api = model
+        .split_once('/')
+        .map(|(_, m)| m)
+        .unwrap_or(&model)
+        .to_string();
     let system_prompt = if soul_text.is_empty() {
         format!(
             "You are {name}, an autonomous AI agent (id: {id}). \
@@ -827,9 +996,6 @@ pub async fn agent_message(
     } else {
         assistant_content
     };
-
-    // Create a turn ID for audit trail tracking
-    let turn_id = uuid::Uuid::new_v4().to_string();
 
     // ReAct loop: if the LLM response contains a tool call, execute it and loop
     let authority = if reduced_authority {
@@ -1214,9 +1380,22 @@ pub async fn agent_message_stream(
         }
     }
 
+    let turn_id = uuid::Uuid::new_v4().to_string();
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
-    let model = select_routed_model(&state, &user_content).await;
+    let model_audit = select_routed_model_with_audit(&state, &user_content).await;
+    let model = model_audit.selected_model.clone();
+    let complexity_label = format!("{complexity:?}");
+    persist_model_selection_audit(
+        &state,
+        &turn_id,
+        &session_id,
+        "api-stream",
+        Some(&complexity_label),
+        &user_content,
+        &model_audit,
+    )
+    .await;
 
     let tier_adapt = config.tier_adapt.clone();
     let agent_name = config.agent.name.clone();
@@ -1269,7 +1448,11 @@ pub async fn agent_message_stream(
         })
         .collect();
 
-    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let model_for_api = model
+        .split_once('/')
+        .map(|(_, m)| m)
+        .unwrap_or(&model)
+        .to_string();
     let system_prompt = if soul_text.is_empty() {
         format!(
             "You are {name}, an autonomous AI agent (id: {id}). \
@@ -1441,6 +1624,7 @@ pub async fn agent_message_stream(
 
     // Send initial metadata event, then stream chunks, then send a final summary
     let session_id_clone = session_id.clone();
+    let turn_id_clone = turn_id.clone();
     let model_clone = selected_model.clone();
     let event_bus = state.event_bus.clone();
     let db = state.db.clone();
@@ -1464,6 +1648,7 @@ pub async fn agent_message_stream(
         let open = json!({
             "type": "stream_start",
             "session_id": session_id_clone,
+            "turn_id": turn_id_clone,
             "model": model_clone,
         });
         yield Ok(Event::default().data(open.to_string()));
@@ -1559,6 +1744,17 @@ pub async fn agent_message_stream(
 
         // Record inference cost
         let cost = unified_resp.tokens_in as f64 * cost_in + unified_resp.tokens_out as f64 * cost_out;
+        if let Err(e) = ironclad_db::sessions::create_turn_with_id(
+            &db,
+            &turn_id_clone,
+            &session_id_clone,
+            Some(&model_clone),
+            Some(unified_resp.tokens_in as i64),
+            Some(unified_resp.tokens_out as i64),
+            Some(cost),
+        ) {
+            tracing::warn!(error = %e, turn_id = %turn_id_clone, "failed to persist streaming turn");
+        }
         ironclad_db::metrics::record_inference_cost(
             &db,
             &model_clone,
@@ -1620,6 +1816,7 @@ pub async fn agent_message_stream(
         let final_event = json!({
             "type": "stream_end",
             "session_id": session_id_clone,
+            "turn_id": turn_id_clone,
             "model": unified_resp.model,
             "tokens_in": unified_resp.tokens_in,
             "tokens_out": unified_resp.tokens_out,
@@ -1665,7 +1862,11 @@ async fn refine_session_nickname(
 
     let llm_read = llm.read().await;
     let model_id = llm_read.router.select_model().to_string();
-    let model_for_api = model_id.split('/').nth(1).unwrap_or(&model_id).to_string();
+    let model_for_api = model_id
+        .split_once('/')
+        .map(|(_, m)| m)
+        .unwrap_or(&model_id)
+        .to_string();
 
     let provider = llm_read.providers.get_by_model(&model_id);
     let (url, api_key, auth_header, format, extra_headers) = match provider {
@@ -1747,6 +1948,86 @@ struct ResolvedInferenceProvider {
     provider_prefix: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ModelCandidateAudit {
+    model: String,
+    source: String,
+    provider_available: bool,
+    breaker_blocked: bool,
+    usable: bool,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ModelSelectionAudit {
+    selected_model: String,
+    strategy: String,
+    primary_model: String,
+    override_model: Option<String>,
+    ordered_models: Vec<String>,
+    candidates: Vec<ModelCandidateAudit>,
+}
+
+fn summarize_user_excerpt(input: &str) -> String {
+    input
+        .split_whitespace()
+        .take(20)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(240)
+        .collect()
+}
+
+async fn persist_model_selection_audit(
+    state: &AppState,
+    turn_id: &str,
+    session_id: &str,
+    channel: &str,
+    complexity: Option<&str>,
+    user_content: &str,
+    audit: &ModelSelectionAudit,
+) {
+    let agent_id = {
+        let cfg = state.config.read().await;
+        cfg.agent.id.clone()
+    };
+    let row = ironclad_db::model_selection::ModelSelectionEventRow {
+        id: uuid::Uuid::new_v4().to_string(),
+        turn_id: turn_id.to_string(),
+        session_id: session_id.to_string(),
+        agent_id,
+        channel: channel.to_string(),
+        selected_model: audit.selected_model.clone(),
+        strategy: audit.strategy.clone(),
+        primary_model: audit.primary_model.clone(),
+        override_model: audit.override_model.clone(),
+        complexity: complexity.map(|s| s.to_string()),
+        user_excerpt: summarize_user_excerpt(user_content),
+        candidates_json: serde_json::to_string(&audit.candidates).unwrap_or_else(|_| "[]".into()),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    if let Err(e) = ironclad_db::model_selection::record_model_selection_event(&state.db, &row) {
+        tracing::warn!(error = %e, turn_id, "failed to persist model selection audit");
+    }
+    state.event_bus.publish(
+        json!({
+            "type": "model_selection",
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "channel": channel,
+            "selected_model": audit.selected_model,
+            "strategy": audit.strategy,
+            "primary_model": audit.primary_model,
+            "override_model": audit.override_model,
+            "complexity": complexity,
+            "candidates": audit.candidates,
+            "created_at": row.created_at,
+        })
+        .to_string(),
+    );
+}
+
 fn fallback_candidates(config: &ironclad_core::IroncladConfig, initial_model: &str) -> Vec<String> {
     let mut candidates = vec![initial_model.to_string()];
     for fb in &config.models.fallbacks {
@@ -1757,7 +2038,16 @@ fn fallback_candidates(config: &ironclad_core::IroncladConfig, initial_model: &s
     candidates
 }
 
-pub(crate) async fn select_routed_model(state: &AppState, _user_content: &str) -> String {
+pub(crate) async fn select_routed_model(state: &AppState, user_content: &str) -> String {
+    select_routed_model_with_audit(state, user_content)
+        .await
+        .selected_model
+}
+
+async fn select_routed_model_with_audit(
+    state: &AppState,
+    _user_content: &str,
+) -> ModelSelectionAudit {
     let config = state.config.read().await;
     let primary = config.models.primary.clone();
     let mut ordered_models = vec![primary.clone()];
@@ -1770,17 +2060,42 @@ pub(crate) async fn select_routed_model(state: &AppState, _user_content: &str) -
 
     let llm_read = state.llm.read().await;
 
-    let is_usable = |model: &str| {
-        if llm_read.providers.get_by_model(model).is_none() {
-            return false;
-        }
+    let evaluate = |model: &str, source: &str| {
+        let provider_available = llm_read.providers.get_by_model(model).is_some();
         let provider_prefix = model.split('/').next().unwrap_or("unknown");
-        !llm_read.breakers.is_blocked(provider_prefix)
+        let breaker_blocked = llm_read.breakers.is_blocked(provider_prefix);
+        let usable = provider_available && !breaker_blocked;
+        let note = if usable {
+            "usable".to_string()
+        } else if !provider_available {
+            "no provider configured for model".to_string()
+        } else {
+            "provider breaker open".to_string()
+        };
+        ModelCandidateAudit {
+            model: model.to_string(),
+            source: source.to_string(),
+            provider_available,
+            breaker_blocked,
+            usable,
+            note,
+        }
     };
+    let mut candidates = Vec::new();
 
     if let Some(ovr) = llm_read.router.get_override() {
-        if is_usable(ovr) {
-            return ovr.to_string();
+        let c = evaluate(ovr, "override");
+        let usable = c.usable;
+        candidates.push(c);
+        if usable {
+            return ModelSelectionAudit {
+                selected_model: ovr.to_string(),
+                strategy: "override_usable".to_string(),
+                primary_model: primary,
+                override_model: Some(ovr.to_string()),
+                ordered_models,
+                candidates,
+            };
         }
         tracing::warn!(
             model = ovr,
@@ -1788,14 +2103,42 @@ pub(crate) async fn select_routed_model(state: &AppState, _user_content: &str) -
         );
     }
 
-    for model in &ordered_models {
-        if is_usable(model) {
-            return model.clone();
+    for (idx, model) in ordered_models.iter().enumerate() {
+        let c = evaluate(
+            model,
+            if idx == 0 {
+                "primary_ordered"
+            } else {
+                "fallback_ordered"
+            },
+        );
+        let usable = c.usable;
+        candidates.push(c);
+        if usable {
+            return ModelSelectionAudit {
+                selected_model: model.clone(),
+                strategy: if idx == 0 {
+                    "primary_usable".to_string()
+                } else {
+                    format!("fallback_usable_{idx}")
+                },
+                primary_model: primary,
+                override_model: llm_read.router.get_override().map(|s| s.to_string()),
+                ordered_models,
+                candidates,
+            };
         }
     }
 
     // Last resort: return configured primary even if provider is degraded/unavailable.
-    primary
+    ModelSelectionAudit {
+        selected_model: primary.clone(),
+        strategy: "last_resort_primary".to_string(),
+        primary_model: primary,
+        override_model: llm_read.router.get_override().map(|s| s.to_string()),
+        ordered_models,
+        candidates,
+    }
 }
 
 async fn resolve_inference_provider(
@@ -1866,7 +2209,11 @@ async fn infer_with_fallback(
             continue;
         }
 
-        let model_for_api = model.split('/').nth(1).unwrap_or(model).to_string();
+        let model_for_api = model
+            .split_once('/')
+            .map(|(_, m)| m)
+            .unwrap_or(model)
+            .to_string();
         let mut req_clone = unified_req.clone();
         // Ensure the request targets this model's API name
         if !req_clone.model.is_empty() {
@@ -2106,11 +2453,12 @@ pub fn check_tool_policy(
     params: &serde_json::Value,
     authority: ironclad_core::InputAuthority,
     tier: ironclad_core::SurvivalTier,
+    risk_level: ironclad_core::RiskLevel,
 ) -> Result<(), (StatusCode, String)> {
     let call = ironclad_agent::policy::ToolCallRequest {
         tool_name: tool_name.into(),
         params: params.clone(),
-        risk_level: ironclad_core::RiskLevel::Caution,
+        risk_level,
     };
     let ctx = ironclad_agent::policy::PolicyContext {
         authority,
@@ -2359,11 +2707,11 @@ async fn build_status_reply(state: &AppState) -> String {
             diag.cache_entries, diag.cache_hit_rate_pct
         ),
         format!(
-            "  subagents: total={} enabled={} running={} error={}",
-            diag.subagents_total,
-            diag.subagents_enabled,
-            diag.subagents_running,
-            diag.subagents_error
+            "  taskable subagents: total={} enabled={} running={} error={}",
+            diag.taskable_subagents_total,
+            diag.taskable_subagents_enabled,
+            diag.taskable_subagents_running,
+            diag.taskable_subagents_error
         ),
         format!(
             "  breakers: {} open, {} half-open",
@@ -2559,9 +2907,22 @@ pub async fn process_channel_message(
         return Err(e.to_string());
     }
 
+    let channel_turn_id = uuid::Uuid::new_v4().to_string();
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
-    let model = select_routed_model(state, &user_content).await;
+    let model_audit = select_routed_model_with_audit(state, &user_content).await;
+    let model = model_audit.selected_model.clone();
+    let complexity_label = format!("{complexity:?}");
+    persist_model_selection_audit(
+        state,
+        &channel_turn_id,
+        &session_id,
+        &platform,
+        Some(&complexity_label),
+        &user_content,
+        &model_audit,
+    )
+    .await;
     let config = state.config.read().await;
 
     let tier_adapt = config.tier_adapt.clone();
@@ -2620,7 +2981,11 @@ pub async fn process_channel_message(
         })
         .collect();
 
-    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let model_for_api = model
+        .split_once('/')
+        .map(|(_, m)| m)
+        .unwrap_or(&model)
+        .to_string();
     let system_prompt = if soul_text.is_empty() {
         format!(
             "You are {name}, an autonomous AI agent (id: {id}). \
@@ -2739,7 +3104,6 @@ pub async fn process_channel_message(
     };
 
     // ReAct loop for channel messages: execute tool calls if detected
-    let channel_turn_id = uuid::Uuid::new_v4().to_string();
     let channel_authority = {
         let cfg = state.config.read().await;
         let trusted = &cfg.channels.trusted_sender_ids;
@@ -3143,6 +3507,7 @@ scope_mode = "{scope_mode}"
             &serde_json::json!({"path": "/tmp/test.txt"}),
             ironclad_core::InputAuthority::Creator,
             ironclad_core::SurvivalTier::Normal,
+            ironclad_core::RiskLevel::Safe,
         );
         assert!(result.is_ok());
     }
@@ -3157,6 +3522,7 @@ scope_mode = "{scope_mode}"
             &serde_json::json!({"command": "rm -rf /"}),
             ironclad_core::InputAuthority::External,
             ironclad_core::SurvivalTier::Normal,
+            ironclad_core::RiskLevel::Dangerous,
         );
         let (status, reason) = result.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -3173,6 +3539,7 @@ scope_mode = "{scope_mode}"
             &serde_json::json!({"amount": 100}),
             ironclad_core::InputAuthority::Creator,
             ironclad_core::SurvivalTier::Normal,
+            ironclad_core::RiskLevel::Dangerous,
         );
         assert!(result.is_ok());
     }
@@ -3188,6 +3555,7 @@ scope_mode = "{scope_mode}"
             &serde_json::json!({"path": "/etc/passwd"}),
             ironclad_core::InputAuthority::External,
             ironclad_core::SurvivalTier::Critical,
+            ironclad_core::RiskLevel::Safe,
         );
         assert!(result.is_ok() || result.is_err());
     }
@@ -3218,6 +3586,13 @@ scope_mode = "{scope_mode}"
     }
 
     #[test]
+    fn model_proxy_roles_are_detected_case_insensitively() {
+        assert!(is_model_proxy_role("model-proxy"));
+        assert!(is_model_proxy_role("Model-Proxy"));
+        assert!(!is_model_proxy_role("subagent"));
+    }
+
+    #[test]
     fn diagnostics_system_note_contains_expected_sections() {
         let diag = RuntimeDiagnostics {
             uptime_seconds: 42,
@@ -3230,10 +3605,10 @@ scope_mode = "{scope_mode}"
             cache_entries: 3,
             cache_hit_rate_pct: 50.0,
             pending_approvals: 1,
-            subagents_total: 2,
-            subagents_enabled: 1,
-            subagents_running: 1,
-            subagents_error: 0,
+            taskable_subagents_total: 2,
+            taskable_subagents_enabled: 1,
+            taskable_subagents_running: 1,
+            taskable_subagents_error: 0,
             channels_total: 2,
             channels_with_errors: 0,
         };

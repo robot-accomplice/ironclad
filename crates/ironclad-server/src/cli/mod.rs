@@ -304,8 +304,7 @@ pub(crate) fn urlencoding(s: &str) -> String {
         .replace('#', "%23")
 }
 
-pub(crate) fn which_binary(name: &str) -> Option<String> {
-    let path_var = std::env::var_os("PATH")?;
+fn which_binary_in_path(name: &str, path_var: &std::ffi::OsStr) -> Option<String> {
     let candidates: Vec<String> = {
         #[cfg(windows)]
         {
@@ -327,11 +326,45 @@ pub(crate) fn which_binary(name: &str) -> Option<String> {
         }
     };
 
-    for dir in std::env::split_paths(&path_var) {
+    for dir in std::env::split_paths(path_var) {
+        #[cfg(windows)]
+        let dir = {
+            // Some Windows PATH entries are quoted; normalize before probing.
+            let raw = dir.to_string_lossy();
+            std::path::PathBuf::from(raw.trim().trim_matches('"'))
+        };
+
         for candidate in &candidates {
             let p = dir.join(candidate);
             if p.is_file() {
                 return Some(p.display().to_string());
+            }
+        }
+    }
+
+    None
+}
+
+pub(crate) fn which_binary(name: &str) -> Option<String> {
+    let path_var = std::env::var_os("PATH")?;
+    if let Some(found) = which_binary_in_path(name, &path_var) {
+        return Some(found);
+    }
+
+    #[cfg(windows)]
+    {
+        // Fall back to Windows command resolution semantics.
+        let output = std::process::Command::new("where")
+            .arg(name)
+            .output()
+            .ok()?;
+        if output.status.success() {
+            if let Some(first) = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+            {
+                return Some(first.to_string());
             }
         }
     }
@@ -405,6 +438,31 @@ mod tests {
     #[test]
     fn which_binary_returns_none_for_nonsense() {
         assert!(which_binary("__ironclad_nonexistent_binary_98765__").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn which_binary_handles_quoted_windows_path_segment() {
+        use std::ffi::OsString;
+        use std::path::PathBuf;
+
+        let test_dir = std::env::temp_dir().join(format!(
+            "ironclad-quoted-path-test-{}-{}",
+            std::process::id(),
+            "go"
+        ));
+        let _ = std::fs::remove_dir_all(&test_dir);
+        std::fs::create_dir_all(&test_dir).unwrap();
+
+        let go_exe = test_dir.join("go.exe");
+        std::fs::write(&go_exe, b"").unwrap();
+
+        let quoted_path = OsString::from(format!("\"{}\"", test_dir.display()));
+        let found = which_binary_in_path("go", &quoted_path).map(PathBuf::from);
+        assert_eq!(found, Some(go_exe.clone()));
+
+        let _ = std::fs::remove_file(go_exe);
+        let _ = std::fs::remove_dir_all(test_dir);
     }
 
     #[test]

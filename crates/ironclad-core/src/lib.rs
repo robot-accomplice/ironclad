@@ -23,6 +23,7 @@
 
 pub mod config;
 pub mod error;
+pub mod input_capability_scan;
 pub mod keystore;
 pub mod personality;
 pub mod style;

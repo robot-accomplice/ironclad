@@ -135,11 +135,30 @@ pub fn find_or_create(
     }
 
     let id = uuid::Uuid::new_v4().to_string();
-    tx.execute(
-        "INSERT INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",
-        rusqlite::params![id, agent_id, &scope_key],
-    )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let inserted = tx
+        .execute(
+            "INSERT OR IGNORE INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, agent_id, &scope_key],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    if inserted == 0 {
+        let existing_after_conflict: Option<String> = tx
+            .query_row(
+                "SELECT id FROM sessions WHERE agent_id = ?1 AND scope_key = ?2 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+                rusqlite::params![agent_id, &scope_key],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(id) = existing_after_conflict {
+            tx.commit()
+                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            return Ok(id);
+        }
+        return Err(IroncladError::Database(
+            "failed to insert or find active session after conflict".to_string(),
+        ));
+    }
 
     tx.commit()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -159,6 +178,35 @@ pub fn create_new(db: &Database, agent_id: &str, scope: Option<&SessionScope>) -
         rusqlite::params![id, agent_id, scope_key],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(id)
+}
+
+/// Archive any active agent-scoped session for `agent_id`, then create a new one atomically.
+pub fn rotate_agent_session(db: &Database, agent_id: &str) -> Result<String> {
+    let conn = db.conn();
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    tx.execute(
+        "UPDATE sessions
+         SET status = 'archived', updated_at = datetime('now')
+         WHERE agent_id = ?1
+           AND status = 'active'
+           AND COALESCE(scope_key, 'agent') = 'agent'",
+        rusqlite::params![agent_id],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, 'agent')",
+        rusqlite::params![id, agent_id],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    tx.commit()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
 }
 
@@ -258,6 +306,26 @@ pub fn create_turn(
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
+}
+
+/// Create a turn record with a caller-provided ID.
+pub fn create_turn_with_id(
+    db: &Database,
+    id: &str,
+    session_id: &str,
+    model: Option<&str>,
+    tokens_in: Option<i64>,
+    tokens_out: Option<i64>,
+    cost: Option<f64>,
+) -> Result<()> {
+    let conn = db.conn();
+    conn.execute(
+        "INSERT INTO turns (id, session_id, model, tokens_in, tokens_out, cost) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, session_id, model, tokens_in, tokens_out, cost],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(())
 }
 
 /// Update the JSON metadata blob for a session.
@@ -1015,6 +1083,21 @@ mod tests {
         let all_active = list_active_sessions(&db, None).unwrap();
         assert_eq!(all_active.len(), 1);
         assert_eq!(all_active[0].agent_id, "agent-list-2");
+    }
+
+    #[test]
+    fn rotate_agent_session_archives_previous_and_creates_new() {
+        let db = test_db();
+        let sid1 = create_new(&db, "agent-rotate", None).unwrap();
+        let sid2 = rotate_agent_session(&db, "agent-rotate").unwrap();
+        assert_ne!(sid1, sid2);
+
+        let old = get_session(&db, &sid1).unwrap().unwrap();
+        assert_eq!(old.status, "archived");
+
+        let active = list_active_sessions(&db, Some("agent-rotate")).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, sid2);
     }
 
     #[test]

@@ -453,6 +453,7 @@ mod tests {
             session_id: "test-session".into(),
             agent_id: "test-agent".into(),
             authority: InputAuthority::Creator,
+            workspace_root: std::env::current_dir().unwrap(),
         }
     }
 
