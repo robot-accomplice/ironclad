@@ -939,6 +939,9 @@ fn plugin_tool_required_permissions(tool_name: &str, input: &Value) -> Vec<&'sta
     if scan.requires_network && !required.contains(&"network") {
         required.push("network");
     }
+    if scan.requires_environment && !required.contains(&"environment") {
+        required.push("environment");
+    }
     required
 }
 
@@ -2404,6 +2407,11 @@ mod tests {
                 required.contains(&"network"),
                 scan.requires_network,
                 "network mismatch for input: {input}"
+            );
+            assert_eq!(
+                required.contains(&"environment"),
+                scan.requires_environment,
+                "environment mismatch for input: {input}"
             );
         }
     }

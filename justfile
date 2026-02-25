@@ -295,10 +295,22 @@ ci-test:
     # Stage 2: Lint
     run_stage "Lint" cargo clippy --workspace --all-targets -- -D warnings
 
-    # Stage 3: Test (per-crate)
-    for crate in "${CRATES[@]}"; do
-        run_stage "Test ($crate)" cargo test -p "$crate" --verbose
-    done
+    # Stage 3: Test
+    #
+    # Prefer nextest for local CI speed. It executes test binaries in parallel
+    # and avoids repeated per-crate command overhead.
+    if command -v cargo-nextest &>/dev/null; then
+        run_stage "Test (workspace nextest)" cargo nextest run --workspace --no-fail-fast
+        # nextest does not run rustdoc tests; keep this explicit for parity.
+        run_stage "Doctest (workspace)" cargo test --workspace --doc
+    else
+        echo ""
+        echo "  ⊘ cargo-nextest not found — using slower per-crate cargo test fallback"
+        echo "    Install: cargo install cargo-nextest"
+        for crate in "${CRATES[@]}"; do
+            run_stage "Test ($crate)" cargo test -p "$crate" --verbose
+        done
+    fi
 
     # Stage 4: Coverage gate (80% floor + no regression)
     COVERAGE_PCT=""
@@ -384,6 +396,37 @@ ci-test:
         echo "  Coverage: ${COVERAGE_PCT}% (baseline: ${old}%)"
         echo "  Note: baseline is CI-authoritative. Use 'just coverage-update-baseline' to update manually."
     fi
+
+# Fast local CI loop (no coverage/build/audit/docs)
+ci-test-fast:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Stage: Format"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    cargo fmt --all -- --check
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Stage: Lint"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    cargo clippy --workspace --all-targets -- -D warnings
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Stage: Test"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    if command -v cargo-nextest &>/dev/null; then
+        cargo nextest run --workspace --no-fail-fast
+        cargo test --workspace --doc
+    else
+        echo "cargo-nextest not found; falling back to cargo test --workspace"
+        cargo test --workspace
+    fi
+
+    echo ""
+    echo "✔ Fast local CI passed"
 
 # ── Clean ──────────────────────────────────────────────
 
@@ -474,7 +517,7 @@ install-hooks:
 
 # Install recommended cargo tools + gosh scripting engine
 install-tools: install-gosh install-hooks
-    cargo install cargo-watch cargo-llvm-cov cargo-outdated cargo-audit
+    cargo install cargo-watch cargo-nextest cargo-llvm-cov cargo-outdated cargo-audit
 
 # Check for Go toolchain (prerequisite for gosh)
 check-go:

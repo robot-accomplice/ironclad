@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, develop]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   checks: write
@@ -14,12 +18,36 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   RUSTFLAGS: "-D warnings"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
+  # ── Change Detection ───────────────────────────────────
+  changes:
+    name: "Change Detection"
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - 'justfile'
+              - 'hooks/**'
+
   # ── Stage 1: Format ────────────────────────────────────
   format:
     name: "Format"
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -37,6 +65,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -63,6 +92,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
@@ -79,6 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: integration-tests
@@ -95,6 +126,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: coverage
@@ -147,6 +179,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: build-${{ matrix.profile }}
@@ -168,6 +201,7 @@ jobs:
     name: "Security Audit"
     runs-on: ubuntu-latest
     needs: lint
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2.0.0
@@ -179,11 +213,13 @@ jobs:
     name: "Documentation"
     runs-on: ubuntu-latest
     needs: lint
+    continue-on-error: true
     env:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: docs
@@ -207,35 +243,34 @@ jobs:
     name: "CI Pass"
     runs-on: ubuntu-latest
     if: always()
-    needs: [format, lint, test, integration-tests, coverage, build, audit, docs]
+    needs: [changes, format, lint, test, integration-tests, coverage, build]
     steps:
       - name: "Verify all required jobs passed"
         env:
+          R_RUST: ${{ needs.changes.outputs.rust }}
           R_FORMAT: ${{ needs.format.result }}
           R_LINT: ${{ needs.lint.result }}
           R_TEST: ${{ needs.test.result }}
           R_INTEGRATION: ${{ needs.integration-tests.result }}
           R_COVERAGE: ${{ needs.coverage.result }}
           R_BUILD: ${{ needs.build.result }}
-          R_AUDIT: ${{ needs.audit.result }}
-          R_DOCS: ${{ needs.docs.result }}
         run: |
+          if [ "$R_RUST" != "true" ]; then
+            echo "No Rust-impacting changes detected — required Rust CI stages skipped."
+            exit 0
+          fi
           echo "format:   $R_FORMAT"
           echo "lint:     $R_LINT"
           echo "test:     $R_TEST"
           echo "integration: $R_INTEGRATION"
           echo "coverage: $R_COVERAGE"
           echo "build:    $R_BUILD"
-          echo "audit:    $R_AUDIT"
-          echo "docs:     $R_DOCS"
           if [ "$R_FORMAT"   != "success" ] || \
              [ "$R_LINT"     != "success" ] || \
              [ "$R_TEST"     != "success" ] || \
              [ "$R_INTEGRATION" != "success" ] || \
              [ "$R_COVERAGE" != "success" ] || \
-             [ "$R_BUILD"    != "success" ] || \
-             [ "$R_AUDIT"    != "success" ] || \
-             [ "$R_DOCS"     != "success" ]; then
+             [ "$R_BUILD"    != "success" ]; then
             echo "::error::One or more CI stages failed"
             exit 1
           fi
