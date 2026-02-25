@@ -435,8 +435,8 @@ mod tests {
     use ironclad_channels::router::ChannelRouter;
     use ironclad_channels::telegram::TelegramAdapter;
     use ironclad_channels::whatsapp::WhatsAppAdapter;
-    use ironclad_db::Database;
     use ironclad_core::InputAuthority;
+    use ironclad_db::Database;
     use ironclad_llm::LlmService;
     use ironclad_llm::OAuthManager;
     use ironclad_plugin_sdk::registry::PluginRegistry;
@@ -1783,12 +1783,15 @@ primary = "ollama/qwen3:8b"
             let cfg = state.config.read().await;
             cfg.skills.clone()
         };
-        registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(skills_cfg)));
+        registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
+            skills_cfg,
+        )));
         state.tools = Arc::new(registry);
 
-        let sid = ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
-        let turn_id = ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None)
-            .unwrap();
+        let sid =
+            ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
+        let turn_id =
+            ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None).unwrap();
 
         let result = agent::execute_tool_call(
             &state,
@@ -1801,7 +1804,10 @@ primary = "ollama/qwen3:8b"
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("requires Creator authority"), "unexpected error: {err}");
+        assert!(
+            err.contains("requires Creator authority"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -1837,12 +1843,15 @@ primary = "ollama/qwen3:8b"
             let cfg = state.config.read().await;
             cfg.skills.clone()
         };
-        registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(skills_cfg)));
+        registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
+            skills_cfg,
+        )));
         state.tools = Arc::new(registry);
 
-        let sid = ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
-        let turn_id = ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None)
-            .unwrap();
+        let sid =
+            ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
+        let turn_id =
+            ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None).unwrap();
 
         let result = agent::execute_tool_call(
             &state,
@@ -1855,7 +1864,10 @@ primary = "ollama/qwen3:8b"
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("denies External authority"), "unexpected error: {err}");
+        assert!(
+            err.contains("denies External authority"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

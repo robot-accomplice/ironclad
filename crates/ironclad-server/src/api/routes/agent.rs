@@ -98,10 +98,7 @@ pub(crate) async fn execute_tool_call(
             _ => ironclad_core::RiskLevel::Caution,
         }
     }
-    fn resolve_script_audit_path(
-        skills_dir: &std::path::Path,
-        script_arg: &str,
-    ) -> Option<String> {
+    fn resolve_script_audit_path(skills_dir: &std::path::Path, script_arg: &str) -> Option<String> {
         let requested = std::path::Path::new(script_arg);
         let root = std::fs::canonicalize(skills_dir).ok()?;
         let joined = if requested.is_absolute() {
@@ -137,7 +134,11 @@ pub(crate) async fn execute_tool_call(
                 ironclad_db::skills::find_enabled_skill_by_script_path(&state.db, &script_path)
         {
             effective_risk = parse_risk_level(&skill.risk_level);
-            matched_skill = Some((skill.id.clone(), skill.name.clone(), skill.content_hash.clone()));
+            matched_skill = Some((
+                skill.id.clone(),
+                skill.name.clone(),
+                skill.content_hash.clone(),
+            ));
 
             if let Some(overrides_raw) = skill.policy_overrides_json.as_deref()
                 && let Ok(overrides) = serde_json::from_str::<serde_json::Value>(overrides_raw)
@@ -156,7 +157,10 @@ pub(crate) async fn execute_tool_call(
                     .unwrap_or(false);
 
                 if disabled {
-                    return Err(format!("Policy override denied: skill '{}' is disabled", skill.name));
+                    return Err(format!(
+                        "Policy override denied: skill '{}' is disabled",
+                        skill.name
+                    ));
                 }
                 if require_creator && authority != ironclad_core::InputAuthority::Creator {
                     return Err(format!(
