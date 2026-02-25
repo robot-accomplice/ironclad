@@ -37,10 +37,23 @@ pub async fn create_approval(
         &body.tool_input,
         body.session_id.as_deref(),
     ) {
-        Ok(req) => match serde_json::to_value(req) {
-            Ok(v) => (StatusCode::CREATED, Json(v)).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
-        },
+        Ok(req) => {
+            if let Err(e) = ironclad_db::approvals::record_approval_request(
+                &state.db,
+                &req.id,
+                &req.tool_name,
+                &req.tool_input,
+                req.session_id.as_deref(),
+                "pending",
+                &req.timeout_at.to_rfc3339(),
+            ) {
+                return super::internal_err(&e).into_response();
+            }
+            match serde_json::to_value(req) {
+                Ok(v) => (StatusCode::CREATED, Json(v)).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
+            }
+        }
         Err(e) => super::internal_err(&e).into_response(),
     }
 }
@@ -64,10 +77,23 @@ pub async fn approve_approval(
     Json(body): Json<DecisionRequest>,
 ) -> impl IntoResponse {
     match state.approvals.approve(&id, &body.decided_by) {
-        Ok(req) => match serde_json::to_value(req) {
-            Ok(v) => Json(v).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
-        },
+        Ok(req) => {
+            if let Some(decided_at) = req.decided_at {
+                if let Err(e) = ironclad_db::approvals::record_approval_decision(
+                    &state.db,
+                    &req.id,
+                    "approved",
+                    req.decided_by.as_deref().unwrap_or(&body.decided_by),
+                    &decided_at.to_rfc3339(),
+                ) {
+                    return super::internal_err(&e).into_response();
+                }
+            }
+            match serde_json::to_value(req) {
+                Ok(v) => Json(v).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
+            }
+        }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -78,10 +104,23 @@ pub async fn deny_approval(
     Json(body): Json<DecisionRequest>,
 ) -> impl IntoResponse {
     match state.approvals.deny(&id, &body.decided_by) {
-        Ok(req) => match serde_json::to_value(req) {
-            Ok(v) => Json(v).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
-        },
+        Ok(req) => {
+            if let Some(decided_at) = req.decided_at {
+                if let Err(e) = ironclad_db::approvals::record_approval_decision(
+                    &state.db,
+                    &req.id,
+                    "denied",
+                    req.decided_by.as_deref().unwrap_or(&body.decided_by),
+                    &decided_at.to_rfc3339(),
+                ) {
+                    return super::internal_err(&e).into_response();
+                }
+            }
+            match serde_json::to_value(req) {
+                Ok(v) => Json(v).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
+            }
+        }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }

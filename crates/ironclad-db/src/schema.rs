@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     tool_name TEXT NOT NULL,
     input TEXT NOT NULL,
     output TEXT,
+    skill_id TEXT,
+    skill_name TEXT,
+    skill_hash TEXT,
     status TEXT NOT NULL,
     duration_ms INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -268,6 +271,7 @@ CREATE TABLE IF NOT EXISTS skills (
     tool_chain_json TEXT,
     policy_overrides_json TEXT,
     script_path TEXT,
+    risk_level TEXT NOT NULL DEFAULT 'Caution',
     enabled INTEGER NOT NULL DEFAULT 1,
     last_loaded_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -384,6 +388,24 @@ CREATE TABLE IF NOT EXISTS context_snapshots (
     model TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS model_selection_events (
+    id TEXT PRIMARY KEY,
+    turn_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    selected_model TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    primary_model TEXT NOT NULL,
+    override_model TEXT,
+    complexity TEXT,
+    user_excerpt TEXT NOT NULL,
+    candidates_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_model_selection_events_turn ON model_selection_events(turn_id);
+CREATE INDEX IF NOT EXISTS idx_model_selection_events_created ON model_selection_events(created_at DESC);
 "#;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
@@ -408,6 +430,46 @@ pub fn initialize_db(db: &Database) -> Result<()> {
     }
 
     run_migrations(db)?;
+    ensure_optional_columns(db)?;
+    Ok(())
+}
+
+fn has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    for col in rows {
+        if col.map_err(|e| IroncladError::Database(e.to_string()))? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn ensure_optional_columns(db: &Database) -> Result<()> {
+    let conn = db.conn();
+    if !has_column(&conn, "skills", "risk_level")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'Caution'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "tool_calls", "skill_id")? {
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN skill_id TEXT", [])
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "tool_calls", "skill_name")? {
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN skill_name TEXT", [])
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "tool_calls", "skill_hash")? {
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN skill_hash TEXT", [])
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -505,8 +567,8 @@ mod tests {
     fn schema_creates_all_tables() {
         let db = Database::new(":memory:").unwrap();
         let count = table_count(&db).unwrap();
-        // 29 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback + context_snapshots = 33
-        assert_eq!(count, 33, "expected 33 user-defined tables, got {count}");
+        // 30 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback + context_snapshots + model_selection_events = 34
+        assert_eq!(count, 34, "expected 34 user-defined tables, got {count}");
     }
 
     #[test]
@@ -515,7 +577,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 33);
+        assert_eq!(count, 34);
     }
 
     #[test]

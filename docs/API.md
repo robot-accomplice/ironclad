@@ -32,7 +32,7 @@ Returns server health status.
 {
   "status": "ok",
   "version": "0.6.0",
-  "agent": "MyAgent",
+  "agent": "Roboticus",
   "uptime_seconds": 3600,
   "models": {
     "primary": "ollama/qwen3:8b",
@@ -133,8 +133,8 @@ Returns the agent's current operational state.
 ```json
 {
   "state": "running",
-  "name": "MyAgent",
-  "id": "my-agent",
+  "name": "Roboticus",
+  "id": "roboticus",
   "model": "ollama/qwen3:8b",
   "primary_provider_state": "closed",
   "uptime_seconds": 3600
@@ -142,6 +142,8 @@ Returns the agent's current operational state.
 ```
 
 The `primary_provider_state` reflects the circuit breaker state: `closed` (healthy), `open` (tripped), or `half_open` (testing recovery).
+
+Diagnostics include `taskable_subagents_*` counts. These metrics explicitly exclude `model-proxy` records, which are routing proxies and not independently taskable subagents.
 
 ### `POST /api/agent/message`
 
@@ -217,7 +219,7 @@ List all sessions.
   "sessions": [
     {
       "id": "abc-123",
-      "agent_id": "my-agent",
+      "agent_id": "roboticus",
       "scope_key": "agent",
       "status": "active",
       "model": "ollama/qwen3:8b",
@@ -237,7 +239,7 @@ Create a new session.
 **Request Body:**
 
 ```json
-{ "agent_id": "my-agent" }
+{ "agent_id": "roboticus" }
 ```
 
 **Response:**
@@ -255,7 +257,7 @@ Get session details.
 ```json
 {
   "id": "abc-123",
-  "agent_id": "my-agent",
+  "agent_id": "roboticus",
   "scope_key": null,
   "status": "active",
   "model": "ollama/qwen3:8b",
@@ -331,6 +333,16 @@ Get a single conversation turn.
 ### `GET /api/turns/{id}/context`
 
 Get the context window state at the time of a turn.
+
+### `GET /api/turns/{id}/model-selection`
+
+Get per-task model-selection forensics for a turn.
+
+**Response includes:**
+- selected model
+- strategy used
+- candidate-by-candidate usability checks (provider availability, breaker state, usability reason)
+- complexity label and task excerpt
 
 ### `GET /api/turns/{id}/tools`
 
@@ -490,7 +502,7 @@ List all scheduled jobs.
     {
       "id": "job-123",
       "name": "heartbeat",
-      "agent_id": "my-agent",
+      "agent_id": "roboticus",
       "schedule_kind": "interval",
       "schedule_expr": "1h",
       "enabled": true
@@ -508,7 +520,7 @@ Create a new scheduled job.
 ```json
 {
   "name": "daily-digest",
-  "agent_id": "my-agent",
+  "agent_id": "roboticus",
   "schedule_kind": "cron",
   "schedule_expr": "0 9 * * *"
 }
@@ -627,6 +639,16 @@ Get per-provider capacity/headroom telemetry used by routing decisions.
   }
 }
 ```
+
+### `GET /api/models/selections`
+
+List recent model-selection forensic events (newest first).
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | `usize` | `100` | Maximum events to return (1-500) |
 
 ---
 
@@ -858,7 +880,7 @@ List all agents in a multi-agent setup.
 ```json
 {
   "agents": [
-    { "id": "my-agent", "name": "MyAgent", "status": "running" }
+    { "id": "roboticus", "name": "Roboticus", "status": "running" }
   ]
 }
 ```
@@ -878,6 +900,10 @@ Stop an agent.
 ---
 
 ## Subagents
+
+Ubiquitous language:
+- A **subagent** is independently taskable, has a fixed skill set, is personality-free, and is orchestrated by the primary agent.
+- A **model-proxy** is not a subagent. It represents model-routing indirection and is excluded from taskable subagent counts.
 
 ### `GET /api/subagents`
 
@@ -902,9 +928,23 @@ Create a new subagent.
 {
   "name": "research-specialist",
   "model": "openai/gpt-4o",
-  "role": "specialist"
+  "role": "subagent",
+  "skills": ["research", "summarization"]
 }
 ```
+
+`role` must be either `subagent` or `model-proxy` (legacy `specialist` is normalized to `subagent`).
+
+`model` supports:
+- a concrete provider/model string (fixed),
+- `auto` (Ironclad chooses per assignment),
+- `commander` (primary agent chooses per assignment).
+
+Validation rules:
+- `personality` payloads are rejected (`400`) for all subagent records.
+- `model-proxy` records cannot own skills.
+- `model-proxy` records cannot use `auto` or `commander`; they require a concrete provider/model.
+- `subagent` records store a fixed skills list (`skills`) on the subagent record.
 
 **Response:**
 
@@ -918,6 +958,8 @@ Create a new subagent.
 ### `PUT /api/subagents/{name}`
 
 Update a subagent's configuration.
+
+Supports updating `display_name`, `model`, `role`, `description`, `skills`, and `enabled`, with the same validation rules as create.
 
 ### `DELETE /api/subagents/{name}`
 
@@ -937,7 +979,7 @@ Toggle a subagent's enabled state.
 
 ### `GET /api/roster`
 
-Get the agent roster (commander + subagents) with skills and models.
+Get the orchestrated roster (commander + taskable subagents) with fixed per-subagent skills and model assignments.
 
 **Response:**
 
@@ -945,11 +987,23 @@ Get the agent roster (commander + subagents) with skills and models.
 {
   "roster": [
     {
-      "name": "MyAgent",
+      "name": "Roboticus",
       "role": "commander",
       "model": "ollama/qwen3:8b",
-      "skills": ["web-search", "bash"]
+      "skills": [],
+      "capabilities": ["orchestrate-subagents", "assign-tasks", "select-subagent-model"]
+    },
+    {
+      "name": "research-specialist",
+      "role": "subagent",
+      "model": "openai/gpt-4o-mini",
+      "skills": ["research", "summarization"]
     }
+  ],
+  "taskable_subagent_count": 1,
+  "model_proxy_count": 2,
+  "model_proxies": [
+    { "name": "cloud-fallback", "role": "model-proxy", "model": "openrouter/openai/gpt-4o-mini" }
   ]
 }
 ```
@@ -963,6 +1017,8 @@ Change the model for an agent in the roster.
 ```json
 { "model": "anthropic/claude-opus-4" }
 ```
+
+For subagents, `model` may also be `auto` or `commander`.
 
 **Response:**
 
@@ -987,13 +1043,23 @@ Change the model for an agent in the roster.
 
 ### `GET /api/workspace/state`
 
-Get the workspace state including agents and files.
+Get the workspace state graph, agent activity, and a top-level workspace file snapshot.
 
 **Response:**
 
 ```json
 {
-  "agents": []
+  "agents": [],
+  "systems": [],
+  "files": {
+    "workspace_root": "/path/to/workspace",
+    "top_level_entries": [
+      { "name": "docs", "kind": "dir" },
+      { "name": "README.md", "kind": "file" }
+    ],
+    "entry_count": 2
+  },
+  "interactions": []
 }
 ```
 
@@ -1053,7 +1119,7 @@ Returns the agent's A2A discovery card per the Google A2A spec.
 
 ```json
 {
-  "name": "MyAgent",
+  "name": "Roboticus",
   "version": "0.4.3",
   "capabilities": ["chat", "tools"]
 }

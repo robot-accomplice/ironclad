@@ -211,7 +211,8 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
 
     // Prerequisites: Go + gosh (plugin scripting engine)
     println!("  {BOLD}Checking prerequisites...{RESET}\n");
-    let has_go = which_binary("go").is_some();
+    let go_bin = which_binary("go");
+    let has_go = go_bin.is_some();
     let has_gosh = which_binary("gosh").is_some();
 
     if !has_go {
@@ -239,9 +240,16 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
             .interact()?;
         if install_now {
             println!("  Installing gosh...");
-            let result = std::process::Command::new("go")
-                .args(["install", "github.com/drewwalton19216801/gosh@latest"])
-                .status();
+            let result = if let Some(go_path) = go_bin.as_deref() {
+                std::process::Command::new(go_path)
+                    .args(["install", "github.com/drewwalton19216801/gosh@latest"])
+                    .status()
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "go binary not found",
+                ))
+            };
             match result {
                 Ok(s) if s.success() => {
                     println!("  {OK} gosh installed successfully");
@@ -267,7 +275,7 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Agent name
     let agent_name: String = Input::new()
         .with_prompt("  Agent name")
-        .default("MyAgent".into())
+        .default("Roboticus".into())
         .interact_text()?;
 
     // 2. LLM provider
@@ -447,7 +455,8 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
 
     // Write config
     let config_path = "ironclad.toml";
-    if std::path::Path::new(config_path).exists() {
+    let is_first_install = !std::path::Path::new(config_path).exists();
+    if !is_first_install {
         let overwrite = Confirm::new()
             .with_prompt("  ironclad.toml already exists. Overwrite?")
             .default(false)
@@ -530,6 +539,20 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
             println!("  {DETAIL} The agent will walk you through a deep personality interview.");
         }
         _ => {}
+    }
+
+    // On first install, explicitly ask whether to run the interview flow.
+    if is_first_install && personality_idx != 2 {
+        let do_interview = Confirm::new()
+            .with_prompt("  Run the guided personality interview now? (recommended)")
+            .default(true)
+            .interact()?;
+        if do_interview {
+            println!();
+            println!("  {DETAIL} Start your agent:  {BOLD}ironclad serve{RESET}");
+            println!("  {DETAIL} Then send it:      {BOLD}/interview{RESET}");
+            println!("  {DETAIL} The agent will walk you through a deep personality interview.");
+        }
     }
 
     println!();

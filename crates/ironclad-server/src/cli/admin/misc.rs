@@ -388,7 +388,7 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
     let mut go_bin = which_binary("go");
     match go_bin.as_ref() {
         Some(path) => {
-            let ver = std::process::Command::new("go")
+            let ver = std::process::Command::new(path)
                 .arg("version")
                 .output()
                 .ok()
@@ -497,9 +497,16 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
             if go_bin.is_some() {
                 if prompt_yes_no("  Install gosh now via `go install`?") {
                     println!("  {ACTION} Installing gosh...");
-                    let result = std::process::Command::new("go")
-                        .args(["install", "github.com/drewwalton19216801/gosh@latest"])
-                        .status();
+                    let result = if let Some(go_path) = go_bin.as_deref() {
+                        std::process::Command::new(go_path)
+                            .args(["install", "github.com/drewwalton19216801/gosh@latest"])
+                            .status()
+                    } else {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "go binary not found",
+                        ))
+                    };
                     match result {
                         Ok(s) if s.success() => {
                             if let Some(path) = which_binary("gosh") {

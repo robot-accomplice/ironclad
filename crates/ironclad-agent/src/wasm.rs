@@ -1,4 +1,4 @@
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::{IroncladError, Result, input_capability_scan};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -118,6 +118,7 @@ impl WasmPlugin {
         if !self.loaded {
             return Err(IroncladError::Config("WASM plugin not loaded".into()));
         }
+        self.enforce_capabilities(input)?;
 
         let engine = self
             .engine
@@ -215,6 +216,61 @@ impl WasmPlugin {
             "plugin": self.config.name,
             "available_exports": export_names,
         }))
+    }
+
+    fn enforce_capabilities(&self, input: &serde_json::Value) -> Result<()> {
+        let mut required: Vec<WasmCapability> = vec![];
+        if let Some(explicit) = input
+            .get("required_capabilities")
+            .and_then(|v| v.as_array())
+        {
+            for cap in explicit.iter().filter_map(|v| v.as_str()) {
+                match cap.to_ascii_lowercase().as_str() {
+                    "readfilesystem" | "read_filesystem" | "filesystem_read" => {
+                        if !required.contains(&WasmCapability::ReadFilesystem) {
+                            required.push(WasmCapability::ReadFilesystem);
+                        }
+                    }
+                    "writefilesystem" | "write_filesystem" | "filesystem_write" => {
+                        if !required.contains(&WasmCapability::WriteFilesystem) {
+                            required.push(WasmCapability::WriteFilesystem);
+                        }
+                    }
+                    "network" => {
+                        if !required.contains(&WasmCapability::Network) {
+                            required.push(WasmCapability::Network);
+                        }
+                    }
+                    "environment" | "env" => {
+                        if !required.contains(&WasmCapability::Environment) {
+                            required.push(WasmCapability::Environment);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let scan = input_capability_scan::scan_input_capabilities(input);
+        if scan.requires_filesystem && !required.contains(&WasmCapability::ReadFilesystem) {
+            required.push(WasmCapability::ReadFilesystem);
+        }
+        if scan.requires_network && !required.contains(&WasmCapability::Network) {
+            required.push(WasmCapability::Network);
+        }
+        if scan.requires_environment && !required.contains(&WasmCapability::Environment) {
+            required.push(WasmCapability::Environment);
+        }
+
+        for cap in required {
+            if !self.has_capability(&cap) {
+                return Err(IroncladError::Tool {
+                    tool: self.config.name.clone(),
+                    message: format!("missing required WASM capability: {:?}", cap),
+                });
+            }
+        }
+        Ok(())
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -323,6 +379,16 @@ mod tests {
         }
     }
 
+    fn plugin_with_capabilities(capabilities: Vec<WasmCapability>) -> WasmPlugin {
+        WasmPlugin::new(WasmPluginConfig {
+            name: "scan-matrix".to_string(),
+            wasm_path: PathBuf::from("/tmp/scan-matrix.wasm"),
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities,
+        })
+    }
+
     #[test]
     fn plugin_load_and_execute() {
         let dir = TempDir::new().unwrap();
@@ -415,6 +481,98 @@ mod tests {
         assert!(plugin.has_capability(&WasmCapability::ReadFilesystem));
         assert!(plugin.has_capability(&WasmCapability::Network));
         assert!(!plugin.has_capability(&WasmCapability::WriteFilesystem));
+    }
+
+    #[test]
+    fn capability_enforcement_blocks_network_access() {
+        let dir = TempDir::new().unwrap();
+        let config = test_config(dir.path(), "caps-enforced");
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+        let err = plugin
+            .execute(&serde_json::json!({"url": "https://example.com"}))
+            .unwrap_err();
+        assert!(err.to_string().contains("missing required WASM capability"));
+    }
+
+    #[test]
+    fn capability_enforcement_allows_declared_network_access() {
+        let dir = TempDir::new().unwrap();
+        let mut config = test_config(dir.path(), "caps-network");
+        config.capabilities = vec![WasmCapability::Network];
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+        let result = plugin
+            .execute(&serde_json::json!({"url": "https://example.com"}))
+            .unwrap();
+        assert_eq!(result["status"], "executed");
+    }
+
+    #[test]
+    fn capability_enforcement_blocks_filesystem_access_for_path_keys() {
+        let dir = TempDir::new().unwrap();
+        let config = test_config(dir.path(), "caps-fs");
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+        let err = plugin
+            .execute(&serde_json::json!({"path": "src/main.rs"}))
+            .unwrap_err();
+        assert!(err.to_string().contains("missing required WASM capability"));
+    }
+
+    #[test]
+    fn capability_enforcement_ignores_regex_backslashes_without_path_context() {
+        let dir = TempDir::new().unwrap();
+        let config = test_config(dir.path(), "caps-regex");
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+        let result = plugin
+            .execute(&serde_json::json!({"pattern": "\\d+\\w+\\s*"}))
+            .unwrap();
+        assert_eq!(result["status"], "executed");
+    }
+
+    #[test]
+    fn capability_enforcement_matches_shared_scan_for_input_matrix() {
+        let cases = vec![
+            serde_json::json!({}),
+            serde_json::json!({"endpoint": "https://example.com/v1"}),
+            serde_json::json!({"socket": "wss://example.com/stream"}),
+            serde_json::json!({"model": "openai/gpt-4o"}),
+            serde_json::json!({"model": "/etc/passwd"}),
+            serde_json::json!({"path": "src/main.rs"}),
+            serde_json::json!({"input": "secrets/config.yaml"}),
+            serde_json::json!({"pattern": "\\d+\\w+\\s*"}),
+            serde_json::json!({"env_var": "SECRET_TOKEN"}),
+        ];
+
+        for input in cases {
+            let scan = input_capability_scan::scan_input_capabilities(&input);
+            let mut required_caps = Vec::new();
+            if scan.requires_filesystem {
+                required_caps.push(WasmCapability::ReadFilesystem);
+            }
+            if scan.requires_network {
+                required_caps.push(WasmCapability::Network);
+            }
+            if scan.requires_environment {
+                required_caps.push(WasmCapability::Environment);
+            }
+
+            let no_caps = plugin_with_capabilities(vec![]);
+            let no_caps_ok = no_caps.enforce_capabilities(&input).is_ok();
+            assert_eq!(
+                no_caps_ok,
+                required_caps.is_empty(),
+                "no-capability behavior mismatch for input: {input}"
+            );
+
+            let with_required = plugin_with_capabilities(required_caps);
+            assert!(
+                with_required.enforce_capabilities(&input).is_ok(),
+                "required-capability behavior mismatch for input: {input}"
+            );
+        }
     }
 
     #[test]

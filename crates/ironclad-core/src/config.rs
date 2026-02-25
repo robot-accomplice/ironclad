@@ -1062,7 +1062,19 @@ fn default_script_max_output() -> usize {
     1_048_576
 }
 fn default_interpreters() -> Vec<String> {
-    vec!["bash".into(), "python3".into(), "node".into()]
+    #[cfg(windows)]
+    {
+        vec![
+            "bash".into(),
+            "python".into(),
+            "python3".into(),
+            "node".into(),
+        ]
+    }
+    #[cfg(not(windows))]
+    {
+        vec!["bash".into(), "python3".into(), "node".into()]
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1765,7 +1777,13 @@ hot_reload = true
         assert_eq!(cfg.script_max_output_bytes, 1_048_576);
         assert!(cfg.sandbox_env);
         assert!(cfg.hot_reload);
-        assert_eq!(cfg.allowed_interpreters.len(), 3);
+        #[cfg(windows)]
+        assert_eq!(
+            cfg.allowed_interpreters,
+            vec!["bash", "python", "python3", "node"]
+        );
+        #[cfg(not(windows))]
+        assert_eq!(cfg.allowed_interpreters, vec!["bash", "python3", "node"]);
     }
 
     #[test]

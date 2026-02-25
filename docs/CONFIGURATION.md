@@ -6,8 +6,8 @@ A minimal config requires only the `[agent]`, `[server]`, `[database]`, and `[mo
 
 ```toml
 [agent]
-name = "MyAgent"
-id = "my-agent"
+name = "Roboticus"
+id = "roboticus"
 
 [server]
 port = 18789
