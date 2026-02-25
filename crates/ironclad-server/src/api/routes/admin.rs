@@ -965,10 +965,9 @@ fn plugin_tool_required_permissions(tool_name: &str, input: &Value) -> Vec<&'sta
     if values
         .iter()
         .any(|v| v.starts_with("http://") || v.starts_with("https://"))
+        && !required.contains(&"network")
     {
-        if !required.contains(&"network") {
-            required.push("network");
-        }
+        required.push("network");
     }
     required
 }
