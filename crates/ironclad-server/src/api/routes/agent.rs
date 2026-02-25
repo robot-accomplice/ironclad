@@ -248,10 +248,15 @@ pub(crate) async fn execute_tool_call(
         Ok(_) => {}
     }
 
+    let workspace_root = {
+        let cfg = state.config.read().await;
+        cfg.agent.workspace.clone()
+    };
     let ctx = ToolContext {
         session_id: turn_id.to_string(),
         agent_id: "ironclad".to_string(),
         authority,
+        workspace_root,
     };
 
     state.event_bus.publish(
@@ -291,7 +296,7 @@ pub(crate) async fn execute_tool_call(
     const MAX_TOOL_OUTPUT: usize = 16_384;
     let (output, status) = match &result {
         Ok(r) => {
-            let out = if r.output.len() > MAX_TOOL_OUTPUT {
+            let mut out = if r.output.len() > MAX_TOOL_OUTPUT {
                 let boundary = r.output.floor_char_boundary(MAX_TOOL_OUTPUT);
                 format!(
                     "{}...\n[truncated: {} bytes total]",
@@ -301,7 +306,18 @@ pub(crate) async fn execute_tool_call(
             } else {
                 r.output.clone()
             };
-            (out, "success")
+            let mut status = "success";
+            if let Some(unreadable) = r
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("unreadable_files"))
+                .and_then(|v| v.as_u64())
+                && unreadable > 0
+            {
+                status = "partial_success";
+                out = format!("{out}\n\n[warning] Search skipped {unreadable} unreadable file(s).");
+            }
+            (out, status)
         }
         Err(e) => (e.message.clone(), "error"),
     };

@@ -310,7 +310,22 @@ mod tests {
         let py_script = dir.path().join("test.py");
         fs::write(&py_script, "print('hi')").unwrap();
 
-        let allowed = vec!["bash".into(), "python3".into(), "node".into()];
+        #[cfg(windows)]
+        let allowed = vec![
+            "bash".to_string(),
+            "python".to_string(),
+            "python3".to_string(),
+            "node".to_string(),
+        ];
+        #[cfg(not(windows))]
+        let allowed = vec![
+            "bash".to_string(),
+            "python3".to_string(),
+            "node".to_string(),
+        ];
+        #[cfg(windows)]
+        assert_eq!(check_interpreter(&py_script, &allowed).unwrap(), "python");
+        #[cfg(not(windows))]
         assert_eq!(check_interpreter(&py_script, &allowed).unwrap(), "python3");
 
         let sh_script = dir.path().join("test.sh");

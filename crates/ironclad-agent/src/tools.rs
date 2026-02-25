@@ -11,15 +11,12 @@ const MAX_FILE_BYTES: usize = 1024 * 1024;
 const MAX_SEARCH_RESULTS: usize = 100;
 const MAX_WALK_FILES: usize = 5000;
 
-fn workspace_root() -> std::result::Result<PathBuf, ToolError> {
-    let root = match std::env::var("IRONCLAD_WORKSPACE_ROOT") {
-        Ok(val) => PathBuf::from(val),
-        Err(_) => std::env::current_dir().map_err(|e| ToolError {
-            message: format!("failed to determine current directory: {e}"),
-        })?,
-    };
-    std::fs::canonicalize(&root).map_err(|e| ToolError {
-        message: format!("failed to resolve workspace root '{}': {e}", root.display()),
+fn workspace_root_from_ctx(ctx: &ToolContext) -> std::result::Result<PathBuf, ToolError> {
+    std::fs::canonicalize(&ctx.workspace_root).map_err(|e| ToolError {
+        message: format!(
+            "failed to resolve workspace root '{}': {e}",
+            ctx.workspace_root.display()
+        ),
     })
 }
 
@@ -38,10 +35,10 @@ fn validate_rel_path(rel: &Path) -> std::result::Result<(), ToolError> {
 }
 
 fn resolve_workspace_path(
+    root: &Path,
     rel: &str,
     allow_nonexistent: bool,
 ) -> std::result::Result<PathBuf, ToolError> {
-    let root = workspace_root()?;
     let rel_path = Path::new(rel);
     validate_rel_path(rel_path)?;
     let joined = root.join(rel_path);
@@ -158,7 +155,7 @@ pub trait Tool: Send + Sync {
     async fn execute(
         &self,
         params: Value,
-        ctx: &ToolContext,
+        _ctx: &ToolContext,
     ) -> std::result::Result<ToolResult, ToolError>;
 }
 
@@ -167,6 +164,7 @@ pub struct ToolContext {
     pub session_id: String,
     pub agent_id: String,
     pub authority: InputAuthority,
+    pub workspace_root: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -328,13 +326,16 @@ impl Tool for ScriptRunnerTool {
 
         match self.runner.execute(script_path, &arg_refs).await {
             Ok(result) => {
-                let output = if result.exit_code == 0 {
-                    result.stdout
-                } else {
-                    format!("exit code {}: {}", result.exit_code, result.stderr)
-                };
+                if result.exit_code != 0 {
+                    return Err(ToolError {
+                        message: format!(
+                            "script exited with code {}: {}",
+                            result.exit_code, result.stderr
+                        ),
+                    });
+                }
                 Ok(ToolResult {
-                    output,
+                    output: result.stdout,
                     metadata: Some(serde_json::json!({
                         "exit_code": result.exit_code,
                         "duration_ms": result.duration_ms,
@@ -361,7 +362,8 @@ impl Tool for ReadFileTool {
     }
 
     fn risk_level(&self) -> RiskLevel {
-        RiskLevel::Safe
+        // Reading workspace files should not be callable by untrusted External input.
+        RiskLevel::Caution
     }
 
     fn parameters_schema(&self) -> Value {
@@ -375,7 +377,7 @@ impl Tool for ReadFileTool {
     async fn execute(
         &self,
         params: Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> std::result::Result<ToolResult, ToolError> {
         let rel = params
             .get("path")
@@ -383,7 +385,8 @@ impl Tool for ReadFileTool {
             .ok_or_else(|| ToolError {
                 message: "missing 'path' parameter".into(),
             })?;
-        let path = resolve_workspace_path(rel, false)?;
+        let root = workspace_root_from_ctx(ctx)?;
+        let path = resolve_workspace_path(&root, rel, false)?;
         let meta = std::fs::metadata(&path).map_err(|e| ToolError {
             message: format!("failed to stat '{}': {e}", path.display()),
         })?;
@@ -438,7 +441,7 @@ impl Tool for WriteFileTool {
     async fn execute(
         &self,
         params: Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> std::result::Result<ToolResult, ToolError> {
         let rel = params
             .get("path")
@@ -456,7 +459,8 @@ impl Tool for WriteFileTool {
             .get("append")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let path = resolve_workspace_path(rel, true)?;
+        let root = workspace_root_from_ctx(ctx)?;
+        let path = resolve_workspace_path(&root, rel, true)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| ToolError {
                 message: format!("failed to create parent dirs '{}': {e}", parent.display()),
@@ -520,7 +524,7 @@ impl Tool for EditFileTool {
     async fn execute(
         &self,
         params: Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> std::result::Result<ToolResult, ToolError> {
         let rel = params
             .get("path")
@@ -544,7 +548,8 @@ impl Tool for EditFileTool {
             .get("replace_all")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let path = resolve_workspace_path(rel, false)?;
+        let root = workspace_root_from_ctx(ctx)?;
+        let path = resolve_workspace_path(&root, rel, false)?;
         let content = std::fs::read_to_string(&path).map_err(|e| ToolError {
             message: format!("failed to read '{}': {e}", path.display()),
         })?;
@@ -583,7 +588,7 @@ impl Tool for ListDirectoryTool {
     }
 
     fn risk_level(&self) -> RiskLevel {
-        RiskLevel::Safe
+        RiskLevel::Caution
     }
 
     fn parameters_schema(&self) -> Value {
@@ -598,10 +603,11 @@ impl Tool for ListDirectoryTool {
     async fn execute(
         &self,
         params: Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> std::result::Result<ToolResult, ToolError> {
         let rel = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let path = resolve_workspace_path(rel, false)?;
+        let root = workspace_root_from_ctx(ctx)?;
+        let path = resolve_workspace_path(&root, rel, false)?;
         let mut entries = Vec::new();
         for entry in std::fs::read_dir(&path).map_err(|e| ToolError {
             message: format!("failed to read directory '{}': {e}", path.display()),
@@ -646,7 +652,7 @@ impl Tool for GlobFilesTool {
     }
 
     fn risk_level(&self) -> RiskLevel {
-        RiskLevel::Safe
+        RiskLevel::Caution
     }
 
     fn parameters_schema(&self) -> Value {
@@ -664,7 +670,7 @@ impl Tool for GlobFilesTool {
     async fn execute(
         &self,
         params: Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> std::result::Result<ToolResult, ToolError> {
         let pattern = params
             .get("pattern")
@@ -679,8 +685,8 @@ impl Tool for GlobFilesTool {
             .map(|n| n as usize)
             .unwrap_or(50)
             .min(500);
-        let base = resolve_workspace_path(rel, false)?;
-        let root = workspace_root()?;
+        let root = workspace_root_from_ctx(ctx)?;
+        let base = resolve_workspace_path(&root, rel, false)?;
         let mut files = Vec::new();
         let mut count = 0usize;
         walk_workspace_files(&base, &mut files, &mut count)?;
@@ -715,7 +721,7 @@ impl Tool for SearchFilesTool {
     }
 
     fn risk_level(&self) -> RiskLevel {
-        RiskLevel::Safe
+        RiskLevel::Caution
     }
 
     fn parameters_schema(&self) -> Value {
@@ -734,7 +740,7 @@ impl Tool for SearchFilesTool {
     async fn execute(
         &self,
         params: Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> std::result::Result<ToolResult, ToolError> {
         let query = params
             .get("query")
@@ -753,12 +759,13 @@ impl Tool for SearchFilesTool {
             .get("case_sensitive")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let base = resolve_workspace_path(rel, false)?;
-        let root = workspace_root()?;
+        let root = workspace_root_from_ctx(ctx)?;
+        let base = resolve_workspace_path(&root, rel, false)?;
         let mut files = Vec::new();
         let mut count = 0usize;
         walk_workspace_files(&base, &mut files, &mut count)?;
         let mut hits = Vec::new();
+        let mut unreadable_files = 0usize;
         let query_cmp = if case_sensitive {
             query.to_string()
         } else {
@@ -770,7 +777,10 @@ impl Tool for SearchFilesTool {
             }
             let content = match std::fs::read_to_string(&p) {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(_) => {
+                    unreadable_files += 1;
+                    continue;
+                }
             };
             for (idx, line) in content.lines().enumerate() {
                 let cmp = if case_sensitive {
@@ -797,7 +807,11 @@ impl Tool for SearchFilesTool {
         }
         Ok(ToolResult {
             output: serde_json::to_string_pretty(&hits).unwrap_or_else(|_| "[]".to_string()),
-            metadata: Some(serde_json::json!({ "count": hits.len(), "query": query })),
+            metadata: Some(serde_json::json!({
+                "count": hits.len(),
+                "query": query,
+                "unreadable_files": unreadable_files
+            })),
         })
     }
 }
@@ -805,6 +819,7 @@ impl Tool for SearchFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ironclad_core::config::SkillsConfig;
     use uuid::Uuid;
 
     fn test_ctx() -> ToolContext {
@@ -812,6 +827,7 @@ mod tests {
             session_id: "test-session".into(),
             agent_id: "test-agent".into(),
             authority: InputAuthority::Creator,
+            workspace_root: std::env::current_dir().unwrap(),
         }
     }
 
@@ -895,5 +911,37 @@ mod tests {
         assert!(listed.output.contains("note.txt"));
 
         let _ = std::fs::remove_dir_all(unique);
+    }
+
+    #[test]
+    fn filesystem_tool_risk_levels_block_external_authority() {
+        assert_eq!(ReadFileTool.risk_level(), RiskLevel::Caution);
+        assert_eq!(ListDirectoryTool.risk_level(), RiskLevel::Caution);
+        assert_eq!(GlobFilesTool.risk_level(), RiskLevel::Caution);
+        assert_eq!(SearchFilesTool.risk_level(), RiskLevel::Caution);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_script_tool_nonzero_exit_is_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("fail.sh");
+        std::fs::write(&script_path, "#!/bin/bash\necho boom >&2\nexit 7").unwrap();
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let cfg = SkillsConfig {
+            skills_dir: dir.path().to_path_buf(),
+            allowed_interpreters: vec!["bash".to_string()],
+            ..Default::default()
+        };
+        let tool = ScriptRunnerTool::new(cfg);
+        let ctx = test_ctx();
+
+        let err = tool
+            .execute(serde_json::json!({"path": "fail.sh"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("script exited with code 7"));
     }
 }

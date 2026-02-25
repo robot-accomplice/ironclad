@@ -345,9 +345,13 @@ mod tests {
             ScriptPlugin::interpreter_for(Path::new("x.go")),
             Some(("go", ["run"].as_slice()))
         );
+        #[cfg(windows)]
+        let expected_python = Some(("python", [].as_slice()));
+        #[cfg(not(windows))]
+        let expected_python = Some(("python3", [].as_slice()));
         assert_eq!(
             ScriptPlugin::interpreter_for(Path::new("x.py")),
-            Some(("python3", [].as_slice()))
+            expected_python
         );
         assert_eq!(
             ScriptPlugin::interpreter_for(Path::new("x.sh")),

@@ -937,39 +937,103 @@ fn plugin_tool_required_permissions(tool_name: &str, input: &Value) -> Vec<&'sta
         required.push("network");
     }
 
-    let mut values = Vec::new();
-    fn collect_strings(v: &Value, out: &mut Vec<String>) {
+    fn is_path_key(key: &str) -> bool {
+        ["path", "file", "filepath", "directory", "dir", "filename"].contains(&key)
+    }
+    fn is_model_key(key: &str) -> bool {
+        [
+            "model",
+            "model_id",
+            "primary",
+            "fallback",
+            "provider_model",
+            "model_name",
+        ]
+        .contains(&key)
+    }
+    fn is_url(v: &str) -> bool {
+        let lower = v.to_ascii_lowercase();
+        lower.starts_with("http://")
+            || lower.starts_with("https://")
+            || lower.starts_with("ws://")
+            || lower.starts_with("wss://")
+    }
+
+    let mut values: Vec<(Option<String>, bool, bool, String)> = Vec::new();
+    fn collect_strings(
+        v: &Value,
+        key_ctx: Option<&str>,
+        in_path_context: bool,
+        in_model_context: bool,
+        out: &mut Vec<(Option<String>, bool, bool, String)>,
+    ) {
         match v {
-            Value::String(s) => out.push(s.clone()),
+            Value::String(s) => out.push((
+                key_ctx.map(|k| k.to_string()),
+                in_path_context,
+                in_model_context,
+                s.clone(),
+            )),
             Value::Array(a) => {
                 for x in a {
-                    collect_strings(x, out);
+                    collect_strings(x, key_ctx, in_path_context, in_model_context, out);
                 }
             }
             Value::Object(m) => {
                 for (k, x) in m {
-                    let key = k.to_lowercase();
-                    if ["path", "file", "filepath", "directory", "dir"].contains(&key.as_str()) {
-                        out.push("__filesystem__".to_string());
-                    }
-                    collect_strings(x, out);
+                    let lower = k.to_lowercase();
+                    let next_path_context = in_path_context || is_path_key(&lower);
+                    let next_model_context = in_model_context || is_model_key(&lower);
+                    collect_strings(x, Some(&lower), next_path_context, next_model_context, out);
                 }
             }
             _ => {}
         }
     }
-    collect_strings(input, &mut values);
+    collect_strings(input, None, false, false, &mut values);
+    fn looks_like_filesystem_path(
+        v: &str,
+        key: Option<&str>,
+        in_path_context: bool,
+        in_model_context: bool,
+    ) -> bool {
+        if in_path_context {
+            return true;
+        }
+        if is_url(v) {
+            return false;
+        }
+        if v.starts_with('/') || v.starts_with('\\') || v.starts_with("./") || v.starts_with("../")
+        {
+            return true;
+        }
+        // Windows drive letter path, e.g. C:\foo or D:/bar
+        let bytes = v.as_bytes();
+        if bytes.len() >= 3 && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/') {
+            return bytes[0].is_ascii_alphabetic();
+        }
+        // In model context, suppress only ambiguous slash-based identifiers
+        // (e.g., provider/model), but not explicit path-shaped values above.
+        if in_model_context {
+            return false;
+        }
+        // Relative paths with separators should count as filesystem unless
+        // they are explicitly model-like identifiers under model keys.
+        if (v.contains('/') || v.contains('\\')) && !key.map(is_model_key).unwrap_or(false) {
+            return true;
+        }
+        false
+    }
+
     if values
         .iter()
-        .any(|v| v == "__filesystem__" || v.contains('/') || v.contains('\\'))
+        .any(|(key, in_path_context, in_model_context, value)| {
+            looks_like_filesystem_path(value, key.as_deref(), *in_path_context, *in_model_context)
+        })
     {
         required.push("filesystem");
     }
-    if values
-        .iter()
-        .any(|v| v.starts_with("http://") || v.starts_with("https://"))
-        && !required.contains(&"network")
-    {
+    if values.iter().any(|(_, _, _, v)| is_url(v)) && !required.contains(&"network") {
         required.push("network");
     }
     required
@@ -2364,5 +2428,41 @@ mod tests {
             workstation_for_tool("target-analyzer"),
             ("exec", "tool_execution")
         );
+    }
+
+    #[test]
+    fn plugin_permissions_do_not_treat_urls_or_model_ids_as_filesystem() {
+        let url_required = plugin_tool_required_permissions(
+            "api_call",
+            &json!({"endpoint": "https://example.com/v1/chat"}),
+        );
+        assert!(url_required.contains(&"network"));
+        assert!(!url_required.contains(&"filesystem"));
+
+        let model_required =
+            plugin_tool_required_permissions("select_model", &json!({"model": "openai/gpt-4o"}));
+        assert!(!model_required.contains(&"filesystem"));
+        let nested_model_required = plugin_tool_required_permissions(
+            "select_model",
+            &json!({"model": {"id": "openai/gpt-4o"}}),
+        );
+        assert!(!nested_model_required.contains(&"filesystem"));
+        let model_path_required =
+            plugin_tool_required_permissions("select_model", &json!({"model": "/etc/passwd"}));
+        assert!(model_path_required.contains(&"filesystem"));
+
+        let generic_relative_path_required = plugin_tool_required_permissions(
+            "process_input",
+            &json!({"input": "secrets/config.yaml"}),
+        );
+        assert!(generic_relative_path_required.contains(&"filesystem"));
+
+        let nested_path_required =
+            plugin_tool_required_permissions("process_input", &json!({"path": {"name": "secret"}}));
+        assert!(nested_path_required.contains(&"filesystem"));
+
+        let file_required =
+            plugin_tool_required_permissions("load_file", &json!({"path": "C:\\tmp\\input.txt"}));
+        assert!(file_required.contains(&"filesystem"));
     }
 }
