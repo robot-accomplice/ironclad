@@ -219,32 +219,109 @@ impl WasmPlugin {
     }
 
     fn enforce_capabilities(&self, input: &serde_json::Value) -> Result<()> {
-        fn collect_strings(v: &serde_json::Value, out: &mut Vec<String>) {
+        fn is_path_key(k: &str) -> bool {
+            ["path", "file", "filepath", "directory", "dir"].contains(&k)
+        }
+
+        fn is_model_key(k: &str) -> bool {
+            ["model", "model_id", "provider", "provider_model", "engine"].contains(&k)
+        }
+
+        fn is_url(v: &str) -> bool {
+            let lower = v.trim().to_ascii_lowercase();
+            lower.starts_with("http://") || lower.starts_with("https://")
+        }
+
+        fn collect_strings(
+            v: &serde_json::Value,
+            key_ctx: Option<&str>,
+            in_path_context: bool,
+            in_model_context: bool,
+            out: &mut Vec<(Option<String>, bool, bool, String)>,
+        ) {
             match v {
-                serde_json::Value::String(s) => out.push(s.clone()),
+                serde_json::Value::String(s) => out.push((
+                    key_ctx.map(|k| k.to_string()),
+                    in_path_context,
+                    in_model_context,
+                    s.clone(),
+                )),
                 serde_json::Value::Array(arr) => {
                     for x in arr {
-                        collect_strings(x, out);
+                        collect_strings(x, key_ctx, in_path_context, in_model_context, out);
                     }
                 }
                 serde_json::Value::Object(map) => {
                     for (k, x) in map {
                         let key = k.to_lowercase();
-                        if ["path", "file", "filepath", "directory", "dir"].contains(&key.as_str())
-                        {
-                            out.push("__filesystem__".into());
+                        if is_path_key(&key) {
+                            out.push((
+                                Some(key.clone()),
+                                true,
+                                in_model_context,
+                                "__filesystem__".into(),
+                            ));
                         }
                         if ["url", "endpoint", "host", "api"].contains(&key.as_str()) {
-                            out.push("__network__".into());
+                            out.push((
+                                Some(key.clone()),
+                                in_path_context,
+                                in_model_context,
+                                "__network__".into(),
+                            ));
                         }
                         if ["env", "environment", "env_var", "env_key"].contains(&key.as_str()) {
-                            out.push("__environment__".into());
+                            out.push((
+                                Some(key.clone()),
+                                in_path_context,
+                                in_model_context,
+                                "__environment__".into(),
+                            ));
                         }
-                        collect_strings(x, out);
+                        let next_path_context = in_path_context || is_path_key(&key);
+                        let next_model_context = in_model_context || is_model_key(&key);
+                        collect_strings(x, Some(&key), next_path_context, next_model_context, out);
                     }
                 }
                 _ => {}
             }
+        }
+
+        fn looks_like_filesystem_path(
+            v: &str,
+            key: Option<&str>,
+            in_path_context: bool,
+            in_model_context: bool,
+        ) -> bool {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                return false;
+            }
+            if in_path_context || key.is_some_and(is_path_key) {
+                return true;
+            }
+            if in_model_context || is_url(trimmed) {
+                return false;
+            }
+            if trimmed.starts_with('/')
+                || trimmed.starts_with("./")
+                || trimmed.starts_with("../")
+                || trimmed.starts_with("~/")
+                || trimmed.starts_with(".\\")
+                || trimmed.starts_with("..\\")
+                || trimmed.starts_with("~\\")
+                || trimmed.starts_with("\\\\")
+            {
+                return true;
+            }
+            if trimmed.len() > 2
+                && trimmed.as_bytes().get(1) == Some(&b':')
+                && matches!(trimmed.as_bytes().get(2), Some(b'\\' | b'/'))
+            {
+                return true;
+            }
+            // Slash-separated strings are path-like once URLs/model IDs are excluded.
+            trimmed.contains('/')
         }
 
         let mut required: Vec<WasmCapability> = vec![];
@@ -280,27 +357,30 @@ impl WasmPlugin {
         }
 
         let mut tokens = Vec::new();
-        collect_strings(input, &mut tokens);
-        if tokens.iter().any(|v| {
-            v == "__filesystem__"
-                || v.contains('\\')
-                || v.starts_with('/')
-                || v.starts_with("./")
-                || v.starts_with("../")
-                || v.starts_with("~/")
-                || (v.len() > 2 && v.as_bytes().get(1) == Some(&b':') && v.contains('\\'))
-        }) && !required.contains(&WasmCapability::ReadFilesystem)
+        collect_strings(input, None, false, false, &mut tokens);
+        if tokens
+            .iter()
+            .any(|(key, in_path_context, in_model_context, value)| {
+                value == "__filesystem__"
+                    || looks_like_filesystem_path(
+                        value,
+                        key.as_deref(),
+                        *in_path_context,
+                        *in_model_context,
+                    )
+            })
+            && !required.contains(&WasmCapability::ReadFilesystem)
         {
             required.push(WasmCapability::ReadFilesystem);
         }
         if tokens
             .iter()
-            .any(|v| v == "__network__" || v.starts_with("http://") || v.starts_with("https://"))
+            .any(|(_, _, _, v)| v == "__network__" || is_url(v))
             && !required.contains(&WasmCapability::Network)
         {
             required.push(WasmCapability::Network);
         }
-        if tokens.iter().any(|v| v == "__environment__")
+        if tokens.iter().any(|(_, _, _, v)| v == "__environment__")
             && !required.contains(&WasmCapability::Environment)
         {
             required.push(WasmCapability::Environment);
@@ -538,6 +618,30 @@ mod tests {
         plugin.load().unwrap();
         let result = plugin
             .execute(&serde_json::json!({"url": "https://example.com"}))
+            .unwrap();
+        assert_eq!(result["status"], "executed");
+    }
+
+    #[test]
+    fn capability_enforcement_blocks_filesystem_access_for_path_keys() {
+        let dir = TempDir::new().unwrap();
+        let config = test_config(dir.path(), "caps-fs");
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+        let err = plugin
+            .execute(&serde_json::json!({"path": "src/main.rs"}))
+            .unwrap_err();
+        assert!(err.to_string().contains("missing required WASM capability"));
+    }
+
+    #[test]
+    fn capability_enforcement_ignores_regex_backslashes_without_path_context() {
+        let dir = TempDir::new().unwrap();
+        let config = test_config(dir.path(), "caps-regex");
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+        let result = plugin
+            .execute(&serde_json::json!({"pattern": "\\d+\\w+\\s*"}))
             .unwrap();
         assert_eq!(result["status"], "executed");
     }

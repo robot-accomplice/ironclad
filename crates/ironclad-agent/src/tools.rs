@@ -101,6 +101,9 @@ fn walk_workspace_files(
         let entry = entry.map_err(|e| ToolError {
             message: format!("failed to read directory entry: {e}"),
         })?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let skip_dir = name.starts_with('.') || name == "node_modules";
         let path = entry.path();
         let ftype = entry.file_type().map_err(|e| ToolError {
             message: format!("failed to inspect '{}': {e}", path.display()),
@@ -109,6 +112,9 @@ fn walk_workspace_files(
             continue;
         }
         if ftype.is_dir() {
+            if skip_dir {
+                continue;
+            }
             walk_workspace_files(&path, out, count)?;
         } else if ftype.is_file() {
             out.push(path);
@@ -118,12 +124,12 @@ fn walk_workspace_files(
     Ok(())
 }
 
-fn wildcard_match(pattern: &str, candidate: &str) -> bool {
-    // Simple glob-style matcher for '*' and '?'.
+fn wildcard_match_segment(pattern: &str, candidate: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let s: Vec<char> = candidate.chars().collect();
     let (mut pi, mut si) = (0usize, 0usize);
     let (mut star, mut match_i) = (None::<usize>, 0usize);
+
     while si < s.len() {
         if pi < p.len() && (p[pi] == '?' || p[pi] == s[si]) {
             pi += 1;
@@ -140,10 +146,57 @@ fn wildcard_match(pattern: &str, candidate: &str) -> bool {
             return false;
         }
     }
+
     while pi < p.len() && p[pi] == '*' {
         pi += 1;
     }
+
     pi == p.len()
+}
+
+fn wildcard_match(pattern: &str, candidate: &str) -> bool {
+    fn rec(
+        p: &[&str],
+        c: &[&str],
+        pi: usize,
+        ci: usize,
+        memo: &mut std::collections::HashMap<(usize, usize), bool>,
+    ) -> bool {
+        if let Some(v) = memo.get(&(pi, ci)) {
+            return *v;
+        }
+
+        let out = if pi == p.len() {
+            ci == c.len()
+        } else if p[pi] == "**" {
+            // Collapse consecutive ** tokens.
+            let mut next_pi = pi + 1;
+            while next_pi < p.len() && p[next_pi] == "**" {
+                next_pi += 1;
+            }
+            if next_pi == p.len() {
+                true
+            } else {
+                (ci..=c.len()).any(|next_ci| rec(p, c, next_pi, next_ci, memo))
+            }
+        } else if ci < c.len() && wildcard_match_segment(p[pi], c[ci]) {
+            rec(p, c, pi + 1, ci + 1, memo)
+        } else {
+            false
+        };
+
+        memo.insert((pi, ci), out);
+        out
+    }
+
+    let pattern_norm = pattern.replace('\\', "/");
+    let candidate_norm = candidate.replace('\\', "/");
+    let p: Vec<&str> = pattern_norm.split('/').filter(|s| !s.is_empty()).collect();
+    let c: Vec<&str> = candidate_norm
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    rec(&p, &c, 0, 0, &mut std::collections::HashMap::new())
 }
 
 #[async_trait]
@@ -875,6 +928,49 @@ mod tests {
         assert!(wildcard_match("src/*.rs", "src/main.rs"));
         assert!(wildcard_match("src/???.rs", "src/mod.rs"));
         assert!(!wildcard_match("src/*.rs", "src/main.ts"));
+    }
+
+    #[test]
+    fn wildcard_match_single_star_does_not_cross_directories() {
+        assert!(wildcard_match("*.rs", "main.rs"));
+        assert!(!wildcard_match("*.rs", "src/main.rs"));
+    }
+
+    #[test]
+    fn wildcard_match_double_star_crosses_directories() {
+        assert!(wildcard_match("**/*.rs", "src/nested/deep/main.rs"));
+        assert!(wildcard_match("src/**/*.rs", "src/main.rs"));
+        assert!(wildcard_match("src/**/*.rs", "src/nested/main.rs"));
+    }
+
+    #[test]
+    fn walk_workspace_files_skips_hidden_and_node_modules_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::write(root.join(".git/objects/hidden.txt"), "x").unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "x").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let mut files = Vec::new();
+        let mut count = 0usize;
+        walk_workspace_files(root, &mut files, &mut count).unwrap();
+        let rels: Vec<String> = files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+
+        assert!(rels.iter().any(|p| p == "src/main.rs"));
+        assert!(!rels.iter().any(|p| p.starts_with(".git/")));
+        assert!(!rels.iter().any(|p| p.starts_with("node_modules/")));
     }
 
     #[tokio::test]

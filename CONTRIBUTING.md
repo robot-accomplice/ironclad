@@ -127,6 +127,7 @@ just coverage
 3. **Description:** Explain what the change does and why. Link any related issues.
 4. **CI must pass:** All status checks must be green before merge.
 5. **Merge method:** Squash merge. GitHub will combine your commits into a single commit on `develop`.
+6. **Final completion step:** Update relevant documentation, including `docs/architecture/` and any impacted architecture/dataflow diagrams, before marking the PR ready to merge.
 
 ## Release Process
 

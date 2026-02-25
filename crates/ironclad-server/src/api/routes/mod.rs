@@ -1318,7 +1318,13 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn reload_skills_returns_reloaded() {
-        let app = build_router(test_state());
+        let state = test_state();
+        let skills_dir = tempfile::tempdir().unwrap();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.skills.skills_dir = skills_dir.path().to_path_buf();
+        }
+        let app = build_router(state);
         let req = Request::builder()
             .method("POST")
             .uri("/api/skills/reload")
@@ -1373,7 +1379,13 @@ params = { path = "README.md" }
 
     #[tokio::test]
     async fn skills_audit_returns_capability_and_drift_payload() {
-        let app = build_router(test_state());
+        let state = test_state();
+        let skills_dir = tempfile::tempdir().unwrap();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.skills.skills_dir = skills_dir.path().to_path_buf();
+        }
+        let app = build_router(state);
         let req = Request::builder()
             .uri("/api/skills/audit")
             .body(Body::empty())
