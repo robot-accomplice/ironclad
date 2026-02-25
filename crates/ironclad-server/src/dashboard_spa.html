@@ -542,13 +542,18 @@
 
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
   function truncate(s, n) { return (s && s.length > n) ? s.slice(0, n) + '\u2026' : (s || ''); }
+  var AGENT_DISPLAY_NAME = '';
+  function setAgentDisplayName(name) {
+    var value = String(name || '').trim();
+    if (value) AGENT_DISPLAY_NAME = value;
+  }
   function sessionAssistantLabel(session, fallback) {
     var fallbackLabel = fallback || 'assistant';
-    if (!session) return fallbackLabel;
+    if (!session) return AGENT_DISPLAY_NAME || fallbackLabel;
     var candidate = (session.agent_name || session.agent_id || '').toString().trim();
-    if (!candidate) return fallbackLabel;
-    if (candidate.toLowerCase() === 'default') return fallbackLabel;
-    return candidate;
+    if (candidate && candidate.toLowerCase() !== 'default') return candidate;
+    if (AGENT_DISPLAY_NAME) return AGENT_DISPLAY_NAME;
+    return fallbackLabel;
   }
   function sanitizeMarkdownUrl(url) {
     var raw = String(url || '').trim();
@@ -559,26 +564,127 @@
     if (raw.charAt(0) === '/' || raw.charAt(0) === '#') return raw;
     return null;
   }
+  function renderInlineMarkdown(text) {
+    var src = String(text || '');
+    if (!src) return '';
+    var html = esc(src);
+    var inlineCodes = [];
+    html = html.replace(/`([^`]+)`/g, function(_, code) {
+      var token = '__MD_INLINE_CODE_' + inlineCodes.length + '__';
+      inlineCodes.push('<code>' + code + '</code>');
+      return token;
+    });
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, label, url) {
+      var safe = sanitizeMarkdownUrl(url);
+      var safeLabel = renderInlineMarkdown(label);
+      if (!safe) return safeLabel;
+      return '<a href="' + esc(safe) + '" target="_blank" rel="noopener noreferrer">' + safeLabel + '</a>';
+    });
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+    html = html.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+    html = html.replace(/_([^_\n]+)_/g, '<em>$1</em>');
+    html = html.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+    html = html.replace(/__MD_INLINE_CODE_(\d+)__/g, function(_, idx) {
+      var n = Number(idx);
+      return inlineCodes[n] || '';
+    });
+    return html;
+  }
   function renderSafeMarkdown(input) {
     var src = String(input || '');
     if (!src) return '';
     var codeBlocks = [];
-    src = src.replace(/```([\s\S]*?)```/g, function(_, code) {
+    src = src.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, function(_, lang, code) {
       var token = '__MD_CODE_BLOCK_' + codeBlocks.length + '__';
-      codeBlocks.push('<pre><code>' + esc(code) + '</code></pre>');
+      var language = String(lang || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      var classAttr = language ? ' class="language-' + language + '"' : '';
+      codeBlocks.push('<pre><code' + classAttr + '>' + esc(code) + '</code></pre>');
       return token;
     });
-    var html = esc(src);
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, label, url) {
-      var safe = sanitizeMarkdownUrl(url);
-      var safeLabel = esc(label);
-      if (!safe) return safeLabel;
-      return '<a href="' + esc(safe) + '" target="_blank" rel="noopener noreferrer">' + safeLabel + '</a>';
-    });
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    html = html.replace(/\n/g, '<br>');
+    var lines = src.replace(/\r\n/g, '\n').split('\n');
+    var htmlParts = [];
+    var paragraph = [];
+    var inUl = false;
+    var inOl = false;
+    var inQuote = false;
+    function flushParagraph() {
+      if (!paragraph.length) return;
+      htmlParts.push('<p>' + paragraph.map(renderInlineMarkdown).join('<br>') + '</p>');
+      paragraph = [];
+    }
+    function closeLists() {
+      if (inUl) { htmlParts.push('</ul>'); inUl = false; }
+      if (inOl) { htmlParts.push('</ol>'); inOl = false; }
+    }
+    function closeQuote() {
+      if (inQuote) { htmlParts.push('</blockquote>'); inQuote = false; }
+    }
+    for (var i = 0; i < lines.length; i++) {
+      var raw = lines[i];
+      var trimmed = raw.trim();
+      var tokenOnly = /^__MD_CODE_BLOCK_\d+__$/.test(trimmed);
+      if (!trimmed) {
+        flushParagraph();
+        closeLists();
+        closeQuote();
+        continue;
+      }
+      if (tokenOnly) {
+        flushParagraph();
+        closeLists();
+        closeQuote();
+        htmlParts.push(trimmed);
+        continue;
+      }
+      var headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+      if (headingMatch) {
+        flushParagraph();
+        closeLists();
+        closeQuote();
+        var level = headingMatch[1].length;
+        htmlParts.push('<h' + level + '>' + renderInlineMarkdown(headingMatch[2]) + '</h' + level + '>');
+        continue;
+      }
+      if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+        flushParagraph();
+        closeLists();
+        closeQuote();
+        htmlParts.push('<hr>');
+        continue;
+      }
+      var quoteMatch = trimmed.match(/^>\s?(.*)$/);
+      if (quoteMatch) {
+        flushParagraph();
+        closeLists();
+        if (!inQuote) { htmlParts.push('<blockquote>'); inQuote = true; }
+        htmlParts.push('<p>' + renderInlineMarkdown(quoteMatch[1]) + '</p>');
+        continue;
+      }
+      closeQuote();
+      var ulMatch = trimmed.match(/^[-*+]\s+(.+)$/);
+      if (ulMatch) {
+        flushParagraph();
+        if (inOl) { htmlParts.push('</ol>'); inOl = false; }
+        if (!inUl) { htmlParts.push('<ul>'); inUl = true; }
+        htmlParts.push('<li>' + renderInlineMarkdown(ulMatch[1]) + '</li>');
+        continue;
+      }
+      var olMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+      if (olMatch) {
+        flushParagraph();
+        if (inUl) { htmlParts.push('</ul>'); inUl = false; }
+        if (!inOl) { htmlParts.push('<ol>'); inOl = true; }
+        htmlParts.push('<li>' + renderInlineMarkdown(olMatch[1]) + '</li>');
+        continue;
+      }
+      closeLists();
+      paragraph.push(trimmed);
+    }
+    flushParagraph();
+    closeLists();
+    closeQuote();
+    var html = htmlParts.join('\n');
     html = html.replace(/__MD_CODE_BLOCK_(\d+)__/g, function(_, idx) {
       var n = Number(idx);
       return codeBlocks[n] || '';
@@ -866,6 +972,7 @@
       if (self._activeAgentId) return Promise.resolve(self._activeAgentId);
       return api('/api/agent/status')
         .then(function(s) {
+          if (s && s.name) setAgentDisplayName(s.name);
           var aid = (s && s.agent_id) ? String(s.agent_id) : 'default';
           self._activeAgentId = aid;
           return aid;
@@ -946,6 +1053,8 @@
         _cachedWorkspace = wsState;
 
         var state = (agent.state || 'unknown').toLowerCase();
+        if (agent.name) setAgentDisplayName(agent.name);
+        else if (health.agent) setAgentDisplayName(health.agent);
         if (agent.agent_id) App._activeAgentId = String(agent.agent_id);
         var dotEl = document.getElementById('agent-dot');
         if (dotEl) dotEl.className = 'status-dot' + (state === 'running' ? '' : state === 'sleeping' ? ' warning' : ' error');
@@ -1069,7 +1178,13 @@
     _sessionMessages: [],
     renderSessions: function() {
       var self = this;
-      return api('/api/sessions').then(function(data) {
+      return Promise.all([
+        api('/api/sessions'),
+        api('/api/agent/status').catch(function() { return {}; })
+      ]).then(function(results) {
+        var data = results[0] || {};
+        var agentStatus = results[1] || {};
+        if (agentStatus.name) setAgentDisplayName(agentStatus.name);
         var sessions = data.sessions || [];
 
         if (self._activeSession) {
@@ -1111,7 +1226,8 @@
               return '<div class="message ' + side + '" id="msg-' + idx + '"><div class="message-role">' + esc(roleLabel) + expandBtn + '</div><div>' + renderSafeMarkdown(m.content || '') + '</div>' + gradeHtml + '<div class="ctx-detail" id="ctx-detail-' + idx + '" style="display:none"></div></div>';
             }).join('') || '<p style="color:var(--muted);padding:1rem">Send a message to begin the conversation.</p>';
             var chatLabel = self._activeSession.nickname || truncate(self._activeSession.id, 16);
-            return '<div class="session-chat-wrap"><div class="session-chat-header"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="btn-back-sessions">\u25c0 Back</button><span style="font-weight:600">' + esc(self._activeSession.agent_id || 'default') + '</span><span class="session-nick" data-copy-id="' + esc(self._activeSession.id) + '" title="' + esc(self._activeSession.id) + '" style="color:var(--muted);font-size:0.75rem">' + esc(chatLabel) + '</span></div><div class="message-thread">' + msgs + '</div><div class="session-chat-input"><input type="text" id="session-msg-input" placeholder="Type a message\u2026" autocomplete="off"><button class="btn" id="btn-send-msg">Send</button></div></div>';
+            var chatAgentLabel = sessionAssistantLabel(self._activeSession, self._activeSession.agent_id || 'default');
+            return '<div class="session-chat-wrap"><div class="session-chat-header"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="btn-back-sessions">\u25c0 Back</button><span style="font-weight:600">' + esc(chatAgentLabel) + '</span><span class="session-nick" data-copy-id="' + esc(self._activeSession.id) + '" title="' + esc(self._activeSession.id) + '" style="color:var(--muted);font-size:0.75rem">' + esc(chatLabel) + '</span></div><div class="message-thread">' + msgs + '</div><div class="session-chat-input"><input type="text" id="session-msg-input" placeholder="Type a message\u2026" autocomplete="off"><button class="btn" id="btn-send-msg">Send</button></div></div>';
           });
         }
 
@@ -2702,7 +2818,7 @@
       App._resolveActiveAgentId().then(function(agentId) {
         return api('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: agentId }) }).then(function(r) {
           var sid = r.session_id || r.id;
-          App._activeSession = { id: sid, agent_id: agentId };
+          App._activeSession = { id: sid, agent_id: agentId, agent_name: AGENT_DISPLAY_NAME || null };
           toast('Session created');
           App.navigate('sessions');
         });
@@ -3302,7 +3418,12 @@
       var tds = row.querySelectorAll('td');
       var nickTd = tds[0]; var agentTd = tds[1];
       var nick = nickTd ? nickTd.textContent.trim() : '';
-      App._activeSession = { id: id, agent_id: agentTd ? agentTd.textContent : 'default', nickname: nick !== id ? nick : null };
+      App._activeSession = {
+        id: id,
+        agent_id: agentTd ? agentTd.textContent : 'default',
+        agent_name: AGENT_DISPLAY_NAME || null,
+        nickname: nick !== id ? nick : null
+      };
       App.navigate('sessions');
       return;
     }
