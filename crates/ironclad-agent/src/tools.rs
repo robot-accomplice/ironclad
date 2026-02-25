@@ -46,7 +46,7 @@ fn resolve_workspace_path(
         let canonical = std::fs::canonicalize(&joined).map_err(|e| ToolError {
             message: format!("failed to resolve '{}': {e}", joined.display()),
         })?;
-        if !canonical.starts_with(&root) {
+        if !canonical.starts_with(root) {
             return Err(ToolError {
                 message: "resolved path escapes workspace root".into(),
             });
@@ -73,7 +73,7 @@ fn resolve_workspace_path(
                 existing_ancestor.display()
             ),
         })?;
-        if !canonical_parent.starts_with(&root) {
+        if !canonical_parent.starts_with(root) {
             return Err(ToolError {
                 message: "target path escapes workspace root".into(),
             });
