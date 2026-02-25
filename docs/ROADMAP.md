@@ -379,9 +379,9 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ---
 
-### 3.3 Multi-Agent Orchestration
+### 3.3 Multi-Agent Orchestration (Partially Complete)
 
-**Current state**: Single agent with A2A protocol for peer communication. `SubagentRegistry` tracks child agent metadata but doesn't orchestrate workflows.
+**Current state**: Partially implemented in 0.7.0. Subagent role contracts (`subagent` vs `model-proxy`), roster semantics, model-assignment modes (`auto`/`commander`), and turn-linked model-selection forensics are live. Full workflow orchestration patterns are still pending.
 
 **Target**: Internal multi-agent patterns — specialist sub-agents for code review, research, financial analysis — orchestrated by a coordinator agent using graph-based workflows.
 
@@ -568,7 +568,7 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 2.15 | Ops telemetry + release provenance gate | 2 | CI workflows, smoke tests, release pipeline | Medium |
 | 3.1 | Compile-time agent safety | 3 | Agent loop, policy engine | High |
 | 3.2 | ~~MCP integration~~ ✅ | 3 | Tool registry, config | ~~High~~ Done |
-| 3.3 | Multi-agent orchestration | 3 | SubagentRegistry, A2A, 2.9 | High |
+| 3.3 | Multi-agent orchestration (partial) | 3 | SubagentRegistry, A2A, 2.9 | High |
 | 3.4 | Agent spawning + wallet provisioning | 3 | SubagentRegistry, wallet | High |
 | 3.5 | Advanced RAG infrastructure (4/5 done ✅) | 3 | 1.5, 1.7, embeddings.rs | ~~High~~ Remaining: doc ingestion |
 | 3.6 | Voice channels (TTS + STT + WebRTC) | 3 | Channel adapters, whisper-rs, local TTS | High |
