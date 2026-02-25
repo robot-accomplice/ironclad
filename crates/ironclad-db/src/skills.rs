@@ -224,20 +224,14 @@ pub fn find_enabled_skill_by_script_path(
     db: &Database,
     script_path: &str,
 ) -> Result<Option<SkillRecord>> {
-    let conn = db.conn();
-    conn.query_row(
-        "SELECT id, name, kind, description, source_path, content_hash, \
-         triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-         enabled, last_loaded_at, created_at \
-         FROM skills WHERE script_path = ?1 AND enabled = 1 LIMIT 1",
-        [script_path],
-        row_to_skill,
-    )
-    .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    Ok(find_any_skill_by_script_path(db, script_path)?.filter(|s| s.enabled))
 }
 
 pub fn find_skill_by_script_path(db: &Database, script_path: &str) -> Result<Option<SkillRecord>> {
+    find_any_skill_by_script_path(db, script_path)
+}
+
+fn find_any_skill_by_script_path(db: &Database, script_path: &str) -> Result<Option<SkillRecord>> {
     let conn = db.conn();
     let mut stmt = conn
         .prepare(
@@ -582,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn find_skill_by_script_path_rejects_ambiguous_duplicates() {
+    fn find_any_skill_by_script_path_rejects_ambiguous_duplicates() {
         let db = test_db();
         register_skill_full(
             &db,
@@ -613,7 +607,67 @@ mod tests {
         )
         .unwrap();
 
-        let err = find_skill_by_script_path(&db, "/skills/bin/dup.sh")
+        let err = find_any_skill_by_script_path(&db, "/skills/bin/dup.sh")
+            .expect_err("duplicate script paths must fail closed");
+        assert!(err.to_string().contains("ambiguous script_path"));
+    }
+
+    #[test]
+    fn find_enabled_skill_by_script_path_filters_disabled() {
+        let db = test_db();
+        let id = register_skill_full(
+            &db,
+            "disabled-script",
+            "structured",
+            None,
+            "/skills/disabled.toml",
+            "h-disabled",
+            None,
+            None,
+            None,
+            Some("/skills/bin/disabled.sh"),
+            "Caution",
+        )
+        .unwrap();
+        toggle_skill_enabled(&db, &id).unwrap();
+
+        let skill = find_enabled_skill_by_script_path(&db, "/skills/bin/disabled.sh").unwrap();
+        assert!(skill.is_none());
+    }
+
+    #[test]
+    fn find_enabled_skill_by_script_path_rejects_ambiguous_duplicates() {
+        let db = test_db();
+        register_skill_full(
+            &db,
+            "dup-enabled-a",
+            "structured",
+            None,
+            "/skills/dup-enabled-a.toml",
+            "h-ea",
+            None,
+            None,
+            None,
+            Some("/skills/bin/dup-enabled.sh"),
+            "Caution",
+        )
+        .unwrap();
+        register_skill_full(
+            &db,
+            "dup-enabled-b",
+            "structured",
+            None,
+            "/skills/dup-enabled-b.toml",
+            "h-eb",
+            None,
+            None,
+            None,
+            Some("/skills/bin/dup-enabled.sh"),
+            "Caution",
+        )
+        .unwrap();
+
+        let err = find_enabled_skill_by_script_path(&db, "/skills/bin/dup-enabled.sh")
             .expect_err("duplicate script paths must fail closed");
         assert!(err.to_string().contains("ambiguous script_path"));
     }

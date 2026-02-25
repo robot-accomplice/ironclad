@@ -57,7 +57,7 @@ impl SessionGovernor {
             return Ok(0);
         }
         let _ = ironclad_db::sessions::rotate_agent_session(db, agent_id)?;
-        Ok(1)
+        Ok(agent_scoped.len())
     }
 
     fn compact_before_archive(&self, db: &Database, session_id: &str) -> ironclad_core::Result<()> {
@@ -147,5 +147,34 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(archived.status, "archived");
+    }
+
+    #[test]
+    fn rotate_agent_scope_sessions_reports_archived_count() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+        db.conn()
+            .execute("DROP INDEX idx_sessions_active_scope_unique", [])
+            .unwrap();
+        let sid1 = ironclad_db::sessions::create_new(&db, "gov-rotate-count", None).unwrap();
+        let sid2 = ironclad_db::sessions::create_new(&db, "gov-rotate-count", None).unwrap();
+        let sid3 = ironclad_db::sessions::create_new(&db, "gov-rotate-count", None).unwrap();
+
+        let rotated = gov
+            .rotate_agent_scope_sessions(&db, "gov-rotate-count")
+            .unwrap();
+        assert_eq!(rotated, 3);
+
+        for sid in [sid1, sid2, sid3] {
+            let archived = ironclad_db::sessions::get_session(&db, &sid)
+                .unwrap()
+                .unwrap();
+            assert_eq!(archived.status, "archived");
+        }
+
+        let active =
+            ironclad_db::sessions::list_active_sessions(&db, Some("gov-rotate-count")).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].scope_key.as_deref(), Some("agent"));
     }
 }
