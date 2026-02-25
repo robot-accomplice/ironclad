@@ -238,7 +238,11 @@ async fn skills_list_includes_built_ins() {
             .iter()
             .any(|s| s["name"].as_str() == Some("supervisor-protocol"))
     );
-    assert!(skills.iter().all(|s| s["enabled"].as_bool().unwrap_or(false)));
+    assert!(
+        skills
+            .iter()
+            .all(|s| s["enabled"].as_bool().unwrap_or(false))
+    );
 }
 
 #[tokio::test]

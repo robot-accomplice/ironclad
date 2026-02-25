@@ -689,7 +689,11 @@ primary = "ollama/qwen3:8b"
         let body = json_body(resp).await;
         let skills = body["skills"].as_array().unwrap();
         assert!(!skills.is_empty());
-        assert!(skills.iter().all(|s| s["enabled"].as_bool().unwrap_or(false)));
+        assert!(
+            skills
+                .iter()
+                .all(|s| s["enabled"].as_bool().unwrap_or(false))
+        );
         assert!(
             skills
                 .iter()
