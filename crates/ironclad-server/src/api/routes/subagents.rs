@@ -13,12 +13,11 @@ const MODEL_MODE_AUTO: &str = "auto";
 const MODEL_MODE_COMMANDER: &str = "commander";
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CreateSubAgentRequest {
     pub name: String,
     #[serde(default)]
     pub display_name: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_model")]
     pub model: String,
     #[serde(default = "default_role")]
     pub role: String,
@@ -35,12 +34,15 @@ pub struct CreateSubAgentRequest {
 fn default_role() -> String {
     ROLE_SUBAGENT.into()
 }
+
+fn default_model() -> String {
+    MODEL_MODE_AUTO.into()
+}
 fn default_true() -> bool {
     true
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct UpdateSubAgentRequest {
     pub display_name: Option<String>,
     pub model: Option<String>,
@@ -280,6 +282,7 @@ pub async fn update_sub_agent(
         .model
         .as_deref()
         .map(normalize_model_input)
+        .filter(|m| !m.is_empty())
         .unwrap_or_else(|| existing.model.clone());
     validate_subagent_contract(
         normalized_role,

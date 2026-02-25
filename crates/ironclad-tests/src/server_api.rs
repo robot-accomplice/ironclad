@@ -1572,6 +1572,38 @@ async fn subagent_contract_validation_enforced() {
                 .uri("/api/subagents")
                 .header("content-type", "application/json")
                 .body(Body::from(
+                    r#"{"name":"legacy-no-model","role":"subagent","skills":[]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/subagents")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"legacy-extra-field","model":"auto","role":"subagent","skills":[],"legacy_client_extra":"x"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/subagents")
+                .header("content-type", "application/json")
+                .body(Body::from(
                     r#"{"name":"persona-leak","model":"ollama/qwen3:8b","role":"subagent","skills":[],"personality":{"tone":"friendly"}}"#,
                 ))
                 .unwrap(),

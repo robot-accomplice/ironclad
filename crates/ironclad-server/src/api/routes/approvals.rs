@@ -3,7 +3,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
-use tracing;
 
 use super::AppState;
 
@@ -39,7 +38,7 @@ pub async fn create_approval(
         body.session_id.as_deref(),
     ) {
         Ok(req) => {
-            ironclad_db::approvals::record_approval_request(
+            if let Err(e) = ironclad_db::approvals::record_approval_request(
                 &state.db,
                 &req.id,
                 &req.tool_name,
@@ -47,9 +46,9 @@ pub async fn create_approval(
                 req.session_id.as_deref(),
                 "pending",
                 &req.timeout_at.to_rfc3339(),
-            )
-            .inspect_err(|e| tracing::warn!(error = %e, "failed to persist approval request"))
-            .ok();
+            ) {
+                return super::internal_err(&e).into_response();
+            }
             match serde_json::to_value(req) {
                 Ok(v) => (StatusCode::CREATED, Json(v)).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
@@ -80,15 +79,15 @@ pub async fn approve_approval(
     match state.approvals.approve(&id, &body.decided_by) {
         Ok(req) => {
             if let Some(decided_at) = req.decided_at {
-                ironclad_db::approvals::record_approval_decision(
+                if let Err(e) = ironclad_db::approvals::record_approval_decision(
                     &state.db,
                     &req.id,
                     "approved",
                     req.decided_by.as_deref().unwrap_or(&body.decided_by),
                     &decided_at.to_rfc3339(),
-                )
-                .inspect_err(|e| tracing::warn!(error = %e, "failed to persist approval decision"))
-                .ok();
+                ) {
+                    return super::internal_err(&e).into_response();
+                }
             }
             match serde_json::to_value(req) {
                 Ok(v) => Json(v).into_response(),
@@ -107,15 +106,15 @@ pub async fn deny_approval(
     match state.approvals.deny(&id, &body.decided_by) {
         Ok(req) => {
             if let Some(decided_at) = req.decided_at {
-                ironclad_db::approvals::record_approval_decision(
+                if let Err(e) = ironclad_db::approvals::record_approval_decision(
                     &state.db,
                     &req.id,
                     "denied",
                     req.decided_by.as_deref().unwrap_or(&body.decided_by),
                     &decided_at.to_rfc3339(),
-                )
-                .inspect_err(|e| tracing::warn!(error = %e, "failed to persist approval decision"))
-                .ok();
+                ) {
+                    return super::internal_err(&e).into_response();
+                }
             }
             match serde_json::to_value(req) {
                 Ok(v) => Json(v).into_response(),
