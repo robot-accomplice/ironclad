@@ -761,7 +761,7 @@ async fn session_turn_and_context_endpoints_work() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    assert!(body["events"].as_array().unwrap().len() >= 1);
+    assert!(!body["events"].as_array().unwrap().is_empty());
 
     let app = build_router(state);
     let resp = app
