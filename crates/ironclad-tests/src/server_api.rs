@@ -220,7 +220,7 @@ async fn message_post_and_retrieve() {
 }
 
 #[tokio::test]
-async fn skills_list_initially_empty() {
+async fn skills_list_includes_built_ins() {
     let app = build_router(test_state());
     let req = Request::builder()
         .uri("/api/skills")
@@ -232,7 +232,13 @@ async fn skills_list_initially_empty() {
 
     let body = json_body(resp).await;
     let skills = body["skills"].as_array().unwrap();
-    assert!(skills.is_empty());
+    assert!(!skills.is_empty());
+    assert!(
+        skills
+            .iter()
+            .any(|s| s["name"].as_str() == Some("supervisor-protocol"))
+    );
+    assert!(skills.iter().all(|s| s["enabled"].as_bool().unwrap_or(false)));
 }
 
 #[tokio::test]

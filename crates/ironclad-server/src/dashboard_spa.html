@@ -169,6 +169,10 @@
     .toggle-track::after { content: ''; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; background: var(--muted); border-radius: 50%; transition: transform 0.2s, background 0.2s; }
     .toggle input:checked + .toggle-track { background: rgba(34,197,94,0.3); }
     .toggle input:checked + .toggle-track::after { transform: translateX(18px); background: var(--success); }
+    .toggle input:disabled + .toggle-track { background: rgba(148,163,184,0.2); cursor: not-allowed; }
+    .toggle input:disabled + .toggle-track::after { background: var(--muted); }
+    .toggle input:checked:disabled + .toggle-track { background: rgba(148,163,184,0.35); }
+    .toggle input:checked:disabled + .toggle-track::after { transform: translateX(18px); background: rgba(203,213,225,0.9); }
     .message-thread { flex: 1; overflow-y: auto; min-height: 0; }
     .message { margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 3px; max-width: 85%; }
     .message.user { margin-left: auto; background: var(--accent-dim); border: 1px solid rgba(99,102,241,0.3); }
@@ -1353,12 +1357,14 @@
           var builtIn = !!s.built_in || String(s.kind || '').toLowerCase() === 'builtin';
           var kindLabel = builtIn ? 'builtin' : (s.kind || '');
           var builtInBadge = builtIn ? '<span class="badge muted" style="font-size:0.6rem;padding:0.08rem 0.35rem;margin-left:0.35rem">built-in</span>' : '';
+          var builtInNameTag = builtIn ? ' <span class="badge muted" style="font-size:0.62rem;padding:0.08rem 0.35rem;vertical-align:middle">Built-In</span>' : '';
           var toggleDisabled = builtIn ? ' disabled' : '';
           var toggleTitle = builtIn ? ' title="Built-in skills are always enabled"' : '';
+          var toggleClass = builtIn ? 'toggle is-disabled' : 'toggle';
           if (s.id && !builtIn) {
             actions = '<div style="display:flex;justify-content:flex-end;margin-top:0.75rem"><button class="btn secondary" data-skill-delete="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '" style="border-color:var(--error);color:var(--error);font-size:0.75rem;padding:0.25rem 0.6rem">Delete</button></div>';
           }
-          return '<div class="card skill-card" data-id="' + esc(s.id || '') + '"><div class="skill-header"><div class="skill-info"><div class="card-title" style="color:' + kindColor + '">' + esc(kindLabel) + builtInBadge + '</div><div class="card-value">' + esc(s.name || '') + '</div></div><label class="toggle"><input type="checkbox" data-skill-toggle="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '"' + (s.enabled ? ' checked' : '') + toggleDisabled + toggleTitle + '><span class="toggle-track"></span></label></div><p style="font-size:0.8125rem;color:var(--muted);margin-top:0.5rem">' + esc(s.description || '') + '</p>' + actions + '</div>';
+          return '<div class="card skill-card" data-id="' + esc(s.id || '') + '"><div class="skill-header"><div class="skill-info"><div class="card-title" style="color:' + kindColor + '">' + esc(kindLabel) + builtInBadge + '</div><div class="card-value">' + esc(s.name || '') + builtInNameTag + '</div></div><label class="' + toggleClass + '"><input type="checkbox" data-skill-toggle="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '"' + (s.enabled ? ' checked' : '') + toggleDisabled + toggleTitle + '><span class="toggle-track"></span></label></div><p style="font-size:0.8125rem;color:var(--muted);margin-top:0.5rem">' + esc(s.description || '') + '</p>' + actions + '</div>';
         }).join('');
         return '<div style="display:flex;align-items:center;gap:1rem"><button class="btn" id="btn-reload-skills">Reload skills</button><span style="font-size:0.8125rem;color:var(--muted)">' + enabledCount + ' / ' + skills.length + ' enabled</span></div><div class="skills-grid" style="margin-top:1rem">' + cards + '</div>';
       });

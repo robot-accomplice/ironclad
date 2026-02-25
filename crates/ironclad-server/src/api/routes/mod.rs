@@ -676,7 +676,7 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
-    async fn list_skills_empty() {
+    async fn list_skills_includes_built_ins() {
         let app = build_router(test_state());
         let req = Request::builder()
             .uri("/api/skills")
@@ -688,7 +688,13 @@ primary = "ollama/qwen3:8b"
 
         let body = json_body(resp).await;
         let skills = body["skills"].as_array().unwrap();
-        assert!(skills.is_empty());
+        assert!(!skills.is_empty());
+        assert!(skills.iter().all(|s| s["enabled"].as_bool().unwrap_or(false)));
+        assert!(
+            skills
+                .iter()
+                .any(|s| s["name"].as_str() == Some("supervisor-protocol"))
+        );
     }
 
     #[tokio::test]
@@ -1436,6 +1442,34 @@ primary = "ollama/qwen3:8b"
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_skill_rejects_built_in_skill_names() {
+        let state = test_state();
+        let skill_id = ironclad_db::skills::register_skill(
+            &state.db,
+            "context-continuity",
+            "instruction",
+            Some("Core continuity protocol"),
+            "/skills/context-continuity",
+            "abc123",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/skills/{skill_id}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
