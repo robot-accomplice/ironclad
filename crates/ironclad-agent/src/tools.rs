@@ -819,6 +819,7 @@ impl Tool for SearchFilesTool {
         walk_workspace_files(&base, &mut files, &mut count)?;
         let mut hits = Vec::new();
         let mut unreadable_files = 0usize;
+        let mut skipped_large_files = 0usize;
         let query_cmp = if case_sensitive {
             query.to_string()
         } else {
@@ -827,6 +828,17 @@ impl Tool for SearchFilesTool {
         for p in files {
             if hits.len() >= limit {
                 break;
+            }
+            let file_size = match std::fs::metadata(&p) {
+                Ok(meta) => meta.len(),
+                Err(_) => {
+                    unreadable_files += 1;
+                    continue;
+                }
+            };
+            if file_size > MAX_FILE_BYTES as u64 {
+                skipped_large_files += 1;
+                continue;
             }
             let content = match std::fs::read_to_string(&p) {
                 Ok(c) => c,
@@ -863,7 +875,8 @@ impl Tool for SearchFilesTool {
             metadata: Some(serde_json::json!({
                 "count": hits.len(),
                 "query": query,
-                "unreadable_files": unreadable_files
+                "unreadable_files": unreadable_files,
+                "skipped_large_files": skipped_large_files
             })),
         })
     }
@@ -1015,6 +1028,32 @@ mod tests {
         assert_eq!(ListDirectoryTool.risk_level(), RiskLevel::Caution);
         assert_eq!(GlobFilesTool.risk_level(), RiskLevel::Caution);
         assert_eq!(SearchFilesTool.risk_level(), RiskLevel::Caution);
+    }
+
+    #[tokio::test]
+    async fn search_files_skips_oversized_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("small.txt"), "needle").unwrap();
+        std::fs::write(dir.path().join("large.txt"), vec![b'a'; MAX_FILE_BYTES + 1]).unwrap();
+
+        let tool = SearchFilesTool;
+        let ctx = ToolContext {
+            session_id: "test-session".into(),
+            agent_id: "test-agent".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(serde_json::json!({"query": "needle", "path": "."}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(result.output.contains("small.txt"));
+        assert!(!result.output.contains("large.txt"));
+
+        let metadata = result.metadata.unwrap();
+        assert_eq!(metadata["skipped_large_files"].as_u64(), Some(1));
     }
 
     #[cfg(unix)]

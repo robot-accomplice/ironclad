@@ -1,4 +1,4 @@
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::{IroncladError, Result, input_capability_scan};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -219,111 +219,6 @@ impl WasmPlugin {
     }
 
     fn enforce_capabilities(&self, input: &serde_json::Value) -> Result<()> {
-        fn is_path_key(k: &str) -> bool {
-            ["path", "file", "filepath", "directory", "dir"].contains(&k)
-        }
-
-        fn is_model_key(k: &str) -> bool {
-            ["model", "model_id", "provider", "provider_model", "engine"].contains(&k)
-        }
-
-        fn is_url(v: &str) -> bool {
-            let lower = v.trim().to_ascii_lowercase();
-            lower.starts_with("http://") || lower.starts_with("https://")
-        }
-
-        fn collect_strings(
-            v: &serde_json::Value,
-            key_ctx: Option<&str>,
-            in_path_context: bool,
-            in_model_context: bool,
-            out: &mut Vec<(Option<String>, bool, bool, String)>,
-        ) {
-            match v {
-                serde_json::Value::String(s) => out.push((
-                    key_ctx.map(|k| k.to_string()),
-                    in_path_context,
-                    in_model_context,
-                    s.clone(),
-                )),
-                serde_json::Value::Array(arr) => {
-                    for x in arr {
-                        collect_strings(x, key_ctx, in_path_context, in_model_context, out);
-                    }
-                }
-                serde_json::Value::Object(map) => {
-                    for (k, x) in map {
-                        let key = k.to_lowercase();
-                        if is_path_key(&key) {
-                            out.push((
-                                Some(key.clone()),
-                                true,
-                                in_model_context,
-                                "__filesystem__".into(),
-                            ));
-                        }
-                        if ["url", "endpoint", "host", "api"].contains(&key.as_str()) {
-                            out.push((
-                                Some(key.clone()),
-                                in_path_context,
-                                in_model_context,
-                                "__network__".into(),
-                            ));
-                        }
-                        if ["env", "environment", "env_var", "env_key"].contains(&key.as_str()) {
-                            out.push((
-                                Some(key.clone()),
-                                in_path_context,
-                                in_model_context,
-                                "__environment__".into(),
-                            ));
-                        }
-                        let next_path_context = in_path_context || is_path_key(&key);
-                        let next_model_context = in_model_context || is_model_key(&key);
-                        collect_strings(x, Some(&key), next_path_context, next_model_context, out);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        fn looks_like_filesystem_path(
-            v: &str,
-            key: Option<&str>,
-            in_path_context: bool,
-            in_model_context: bool,
-        ) -> bool {
-            let trimmed = v.trim();
-            if trimmed.is_empty() {
-                return false;
-            }
-            if in_path_context || key.is_some_and(is_path_key) {
-                return true;
-            }
-            if in_model_context || is_url(trimmed) {
-                return false;
-            }
-            if trimmed.starts_with('/')
-                || trimmed.starts_with("./")
-                || trimmed.starts_with("../")
-                || trimmed.starts_with("~/")
-                || trimmed.starts_with(".\\")
-                || trimmed.starts_with("..\\")
-                || trimmed.starts_with("~\\")
-                || trimmed.starts_with("\\\\")
-            {
-                return true;
-            }
-            if trimmed.len() > 2
-                && trimmed.as_bytes().get(1) == Some(&b':')
-                && matches!(trimmed.as_bytes().get(2), Some(b'\\' | b'/'))
-            {
-                return true;
-            }
-            // Slash-separated strings are path-like once URLs/model IDs are excluded.
-            trimmed.contains('/')
-        }
-
         let mut required: Vec<WasmCapability> = vec![];
         if let Some(explicit) = input
             .get("required_capabilities")
@@ -356,33 +251,14 @@ impl WasmPlugin {
             }
         }
 
-        let mut tokens = Vec::new();
-        collect_strings(input, None, false, false, &mut tokens);
-        if tokens
-            .iter()
-            .any(|(key, in_path_context, in_model_context, value)| {
-                value == "__filesystem__"
-                    || looks_like_filesystem_path(
-                        value,
-                        key.as_deref(),
-                        *in_path_context,
-                        *in_model_context,
-                    )
-            })
-            && !required.contains(&WasmCapability::ReadFilesystem)
-        {
+        let scan = input_capability_scan::scan_input_capabilities(input);
+        if scan.requires_filesystem && !required.contains(&WasmCapability::ReadFilesystem) {
             required.push(WasmCapability::ReadFilesystem);
         }
-        if tokens
-            .iter()
-            .any(|(_, _, _, v)| v == "__network__" || is_url(v))
-            && !required.contains(&WasmCapability::Network)
-        {
+        if scan.requires_network && !required.contains(&WasmCapability::Network) {
             required.push(WasmCapability::Network);
         }
-        if tokens.iter().any(|(_, _, _, v)| v == "__environment__")
-            && !required.contains(&WasmCapability::Environment)
-        {
+        if scan.requires_environment && !required.contains(&WasmCapability::Environment) {
             required.push(WasmCapability::Environment);
         }
 
@@ -501,6 +377,16 @@ mod tests {
             execution_timeout_ms: default_execution_timeout_ms(),
             capabilities: vec![],
         }
+    }
+
+    fn plugin_with_capabilities(capabilities: Vec<WasmCapability>) -> WasmPlugin {
+        WasmPlugin::new(WasmPluginConfig {
+            name: "scan-matrix".to_string(),
+            wasm_path: PathBuf::from("/tmp/scan-matrix.wasm"),
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities,
+        })
     }
 
     #[test]
@@ -644,6 +530,49 @@ mod tests {
             .execute(&serde_json::json!({"pattern": "\\d+\\w+\\s*"}))
             .unwrap();
         assert_eq!(result["status"], "executed");
+    }
+
+    #[test]
+    fn capability_enforcement_matches_shared_scan_for_input_matrix() {
+        let cases = vec![
+            serde_json::json!({}),
+            serde_json::json!({"endpoint": "https://example.com/v1"}),
+            serde_json::json!({"socket": "wss://example.com/stream"}),
+            serde_json::json!({"model": "openai/gpt-4o"}),
+            serde_json::json!({"model": "/etc/passwd"}),
+            serde_json::json!({"path": "src/main.rs"}),
+            serde_json::json!({"input": "secrets/config.yaml"}),
+            serde_json::json!({"pattern": "\\d+\\w+\\s*"}),
+            serde_json::json!({"env_var": "SECRET_TOKEN"}),
+        ];
+
+        for input in cases {
+            let scan = input_capability_scan::scan_input_capabilities(&input);
+            let mut required_caps = Vec::new();
+            if scan.requires_filesystem {
+                required_caps.push(WasmCapability::ReadFilesystem);
+            }
+            if scan.requires_network {
+                required_caps.push(WasmCapability::Network);
+            }
+            if scan.requires_environment {
+                required_caps.push(WasmCapability::Environment);
+            }
+
+            let no_caps = plugin_with_capabilities(vec![]);
+            let no_caps_ok = no_caps.enforce_capabilities(&input).is_ok();
+            assert_eq!(
+                no_caps_ok,
+                required_caps.is_empty(),
+                "no-capability behavior mismatch for input: {input}"
+            );
+
+            let with_required = plugin_with_capabilities(required_caps);
+            assert!(
+                with_required.enforce_capabilities(&input).is_ok(),
+                "required-capability behavior mismatch for input: {input}"
+            );
+        }
     }
 
     #[test]

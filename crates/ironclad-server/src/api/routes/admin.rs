@@ -10,7 +10,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use ironclad_agent::policy::{PolicyContext, ToolCallRequest};
-use ironclad_core::{InputAuthority, IroncladConfig, PolicyDecision, SurvivalTier};
+use ironclad_core::{
+    InputAuthority, IroncladConfig, PolicyDecision, SurvivalTier, input_capability_scan,
+};
 
 use super::{AppState, internal_err};
 
@@ -929,111 +931,12 @@ fn format_balance(balance: f64, symbol: &str) -> String {
 
 fn plugin_tool_required_permissions(tool_name: &str, input: &Value) -> Vec<&'static str> {
     let mut required = Vec::new();
-    let lower_name = tool_name.to_lowercase();
-    if ["http", "fetch", "request", "webhook", "api", "url"]
-        .iter()
-        .any(|k| lower_name.contains(k))
-    {
-        required.push("network");
-    }
-
-    fn is_path_key(key: &str) -> bool {
-        ["path", "file", "filepath", "directory", "dir", "filename"].contains(&key)
-    }
-    fn is_model_key(key: &str) -> bool {
-        [
-            "model",
-            "model_id",
-            "primary",
-            "fallback",
-            "provider_model",
-            "model_name",
-        ]
-        .contains(&key)
-    }
-    fn is_url(v: &str) -> bool {
-        let lower = v.to_ascii_lowercase();
-        lower.starts_with("http://")
-            || lower.starts_with("https://")
-            || lower.starts_with("ws://")
-            || lower.starts_with("wss://")
-    }
-
-    let mut values: Vec<(Option<String>, bool, bool, String)> = Vec::new();
-    fn collect_strings(
-        v: &Value,
-        key_ctx: Option<&str>,
-        in_path_context: bool,
-        in_model_context: bool,
-        out: &mut Vec<(Option<String>, bool, bool, String)>,
-    ) {
-        match v {
-            Value::String(s) => out.push((
-                key_ctx.map(|k| k.to_string()),
-                in_path_context,
-                in_model_context,
-                s.clone(),
-            )),
-            Value::Array(a) => {
-                for x in a {
-                    collect_strings(x, key_ctx, in_path_context, in_model_context, out);
-                }
-            }
-            Value::Object(m) => {
-                for (k, x) in m {
-                    let lower = k.to_lowercase();
-                    let next_path_context = in_path_context || is_path_key(&lower);
-                    let next_model_context = in_model_context || is_model_key(&lower);
-                    collect_strings(x, Some(&lower), next_path_context, next_model_context, out);
-                }
-            }
-            _ => {}
-        }
-    }
-    collect_strings(input, None, false, false, &mut values);
-    fn looks_like_filesystem_path(
-        v: &str,
-        key: Option<&str>,
-        in_path_context: bool,
-        in_model_context: bool,
-    ) -> bool {
-        if in_path_context {
-            return true;
-        }
-        if is_url(v) {
-            return false;
-        }
-        if v.starts_with('/') || v.starts_with('\\') || v.starts_with("./") || v.starts_with("../")
-        {
-            return true;
-        }
-        // Windows drive letter path, e.g. C:\foo or D:/bar
-        let bytes = v.as_bytes();
-        if bytes.len() >= 3 && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/') {
-            return bytes[0].is_ascii_alphabetic();
-        }
-        // In model context, suppress only ambiguous slash-based identifiers
-        // (e.g., provider/model), but not explicit path-shaped values above.
-        if in_model_context {
-            return false;
-        }
-        // Relative paths with separators should count as filesystem unless
-        // they are explicitly model-like identifiers under model keys.
-        if (v.contains('/') || v.contains('\\')) && !key.map(is_model_key).unwrap_or(false) {
-            return true;
-        }
-        false
-    }
-
-    if values
-        .iter()
-        .any(|(key, in_path_context, in_model_context, value)| {
-            looks_like_filesystem_path(value, key.as_deref(), *in_path_context, *in_model_context)
-        })
-    {
+    let _ = tool_name;
+    let scan = input_capability_scan::scan_input_capabilities(input);
+    if scan.requires_filesystem {
         required.push("filesystem");
     }
-    if values.iter().any(|(_, _, _, v)| is_url(v)) && !required.contains(&"network") {
+    if scan.requires_network && !required.contains(&"network") {
         required.push("network");
     }
     required
@@ -1313,9 +1216,7 @@ fn has_tool_token(tool_name_lower: &str, token: &str) -> bool {
 
 fn workstation_for_tool(tool_name: &str) -> (&'static str, &'static str) {
     let t = tool_name.to_lowercase();
-    if t.contains("web") || t.contains("http") || t.contains("fetch") || t.contains("search") {
-        return ("web", "tool_execution");
-    }
+    // Classify local file/search tooling before broad "search" web matching.
     if t.contains("read")
         || t.contains("write")
         || t.contains("file")
@@ -1325,6 +1226,9 @@ fn workstation_for_tool(tool_name: &str) -> (&'static str, &'static str) {
         || t.contains("edit")
     {
         return ("files", "tool_execution");
+    }
+    if t.contains("web") || t.contains("http") || t.contains("fetch") || t.contains("search") {
+        return ("web", "tool_execution");
     }
     if t.contains("memory") {
         return ("memory", "working");
@@ -2425,6 +2329,10 @@ mod tests {
             ("files", "tool_execution")
         );
         assert_eq!(
+            workstation_for_tool("search_files"),
+            ("files", "tool_execution")
+        );
+        assert_eq!(
             workstation_for_tool("target-analyzer"),
             ("exec", "tool_execution")
         );
@@ -2464,5 +2372,45 @@ mod tests {
         let file_required =
             plugin_tool_required_permissions("load_file", &json!({"path": "C:\\tmp\\input.txt"}));
         assert!(file_required.contains(&"filesystem"));
+
+        let regex_required =
+            plugin_tool_required_permissions("process_input", &json!({"pattern": "\\d+"}));
+        assert!(!regex_required.contains(&"filesystem"));
+    }
+
+    #[test]
+    fn plugin_permissions_match_shared_scan_for_input_matrix() {
+        let cases = vec![
+            json!({}),
+            json!({"endpoint": "https://example.com/v1"}),
+            json!({"socket": "wss://example.com/stream"}),
+            json!({"model": "openai/gpt-4o"}),
+            json!({"model": "/etc/passwd"}),
+            json!({"path": "src/main.rs"}),
+            json!({"input": "secrets/config.yaml"}),
+            json!({"pattern": "\\d+\\w+\\s*"}),
+            json!({"env_var": "SECRET_TOKEN"}),
+        ];
+
+        for input in cases {
+            let scan = input_capability_scan::scan_input_capabilities(&input);
+            let required = plugin_tool_required_permissions("neutral_tool", &input);
+            assert_eq!(
+                required.contains(&"filesystem"),
+                scan.requires_filesystem,
+                "filesystem mismatch for input: {input}"
+            );
+            assert_eq!(
+                required.contains(&"network"),
+                scan.requires_network,
+                "network mismatch for input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_permissions_do_not_infer_network_from_tool_name_alone() {
+        let required = plugin_tool_required_permissions("api_call", &json!({}));
+        assert!(!required.contains(&"network"));
     }
 }
