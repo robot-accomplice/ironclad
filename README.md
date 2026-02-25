@@ -3,6 +3,7 @@
 [![Rust](https://img.shields.io/badge/Rust-2024_edition-b7410e?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/robot-accomplice/ironclad/ci.yml?branch=main&logo=github&label=CI)](https://github.com/robot-accomplice/ironclad/actions)
+[![codecov](https://codecov.io/gh/robot-accomplice/ironclad/graph/badge.svg)](https://codecov.io/gh/robot-accomplice/ironclad)
 [![Website](https://img.shields.io/badge/website-roboticus.ai-green?logo=google-chrome&logoColor=white)](https://roboticus.ai)
 [![Tests](https://img.shields.io/badge/tests-1,271-brightgreen?logo=checkmarx&logoColor=white)](#development)
 [![crates.io](https://img.shields.io/crates/v/ironclad-server.svg)](https://crates.io/crates/ironclad-server)

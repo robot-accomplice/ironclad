@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows daemon startup reliability**: Replaced the broken `sc.exe` service launch path (which caused `StartService FAILED 1053`) with a managed detached user-process daemon flow on Windows.
+- **Windows binary update failure mode**: `ironclad update binary` now explicitly blocks in-process self-update on Windows and prints safe manual upgrade steps, avoiding opaque `cargo install` executable move failures.
+- **Dashboard JS bleed-through**: Dashboard HTML rendering now trims to the canonical document boundary, preventing stray trailing script bytes from being rendered in the UI.
+- **Internal proxy regression lock-down**: Ironclad now migrates legacy `127.0.0.1:8788/<provider>` URLs to canonical in-process routing targets at startup, persists the migration safely, and removes runtime dependence on an external loopback proxy listener.
+- **Dashboard/provider boundary hardening**: `/api/models/available` now reports explicit in-process proxy mode metadata so the dashboard remains server-mediated and does not rely on direct local proxy access.
+- **Telegram silent no-reply hardening**: Channel ingress now records receive/error telemetry in dedicated poll/webhook paths, and Telegram processing failures proactively trigger a user-visible fallback reply instead of failing silently.
+
+## [0.7.0] - 2026-02-25
+
 ### Added
 
 - **Subagent contract enforcement**: Added explicit `subagent` vs `model-proxy` role validation, fixed-skills persistence/validation, and strict rejection of personality payloads for taskable subagents.
@@ -211,3 +222,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial release with core agent runtime, memory tiers, wallet integration,
 channel adapters, browser automation, plugin SDK, and scheduling.
+
+## [0.1.0] - 2026-02-22
+
+### Added
+
+- Initial Project Roboticus baseline for Ironclad.
+- Multi-crate Rust workspace foundation (runtime crates + integration test crate).
+- Core SQLite persistence layer with schema/migrations and operational defaults.
+- Early HTTP API, CLI surface, and embedded dashboard scaffolding.
+- Initial architecture and reference documentation set.
+
+### Changed
+
+- Prepared packaging/publish metadata for early release workflows.
+
+### Fixed
+
+- Early release stabilization fixes for binary packaging, startup wiring, and quality gates.

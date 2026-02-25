@@ -323,6 +323,62 @@ pub struct AvailableModelsQuery {
     pub validation_level: Option<String>,
 }
 
+fn model_discovery_mode(
+    provider_name: &str,
+    provider_url: &str,
+    is_local_flag: bool,
+) -> (bool, String) {
+    let name_l = provider_name.to_ascii_lowercase();
+    let url_l = provider_url.to_ascii_lowercase();
+    // Only Ollama-style providers should be probed with /api/tags.
+    let ollama_like = name_l.contains("ollama") || url_l.contains("11434");
+    let keyless_local = is_local_flag || ollama_like;
+    let models_url = if ollama_like {
+        format!("{provider_url}/api/tags")
+    } else {
+        format!("{provider_url}/v1/models")
+    };
+    (keyless_local, models_url)
+}
+
+fn apply_provider_auth(
+    req: reqwest::RequestBuilder,
+    auth_header_name: &str,
+    key: &str,
+) -> reqwest::RequestBuilder {
+    if let Some(param_name) = auth_header_name.strip_prefix("query:") {
+        req.query(&[(param_name, key)])
+    } else if auth_header_name.eq_ignore_ascii_case("authorization") {
+        req.header(auth_header_name, format!("Bearer {key}"))
+    } else {
+        req.header(auth_header_name, key)
+    }
+}
+
+fn is_loopback_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.contains("127.0.0.1") || lower.contains("localhost")
+}
+
+fn classify_provider_connectivity_status(
+    provider_name: &str,
+    provider_url: &str,
+    models_url: &str,
+    _error: &str,
+    localish: bool,
+) -> (&'static str, Option<String>) {
+    let remote_discovery_target = models_url.contains("/v1/models");
+    if !localish && is_loopback_url(provider_url) && remote_discovery_target {
+        return (
+            "proxy_unreachable",
+            Some(format!(
+                "legacy loopback proxy URL detected for provider '{provider_name}' at {provider_url}; update providers.{provider_name}.url to a direct provider base URL"
+            )),
+        );
+    }
+    ("unreachable", None)
+}
+
 pub async fn get_available_models(
     State(state): State<AppState>,
     Query(query): Query<AvailableModelsQuery>,
@@ -380,18 +436,8 @@ pub async fn get_available_models(
             continue;
         }
 
-        let lower_url = url.to_lowercase();
-        let localish = provider_cfg.is_local.unwrap_or(false)
-            || lower_url.contains("localhost")
-            || lower_url.contains("127.0.0.1")
-            || lower_url.contains("11434")
-            || name.to_lowercase().contains("ollama");
-
-        let models_url = if localish {
-            format!("{url}/api/tags")
-        } else {
-            format!("{url}/v1/models")
-        };
+        let (localish, models_url) =
+            model_discovery_mode(&name, &url, provider_cfg.is_local.unwrap_or(false));
 
         let auth_mode = provider_cfg.auth_mode.as_deref().unwrap_or("api_key");
         let api_key_env = provider_cfg.api_key_env.as_deref().unwrap_or("");
@@ -416,11 +462,7 @@ pub async fn get_available_models(
                 .as_deref()
                 .unwrap_or("Authorization")
                 .trim();
-            if auth_header_name.eq_ignore_ascii_case("authorization") {
-                req = req.header(auth_header_name, format!("Bearer {k}"));
-            } else {
-                req = req.header(auth_header_name, k);
-            }
+            req = apply_provider_auth(req, auth_header_name, &k);
         }
         if let Some(extra) = &provider_cfg.extra_headers {
             for (k, v) in extra {
@@ -434,6 +476,33 @@ pub async fn get_available_models(
                     Ok(v) => v,
                     Err(_) => json!({}),
                 };
+                let has_ollama_shape = body.get("models").and_then(|v| v.as_array()).is_some();
+                let has_openai_shape = body.get("data").and_then(|v| v.as_array()).is_some();
+                if !has_ollama_shape && !has_openai_shape {
+                    let status = if !localish && is_loopback_url(&url) {
+                        "proxy_misconfigured"
+                    } else {
+                        "error"
+                    };
+                    let hint = if status == "proxy_misconfigured" {
+                        Some(format!(
+                            "provider '{name}' returned a non-models payload at {models_url}; verify internal proxy routing for /v1/models"
+                        ))
+                    } else {
+                        None
+                    };
+                    provider_reports.insert(
+                        name.clone(),
+                        json!({
+                            "status": status,
+                            "error": "invalid models discovery response",
+                            "hint": hint,
+                            "models": [],
+                            "count": 0,
+                        }),
+                    );
+                    continue;
+                }
                 let mut models: Vec<String> =
                     if let Some(arr) = body.get("models").and_then(|v| v.as_array()) {
                         arr.iter()
@@ -485,11 +554,15 @@ pub async fn get_available_models(
                 );
             }
             Err(e) => {
+                let err = e.to_string();
+                let (status, hint) =
+                    classify_provider_connectivity_status(&name, &url, &models_url, &err, localish);
                 provider_reports.insert(
                     name.clone(),
                     json!({
-                        "status": "unreachable",
-                        "error": e.to_string(),
+                        "status": status,
+                        "error": err,
+                        "hint": hint,
                         "models": [],
                         "count": 0,
                     }),
@@ -519,6 +592,10 @@ pub async fn get_available_models(
         "models": models,
         "count": models.len(),
         "validation_level": validation_level,
+        "proxy": {
+            "mode": "in_process",
+            "loopback_listener_required": false
+        },
         "providers": provider_reports,
     }))
 }
@@ -2412,5 +2489,50 @@ mod tests {
     fn plugin_permissions_do_not_infer_network_from_tool_name_alone() {
         let required = plugin_tool_required_permissions("api_call", &json!({}));
         assert!(!required.contains(&"network"));
+    }
+
+    #[test]
+    fn model_discovery_uses_ollama_tags_only_for_ollama_like_providers() {
+        let (localish_ollama, url_ollama) =
+            model_discovery_mode("ollama-gpu", "http://192.168.50.253:11434", true);
+        assert!(localish_ollama);
+        assert_eq!(url_ollama, "http://192.168.50.253:11434/api/tags");
+
+        let (localish_proxy, url_proxy) =
+            model_discovery_mode("anthropic", "http://127.0.0.1:8788/anthropic", false);
+        assert!(!localish_proxy);
+        assert_eq!(url_proxy, "http://127.0.0.1:8788/anthropic/v1/models");
+    }
+
+    #[test]
+    fn apply_provider_auth_supports_query_key_mode() {
+        let client = reqwest::Client::new();
+        let req = client.get("http://example.test/v1/models");
+        let built = apply_provider_auth(req, "query:key", "secret")
+            .build()
+            .expect("request builds");
+        assert_eq!(
+            built.url().as_str(),
+            "http://example.test/v1/models?key=secret"
+        );
+    }
+
+    #[test]
+    fn classify_provider_connectivity_status_marks_local_proxy_refusal() {
+        let (status, hint) = classify_provider_connectivity_status(
+            "anthropic",
+            "http://127.0.0.1:8788/anthropic",
+            "http://127.0.0.1:8788/anthropic/v1/models",
+            "error sending request for url: connect: connection refused",
+            false,
+        );
+        assert_eq!(status, "proxy_unreachable");
+        assert!(hint.unwrap_or_default().contains("providers.anthropic.url"));
+    }
+
+    #[test]
+    fn loopback_nonlocal_proxy_can_be_marked_misconfigured() {
+        assert!(is_loopback_url("http://127.0.0.1:8788/anthropic"));
+        assert!(!is_loopback_url("https://api.anthropic.com"));
     }
 }

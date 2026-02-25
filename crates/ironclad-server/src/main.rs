@@ -1,3 +1,4 @@
+use std::net::ToSocketAddrs;
 use std::path::Path;
 use std::time::Instant;
 
@@ -1301,6 +1302,23 @@ async fn cmd_serve(
         config.server.bind = b;
     }
 
+    let migrations =
+        migrate_legacy_proxy_urls(&mut config, resolved_path.as_deref().map(Path::new))?;
+    if !migrations.is_empty() {
+        step_warn(
+            t,
+            2,
+            STEPS,
+            &format!(
+                "Migrated {} legacy provider URL(s) from loopback proxy to in-process routing",
+                migrations.len()
+            ),
+        );
+        for m in &migrations {
+            step_detail(t, &format!("providers.{}", m.provider), &m.to_url);
+        }
+    }
+
     config.validate().map_err(|e| {
         let (er, r) = (t.error(), t.reset());
         let err_icon = t.icon_error();
@@ -1308,6 +1326,13 @@ async fn cmd_serve(
         e
     })?;
     step(t, 2, STEPS, "Configuration validated");
+
+    ensure_internal_proxies_reachable(&config).map_err(|e| {
+        let (er, r) = (t.error(), t.reset());
+        let err_icon = t.icon_error();
+        eprintln!("  {er}{err_icon}{r} Internal proxy preflight failed: {e}");
+        e
+    })?;
 
     let is_localhost = config.server.bind == "127.0.0.1"
         || config.server.bind == "localhost"
@@ -1482,6 +1507,239 @@ async fn cmd_serve(
 
     info!("Server shut down");
     Ok(())
+}
+
+fn provider_requires_internal_proxy(
+    name: &str,
+    cfg: &ironclad_core::config::ProviderConfig,
+) -> bool {
+    if cfg.is_local.unwrap_or(false) {
+        return false;
+    }
+    let lowered = name.to_ascii_lowercase();
+    if lowered.contains("ollama") {
+        return false;
+    }
+    let parsed = match reqwest::Url::parse(cfg.url.trim()) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    matches!(
+        parsed
+            .host_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "127.0.0.1" | "localhost" | "::1"
+    )
+}
+
+fn tcp_endpoint_reachable(host: &str, port: u16) -> bool {
+    let addr = format!("{host}:{port}");
+    let resolved = match addr.to_socket_addrs() {
+        Ok(mut addrs) => addrs.next(),
+        Err(_) => None,
+    };
+    let Some(sock) = resolved else {
+        return false;
+    };
+    std::net::TcpStream::connect_timeout(&sock, std::time::Duration::from_millis(400)).is_ok()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderUrlMigration {
+    provider: String,
+    from_url: String,
+    to_url: String,
+}
+
+fn canonical_provider_base_url(provider_name: &str) -> Option<&'static str> {
+    match provider_name.to_ascii_lowercase().as_str() {
+        "anthropic" => Some("https://api.anthropic.com"),
+        "google" => Some("https://generativelanguage.googleapis.com"),
+        "openai" => Some("https://api.openai.com"),
+        "openrouter" => Some("https://openrouter.ai/api"),
+        "moonshot" => Some("https://api.moonshot.ai"),
+        _ => None,
+    }
+}
+
+fn parse_legacy_proxy_url(provider_name: &str, url: &str) -> bool {
+    let parsed = match reqwest::Url::parse(url.trim()) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1") {
+        return false;
+    }
+    if parsed.port_or_known_default().unwrap_or(80) != 8788 {
+        return false;
+    }
+    let mut segs = match parsed.path_segments() {
+        Some(v) => v,
+        None => return false,
+    };
+    let Some(first) = segs.next() else {
+        return false;
+    };
+    first.eq_ignore_ascii_case(provider_name)
+}
+
+fn rewrite_provider_urls_in_toml(
+    original: &str,
+    migrations: &[ProviderUrlMigration],
+) -> (String, bool) {
+    let mut migration_map = std::collections::HashMap::<String, String>::new();
+    for m in migrations {
+        migration_map.insert(m.provider.to_ascii_lowercase(), m.to_url.clone());
+    }
+    if migration_map.is_empty() {
+        return (original.to_string(), false);
+    }
+
+    let mut current_provider: Option<String> = None;
+    let mut changed = false;
+    let mut out = Vec::<String>::new();
+    for line in original.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let section = &trimmed[1..trimmed.len() - 1];
+            if let Some(rest) = section.strip_prefix("providers.") {
+                if !rest.contains('.') && !rest.is_empty() {
+                    current_provider = Some(rest.to_ascii_lowercase());
+                } else {
+                    current_provider = None;
+                }
+            } else {
+                current_provider = None;
+            }
+            out.push(line.to_string());
+            continue;
+        }
+
+        if let Some(provider) = current_provider.as_deref()
+            && trimmed.starts_with("url")
+            && trimmed.contains('=')
+            && let Some(new_url) = migration_map.get(provider)
+        {
+            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            out.push(format!("{indent}url = \"{new_url}\""));
+            changed = true;
+            continue;
+        }
+
+        out.push(line.to_string());
+    }
+
+    let mut rewritten = out.join("\n");
+    if original.ends_with('\n') {
+        rewritten.push('\n');
+    }
+    (rewritten, changed)
+}
+
+fn persist_provider_url_migrations(
+    config_path: &Path,
+    migrations: &[ProviderUrlMigration],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if migrations.is_empty() || !config_path.exists() {
+        return Ok(());
+    }
+
+    let original = std::fs::read_to_string(config_path)?;
+    let (rewritten, changed) = rewrite_provider_urls_in_toml(&original, migrations);
+    if !changed {
+        return Ok(());
+    }
+
+    let backup = config_path.with_extension("toml.bak");
+    if !backup.exists() {
+        std::fs::copy(config_path, &backup)?;
+    }
+
+    let tmp = config_path.with_extension("toml.tmp");
+    std::fs::write(&tmp, rewritten)?;
+    std::fs::rename(&tmp, config_path)?;
+    Ok(())
+}
+
+fn migrate_legacy_proxy_urls(
+    config: &mut IroncladConfig,
+    config_path: Option<&Path>,
+) -> Result<Vec<ProviderUrlMigration>, Box<dyn std::error::Error>> {
+    let mut migrations = Vec::new();
+    for (name, provider) in &mut config.providers {
+        if provider.is_local.unwrap_or(false) {
+            continue;
+        }
+        if !parse_legacy_proxy_url(name, &provider.url) {
+            continue;
+        }
+        let Some(canonical) = canonical_provider_base_url(name) else {
+            continue;
+        };
+        if provider.url.trim().eq_ignore_ascii_case(canonical) {
+            continue;
+        }
+        let from = provider.url.clone();
+        provider.url = canonical.to_string();
+        migrations.push(ProviderUrlMigration {
+            provider: name.clone(),
+            from_url: from,
+            to_url: canonical.to_string(),
+        });
+    }
+
+    if let Some(path) = config_path {
+        persist_provider_url_migrations(path, &migrations)?;
+    }
+
+    Ok(migrations)
+}
+
+fn ensure_internal_proxies_reachable(
+    config: &IroncladConfig,
+) -> Result<(), ironclad_core::IroncladError> {
+    let mut required = Vec::<(String, String, u16)>::new();
+    for (name, provider) in &config.providers {
+        if !provider_requires_internal_proxy(name, provider) {
+            continue;
+        }
+        let parsed = reqwest::Url::parse(provider.url.trim()).map_err(|e| {
+            ironclad_core::IroncladError::Config(format!(
+                "invalid provider URL for {name}: {} ({e})",
+                provider.url
+            ))
+        })?;
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| {
+                ironclad_core::IroncladError::Config(format!(
+                    "provider URL for {name} missing host: {}",
+                    provider.url
+                ))
+            })?
+            .to_string();
+        let port = parsed.port_or_known_default().unwrap_or(80);
+        required.push((name.clone(), host, port));
+    }
+
+    let mut unreachable = Vec::new();
+    for (name, host, port) in required {
+        if !tcp_endpoint_reachable(&host, port) {
+            unreachable.push(format!("{name} ({host}:{port})"));
+        }
+    }
+
+    if unreachable.is_empty() {
+        Ok(())
+    } else {
+        Err(ironclad_core::IroncladError::Config(format!(
+            "required internal provider proxy is unreachable: {}",
+            unreachable.join(", ")
+        )))
+    }
 }
 
 fn cmd_init(path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -1721,3 +1979,138 @@ rate_limit_per_peer = 10
 session_timeout_seconds = 3600
 require_on_chain_identity = true
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_cfg_with_providers(providers_block: &str) -> IroncladConfig {
+        let cfg = format!(
+            r#"
+[agent]
+name = "T"
+id = "t"
+[server]
+bind = "127.0.0.1"
+port = 18789
+[database]
+path = ":memory:"
+[models]
+primary = "moonshot/kimi-k2-turbo-preview"
+{providers}
+"#,
+            providers = providers_block
+        );
+        IroncladConfig::from_str(&cfg).expect("config parses")
+    }
+
+    #[test]
+    fn provider_requires_internal_proxy_true_for_non_local_loopback() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#,
+        );
+        let p = cfg.providers.get("anthropic").unwrap();
+        assert!(provider_requires_internal_proxy("anthropic", p));
+    }
+
+    #[test]
+    fn provider_requires_internal_proxy_false_for_ollama_and_local() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.ollama]
+url = "http://127.0.0.1:11434"
+tier = "T1"
+is_local = true
+"#,
+        );
+        let p = cfg.providers.get("ollama").unwrap();
+        assert!(!provider_requires_internal_proxy("ollama", p));
+    }
+
+    #[test]
+    fn tcp_endpoint_reachable_detects_open_listener() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(tcp_endpoint_reachable("127.0.0.1", port));
+    }
+
+    #[test]
+    fn tcp_endpoint_reachable_detects_closed_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(!tcp_endpoint_reachable("127.0.0.1", port));
+    }
+
+    #[test]
+    fn parse_legacy_proxy_url_requires_loopback_8788_and_provider_prefix() {
+        assert!(parse_legacy_proxy_url(
+            "anthropic",
+            "http://127.0.0.1:8788/anthropic"
+        ));
+        assert!(!parse_legacy_proxy_url(
+            "anthropic",
+            "http://127.0.0.1:8789/anthropic"
+        ));
+        assert!(!parse_legacy_proxy_url(
+            "anthropic",
+            "https://api.anthropic.com"
+        ));
+    }
+
+    #[test]
+    fn rewrite_provider_urls_in_toml_updates_only_targeted_provider_blocks() {
+        let source = r#"[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+
+[providers.google]
+url = "http://127.0.0.1:8788/google"
+tier = "T2"
+"#;
+        let migrations = vec![ProviderUrlMigration {
+            provider: "anthropic".into(),
+            from_url: "http://127.0.0.1:8788/anthropic".into(),
+            to_url: "https://api.anthropic.com".into(),
+        }];
+        let (rewritten, changed) = rewrite_provider_urls_in_toml(source, &migrations);
+        assert!(changed);
+        assert!(rewritten.contains("url = \"https://api.anthropic.com\""));
+        assert!(rewritten.contains("url = \"http://127.0.0.1:8788/google\""));
+    }
+
+    #[test]
+    fn migrate_legacy_proxy_urls_rewrites_config_and_persists_file() {
+        let cfg = r#"
+[agent]
+name = "T"
+id = "t"
+[server]
+bind = "127.0.0.1"
+port = 18789
+[database]
+path = ":memory:"
+[models]
+primary = "anthropic/x"
+[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ironclad.toml");
+        std::fs::write(&path, cfg).unwrap();
+        let mut parsed = IroncladConfig::from_str(cfg).unwrap();
+        let migrations = migrate_legacy_proxy_urls(&mut parsed, Some(&path)).unwrap();
+        assert_eq!(migrations.len(), 1);
+        assert_eq!(
+            parsed.providers.get("anthropic").unwrap().url,
+            "https://api.anthropic.com"
+        );
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("url = \"https://api.anthropic.com\""));
+    }
+}

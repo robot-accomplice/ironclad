@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -25,15 +25,15 @@ keywords = ["agent", "llm", "autonomous", "ai", "runtime"]
 categories = ["command-line-utilities", "network-programming"]
 
 [workspace.dependencies]
-ironclad-core = { path = "crates/ironclad-core", version = "0.6.1" }
-ironclad-db = { path = "crates/ironclad-db", version = "0.6.1" }
-ironclad-llm = { path = "crates/ironclad-llm", version = "0.6.1" }
-ironclad-agent = { path = "crates/ironclad-agent", version = "0.6.1" }
-ironclad-wallet = { path = "crates/ironclad-wallet", version = "0.6.1" }
-ironclad-schedule = { path = "crates/ironclad-schedule", version = "0.6.1" }
-ironclad-channels = { path = "crates/ironclad-channels", version = "0.6.1" }
-ironclad-plugin-sdk = { path = "crates/ironclad-plugin-sdk", version = "0.6.1" }
-ironclad-browser = { path = "crates/ironclad-browser", version = "0.6.1" }
+ironclad-core = { path = "crates/ironclad-core", version = "0.7.0" }
+ironclad-db = { path = "crates/ironclad-db", version = "0.7.0" }
+ironclad-llm = { path = "crates/ironclad-llm", version = "0.7.0" }
+ironclad-agent = { path = "crates/ironclad-agent", version = "0.7.0" }
+ironclad-wallet = { path = "crates/ironclad-wallet", version = "0.7.0" }
+ironclad-schedule = { path = "crates/ironclad-schedule", version = "0.7.0" }
+ironclad-channels = { path = "crates/ironclad-channels", version = "0.7.0" }
+ironclad-plugin-sdk = { path = "crates/ironclad-plugin-sdk", version = "0.7.0" }
+ironclad-browser = { path = "crates/ironclad-browser", version = "0.7.0" }
 
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

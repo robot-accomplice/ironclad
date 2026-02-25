@@ -2383,6 +2383,25 @@
         return '<option value="' + esc(entry.value) + '">' + esc(entry.label) + '</option>';
       }).join('');
     },
+    _renderProviderDiscoveryAlerts: function() {
+      var reports = this._availableModelsProvidersReport || {};
+      var proxy = this._availableModelsProxyRuntime || {};
+      var alerts = [];
+      if (proxy.mode === 'in_process') {
+        alerts.push('<div class="card" style="border-color:var(--border);margin-bottom:0.6rem"><div style="font-size:0.72rem;color:var(--muted);font-weight:600">Provider routing mode: in-process</div><div style="font-size:0.72rem;color:var(--muted);margin-top:0.2rem">Dashboard discovery is server-mediated. Providers are contacted only by Ironclad backend APIs.</div></div>');
+      }
+      Object.keys(reports).forEach(function(name) {
+        var rep = reports[name] || {};
+        if (rep.status === 'proxy_unreachable' || rep.status === 'proxy_misconfigured') {
+          var hint = rep.hint || ('Local proxy for ' + name + ' is unavailable.');
+          var title = rep.status === 'proxy_misconfigured'
+            ? ('Proxy misconfigured: ' + name)
+            : ('Proxy unreachable: ' + name);
+          alerts.push('<div class="card" style="border-color:var(--warning);margin-bottom:0.6rem"><div style="font-size:0.72rem;color:var(--warning);font-weight:600">' + esc(title) + '</div><div style="font-size:0.72rem;color:var(--muted);margin-top:0.2rem">' + esc(hint) + '</div></div>');
+        }
+      });
+      return alerts.join('');
+    },
     _CHAIN_PRESETS: {
       'Ethereum': { chain_id: 1, rpc_url: 'https://eth.llamarpc.com' },
       'Sepolia': { chain_id: 11155111, rpc_url: 'https://rpc.sepolia.org' },
@@ -2394,6 +2413,8 @@
     },
     _agentsTab: 'roster',
     _availableModelsCache: [],
+    _availableModelsProvidersReport: {},
+    _availableModelsProxyRuntime: {},
     _availableModelsFetchedAt: 0,
     _availableModelsInFlight: null,
     _loadAvailableModels: function(opts) {
@@ -2416,6 +2437,8 @@
           .then(function(payload) {
             var models = (payload && payload.models) || [];
             self._availableModelsCache = Array.isArray(models) ? models : [];
+            self._availableModelsProvidersReport = (payload && payload.providers) || {};
+            self._availableModelsProxyRuntime = (payload && payload.proxy) || {};
             self._availableModelsFetchedAt = Date.now();
             return self._availableModelsCache;
           })
@@ -2916,8 +2939,10 @@
             ? '<div style="font-size:0.75rem;color:var(--muted);margin:0.35rem 0 0.85rem">Model order is immutable at runtime for this instance. Edit `ironclad.toml` and restart.</div>'
             : '<div style="font-size:0.75rem;color:var(--muted);margin:0.35rem 0 0.85rem">Drag rows to reorder preference. Top row is primary; all others are fallback order.</div>';
           var addRow = modelsImmutable ? '' : ('<div class="model-order-add"><input id="model-order-add-input" class="settings-input" list="model-order-known-list" type="text" placeholder="Add model (provider/name)"><datalist id="model-order-known-list">' + knownModelOptions + '</datalist><button class="btn secondary" id="model-order-add-btn">Add model</button></div>');
+          var providerAlerts = self._renderProviderDiscoveryAlerts();
           return tabs
             + '<div class="settings-form"><div class="settings-section"><div class="settings-section-title">Model Order</div>'
+            + providerAlerts
             + immutableNote
             + '<div class="model-order-list" id="model-order-list">' + modelRows + '</div>'
             + addRow
@@ -2942,6 +2967,7 @@
 
           if (section === 'models') {
             html += '<div class="settings-section"><div class="settings-section-title">Models</div>';
+            html += self._renderProviderDiscoveryAlerts();
             var modeVal = sectionData.mode || sectionData.routing || 'standard';
             html += '<div class="settings-row"><div class="settings-label">Mode</div><select class="settings-input" data-settings-path="models.mode" style="max-width:200px"><option value="standard"' + (modeVal === 'standard' ? ' selected' : '') + '>Standard</option><option value="creative"' + (modeVal === 'creative' ? ' selected' : '') + '>Creative</option></select></div>';
             var primaryVal = sectionData.primary || '';

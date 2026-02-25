@@ -5,6 +5,7 @@
 .vscode/
 .idea/
 .cursor/
+.playwright-mcp/
 *.swp
 *.swo
 

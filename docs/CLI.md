@@ -39,6 +39,8 @@ If no config file is specified, Ironclad looks for `~/.ironclad/ironclad.toml`. 
 
 Refuses to start on a non-localhost bind address without `[server] api_key` set.
 
+On startup, Ironclad auto-migrates legacy provider URLs that still point to `http://127.0.0.1:8788/<provider>` to canonical direct provider base URLs (for example Anthropic/Google), writes the updated `ironclad.toml`, and keeps a one-time backup at `ironclad.toml.bak`.
+
 ### `ironclad init`
 
 Initialize a new workspace with a starter config and skills directory.
@@ -116,6 +118,15 @@ ironclad update all [OPTIONS]
 #### `ironclad update binary`
 
 Update the Ironclad binary via `cargo install`.
+
+> On Windows, in-process self-update is disabled because running executables are file-locked by the OS.
+> Use a fresh PowerShell session instead:
+>
+> ```powershell
+> ironclad daemon stop
+> cargo install ironclad-server --locked --force
+> ironclad daemon start
+> ```
 
 ```bash
 ironclad update binary [OPTIONS]
@@ -571,7 +582,7 @@ Manage the background daemon service.
 
 #### `ironclad daemon install`
 
-Install the daemon as a LaunchAgent (macOS) or systemd user service (Linux).
+Install the daemon as a LaunchAgent (macOS), systemd user service (Linux), or managed detached user process (Windows).
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -592,7 +603,7 @@ Restart the daemon.
 
 #### `ironclad daemon status`
 
-Show daemon status (installed, running, PID).
+Show daemon status (installed, running, PID when available).
 
 #### `ironclad daemon uninstall`
 
