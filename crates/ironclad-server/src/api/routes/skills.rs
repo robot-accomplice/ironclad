@@ -4,6 +4,7 @@ use axum::{
 };
 use serde_json::Value;
 use std::collections::HashSet;
+use std::path::Path as FsPath;
 
 use super::{AppState, internal_err};
 
@@ -94,6 +95,7 @@ pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
                         "kind": s.kind,
                         "description": s.description,
                         "source_path": s.source_path,
+                        "risk_level": s.risk_level,
                         "enabled": s.enabled || built_in,
                         "built_in": built_in,
                         "last_loaded_at": s.last_loaded_at,
@@ -116,6 +118,7 @@ pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
                     "kind": "builtin",
                     "description": built_in.description,
                     "source_path": Value::Null,
+                    "risk_level": "Caution",
                     "enabled": true,
                     "built_in": true,
                     "last_loaded_at": Value::Null,
@@ -143,6 +146,7 @@ pub async fn get_skill(State(state): State<AppState>, Path(id): Path<String>) ->
                 "tool_chain_json": s.tool_chain_json,
                 "policy_overrides_json": s.policy_overrides_json,
                 "script_path": s.script_path,
+                "risk_level": s.risk_level,
                 "enabled": s.enabled || built_in,
                 "built_in": built_in,
                 "last_loaded_at": s.last_loaded_at,
@@ -160,6 +164,26 @@ pub async fn get_skill(State(state): State<AppState>, Path(id): Path<String>) ->
 pub async fn reload_skills(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+    fn risk_level_str(r: ironclad_core::RiskLevel) -> &'static str {
+        match r {
+            ironclad_core::RiskLevel::Safe => "Safe",
+            ironclad_core::RiskLevel::Caution => "Caution",
+            ironclad_core::RiskLevel::Dangerous => "Dangerous",
+            ironclad_core::RiskLevel::Forbidden => "Forbidden",
+        }
+    }
+    fn normalize_script_path(base: &FsPath, raw: &FsPath) -> String {
+        let candidate = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            base.join(raw)
+        };
+        std::fs::canonicalize(&candidate)
+            .unwrap_or(candidate)
+            .to_string_lossy()
+            .to_string()
+    }
+
     let config = state.config.read().await;
     let skills_dir = config.skills.skills_dir.clone();
     drop(config);
@@ -170,46 +194,87 @@ pub async fn reload_skills(
     let mut added = 0u32;
     let mut updated = 0u32;
 
+    let existing_by_name: std::collections::HashMap<String, ironclad_db::skills::SkillRecord> =
+        ironclad_db::skills::list_skills(&state.db)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| (s.name.clone(), s))
+            .collect();
+
     for skill in &loaded {
         let name = skill.name();
         let hash = skill.hash();
         let kind = match skill {
-            ironclad_agent::skills::LoadedSkill::Structured(_, _) => "structured",
-            ironclad_agent::skills::LoadedSkill::Instruction(_, _) => "instruction",
+            ironclad_agent::skills::LoadedSkill::Structured(_, _, _) => "structured",
+            ironclad_agent::skills::LoadedSkill::Instruction(_, _, _) => "instruction",
         };
         let triggers = serde_json::to_string(skill.triggers()).ok();
-        let source = skills_dir.join(name).to_string_lossy().to_string();
+        let source = skill.source_path().to_string_lossy().to_string();
+        let desc = skill.description();
+        let (tool_chain_json, policy_overrides_json, script_path, risk_level) =
+            if let Some(manifest) = skill.structured_manifest() {
+                let tool_chain_json = manifest
+                    .tool_chain
+                    .as_ref()
+                    .and_then(|v| serde_json::to_string(v).ok());
+                let policy_overrides_json = manifest
+                    .policy_overrides
+                    .as_ref()
+                    .and_then(|v| serde_json::to_string(v).ok());
+                let base = skill.source_path().parent().unwrap_or(skills_dir.as_path());
+                let script_path = manifest
+                    .script_path
+                    .as_ref()
+                    .map(|p| normalize_script_path(base, p));
+                (
+                    tool_chain_json,
+                    policy_overrides_json,
+                    script_path,
+                    risk_level_str(manifest.risk_level).to_string(),
+                )
+            } else {
+                (None, None, None, "Caution".to_string())
+            };
 
-        let existing = ironclad_db::skills::list_skills(&state.db)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|s| s.name == name);
+        let existing = existing_by_name.get(name);
 
         if let Some(existing) = existing {
-            if existing.content_hash != hash {
-                if let Err(e) = ironclad_db::skills::update_skill(
+            if existing.content_hash != hash
+                || existing.triggers_json.as_deref() != triggers.as_deref()
+                || existing.tool_chain_json.as_deref() != tool_chain_json.as_deref()
+                || existing.policy_overrides_json.as_deref() != policy_overrides_json.as_deref()
+                || existing.script_path.as_deref() != script_path.as_deref()
+                || existing.source_path != source
+                || existing.risk_level != risk_level
+            {
+                if let Err(e) = ironclad_db::skills::update_skill_full(
                     &state.db,
                     &existing.id,
                     hash,
                     triggers.as_deref(),
-                    None,
+                    tool_chain_json.as_deref(),
+                    policy_overrides_json.as_deref(),
+                    script_path.as_deref(),
+                    &source,
+                    &risk_level,
                 ) {
                     tracing::warn!(error = %e, skill = name, "skill sync: update_skill failed");
                 }
                 updated += 1;
             }
         } else {
-            if let Err(e) = ironclad_db::skills::register_skill(
+            if let Err(e) = ironclad_db::skills::register_skill_full(
                 &state.db,
                 name,
                 kind,
-                None,
+                desc,
                 &source,
                 hash,
                 triggers.as_deref(),
-                None,
-                None,
-                None,
+                tool_chain_json.as_deref(),
+                policy_overrides_json.as_deref(),
+                script_path.as_deref(),
+                &risk_level,
             ) {
                 tracing::warn!(error = %e, skill = name, "skill sync: register_skill failed");
             }

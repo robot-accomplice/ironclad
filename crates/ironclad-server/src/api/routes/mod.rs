@@ -436,6 +436,7 @@ mod tests {
     use ironclad_channels::telegram::TelegramAdapter;
     use ironclad_channels::whatsapp::WhatsAppAdapter;
     use ironclad_db::Database;
+    use ironclad_core::InputAuthority;
     use ironclad_llm::LlmService;
     use ironclad_llm::OAuthManager;
     use ironclad_plugin_sdk::registry::PluginRegistry;
@@ -1747,6 +1748,114 @@ primary = "ollama/qwen3:8b"
             StatusCode::FORBIDDEN,
             "policy should deny External + Caution tool call"
         );
+    }
+
+    #[tokio::test]
+    async fn run_script_policy_override_require_creator_denies_external() {
+        let mut state = test_state();
+        let skills_dir = tempfile::tempdir().unwrap();
+        let script = skills_dir.path().join("protected.sh");
+        std::fs::write(&script, "#!/bin/bash\necho protected").unwrap();
+        let script_canonical = std::fs::canonicalize(&script).unwrap();
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.skills.skills_dir = skills_dir.path().to_path_buf();
+        }
+
+        ironclad_db::skills::register_skill_full(
+            &state.db,
+            "protected-runner",
+            "structured",
+            Some("script protected by creator-only override"),
+            &script_canonical.to_string_lossy(),
+            "hash-protected",
+            Some(r#"{"keywords":["protected"]}"#),
+            None,
+            Some(r#"{"require_creator":true}"#),
+            Some(&script_canonical.to_string_lossy()),
+            "Caution",
+        )
+        .unwrap();
+
+        let mut registry = ToolRegistry::new();
+        let skills_cfg = {
+            let cfg = state.config.read().await;
+            cfg.skills.clone()
+        };
+        registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(skills_cfg)));
+        state.tools = Arc::new(registry);
+
+        let sid = ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
+        let turn_id = ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None)
+            .unwrap();
+
+        let result = agent::execute_tool_call(
+            &state,
+            "run_script",
+            &serde_json::json!({ "path": "protected.sh" }),
+            &turn_id,
+            InputAuthority::External,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("requires Creator authority"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn run_script_policy_override_deny_external_blocks_external() {
+        let mut state = test_state();
+        let skills_dir = tempfile::tempdir().unwrap();
+        let script = skills_dir.path().join("deny-external.sh");
+        std::fs::write(&script, "#!/bin/bash\necho denied").unwrap();
+        let script_canonical = std::fs::canonicalize(&script).unwrap();
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.skills.skills_dir = skills_dir.path().to_path_buf();
+        }
+
+        ironclad_db::skills::register_skill_full(
+            &state.db,
+            "deny-external-runner",
+            "structured",
+            Some("script denied for external callers"),
+            &script_canonical.to_string_lossy(),
+            "hash-deny-external",
+            Some(r#"{"keywords":["deny-external"]}"#),
+            None,
+            Some(r#"{"deny_external":true}"#),
+            Some(&script_canonical.to_string_lossy()),
+            "Caution",
+        )
+        .unwrap();
+
+        let mut registry = ToolRegistry::new();
+        let skills_cfg = {
+            let cfg = state.config.read().await;
+            cfg.skills.clone()
+        };
+        registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(skills_cfg)));
+        state.tools = Arc::new(registry);
+
+        let sid = ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
+        let turn_id = ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None)
+            .unwrap();
+
+        let result = agent::execute_tool_call(
+            &state,
+            "run_script",
+            &serde_json::json!({ "path": "deny-external.sh" }),
+            &turn_id,
+            InputAuthority::External,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("denies External authority"), "unexpected error: {err}");
     }
 
     #[tokio::test]

@@ -345,6 +345,9 @@ pub async fn get_turn_tools(
                     serde_json::json!({
                         "id": tc.id,
                         "tool_name": tc.tool_name,
+                        "skill_id": tc.skill_id,
+                        "skill_name": tc.skill_name,
+                        "skill_hash": tc.skill_hash,
                         "status": tc.status,
                         "duration_ms": tc.duration_ms,
                         "created_at": tc.created_at,

@@ -10,6 +10,9 @@ pub struct ToolCallRecord {
     pub tool_name: String,
     pub input: String,
     pub output: Option<String>,
+    pub skill_id: Option<String>,
+    pub skill_name: Option<String>,
+    pub skill_hash: Option<String>,
     pub status: String,
     pub duration_ms: Option<i64>,
     pub created_at: String,
@@ -24,12 +27,50 @@ pub fn record_tool_call(
     status: &str,
     duration_ms: Option<i64>,
 ) -> Result<String> {
+    record_tool_call_with_skill(
+        db,
+        turn_id,
+        tool_name,
+        input,
+        output,
+        status,
+        duration_ms,
+        None,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_tool_call_with_skill(
+    db: &Database,
+    turn_id: &str,
+    tool_name: &str,
+    input: &str,
+    output: Option<&str>,
+    status: &str,
+    duration_ms: Option<i64>,
+    skill_id: Option<&str>,
+    skill_name: Option<&str>,
+    skill_hash: Option<&str>,
+) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO tool_calls (id, turn_id, tool_name, input, output, status, duration_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![id, turn_id, tool_name, input, output, status, duration_ms],
+        "INSERT INTO tool_calls (id, turn_id, tool_name, input, output, skill_id, skill_name, \
+         skill_hash, status, duration_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            id,
+            turn_id,
+            tool_name,
+            input,
+            output,
+            skill_id,
+            skill_name,
+            skill_hash,
+            status,
+            duration_ms
+        ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
@@ -39,7 +80,8 @@ pub fn get_tool_calls_for_turn(db: &Database, turn_id: &str) -> Result<Vec<ToolC
     let conn = db.conn();
     let mut stmt = conn
         .prepare(
-            "SELECT id, turn_id, tool_name, input, output, status, duration_ms, created_at \
+            "SELECT id, turn_id, tool_name, input, output, skill_id, skill_name, skill_hash, \
+             status, duration_ms, created_at \
              FROM tool_calls WHERE turn_id = ?1 ORDER BY created_at ASC",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -52,9 +94,12 @@ pub fn get_tool_calls_for_turn(db: &Database, turn_id: &str) -> Result<Vec<ToolC
                 tool_name: row.get(2)?,
                 input: row.get(3)?,
                 output: row.get(4)?,
-                status: row.get(5)?,
-                duration_ms: row.get(6)?,
-                created_at: row.get(7)?,
+                skill_id: row.get(5)?,
+                skill_name: row.get(6)?,
+                skill_hash: row.get(7)?,
+                status: row.get(8)?,
+                duration_ms: row.get(9)?,
+                created_at: row.get(10)?,
             })
         })
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -72,8 +117,8 @@ pub fn get_tool_calls_for_session(
     let conn = db.conn();
     let mut stmt = conn
         .prepare(
-            "SELECT tc.id, tc.turn_id, tc.tool_name, tc.input, tc.output, tc.status, \
-                    tc.duration_ms, tc.created_at \
+            "SELECT tc.id, tc.turn_id, tc.tool_name, tc.input, tc.output, tc.skill_id, \
+                    tc.skill_name, tc.skill_hash, tc.status, tc.duration_ms, tc.created_at \
              FROM tool_calls tc \
              INNER JOIN turns t ON tc.turn_id = t.id \
              WHERE t.session_id = ?1 \
@@ -89,9 +134,12 @@ pub fn get_tool_calls_for_session(
                 tool_name: row.get(2)?,
                 input: row.get(3)?,
                 output: row.get(4)?,
-                status: row.get(5)?,
-                duration_ms: row.get(6)?,
-                created_at: row.get(7)?,
+                skill_id: row.get(5)?,
+                skill_name: row.get(6)?,
+                skill_hash: row.get(7)?,
+                status: row.get(8)?,
+                duration_ms: row.get(9)?,
+                created_at: row.get(10)?,
             })
         })
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -250,5 +298,28 @@ mod tests {
         assert!(!calls[0].id.is_empty());
         assert_eq!(calls[0].turn_id, "t1");
         assert!(!calls[0].created_at.is_empty());
+    }
+
+    #[test]
+    fn record_tool_call_with_skill_attribution() {
+        let db = test_db();
+        record_tool_call_with_skill(
+            &db,
+            "t1",
+            "run_script",
+            r#"{"path":"deploy.sh"}"#,
+            Some("ok"),
+            "success",
+            Some(33),
+            Some("skill-123"),
+            Some("deploy"),
+            Some("hash-abc"),
+        )
+        .unwrap();
+        let calls = get_tool_calls_for_turn(&db, "t1").unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].skill_id.as_deref(), Some("skill-123"));
+        assert_eq!(calls[0].skill_name.as_deref(), Some("deploy"));
+        assert_eq!(calls[0].skill_hash.as_deref(), Some("hash-abc"));
     }
 }

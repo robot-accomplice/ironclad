@@ -83,20 +83,96 @@ fn provider_failure_user_message(last_error: &str, message_already_stored: bool)
 }
 
 /// Execute a tool call through the ToolRegistry, enforcing policy and recording audit trails.
-async fn execute_tool_call(
+pub(crate) async fn execute_tool_call(
     state: &AppState,
     tool_name: &str,
     params: &serde_json::Value,
     turn_id: &str,
     authority: InputAuthority,
 ) -> Result<String, String> {
+    fn parse_risk_level(raw: &str) -> ironclad_core::RiskLevel {
+        match raw.to_ascii_lowercase().as_str() {
+            "safe" => ironclad_core::RiskLevel::Safe,
+            "dangerous" => ironclad_core::RiskLevel::Dangerous,
+            "forbidden" => ironclad_core::RiskLevel::Forbidden,
+            _ => ironclad_core::RiskLevel::Caution,
+        }
+    }
+    fn resolve_script_audit_path(
+        skills_dir: &std::path::Path,
+        script_arg: &str,
+    ) -> Option<String> {
+        let requested = std::path::Path::new(script_arg);
+        let root = std::fs::canonicalize(skills_dir).ok()?;
+        let joined = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            root.join(requested)
+        };
+        let canonical = std::fs::canonicalize(&joined).ok()?;
+        if canonical.starts_with(&root) {
+            Some(canonical.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    }
+
     let balance = state.wallet.wallet.get_usdc_balance().await.unwrap_or(0.0);
     let tier = ironclad_core::SurvivalTier::from_balance(balance, 0.0);
     let tool = match state.tools.get(tool_name) {
         Some(t) => t,
         None => return Err(format!("Unknown tool: {tool_name}")),
     };
-    let tool_risk = tool.risk_level();
+    let mut effective_risk = tool.risk_level();
+    let mut matched_skill: Option<(String, String, String)> = None;
+
+    if tool_name == "run_script" {
+        let script_arg = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let config = state.config.read().await;
+        let maybe_script_path = resolve_script_audit_path(&config.skills.skills_dir, script_arg);
+        drop(config);
+
+        if let Some(script_path) = maybe_script_path
+            && let Ok(Some(skill)) =
+                ironclad_db::skills::find_enabled_skill_by_script_path(&state.db, &script_path)
+        {
+            effective_risk = parse_risk_level(&skill.risk_level);
+            matched_skill = Some((skill.id.clone(), skill.name.clone(), skill.content_hash.clone()));
+
+            if let Some(overrides_raw) = skill.policy_overrides_json.as_deref()
+                && let Ok(overrides) = serde_json::from_str::<serde_json::Value>(overrides_raw)
+            {
+                let require_creator = overrides
+                    .get("require_creator")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let deny_external = overrides
+                    .get("deny_external")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let disabled = overrides
+                    .get("disabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                if disabled {
+                    return Err(format!("Policy override denied: skill '{}' is disabled", skill.name));
+                }
+                if require_creator && authority != ironclad_core::InputAuthority::Creator {
+                    return Err(format!(
+                        "Policy override denied: skill '{}' requires Creator authority",
+                        skill.name
+                    ));
+                }
+                if deny_external && authority == ironclad_core::InputAuthority::External {
+                    return Err(format!(
+                        "Policy override denied: skill '{}' denies External authority",
+                        skill.name
+                    ));
+                }
+            }
+        }
+    }
 
     let policy_result = check_tool_policy(
         &state.policy_engine,
@@ -104,7 +180,7 @@ async fn execute_tool_call(
         params,
         authority,
         tier,
-        tool_risk,
+        effective_risk,
     );
 
     let (decision_str, rule_name, reason) = match &policy_result {
@@ -184,15 +260,18 @@ async fn execute_tool_call(
         })
         .to_string(),
     );
-    state.event_bus.publish(
-        serde_json::json!({
-            "type": "skill_activated",
-            "agent_id": "ironclad",
-            "skill": tool_name,
-            "turn_id": turn_id,
-        })
-        .to_string(),
-    );
+    if let Some((_, skill_name, _)) = matched_skill.as_ref() {
+        state.event_bus.publish(
+            serde_json::json!({
+                "type": "skill_activated",
+                "agent_id": "ironclad",
+                "skill": skill_name,
+                "tool_name": tool_name,
+                "turn_id": turn_id,
+            })
+            .to_string(),
+        );
+    }
 
     let start = std::time::Instant::now();
     let timeout_duration = std::time::Duration::from_secs(120);
@@ -223,7 +302,11 @@ async fn execute_tool_call(
         Err(e) => (e.message.clone(), "error"),
     };
 
-    ironclad_db::tools::record_tool_call(
+    let (skill_id, skill_name, skill_hash) = match matched_skill.as_ref() {
+        Some((id, name, hash)) => (Some(id.as_str()), Some(name.as_str()), Some(hash.as_str())),
+        None => (None, None, None),
+    };
+    ironclad_db::tools::record_tool_call_with_skill(
         &state.db,
         turn_id,
         tool_name,
@@ -231,6 +314,9 @@ async fn execute_tool_call(
         Some(&output),
         status,
         Some(duration_ms),
+        skill_id,
+        skill_name,
+        skill_hash,
     )
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record tool call"))
     .ok();

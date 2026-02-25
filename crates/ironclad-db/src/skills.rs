@@ -14,6 +14,7 @@ pub struct SkillRecord {
     pub tool_chain_json: Option<String>,
     pub policy_overrides_json: Option<String>,
     pub script_path: Option<String>,
+    pub risk_level: String,
     pub enabled: bool,
     pub last_loaded_at: Option<String>,
     pub created_at: String,
@@ -32,12 +33,41 @@ pub fn register_skill(
     policy_overrides_json: Option<&str>,
     script_path: Option<&str>,
 ) -> Result<String> {
+    register_skill_full(
+        db,
+        name,
+        kind,
+        description,
+        source_path,
+        content_hash,
+        triggers_json,
+        tool_chain_json,
+        policy_overrides_json,
+        script_path,
+        "Caution",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn register_skill_full(
+    db: &Database,
+    name: &str,
+    kind: &str,
+    description: Option<&str>,
+    source_path: &str,
+    content_hash: &str,
+    triggers_json: Option<&str>,
+    tool_chain_json: Option<&str>,
+    policy_overrides_json: Option<&str>,
+    script_path: Option<&str>,
+    risk_level: &str,
+) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO skills (id, name, kind, description, source_path, content_hash, \
-         triggers_json, tool_chain_json, policy_overrides_json, script_path) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+         triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         rusqlite::params![
             id,
             name,
@@ -49,6 +79,7 @@ pub fn register_skill(
             tool_chain_json,
             policy_overrides_json,
             script_path,
+            risk_level,
         ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -59,7 +90,7 @@ pub fn get_skill(db: &Database, id: &str) -> Result<Option<SkillRecord>> {
     let conn = db.conn();
     conn.query_row(
         "SELECT id, name, kind, description, source_path, content_hash, \
-         triggers_json, tool_chain_json, policy_overrides_json, script_path, \
+         triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
          enabled, last_loaded_at, created_at \
          FROM skills WHERE id = ?1",
         [id],
@@ -74,7 +105,7 @@ pub fn list_skills(db: &Database) -> Result<Vec<SkillRecord>> {
     let mut stmt = conn
         .prepare(
             "SELECT id, name, kind, description, source_path, content_hash, \
-             triggers_json, tool_chain_json, policy_overrides_json, script_path, \
+             triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
              enabled, last_loaded_at, created_at \
              FROM skills ORDER BY name ASC",
         )
@@ -100,6 +131,38 @@ pub fn update_skill(
         "UPDATE skills SET content_hash = ?1, triggers_json = ?2, tool_chain_json = ?3, \
          last_loaded_at = datetime('now') WHERE id = ?4",
         rusqlite::params![content_hash, triggers_json, tool_chain_json, id],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn update_skill_full(
+    db: &Database,
+    id: &str,
+    content_hash: &str,
+    triggers_json: Option<&str>,
+    tool_chain_json: Option<&str>,
+    policy_overrides_json: Option<&str>,
+    script_path: Option<&str>,
+    source_path: &str,
+    risk_level: &str,
+) -> Result<()> {
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE skills SET content_hash = ?1, triggers_json = ?2, tool_chain_json = ?3, \
+         policy_overrides_json = ?4, script_path = ?5, source_path = ?6, risk_level = ?7, \
+         last_loaded_at = datetime('now') WHERE id = ?8",
+        rusqlite::params![
+            content_hash,
+            triggers_json,
+            tool_chain_json,
+            policy_overrides_json,
+            script_path,
+            source_path,
+            risk_level,
+            id
+        ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(())
@@ -143,7 +206,7 @@ pub fn find_by_trigger(db: &Database, keyword: &str) -> Result<Vec<SkillRecord>>
     let mut stmt = conn
         .prepare(
             "SELECT id, name, kind, description, source_path, content_hash, \
-             triggers_json, tool_chain_json, policy_overrides_json, script_path, \
+             triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
              enabled, last_loaded_at, created_at \
              FROM skills WHERE triggers_json LIKE ?1 ESCAPE '\\' AND enabled = 1",
         )
@@ -155,6 +218,23 @@ pub fn find_by_trigger(db: &Database, keyword: &str) -> Result<Vec<SkillRecord>>
 
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
+pub fn find_enabled_skill_by_script_path(
+    db: &Database,
+    script_path: &str,
+) -> Result<Option<SkillRecord>> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT id, name, kind, description, source_path, content_hash, \
+         triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
+         enabled, last_loaded_at, created_at \
+         FROM skills WHERE script_path = ?1 AND enabled = 1 LIMIT 1",
+        [script_path],
+        row_to_skill,
+    )
+    .optional()
+    .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
 fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillRecord> {
@@ -169,9 +249,10 @@ fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillRecord> {
         tool_chain_json: row.get(7)?,
         policy_overrides_json: row.get(8)?,
         script_path: row.get(9)?,
-        enabled: row.get::<_, i32>(10)? != 0,
-        last_loaded_at: row.get(11)?,
-        created_at: row.get(12)?,
+        risk_level: row.get(10)?,
+        enabled: row.get::<_, i32>(11)? != 0,
+        last_loaded_at: row.get(12)?,
+        created_at: row.get(13)?,
     })
 }
 
@@ -451,5 +532,26 @@ mod tests {
         update_skill(&db, &id, "new", None, None).unwrap();
         let skill = get_skill(&db, &id).unwrap().unwrap();
         assert!(skill.last_loaded_at.is_some());
+    }
+
+    #[test]
+    fn register_skill_full_persists_risk_level() {
+        let db = test_db();
+        let id = register_skill_full(
+            &db,
+            "high-risk",
+            "structured",
+            Some("dangerous operation"),
+            "/skills/high-risk.toml",
+            "h-risk",
+            Some(r#"{"keywords":["danger"]}"#),
+            None,
+            Some(r#"{"require_creator":true}"#),
+            Some("/skills/bin/high-risk.sh"),
+            "Dangerous",
+        )
+        .unwrap();
+        let skill = get_skill(&db, &id).unwrap().unwrap();
+        assert_eq!(skill.risk_level, "Dangerous");
     }
 }

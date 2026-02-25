@@ -216,6 +216,9 @@ pub async fn get_tool_audit(
         "tool_calls": calls.iter().map(|c| json!({
             "id": c.id,
             "tool_name": c.tool_name,
+            "skill_id": c.skill_id,
+            "skill_name": c.skill_name,
+            "skill_hash": c.skill_hash,
             "input": c.input,
             "output": c.output,
             "status": c.status,

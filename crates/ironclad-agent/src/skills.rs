@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
@@ -6,28 +6,48 @@ use ironclad_core::{InstructionSkill, IroncladError, Result, SkillManifest, Skil
 
 #[derive(Debug, Clone)]
 pub enum LoadedSkill {
-    Structured(SkillManifest, String),
-    Instruction(InstructionSkill, String),
+    Structured(SkillManifest, String, PathBuf),
+    Instruction(InstructionSkill, String, PathBuf),
 }
 
 impl LoadedSkill {
     pub fn name(&self) -> &str {
         match self {
-            LoadedSkill::Structured(m, _) => &m.name,
-            LoadedSkill::Instruction(i, _) => &i.name,
+            LoadedSkill::Structured(m, _, _) => &m.name,
+            LoadedSkill::Instruction(i, _, _) => &i.name,
         }
     }
 
     pub fn triggers(&self) -> &SkillTrigger {
         match self {
-            LoadedSkill::Structured(m, _) => &m.triggers,
-            LoadedSkill::Instruction(i, _) => &i.triggers,
+            LoadedSkill::Structured(m, _, _) => &m.triggers,
+            LoadedSkill::Instruction(i, _, _) => &i.triggers,
         }
     }
 
     pub fn hash(&self) -> &str {
         match self {
-            LoadedSkill::Structured(_, h) | LoadedSkill::Instruction(_, h) => h,
+            LoadedSkill::Structured(_, h, _) | LoadedSkill::Instruction(_, h, _) => h,
+        }
+    }
+
+    pub fn source_path(&self) -> &Path {
+        match self {
+            LoadedSkill::Structured(_, _, p) | LoadedSkill::Instruction(_, _, p) => p.as_path(),
+        }
+    }
+
+    pub fn structured_manifest(&self) -> Option<&SkillManifest> {
+        match self {
+            LoadedSkill::Structured(m, _, _) => Some(m),
+            LoadedSkill::Instruction(_, _, _) => None,
+        }
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            LoadedSkill::Structured(m, _, _) => Some(&m.description),
+            LoadedSkill::Instruction(i, _, _) => Some(&i.description),
         }
     }
 }
@@ -62,13 +82,13 @@ impl SkillLoader {
                         let manifest: SkillManifest = toml::from_str(&raw).map_err(|e| {
                             IroncladError::Skill(format!("failed to parse {}: {e}", path.display()))
                         })?;
-                        skills.push(LoadedSkill::Structured(manifest, hash));
+                        skills.push(LoadedSkill::Structured(manifest, hash, path.clone()));
                     }
                     Some("md") => {
                         let raw = std::fs::read_to_string(&path)?;
                         let hash = content_hash(raw.as_bytes());
                         let skill = parse_instruction_md(&raw, &path)?;
-                        skills.push(LoadedSkill::Instruction(skill, hash));
+                        skills.push(LoadedSkill::Instruction(skill, hash, path.clone()));
                     }
                     _ => {}
                 }
@@ -189,7 +209,7 @@ regex_patterns = []
         assert_eq!(skills.len(), 1);
 
         match &skills[0] {
-            LoadedSkill::Structured(manifest, hash) => {
+            LoadedSkill::Structured(manifest, hash, _) => {
                 assert_eq!(manifest.name, "code_review");
                 assert_eq!(manifest.priority, 3);
                 assert!(!hash.is_empty());
@@ -218,7 +238,7 @@ Always greet the user with enthusiasm and warmth.
         assert_eq!(skills.len(), 1);
 
         match &skills[0] {
-            LoadedSkill::Instruction(skill, hash) => {
+            LoadedSkill::Instruction(skill, hash, _) => {
                 assert_eq!(skill.name, "greeting");
                 assert_eq!(skill.priority, 2);
                 assert!(skill.body.contains("enthusiasm"));
@@ -245,6 +265,7 @@ Always greet the user with enthusiasm and warmth.
                 body: "Review the code.".into(),
             },
             "hash_a".into(),
+            PathBuf::from("/tmp/hash_a"),
         );
 
         let skill_b = LoadedSkill::Instruction(
@@ -260,6 +281,7 @@ Always greet the user with enthusiasm and warmth.
                 body: "Deploy the service.".into(),
             },
             "hash_b".into(),
+            PathBuf::from("/tmp/hash_b"),
         );
 
         registry.register(skill_a);

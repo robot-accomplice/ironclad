@@ -211,7 +211,8 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
 
     // Prerequisites: Go + gosh (plugin scripting engine)
     println!("  {BOLD}Checking prerequisites...{RESET}\n");
-    let has_go = which_binary("go").is_some();
+    let go_bin = which_binary("go");
+    let has_go = go_bin.is_some();
     let has_gosh = which_binary("gosh").is_some();
 
     if !has_go {
@@ -239,9 +240,16 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
             .interact()?;
         if install_now {
             println!("  Installing gosh...");
-            let result = std::process::Command::new("go")
-                .args(["install", "github.com/drewwalton19216801/gosh@latest"])
-                .status();
+            let result = if let Some(go_path) = go_bin.as_deref() {
+                std::process::Command::new(go_path)
+                    .args(["install", "github.com/drewwalton19216801/gosh@latest"])
+                    .status()
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "go binary not found",
+                ))
+            };
             match result {
                 Ok(s) if s.success() => {
                     println!("  {OK} gosh installed successfully");
