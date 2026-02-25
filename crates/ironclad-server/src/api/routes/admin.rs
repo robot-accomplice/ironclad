@@ -1241,6 +1241,12 @@ fn is_recent_activity(ts: &str, now: chrono::DateTime<chrono::Utc>) -> bool {
         .unwrap_or(false)
 }
 
+fn has_tool_token(tool_name_lower: &str, token: &str) -> bool {
+    tool_name_lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|part| part == token)
+}
+
 fn workstation_for_tool(tool_name: &str) -> (&'static str, &'static str) {
     let t = tool_name.to_lowercase();
     if t.contains("web") || t.contains("http") || t.contains("fetch") || t.contains("search") {
@@ -1250,7 +1256,7 @@ fn workstation_for_tool(tool_name: &str) -> (&'static str, &'static str) {
         || t.contains("write")
         || t.contains("file")
         || t.contains("glob")
-        || t.contains("rg")
+        || has_tool_token(&t, "rg")
         || t.contains("patch")
         || t.contains("edit")
     {
@@ -2345,5 +2351,18 @@ mod tests {
         );
         assert_eq!(base["l1"]["l2"]["l3"], "new");
         assert_eq!(base["l1"]["l2"]["extra"], true);
+    }
+
+    #[test]
+    fn workstation_for_tool_uses_token_match_for_rg() {
+        assert_eq!(workstation_for_tool("rg"), ("files", "tool_execution"));
+        assert_eq!(
+            workstation_for_tool("plugin-rg-runner"),
+            ("files", "tool_execution")
+        );
+        assert_eq!(
+            workstation_for_tool("target-analyzer"),
+            ("exec", "tool_execution")
+        );
     }
 }
