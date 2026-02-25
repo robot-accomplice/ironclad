@@ -46,22 +46,18 @@ impl SessionGovernor {
         agent_id: &str,
     ) -> ironclad_core::Result<usize> {
         let sessions = ironclad_db::sessions::list_active_sessions(db, Some(agent_id))?;
-        let mut rotated = 0usize;
-        for s in sessions {
-            if s.scope_key.as_deref() == Some("agent") {
-                self.compact_before_archive(db, &s.id).ok();
-                ironclad_db::sessions::archive_session(db, &s.id)?;
-                rotated += 1;
-            }
+        let agent_scoped: Vec<_> = sessions
+            .into_iter()
+            .filter(|s| s.scope_key.as_deref() == Some("agent"))
+            .collect();
+        for s in &agent_scoped {
+            self.compact_before_archive(db, &s.id).ok();
         }
-        if rotated > 0 {
-            let _ = self.spawn(
-                db,
-                agent_id,
-                Some(&ironclad_db::sessions::SessionScope::Agent),
-            )?;
+        if agent_scoped.is_empty() {
+            return Ok(0);
         }
-        Ok(rotated)
+        let _ = ironclad_db::sessions::rotate_agent_session(db, agent_id)?;
+        Ok(1)
     }
 
     fn compact_before_archive(&self, db: &Database, session_id: &str) -> ironclad_core::Result<()> {
@@ -131,5 +127,25 @@ mod tests {
         let sid_scoped = gov.spawn(&db, "gov-agent", Some(&scope)).unwrap();
         let sid_plain = gov.spawn(&db, "gov-agent", None).unwrap();
         assert_ne!(sid_scoped, sid_plain);
+    }
+
+    #[test]
+    fn rotate_agent_scope_sessions_keeps_single_active_session() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+        let sid1 = ironclad_db::sessions::create_new(&db, "gov-rotate", None).unwrap();
+
+        let rotated = gov.rotate_agent_scope_sessions(&db, "gov-rotate").unwrap();
+        assert_eq!(rotated, 1);
+
+        let active = ironclad_db::sessions::list_active_sessions(&db, Some("gov-rotate")).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].scope_key.as_deref(), Some("agent"));
+        assert_ne!(active[0].id, sid1);
+
+        let archived = ironclad_db::sessions::get_session(&db, &sid1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(archived.status, "archived");
     }
 }

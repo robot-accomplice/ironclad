@@ -239,16 +239,28 @@ pub fn find_enabled_skill_by_script_path(
 
 pub fn find_skill_by_script_path(db: &Database, script_path: &str) -> Result<Option<SkillRecord>> {
     let conn = db.conn();
-    conn.query_row(
-        "SELECT id, name, kind, description, source_path, content_hash, \
-         triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-         enabled, last_loaded_at, created_at \
-         FROM skills WHERE script_path = ?1 LIMIT 1",
-        [script_path],
-        row_to_skill,
-    )
-    .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, kind, description, source_path, content_hash, \
+             triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
+             enabled, last_loaded_at, created_at \
+             FROM skills WHERE script_path = ?1 ORDER BY created_at DESC",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map([script_path], row_to_skill)
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let mut matches = rows
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    if matches.len() > 1 {
+        return Err(IroncladError::Database(format!(
+            "ambiguous script_path '{}' matches {} skills",
+            script_path,
+            matches.len()
+        )));
+    }
+    Ok(matches.pop())
 }
 
 fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillRecord> {
@@ -567,5 +579,42 @@ mod tests {
         .unwrap();
         let skill = get_skill(&db, &id).unwrap().unwrap();
         assert_eq!(skill.risk_level, "Dangerous");
+    }
+
+    #[test]
+    fn find_skill_by_script_path_rejects_ambiguous_duplicates() {
+        let db = test_db();
+        register_skill_full(
+            &db,
+            "dup-a",
+            "structured",
+            None,
+            "/skills/dup-a.toml",
+            "h-a",
+            None,
+            None,
+            None,
+            Some("/skills/bin/dup.sh"),
+            "Caution",
+        )
+        .unwrap();
+        register_skill_full(
+            &db,
+            "dup-b",
+            "structured",
+            None,
+            "/skills/dup-b.toml",
+            "h-b",
+            None,
+            None,
+            None,
+            Some("/skills/bin/dup.sh"),
+            "Caution",
+        )
+        .unwrap();
+
+        let err = find_skill_by_script_path(&db, "/skills/bin/dup.sh")
+            .expect_err("duplicate script paths must fail closed");
+        assert!(err.to_string().contains("ambiguous script_path"));
     }
 }
