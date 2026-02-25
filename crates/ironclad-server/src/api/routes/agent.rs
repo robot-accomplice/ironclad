@@ -10,6 +10,7 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::StreamExt;
 use ironclad_agent::agent_loop::{AgentLoop, ReactAction, ReactState};
+use ironclad_agent::script_runner::ScriptRunner;
 use ironclad_agent::tools::ToolContext;
 use ironclad_channels::ChannelAdapter;
 use ironclad_core::InputAuthority;
@@ -99,22 +100,6 @@ pub(crate) async fn execute_tool_call(
             _ => Err(format!("invalid skill risk_level '{raw}'")),
         }
     }
-    fn resolve_script_audit_path(skills_dir: &std::path::Path, script_arg: &str) -> Option<String> {
-        let requested = std::path::Path::new(script_arg);
-        let root = std::fs::canonicalize(skills_dir).ok()?;
-        let joined = if requested.is_absolute() {
-            requested.to_path_buf()
-        } else {
-            root.join(requested)
-        };
-        let canonical = std::fs::canonicalize(&joined).ok()?;
-        if canonical.starts_with(&root) {
-            Some(canonical.to_string_lossy().to_string())
-        } else {
-            None
-        }
-    }
-
     let balance = state.wallet.wallet.get_usdc_balance().await.unwrap_or(0.0);
     let tier = ironclad_core::SurvivalTier::from_balance(balance, 0.0);
     let tool = match state.tools.get(tool_name) {
@@ -127,7 +112,11 @@ pub(crate) async fn execute_tool_call(
     if tool_name == "run_script" {
         let script_arg = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let config = state.config.read().await;
-        let maybe_script_path = resolve_script_audit_path(&config.skills.skills_dir, script_arg);
+        let runner = ScriptRunner::new(config.skills.clone());
+        let maybe_script_path = runner
+            .resolve_script_path(std::path::Path::new(script_arg))
+            .ok()
+            .map(|p| p.to_string_lossy().to_string());
         drop(config);
 
         if let Some(script_path) = maybe_script_path {

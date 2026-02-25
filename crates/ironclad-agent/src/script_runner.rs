@@ -95,7 +95,10 @@ impl ScriptRunner {
         })
     }
 
-    fn resolve_script_path(&self, requested: &Path) -> Result<std::path::PathBuf> {
+    /// Resolve a requested script path under the configured skills root.
+    ///
+    /// This canonicalizes both root and script path and enforces containment.
+    pub fn resolve_script_path(&self, requested: &Path) -> Result<std::path::PathBuf> {
         let root =
             std::fs::canonicalize(&self.config.skills_dir).map_err(|e| IroncladError::Tool {
                 tool: "script_runner".into(),
