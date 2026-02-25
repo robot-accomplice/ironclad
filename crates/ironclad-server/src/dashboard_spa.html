@@ -917,9 +917,10 @@
   }
   function startOverviewRefresh(app) {
     if (overviewRefreshTimer) clearInterval(overviewRefreshTimer);
-    // Intentionally disable periodic full overview redraws to keep the page
-    // stable while users inspect cards/charts.
-    overviewRefreshTimer = null;
+    overviewRefreshTimer = setInterval(function() {
+      if (!app || app.page !== 'overview') return;
+      app.refreshOverview();
+    }, 7000);
   }
   function stopModelsBackgroundRefresh() {
     if (modelsRefreshTimer) {
@@ -994,10 +995,48 @@
       if (this.page !== 'overview') return;
       var content = document.getElementById('content');
       if (!content) return;
-      this.renderOverview().then(function(html) {
-        setHtml(content, html);
+      var self = this;
+      this.renderOverview().then(function(cards) {
+        self._applyOverviewCards(cards);
       }).catch(function(e) {
         toast(e.message || 'Overview refresh failed');
+      });
+    },
+    _renderOverviewShell: function() {
+      return ''
+        + '<div class="overview-grid" id="overview-grid">'
+        + '  <div id="ov-card-cost"></div>'
+        + '  <div id="ov-card-tokens"></div>'
+        + '  <div id="ov-card-cache"></div>'
+        + '  <div id="ov-card-wallet"></div>'
+        + '  <div id="ov-card-latency"></div>'
+        + '  <div id="ov-card-sessions"></div>'
+        + '  <div id="ov-card-system"></div>'
+        + '  <div id="ov-card-fleet" style="display:none"></div>'
+        + '</div>';
+    },
+    _applyOverviewCards: function(cards) {
+      var slotMap = {
+        cost: 'ov-card-cost',
+        tokens: 'ov-card-tokens',
+        cache: 'ov-card-cache',
+        wallet: 'ov-card-wallet',
+        latency: 'ov-card-latency',
+        sessions: 'ov-card-sessions',
+        system: 'ov-card-system',
+        fleet: 'ov-card-fleet'
+      };
+      Object.keys(slotMap).forEach(function(key) {
+        var el = document.getElementById(slotMap[key]);
+        if (!el) return;
+        var html = cards && cards[key] ? cards[key] : '';
+        if (html) {
+          setHtml(el, html);
+          el.style.display = '';
+        } else {
+          setHtml(el, '');
+          if (key === 'fleet') el.style.display = 'none';
+        }
       });
     },
     navigate: function(page) {
@@ -1016,6 +1055,12 @@
       var renderName = 'render' + page.charAt(0).toUpperCase() + page.slice(1);
       if (this[renderName]) {
         this[renderName]().then(function(html) {
+          if (page === 'overview') {
+            if (content) setHtml(content, self._renderOverviewShell());
+            self._applyOverviewCards(html);
+            startOverviewRefresh(self);
+            return;
+          }
           if (content) setHtml(content, html);
           if (page === 'workspace') setTimeout(function() { startWorkspaceEngine(_cachedWorkspace || { agents: [], workstations: [] }); startWorkspaceRefresh(self); }, 0);
           if (page === 'overview') startOverviewRefresh(self);
@@ -1133,14 +1178,14 @@
         var latLast = seriesLast(TS.requestLatency), latPrev = seriesPrev(TS.requestLatency);
         var memLast = seriesLast(TS.memoryEntries);
 
-        var cards = '';
-        cards += '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Inference Cost (24h)</div><div class="cc-value">$' + totalCost.toFixed(2) + '</div><div class="cc-sub">$' + costLast.toFixed(4) + '/hr current</div></div><div class="cc-right">' + deltaHtml(costLast, costPrev) + '</div></div>' + renderSparkCanvas(TS.costPerHour, { color: '#6366f1' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Avg / hr</div><div class="cc-stat-value">$' + seriesAvg(TS.costPerHour).toFixed(4) + '</div></div><div class="cc-stat"><div class="cc-stat-label">Peak</div><div class="cc-stat-value">$' + seriesMax(TS.costPerHour).toFixed(4) + '</div></div><div class="cc-stat"><div class="cc-stat-label">Requests</div><div class="cc-stat-value">' + costs.length + '</div></div></div></div>';
-        cards += '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Token Throughput</div><div class="cc-value">' + Math.round(tokLast).toLocaleString() + '</div><div class="cc-sub">tokens/hr current</div></div><div class="cc-right">' + deltaHtml(tokLast, tokPrev) + '</div></div>' + renderSparkCanvas(TS.tokensPerHour, { color: '#8b5cf6' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Avg / hr</div><div class="cc-stat-value">' + Math.round(seriesAvg(TS.tokensPerHour)).toLocaleString() + '</div></div><div class="cc-stat"><div class="cc-stat-label">Peak</div><div class="cc-stat-value">' + Math.round(seriesMax(TS.tokensPerHour)).toLocaleString() + '</div></div><div class="cc-stat"><div class="cc-stat-label">Total (24h)</div><div class="cc-stat-value">' + totalTokens.toLocaleString() + '</div></div></div></div>';
-        cards += '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Cache Hit Rate</div><div class="cc-value">' + (hitLast * 100).toFixed(1) + '%</div><div class="cc-sub">' + (seriesAvg(TS.cacheHitRate) * 100).toFixed(1) + '% avg over 24h</div></div><div class="cc-right">' + deltaHtml(hitLast, hitPrev) + '</div></div>' + renderSparkCanvas(TS.cacheHitRate, { color: '#22c55e' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Floor</div><div class="cc-stat-value">' + (Math.min.apply(null, TS.cacheHitRate) * 100).toFixed(1) + '%</div></div><div class="cc-stat"><div class="cc-stat-label">Ceiling</div><div class="cc-stat-value">' + (seriesMax(TS.cacheHitRate) * 100).toFixed(1) + '%</div></div></div></div>';
-        cards += '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Wallet Balance</div><div class="cc-value">' + balLast.toFixed(3) + ' ' + esc(wallet.currency || 'SOL') + '</div><div class="cc-sub">managed wallet</div></div><div class="cc-right">' + deltaHtml(balLast, balPrev) + '</div></div>' + renderSparkCanvas(TS.walletBalance, { color: '#f59e0b' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">24h Low</div><div class="cc-stat-value">' + Math.min.apply(null, TS.walletBalance).toFixed(3) + '</div></div><div class="cc-stat"><div class="cc-stat-label">24h High</div><div class="cc-stat-value">' + seriesMax(TS.walletBalance).toFixed(3) + '</div></div></div></div>';
-        cards += '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Request Latency</div><div class="cc-value">' + Math.round(latLast) + 'ms</div><div class="cc-sub">p50 current</div></div><div class="cc-right">' + deltaHtml(latPrev, latLast) + '</div></div>' + renderSparkCanvas(TS.requestLatency, { color: '#06b6d4' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Avg</div><div class="cc-stat-value">' + Math.round(seriesAvg(TS.requestLatency)) + 'ms</div></div><div class="cc-stat"><div class="cc-stat-label">p99</div><div class="cc-stat-value">' + Math.round(seriesMax(TS.requestLatency)) + 'ms</div></div></div></div>';
-        cards += '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Sessions</div><div class="cc-value">' + sessionCount + ' active</div></div><div class="cc-right"><span class="cc-delta flat">' + sessionCount + ' open</span></div></div>' + renderSparkCanvas(TS.sessionsPerHour, { color: '#ec4899' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Skills</div><div class="cc-stat-value">' + enabledSkills + '/' + skillCount + '</div></div><div class="cc-stat"><div class="cc-stat-label">Cron jobs</div><div class="cc-stat-value">' + jobCount + '</div></div></div></div>';
-        cards += '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">System Health</div><div class="cc-value"><span class="badge success">' + esc(health.status || 'ok') + '</span></div><div class="cc-sub">uptime ' + (health.uptime_seconds != null ? health.uptime_seconds + 's' : '\u2014') + '</div></div><div class="cc-right"><span class="cc-delta up">' + (seriesLast(TS.cronSuccess) * 100).toFixed(0) + '% cron</span></div></div>' + renderSparkCanvas(TS.cronSuccess, { color: '#22c55e' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Breaker</div><div class="cc-stat-value"><span class="badge success" style="font-size:0.6875rem">' + esc(breaker.note || 'closed') + '</span></div></div><div class="cc-stat"><div class="cc-stat-label">Cron errors</div><div class="cc-stat-value">' + cronErrors + '</div></div></div></div>';
+        var cardCost = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Inference Cost (24h)</div><div class="cc-value">$' + totalCost.toFixed(2) + '</div><div class="cc-sub">$' + costLast.toFixed(4) + '/hr current</div></div><div class="cc-right">' + deltaHtml(costLast, costPrev) + '</div></div>' + renderSparkCanvas(TS.costPerHour, { color: '#6366f1' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Avg / hr</div><div class="cc-stat-value">$' + seriesAvg(TS.costPerHour).toFixed(4) + '</div></div><div class="cc-stat"><div class="cc-stat-label">Peak</div><div class="cc-stat-value">$' + seriesMax(TS.costPerHour).toFixed(4) + '</div></div><div class="cc-stat"><div class="cc-stat-label">Requests</div><div class="cc-stat-value">' + costs.length + '</div></div></div></div>';
+        var cardTokens = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Token Throughput</div><div class="cc-value">' + Math.round(tokLast).toLocaleString() + '</div><div class="cc-sub">tokens/hr current</div></div><div class="cc-right">' + deltaHtml(tokLast, tokPrev) + '</div></div>' + renderSparkCanvas(TS.tokensPerHour, { color: '#8b5cf6' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Avg / hr</div><div class="cc-stat-value">' + Math.round(seriesAvg(TS.tokensPerHour)).toLocaleString() + '</div></div><div class="cc-stat"><div class="cc-stat-label">Peak</div><div class="cc-stat-value">' + Math.round(seriesMax(TS.tokensPerHour)).toLocaleString() + '</div></div><div class="cc-stat"><div class="cc-stat-label">Total (24h)</div><div class="cc-stat-value">' + totalTokens.toLocaleString() + '</div></div></div></div>';
+        var cardCache = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Cache Hit Rate</div><div class="cc-value">' + (hitLast * 100).toFixed(1) + '%</div><div class="cc-sub">' + (seriesAvg(TS.cacheHitRate) * 100).toFixed(1) + '% avg over 24h</div></div><div class="cc-right">' + deltaHtml(hitLast, hitPrev) + '</div></div>' + renderSparkCanvas(TS.cacheHitRate, { color: '#22c55e' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Floor</div><div class="cc-stat-value">' + (Math.min.apply(null, TS.cacheHitRate) * 100).toFixed(1) + '%</div></div><div class="cc-stat"><div class="cc-stat-label">Ceiling</div><div class="cc-stat-value">' + (seriesMax(TS.cacheHitRate) * 100).toFixed(1) + '%</div></div></div></div>';
+        var cardWallet = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Wallet Balance</div><div class="cc-value">' + balLast.toFixed(3) + ' ' + esc(wallet.currency || 'SOL') + '</div><div class="cc-sub">managed wallet</div></div><div class="cc-right">' + deltaHtml(balLast, balPrev) + '</div></div>' + renderSparkCanvas(TS.walletBalance, { color: '#f59e0b' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">24h Low</div><div class="cc-stat-value">' + Math.min.apply(null, TS.walletBalance).toFixed(3) + '</div></div><div class="cc-stat"><div class="cc-stat-label">24h High</div><div class="cc-stat-value">' + seriesMax(TS.walletBalance).toFixed(3) + '</div></div></div></div>';
+        var cardLatency = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Request Latency</div><div class="cc-value">' + Math.round(latLast) + 'ms</div><div class="cc-sub">p50 current</div></div><div class="cc-right">' + deltaHtml(latPrev, latLast) + '</div></div>' + renderSparkCanvas(TS.requestLatency, { color: '#06b6d4' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Avg</div><div class="cc-stat-value">' + Math.round(seriesAvg(TS.requestLatency)) + 'ms</div></div><div class="cc-stat"><div class="cc-stat-label">p99</div><div class="cc-stat-value">' + Math.round(seriesMax(TS.requestLatency)) + 'ms</div></div></div></div>';
+        var cardSessions = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Sessions</div><div class="cc-value">' + sessionCount + ' active</div></div><div class="cc-right"><span class="cc-delta flat">' + sessionCount + ' open</span></div></div>' + renderSparkCanvas(TS.sessionsPerHour, { color: '#ec4899' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Skills</div><div class="cc-stat-value">' + enabledSkills + '/' + skillCount + '</div></div><div class="cc-stat"><div class="cc-stat-label">Cron jobs</div><div class="cc-stat-value">' + jobCount + '</div></div></div></div>';
+        var cardSystem = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">System Health</div><div class="cc-value"><span class="badge success">' + esc(health.status || 'ok') + '</span></div><div class="cc-sub">uptime ' + (health.uptime_seconds != null ? health.uptime_seconds + 's' : '\u2014') + '</div></div><div class="cc-right"><span class="cc-delta up">' + (seriesLast(TS.cronSuccess) * 100).toFixed(0) + '% cron</span></div></div>' + renderSparkCanvas(TS.cronSuccess, { color: '#22c55e' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Breaker</div><div class="cc-stat-value"><span class="badge success" style="font-size:0.6875rem">' + esc(breaker.note || 'closed') + '</span></div></div><div class="cc-stat"><div class="cc-stat-label">Cron errors</div><div class="cc-stat-value">' + cronErrors + '</div></div></div></div>';
+        var cardFleet = '';
 
         if (agents.length > 0) {
           var fleetColors = {};
@@ -1171,10 +1216,19 @@
               yFormat: function(v) { return v.toFixed(1); }
             }
           );
-          cards += '<div class="card composite-card" style="grid-column: 1 / -1"><div class="cc-header"><div class="cc-left"><div class="cc-label">Agent Fleet Activity</div><div class="cc-value">' + (seriesLast(TS.agentLoad) * 100).toFixed(0) + '% active load</div><div class="cc-sub">' + agentActiveNow + ' / ' + agents.length + ' agents active now</div></div><div class="cc-right">' + deltaHtml(seriesLast(TS.agentLoad), seriesPrev(TS.agentLoad)) + '</div></div>' + fleetChart + '<div class="metrics-legend" style="padding:0.5rem 1rem 0.75rem">' + fleetLegend + '</div></div>';
+          cardFleet = '<div class="card composite-card" style="grid-column: 1 / -1"><div class="cc-header"><div class="cc-left"><div class="cc-label">Agent Fleet Activity</div><div class="cc-value">' + (seriesLast(TS.agentLoad) * 100).toFixed(0) + '% active load</div><div class="cc-sub">' + agentActiveNow + ' / ' + agents.length + ' agents active now</div></div><div class="cc-right">' + deltaHtml(seriesLast(TS.agentLoad), seriesPrev(TS.agentLoad)) + '</div></div>' + fleetChart + '<div class="metrics-legend" style="padding:0.5rem 1rem 0.75rem">' + fleetLegend + '</div></div>';
         }
 
-        return '<div class="overview-grid">' + cards + '</div>';
+        return {
+          cost: cardCost,
+          tokens: cardTokens,
+          cache: cardCache,
+          wallet: cardWallet,
+          latency: cardLatency,
+          sessions: cardSessions,
+          system: cardSystem,
+          fleet: cardFleet
+        };
       });
     },
 
