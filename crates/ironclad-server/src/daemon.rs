@@ -324,8 +324,11 @@ pub fn daemon_status() -> Result<String> {
             }
             let out = command_output("sc.exe", &["query", WINDOWS_SERVICE_NAME])?;
             let stdout = String::from_utf8_lossy(&out.stdout);
-            let state = parse_windows_sc_state(&stdout)
-                .unwrap_or(if out.status.success() { "unknown" } else { "not_found" });
+            let state = parse_windows_sc_state(&stdout).unwrap_or(if out.status.success() {
+                "unknown"
+            } else {
+                "not_found"
+            });
             match state {
                 "running" => Ok("Daemon running (Windows service)".into()),
                 "stopped" => Ok("Daemon installed but stopped (Windows service)".into()),

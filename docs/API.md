@@ -32,7 +32,7 @@ Returns server health status.
 {
   "status": "ok",
   "version": "0.6.0",
-  "agent": "MyAgent",
+  "agent": "Roboticus",
   "uptime_seconds": 3600,
   "models": {
     "primary": "ollama/qwen3:8b",
@@ -133,8 +133,8 @@ Returns the agent's current operational state.
 ```json
 {
   "state": "running",
-  "name": "MyAgent",
-  "id": "my-agent",
+  "name": "Roboticus",
+  "id": "roboticus",
   "model": "ollama/qwen3:8b",
   "primary_provider_state": "closed",
   "uptime_seconds": 3600
@@ -217,7 +217,7 @@ List all sessions.
   "sessions": [
     {
       "id": "abc-123",
-      "agent_id": "my-agent",
+      "agent_id": "roboticus",
       "scope_key": "agent",
       "status": "active",
       "model": "ollama/qwen3:8b",
@@ -237,7 +237,7 @@ Create a new session.
 **Request Body:**
 
 ```json
-{ "agent_id": "my-agent" }
+{ "agent_id": "roboticus" }
 ```
 
 **Response:**
@@ -255,7 +255,7 @@ Get session details.
 ```json
 {
   "id": "abc-123",
-  "agent_id": "my-agent",
+  "agent_id": "roboticus",
   "scope_key": null,
   "status": "active",
   "model": "ollama/qwen3:8b",
@@ -490,7 +490,7 @@ List all scheduled jobs.
     {
       "id": "job-123",
       "name": "heartbeat",
-      "agent_id": "my-agent",
+      "agent_id": "roboticus",
       "schedule_kind": "interval",
       "schedule_expr": "1h",
       "enabled": true
@@ -508,7 +508,7 @@ Create a new scheduled job.
 ```json
 {
   "name": "daily-digest",
-  "agent_id": "my-agent",
+  "agent_id": "roboticus",
   "schedule_kind": "cron",
   "schedule_expr": "0 9 * * *"
 }
@@ -858,7 +858,7 @@ List all agents in a multi-agent setup.
 ```json
 {
   "agents": [
-    { "id": "my-agent", "name": "MyAgent", "status": "running" }
+    { "id": "roboticus", "name": "Roboticus", "status": "running" }
   ]
 }
 ```
@@ -945,7 +945,7 @@ Get the agent roster (commander + subagents) with skills and models.
 {
   "roster": [
     {
-      "name": "MyAgent",
+      "name": "Roboticus",
       "role": "commander",
       "model": "ollama/qwen3:8b",
       "skills": ["web-search", "bash"]
@@ -1053,7 +1053,7 @@ Returns the agent's A2A discovery card per the Google A2A spec.
 
 ```json
 {
-  "name": "MyAgent",
+  "name": "Roboticus",
   "version": "0.4.3",
   "capabilities": ["chat", "tools"]
 }

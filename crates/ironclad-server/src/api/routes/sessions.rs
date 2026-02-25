@@ -69,10 +69,10 @@ pub async fn create_session(
     match ironclad_db::sessions::list_active_sessions(&state.db, Some(&body.agent_id)) {
         Ok(active) => {
             for session in active {
-                if session.scope_key.as_deref() == Some("agent") {
-                    if let Err(e) = ironclad_db::sessions::archive_session(&state.db, &session.id) {
-                        return Err(internal_err(&e));
-                    }
+                if session.scope_key.as_deref() == Some("agent")
+                    && let Err(e) = ironclad_db::sessions::archive_session(&state.db, &session.id)
+                {
+                    return Err(internal_err(&e));
                 }
             }
         }

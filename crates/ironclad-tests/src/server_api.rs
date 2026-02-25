@@ -174,10 +174,7 @@ async fn session_create_and_list() {
     let sessions = body["sessions"].as_array().unwrap();
     assert_eq!(sessions.len(), 2);
     assert!(sessions.iter().all(|s| s["agent_id"] == "test-agent"));
-    let active_count = sessions
-        .iter()
-        .filter(|s| s["status"] == "active")
-        .count();
+    let active_count = sessions.iter().filter(|s| s["status"] == "active").count();
     let archived_count = sessions
         .iter()
         .filter(|s| s["status"] == "archived")

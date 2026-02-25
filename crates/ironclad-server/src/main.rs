@@ -1665,8 +1665,8 @@ const INIT_CONFIG: &str = r#"# Ironclad Configuration
 # See: https://roboticus.ai/docs/configuration
 
 [agent]
-name = "MyAgent"
-id = "my-agent"
+name = "Roboticus"
+id = "roboticus"
 workspace = "~/.ironclad/workspace"
 log_level = "info"
 
