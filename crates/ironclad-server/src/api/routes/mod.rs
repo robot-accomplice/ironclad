@@ -426,9 +426,13 @@ pub use health::LogEntry;
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use axum::body::Body;
+    use axum::extract::{Query, State as AxumState};
     use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Json;
     use ironclad_agent::policy::{AuthorityRule, CommandSafetyRule, PolicyEngine};
     use ironclad_agent::subagents::SubagentRegistry;
     use ironclad_browser::Browser;
@@ -442,6 +446,9 @@ mod tests {
     use ironclad_llm::OAuthManager;
     use ironclad_plugin_sdk::registry::PluginRegistry;
     use ironclad_plugin_sdk::{Plugin, ToolDef, ToolResult};
+    use serde_json::json;
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex;
     use tower::ServiceExt;
 
     use ironclad_agent::approvals::ApprovalManager;
@@ -2422,6 +2429,192 @@ params = { path = "README.md" }
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dashboard_returns_single_document_without_trailing_bytes() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = text_body(resp).await;
+        let lower = html.to_ascii_lowercase();
+        assert_eq!(lower.matches("</html>").count(), 1);
+        let idx = lower.rfind("</html>").expect("document must contain </html>");
+        assert!(
+            html[idx + "</html>".len()..].trim().is_empty(),
+            "dashboard HTML should not have trailing bytes after </html>"
+        );
+    }
+
+    #[tokio::test]
+    async fn models_available_uses_v1_models_and_query_auth_for_non_ollama_local_proxy() {
+        let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mock_hits = hits.clone();
+        let mock = Router::new()
+            .route(
+                "/v1/models",
+                get(
+                    |AxumState(hits): AxumState<Arc<Mutex<Vec<String>>>>,
+                     uri: axum::http::Uri,
+                     Query(query): Query<HashMap<String, String>>| async move {
+                        hits.lock().await.push(uri.to_string());
+                        if query.get("key").is_none() {
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                Json(json!({"error":"missing key query param"})),
+                            );
+                        }
+                        (
+                            StatusCode::OK,
+                            Json(json!({"data":[{"id":"test-model"}]})),
+                        )
+                    },
+                ),
+            )
+            .with_state(mock_hits);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_task = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let state = test_state();
+        state.keystore.unlock_machine().unwrap();
+        state.keystore.set("google_api_key", "test-key").unwrap();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.providers.clear();
+            let mut provider =
+                ironclad_core::config::ProviderConfig::new(format!("http://{addr}"), "T2");
+            provider.auth_header = Some("query:key".into());
+            provider.is_local = Some(false);
+            cfg.providers.insert("google".into(), provider);
+            cfg.models.primary = "google/test-model".into();
+            cfg.models.fallbacks.clear();
+        }
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/available?validation_level=zero")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["providers"]["google"]["status"], "ok");
+        assert_eq!(body["proxy"]["mode"], "in_process");
+        assert!(
+            body["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m.as_str() == Some("google/test-model"))
+        );
+
+        let seen = hits.lock().await.clone();
+        assert!(
+            seen.iter().any(|u| u.contains("/v1/models?key=test-key")),
+            "expected /v1/models with query key, got: {seen:?}"
+        );
+        assert!(
+            seen.iter().all(|u| !u.contains("/api/tags")),
+            "non-ollama provider discovery should not call /api/tags: {seen:?}"
+        );
+        mock_task.abort();
+    }
+
+    #[tokio::test]
+    async fn models_available_reports_proxy_unreachable_for_local_proxy_refusal() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // ensure immediate connection refusal on this port
+
+        let state = test_state();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.providers.clear();
+            let provider = ironclad_core::config::ProviderConfig::new(
+                format!("http://{addr}/anthropic"),
+                "T3",
+            );
+            cfg.providers.insert("anthropic".into(), provider);
+            cfg.models.primary = "anthropic/test-model".into();
+            cfg.models.fallbacks.clear();
+        }
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/available?validation_level=zero")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["providers"]["anthropic"]["status"], "proxy_unreachable");
+        assert!(
+            body["providers"]["anthropic"]["hint"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("providers.anthropic.url")
+        );
+    }
+
+    #[tokio::test]
+    async fn models_available_reports_proxy_misconfigured_for_non_models_payload() {
+        let mock = Router::new().route(
+            "/anthropic/v1/models",
+            get(|| async move { (StatusCode::OK, "not a models payload") }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_task = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let state = test_state();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.providers.clear();
+            let provider = ironclad_core::config::ProviderConfig::new(
+                format!("http://{addr}/anthropic"),
+                "T3",
+            );
+            cfg.providers.insert("anthropic".into(), provider);
+            cfg.models.primary = "anthropic/test-model".into();
+            cfg.models.fallbacks.clear();
+        }
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/available?validation_level=zero")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["providers"]["anthropic"]["status"], "proxy_misconfigured");
+        assert!(
+            body["providers"]["anthropic"]["hint"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("internal proxy routing")
+        );
+        mock_task.abort();
     }
 
     #[tokio::test]

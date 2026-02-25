@@ -210,6 +210,10 @@ fn is_newer(remote: &str, local: &str) -> bool {
     parse_semver(remote) > parse_semver(local)
 }
 
+fn should_skip_inplace_binary_update(os: &str) -> bool {
+    os == "windows"
+}
+
 // ── TOML diff ────────────────────────────────────────────────
 
 pub fn diff_lines(old: &str, new: &str) -> Vec<DiffLine> {
@@ -287,7 +291,7 @@ async fn check_binary_version(
 
 async fn apply_binary_update(yes: bool) -> Result<bool, Box<dyn std::error::Error>> {
     let (DIM, BOLD, _, GREEN, _, _, _, RESET, MONO) = colors();
-    let (OK, _, WARN, _, ERR) = icons();
+    let (OK, _, WARN, DETAIL, ERR) = icons();
     let current = env!("CARGO_PKG_VERSION");
     let client = http_client()?;
 
@@ -311,6 +315,16 @@ async fn apply_binary_update(yes: bool) -> Result<bool, Box<dyn std::error::Erro
 
     println!("    {GREEN}New version available: v{latest}{RESET}");
     println!();
+
+    if should_skip_inplace_binary_update(std::env::consts::OS) {
+        println!("    {WARN} In-place self-update is disabled on Windows");
+        println!("    {DETAIL} Windows locks running executables, so `cargo install` cannot replace `ironclad.exe` while this process is active.");
+        println!("    {DETAIL} Upgrade manually from a fresh PowerShell session:");
+        println!("      1) ironclad daemon stop");
+        println!("      2) cargo install {CRATE_NAME} --locked --force");
+        println!("      3) ironclad daemon start");
+        return Ok(false);
+    }
 
     if !yes && !confirm_action("Proceed with binary update?", true) {
         println!("    Skipped.");
@@ -1102,6 +1116,13 @@ mod tests {
     #[test]
     fn is_newer_same_version() {
         assert!(!is_newer("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn should_skip_inplace_binary_update_windows_only() {
+        assert!(should_skip_inplace_binary_update("windows"));
+        assert!(!should_skip_inplace_binary_update("linux"));
+        assert!(!should_skip_inplace_binary_update("macos"));
     }
 
     #[test]

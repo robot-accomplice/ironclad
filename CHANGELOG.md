@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows daemon startup reliability**: Replaced the broken `sc.exe` service launch path (which caused `StartService FAILED 1053`) with a managed detached user-process daemon flow on Windows.
+- **Windows binary update failure mode**: `ironclad update binary` now explicitly blocks in-process self-update on Windows and prints safe manual upgrade steps, avoiding opaque `cargo install` executable move failures.
+- **Dashboard JS bleed-through**: Dashboard HTML rendering now trims to the canonical document boundary, preventing stray trailing script bytes from being rendered in the UI.
+- **Internal proxy regression lock-down**: Ironclad now migrates legacy `127.0.0.1:8788/<provider>` URLs to canonical in-process routing targets at startup, persists the migration safely, and removes runtime dependence on an external loopback proxy listener.
+- **Dashboard/provider boundary hardening**: `/api/models/available` now reports explicit in-process proxy mode metadata so the dashboard remains server-mediated and does not rely on direct local proxy access.
+
 ## [0.7.0] - 2026-02-25
 
 ### Added
