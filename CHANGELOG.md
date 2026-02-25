@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-02-25
+
 ### Added
 
 - **Subagent contract enforcement**: Added explicit `subagent` vs `model-proxy` role validation, fixed-skills persistence/validation, and strict rejection of personality payloads for taskable subagents.
