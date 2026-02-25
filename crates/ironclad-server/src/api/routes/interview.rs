@@ -92,7 +92,11 @@ pub async fn interview_turn(
 
     let model = super::agent::select_routed_model(&state, &user_content).await;
     let req = ironclad_llm::format::UnifiedRequest {
-        model: model.split('/').nth(1).unwrap_or(&model).to_string(),
+        model: model
+            .split_once('/')
+            .map(|(_, m)| m)
+            .unwrap_or(&model)
+            .to_string(),
         messages: history,
         max_tokens: Some(4096),
         temperature: None,

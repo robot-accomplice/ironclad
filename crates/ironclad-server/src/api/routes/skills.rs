@@ -6,8 +6,24 @@ use serde_json::Value;
 
 use super::{AppState, internal_err};
 
+const ALWAYS_ON_SKILLS: &[&str] = &[
+    "context-continuity",
+    "fast-cache",
+    "heartbeat-protocol",
+    "supervisor-protocol",
+    "self-diagnostics",
+    "session-bloat-prevention",
+    "model-management",
+    "local-subagents",
+    "postgres-memory",
+    "git-state-management",
+];
+
 fn is_builtin_skill(s: &ironclad_db::skills::SkillRecord) -> bool {
     s.kind.eq_ignore_ascii_case("builtin")
+        || ALWAYS_ON_SKILLS
+            .iter()
+            .any(|name| s.name.eq_ignore_ascii_case(name))
 }
 
 pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {

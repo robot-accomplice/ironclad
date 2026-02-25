@@ -722,7 +722,11 @@ pub async fn agent_message(
         })
         .collect();
 
-    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let model_for_api = model
+        .split_once('/')
+        .map(|(_, m)| m)
+        .unwrap_or(&model)
+        .to_string();
     let system_prompt = if soul_text.is_empty() {
         format!(
             "You are {name}, an autonomous AI agent (id: {id}). \
@@ -1269,7 +1273,11 @@ pub async fn agent_message_stream(
         })
         .collect();
 
-    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let model_for_api = model
+        .split_once('/')
+        .map(|(_, m)| m)
+        .unwrap_or(&model)
+        .to_string();
     let system_prompt = if soul_text.is_empty() {
         format!(
             "You are {name}, an autonomous AI agent (id: {id}). \
@@ -1665,7 +1673,11 @@ async fn refine_session_nickname(
 
     let llm_read = llm.read().await;
     let model_id = llm_read.router.select_model().to_string();
-    let model_for_api = model_id.split('/').nth(1).unwrap_or(&model_id).to_string();
+    let model_for_api = model_id
+        .split_once('/')
+        .map(|(_, m)| m)
+        .unwrap_or(&model_id)
+        .to_string();
 
     let provider = llm_read.providers.get_by_model(&model_id);
     let (url, api_key, auth_header, format, extra_headers) = match provider {
@@ -1866,7 +1878,11 @@ async fn infer_with_fallback(
             continue;
         }
 
-        let model_for_api = model.split('/').nth(1).unwrap_or(model).to_string();
+        let model_for_api = model
+            .split_once('/')
+            .map(|(_, m)| m)
+            .unwrap_or(model)
+            .to_string();
         let mut req_clone = unified_req.clone();
         // Ensure the request targets this model's API name
         if !req_clone.model.is_empty() {
@@ -2620,7 +2636,11 @@ pub async fn process_channel_message(
         })
         .collect();
 
-    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let model_for_api = model
+        .split_once('/')
+        .map(|(_, m)| m)
+        .unwrap_or(&model)
+        .to_string();
     let system_prompt = if soul_text.is_empty() {
         format!(
             "You are {name}, an autonomous AI agent (id: {id}). \

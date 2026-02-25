@@ -97,7 +97,7 @@ enum Commands {
     #[command(next_help_heading = "Lifecycle")]
     Version,
     /// Check for and install updates
-    #[command(next_help_heading = "Lifecycle")]
+    #[command(alias = "upgrade", next_help_heading = "Lifecycle")]
     #[command(subcommand)]
     Update(UpdateCmd),
 
@@ -366,7 +366,7 @@ enum AgentsCmd {
 
 #[derive(Subcommand)]
 enum DaemonCmd {
-    /// Install daemon service (LaunchAgent/systemd)
+    /// Install daemon service (LaunchAgent/systemd/Windows Service)
     Install {
         /// Path to config file
         #[arg(short, long, default_value = "ironclad.toml")]
@@ -887,16 +887,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(())
             }
             DaemonCmd::Status => {
-                if !ironclad_server::daemon::is_installed() {
-                    eprintln!("  Daemon not installed");
-                    return Ok(());
-                }
-                let pid_path = ironclad_core::config::DaemonConfig::default().pid_file;
-                match ironclad_server::daemon::read_pid_file(&pid_path) {
-                    Ok(Some(pid)) => eprintln!("  Daemon running (PID {pid})"),
-                    Ok(None) => eprintln!("  Daemon installed but not running"),
-                    Err(e) => eprintln!("  Error reading PID: {e}"),
-                }
+                let status = ironclad_server::daemon::daemon_status()?;
+                eprintln!("  {status}");
                 Ok(())
             }
             DaemonCmd::Uninstall => {

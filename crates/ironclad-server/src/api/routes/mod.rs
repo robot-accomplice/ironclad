@@ -1360,6 +1360,34 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn toggle_skill_rejects_always_on_skill_names() {
+        let state = test_state();
+        let skill_id = ironclad_db::skills::register_skill(
+            &state.db,
+            "context-continuity",
+            "instruction",
+            Some("Core continuity protocol"),
+            "/skills/context-continuity",
+            "abc123",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("PUT")
+            .uri(format!("/api/skills/{skill_id}/toggle"))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn delete_skill_removes_record() {
         let state = test_state();
         let skill_id = ironclad_db::skills::register_skill(

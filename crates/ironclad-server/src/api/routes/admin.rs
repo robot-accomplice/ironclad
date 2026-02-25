@@ -315,6 +315,7 @@ pub async fn get_config_capabilities() -> impl IntoResponse {
 #[derive(Deserialize, Default)]
 pub struct AvailableModelsQuery {
     pub provider: Option<String>,
+    pub validation_level: Option<String>,
 }
 
 pub async fn get_available_models(
@@ -322,9 +323,17 @@ pub async fn get_available_models(
     Query(query): Query<AvailableModelsQuery>,
 ) -> impl IntoResponse {
     let provider_filter = query.provider.map(|p| p.to_lowercase());
-    let providers = {
+    let validation_level = query
+        .validation_level
+        .as_deref()
+        .unwrap_or("zero")
+        .to_lowercase();
+    let (providers, configured_models) = {
         let config = state.config.read().await;
-        config.providers.clone()
+        let mut configured = Vec::new();
+        configured.push(config.models.primary.clone());
+        configured.extend(config.models.fallbacks.clone());
+        (config.providers.clone(), configured)
     };
 
     let client = match reqwest::Client::builder()
@@ -484,10 +493,27 @@ pub async fn get_available_models(
         }
     }
 
+    // Always include configured model order entries so UI selectors remain
+    // usable even when remote provider model discovery is unavailable.
+    for model in configured_models {
+        let m = model.trim();
+        if m.is_empty() {
+            continue;
+        }
+        if let Some(filter) = provider_filter.as_deref() {
+            let provider_prefix = m.split('/').next().unwrap_or_default().to_lowercase();
+            if provider_prefix != filter {
+                continue;
+            }
+        }
+        all_models.insert(m.to_string());
+    }
+
     let models: Vec<String> = all_models.into_iter().collect();
     Json(json!({
         "models": models,
         "count": models.len(),
+        "validation_level": validation_level,
         "providers": provider_reports,
     }))
 }
@@ -1088,9 +1114,115 @@ const WORKSPACE_PALETTE: &[&str] = &[
     "#f97316", "#84cc16", "#a855f7", "#0ea5e9",
 ];
 
+const WORKSPACE_ACTIVITY_WINDOW_SECS: i64 = 120;
+
+fn parse_db_timestamp_utc(ts: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+        return Some(chrono::DateTime::from_naive_utc_and_offset(
+            ndt,
+            chrono::Utc,
+        ));
+    }
+    None
+}
+
+fn is_recent_activity(ts: &str, now: chrono::DateTime<chrono::Utc>) -> bool {
+    parse_db_timestamp_utc(ts)
+        .map(|t| (now - t).num_seconds() <= WORKSPACE_ACTIVITY_WINDOW_SECS)
+        .unwrap_or(false)
+}
+
+fn workstation_for_tool(tool_name: &str) -> (&'static str, &'static str) {
+    let t = tool_name.to_lowercase();
+    if t.contains("web") || t.contains("http") || t.contains("fetch") || t.contains("search") {
+        return ("web", "tool_execution");
+    }
+    if t.contains("read")
+        || t.contains("write")
+        || t.contains("file")
+        || t.contains("glob")
+        || t.contains("rg")
+        || t.contains("patch")
+        || t.contains("edit")
+    {
+        return ("files", "tool_execution");
+    }
+    if t.contains("memory") {
+        return ("memory", "working");
+    }
+    if t.contains("wallet")
+        || t.contains("chain")
+        || t.contains("block")
+        || t.contains("contract")
+        || t.contains("token")
+    {
+        return ("blockchain", "tool_execution");
+    }
+    ("exec", "tool_execution")
+}
+
+fn derive_workspace_activity(
+    db: &ironclad_db::Database,
+    agent_id: &str,
+    running: bool,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (Option<&'static str>, &'static str, Option<String>) {
+    if !running {
+        return (Some("standby"), "idle", None);
+    }
+
+    let conn = db.conn();
+
+    let latest_tool: Option<(String, String)> = conn
+        .query_row(
+            "SELECT tc.tool_name, tc.created_at
+             FROM tool_calls tc
+             INNER JOIN turns t ON t.id = tc.turn_id
+             INNER JOIN sessions s ON s.id = t.session_id
+             WHERE s.agent_id = ?1
+             ORDER BY tc.created_at DESC
+             LIMIT 1",
+            [agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok();
+
+    if let Some((tool_name, created_at)) = latest_tool
+        && is_recent_activity(&created_at, now)
+    {
+        let (workstation, activity) = workstation_for_tool(&tool_name);
+        return (Some(workstation), activity, Some(tool_name));
+    }
+
+    let latest_turn_created: Option<String> = conn
+        .query_row(
+            "SELECT t.created_at
+             FROM turns t
+             INNER JOIN sessions s ON s.id = t.session_id
+             WHERE s.agent_id = ?1
+             ORDER BY t.created_at DESC
+             LIMIT 1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .ok();
+
+    if let Some(created_at) = latest_turn_created
+        && is_recent_activity(&created_at, now)
+    {
+        return (Some("llm"), "inference", None);
+    }
+
+    (Some("standby"), "idle", None)
+}
+
 pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse {
     let agents = state.registry.list_agents().await;
     let config = state.config.read().await;
+    let now = chrono::Utc::now();
 
     let systems: Vec<Value> = vec![
         json!({ "id": "llm",        "name": "LLM Inference",   "kind": "Inference",   "x": 0.18, "y": 0.22 }),
@@ -1114,12 +1246,9 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
         .enumerate()
         .map(|(i, a)| {
             let color = WORKSPACE_PALETTE[(i + 1) % WORKSPACE_PALETTE.len()];
-            let state_lower = format!("{:?}", a.state).to_lowercase();
-            let workstation = if state_lower == "running" {
-                Some("llm")
-            } else {
-                None
-            };
+            let running = format!("{:?}", a.state).to_lowercase() == "running";
+            let (workstation, activity, active_skill) =
+                derive_workspace_activity(&state.db, &a.id, running, now);
             json!({
                 "id": a.id,
                 "name": a.name,
@@ -1128,14 +1257,17 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
                 "color": color,
                 "model": a.model,
                 "current_workstation": workstation,
-                "activity": if workstation.is_some() { "inference" } else { "idle" },
-                "active_skill": null,
+                "activity": activity,
+                "active_skill": active_skill,
                 "updated_at": chrono::Utc::now().to_rfc3339(),
                 "subordinates": [],
                 "supervisor": config.agent.id,
             })
         })
         .collect();
+
+    let (main_workstation, main_activity, main_active_skill) =
+        derive_workspace_activity(&state.db, &config.agent.id, true, now);
 
     let main_agent = json!({
         "id": config.agent.id,
@@ -1144,9 +1276,9 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
         "state": "Running",
         "color": WORKSPACE_PALETTE[0],
         "model": config.models.primary,
-        "current_workstation": "llm",
-        "activity": "inference",
-        "active_skill": enabled_skills.first().cloned(),
+        "current_workstation": main_workstation,
+        "activity": main_activity,
+        "active_skill": main_active_skill.or_else(|| enabled_skills.first().cloned()),
         "skills": enabled_skills,
         "updated_at": chrono::Utc::now().to_rfc3339(),
         "subordinates": agent_list.iter()
@@ -1586,7 +1718,11 @@ async fn run_llm_recommendation_analysis(
         let llm = state.llm.read().await;
         llm.router.select_model().to_string()
     };
-    let model_for_api = model.split('/').nth(1).unwrap_or(&model).to_string();
+    let model_for_api = model
+        .split_once('/')
+        .map(|(_, m)| m)
+        .unwrap_or(&model)
+        .to_string();
     let req = ironclad_llm::format::UnifiedRequest {
         model: model_for_api,
         messages: vec![ironclad_llm::format::UnifiedMessage {

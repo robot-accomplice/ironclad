@@ -135,11 +135,30 @@ pub fn find_or_create(
     }
 
     let id = uuid::Uuid::new_v4().to_string();
-    tx.execute(
-        "INSERT INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",
-        rusqlite::params![id, agent_id, &scope_key],
-    )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let inserted = tx
+        .execute(
+            "INSERT OR IGNORE INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, agent_id, &scope_key],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    if inserted == 0 {
+        let existing_after_conflict: Option<String> = tx
+            .query_row(
+                "SELECT id FROM sessions WHERE agent_id = ?1 AND scope_key = ?2 AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+                rusqlite::params![agent_id, &scope_key],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(id) = existing_after_conflict {
+            tx.commit()
+                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            return Ok(id);
+        }
+        return Err(IroncladError::Database(
+            "failed to insert or find active session after conflict".to_string(),
+        ));
+    }
 
     tx.commit()
         .map_err(|e| IroncladError::Database(e.to_string()))?;

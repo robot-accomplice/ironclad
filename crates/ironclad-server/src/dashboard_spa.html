@@ -776,11 +776,79 @@
   function seriesMax(s) { return Math.max.apply(null, s); }
 
   var overviewRefreshTimer = null;
+  var modelsRefreshTimer = null;
+  var FLEET_HISTORY_MAX_POINTS = 40;
+  var _fleetHistory = { labels: [], byAgent: {} };
+  function pushFleetSnapshot(agents, activityByAgent) {
+    var now = new Date();
+    var hh = String(now.getHours()).padStart(2, '0');
+    var mm = String(now.getMinutes()).padStart(2, '0');
+    var label = hh + ':' + mm;
+    _fleetHistory.labels.push(label);
+    if (_fleetHistory.labels.length > FLEET_HISTORY_MAX_POINTS) _fleetHistory.labels.shift();
+
+    var activeKeys = {};
+    agents.forEach(function(a) {
+      var k = a.name || a.id;
+      activeKeys[k] = true;
+      if (!_fleetHistory.byAgent[k]) _fleetHistory.byAgent[k] = [];
+      _fleetHistory.byAgent[k].push(activityByAgent[k] || 0);
+      if (_fleetHistory.byAgent[k].length > FLEET_HISTORY_MAX_POINTS) _fleetHistory.byAgent[k].shift();
+    });
+
+    Object.keys(_fleetHistory.byAgent).forEach(function(k) {
+      if (!activeKeys[k]) delete _fleetHistory.byAgent[k];
+    });
+
+    var len = _fleetHistory.labels.length;
+    Object.keys(_fleetHistory.byAgent).forEach(function(k) {
+      while (_fleetHistory.byAgent[k].length < len) _fleetHistory.byAgent[k].unshift(0);
+    });
+  }
   function startOverviewRefresh(app) {
     if (overviewRefreshTimer) clearInterval(overviewRefreshTimer);
-    overviewRefreshTimer = setInterval(function() {
-      if (app.page === 'overview') app.navigate('overview');
-    }, 15000);
+    // Intentionally disable periodic full overview redraws to keep the page
+    // stable while users inspect cards/charts.
+    overviewRefreshTimer = null;
+  }
+  function stopModelsBackgroundRefresh() {
+    if (modelsRefreshTimer) {
+      clearInterval(modelsRefreshTimer);
+      modelsRefreshTimer = null;
+    }
+  }
+  function startModelsBackgroundRefresh(app) {
+    stopModelsBackgroundRefresh();
+    // Keep model cache warm using metadata-only discovery (no inference calls).
+    modelsRefreshTimer = setInterval(function() {
+      if (!app || !app._loadAvailableModels) return;
+      app._loadAvailableModels({
+        forceRefresh: true,
+        cacheTtlMs: 0,
+        timeoutMs: 700,
+        nonBlocking: true,
+        validationLevel: 'zero'
+      }).catch(function() {});
+    }, 180000);
+  }
+  var workspaceRefreshTimer = null;
+  function stopWorkspaceRefresh() {
+    if (workspaceRefreshTimer) {
+      clearInterval(workspaceRefreshTimer);
+      workspaceRefreshTimer = null;
+    }
+  }
+  function startWorkspaceRefresh(app) {
+    stopWorkspaceRefresh();
+    workspaceRefreshTimer = setInterval(function() {
+      if (app.page !== 'workspace' || !workspace || !workspace.applySnapshot) return;
+      api('/api/workspace/state')
+        .then(function(data) {
+          _cachedWorkspace = data;
+          workspace.applySnapshot(data);
+        })
+        .catch(function() {});
+    }, 3000);
   }
 
   var _cachedConfig = null;
@@ -811,8 +879,22 @@
       });
       var bc = document.getElementById('breadcrumb'); if (bc) bc.textContent = titles[p] || p;
     },
+    refreshOverview: function() {
+      if (this.page !== 'overview') return;
+      var content = document.getElementById('content');
+      if (!content) return;
+      this.renderOverview().then(function(html) {
+        setHtml(content, html);
+      }).catch(function(e) {
+        toast(e.message || 'Overview refresh failed');
+      });
+    },
     navigate: function(page) {
       this.setPage(page);
+      if (page !== 'overview') {
+        if (overviewRefreshTimer) clearInterval(overviewRefreshTimer);
+      }
+      if (page !== 'workspace') stopWorkspaceRefresh();
       var content = document.getElementById('content');
       if (content) {
         if (page === 'workspace' || page === 'scheduler') { content.style.overflow = 'hidden'; content.style.padding = '0'; }
@@ -824,7 +906,7 @@
       if (this[renderName]) {
         this[renderName]().then(function(html) {
           if (content) setHtml(content, html);
-          if (page === 'workspace') setTimeout(function() { startWorkspaceEngine(_cachedWorkspace || { agents: [], workstations: [] }); }, 0);
+          if (page === 'workspace') setTimeout(function() { startWorkspaceEngine(_cachedWorkspace || { agents: [], workstations: [] }); startWorkspaceRefresh(self); }, 0);
           if (page === 'overview') startOverviewRefresh(self);
         }).catch(function(e) {
           if (content) setHtml(content, '<div class="card"><p style="color:var(--error)">' + esc(e.message || 'Failed to load') + '</p></div>');
@@ -921,10 +1003,15 @@
         if (TS.requestLatency.length === 0) TS.requestLatency = repeatedSeries(buckets, 0);
         if (TS.sessionsPerHour.length === 0) TS.sessionsPerHour = repeatedSeries(buckets, sessionCount);
         if (TS.cronSuccess.length === 0) TS.cronSuccess = repeatedSeries(buckets, cronSuccessVal);
+        pushFleetSnapshot(agents, agentActivity);
         TS.agentLoadByAgent = {};
         agents.forEach(function(a) {
-          TS.agentLoadByAgent[a.name || a.id] = repeatedSeries(buckets, agentActivity[a.name || a.id] || 0);
+          var k = a.name || a.id;
+          var history = (_fleetHistory.byAgent[k] || []).slice();
+          if (history.length === 0) history = [agentActivity[k] || 0];
+          TS.agentLoadByAgent[k] = history;
         });
+        TS.agentLoadLabels = _fleetHistory.labels.slice();
 
         var costLast = seriesLast(TS.costPerHour), costPrev = seriesPrev(TS.costPerHour);
         var tokLast = seriesLast(TS.tokensPerHour), tokPrev = seriesPrev(TS.tokensPerHour);
@@ -943,19 +1030,35 @@
         cards += '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">System Health</div><div class="cc-value"><span class="badge success">' + esc(health.status || 'ok') + '</span></div><div class="cc-sub">uptime ' + (health.uptime_seconds != null ? health.uptime_seconds + 's' : '\u2014') + '</div></div><div class="cc-right"><span class="cc-delta up">' + (seriesLast(TS.cronSuccess) * 100).toFixed(0) + '% cron</span></div></div>' + renderSparkCanvas(TS.cronSuccess, { color: '#22c55e' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Breaker</div><div class="cc-stat-value"><span class="badge success" style="font-size:0.6875rem">' + esc(breaker.note || 'closed') + '</span></div></div><div class="cc-stat"><div class="cc-stat-label">Cron errors</div><div class="cc-stat-value">' + cronErrors + '</div></div></div></div>';
 
         if (agents.length > 0) {
+          var fleetColors = {};
           var fleetLegend = agents.map(function(a) {
             var k = a.name || a.id;
             var stDot = (a.state || '').toLowerCase() === 'running' ? 'var(--success)' : 'var(--warning)';
             var lastVal = TS.agentLoadByAgent[k] ? seriesLast(TS.agentLoadByAgent[k]) : 0;
             var stateLabel = (a.activity || a.state || 'idle').toString().toLowerCase();
+            var color = a.color || '#6366f1';
+            fleetColors[k] = color;
             return '<div class="metrics-legend-item" style="display:grid;grid-template-columns:minmax(120px,1fr) 1fr auto auto;align-items:center;gap:0.5rem">' +
               '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(k) + '</div>' +
-              '<div style="height:6px;background:rgba(255,255,255,0.09);border-radius:999px;overflow:hidden"><div style="height:100%;width:' + Math.max(0, Math.min(100, lastVal * 100)).toFixed(0) + '%;background:var(--accent);border-radius:999px"></div></div>' +
+              '<div style="height:6px;background:rgba(255,255,255,0.09);border-radius:999px;overflow:hidden"><div style="height:100%;width:' + Math.max(0, Math.min(100, lastVal * 100)).toFixed(0) + '%;background:' + color + ';border-radius:999px"></div></div>' +
               '<span class="metrics-legend-val" style="margin-left:0.25rem">' + (lastVal * 100).toFixed(0) + '%</span>' +
               '<div title="' + esc(stateLabel) + '" style="width:6px;height:6px;border-radius:50%;background:' + stDot + ';flex-shrink:0"></div>' +
             '</div>';
           }).join('');
-          cards += '<div class="card composite-card" style="grid-column: 1 / -1"><div class="cc-header"><div class="cc-left"><div class="cc-label">Agent Fleet Activity</div><div class="cc-value">' + (seriesLast(TS.agentLoad) * 100).toFixed(0) + '% active load</div><div class="cc-sub">' + agentActiveNow + ' / ' + agents.length + ' agents active now</div></div><div class="cc-right">' + deltaHtml(seriesLast(TS.agentLoad), seriesPrev(TS.agentLoad)) + '</div></div>' + renderSparkCanvas(TS.agentLoad, { color: '#6366f1', min: 0, max: 1, axisTopLabel: '100%', axisBottomLabel: '0%' }) + '<div class="metrics-legend" style="padding:0.5rem 1rem 0.75rem">' + fleetLegend + '</div></div>';
+          var fleetKeys = agents.map(function(a) { return a.name || a.id; });
+          var fleetChart = renderStackedArea(
+            TS.agentLoadByAgent,
+            fleetKeys,
+            fleetColors,
+            {
+              height: 190,
+              labels: TS.agentLoadLabels.length > 1,
+              xLabels: TS.agentLoadLabels,
+              yAxis: true,
+              yFormat: function(v) { return v.toFixed(1); }
+            }
+          );
+          cards += '<div class="card composite-card" style="grid-column: 1 / -1"><div class="cc-header"><div class="cc-left"><div class="cc-label">Agent Fleet Activity</div><div class="cc-value">' + (seriesLast(TS.agentLoad) * 100).toFixed(0) + '% active load</div><div class="cc-sub">' + agentActiveNow + ' / ' + agents.length + ' agents active now</div></div><div class="cc-right">' + deltaHtml(seriesLast(TS.agentLoad), seriesPrev(TS.agentLoad)) + '</div></div>' + fleetChart + '<div class="metrics-legend" style="padding:0.5rem 1rem 0.75rem">' + fleetLegend + '</div></div>';
         }
 
         return '<div class="overview-grid">' + cards + '</div>';
@@ -1858,6 +1961,7 @@
 
     _settingsMode: 'form',
     _settingsDraft: null,
+    _configCapabilities: null,
     _settingsModelOrder: null,
     _settingsDragModelIndex: null,
     _settingsJsonText: null,
@@ -1865,6 +1969,16 @@
     _getSettingsDraft: function() {
       if (!this._settingsDraft && _cachedConfig) this._settingsDraft = JSON.parse(JSON.stringify(_cachedConfig));
       return this._settingsDraft || {};
+    },
+    _buildMutableConfigPatch: function(draft) {
+      var caps = this._configCapabilities || {};
+      var immutable = {};
+      (caps.immutable_sections || ['server', 'treasury', 'a2a', 'wallet']).forEach(function(k) { immutable[k] = true; });
+      var patch = {};
+      Object.keys(draft || {}).forEach(function(k) {
+        if (!immutable[k]) patch[k] = draft[k];
+      });
+      return patch;
     },
     _initModelOrderFromDraft: function() {
       var draft = this._getSettingsDraft();
@@ -1900,6 +2014,48 @@
       'Solana': { chain_id: 0, rpc_url: 'https://api.mainnet-beta.solana.com' }
     },
     _agentsTab: 'roster',
+    _availableModelsCache: [],
+    _availableModelsFetchedAt: 0,
+    _availableModelsInFlight: null,
+    _loadAvailableModels: function(opts) {
+      opts = opts || {};
+      var self = this;
+      var now = Date.now();
+      var cacheTtlMs = opts.cacheTtlMs != null ? opts.cacheTtlMs : 300000;
+      var timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 1200;
+      var skipFetch = !!opts.skipFetch;
+      var validationLevel = (opts.validationLevel || 'zero').toString().toLowerCase();
+      var cached = Array.isArray(self._availableModelsCache) ? self._availableModelsCache : [];
+      var cacheFresh = self._availableModelsFetchedAt && ((now - self._availableModelsFetchedAt) < cacheTtlMs);
+
+      if (cacheFresh && !opts.forceRefresh) return Promise.resolve(cached);
+      if (skipFetch) return Promise.resolve(cached);
+
+      if (!self._availableModelsInFlight) {
+        var modelsPath = '/api/models/available?validation_level=' + encodeURIComponent(validationLevel);
+        self._availableModelsInFlight = api(modelsPath)
+          .then(function(payload) {
+            var models = (payload && payload.models) || [];
+            self._availableModelsCache = Array.isArray(models) ? models : [];
+            self._availableModelsFetchedAt = Date.now();
+            return self._availableModelsCache;
+          })
+          .catch(function() {
+            return cached;
+          })
+          .finally(function() {
+            self._availableModelsInFlight = null;
+          });
+      }
+
+      // For UI paths, prefer responsiveness over waiting on slow provider scans.
+      if (opts.nonBlocking) return Promise.resolve(cached);
+
+      return Promise.race([
+        self._availableModelsInFlight,
+        new Promise(function(resolve) { setTimeout(function() { resolve(cached); }, timeoutMs); })
+      ]);
+    },
     renderAgents: function() {
       var self = this;
       var tab = self._agentsTab || 'roster';
@@ -1965,10 +2121,10 @@
       var self = this;
       return Promise.all([
         api('/api/subagents'),
-        api('/api/models/available').catch(function() { return { models: [] }; })
+        self._loadAvailableModels({ nonBlocking: true, skipFetch: true })
       ]).then(function(arr) {
         var data = arr[0] || {};
-        var discoveredModels = (arr[1] && arr[1].models) || [];
+        var discoveredModels = arr[1] || [];
         var agents = data.agents || [];
         var specialists = agents.filter(function(a) { return a.role === 'specialist'; });
         var proxies = agents.filter(function(a) { return a.role === 'model-proxy'; });
@@ -2280,6 +2436,7 @@
       ]).then(function(arr) {
         var cfg = arr[0] || {};
         var caps = arr[1] || {};
+        self._configCapabilities = caps;
         var immutableSet = {};
         (caps.immutable_sections || []).forEach(function(s) { immutableSet[s] = true; });
         _cachedConfig = cfg;
@@ -2662,11 +2819,11 @@
       var agentId = rosterCard.getAttribute('data-roster-id');
       Promise.all([
         api('/api/roster'),
-        api('/api/models/available').catch(function() { return { models: [] }; }),
+        App._loadAvailableModels({ nonBlocking: true, skipFetch: true }),
         api('/api/config').catch(function() { return { models: {} }; })
       ]).then(function(arr) {
         var data = arr[0] || { roster: [] };
-        var availableModels = (arr[1] && arr[1].models) || [];
+        var availableModels = arr[1] || [];
         var cfgModels = (arr[2] && arr[2].models) || {};
         var agent = (data.roster || []).find(function(a) { return (a.name || a.id) === agentId; });
         if (!agent) return;
@@ -2997,8 +3154,11 @@
       var isApply = !!e.target.closest('#settings-apply');
       if (App._settingsMode === 'json') { try { App._settingsDraft = JSON.parse(App._settingsJsonText || '{}'); } catch(err) { toast('Fix JSON errors first'); return; } }
       var draft = App._getSettingsDraft();
-      api('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft) }).then(function() {
-        _cachedConfig = JSON.parse(JSON.stringify(draft));
+      var patch = App._buildMutableConfigPatch(draft);
+      api('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }).then(function() {
+        var merged = JSON.parse(JSON.stringify(_cachedConfig || {}));
+        Object.keys(patch || {}).forEach(function(k) { merged[k] = patch[k]; });
+        _cachedConfig = merged;
         App._settingsDirty = false; App._settingsJsonText = null;
         toast(isApply ? 'Configuration applied' : 'Configuration saved');
         App.navigate('settings');
@@ -3437,6 +3597,40 @@
     this.initData(data);
   }
 
+  WorkspaceEngine.prototype._stationById = function(id) {
+    if (!id) return null;
+    return this.stations.find(function(s) { return s.id === id; }) || null;
+  };
+
+  WorkspaceEngine.prototype._isRuntimeActive = function(activity) {
+    var a = (activity || '').toLowerCase();
+    return a === 'inference' || a === 'working' || a === 'tool_execution' || a === 'tooling' || a === 'moving' || a === 'walking' || a === 'talking';
+  };
+
+  WorkspaceEngine.prototype._buildBotFromAgent = function(a, idx, total) {
+    var cx = 0.5, cy = 0.5;
+    if (total > 1) {
+      var angle = (idx / total) * Math.PI * 2 - Math.PI / 2;
+      var radius = Math.min(0.22, 0.08 + total * 0.012);
+      cx = 0.5 + Math.cos(angle) * radius;
+      cy = 0.5 + Math.sin(angle) * radius;
+    }
+    return {
+      id: a.id, name: a.name, role: a.role || 'specialist',
+      model: a.model || '', state: (a.state || 'Idle').toString(), color: a.color || '#6366f1',
+      activity: (a.activity || '').toString().toLowerCase(),
+      subordinates: a.subordinates || [], supervisor: a.supervisor || null,
+      skills: a.skills || [], activeSkill: a.active_skill || null, skillFade: 0,
+      x: cx, y: cy,
+      targetX: cx, targetY: cy, vx: 0, vy: 0,
+      animState: (a.activity && a.activity !== 'idle') ? 'working' : 'idle', animFrame: 0, animTimer: 0,
+      headAngle: 0, headTarget: 0, headTimer: 2 + idx * 0.15,
+      lights: [0.6, 0.6, 0.8], lightTimer: 0.5,
+      blinkTimer: 3 + idx * 0.2, blinking: false,
+      workTimer: 0, currentStation: a.current_workstation || null
+    };
+  };
+
   WorkspaceEngine.prototype.initData = function(data) {
     var agents = data.agents || [];
     var systems = data.systems || data.workstations || [];
@@ -3453,28 +3647,7 @@
       ];
     }
     var self = this;
-    this.bots = agents.map(function(a, idx) {
-      var cx = 0.5, cy = 0.5;
-      if (agents.length > 1) {
-        var angle = (idx / agents.length) * Math.PI * 2 - Math.PI / 2;
-        var radius = Math.min(0.22, 0.08 + agents.length * 0.012);
-        cx = 0.5 + Math.cos(angle) * radius;
-        cy = 0.5 + Math.sin(angle) * radius;
-      }
-      return {
-        id: a.id, name: a.name, role: a.role || 'specialist',
-        model: a.model || '', state: (a.state || 'Idle').toString(), color: a.color || '#6366f1',
-        subordinates: a.subordinates || [], supervisor: a.supervisor || null,
-        skills: a.skills || [], activeSkill: a.active_skill || null, skillFade: 0,
-        x: cx, y: cy,
-        targetX: cx, targetY: cy, vx: 0, vy: 0,
-        animState: (a.activity && a.activity !== 'idle') ? 'working' : 'idle', animFrame: 0, animTimer: 0,
-        headAngle: 0, headTarget: 0, headTimer: 2 + idx * 0.15,
-        lights: [0.6, 0.6, 0.8], lightTimer: 0.5,
-        blinkTimer: 3 + idx * 0.2, blinking: false,
-        workTimer: 0, currentStation: a.current_workstation || null
-      };
-    });
+    this.bots = agents.map(function(a, idx) { return self._buildBotFromAgent(a, idx, agents.length); });
     this.bots.forEach(function(bot) {
       if (!bot.currentStation) return;
       var st = self.stations.find(function(s) { return s.id === bot.currentStation; });
@@ -3494,6 +3667,58 @@
         }
       }
     }
+  };
+
+  WorkspaceEngine.prototype.applySnapshot = function(data) {
+    if (!data) return;
+    var agents = data.agents || [];
+    var systems = data.systems || data.workstations || [];
+    if (systems.length > 0) {
+      this.stations = systems.map(function(s) { return { id: s.id, name: s.name, kind: s.kind, x: s.x, y: s.y }; });
+    }
+    var byId = {};
+    this.bots.forEach(function(b) { byId[b.id] = b; });
+    var nextBots = [];
+    for (var i = 0; i < agents.length; i++) {
+      var incoming = agents[i];
+      var existing = byId[incoming.id];
+      if (!existing) {
+        existing = this._buildBotFromAgent(incoming, i, agents.length);
+      } else {
+        existing.name = incoming.name || existing.name;
+        existing.role = incoming.role || existing.role;
+        existing.model = incoming.model || existing.model;
+        existing.state = (incoming.state || existing.state || 'Idle').toString();
+        existing.color = incoming.color || existing.color;
+        existing.activity = (incoming.activity || '').toString().toLowerCase();
+        existing.subordinates = incoming.subordinates || existing.subordinates || [];
+        existing.supervisor = incoming.supervisor || null;
+        existing.skills = incoming.skills || existing.skills || [];
+        existing.activeSkill = incoming.active_skill || null;
+        existing.currentStation = incoming.current_workstation || existing.currentStation || null;
+        var runtimeActive = this._isRuntimeActive(existing.activity);
+        var stationedActive = !!existing.currentStation && existing.currentStation !== 'standby';
+        if (existing.animState !== 'walking') existing.animState = (existing.activeSkill || runtimeActive || stationedActive) ? 'working' : 'idle';
+      }
+      var st = this._stationById(existing.currentStation);
+      if (st) {
+        existing.targetX = st.x;
+        existing.targetY = st.y + 0.10;
+      }
+      nextBots.push(existing);
+    }
+    this.bots = nextBots;
+    this.tethers = [];
+    for (var t = 0; t < this.bots.length; t++) {
+      var bot = this.bots[t];
+      if (bot.subordinates && bot.subordinates.length > 0) {
+        for (var j = 0; j < bot.subordinates.length; j++) {
+          var sub = this.bots.find(function(b) { return b.id === bot.subordinates[j]; });
+          if (sub) this.tethers.push({ from: bot, to: sub, color: bot.color });
+        }
+      }
+    }
+    this.layoutStandby();
   };
 
   WorkspaceEngine.prototype.layoutStandby = function() {
@@ -3646,6 +3871,7 @@
     if (this.selectedBotId && !this.bots.some(function(b) { return b.id === this.selectedBotId; }, this)) {
       this.selectedBotId = null;
     }
+    var self = this;
     this.bots.forEach(function(bot) {
       var dx = bot.targetX - bot.x, dy = bot.targetY - bot.y;
       var dist = Math.sqrt(dx * dx + dy * dy);
@@ -3669,7 +3895,11 @@
 
       if (bot.activeSkill) { bot.skillFade = Math.min(1, bot.skillFade + dt * 3); }
       else { bot.skillFade = Math.max(0, bot.skillFade - dt * 2); }
-      if (bot.animState !== 'walking') bot.animState = bot.activeSkill ? 'working' : 'idle';
+      if (bot.animState !== 'walking') {
+        var runtimeActive = self._isRuntimeActive(bot.activity);
+        var stationedActive = !!bot.currentStation && bot.currentStation !== 'standby';
+        bot.animState = (bot.activeSkill || runtimeActive || stationedActive) ? 'working' : 'idle';
+      }
     });
 
     for (var i = this.dataStreams.length - 1; i >= 0; i--) {
@@ -4071,6 +4301,8 @@
     App.ws.onmessage = function(ev) { try { var event = JSON.parse(ev.data); if (workspace && workspace.handleEvent) workspace.handleEvent(event); } catch(e) {} };
   } catch (err) { var d = document.getElementById('ws-dot'); if (d) d.classList.add('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'No WebSocket'; }
 
+  startModelsBackgroundRefresh(App);
+  App._loadAvailableModels({ nonBlocking: true, validationLevel: 'zero' }).catch(function() {});
   onHash();
 })();
   </script>

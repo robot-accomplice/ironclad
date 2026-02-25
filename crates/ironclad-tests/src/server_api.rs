@@ -10,7 +10,10 @@ use ironclad_db::Database;
 use ironclad_llm::LlmService;
 use ironclad_llm::OAuthManager;
 use ironclad_plugin_sdk::registry::PluginRegistry;
-use ironclad_server::{AppState, EventBus, PersonalityState, build_router};
+use ironclad_server::AppState;
+use ironclad_server::EventBus;
+use ironclad_server::PersonalityState;
+use ironclad_server::build_router;
 use ironclad_wallet::{TreasuryPolicy, WalletService, YieldEngine};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
@@ -142,6 +145,23 @@ async fn session_create_and_list() {
     let session_id = body["session_id"].as_str().unwrap().to_string();
     assert!(!session_id.is_empty());
 
+    // Creating again for same agent should rotate the active agent-scope
+    // session instead of failing on uniqueness constraints.
+    let app = build_router(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/sessions")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"agent_id":"test-agent"}"#))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let session_id_2 = body["session_id"].as_str().unwrap().to_string();
+    assert!(!session_id_2.is_empty());
+    assert_ne!(session_id_2, session_id);
+
     let app = build_router(state.clone());
     let req = Request::builder()
         .uri("/api/sessions")
@@ -152,8 +172,18 @@ async fn session_create_and_list() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
     let sessions = body["sessions"].as_array().unwrap();
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0]["agent_id"], "test-agent");
+    assert_eq!(sessions.len(), 2);
+    assert!(sessions.iter().all(|s| s["agent_id"] == "test-agent"));
+    let active_count = sessions
+        .iter()
+        .filter(|s| s["status"] == "active")
+        .count();
+    let archived_count = sessions
+        .iter()
+        .filter(|s| s["status"] == "archived")
+        .count();
+    assert_eq!(active_count, 1);
+    assert_eq!(archived_count, 1);
 }
 
 #[tokio::test]

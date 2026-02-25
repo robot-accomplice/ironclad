@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 
 use ironclad_core::{IroncladError, Result};
 
+const WINDOWS_SERVICE_NAME: &str = "IroncladAgent";
+const WINDOWS_SERVICE_DISPLAY_NAME: &str = "Ironclad Autonomous Agent Runtime";
+
 pub fn launchd_plist(binary_path: &str, config_path: &str, port: u16) -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/var/log".into());
     let log_dir = PathBuf::from(&home).join(".ironclad").join("logs");
@@ -74,11 +77,77 @@ pub fn systemd_path() -> PathBuf {
     PathBuf::from(home).join(".config/systemd/user/ironclad.service")
 }
 
+fn windows_service_marker_path() -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home)
+        .join(".ironclad")
+        .join("windows-service-install.txt")
+}
+
+fn windows_quote_arg(arg: &str) -> String {
+    arg.replace('"', "\\\"")
+}
+
+fn windows_service_bin_path(binary_path: &str, config_path: &str, port: u16) -> String {
+    format!(
+        "\"{}\" serve -c \"{}\" -p {}",
+        windows_quote_arg(binary_path),
+        windows_quote_arg(config_path),
+        port
+    )
+}
+
 pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result<PathBuf> {
     let os = std::env::consts::OS;
     let (content, path) = match os {
         "macos" => (launchd_plist(binary_path, config_path, port), plist_path()),
         "linux" => (systemd_unit(binary_path, config_path, port), systemd_path()),
+        "windows" => {
+            let bin_path = windows_service_bin_path(binary_path, config_path, port);
+            if windows_service_exists() {
+                run_cmd(
+                    "sc.exe",
+                    &[
+                        "config",
+                        WINDOWS_SERVICE_NAME,
+                        "binPath=",
+                        &bin_path,
+                        "start=",
+                        "auto",
+                        "DisplayName=",
+                        WINDOWS_SERVICE_DISPLAY_NAME,
+                    ],
+                )?;
+            } else {
+                run_cmd(
+                    "sc.exe",
+                    &[
+                        "create",
+                        WINDOWS_SERVICE_NAME,
+                        "binPath=",
+                        &bin_path,
+                        "start=",
+                        "auto",
+                        "DisplayName=",
+                        WINDOWS_SERVICE_DISPLAY_NAME,
+                    ],
+                )?;
+            }
+
+            let marker = windows_service_marker_path();
+            if let Some(parent) = marker.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(
+                &marker,
+                format!(
+                    "service={WINDOWS_SERVICE_NAME}\nbinary={binary_path}\nconfig={config_path}\nport={port}\n"
+                ),
+            )?;
+            return Ok(marker);
+        }
         other => {
             return Err(IroncladError::Config(format!(
                 "daemon install not supported on {other}"
@@ -124,6 +193,7 @@ pub fn start_daemon() -> Result<()> {
                 &["--user", "enable", "--now", "ironclad.service"],
             )
         }
+        "windows" => run_cmd("sc.exe", &["start", WINDOWS_SERVICE_NAME]),
         other => Err(IroncladError::Config(format!(
             "daemon start not supported on {other}"
         ))),
@@ -135,6 +205,7 @@ pub fn stop_daemon() -> Result<()> {
     match os {
         "macos" => run_cmd("launchctl", &["unload", &plist_path().to_string_lossy()]),
         "linux" => run_cmd("systemctl", &["--user", "stop", "ironclad.service"]),
+        "windows" => run_cmd("sc.exe", &["stop", WINDOWS_SERVICE_NAME]),
         other => Err(IroncladError::Config(format!(
             "daemon stop not supported on {other}"
         ))),
@@ -149,6 +220,10 @@ pub fn restart_daemon() -> Result<()> {
             start_daemon()
         }
         "linux" => run_cmd("systemctl", &["--user", "restart", "ironclad.service"]),
+        "windows" => {
+            let _ = stop_daemon();
+            start_daemon()
+        }
         other => Err(IroncladError::Config(format!(
             "daemon restart not supported on {other}"
         ))),
@@ -166,12 +241,100 @@ fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
     if output.status.success() {
         Ok(())
     } else {
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else {
+            stdout.trim().to_string()
+        };
         Err(IroncladError::Config(format!(
             "{program} failed (exit {}): {}",
             output.status.code().unwrap_or(-1),
-            stderr.trim()
+            detail
         )))
+    }
+}
+
+fn command_output(program: &str, args: &[&str]) -> Result<std::process::Output> {
+    std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| IroncladError::Config(format!("failed to run {program}: {e}")))
+}
+
+fn windows_service_exists() -> bool {
+    if std::env::consts::OS != "windows" {
+        return false;
+    }
+    match command_output("sc.exe", &["query", WINDOWS_SERVICE_NAME]) {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    }
+}
+
+fn parse_windows_sc_state(output: &str) -> Option<&'static str> {
+    let up = output.to_ascii_uppercase();
+    if up.contains("STATE") && up.contains("RUNNING") {
+        Some("running")
+    } else if up.contains("STATE") && up.contains("STOPPED") {
+        Some("stopped")
+    } else if up.contains("STATE") && up.contains("START_PENDING") {
+        Some("start_pending")
+    } else if up.contains("STATE") && up.contains("STOP_PENDING") {
+        Some("stop_pending")
+    } else {
+        None
+    }
+}
+
+pub fn daemon_status() -> Result<String> {
+    match std::env::consts::OS {
+        "macos" => {
+            if !is_installed() {
+                return Ok("Daemon not installed".into());
+            }
+            match command_output("launchctl", &["list", LAUNCHD_LABEL]) {
+                Ok(out) if out.status.success() => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    if stdout.contains("\"PID\"") {
+                        Ok("Daemon running (launchd loaded)".into())
+                    } else {
+                        Ok("Daemon installed but not running".into())
+                    }
+                }
+                Ok(_) => Ok("Daemon installed but not running".into()),
+                Err(e) => Err(e),
+            }
+        }
+        "linux" => {
+            if !is_installed() {
+                return Ok("Daemon not installed".into());
+            }
+            let out = command_output("systemctl", &["--user", "is-active", "ironclad.service"])?;
+            if out.status.success() {
+                Ok("Daemon running (systemd active)".into())
+            } else {
+                Ok("Daemon installed but not running".into())
+            }
+        }
+        "windows" => {
+            if !is_installed() {
+                return Ok("Daemon not installed".into());
+            }
+            let out = command_output("sc.exe", &["query", WINDOWS_SERVICE_NAME])?;
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let state = parse_windows_sc_state(&stdout)
+                .unwrap_or(if out.status.success() { "unknown" } else { "not_found" });
+            match state {
+                "running" => Ok("Daemon running (Windows service)".into()),
+                "stopped" => Ok("Daemon installed but stopped (Windows service)".into()),
+                "start_pending" => Ok("Daemon starting (Windows service)".into()),
+                "stop_pending" => Ok("Daemon stopping (Windows service)".into()),
+                _ => Ok("Daemon installed (Windows service state unknown)".into()),
+            }
+        }
+        other => Ok(format!("Daemon status unsupported on {other}")),
     }
 }
 
@@ -229,7 +392,11 @@ fn verify_launchd_running() -> Result<()> {
 }
 
 pub fn is_installed() -> bool {
-    let path = match std::env::consts::OS {
+    let os = std::env::consts::OS;
+    if os == "windows" {
+        return windows_service_exists();
+    }
+    let path = match os {
         "macos" => plist_path(),
         "linux" => systemd_path(),
         _ => return false,
@@ -242,6 +409,14 @@ pub fn uninstall_daemon() -> Result<()> {
         return Ok(());
     }
     let _ = stop_daemon();
+    if std::env::consts::OS == "windows" {
+        run_cmd("sc.exe", &["delete", WINDOWS_SERVICE_NAME])?;
+        let marker = windows_service_marker_path();
+        if marker.exists() {
+            let _ = std::fs::remove_file(marker);
+        }
+        return Ok(());
+    }
     let path = match std::env::consts::OS {
         "macos" => plist_path(),
         "linux" => systemd_path(),
@@ -381,6 +556,9 @@ mod tests {
 
     #[test]
     fn install_daemon_creates_file() {
+        if std::env::consts::OS == "windows" {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("ironclad");
         std::fs::write(&bin, "").unwrap();
@@ -403,5 +581,25 @@ mod tests {
         assert_eq!(pid, std::process::id());
         remove_pid_file(&pid_path).unwrap();
         assert!(!pid_path.exists());
+    }
+
+    #[test]
+    fn parse_windows_sc_state_running() {
+        let out = r#"
+SERVICE_NAME: IroncladAgent
+        TYPE               : 10  WIN32_OWN_PROCESS
+        STATE              : 4  RUNNING
+"#;
+        assert_eq!(parse_windows_sc_state(out), Some("running"));
+    }
+
+    #[test]
+    fn parse_windows_sc_state_stopped() {
+        let out = r#"
+SERVICE_NAME: IroncladAgent
+        TYPE               : 10  WIN32_OWN_PROCESS
+        STATE              : 1  STOPPED
+"#;
+        assert_eq!(parse_windows_sc_state(out), Some("stopped"));
     }
 }
