@@ -142,10 +142,7 @@ pub(crate) async fn execute_tool_call(
                 }
 
                 effective_risk = parse_risk_level(&skill.risk_level).map_err(|e| {
-                    format!(
-                        "Policy override denied: skill '{}' has {}",
-                        skill.name, e
-                    )
+                    format!("Policy override denied: skill '{}' has {}", skill.name, e)
                 })?;
                 matched_skill = Some((
                     skill.id.clone(),

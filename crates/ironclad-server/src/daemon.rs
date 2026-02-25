@@ -216,14 +216,18 @@ pub fn restart_daemon() -> Result<()> {
     let os = std::env::consts::OS;
     match os {
         "macos" => {
-            if let Err(e) = stop_daemon() && !is_benign_stop_error(&e) {
+            if let Err(e) = stop_daemon()
+                && !is_benign_stop_error(&e)
+            {
                 return Err(e);
             }
             start_daemon()
         }
         "linux" => run_cmd("systemctl", &["--user", "restart", "ironclad.service"]),
         "windows" => {
-            if let Err(e) = stop_daemon() && !is_benign_stop_error(&e) {
+            if let Err(e) = stop_daemon()
+                && !is_benign_stop_error(&e)
+            {
                 return Err(e);
             }
             start_daemon()
@@ -426,21 +430,22 @@ pub fn uninstall_daemon() -> Result<()> {
     if !is_installed_result()? {
         return Ok(());
     }
-    if let Err(e) = stop_daemon() && !is_benign_stop_error(&e) {
+    if let Err(e) = stop_daemon()
+        && !is_benign_stop_error(&e)
+    {
         return Err(e);
     }
     if std::env::consts::OS == "windows" {
         run_cmd("sc.exe", &["delete", WINDOWS_SERVICE_NAME])?;
         let marker = windows_service_marker_path();
-        if marker.exists() {
-            if let Err(e) = std::fs::remove_file(&marker)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(IroncladError::Config(format!(
-                    "failed to remove windows service marker {}: {e}",
-                    marker.display()
-                )));
-            }
+        if marker.exists()
+            && let Err(e) = std::fs::remove_file(&marker)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(IroncladError::Config(format!(
+                "failed to remove windows service marker {}: {e}",
+                marker.display()
+            )));
         }
         return Ok(());
     }

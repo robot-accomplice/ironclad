@@ -82,6 +82,63 @@ fn is_builtin_skill(s: &ironclad_db::skills::SkillRecord) -> bool {
     s.kind.eq_ignore_ascii_case("builtin") || is_builtin_skill_name(&s.name)
 }
 
+fn canonical_in_root(root: &FsPath, base: &FsPath, raw: &FsPath) -> Result<String, String> {
+    let candidate = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        base.join(raw)
+    };
+    let canonical = std::fs::canonicalize(&candidate).map_err(|e| {
+        format!(
+            "script path '{}' cannot be resolved: {e}",
+            candidate.display()
+        )
+    })?;
+    if !canonical.starts_with(root) {
+        return Err(format!(
+            "script path '{}' escapes skills_dir '{}'",
+            canonical.display(),
+            root.display()
+        ));
+    }
+    if !canonical.is_file() {
+        return Err(format!(
+            "script path '{}' is not a file",
+            canonical.display()
+        ));
+    }
+    Ok(canonical.to_string_lossy().to_string())
+}
+
+fn validate_policy_overrides(value: &serde_json::Value) -> Result<(), String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "policy_overrides must be a JSON object".to_string())?;
+    let allowed = ["require_creator", "deny_external", "disabled"];
+    for (k, v) in obj {
+        if !allowed.contains(&k.as_str()) {
+            return Err(format!("unsupported policy_overrides key '{k}'"));
+        }
+        if !v.is_boolean() {
+            return Err(format!(
+                "policy_overrides key '{}' must be boolean, got {}",
+                k, v
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_risk_level(raw: &str) -> Result<&'static str, String> {
+    match raw.to_ascii_lowercase().as_str() {
+        "safe" => Ok("Safe"),
+        "caution" => Ok("Caution"),
+        "dangerous" => Ok("Dangerous"),
+        "forbidden" => Ok("Forbidden"),
+        _ => Err(format!("invalid risk_level '{raw}'")),
+    }
+}
+
 pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
     match ironclad_db::skills::list_skills(&state.db) {
         Ok(skills) => {
@@ -172,20 +229,16 @@ pub async fn reload_skills(
             ironclad_core::RiskLevel::Forbidden => "Forbidden",
         }
     }
-    fn normalize_script_path(base: &FsPath, raw: &FsPath) -> String {
-        let candidate = if raw.is_absolute() {
-            raw.to_path_buf()
-        } else {
-            base.join(raw)
-        };
-        std::fs::canonicalize(&candidate)
-            .unwrap_or(candidate)
-            .to_string_lossy()
-            .to_string()
-    }
-
     let config = state.config.read().await;
-    let skills_dir = config.skills.skills_dir.clone();
+    let skills_dir = std::fs::canonicalize(&config.skills.skills_dir).map_err(|e| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "failed to resolve skills_dir '{}': {e}",
+                config.skills.skills_dir.display()
+            ),
+        )
+    })?;
     drop(config);
 
     let loaded = ironclad_agent::skills::SkillLoader::load_from_dir(&skills_dir)
@@ -193,6 +246,8 @@ pub async fn reload_skills(
 
     let mut added = 0u32;
     let mut updated = 0u32;
+    let mut rejected = 0u32;
+    let mut issues: Vec<String> = Vec::new();
 
     let existing_by_name: std::collections::HashMap<String, ironclad_db::skills::SkillRecord> =
         ironclad_db::skills::list_skills(&state.db)
@@ -211,30 +266,66 @@ pub async fn reload_skills(
         let triggers = serde_json::to_string(skill.triggers()).ok();
         let source = skill.source_path().to_string_lossy().to_string();
         let desc = skill.description();
-        let (tool_chain_json, policy_overrides_json, script_path, risk_level) =
-            if let Some(manifest) = skill.structured_manifest() {
-                let tool_chain_json = manifest
-                    .tool_chain
-                    .as_ref()
-                    .and_then(|v| serde_json::to_string(v).ok());
-                let policy_overrides_json = manifest
-                    .policy_overrides
-                    .as_ref()
-                    .and_then(|v| serde_json::to_string(v).ok());
-                let base = skill.source_path().parent().unwrap_or(skills_dir.as_path());
-                let script_path = manifest
-                    .script_path
-                    .as_ref()
-                    .map(|p| normalize_script_path(base, p));
-                (
-                    tool_chain_json,
-                    policy_overrides_json,
-                    script_path,
-                    risk_level_str(manifest.risk_level).to_string(),
-                )
+        let (tool_chain_json, policy_overrides_json, script_path, risk_level) = if let Some(
+            manifest,
+        ) =
+            skill.structured_manifest()
+        {
+            if manifest
+                .tool_chain
+                .as_ref()
+                .is_some_and(|chain| !chain.is_empty())
+            {
+                rejected += 1;
+                issues.push(format!(
+                        "rejected skill '{}': tool_chain is not yet executable in runtime (remove it or keep empty)",
+                        name
+                    ));
+                continue;
+            }
+
+            let tool_chain_json = manifest
+                .tool_chain
+                .as_ref()
+                .and_then(|v| serde_json::to_string(v).ok());
+            let policy_overrides_json = if let Some(v) = manifest.policy_overrides.as_ref() {
+                if let Err(msg) = validate_policy_overrides(v) {
+                    rejected += 1;
+                    issues.push(format!("rejected skill '{}': {}", name, msg));
+                    continue;
+                }
+                serde_json::to_string(v).ok()
             } else {
-                (None, None, None, "Caution".to_string())
+                None
             };
+            let base = skill.source_path().parent().unwrap_or(skills_dir.as_path());
+            let script_path = manifest
+                .script_path
+                .as_ref()
+                .map(|p| canonical_in_root(&skills_dir, base, p))
+                .transpose()
+                .map_err(|msg| {
+                    rejected += 1;
+                    issues.push(format!("rejected skill '{}': {}", name, msg));
+                    (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        "invalid skill manifest".to_string(),
+                    )
+                })
+                .ok()
+                .flatten();
+            if manifest.script_path.is_some() && script_path.is_none() {
+                continue;
+            }
+            (
+                tool_chain_json,
+                policy_overrides_json,
+                script_path,
+                risk_level_str(manifest.risk_level).to_string(),
+            )
+        } else {
+            (None, None, None, "Caution".to_string())
+        };
 
         let existing = existing_by_name.get(name);
 
@@ -287,6 +378,177 @@ pub async fn reload_skills(
         "scanned": loaded.len(),
         "added": added,
         "updated": updated,
+        "rejected": rejected,
+        "issues": issues,
+    })))
+}
+
+pub async fn audit_skills(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+    let config = state.config.read().await;
+    let skills_dir = std::fs::canonicalize(&config.skills.skills_dir).map_err(|e| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "failed to resolve skills_dir '{}': {e}",
+                config.skills.skills_dir.display()
+            ),
+        )
+    })?;
+    drop(config);
+
+    let loaded = ironclad_agent::skills::SkillLoader::load_from_dir(&skills_dir)
+        .map_err(|e| internal_err(&e))?;
+    let loaded_by_name: std::collections::HashMap<
+        String,
+        (&ironclad_agent::skills::LoadedSkill, String),
+    > = loaded
+        .iter()
+        .map(|s| (s.name().to_string(), (s, s.hash().to_string())))
+        .collect();
+
+    let db_skills = ironclad_db::skills::list_skills(&state.db).map_err(|e| internal_err(&e))?;
+    let mut drifted = 0usize;
+    let mut skills_report = Vec::new();
+
+    for s in &db_skills {
+        let (drift_status, drift_reason) = if let Err(msg) = normalize_risk_level(&s.risk_level) {
+            drifted += 1;
+            ("invalid_metadata", msg)
+        } else if let Some((loaded_skill, loaded_hash)) = loaded_by_name.get(&s.name) {
+            if &s.content_hash != loaded_hash {
+                drifted += 1;
+                (
+                    "drifted",
+                    format!("hash mismatch (db={} disk={})", s.content_hash, loaded_hash),
+                )
+            } else {
+                let mut issues = Vec::new();
+                if let Some(manifest) = loaded_skill.structured_manifest() {
+                    if manifest.tool_chain.as_ref().is_some_and(|c| !c.is_empty()) {
+                        issues.push(
+                            "tool_chain present but runtime does not execute skill tool chains"
+                                .to_string(),
+                        );
+                    }
+                    if let Some(v) = manifest.policy_overrides.as_ref()
+                        && let Err(msg) = validate_policy_overrides(v)
+                    {
+                        issues.push(msg);
+                    }
+                    if let Some(script) = manifest.script_path.as_ref() {
+                        let base = loaded_skill
+                            .source_path()
+                            .parent()
+                            .unwrap_or(skills_dir.as_path());
+                        if let Err(msg) = canonical_in_root(&skills_dir, base, script) {
+                            issues.push(msg);
+                        }
+                    }
+                }
+                if issues.is_empty() {
+                    ("in_sync", String::new())
+                } else {
+                    drifted += 1;
+                    ("invalid_metadata", issues.join("; "))
+                }
+            }
+        } else {
+            drifted += 1;
+            (
+                "missing_on_disk",
+                "present in DB but not found in skills_dir scan".to_string(),
+            )
+        };
+
+        skills_report.push(serde_json::json!({
+            "id": s.id,
+            "name": s.name,
+            "enabled": s.enabled,
+            "risk_level": s.risk_level,
+            "source_path": s.source_path,
+            "drift_status": drift_status,
+            "drift_reason": drift_reason,
+        }));
+    }
+
+    let tool_names: Vec<String> = state
+        .tools
+        .list()
+        .into_iter()
+        .map(|t| t.name().to_string())
+        .collect();
+    let key_tools = [
+        ("run_script", serde_json::json!({"path":"sample.sh"})),
+        ("read_file", serde_json::json!({"path":"README.md"})),
+        (
+            "write_file",
+            serde_json::json!({"path":"tmp/audit.txt","content":"x"}),
+        ),
+        (
+            "edit_file",
+            serde_json::json!({"path":"tmp/audit.txt","old":"x","new":"y"}),
+        ),
+        ("list_directory", serde_json::json!({"path":"."})),
+        ("glob_files", serde_json::json!({"pattern":"*.md"})),
+        ("search_files", serde_json::json!({"query":"TODO"})),
+    ];
+    let mut capability_rows = Vec::new();
+    for (tool_name, sample_params) in key_tools {
+        let Some(tool) = state.tools.get(tool_name) else {
+            capability_rows.push(serde_json::json!({
+                "tool_name": tool_name,
+                "present": false,
+            }));
+            continue;
+        };
+        let normal_tier = ironclad_core::SurvivalTier::Normal;
+        let creator_allowed = super::agent::check_tool_policy(
+            &state.policy_engine,
+            tool_name,
+            &sample_params,
+            ironclad_core::InputAuthority::Creator,
+            normal_tier,
+            tool.risk_level(),
+        )
+        .is_ok();
+        let external_allowed = super::agent::check_tool_policy(
+            &state.policy_engine,
+            tool_name,
+            &sample_params,
+            ironclad_core::InputAuthority::External,
+            normal_tier,
+            tool.risk_level(),
+        )
+        .is_ok();
+        let approval_classification = state
+            .approvals
+            .check_tool(tool_name)
+            .map(|c| format!("{c:?}"))
+            .unwrap_or_else(|e| format!("error:{e}"));
+        capability_rows.push(serde_json::json!({
+            "tool_name": tool_name,
+            "present": true,
+            "risk_level": format!("{:?}", tool.risk_level()),
+            "creator_allowed": creator_allowed,
+            "external_allowed": external_allowed,
+            "approval_classification": approval_classification,
+        }));
+    }
+
+    Ok(axum::Json(serde_json::json!({
+        "skills_dir": skills_dir,
+        "summary": {
+            "db_skills": db_skills.len(),
+            "disk_skills": loaded.len(),
+            "drifted_skills": drifted,
+        },
+        "runtime": {
+            "registered_tools": tool_names,
+            "capabilities": capability_rows,
+        },
+        "skills": skills_report,
     })))
 }
 

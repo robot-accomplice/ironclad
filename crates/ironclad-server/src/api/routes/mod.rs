@@ -1928,6 +1928,66 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
+    async fn run_script_invalid_skill_risk_level_is_denied() {
+        let mut state = test_state();
+        let skills_dir = tempfile::tempdir().unwrap();
+        let script = skills_dir.path().join("invalid-risk.sh");
+        std::fs::write(&script, "#!/bin/bash\necho risk").unwrap();
+        let script_canonical = std::fs::canonicalize(&script).unwrap();
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.skills.skills_dir = skills_dir.path().to_path_buf();
+        }
+
+        ironclad_db::skills::register_skill_full(
+            &state.db,
+            "invalid-risk-runner",
+            "structured",
+            Some("invalid risk in db"),
+            &script_canonical.to_string_lossy(),
+            "hash-invalid-risk",
+            Some(r#"{"keywords":["invalid-risk"]}"#),
+            None,
+            None,
+            Some(&script_canonical.to_string_lossy()),
+            "TotallyInvalid",
+        )
+        .unwrap();
+
+        let mut registry = ToolRegistry::new();
+        let skills_cfg = {
+            let cfg = state.config.read().await;
+            cfg.skills.clone()
+        };
+        registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
+            skills_cfg,
+        )));
+        state.tools = Arc::new(registry);
+
+        let sid =
+            ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
+        let turn_id =
+            ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None).unwrap();
+
+        let result = agent::execute_tool_call(
+            &state,
+            "run_script",
+            &serde_json::json!({ "path": "invalid-risk.sh" }),
+            &turn_id,
+            InputAuthority::Creator,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("invalid skill risk_level"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn run_script_disabled_skill_blocks_creator_execution() {
         let mut state = test_state();
         let skills_dir = tempfile::tempdir().unwrap();
