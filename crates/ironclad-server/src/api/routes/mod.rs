@@ -245,8 +245,9 @@ pub fn build_router(state: AppState) -> Router {
     use sessions::{
         analyze_session, analyze_turn, backfill_nicknames, create_session, get_session,
         get_session_feedback, get_session_insights, get_turn, get_turn_context, get_turn_feedback,
-        get_turn_tips, get_turn_tools, list_messages, list_session_turns, list_sessions,
-        post_message, post_turn_feedback, put_turn_feedback,
+        get_turn_model_selection, get_turn_tips, get_turn_tools, list_messages,
+        list_model_selection_events, list_session_turns, list_sessions, post_message,
+        post_turn_feedback, put_turn_feedback,
     };
     use skills::{delete_skill, get_skill, list_skills, reload_skills, toggle_skill};
     use subagents::{
@@ -276,8 +277,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/sessions/{id}/feedback", get(get_session_feedback))
         .route("/api/turns/{id}", get(get_turn))
         .route("/api/turns/{id}/context", get(get_turn_context))
+        .route(
+            "/api/turns/{id}/model-selection",
+            get(get_turn_model_selection),
+        )
         .route("/api/turns/{id}/tools", get(get_turn_tools))
         .route("/api/turns/{id}/tips", get(get_turn_tips))
+        .route("/api/models/selections", get(list_model_selection_events))
         .route("/api/turns/{id}/analyze", post(analyze_turn))
         .route(
             "/api/turns/{id}/feedback",
@@ -1694,6 +1700,8 @@ primary = "ollama/qwen3:8b"
                     name: format!("{}_tool", self.name),
                     description: "mock tool".into(),
                     parameters: serde_json::json!({}),
+                    risk_level: ironclad_core::RiskLevel::Dangerous,
+                    permissions: vec![],
                 }]
             }
             async fn init(&mut self) -> ironclad_core::Result<()> {
@@ -1865,6 +1873,54 @@ primary = "ollama/qwen3:8b"
         assert_eq!(body["updated"], true);
         assert_eq!(body["old_model"], "ollama/qwen3:8b");
         assert_eq!(body["new_model"], "anthropic/claude-opus-4");
+        assert_eq!(body["fallbacks"][0], "ollama/qwen3:8b");
+    }
+
+    #[tokio::test]
+    async fn change_commander_model_and_order() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/roster/TestBot/model")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"openai/gpt-4o","fallbacks":["anthropic/claude-3.5-sonnet","openai/gpt-4o","ollama/qwen3:8b"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["updated"], true);
+        assert_eq!(body["old_model"], "ollama/qwen3:8b");
+        assert_eq!(body["new_model"], "openai/gpt-4o");
+        assert_eq!(body["fallbacks"][0], "anthropic/claude-3.5-sonnet");
+        assert_eq!(body["fallbacks"][1], "ollama/qwen3:8b");
+        assert_eq!(body["model_order"][0], "openai/gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn change_specialist_model_rejects_fallback_order() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/roster/default-researcher/model")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"openai/gpt-4o-mini","fallbacks":["anthropic/claude-3.5-sonnet"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -2446,6 +2502,7 @@ primary = "ollama/qwen3:8b"
             &serde_json::json!({"command": "rm -rf /"}),
             ironclad_core::InputAuthority::External,
             ironclad_core::SurvivalTier::Normal,
+            ironclad_core::RiskLevel::Dangerous,
         );
         assert!(result.is_err());
         let (status, msg) = result.unwrap_err();
@@ -2467,6 +2524,7 @@ primary = "ollama/qwen3:8b"
             &serde_json::json!({"path": "/tmp/safe.txt"}),
             ironclad_core::InputAuthority::Creator,
             ironclad_core::SurvivalTier::Normal,
+            ironclad_core::RiskLevel::Safe,
         );
         assert!(result.is_ok());
     }
@@ -2694,6 +2752,8 @@ primary = "ollama/qwen3:8b"
                     name: "greet".into(),
                     description: "says hello".into(),
                     parameters: serde_json::json!({}),
+                    risk_level: ironclad_core::RiskLevel::Safe,
+                    permissions: vec![],
                 }]
             }
             async fn init(&mut self) -> ironclad_core::Result<()> {

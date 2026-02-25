@@ -27,13 +27,21 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use ironclad_core::Result;
+use ironclad_core::{Result, RiskLevel};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    #[serde(default = "default_tool_risk_level")]
+    pub risk_level: RiskLevel,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+}
+
+fn default_tool_risk_level() -> RiskLevel {
+    RiskLevel::Safe
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +79,8 @@ mod tests {
             name: "test_tool".into(),
             description: "A test tool".into(),
             parameters: serde_json::json!({"type": "object"}),
+            risk_level: RiskLevel::Safe,
+            permissions: vec![],
         };
         let json = serde_json::to_string(&tool).unwrap();
         let back: ToolDef = serde_json::from_str(&json).unwrap();

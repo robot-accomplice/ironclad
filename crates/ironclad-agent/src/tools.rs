@@ -1,10 +1,153 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 use serde_json::Value;
 
 use ironclad_core::{InputAuthority, RiskLevel};
+
+const MAX_FILE_BYTES: usize = 1024 * 1024;
+const MAX_SEARCH_RESULTS: usize = 100;
+const MAX_WALK_FILES: usize = 5000;
+
+fn workspace_root() -> std::result::Result<PathBuf, ToolError> {
+    let root = match std::env::var("IRONCLAD_WORKSPACE_ROOT") {
+        Ok(val) => PathBuf::from(val),
+        Err(_) => std::env::current_dir().map_err(|e| ToolError {
+            message: format!("failed to determine current directory: {e}"),
+        })?,
+    };
+    std::fs::canonicalize(&root).map_err(|e| ToolError {
+        message: format!("failed to resolve workspace root '{}': {e}", root.display()),
+    })
+}
+
+fn validate_rel_path(rel: &Path) -> std::result::Result<(), ToolError> {
+    if rel.is_absolute() {
+        return Err(ToolError {
+            message: "absolute paths are not allowed".into(),
+        });
+    }
+    if rel.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(ToolError {
+            message: "path traversal ('..') is not allowed".into(),
+        });
+    }
+    Ok(())
+}
+
+fn resolve_workspace_path(
+    rel: &str,
+    allow_nonexistent: bool,
+) -> std::result::Result<PathBuf, ToolError> {
+    let root = workspace_root()?;
+    let rel_path = Path::new(rel);
+    validate_rel_path(rel_path)?;
+    let joined = root.join(rel_path);
+    if joined.exists() {
+        let canonical = std::fs::canonicalize(&joined).map_err(|e| ToolError {
+            message: format!("failed to resolve '{}': {e}", joined.display()),
+        })?;
+        if !canonical.starts_with(&root) {
+            return Err(ToolError {
+                message: "resolved path escapes workspace root".into(),
+            });
+        }
+        return Ok(canonical);
+    }
+
+    if !allow_nonexistent {
+        return Err(ToolError {
+            message: format!("path does not exist: {}", joined.display()),
+        });
+    }
+
+    if let Some(parent) = joined.parent() {
+        let mut existing_ancestor = parent;
+        while !existing_ancestor.exists() {
+            existing_ancestor = existing_ancestor.parent().ok_or_else(|| ToolError {
+                message: "unable to resolve existing parent for target path".into(),
+            })?;
+        }
+        let canonical_parent = std::fs::canonicalize(existing_ancestor).map_err(|e| ToolError {
+            message: format!(
+                "failed to resolve parent '{}': {e}",
+                existing_ancestor.display()
+            ),
+        })?;
+        if !canonical_parent.starts_with(&root) {
+            return Err(ToolError {
+                message: "target path escapes workspace root".into(),
+            });
+        }
+    }
+
+    Ok(joined)
+}
+
+fn walk_workspace_files(
+    base: &Path,
+    out: &mut Vec<PathBuf>,
+    count: &mut usize,
+) -> std::result::Result<(), ToolError> {
+    if *count >= MAX_WALK_FILES {
+        return Ok(());
+    }
+    let rd = std::fs::read_dir(base).map_err(|e| ToolError {
+        message: format!("failed to read directory '{}': {e}", base.display()),
+    })?;
+    for entry in rd {
+        if *count >= MAX_WALK_FILES {
+            break;
+        }
+        let entry = entry.map_err(|e| ToolError {
+            message: format!("failed to read directory entry: {e}"),
+        })?;
+        let path = entry.path();
+        let ftype = entry.file_type().map_err(|e| ToolError {
+            message: format!("failed to inspect '{}': {e}", path.display()),
+        })?;
+        if ftype.is_symlink() {
+            continue;
+        }
+        if ftype.is_dir() {
+            walk_workspace_files(&path, out, count)?;
+        } else if ftype.is_file() {
+            out.push(path);
+            *count += 1;
+        }
+    }
+    Ok(())
+}
+
+fn wildcard_match(pattern: &str, candidate: &str) -> bool {
+    // Simple glob-style matcher for '*' and '?'.
+    let p: Vec<char> = pattern.chars().collect();
+    let s: Vec<char> = candidate.chars().collect();
+    let (mut pi, mut si) = (0usize, 0usize);
+    let (mut star, mut match_i) = (None::<usize>, 0usize);
+    while si < s.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == s[si]) {
+            pi += 1;
+            si += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            pi += 1;
+            match_i = si;
+        } else if let Some(star_idx) = star {
+            pi = star_idx + 1;
+            match_i += 1;
+            si = match_i;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
 
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -205,9 +348,464 @@ impl Tool for ScriptRunnerTool {
     }
 }
 
+pub struct ReadFileTool;
+
+#[async_trait]
+impl Tool for ReadFileTool {
+    fn name(&self) -> &str {
+        "read_file"
+    }
+
+    fn description(&self) -> &str {
+        "Read a UTF-8 text file from the workspace"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        _ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let rel = params
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'path' parameter".into(),
+            })?;
+        let path = resolve_workspace_path(rel, false)?;
+        let meta = std::fs::metadata(&path).map_err(|e| ToolError {
+            message: format!("failed to stat '{}': {e}", path.display()),
+        })?;
+        if meta.len() as usize > MAX_FILE_BYTES {
+            return Err(ToolError {
+                message: format!(
+                    "file too large (>{MAX_FILE_BYTES} bytes): {}",
+                    path.display()
+                ),
+            });
+        }
+        let content = std::fs::read_to_string(&path).map_err(|e| ToolError {
+            message: format!("failed to read '{}': {e}", path.display()),
+        })?;
+        Ok(ToolResult {
+            output: content,
+            metadata: Some(
+                serde_json::json!({ "path": path.display().to_string(), "bytes": meta.len() }),
+            ),
+        })
+    }
+}
+
+pub struct WriteFileTool;
+
+#[async_trait]
+impl Tool for WriteFileTool {
+    fn name(&self) -> &str {
+        "write_file"
+    }
+
+    fn description(&self) -> &str {
+        "Write text content to a workspace file"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Caution
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "content": { "type": "string" },
+                "append": { "type": "boolean", "default": false }
+            },
+            "required": ["path", "content"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        _ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let rel = params
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'path' parameter".into(),
+            })?;
+        let content = params
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'content' parameter".into(),
+            })?;
+        let append = params
+            .get("append")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let path = resolve_workspace_path(rel, true)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| ToolError {
+                message: format!("failed to create parent dirs '{}': {e}", parent.display()),
+            })?;
+        }
+        if append {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|e| ToolError {
+                    message: format!("failed to open '{}': {e}", path.display()),
+                })?;
+            f.write_all(content.as_bytes()).map_err(|e| ToolError {
+                message: format!("failed to append '{}': {e}", path.display()),
+            })?;
+        } else {
+            std::fs::write(&path, content).map_err(|e| ToolError {
+                message: format!("failed to write '{}': {e}", path.display()),
+            })?;
+        }
+        Ok(ToolResult {
+            output: "ok".into(),
+            metadata: Some(
+                serde_json::json!({ "path": path.display().to_string(), "append": append }),
+            ),
+        })
+    }
+}
+
+pub struct EditFileTool;
+
+#[async_trait]
+impl Tool for EditFileTool {
+    fn name(&self) -> &str {
+        "edit_file"
+    }
+
+    fn description(&self) -> &str {
+        "Replace text in an existing workspace file"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Caution
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "old_text": { "type": "string" },
+                "new_text": { "type": "string" },
+                "replace_all": { "type": "boolean", "default": false }
+            },
+            "required": ["path", "old_text", "new_text"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        _ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let rel = params
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'path' parameter".into(),
+            })?;
+        let old_text = params
+            .get("old_text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'old_text' parameter".into(),
+            })?;
+        let new_text = params
+            .get("new_text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'new_text' parameter".into(),
+            })?;
+        let replace_all = params
+            .get("replace_all")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let path = resolve_workspace_path(rel, false)?;
+        let content = std::fs::read_to_string(&path).map_err(|e| ToolError {
+            message: format!("failed to read '{}': {e}", path.display()),
+        })?;
+        if !content.contains(old_text) {
+            return Err(ToolError {
+                message: "old_text not found in file".into(),
+            });
+        }
+        let updated = if replace_all {
+            content.replace(old_text, new_text)
+        } else {
+            content.replacen(old_text, new_text, 1)
+        };
+        std::fs::write(&path, updated).map_err(|e| ToolError {
+            message: format!("failed to write '{}': {e}", path.display()),
+        })?;
+        Ok(ToolResult {
+            output: "ok".into(),
+            metadata: Some(
+                serde_json::json!({ "path": path.display().to_string(), "replace_all": replace_all }),
+            ),
+        })
+    }
+}
+
+pub struct ListDirectoryTool;
+
+#[async_trait]
+impl Tool for ListDirectoryTool {
+    fn name(&self) -> &str {
+        "list_directory"
+    }
+
+    fn description(&self) -> &str {
+        "List files and folders in a workspace directory"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "default": "." }
+            }
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        _ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let rel = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let path = resolve_workspace_path(rel, false)?;
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(&path).map_err(|e| ToolError {
+            message: format!("failed to read directory '{}': {e}", path.display()),
+        })? {
+            let entry = entry.map_err(|e| ToolError {
+                message: format!("failed to read entry: {e}"),
+            })?;
+            let p = entry.path();
+            let kind = if p.is_dir() { "dir" } else { "file" };
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            entries.push(serde_json::json!({ "name": name, "kind": kind }));
+        }
+        entries.sort_by(|a, b| {
+            a["name"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(b["name"].as_str().unwrap_or_default())
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string()),
+            metadata: Some(
+                serde_json::json!({ "path": path.display().to_string(), "count": entries.len() }),
+            ),
+        })
+    }
+}
+
+pub struct GlobFilesTool;
+
+#[async_trait]
+impl Tool for GlobFilesTool {
+    fn name(&self) -> &str {
+        "glob_files"
+    }
+
+    fn description(&self) -> &str {
+        "Find files matching a wildcard pattern under the workspace"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": { "type": "string" },
+                "path": { "type": "string", "default": "." },
+                "limit": { "type": "integer", "default": 50, "minimum": 1, "maximum": 500 }
+            },
+            "required": ["pattern"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        _ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let pattern = params
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'pattern' parameter".into(),
+            })?;
+        let rel = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or(50)
+            .min(500);
+        let base = resolve_workspace_path(rel, false)?;
+        let root = workspace_root()?;
+        let mut files = Vec::new();
+        let mut count = 0usize;
+        walk_workspace_files(&base, &mut files, &mut count)?;
+        let mut matches = Vec::new();
+        for p in files {
+            let rel = p.strip_prefix(&root).unwrap_or(&p);
+            let rel_norm = rel.to_string_lossy().replace('\\', "/");
+            if wildcard_match(pattern, &rel_norm) {
+                matches.push(rel_norm);
+                if matches.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&matches).unwrap_or_else(|_| "[]".to_string()),
+            metadata: Some(serde_json::json!({ "count": matches.len(), "pattern": pattern })),
+        })
+    }
+}
+
+pub struct SearchFilesTool;
+
+#[async_trait]
+impl Tool for SearchFilesTool {
+    fn name(&self) -> &str {
+        "search_files"
+    }
+
+    fn description(&self) -> &str {
+        "Search for text content across workspace files"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "path": { "type": "string", "default": "." },
+                "limit": { "type": "integer", "default": 20, "minimum": 1, "maximum": 100 },
+                "case_sensitive": { "type": "boolean", "default": false }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        _ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let query = params
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'query' parameter".into(),
+            })?;
+        let rel = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or(20)
+            .min(MAX_SEARCH_RESULTS);
+        let case_sensitive = params
+            .get("case_sensitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let base = resolve_workspace_path(rel, false)?;
+        let root = workspace_root()?;
+        let mut files = Vec::new();
+        let mut count = 0usize;
+        walk_workspace_files(&base, &mut files, &mut count)?;
+        let mut hits = Vec::new();
+        let query_cmp = if case_sensitive {
+            query.to_string()
+        } else {
+            query.to_lowercase()
+        };
+        for p in files {
+            if hits.len() >= limit {
+                break;
+            }
+            let content = match std::fs::read_to_string(&p) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            for (idx, line) in content.lines().enumerate() {
+                let cmp = if case_sensitive {
+                    line.to_string()
+                } else {
+                    line.to_lowercase()
+                };
+                if cmp.contains(&query_cmp) {
+                    let relp = p
+                        .strip_prefix(&root)
+                        .unwrap_or(&p)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    hits.push(serde_json::json!({
+                        "path": relp,
+                        "line": idx + 1,
+                        "preview": line
+                    }));
+                    if hits.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&hits).unwrap_or_else(|_| "[]".to_string()),
+            metadata: Some(serde_json::json!({ "count": hits.len(), "query": query })),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     fn test_ctx() -> ToolContext {
         ToolContext {
@@ -254,5 +852,48 @@ mod tests {
         let bad_params = serde_json::json!({});
         let err = tool.execute(bad_params, &ctx).await.unwrap_err();
         assert!(err.message.contains("missing"));
+    }
+
+    #[test]
+    fn wildcard_match_supports_star_and_question() {
+        assert!(wildcard_match("src/*.rs", "src/main.rs"));
+        assert!(wildcard_match("src/???.rs", "src/mod.rs"));
+        assert!(!wildcard_match("src/*.rs", "src/main.ts"));
+    }
+
+    #[tokio::test]
+    async fn filesystem_tools_roundtrip() {
+        let ctx = test_ctx();
+        let unique = format!(".tmp_tools_test_{}", Uuid::new_v4());
+        let rel_file = format!("{unique}/note.txt");
+        let _ = std::fs::create_dir_all(&unique);
+
+        let write = WriteFileTool;
+        write
+            .execute(
+                serde_json::json!({"path": rel_file, "content": "hello tools"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let read = ReadFileTool;
+        let out = read
+            .execute(
+                serde_json::json!({"path": format!("{unique}/note.txt")}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.output, "hello tools");
+
+        let list = ListDirectoryTool;
+        let listed = list
+            .execute(serde_json::json!({"path": unique.clone()}), &ctx)
+            .await
+            .unwrap();
+        assert!(listed.output.contains("note.txt"));
+
+        let _ = std::fs::remove_dir_all(unique);
     }
 }

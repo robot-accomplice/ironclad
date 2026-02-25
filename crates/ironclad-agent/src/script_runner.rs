@@ -37,8 +37,13 @@ impl ScriptRunner {
             if let Ok(path) = std::env::var("PATH") {
                 cmd.env("PATH", path);
             }
-            if let Ok(home) = std::env::var("HOME") {
+            if let Some(home) = default_home_env() {
                 cmd.env("HOME", home);
+            }
+            for key in ["USERPROFILE", "TMPDIR", "TMP", "TEMP", "LANG", "TERM"] {
+                if let Ok(val) = std::env::var(key) {
+                    cmd.env(key, val);
+                }
             }
         }
 
@@ -102,6 +107,23 @@ fn truncate_str(s: &str, max_bytes: usize) -> String {
     }
 }
 
+fn default_home_env() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+}
+
+fn default_python_interpreter() -> &'static str {
+    #[cfg(windows)]
+    {
+        "python"
+    }
+    #[cfg(not(windows))]
+    {
+        "python3"
+    }
+}
+
 /// Determines the interpreter for a script by reading its shebang line
 /// or inferring from the file extension, then checks against the whitelist.
 pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<String> {
@@ -140,7 +162,7 @@ pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<Strin
         .unwrap_or("");
 
     let inferred = match ext {
-        "py" => "python3",
+        "py" => default_python_interpreter(),
         "sh" | "bash" => "bash",
         "js" => "node",
         _ => {

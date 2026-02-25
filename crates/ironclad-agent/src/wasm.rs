@@ -118,6 +118,7 @@ impl WasmPlugin {
         if !self.loaded {
             return Err(IroncladError::Config("WASM plugin not loaded".into()));
         }
+        self.enforce_capabilities(input)?;
 
         let engine = self
             .engine
@@ -215,6 +216,105 @@ impl WasmPlugin {
             "plugin": self.config.name,
             "available_exports": export_names,
         }))
+    }
+
+    fn enforce_capabilities(&self, input: &serde_json::Value) -> Result<()> {
+        fn collect_strings(v: &serde_json::Value, out: &mut Vec<String>) {
+            match v {
+                serde_json::Value::String(s) => out.push(s.clone()),
+                serde_json::Value::Array(arr) => {
+                    for x in arr {
+                        collect_strings(x, out);
+                    }
+                }
+                serde_json::Value::Object(map) => {
+                    for (k, x) in map {
+                        let key = k.to_lowercase();
+                        if ["path", "file", "filepath", "directory", "dir"].contains(&key.as_str())
+                        {
+                            out.push("__filesystem__".into());
+                        }
+                        if ["url", "endpoint", "host", "api"].contains(&key.as_str()) {
+                            out.push("__network__".into());
+                        }
+                        if ["env", "environment", "env_var", "env_key"].contains(&key.as_str()) {
+                            out.push("__environment__".into());
+                        }
+                        collect_strings(x, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut required: Vec<WasmCapability> = vec![];
+        if let Some(explicit) = input
+            .get("required_capabilities")
+            .and_then(|v| v.as_array())
+        {
+            for cap in explicit.iter().filter_map(|v| v.as_str()) {
+                match cap.to_ascii_lowercase().as_str() {
+                    "readfilesystem" | "read_filesystem" | "filesystem_read" => {
+                        if !required.contains(&WasmCapability::ReadFilesystem) {
+                            required.push(WasmCapability::ReadFilesystem);
+                        }
+                    }
+                    "writefilesystem" | "write_filesystem" | "filesystem_write" => {
+                        if !required.contains(&WasmCapability::WriteFilesystem) {
+                            required.push(WasmCapability::WriteFilesystem);
+                        }
+                    }
+                    "network" => {
+                        if !required.contains(&WasmCapability::Network) {
+                            required.push(WasmCapability::Network);
+                        }
+                    }
+                    "environment" | "env" => {
+                        if !required.contains(&WasmCapability::Environment) {
+                            required.push(WasmCapability::Environment);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut tokens = Vec::new();
+        collect_strings(input, &mut tokens);
+        if tokens.iter().any(|v| {
+            v == "__filesystem__"
+                || v.contains('\\')
+                || v.starts_with('/')
+                || v.starts_with("./")
+                || v.starts_with("../")
+                || v.starts_with("~/")
+                || (v.len() > 2 && v.as_bytes().get(1) == Some(&b':') && v.contains('\\'))
+        }) && !required.contains(&WasmCapability::ReadFilesystem)
+        {
+            required.push(WasmCapability::ReadFilesystem);
+        }
+        if tokens
+            .iter()
+            .any(|v| v == "__network__" || v.starts_with("http://") || v.starts_with("https://"))
+            && !required.contains(&WasmCapability::Network)
+        {
+            required.push(WasmCapability::Network);
+        }
+        if tokens.iter().any(|v| v == "__environment__")
+            && !required.contains(&WasmCapability::Environment)
+        {
+            required.push(WasmCapability::Environment);
+        }
+
+        for cap in required {
+            if !self.has_capability(&cap) {
+                return Err(IroncladError::Tool {
+                    tool: self.config.name.clone(),
+                    message: format!("missing required WASM capability: {:?}", cap),
+                });
+            }
+        }
+        Ok(())
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -415,6 +515,31 @@ mod tests {
         assert!(plugin.has_capability(&WasmCapability::ReadFilesystem));
         assert!(plugin.has_capability(&WasmCapability::Network));
         assert!(!plugin.has_capability(&WasmCapability::WriteFilesystem));
+    }
+
+    #[test]
+    fn capability_enforcement_blocks_network_access() {
+        let dir = TempDir::new().unwrap();
+        let config = test_config(dir.path(), "caps-enforced");
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+        let err = plugin
+            .execute(&serde_json::json!({"url": "https://example.com"}))
+            .unwrap_err();
+        assert!(err.to_string().contains("missing required WASM capability"));
+    }
+
+    #[test]
+    fn capability_enforcement_allows_declared_network_access() {
+        let dir = TempDir::new().unwrap();
+        let mut config = test_config(dir.path(), "caps-network");
+        config.capabilities = vec![WasmCapability::Network];
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+        let result = plugin
+            .execute(&serde_json::json!({"url": "https://example.com"}))
+            .unwrap();
+        assert_eq!(result["status"], "executed");
     }
 
     #[test]

@@ -3,10 +3,17 @@ use axum::{
     response::IntoResponse,
 };
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::{AppState, internal_err};
 
+const ROLE_SUBAGENT: &str = "subagent";
+const ROLE_MODEL_PROXY: &str = "model-proxy";
+const MODEL_MODE_AUTO: &str = "auto";
+const MODEL_MODE_COMMANDER: &str = "commander";
+
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateSubAgentRequest {
     pub name: String,
     #[serde(default)]
@@ -17,24 +24,121 @@ pub struct CreateSubAgentRequest {
     pub role: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub personality: Option<Value>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
 
 fn default_role() -> String {
-    "specialist".into()
+    ROLE_SUBAGENT.into()
 }
 fn default_true() -> bool {
     true
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateSubAgentRequest {
     pub display_name: Option<String>,
     pub model: Option<String>,
     pub role: Option<String>,
     pub description: Option<String>,
+    pub skills: Option<Vec<String>>,
+    #[serde(default)]
+    pub personality: Option<Value>,
     pub enabled: Option<bool>,
+}
+
+fn normalize_role(raw: &str) -> Option<&'static str> {
+    let v = raw.trim().to_ascii_lowercase();
+    match v.as_str() {
+        ROLE_SUBAGENT | "specialist" => Some(ROLE_SUBAGENT),
+        ROLE_MODEL_PROXY => Some(ROLE_MODEL_PROXY),
+        _ => None,
+    }
+}
+
+fn normalize_skills(skills: &[String]) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for s in skills {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            out.insert(trimmed.to_string());
+        }
+    }
+    out.into_iter().collect()
+}
+
+fn normalize_model_input(model: &str) -> String {
+    model.trim().to_string()
+}
+
+fn is_model_mode(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        MODEL_MODE_AUTO | MODEL_MODE_COMMANDER
+    )
+}
+
+async fn resolve_taskable_subagent_runtime_model(
+    state: &AppState,
+    configured_model: &str,
+) -> String {
+    let model = configured_model.trim().to_ascii_lowercase();
+    match model.as_str() {
+        MODEL_MODE_AUTO => super::agent::select_routed_model(state, "").await,
+        MODEL_MODE_COMMANDER => {
+            let llm = state.llm.read().await;
+            llm.router.select_model().to_string()
+        }
+        _ => configured_model.trim().to_string(),
+    }
+}
+
+fn validate_subagent_contract(
+    role: &str,
+    model: &str,
+    skills: &[String],
+    personality: Option<&Value>,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    let normalized = normalize_role(role).ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            "role must be 'subagent' or 'model-proxy'".to_string(),
+        )
+    })?;
+    if personality.is_some() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "personality is not supported for subagents; subagents must be personality-free"
+                .to_string(),
+        ));
+    }
+    if normalized == ROLE_MODEL_PROXY && !skills.is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "model-proxy entries cannot own skills; only taskable subagents may have fixed skills"
+                .to_string(),
+        ));
+    }
+    if model.trim().is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "model cannot be empty; use a concrete provider/model, 'auto', or 'commander'"
+                .to_string(),
+        ));
+    }
+    if normalized == ROLE_MODEL_PROXY && is_model_mode(model) {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "model-proxy entries require a concrete provider/model, not 'auto' or 'commander'"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse {
@@ -43,6 +147,11 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
             let items: Vec<serde_json::Value> = agents
                 .into_iter()
                 .map(|a| {
+                    let skills = a
+                        .skills_json
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                        .unwrap_or_default();
                     serde_json::json!({
                         "id": a.id,
                         "name": a.name,
@@ -50,6 +159,7 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
                         "model": a.model,
                         "role": a.role,
                         "description": a.description,
+                        "skills": skills,
                         "enabled": a.enabled,
                         "session_count": a.session_count,
                     })
@@ -68,6 +178,17 @@ pub async fn create_sub_agent(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<CreateSubAgentRequest>,
 ) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+    let role = normalize_role(&body.role)
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                "role must be 'subagent' or 'model-proxy'".to_string(),
+            )
+        })?
+        .to_string();
+    let model = normalize_model_input(&body.model);
+    let skills = normalize_skills(&body.skills);
+    validate_subagent_contract(&role, &model, &skills, body.personality.as_ref())?;
     let agent = ironclad_db::agents::SubAgentRow {
         id: uuid::Uuid::new_v4().to_string(),
         name: body.name.clone(),
@@ -86,25 +207,25 @@ pub async fn create_sub_agent(
                     .join(" "),
             )
         }),
-        model: body.model,
-        role: body.role,
+        model,
+        role,
         description: body.description,
-        skills_json: None,
+        skills_json: Some(serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string())),
         enabled: body.enabled,
         session_count: 0,
     };
 
     match ironclad_db::agents::upsert_sub_agent(&state.db, &agent) {
         Ok(()) => {
-            if agent.enabled {
+            if agent.enabled && agent.role == ROLE_SUBAGENT {
                 let config = ironclad_agent::subagents::AgentInstanceConfig {
                     id: agent.name.clone(),
                     name: agent
                         .display_name
                         .clone()
                         .unwrap_or_else(|| agent.name.clone()),
-                    model: agent.model.clone(),
-                    skills: vec![],
+                    model: resolve_taskable_subagent_runtime_model(&state, &agent.model).await,
+                    skills,
                     allowed_subagents: vec![],
                     max_concurrent: 4,
                 };
@@ -134,14 +255,49 @@ pub async fn update_sub_agent(
         )
     })?;
 
+    let merged_role = body
+        .role
+        .as_deref()
+        .or(Some(existing.role.as_str()))
+        .unwrap_or(ROLE_SUBAGENT);
+    let normalized_role = normalize_role(merged_role).ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            "role must be 'subagent' or 'model-proxy'".to_string(),
+        )
+    })?;
+    let merged_skills = body.skills.as_deref().map_or_else(
+        || {
+            existing
+                .skills_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                .unwrap_or_default()
+        },
+        normalize_skills,
+    );
+    let merged_model = body
+        .model
+        .as_deref()
+        .map(normalize_model_input)
+        .unwrap_or_else(|| existing.model.clone());
+    validate_subagent_contract(
+        normalized_role,
+        &merged_model,
+        &merged_skills,
+        body.personality.as_ref(),
+    )?;
+
     let updated = ironclad_db::agents::SubAgentRow {
         id: existing.id.clone(),
         name: existing.name.clone(),
         display_name: body.display_name.or(existing.display_name.clone()),
-        model: body.model.unwrap_or_else(|| existing.model.clone()),
-        role: body.role.unwrap_or_else(|| existing.role.clone()),
+        model: merged_model,
+        role: normalized_role.to_string(),
         description: body.description.or(existing.description.clone()),
-        skills_json: existing.skills_json.clone(),
+        skills_json: Some(
+            serde_json::to_string(&merged_skills).unwrap_or_else(|_| "[]".to_string()),
+        ),
         enabled: body.enabled.unwrap_or(existing.enabled),
         session_count: existing.session_count,
     };

@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use ironclad_agent::policy::{PolicyContext, ToolCallRequest};
-use ironclad_core::{InputAuthority, IroncladConfig, PolicyDecision, RiskLevel, SurvivalTier};
+use ironclad_core::{InputAuthority, IroncladConfig, PolicyDecision, SurvivalTier};
 
 use super::{AppState, internal_err};
 
@@ -924,6 +924,55 @@ fn format_balance(balance: f64, symbol: &str) -> String {
     }
 }
 
+fn plugin_tool_required_permissions(tool_name: &str, input: &Value) -> Vec<&'static str> {
+    let mut required = Vec::new();
+    let lower_name = tool_name.to_lowercase();
+    if ["http", "fetch", "request", "webhook", "api", "url"]
+        .iter()
+        .any(|k| lower_name.contains(k))
+    {
+        required.push("network");
+    }
+
+    let mut values = Vec::new();
+    fn collect_strings(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::String(s) => out.push(s.clone()),
+            Value::Array(a) => {
+                for x in a {
+                    collect_strings(x, out);
+                }
+            }
+            Value::Object(m) => {
+                for (k, x) in m {
+                    let key = k.to_lowercase();
+                    if ["path", "file", "filepath", "directory", "dir"].contains(&key.as_str()) {
+                        out.push("__filesystem__".to_string());
+                    }
+                    collect_strings(x, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    collect_strings(input, &mut values);
+    if values
+        .iter()
+        .any(|v| v == "__filesystem__" || v.contains('/') || v.contains('\\'))
+    {
+        required.push("filesystem");
+    }
+    if values
+        .iter()
+        .any(|v| v.starts_with("http://") || v.starts_with("https://"))
+    {
+        if !required.contains(&"network") {
+            required.push("network");
+        }
+    }
+    required
+}
+
 pub async fn wallet_address(State(state): State<AppState>) -> impl IntoResponse {
     let address = state.wallet.wallet.address().to_string();
     let chain_id = state.wallet.wallet.chain_id();
@@ -989,11 +1038,33 @@ pub async fn execute_plugin_tool(
 ) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
     let found = state.plugins.find_tool(&tool).await;
     match found {
-        Some((plugin_name, _)) if plugin_name == name => {
+        Some((plugin_name, tool_def)) if plugin_name == name => {
+            let declared_permissions: Vec<String> = tool_def
+                .permissions
+                .iter()
+                .map(|p| p.to_lowercase())
+                .collect();
+            let required_permissions = plugin_tool_required_permissions(&tool, &body);
+            let missing: Vec<&str> = required_permissions
+                .iter()
+                .copied()
+                .filter(|need| !declared_permissions.iter().any(|p| p == need))
+                .collect();
+            if !missing.is_empty() {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "plugin '{}' tool '{}' missing required permissions: {}",
+                        name,
+                        tool,
+                        missing.join(", ")
+                    ),
+                ));
+            }
             let call = ToolCallRequest {
                 tool_name: tool.clone(),
                 params: body.clone(),
-                risk_level: RiskLevel::Caution,
+                risk_level: tool_def.risk_level,
             };
             let ctx = PolicyContext {
                 authority: InputAuthority::External,
@@ -1113,8 +1184,41 @@ const WORKSPACE_PALETTE: &[&str] = &[
     "#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#14b8a6",
     "#f97316", "#84cc16", "#a855f7", "#0ea5e9",
 ];
+const ROLE_SUBAGENT: &str = "subagent";
+const ROLE_MODEL_PROXY: &str = "model-proxy";
 
 const WORKSPACE_ACTIVITY_WINDOW_SECS: i64 = 120;
+
+fn workspace_files_snapshot(workspace_root: &std::path::Path) -> Value {
+    let mut entries: Vec<Value> = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(workspace_root) {
+        for entry in read_dir.flatten().take(200) {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name.is_empty() || name.starts_with('.') {
+                continue;
+            }
+            let kind = if path.is_dir() { "dir" } else { "file" };
+            entries.push(json!({ "name": name, "kind": kind }));
+        }
+    }
+    entries.sort_by(|a, b| {
+        a["name"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(b["name"].as_str().unwrap_or_default())
+    });
+    let entry_count = entries.len();
+    json!({
+        "workspace_root": workspace_root.display().to_string(),
+        "top_level_entries": entries,
+        "entry_count": entry_count,
+    })
+}
 
 fn parse_db_timestamp_utc(ts: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
@@ -1223,6 +1327,8 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
     let agents = state.registry.list_agents().await;
     let config = state.config.read().await;
     let now = chrono::Utc::now();
+    let workspace_root = std::path::Path::new(&config.agent.workspace);
+    let files = workspace_files_snapshot(workspace_root);
 
     let systems: Vec<Value> = vec![
         json!({ "id": "llm",        "name": "LLM Inference",   "kind": "Inference",   "x": 0.18, "y": 0.22 }),
@@ -1252,7 +1358,7 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
             json!({
                 "id": a.id,
                 "name": a.name,
-                "role": "specialist",
+                "role": ROLE_SUBAGENT,
                 "state": a.state,
                 "color": color,
                 "model": a.model,
@@ -1282,7 +1388,7 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
         "skills": enabled_skills,
         "updated_at": chrono::Utc::now().to_rfc3339(),
         "subordinates": agent_list.iter()
-            .filter(|a| a["role"] == "specialist")
+            .filter(|a| a["role"] == ROLE_SUBAGENT)
             .map(|a| a["id"].clone())
             .collect::<Vec<_>>(),
         "supervisor": null,
@@ -1294,6 +1400,7 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
     Json(json!({
         "agents": all_agents,
         "systems": systems,
+        "files": files,
         "interactions": [],
     }))
 }
@@ -1367,12 +1474,27 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         })
         .unwrap_or_default();
 
+    let sub_agents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let taskable_sub_agents: Vec<&ironclad_db::agents::SubAgentRow> = sub_agents
+        .iter()
+        .filter(|sa| !sa.role.eq_ignore_ascii_case(ROLE_MODEL_PROXY))
+        .collect();
+    let model_proxies: Vec<&ironclad_db::agents::SubAgentRow> = sub_agents
+        .iter()
+        .filter(|sa| sa.role.eq_ignore_ascii_case(ROLE_MODEL_PROXY))
+        .collect();
+
     let running_count = agents_in_registry
         .iter()
         .filter(|a| a.state == ironclad_agent::subagents::AgentRunState::Running)
+        .filter(|a| {
+            taskable_sub_agents
+                .iter()
+                .any(|sa| sa.name.eq_ignore_ascii_case(&a.id))
+        })
         .count();
     let stats = json!({
-        "subordinate_count": agents_in_registry.len(),
+        "subordinate_count": taskable_sub_agents.len(),
         "running_subordinates": running_count,
         "total_skills": skills.len(),
         "enabled_skills": enabled_skills.len(),
@@ -1396,25 +1518,36 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         "voice": voice,
         "missions": missions,
         "firmware_rules": firmware_rules,
-        "skills": enabled_skills,
+        "skills": [],
+        "capabilities": [
+            "orchestrate-subagents",
+            "assign-tasks",
+            "select-subagent-model"
+        ],
         "skill_breakdown": skill_kinds,
-        "subordinates": agents_in_registry.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+        "subordinates": taskable_sub_agents.iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
         "stats": stats,
     });
 
-    let sub_agents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
-    let specialist_cards: Vec<Value> = sub_agents.iter().enumerate().map(|(i, sa)| {
+    let specialist_cards: Vec<Value> = taskable_sub_agents.iter().enumerate().map(|(i, sa)| {
         let runtime = agents_in_registry.iter().find(|a| a.id == sa.name);
         let state_str = runtime.map(|r| format!("{:?}", r.state)).unwrap_or_else(|| {
             if sa.enabled { "Idle".into() } else { "Disabled".into() }
         });
+        let model_mode = match sa.model.trim().to_ascii_lowercase().as_str() {
+            "auto" => "auto",
+            "commander" => "commander",
+            _ => "fixed",
+        };
         let color = WORKSPACE_PALETTE[(i + 1) % WORKSPACE_PALETTE.len()];
         json!({
             "id": sa.id,
             "name": sa.name,
             "display_name": sa.display_name,
-            "role": sa.role,
+            "role": ROLE_SUBAGENT,
             "model": sa.model,
+            "model_mode": model_mode,
+            "resolved_model": runtime.map(|r| r.model.clone()),
             "enabled": sa.enabled,
             "color": color,
             "state": state_str,
@@ -1428,12 +1561,34 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
     let mut roster = vec![main_agent];
     roster.extend(specialist_cards);
 
-    Json(json!({ "roster": roster, "count": roster.len() }))
+    let proxies: Vec<Value> = model_proxies
+        .iter()
+        .map(|sa| {
+            json!({
+                "id": sa.id,
+                "name": sa.name,
+                "display_name": sa.display_name,
+                "role": ROLE_MODEL_PROXY,
+                "model": sa.model,
+                "enabled": sa.enabled
+            })
+        })
+        .collect();
+
+    Json(json!({
+        "roster": roster,
+        "count": roster.len(),
+        "taskable_subagent_count": taskable_sub_agents.len(),
+        "model_proxy_count": proxies.len(),
+        "model_proxies": proxies
+    }))
 }
 
 #[derive(Deserialize)]
 pub struct ChangeModelRequest {
     pub model: String,
+    #[serde(default)]
+    pub fallbacks: Option<Vec<String>>,
 }
 
 pub async fn change_agent_model(
@@ -1445,6 +1600,19 @@ pub async fn change_agent_model(
     if model.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "model cannot be empty".into()));
     }
+    let normalize_fallbacks = |primary: &str, candidates: Vec<String>| -> Vec<String> {
+        let mut cleaned = Vec::new();
+        for cand in candidates {
+            let item = cand.trim();
+            if item.is_empty() || item == primary {
+                continue;
+            }
+            if !cleaned.iter().any(|existing: &String| existing == item) {
+                cleaned.push(item.to_string());
+            }
+        }
+        cleaned
+    };
 
     let config = state.config.read().await;
     let is_commander = agent_name == config.agent.name || agent_name == config.agent.id;
@@ -1454,24 +1622,46 @@ pub async fn change_agent_model(
     if is_commander {
         let mut config = state.config.write().await;
         old_model = config.models.primary.clone();
+        let old_fallbacks = config.models.fallbacks.clone();
         config.models.primary = model.clone();
+        config.models.fallbacks = if let Some(requested) = body.fallbacks.clone() {
+            normalize_fallbacks(&model, requested)
+        } else {
+            // Preserve previous ordering semantics by demoting the old primary to first fallback.
+            let mut reordered = vec![old_model.clone()];
+            reordered.extend(old_fallbacks);
+            normalize_fallbacks(&model, reordered)
+        };
         let models = config.models.clone();
         drop(config);
 
         // Synchronize active router immediately for commander model changes.
         {
             let mut llm = state.llm.write().await;
-            llm.router
-                .sync_runtime(models.primary, models.fallbacks, models.routing);
+            llm.router.sync_runtime(
+                models.primary.clone(),
+                models.fallbacks.clone(),
+                models.routing.clone(),
+            );
         }
         Ok(axum::Json(json!({
             "updated": true,
             "agent": agent_name,
             "old_model": old_model,
             "new_model": model,
+            "fallbacks": models.fallbacks,
+            "model_order": std::iter::once(models.primary.clone())
+                .chain(models.fallbacks.clone())
+                .collect::<Vec<_>>(),
             "scope": "commander (runtime only, not persisted to disk)",
         })))
     } else {
+        if body.fallbacks.is_some() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "fallback ordering is only supported for the commander agent".into(),
+            ));
+        }
         let agents =
             ironclad_db::agents::list_sub_agents(&state.db).map_err(|e| internal_err(&e))?;
         let existing = agents

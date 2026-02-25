@@ -75,7 +75,10 @@ use ironclad_wallet::WalletService;
 use ironclad_agent::approvals::ApprovalManager;
 use ironclad_agent::obsidian::ObsidianVault;
 use ironclad_agent::obsidian_tools::{ObsidianReadTool, ObsidianSearchTool, ObsidianWriteTool};
-use ironclad_agent::tools::{EchoTool, ScriptRunnerTool, ToolRegistry};
+use ironclad_agent::tools::{
+    EchoTool, EditFileTool, GlobFilesTool, ListDirectoryTool, ReadFileTool, ScriptRunnerTool,
+    SearchFilesTool, ToolRegistry, WriteFileTool,
+};
 use ironclad_channels::discord::DiscordAdapter;
 use ironclad_channels::email::EmailAdapter;
 use ironclad_channels::signal::SignalAdapter;
@@ -221,11 +224,20 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
 
     if let Ok(sub_agents) = ironclad_db::agents::list_enabled_sub_agents(&db) {
         for sa in &sub_agents {
+            let resolved_model = match sa.model.trim().to_ascii_lowercase().as_str() {
+                "auto" | "commander" => llm.router.select_model().to_string(),
+                _ => sa.model.clone(),
+            };
+            let fixed_skills = sa
+                .skills_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                .unwrap_or_default();
             let agent_config = ironclad_agent::subagents::AgentInstanceConfig {
                 id: sa.name.clone(),
                 name: sa.display_name.clone().unwrap_or_else(|| sa.name.clone()),
-                model: sa.model.clone(),
-                skills: vec![],
+                model: resolved_model,
+                skills: fixed_skills,
                 allowed_subagents: vec![],
                 max_concurrent: 4,
             };
@@ -444,6 +456,12 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
     let mut tool_registry = ToolRegistry::new();
     tool_registry.register(Box::new(EchoTool));
     tool_registry.register(Box::new(ScriptRunnerTool::new(config.skills.clone())));
+    tool_registry.register(Box::new(ReadFileTool));
+    tool_registry.register(Box::new(WriteFileTool));
+    tool_registry.register(Box::new(EditFileTool));
+    tool_registry.register(Box::new(ListDirectoryTool));
+    tool_registry.register(Box::new(GlobFilesTool));
+    tool_registry.register(Box::new(SearchFilesTool));
 
     // Obsidian vault integration
     let obsidian_vault: Option<Arc<RwLock<ObsidianVault>>> = if config.obsidian.enabled {

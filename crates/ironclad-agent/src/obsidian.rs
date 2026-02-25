@@ -321,6 +321,17 @@ impl ObsidianVault {
         content: &str,
         frontmatter: Option<serde_json::Value>,
     ) -> Result<PathBuf> {
+        let input_path = Path::new(rel_path);
+        if input_path.is_absolute()
+            || input_path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(IroncladError::Config(
+                "note path must be relative and must not contain '..'".into(),
+            ));
+        }
+
         let path = if rel_path.contains('/') || rel_path.contains('\\') {
             self.root.join(rel_path)
         } else {
@@ -332,6 +343,31 @@ impl ObsidianVault {
         } else {
             path
         };
+
+        let canonical_root = std::fs::canonicalize(&self.root).map_err(|e| {
+            IroncladError::Config(format!(
+                "failed to resolve vault root '{}': {e}",
+                self.root.display()
+            ))
+        })?;
+        let parent = path.parent().ok_or_else(|| {
+            IroncladError::Config(format!("invalid target path: {}", path.display()))
+        })?;
+        let mut existing_ancestor = parent;
+        while !existing_ancestor.exists() {
+            existing_ancestor = existing_ancestor.parent().ok_or_else(|| {
+                IroncladError::Config("unable to resolve note parent directory".into())
+            })?;
+        }
+        let canonical_ancestor = std::fs::canonicalize(existing_ancestor).map_err(|e| {
+            IroncladError::Config(format!(
+                "failed to resolve note parent '{}': {e}",
+                existing_ancestor.display()
+            ))
+        })?;
+        if !canonical_ancestor.starts_with(&canonical_root) {
+            return Err(IroncladError::Config("note path escapes vault root".into()));
+        }
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -939,6 +975,14 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("custom content") || content.contains("Custom content"));
         assert!(content.contains("created_by"));
+    }
+
+    #[test]
+    fn write_note_rejects_path_traversal() {
+        let (_dir, config) = create_test_vault();
+        let mut vault = ObsidianVault::from_config(&config).unwrap();
+        let err = vault.write_note("../escape.md", "bad", None).unwrap_err();
+        assert!(err.to_string().contains("must be relative"));
     }
 
     #[test]

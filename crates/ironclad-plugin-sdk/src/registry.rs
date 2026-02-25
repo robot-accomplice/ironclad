@@ -242,6 +242,8 @@ mod tests {
                 name: format!("{}_tool", self.name),
                 description: "mock tool".into(),
                 parameters: serde_json::json!({}),
+                risk_level: ironclad_core::RiskLevel::Safe,
+                permissions: vec![],
             }]
         }
         async fn init(&mut self) -> Result<()> {

@@ -95,10 +95,15 @@ impl ScriptPlugin {
     }
 
     fn interpreter_for(path: &Path) -> Option<(&'static str, &'static [&'static str])> {
+        #[cfg(windows)]
+        const PYTHON_BIN: &str = "python";
+        #[cfg(not(windows))]
+        const PYTHON_BIN: &str = "python3";
+
         match path.extension().and_then(|e| e.to_str()) {
             Some("gosh") => Some(("gosh", &[])),
             Some("go") => Some(("go", &["run"])),
-            Some("py") => Some(("python3", &[])),
+            Some("py") => Some((PYTHON_BIN, &[])),
             Some("rb") => Some(("ruby", &[])),
             Some("js") => Some(("node", &[])),
             Some("sh") => Some(("sh", &[])),
@@ -145,6 +150,12 @@ impl Plugin for ScriptPlugin {
                 name: t.name.clone(),
                 description: t.description.clone(),
                 parameters: json!({"type": "object"}),
+                risk_level: if t.dangerous {
+                    ironclad_core::RiskLevel::Dangerous
+                } else {
+                    ironclad_core::RiskLevel::Safe
+                },
+                permissions: self.manifest.permissions.clone(),
             })
             .collect()
     }

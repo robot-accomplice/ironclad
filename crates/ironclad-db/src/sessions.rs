@@ -279,6 +279,26 @@ pub fn create_turn(
     Ok(id)
 }
 
+/// Create a turn record with a caller-provided ID.
+pub fn create_turn_with_id(
+    db: &Database,
+    id: &str,
+    session_id: &str,
+    model: Option<&str>,
+    tokens_in: Option<i64>,
+    tokens_out: Option<i64>,
+    cost: Option<f64>,
+) -> Result<()> {
+    let conn = db.conn();
+    conn.execute(
+        "INSERT INTO turns (id, session_id, model, tokens_in, tokens_out, cost) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, session_id, model, tokens_in, tokens_out, cost],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(())
+}
+
 /// Update the JSON metadata blob for a session.
 pub fn update_metadata(db: &Database, session_id: &str, metadata_json: &str) -> Result<()> {
     let conn = db.conn();
