@@ -1526,10 +1526,10 @@ fn provider_requires_internal_proxy(
     };
     matches!(
         parsed
-        .host_str()
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str(),
+            .host_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
         "127.0.0.1" | "localhost" | "::1"
     )
 }

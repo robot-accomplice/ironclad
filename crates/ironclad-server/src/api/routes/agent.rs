@@ -2758,6 +2758,10 @@ fn resolve_channel_chat_id(inbound: &ironclad_channels::InboundMessage) -> Strin
         .unwrap_or_else(|| inbound.sender_id.clone())
 }
 
+pub(crate) fn channel_chat_id_for_inbound(inbound: &ironclad_channels::InboundMessage) -> String {
+    resolve_channel_chat_id(inbound)
+}
+
 fn resolve_channel_is_group(inbound: &ironclad_channels::InboundMessage) -> bool {
     let meta = inbound.metadata.as_ref();
     if let Some(v) = meta
@@ -3254,6 +3258,9 @@ pub async fn process_channel_message(
     Ok(())
 }
 
+pub(crate) const CHANNEL_PROCESSING_ERROR_REPLY: &str =
+    "I hit an internal processing error while handling that message. Please retry in a moment.";
+
 pub async fn telegram_poll_loop(state: AppState) {
     static CHANNEL_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
         std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(8)));
@@ -3268,14 +3275,35 @@ pub async fn telegram_poll_loop(state: AppState) {
     loop {
         match adapter.recv().await {
             Ok(Some(inbound)) => {
+                state.channel_router.record_received("telegram").await;
                 let state = state.clone();
                 let semaphore = Arc::clone(&CHANNEL_SEMAPHORE);
+                let inbound_for_error = inbound.clone();
                 tokio::spawn(async move {
                     let _permit = match semaphore.acquire_owned().await {
                         Ok(p) => p,
                         Err(_) => return,
                     };
                     if let Err(e) = process_channel_message(&state, inbound).await {
+                        state
+                            .channel_router
+                            .record_processing_error("telegram", e.clone())
+                            .await;
+                        let chat_id = resolve_channel_chat_id(&inbound_for_error);
+                        if let Err(send_err) = state
+                            .channel_router
+                            .send_reply(
+                                "telegram",
+                                &chat_id,
+                                CHANNEL_PROCESSING_ERROR_REPLY.to_string(),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %send_err,
+                                "failed to send Telegram processing failure reply"
+                            );
+                        }
                         tracing::error!(error = %e, "Telegram message processing failed");
                     }
                 });
@@ -3300,6 +3328,7 @@ pub async fn discord_poll_loop(state: AppState) {
     loop {
         match adapter.recv().await {
             Ok(Some(inbound)) => {
+                state.channel_router.record_received("discord").await;
                 let state = state.clone();
                 let semaphore = Arc::clone(&CHANNEL_SEMAPHORE);
                 tokio::spawn(async move {
@@ -3308,6 +3337,10 @@ pub async fn discord_poll_loop(state: AppState) {
                         Err(_) => return,
                     };
                     if let Err(e) = process_channel_message(&state, inbound).await {
+                        state
+                            .channel_router
+                            .record_processing_error("discord", e.clone())
+                            .await;
                         tracing::error!(error = %e, "Discord message processing failed");
                     }
                 });
@@ -3332,6 +3365,7 @@ pub async fn signal_poll_loop(state: AppState) {
     loop {
         match adapter.recv().await {
             Ok(Some(inbound)) => {
+                state.channel_router.record_received("signal").await;
                 let state = state.clone();
                 let semaphore = Arc::clone(&CHANNEL_SEMAPHORE);
                 tokio::spawn(async move {
@@ -3340,6 +3374,10 @@ pub async fn signal_poll_loop(state: AppState) {
                         Err(_) => return,
                     };
                     if let Err(e) = process_channel_message(&state, inbound).await {
+                        state
+                            .channel_router
+                            .record_processing_error("signal", e.clone())
+                            .await;
                         tracing::error!(error = %e, "Signal message processing failed");
                     }
                 });
@@ -3364,6 +3402,7 @@ pub async fn email_poll_loop(state: AppState) {
     loop {
         match adapter.recv().await {
             Ok(Some(inbound)) => {
+                state.channel_router.record_received("email").await;
                 let state = state.clone();
                 let semaphore = Arc::clone(&CHANNEL_SEMAPHORE);
                 tokio::spawn(async move {
@@ -3372,6 +3411,10 @@ pub async fn email_poll_loop(state: AppState) {
                         Err(_) => return,
                     };
                     if let Err(e) = process_channel_message(&state, inbound).await {
+                        state
+                            .channel_router
+                            .record_processing_error("email", e.clone())
+                            .await;
                         tracing::error!(error = %e, "Email message processing failed");
                     }
                 });

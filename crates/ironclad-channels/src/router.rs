@@ -156,6 +156,22 @@ impl ChannelRouter {
         self.send_to(platform, msg).await
     }
 
+    pub async fn record_received(&self, channel_name: &str) {
+        let mut channels = self.channels.lock().await;
+        if let Some(entry) = channels.get_mut(channel_name) {
+            entry.status.messages_received += 1;
+            entry.status.last_activity = Some(Utc::now());
+        }
+    }
+
+    pub async fn record_processing_error(&self, channel_name: &str, error: String) {
+        let mut channels = self.channels.lock().await;
+        if let Some(entry) = channels.get_mut(channel_name) {
+            entry.status.last_error = Some(error);
+            entry.status.last_activity = Some(Utc::now());
+        }
+    }
+
     pub async fn drain_retry_queue(&self) {
         while let Some(item) = self.delivery_queue.next_ready().await {
             let adapter = {
@@ -373,6 +389,32 @@ mod tests {
         router.poll_all().await;
         let statuses = router.channel_status().await;
         assert_eq!(statuses[0].messages_received, 1);
+        assert!(statuses[0].last_activity.is_some());
+    }
+
+    #[tokio::test]
+    async fn record_received_updates_status() {
+        let router = ChannelRouter::new();
+        router
+            .register(Arc::new(MockAdapter::new("telegram")))
+            .await;
+        router.record_received("telegram").await;
+        let statuses = router.channel_status().await;
+        assert_eq!(statuses[0].messages_received, 1);
+        assert!(statuses[0].last_activity.is_some());
+    }
+
+    #[tokio::test]
+    async fn record_processing_error_updates_status() {
+        let router = ChannelRouter::new();
+        router
+            .register(Arc::new(MockAdapter::new("telegram")))
+            .await;
+        router
+            .record_processing_error("telegram", "pipeline failed".into())
+            .await;
+        let statuses = router.channel_status().await;
+        assert_eq!(statuses[0].last_error.as_deref(), Some("pipeline failed"));
         assert!(statuses[0].last_activity.is_some());
     }
 }

@@ -12,7 +12,9 @@ use axum::{
 use serde_json::{Value, json};
 
 use super::AppState;
-use super::agent::process_channel_message;
+use super::agent::{
+    CHANNEL_PROCESSING_ERROR_REPLY, channel_chat_id_for_inbound, process_channel_message,
+};
 
 pub async fn webhook_telegram(
     State(state): State<AppState>,
@@ -56,8 +58,29 @@ pub async fn webhook_telegram(
         match adapter.process_webhook_update(&body) {
             Ok(Some(inbound)) => {
                 let state = state.clone();
+                state.channel_router.record_received("telegram").await;
+                let inbound_for_error = inbound.clone();
                 tokio::spawn(async move {
                     if let Err(e) = process_channel_message(&state, inbound).await {
+                        state
+                            .channel_router
+                            .record_processing_error("telegram", e.clone())
+                            .await;
+                        let chat_id = channel_chat_id_for_inbound(&inbound_for_error);
+                        if let Err(send_err) = state
+                            .channel_router
+                            .send_reply(
+                                "telegram",
+                                &chat_id,
+                                CHANNEL_PROCESSING_ERROR_REPLY.to_string(),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %send_err,
+                                "failed to send Telegram webhook processing failure reply"
+                            );
+                        }
                         tracing::error!(error = %e, "Telegram message processing failed");
                     }
                 });
@@ -170,8 +193,13 @@ pub async fn webhook_whatsapp(
     match adapter.process_webhook(&body_json) {
         Ok(Some(inbound)) => {
             let state = state.clone();
+            state.channel_router.record_received("whatsapp").await;
             tokio::spawn(async move {
                 if let Err(e) = process_channel_message(&state, inbound).await {
+                    state
+                        .channel_router
+                        .record_processing_error("whatsapp", e.clone())
+                        .await;
                     tracing::error!(error = %e, "WhatsApp message processing failed");
                 }
             });
