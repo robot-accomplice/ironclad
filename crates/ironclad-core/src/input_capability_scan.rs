@@ -144,7 +144,10 @@ fn looks_like_filesystem_path(
     {
         return true;
     }
-    if v.len() > 2 && v.as_bytes().get(1) == Some(&b':') && matches!(v.as_bytes().get(2), Some(b'\\' | b'/')) {
+    if v.len() > 2
+        && v.as_bytes().get(1) == Some(&b':')
+        && matches!(v.as_bytes().get(2), Some(b'\\' | b'/'))
+    {
         return v.as_bytes()[0].is_ascii_alphabetic();
     }
     if in_model_context {
