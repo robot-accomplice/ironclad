@@ -20,6 +20,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-server.md` | 1 (flowchart) | 5 missing modules from diagram (present in table) | 0 | 0 | 0 | Drifted |
 | `ironclad-c4-browser.md` | 1 (flowchart) | 0 | 0 | 0 | 0 | Accurate |
 | `ironclad-c4-plugin-sdk.md` | 1 (flowchart) | 0 | 0 | 0 | 1 stale ToolDef fields, 1 stale dep-by list | Drifted |
+| `ironclad-dataflow.md` | 20 (flowcharts) | 0 | 0 | 4 behavioral mismatches | 5 stale counts/labels | Drifted |
 
 ## Detailed Findings
 
@@ -1046,3 +1047,155 @@ v0.5.0 and v0.6.0, representing approximately 2 major versions of drift.
   This is the gold standard for diagram maintenance.
 - **ironclad-c4-browser.md** -- Fully accurate. All 4 modules, 12 action variants, and
   types match perfectly.
+
+### ironclad-dataflow.md
+
+**Audit scope:** All 20 dataflow diagrams (numbered 0-19) in the Mermaid flowcharts,
+cross-referenced against v0.8.0 source code across all workspace crates. Diagrams were
+last updated at v0.5.0-v0.6.0.
+
+**Method:** For each diagram, traced the described data path through actual function
+calls, struct definitions, and module boundaries. Verified node labels, function names,
+counts, and behavioral claims against the live codebase.
+
+#### Diagrams confirmed accurate (no drift)
+
+| Diagram | Description | Status |
+|---|---|---|
+| 0. Runtime Config Reload | `config_runtime.rs` flow: parse -> validate -> backup -> atomic write -> apply -> sync router & A2A -> deferred hints | OK |
+| 2. Semantic Cache | 3-level lookup order (L1 exact -> L3 tool TTL -> L2 semantic n-gram) matches `cache.rs` `lookup()` at line 190 | OK |
+| 3. Heuristic Model Router | `HeuristicBackend::classify_complexity` formula, `select_for_complexity` behavior, `ml_router.rs` alternative backend all confirmed | OK |
+| 4. Memory Lifecycle | 5-tier memory (working, episodic, semantic, procedural, relationship), budget percentages (30/25/20/15/10) match `MemoryConfig` defaults, FTS5 sync confirmed | OK |
+| 5. Zero-Trust A2A | Challenge-response, ECDH session keys, AES-256-GCM encryption, trust score management all confirmed in `ironclad-channels/a2a.rs` | OK |
+| 6. Multi-Layer Injection Defense | L1 (gatekeeping), L2 (HMAC boundaries), L3 (policy authority gate), L4 (`scan_output` with NFKC+homoglyph+regex) all confirmed | OK |
+| 7. Financial + Yield Engine | SurvivalTier calculation, x402 EIP-3009 payment, Aave deposit/withdraw, treasury policy checks all confirmed | OK |
+| 9. Skill Execution | Dual-format (TOML structured + MD instruction), SHA-256 hashing, trigger matching, script sandbox with env stripping all confirmed | OK |
+| 10. Approval Workflow | `ApprovalManager` in `ironclad-agent/src/approvals.rs`, EventBus notification, oneshot pause/resume, DB persistence all confirmed | OK |
+| 11. Browser Tool Execution | `BrowserManager`, `CdpSession`, action dispatch (navigate/click/type/screenshot), idle eviction all confirmed in `ironclad-browser/` | OK |
+| 15. Addressability Filter | FilterChain with OR logic across MentionFilter, ReplyFilter, ConversationFilter confirmed in `ironclad-channels/` | OK |
+| 17. Plugin SDK Execution | Discovery, manifest parsing, ToolDef registration with prefix, permission checks, sandboxed execution all confirmed | OK |
+| 18. OAuth & Credential Resolution | `OAuthManager` in `ironclad-llm/src/oauth.rs`, multi-strategy resolution (env -> keystore -> OAuth refresh), token caching all confirmed | OK |
+| 19. Channel Adapter Lifecycle | Webhook/polling modes, InboundMessage parsing, addressability filter, agent dispatch, rate-limited delivery, health reconnect all confirmed | OK |
+
+#### Drift findings
+
+##### DF-1: Diagram 1 (Primary Request Dataflow) -- version label says v0.6.0 but references v0.8.0 constructs
+
+The diagram header comment says `version: 0.6.0` but the preamble text references
+"Capacity-aware model selection" and "Session rotation now evaluates session.reset_schedule
+cron expressions" which are v0.8.0 features. The Install/Setup subgraph (Apertus with
+SGLang-first host recommendation) was also added post-v0.6.0. The version comment is stale.
+
+**Impact:** Low. The diagram content is more current than its version tag suggests.
+
+##### DF-2: Diagram 1 -- Provider list in LLM Pipeline says "Anthropic / Google / Moonshot / OpenAI / Ollama"
+
+The actual `bundled_providers.toml` includes 11 providers: Anthropic, OpenAI, Google,
+Moonshot, DeepSeek, Groq, SGLang, vLLM, Docker Model Runner, llama-cpp, and OpenRouter.
+The diagram lists only 5 representative providers.
+
+**Impact:** Low. This is a visual simplification, but the list diverges from the 11
+bundled providers in v0.8.0.
+
+##### DF-3: Diagram 8 (Cron + Heartbeat Scheduling) -- behavioral drift: `agentTurn` payload shown as active execution path
+
+The diagram (section iii "Job Execution") shows `agentTurn` as the primary payload kind
+with session selection (main vs isolated) and a full `Run ReAct loop turn` execution.
+In v0.8.0, `ironclad-schedule/src/lib.rs` line 212-219 treats `agent_turn_legacy` as a
+noop with a warning log: "legacy agentTurn cron payload detected; treating as noop".
+The `agentTurn` kind is mapped to `agent_turn_legacy` at line 230.
+
+**Impact:** Medium. The diagram implies a feature that was deprecated. A reader would
+believe scheduled agent turns are functional, but they are not.
+
+##### DF-4: Diagram 8 -- stale label: "register 6 default tasks" implied by heartbeat tasks list
+
+The diagram's tick loop and evaluation subgraphs assume the default task set. In v0.8.0,
+`default_tasks()` in `heartbeat.rs` line 76-87 returns 8 tasks: SurvivalCheck,
+UsdcMonitor, YieldTask, MemoryPrune, CacheEvict, MetricSnapshot, AgentCardRefresh,
+SessionGovernor. The `SessionGovernor` and `AgentCardRefresh` tasks were added post-v0.5.0.
+
+**Impact:** Low. The diagram does not explicitly state a count, but the cross-reference
+with the schedule C4 diagram (which states 7 variants) creates inconsistency. Actual
+count is 8.
+
+##### DF-5: Diagram 12 (Context Assembly) -- naming drift: `ContextBuilder`, `BudgetManager`, `ComplexityClassifier`, `SnapshotDB` not found as named types
+
+The diagram references `ContextBuilder`, `BudgetManager`, `ComplexityClassifier`, and
+`SnapshotDB` as distinct struct/module names. In v0.8.0:
+- Context assembly is in `ironclad-agent/context.rs` via `build_context()` function,
+  not a `ContextBuilder` struct
+- Budget management is via `MemoryBudgetManager` (not `BudgetManager`)
+- Complexity classification is via `classify_complexity()` free function in
+  `ironclad-llm/router.rs` (not a `ComplexityClassifier` struct)
+- Context snapshots go to the `context_snapshots` table but there is no `SnapshotDB`
+  type
+
+**Impact:** Low. The diagram describes conceptual components that map to real functions,
+but uses aspirational type names that do not exist in code. A reader searching for these
+types would not find them.
+
+##### DF-6: Diagram 13 (Response Transform Pipeline) -- entire pipeline references dead code
+
+The diagram describes a 4-stage response transform pipeline using `ReasoningExtractor`,
+`FormatNormalizer`, `ContentGuard`, and `PII leak scan`. These concepts exist only in
+`ironclad-llm/src/transform.rs` (11,158 bytes), which is NOT declared as `pub mod
+transform` in `lib.rs`. This file is dead code -- unreachable from any other crate. This
+was already identified as BUG-024 in the C4 audit.
+
+The actual response processing in v0.8.0 happens inline in `agent.rs` (the
+`infer_with_fallback` and `agent_message_stream` functions) without a dedicated transform
+pipeline.
+
+**Impact:** Medium. The diagram describes a feature that was designed but never wired
+into the live code path. Readers would believe a PII-scan and reasoning-extraction
+pipeline exists in the hot path, but it does not.
+
+##### DF-7: Diagram 14 (Streaming LLM) -- behavioral accuracy confirmed with one exception
+
+The streaming diagram correctly shows SSE chunk processing, accumulator pattern, EventBus
+publish to WebSocket subscribers, and circuit breaker update on finalization. The error
+handling section showing fallback on stream failure is also confirmed.
+
+The diagram does NOT show the in-flight deduplication step that the actual code performs
+(lines 1834-1854 of `agent.rs`). This is a missing step, not a behavioral mismatch.
+
+**Impact:** Low. The dedup check is a safety rail that exists in code but is absent from
+the diagram.
+
+##### DF-8: Diagram 16 (Context Observatory) -- naming drift: `EfficiencyEngine` struct name does not exist
+
+The diagram references `EfficiencyEngine` as a named struct that computes composite
+efficiency scores. In v0.8.0, the efficiency computation is done by the
+`compute_efficiency()` free function in `ironclad-db/src/efficiency.rs` (line 208), not
+by an `EfficiencyEngine` struct. The `EfficiencyReport` struct (line 94) is the return
+type. The diagram's `GradingSystem` and `RecommendationEngine` are similarly conceptual
+names that map to functions in `recommendations.rs` rather than dedicated structs.
+
+**Impact:** Low. Same pattern as DF-5: conceptual names in diagram that map to real
+functions but do not exist as named types.
+
+##### DF-9: Diagram 1 -- bootstrap step count: code has STEPS=12, not 13
+
+The `cmd_serve()` function in `main.rs` line 1388 declares `const STEPS: u32 = 12` and
+the step calls go from step 1 through step 12. The dataflow diagram itself does not
+explicitly claim "13 steps" (that claim is in the sequence diagrams), but the Primary
+Request Dataflow diagram's preamble references the bootstrap implicitly. This is noted
+for cross-reference with the sequence diagram audit.
+
+**Impact:** Informational (for cross-reference with Task 15).
+
+#### Summary of dataflow drift by category
+
+| Category | Count | Severity | Key Issues |
+|---|---|---|---|
+| Behavioral mismatch | 4 | Medium | agentTurn noop (DF-3), dead transform pipeline (DF-6), missing dedup in stream (DF-7), stale version tag (DF-1) |
+| Naming/label drift | 5 | Low | Provider list (DF-2), task count (DF-4), conceptual type names (DF-5, DF-8), step count (DF-9) |
+| Structural drift | 0 | -- | All 20 diagrams structurally reflect the actual data paths |
+
+#### Dataflow diagrams that are fully accurate
+
+14 of 20 diagrams are accurate with no meaningful drift: diagrams 0, 2, 3, 4, 5, 6, 7,
+9, 10, 11, 15, 17, 18, 19. This is a notably better accuracy rate than the C4 component
+diagrams, suggesting the dataflow diagrams were maintained more recently or describe more
+stable subsystems.
