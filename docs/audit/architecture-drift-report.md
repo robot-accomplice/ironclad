@@ -14,6 +14,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-db.md` | 1 (flowchart) | 3 missing modules | 0 | 0 | 1 stale "Depended on by" list | Drifted |
 | `ironclad-c4-llm.md` | 1 (flowchart) | 1 phantom module (transform.rs not in pub mod), 1 missing top-level struct (LlmService) | 0 | 0 | 0 | Minor drift |
 | `ironclad-c4-agent.md` | 2 (flowchart + sequence) | 0 missing modules | 0 | 0 | 0 | Accurate |
+| `ironclad-c4-wallet.md` | 2 (flowchart + sequence) | 0 | 0 | 0 | 1 (money.rs misplaced as wallet.rs child) | Minor drift |
 
 ## Detailed Findings
 
@@ -607,3 +608,40 @@ and grouped summaries for smaller modules.
   injection layers, skill matching, embedding, retrieval, and persistence.
 - The dependency section correctly states ironclad-core, ironclad-db, ironclad-llm.
 - No bugs filed -- diagram is current.
+
+### ironclad-c4-wallet.md
+
+**Audit scope:** All nodes in the Mermaid `flowchart TB` block (lines 10-55), the
+Financial Flow sequence diagram (lines 59-92), and the Dependencies section,
+cross-referenced against v0.8.0 source code in `crates/ironclad-wallet/src/`.
+
+**Method:** Compared every component node against `lib.rs` `pub mod` declarations and
+source files.
+
+#### Modules confirmed present and accurately described
+
+| Diagram Module | Code File | Status |
+|---|---|---|
+| `wallet.rs` | `wallet.rs` (27,762 bytes) | OK |
+| `x402.rs` | `x402.rs` (6,300 bytes) | OK |
+| `treasury.rs` | `treasury.rs` (12,322 bytes) | OK |
+| `yield_engine.rs` | `yield_engine.rs` (23,975 bytes) | OK |
+
+#### WALLET-1: money.rs shown as wallet.rs child but is a separate pub mod
+
+The diagram places `MONEY["money.rs: Money(i64 cents)..."]` inside the `WalletDetail`
+subgraph (line 19), implying it is part of `wallet.rs`. In reality, `money.rs` is
+declared as a separate `pub mod money;` in `lib.rs` (line 24) and re-exported as
+`pub use money::Money`. It is a peer module to wallet, not a child.
+
+**Impact:** Low. The module IS documented in the diagram -- just misplaced
+hierarchically. A reader might look for `Money` inside `wallet.rs` instead of
+`money.rs`.
+
+#### Notes
+
+- The `WalletService` facade struct (`lib.rs` line 39) is not shown in the diagram,
+  consistent with the pattern seen in `ironclad-llm` (LlmService also not shown).
+- The Financial Flow sequence diagram accurately represents the yield engine flow.
+- Dependencies are correctly listed.
+- Overall this is a well-maintained diagram with only a minor organizational issue.
