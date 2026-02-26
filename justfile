@@ -39,6 +39,62 @@ test-integration:
 test-integration-api:
     cargo test -p ironclad-tests server_api::
 
+# Run focused regression battery (deterministic and release-oriented)
+test-regression:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo test -p ironclad-agent retriever_skips_turn_summary_working_entries
+    cargo test -p ironclad-channels process_webhook_update_advances_id_without_rewinding
+    cargo test -p ironclad-channels send_to_permanent_error_does_not_enqueue_retry
+    cargo test -p ironclad-db retrieve_working_is_session_isolated
+    cargo test -p ironclad-tests memory_retrieval_excludes_turn_summary_echoes
+    cargo test -p ironclad-tests scoped_sessions_remain_isolated_between_peer_and_group
+    cargo test -p ironclad-tests router_falls_through_multiple_blocked_candidates
+    cargo test -p ironclad-tests cron_schedule_rejects_invalid_timestamps
+    cargo test -p ironclad-tests cron_schedule_rejects_invalid_expressions
+    cargo test -p ironclad-server webhook_telegram_non_message_update_advances_offset
+    cargo test -p ironclad-server query_token_not_accepted_for_non_ws_paths
+    cargo test -p ironclad-server channels_dead_letter_limit_is_clamped
+
+# Release-critical deterministic battery (workspace + integration + regression)
+test-release-critical:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo test --workspace --locked
+    cargo test -p ironclad-tests server_api:: --locked
+    just test-regression
+
+# Long-running soak/fuzz battery (bounded runtime by env)
+# Env knobs:
+#   SOAK_ROUNDS=5 FUZZ_SECONDS=45 just test-soak-fuzz
+test-soak-fuzz:
+    bash scripts/run-soak-fuzz.sh
+
+# CLI UAT smoke against a running server
+# Env knobs:
+#   BASE_URL=http://127.0.0.1:18789 API_KEY=... just test-uat-cli
+test-uat-cli:
+    bash scripts/run-uat-cli-smoke.sh
+
+# Web/dashboard UAT smoke against a running server
+# Env knobs:
+#   BASE_URL=http://127.0.0.1:18789 API_KEY=... just test-uat-web
+test-uat-web:
+    bash scripts/run-uat-web-smoke.sh
+
+# Release docs + artifact/provenance consistency gate
+test-release-doc-gate:
+    RELEASE_TARGET_VERSION="${RELEASE_TARGET_VERSION:-0.8.0}" bash scripts/run-release-doc-gate.sh
+
+# Canonical v0.8.0 go-live gate (life-or-death mode)
+test-v080-go-live:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just test-release-critical
+    just test-soak-fuzz
+    bash scripts/run-uat-stack.sh
+    just test-release-doc-gate
+
 # Run integration smoke checks against a live server
 # Usage:
 #   just smoke
@@ -130,6 +186,10 @@ run config="":
 # Run the server (release build)
 run-release config="":
     {{ if config == "" { "cargo run --release --bin ironclad-server -- serve" } else { "cargo run --release --bin ironclad-server -- serve -c " + config } }}
+
+# Run local source with installed config/data paths (~/.ironclad by default)
+run-installed-config config="~/.ironclad/ironclad.toml":
+    cargo run --bin ironclad -- serve -c {{config}}
 
 # Initialize a new workspace in the given directory
 init dir=".":

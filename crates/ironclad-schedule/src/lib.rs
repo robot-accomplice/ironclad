@@ -125,6 +125,12 @@ fn execute_cron_job(
     let action = payload
         .get("action")
         .and_then(|v| v.as_str())
+        .or_else(|| {
+            payload
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .and_then(legacy_kind_to_action)
+        })
         .unwrap_or("unknown");
 
     match action {
@@ -192,10 +198,31 @@ fn execute_cron_job(
             tracing::debug!(job = %job.name, "noop cron job");
             ("success", None)
         }
+        "agent_turn_legacy" => {
+            // Backward compatibility for imported legacy cron payloads from older runtimes.
+            // Ironclad's durable scheduler currently does not execute agent turns directly.
+            tracing::warn!(
+                job = %job.name,
+                "legacy agentTurn cron payload detected; treating as noop"
+            );
+            ("success", None)
+        }
         other => {
             tracing::warn!(job = %job.name, action = other, "unknown cron action");
             ("error", Some(format!("unknown action: {other}")))
         }
+    }
+}
+
+fn legacy_kind_to_action(kind: &str) -> Option<&'static str> {
+    match kind {
+        "agentTurn" => Some("agent_turn_legacy"),
+        "metricSnapshot" => Some("metric_snapshot"),
+        "expireSessions" => Some("expire_sessions"),
+        "recordTransaction" => Some("record_transaction"),
+        "log" => Some("log"),
+        "noop" => Some("noop"),
+        _ => None,
     }
 }
 
@@ -373,5 +400,27 @@ mod tests {
         let (status, error) = execute_cron_job(&db, &job);
         assert_eq!(status, "error");
         assert!(error.unwrap_or_default().contains("unknown action"));
+    }
+
+    #[test]
+    fn execute_cron_job_accepts_legacy_agent_turn_kind() {
+        let db = test_db();
+        let job = job_with_payload(
+            &db,
+            "legacy-agent-turn",
+            r#"{"kind":"agentTurn","message":"Do work"}"#,
+        );
+        let (status, error) = execute_cron_job(&db, &job);
+        assert_eq!(status, "success");
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn execute_cron_job_accepts_legacy_metric_snapshot_kind() {
+        let db = test_db();
+        let job = job_with_payload(&db, "legacy-metrics", r#"{"kind":"metricSnapshot"}"#);
+        let (status, error) = execute_cron_job(&db, &job);
+        assert_eq!(status, "success");
+        assert!(error.is_none());
     }
 }

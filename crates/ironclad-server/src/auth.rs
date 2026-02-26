@@ -74,6 +74,19 @@ fn extract_api_key(req: &Request<Body>) -> Option<String> {
     None
 }
 
+pub(crate) fn extract_auth_principal(req: &Request<Body>) -> Option<String> {
+    if req.headers().contains_key("x-api-key") {
+        return Some("api_key".to_string());
+    }
+    if let Some(val) = req.headers().get("authorization")
+        && let Ok(s) = val.to_str()
+        && s.starts_with("Bearer ")
+    {
+        return Some("bearer".to_string());
+    }
+    None
+}
+
 fn unauthorized_response() -> Response<Body> {
     let body = serde_json::json!({"error": "unauthorized", "message": "Valid API key required"});
     Response::builder()
@@ -160,6 +173,15 @@ mod tests {
     }
 
     #[test]
+    fn query_token_not_accepted_for_non_ws_paths() {
+        let req = Request::builder()
+            .uri("/api/health?token=query-key-456")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_api_key(&req), None);
+    }
+
+    #[test]
     fn no_key_returns_none() {
         let req = Request::builder().body(Body::empty()).unwrap();
         assert_eq!(extract_api_key(&req), None);
@@ -173,6 +195,25 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(extract_api_key(&req).as_deref(), Some("header-key"));
+    }
+
+    #[test]
+    fn extract_auth_principal_prefers_api_key() {
+        let req = Request::builder()
+            .header("x-api-key", "abc")
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_auth_principal(&req).as_deref(), Some("api_key"));
+    }
+
+    #[test]
+    fn extract_auth_principal_bearer() {
+        let req = Request::builder()
+            .header("authorization", "Bearer token")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_auth_principal(&req).as_deref(), Some("bearer"));
     }
 
     #[test]

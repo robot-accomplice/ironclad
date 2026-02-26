@@ -143,3 +143,32 @@ fn router_override_short_circuits_then_clear_restores() {
     let selected = router.select_for_complexity(0.1, Some(&reg), None, Some(&breakers));
     assert_eq!(selected, "ollama/qwen3:14b");
 }
+
+#[test]
+fn router_falls_through_multiple_blocked_candidates() {
+    let cfg = RoutingConfig {
+        mode: "ml".to_string(),
+        confidence_threshold: 0.5,
+        local_first: false,
+        ..Default::default()
+    };
+    let router = ModelRouter::new(
+        "moonshot/kimi-k2-turbo-preview".to_string(),
+        vec![
+            "anthropic/claude-sonnet-4-6".to_string(),
+            "ollama/qwen3:14b".to_string(),
+        ],
+        cfg,
+        Box::new(ironclad_llm::router::HeuristicBackend),
+    );
+    let reg = mk_registry();
+    let mut breakers = mk_breakers();
+    breakers.record_credit_error("moonshot");
+    breakers.record_credit_error("anthropic");
+
+    let selected = router.select_for_complexity(0.95, Some(&reg), None, Some(&breakers));
+    assert_eq!(
+        selected, "ollama/qwen3:14b",
+        "router should continue fallback traversal until it finds a closed provider"
+    );
+}

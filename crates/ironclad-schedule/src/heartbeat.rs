@@ -1,6 +1,7 @@
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, Utc};
 use ironclad_core::SurvivalTier;
 use serde::{Deserialize, Serialize};
+use crate::scheduler::DurableScheduler;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TickContext {
@@ -69,6 +70,16 @@ pub fn default_tasks() -> Vec<crate::tasks::HeartbeatTask> {
     ]
 }
 
+fn should_rotate_sessions(
+    reset_schedule: Option<&str>,
+    last_rotation_at: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
+    reset_schedule
+        .map(|expr| DurableScheduler::evaluate_cron(expr, last_rotation_at, &now.to_rfc3339()))
+        .unwrap_or(false)
+}
+
 /// Run the heartbeat loop. Fetches balances from the wallet, builds a tick context,
 /// runs tasks, and adjusts interval based on survival tier.
 pub async fn run(
@@ -86,7 +97,7 @@ pub async fn run(
     let mut interval = tokio::time::interval(Duration::from_millis(daemon.interval_ms));
     let mut last_atoken_balance: Option<f64> = None;
     let governor = ironclad_agent::governor::SessionGovernor::new(session_config.clone());
-    let mut last_rotation_hour: Option<String> = None;
+    let mut last_rotation_at: Option<String> = None;
 
     tracing::info!(interval_ms = daemon.interval_ms, "Heartbeat loop started");
 
@@ -164,23 +175,20 @@ pub async fn run(
                     }
                     Err(e) => tracing::warn!(error = %e, "session governor tick failed"),
                 }
-                if session_config.reset_schedule.is_some() {
-                    let stamp = chrono::Utc::now().format("%Y-%m-%dT%H").to_string();
-                    if chrono::Utc::now().minute() == 0
-                        && last_rotation_hour.as_deref() != Some(&stamp)
-                    {
-                        match governor.rotate_agent_scope_sessions(&db, &agent_id) {
-                            Ok(rotated) => {
-                                if rotated > 0 {
-                                    tracing::info!(
-                                        rotated,
-                                        "session governor rotated agent sessions"
-                                    );
-                                }
+                let now = chrono::Utc::now();
+                if should_rotate_sessions(
+                    session_config.reset_schedule.as_deref(),
+                    last_rotation_at.as_deref(),
+                    now,
+                ) {
+                    match governor.rotate_agent_scope_sessions(&db, &agent_id) {
+                        Ok(rotated) => {
+                            if rotated > 0 {
+                                tracing::info!(rotated, "session governor rotated agent sessions");
                             }
-                            Err(e) => tracing::warn!(error = %e, "session rotation failed"),
+                            last_rotation_at = Some(now.to_rfc3339());
                         }
-                        last_rotation_hour = Some(stamp);
+                        Err(e) => tracing::warn!(error = %e, "session rotation failed"),
                     }
                 }
             }
@@ -319,5 +327,26 @@ mod tests {
         let new = daemon.should_adjust_interval(&SurvivalTier::LowCompute);
         assert!(new.is_some());
         assert!(new.unwrap() >= MIN_HEARTBEAT_INTERVAL_MS);
+    }
+
+    #[test]
+    fn should_rotate_sessions_respects_cron_slots() {
+        let now = DateTime::parse_from_rfc3339("2025-01-01T12:00:10+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(should_rotate_sessions(Some("0 12 * * *"), None, now));
+        assert!(!should_rotate_sessions(Some("15 12 * * *"), None, now));
+    }
+
+    #[test]
+    fn should_rotate_sessions_deduplicates_same_slot() {
+        let now = DateTime::parse_from_rfc3339("2025-01-01T12:00:20+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(!should_rotate_sessions(
+            Some("0 12 * * *"),
+            Some("2025-01-01T12:00:05+00:00"),
+            now
+        ));
     }
 }

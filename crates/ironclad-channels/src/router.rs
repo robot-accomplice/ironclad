@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
 use ironclad_core::{IroncladError, Result};
+use ironclad_db::Database;
 
 use crate::delivery::{DeliveryItem, DeliveryQueue};
 use crate::{ChannelAdapter, InboundMessage, OutboundMessage};
@@ -36,6 +37,15 @@ impl ChannelRouter {
         Self {
             channels: Mutex::new(HashMap::new()),
             delivery_queue: DeliveryQueue::new(),
+        }
+    }
+
+    pub fn with_store(store: Database) -> Self {
+        let delivery_queue = DeliveryQueue::with_store(store);
+        delivery_queue.recover_from_store();
+        Self {
+            channels: Mutex::new(HashMap::new()),
+            delivery_queue,
         }
     }
 
@@ -251,6 +261,22 @@ impl ChannelRouter {
         channels.len()
     }
 
+    pub async fn dead_letters(&self, max_items: usize) -> Vec<DeliveryItem> {
+        let mut merged = self.delivery_queue.dead_letters_from_store(max_items);
+        if merged.is_empty() {
+            merged = self.delivery_queue.dead_letters().await;
+        }
+        merged
+    }
+
+    pub async fn replay_dead_letter(&self, id: &str) -> bool {
+        if self.delivery_queue.replay_dead_letter_in_store(id) {
+            self.delivery_queue.recover_from_store();
+            return true;
+        }
+        self.delivery_queue.replay_dead_letter_in_memory(id).await
+    }
+
     pub async fn is_registered(&self, name: &str) -> bool {
         let channels = self.channels.lock().await;
         channels.contains_key(name)
@@ -267,6 +293,8 @@ impl Default for ChannelRouter {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use ironclad_db::Database;
+    use ironclad_core::IroncladError;
 
     struct MockAdapter {
         name: String,
@@ -305,6 +333,27 @@ mod tests {
         }
         async fn send(&self, _msg: OutboundMessage) -> Result<()> {
             Ok(())
+        }
+    }
+
+    struct PermanentFailAdapter {
+        name: String,
+    }
+
+    #[async_trait]
+    impl ChannelAdapter for PermanentFailAdapter {
+        fn platform_name(&self) -> &str {
+            &self.name
+        }
+
+        async fn recv(&self) -> Result<Option<InboundMessage>> {
+            Ok(None)
+        }
+
+        async fn send(&self, _msg: OutboundMessage) -> Result<()> {
+            Err(IroncladError::Network(
+                "Telegram API 403 Forbidden: bot was blocked by the user".into(),
+            ))
         }
     }
 
@@ -416,5 +465,47 @@ mod tests {
         let statuses = router.channel_status().await;
         assert_eq!(statuses[0].last_error.as_deref(), Some("pipeline failed"));
         assert!(statuses[0].last_activity.is_some());
+    }
+
+    #[tokio::test]
+    async fn with_store_recovers_queue_state() {
+        let db = Database::new(":memory:").expect("db");
+        let router = ChannelRouter::with_store(db.clone());
+        let msg = OutboundMessage {
+            content: "queued".into(),
+            recipient_id: "r1".into(),
+            metadata: None,
+        };
+        router
+            .delivery_queue()
+            .enqueue("telegram".into(), msg)
+            .await;
+
+        let recovered = ChannelRouter::with_store(db);
+        assert_eq!(recovered.delivery_queue().queue_size().await, 1);
+    }
+
+    #[tokio::test]
+    async fn send_to_permanent_error_does_not_enqueue_retry() {
+        let router = ChannelRouter::new();
+        router
+            .register(Arc::new(PermanentFailAdapter {
+                name: "telegram".into(),
+            }))
+            .await;
+
+        let msg = OutboundMessage {
+            content: "hello".into(),
+            recipient_id: "r1".into(),
+            metadata: None,
+        };
+
+        let result = router.send_to("telegram", msg).await;
+        assert!(result.is_ok(), "router should swallow send failure into status");
+        assert_eq!(
+            router.delivery_queue().queue_size().await,
+            0,
+            "permanent errors must not be queued for retry"
+        );
     }
 }

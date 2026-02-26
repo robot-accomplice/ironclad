@@ -13,6 +13,7 @@ members = [
     "crates/ironclad-browser",
     "crates/ironclad-tests",
 ]
+exclude = ["crates/ironclad-agent/fuzz"]
 
 [workspace.package]
 version = "0.7.1"

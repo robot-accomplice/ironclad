@@ -2,6 +2,13 @@
 
 This matrix enumerates known end-to-end integration paths in Ironclad and marks where behavior is fully implemented versus partial/stubbed.
 
+Regression governance companion docs:
+- `docs/testing/regression-matrix.md`
+- `docs/testing/regression-policy.md`
+- Release/CI battery commands:
+  - `just test-regression` (focused deterministic subset)
+  - `just test-v080-go-live` (full v0.8.0 zero-regression gate)
+
 Status key:
 - `READY` — path is wired and testable end-to-end.
 - `PARTIAL` — path exists but has meaningful gaps or reduced behavior.
@@ -121,3 +128,5 @@ Status key:
 8. H2/H3 cron execution: verify UI-created schedule kinds execute as expected.
 9. K2 markdown safety fuzz: malicious markdown payload corpus in session/context surfaces.
 10. G-path sanity: verify stub endpoints are explicitly labeled and not silently treated as complete.
+11. UAT CLI/Web smoke: run `bash scripts/run-uat-stack.sh` and ensure operator-critical commands and dashboard APIs are healthy.
+12. Soak/fuzz stability: run `SOAK_ROUNDS=4 FUZZ_SECONDS=45 just test-soak-fuzz` with no flakes or crashes.

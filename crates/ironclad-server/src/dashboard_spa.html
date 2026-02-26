@@ -83,6 +83,7 @@
     .sidebar.collapsed .sidebar-nav a { justify-content: center; padding: 0.625rem 0; }
     .sidebar.collapsed .sidebar-nav a .nav-label { display: none; }
     .nav-icon { width: 16px; height: 16px; flex-shrink: 0; color: currentColor; }
+    .ui-icon { width: 14px; height: 14px; flex-shrink: 0; color: currentColor; display: inline-block; }
     .sidebar-nav a:hover { color: var(--text); background: rgba(255,255,255,0.03); }
     .sidebar-nav a.active { color: var(--accent); background: var(--accent-dim); }
     .sidebar-nav a:focus-visible,
@@ -122,12 +123,16 @@
     .card-mono { font-family: var(--font-mono); font-size: 0.8125rem; }
     .session-nick { cursor: copy; border-bottom: 1px dashed var(--border); transition: color 0.15s; }
     .session-nick:hover { color: var(--accent); }
-    .badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.75rem; font-weight: 500; }
+    .badge { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.75rem; font-weight: 500; }
     .badge.success { background: rgba(34, 197, 94, 0.2); color: var(--success); }
     .badge.error { background: rgba(239, 68, 68, 0.2); color: var(--error); }
     .badge.warning { background: rgba(234, 179, 8, 0.2); color: var(--warning); }
     .badge.muted { background: rgba(113, 113, 122, 0.2); color: var(--muted); }
+    .badge.success::before { content: '✓'; font-size: 0.68rem; line-height: 1; }
+    .badge.warning::before { content: '!'; font-size: 0.68rem; line-height: 1; }
+    .badge.error::before { content: '×'; font-size: 0.7rem; line-height: 1; }
     .overview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1rem; }
+    .overview-fleet-slot { grid-column: 1 / -1; min-width: 0; }
     .composite-card { padding: 0; overflow: hidden; }
     .composite-card:hover { transform: translateY(-2px); }
     .cc-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 1rem 1.25rem 0; }
@@ -231,6 +236,57 @@
     .ctx-tip.critical .tip-dot { background: #ef4444; }
     .ctx-tip-detail { margin-top: 0.375rem; padding: 0.375rem 0.5rem; background: rgba(0,0,0,0.15); border-radius: 3px; font-size: 0.6875rem; color: var(--muted); }
     .ctx-tip-detail strong { color: var(--text); font-weight: 600; }
+    .hint-banner {
+      margin-bottom: 0.75rem;
+      border: 1px solid rgba(59, 130, 246, 0.45);
+      background: rgba(59, 130, 246, 0.14);
+      color: #bfdbfe;
+      border-radius: var(--radius);
+      padding: 0.65rem 0.75rem;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.75rem;
+      font-size: 0.8125rem;
+      line-height: 1.35;
+    }
+    .hint-banner .hint-main { display: flex; align-items: flex-start; gap: 0.5rem; min-width: 0; }
+    .hint-banner .hint-icon { font-size: 0.95rem; line-height: 1; margin-top: 1px; flex-shrink: 0; }
+    .hint-banner .hint-text { color: #dbeafe; }
+    .hint-banner .hint-dismiss {
+      border: 1px solid rgba(191, 219, 254, 0.35);
+      background: rgba(15, 23, 42, 0.45);
+      color: #dbeafe;
+      border-radius: 4px;
+      width: 22px;
+      height: 22px;
+      line-height: 1;
+      cursor: pointer;
+      font-family: var(--font);
+      flex-shrink: 0;
+    }
+    .hint-banner .hint-dismiss:hover { border-color: #dbeafe; color: #fff; }
+    .hint-pref-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1200;
+      background: rgba(0, 0, 0, 0.62);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .hint-pref-modal {
+      width: min(430px, 92vw);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 1rem;
+    }
+    .hint-pref-title { font-size: 1rem; font-weight: 600; margin-bottom: 0.45rem; }
+    .hint-pref-copy { font-size: 0.8125rem; color: var(--muted); margin-bottom: 0.85rem; }
+    .hint-pref-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
     .ctx-analyze-btn { margin-top: 0.5rem; font-size: 0.6875rem; padding: 0.25rem 0.625rem; }
     .ctx-insights { margin-top: 1rem; }
     .streaming-content { white-space: pre-wrap; word-break: break-word; }
@@ -260,7 +316,8 @@
     .toast { padding: 0.75rem 1.25rem; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; box-shadow: var(--shadow); font-size: 0.875rem; animation: toastIn 0.25s ease; }
     @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     .mobile-nav { display: none; position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--border); padding: 0.5rem; z-index: 100; }
-    .mobile-nav a { flex: 1; justify-content: center; padding: 0.5rem; font-size: 0.75rem; text-decoration: none; color: var(--muted); cursor: pointer; }
+    .mobile-nav a { flex: 1; display: flex; align-items: center; justify-content: center; gap: 0.35rem; padding: 0.5rem; font-size: 0.75rem; text-decoration: none; color: var(--muted); cursor: pointer; }
+    .mobile-nav a .nav-icon { width: 12px; height: 12px; }
     .settings-actions { display: flex; gap: 0.5rem; margin-top: 1rem; }
     .settings-actions .btn { min-width: 80px; justify-content: center; }
     .settings-editor { position: relative; }
@@ -538,19 +595,19 @@
   <div class="crt-overlay"></div>
   <div class="toast-container" id="toasts"></div>
   <nav class="mobile-nav">
-    <a href="#overview" data-page="overview">Overview</a>
-    <a href="#sessions" data-page="sessions">Sessions</a>
-    <a href="#context" data-page="context">Context</a>
-    <a href="#memory" data-page="memory">Memory</a>
-    <a href="#skills" data-page="skills">Skills</a>
-    <a href="#agents" data-page="agents">Agents</a>
-    <a href="#scheduler" data-page="scheduler">Scheduler</a>
-    <a href="#metrics" data-page="metrics">Metrics</a>
-    <a href="#efficiency" data-page="efficiency">Prompt Performance</a>
-    <a href="#recommendations" data-page="recommendations">Recommendations</a>
-    <a href="#wallet" data-page="wallet">Wallet</a>
-    <a href="#workspace" data-page="workspace">Workspace</a>
-    <a href="#settings" data-page="settings">Settings</a>
+    <a href="#overview" data-page="overview"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor"/><rect x="9" y="1" width="6" height="3" rx="1" fill="currentColor"/><rect x="1" y="9" width="6" height="3" rx="1" fill="currentColor"/><rect x="9" y="6" width="6" height="9" rx="1" fill="currentColor"/><rect x="1" y="14" width="6" height="1" rx=".5" fill="currentColor"/></svg>Overview</a>
+    <a href="#sessions" data-page="sessions"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M2 1h12a1 1 0 011 1v8a1 1 0 01-1 1H5.5L2 14V2a1 1 0 010-1z" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="5" y1="5" x2="11" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="8" x2="9" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>Sessions</a>
+    <a href="#context" data-page="context"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M8 1.5l5.5 2v5c0 3.1-2.2 5.6-5.5 6.6-3.3-1-5.5-3.5-5.5-6.6v-5z" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="7" r="1.4" fill="currentColor"/><path d="M5.5 10c.7-1 1.5-1.5 2.5-1.5s1.8.5 2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>Context</a>
+    <a href="#memory" data-page="memory"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="3" y="2" width="10" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="1" y1="5" x2="3" y2="5" stroke="currentColor" stroke-width="1.2"/><line x1="1" y1="8" x2="3" y2="8" stroke="currentColor" stroke-width="1.2"/><line x1="1" y1="11" x2="3" y2="11" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>Memory</a>
+    <a href="#skills" data-page="skills"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M8 1l1.8 3.6L14 5.3l-3 2.9.7 4.1L8 10.5l-3.7 1.8.7-4.1-3-2.9 4.2-.7z" fill="currentColor"/></svg>Skills</a>
+    <a href="#agents" data-page="agents"><svg class="nav-icon" viewBox="0 0 16 16"><circle cx="8" cy="4" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>Agents</a>
+    <a href="#scheduler" data-page="scheduler"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="1.5" y1="6" x2="14.5" y2="6" stroke="currentColor" stroke-width="1.5"/><line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="11" y1="1" x2="11" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>Scheduler</a>
+    <a href="#metrics" data-page="metrics"><svg class="nav-icon" viewBox="0 0 16 16"><polyline points="1,12 4,7 7,9 10,3 14,6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><line x1="1" y1="14.5" x2="15" y2="14.5" stroke="currentColor" stroke-width="1.2"/></svg>Metrics</a>
+    <a href="#efficiency" data-page="efficiency"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M8 1v6l4.2 2.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1" fill="currentColor"/></svg>Prompt Performance</a>
+    <a href="#recommendations" data-page="recommendations"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M8 1l2 4h4l-3 3 1 4-4-2-4 2 1-4-3-3h4z" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="3" y1="14" x2="13" y2="14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>Recommendations</a>
+    <a href="#wallet" data-page="wallet"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1" y="3" width="14" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M1 3V2.5A1.5 1.5 0 012.5 1h9L14 3" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>Wallet</a>
+    <a href="#workspace" data-page="workspace"><svg class="nav-icon" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="5.5" r="1.5" fill="currentColor"/><circle cx="11" cy="5.5" r="1.5" fill="currentColor"/><circle cx="8" cy="11" r="1.5" fill="currentColor"/></svg>Workspace</a>
+    <a href="#settings" data-page="settings"><svg class="nav-icon" viewBox="0 0 16 16"><path d="M6.5 1h3l.3 2.1a5.5 5.5 0 011.3.7L13 2.7l1.5 2.6-1.8 1.2a5.5 5.5 0 010 1.5l1.8 1.2-1.5 2.6-1.9-1.1a5.5 5.5 0 01-1.3.7L9.5 13.5h-3l-.3-2.1a5.5 5.5 0 01-1.3-.7L3 11.8l-1.5-2.6 1.8-1.2a5.5 5.5 0 010-1.5L1.5 5.3 3 2.7l1.9 1.1a5.5 5.5 0 011.3-.7L6.5 1zM8 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z" fill="currentColor"/></svg>Settings</a>
   </nav>
   <script>
 (function() {
@@ -560,7 +617,114 @@
   var titles = { overview: 'Overview', sessions: 'Sessions', context: 'Context', memory: 'Memory', skills: 'Skills', agents: 'Agents', scheduler: 'Scheduler', metrics: 'Metrics', efficiency: 'Prompt Performance', wallet: 'Wallet', settings: 'Settings', workspace: 'Workspace' };
 
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+  function uiIcon(name) {
+    switch (name) {
+      case 'refresh':
+        return '<svg class="ui-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 5V2h-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 2A6 6 0 1 0 14 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+      case 'download':
+        return '<svg class="ui-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2v7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M5.5 7.5L8 10l2.5-2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 12.5h11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+      case 'spark':
+        return '<svg class="ui-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1.5l1.7 3.4 3.8.6-2.7 2.6.6 3.7L8 10.3l-3.4 1.8.6-3.7L2.5 5.5l3.8-.6L8 1.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+      case 'power':
+        return '<svg class="ui-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1.8v5.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M11.5 3.7a5 5 0 1 1-7 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+      case 'trash':
+        return '<svg class="ui-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 4h11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M6 4V2.8h4V4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M4.2 4l.8 9h6l.8-9" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+      case 'plus':
+        return '<svg class="ui-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+      case 'send':
+        return '<svg class="ui-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8l12-5-3.5 10-2.7-4.2L2 8z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+      case 'search':
+        return '<svg class="ui-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.3"/><path d="M10.4 10.4L14 14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+      case 'back':
+        return '<svg class="ui-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M7 3L2.5 8 7 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 8h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+      default:
+        return '';
+    }
+  }
+  function uiBtnLabel(iconName, label) { return uiIcon(iconName) + '<span>' + label + '</span>'; }
   function truncate(s, n) { return (s && s.length > n) ? s.slice(0, n) + '\u2026' : (s || ''); }
+  var HINTS_ENABLED_KEY = 'ic_hints_enabled';
+  var HINTS_PROMPTED_KEY = 'ic_hints_prompted';
+  var HINTS_DISMISSED_KEY = 'ic_hints_dismissed';
+  function hintsEnabled() {
+    try {
+      var v = window.localStorage.getItem(HINTS_ENABLED_KEY);
+      return v !== '0';
+    } catch (_) {
+      return true;
+    }
+  }
+  function setHintsEnabled(enabled) {
+    try { window.localStorage.setItem(HINTS_ENABLED_KEY, enabled ? '1' : '0'); } catch (_) {}
+  }
+  function loadDismissedHints() {
+    try {
+      var raw = window.localStorage.getItem(HINTS_DISMISSED_KEY);
+      if (!raw) return {};
+      var parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+  function saveDismissedHints(map) {
+    try { window.localStorage.setItem(HINTS_DISMISSED_KEY, JSON.stringify(map || {})); } catch (_) {}
+  }
+  function dismissHint(id) {
+    if (!id) return;
+    var map = loadDismissedHints();
+    map[id] = true;
+    saveDismissedHints(map);
+  }
+  function isHintDismissed(id) {
+    if (!id) return false;
+    return !!loadDismissedHints()[id];
+  }
+  function clearHintDismissals() {
+    saveDismissedHints({});
+  }
+  function disableAndClearHints() {
+    setHintsEnabled(false);
+    clearHintDismissals();
+    try { window.localStorage.setItem('ic_sessions_helper_dismissed', '1'); } catch (_) {}
+    try { window.localStorage.setItem('ic_dash_onboarding_dismissed', '1'); } catch (_) {}
+  }
+  function renderHintBanner(id, text) {
+    return '<div class="hint-banner" data-hint-id="' + esc(id) + '">'
+      + '<div class="hint-main"><span class="hint-icon" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="4.4" r="0.9" fill="currentColor"/><path d="M8 7v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span><div class="hint-text">' + esc(text) + '</div></div>'
+      + '<button class="hint-dismiss" data-dismiss-hint="' + esc(id) + '" title="Dismiss hint" aria-label="Dismiss hint">x</button>'
+      + '</div>';
+  }
+  function maybePromptHintPreference() {
+    var prompted = false;
+    try { prompted = window.localStorage.getItem(HINTS_PROMPTED_KEY) === '1'; } catch (_) {}
+    if (prompted) return;
+    if (document.getElementById('hint-pref-overlay')) return;
+    var overlay = document.createElement('div');
+    overlay.id = 'hint-pref-overlay';
+    overlay.className = 'hint-pref-overlay';
+    overlay.innerHTML = '<div class="hint-pref-modal">'
+      + '<div class="hint-pref-title">Show hints?</div>'
+      + '<div class="hint-pref-copy">Hints call out useful next steps. You can change this later in Settings.</div>'
+      + '<div class="hint-pref-actions">'
+      + '<button class="btn secondary" id="hint-pref-no">No</button>'
+      + '<button class="btn" id="hint-pref-yes">Yes</button>'
+      + '</div></div>';
+    document.body.appendChild(overlay);
+    function finalize(enableHints) {
+      try { window.localStorage.setItem(HINTS_PROMPTED_KEY, '1'); } catch (_) {}
+      if (enableHints) setHintsEnabled(true); else disableAndClearHints();
+      overlay.remove();
+      if (App && App.page) App.navigate(App.page);
+    }
+    var noBtn = overlay.querySelector('#hint-pref-no');
+    var yesBtn = overlay.querySelector('#hint-pref-yes');
+    if (noBtn) noBtn.addEventListener('click', function() { finalize(false); });
+    if (yesBtn) yesBtn.addEventListener('click', function() { finalize(true); });
+  }
+  try {
+    if (window.localStorage.getItem('ic_sessions_helper_dismissed') === '1') dismissHint('sessions-helper');
+  } catch (_) {}
   var AGENT_DISPLAY_NAME = '';
   function setAgentDisplayName(name) {
     var value = String(name || '').trim();
@@ -757,6 +921,19 @@
       if (ct && ct.indexOf('application/json') !== -1) return r.json();
       return r.text();
     });
+  }
+
+  function fetchWithFallback(url, fallback, label) {
+    return api(url)
+      .then(function(data) { return { ok: true, data: data, label: label }; })
+      .catch(function(err) {
+        return {
+          ok: false,
+          data: fallback,
+          label: label,
+          error: (err && err.message) ? err.message : String(err || 'unknown error')
+        };
+      });
   }
 
   function repeatedSeries(count, value) {
@@ -985,6 +1162,7 @@
     page: 'overview',
     _activeAgentId: null,
     _memoryTab: 'episodic',
+    _skillsTab: 'installed',
     _memorySessionId: '',
     _overviewShowDetails: false,
     ws: null,
@@ -1036,7 +1214,7 @@
         + '  <div id="ov-card-latency"></div>'
         + '  <div id="ov-card-sessions"></div>'
         + '  <div id="ov-card-system"></div>'
-        + '  <div id="ov-card-fleet" style="display:none"></div>'
+        + '  <div id="ov-card-fleet" class="overview-fleet-slot" style="display:none"></div>'
         + '</div>';
     },
     _applyOverviewCards: function(cards) {
@@ -1076,12 +1254,12 @@
         }
       }
       var ovOnboarding = document.getElementById('ov-onboarding');
-      if (ovOnboarding && !window.localStorage.getItem('ic_dash_onboarding_dismissed')) {
+      if (ovOnboarding && hintsEnabled() && !window.localStorage.getItem('ic_dash_onboarding_dismissed')) {
         setHtml(
           ovOnboarding,
           '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start">'
             + '<div><strong>Quick Start</strong><div style="margin-top:0.35rem;color:var(--muted);font-size:0.85rem">1) Open <em>Sessions</em> and start a conversation. 2) Use <em>Context</em> to inspect token and reasoning traces. 3) Use <em>Prompt Performance</em> to tune latency/cost.</div></div>'
-            + '<button class="btn secondary" id="dismiss-onboarding">Dismiss</button>'
+            + '<button class="btn secondary" id="dismiss-onboarding" title="Dismiss hint" aria-label="Dismiss hint">x</button>'
             + '</div>'
         );
         ovOnboarding.style.display = '';
@@ -1127,23 +1305,26 @@
             return;
           }
           if (content) {
-            var helperTextMap = {
-              sessions: 'Review and continue conversations. Click a row to open details.',
-              context: 'Inspect context budgets, token allocation, and reasoning traces.',
-              memory: 'Browse memory layers or search by query.',
-              skills: 'Toggle and manage enabled runtime skills.',
-              agents: 'Monitor subordinate agents and their current state.',
-              scheduler: 'Manage recurring jobs and inspect run outcomes.',
-              metrics: 'Track costs, throughput, and provider capacity.',
-              efficiency: 'Find prompt and token optimization opportunities.',
-              recommendations: 'Generate and review improvement suggestions.',
-              wallet: 'Inspect treasury balances and token positions.',
-              workspace: 'See live runtime activity across systems.',
-              settings: 'Edit runtime configuration safely.'
+            var helperDefs = {
+              sessions: { id: 'sessions-helper', text: 'Review and continue conversations. Click a row to open details.' },
+              context: { id: 'context-helper', text: 'Inspect context budgets, token allocation, and reasoning traces.' },
+              memory: { id: 'memory-helper', text: 'Browse memory layers or search by query.' },
+              skills: { id: 'skills-helper', text: 'Toggle and manage enabled runtime skills.' },
+              agents: { id: 'agents-helper', text: 'Monitor subordinate agents and their current state.' },
+              scheduler: { id: 'scheduler-helper', text: 'Manage recurring jobs and inspect run outcomes.' },
+              metrics: { id: 'metrics-helper', text: 'Track costs, throughput, and provider capacity.' },
+              efficiency: { id: 'efficiency-helper', text: 'Find prompt and token optimization opportunities.' },
+              recommendations: { id: 'recommendations-helper', text: 'Generate and review improvement suggestions.' },
+              wallet: { id: 'wallet-helper', text: 'Inspect treasury balances and token positions.' },
+              workspace: { id: 'workspace-helper', text: 'See live runtime activity across systems.' },
+              settings: { id: 'settings-helper', text: 'Edit runtime configuration safely.' }
             };
-            var helper = helperTextMap[page]
-              ? '<div class="card" style="margin-bottom:0.75rem;color:var(--muted);font-size:0.875rem">' + esc(helperTextMap[page]) + '</div>'
-              : '';
+            var helperDef = helperDefs[page];
+            var showHelper = !!helperDef && hintsEnabled() && !isHintDismissed(helperDef.id);
+            if (page === 'sessions') {
+              showHelper = showHelper && !self._activeSession;
+            }
+            var helper = showHelper ? renderHintBanner(helperDef.id, helperDef.text) : '';
             setHtml(content, helper + html);
           }
           if (page === 'workspace') setTimeout(function() { startWorkspaceEngine(_cachedWorkspace || { agents: [], workstations: [] }); startWorkspaceRefresh(self); }, 0);
@@ -1166,13 +1347,6 @@
     },
 
     renderOverview: function() {
-      function fetchWithFallback(url, fallback, label) {
-        return api(url)
-          .then(function(data) { return { ok: true, data: data, label: label }; })
-          .catch(function(err) {
-            return { ok: false, data: fallback, label: label, error: (err && err.message) ? err.message : String(err || 'unknown error') };
-          });
-      }
       return Promise.all([
         fetchWithFallback('/api/agent/status', {}, 'agent status'),
         fetchWithFallback('/api/health', {}, 'health'),
@@ -1312,7 +1486,7 @@
               yFormat: function(v) { return v.toFixed(1); }
             }
           );
-          cardFleet = '<div class="card composite-card" style="grid-column: 1 / -1"><div class="cc-header"><div class="cc-left"><div class="cc-label">Agent Fleet Activity</div><div class="cc-value">' + (seriesLast(TS.agentLoad) * 100).toFixed(0) + '% active load</div><div class="cc-sub">' + agentActiveNow + ' / ' + agents.length + ' agents active now</div></div><div class="cc-right">' + deltaHtml(seriesLast(TS.agentLoad), seriesPrev(TS.agentLoad)) + '</div></div>' + fleetChart + '<div class="metrics-legend" style="padding:0.5rem 1rem 0.75rem">' + fleetLegend + '</div></div>';
+          cardFleet = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Agent Fleet Activity</div><div class="cc-value">' + (seriesLast(TS.agentLoad) * 100).toFixed(0) + '% active load</div><div class="cc-sub">' + agentActiveNow + ' / ' + agents.length + ' agents active now</div></div><div class="cc-right">' + deltaHtml(seriesLast(TS.agentLoad), seriesPrev(TS.agentLoad)) + '</div></div>' + fleetChart + '<div class="metrics-legend" style="padding:0.5rem 1rem 0.75rem">' + fleetLegend + '</div></div>';
         }
 
         var attention = [];
@@ -1349,6 +1523,10 @@
         var agentStatus = results[1] || {};
         if (agentStatus.name) setAgentDisplayName(agentStatus.name);
         var sessions = data.sessions || [];
+        if (sessions.length > 0) {
+          dismissHint('sessions-helper');
+          try { window.localStorage.setItem('ic_sessions_helper_dismissed', '1'); } catch (_) {}
+        }
 
         if (self._activeSession) {
           return Promise.all([
@@ -1390,7 +1568,7 @@
             }).join('') || '<p style="color:var(--muted);padding:1rem">Send a message to begin the conversation.</p>';
             var chatLabel = self._activeSession.nickname || truncate(self._activeSession.id, 16);
             var chatAgentLabel = sessionAssistantLabel(self._activeSession, self._activeSession.agent_id || 'default');
-            return '<div class="session-chat-wrap"><div class="session-chat-header"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="btn-back-sessions">\u25c0 Back</button><span style="font-weight:600">' + esc(chatAgentLabel) + '</span><span class="session-nick" data-copy-id="' + esc(self._activeSession.id) + '" title="' + esc(self._activeSession.id) + '" style="color:var(--muted);font-size:0.75rem">' + esc(chatLabel) + '</span></div><div class="message-thread">' + msgs + '</div><div class="session-chat-input"><input type="text" id="session-msg-input" placeholder="Type a message\u2026" autocomplete="off"><button class="btn" id="btn-send-msg">Send</button></div></div>';
+            return '<div class="session-chat-wrap"><div class="session-chat-header"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="btn-back-sessions">' + uiBtnLabel('back', 'Back') + '</button><span style="font-weight:600">' + esc(chatAgentLabel) + '</span><span class="session-nick" data-copy-id="' + esc(self._activeSession.id) + '" title="' + esc(self._activeSession.id) + '" style="color:var(--muted);font-size:0.75rem">' + esc(chatLabel) + '</span></div><div class="message-thread">' + msgs + '</div><div class="session-chat-input"><input type="text" id="session-msg-input" placeholder="Type a message\u2026" autocomplete="off"><button class="btn" id="btn-send-msg">' + uiBtnLabel('send', 'Send') + '</button></div></div>';
           });
         }
 
@@ -1399,7 +1577,7 @@
           return '<tr data-id="' + esc(s.id || '') + '" style="cursor:pointer" title="' + esc(s.id || '') + '"><td><span class="session-nick" data-copy-id="' + esc(s.id || '') + '">' + esc(label) + '</span></td><td>' + esc(s.agent_id || '') + '</td><td>' + esc(s.created_at || '') + '</td><td>' + esc(s.updated_at || '') + '</td><td><button class="btn secondary" style="font-size:0.65rem;padding:0.2rem 0.5rem">Open</button></td></tr>';
         }).join('');
         var emptyHint = sessions.length === 0 ? '<div class="card" style="margin-top:1rem;color:var(--muted)">No sessions yet. Click <strong>New session</strong> to start one.</div>' : '';
-        return '<div style="display:flex;gap:0.75rem;align-items:center"><button class="btn" id="btn-new-session">New session</button><span style="font-size:0.8125rem;color:var(--muted)">' + sessions.length + ' session' + (sessions.length !== 1 ? 's' : '') + '</span></div><div class="table-wrap" style="margin-top:1rem;max-height:calc(100vh - 56px - 8rem);overflow-y:auto"><table><thead><tr><th>Topic</th><th>Agent</th><th>Created</th><th>Updated</th><th>Action</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + emptyHint;
+        return '<div style="display:flex;gap:0.75rem;align-items:center"><button class="btn" id="btn-new-session">' + uiBtnLabel('plus', 'New session') + '</button><span style="font-size:0.8125rem;color:var(--muted)">' + sessions.length + ' session' + (sessions.length !== 1 ? 's' : '') + '</span></div><div class="table-wrap" style="margin-top:1rem;max-height:calc(100vh - 56px - 8rem);overflow-y:auto"><table><thead><tr><th>Topic</th><th>Agent</th><th>Created</th><th>Updated</th><th>Action</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + emptyHint;
       });
     },
 
@@ -1489,7 +1667,7 @@
         }
 
         if (mode === 'search') {
-          var searchHtml = '<div style="margin-bottom:1rem"><input type="text" id="memory-search-q" placeholder="Search across all memory\u2026" style="padding:0.5rem 1rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);width:100%;max-width:400px;font-family:var(--font)"><button class="btn" style="margin-left:8px" id="memory-search-btn">Search</button></div>';
+          var searchHtml = '<div style="margin-bottom:1rem"><input type="text" id="memory-search-q" placeholder="Search across all memory\u2026" style="padding:0.5rem 1rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);width:100%;max-width:400px;font-family:var(--font)"><button class="btn" style="margin-left:8px" id="memory-search-btn">' + uiBtnLabel('search', 'Search') + '</button></div>';
           return tabButtons + searchHtml + '<div id="memory-search-results"><p style="color:var(--muted)">Enter a query and click Search (example: <code>token budget</code>).</p></div>';
         }
 
@@ -1505,10 +1683,97 @@
 
     renderSkills: function() {
       var self = this;
-      return api('/api/skills').then(function(data) {
+      var tab = self._skillsTab || 'installed';
+      if (tab !== 'installed' && tab !== 'catalog') tab = 'installed';
+      var tabs = '<div class="tabs" style="margin-bottom:1rem">'
+        + '<button class="' + (tab === 'installed' ? 'active' : '') + '" data-skills-tab="installed">Installed</button>'
+        + '<button class="' + (tab === 'catalog' ? 'active' : '') + '" data-skills-tab="catalog">Catalog</button>'
+        + '</div>';
+      return Promise.all([
+        api('/api/skills'),
+        fetchWithFallback('/api/skills/catalog', { items: [] }, 'skills-catalog')
+      ]).then(function(results) {
+        var data = results[0] || {};
+        var catalogData = (results[1] && results[1].data) ? results[1].data : { items: [] };
         var skills = data.skills || [];
+        var catalogItems = (catalogData.items || []).filter(function(i) { return (i.source || '') === 'registry'; });
+        var installedSkillSet = {};
+        skills.forEach(function(s) {
+          var skillName = (s && s.name) ? String(s.name).trim().toLowerCase() : '';
+          if (skillName) installedSkillSet[skillName] = true;
+        });
+
+        var catalogHtml = '';
+        if (catalogItems.length > 0) {
+          var catRows = catalogItems.map(function(item) {
+            var name = item.name || item.filename || '';
+            var description = String(item.description || '').trim();
+            var summary = description || 'No description provided for this catalog entry yet.';
+            var metaParts = [];
+            if (item.kind) metaParts.push(String(item.kind));
+            if (item.version) metaParts.push('v' + String(item.version));
+            if (item.tags && item.tags.length) metaParts.push(String(item.tags.slice(0, 4).join(', ')));
+            var metaLine = metaParts.length ? metaParts.join(' • ') : '';
+            var searchText = [
+              name,
+              summary,
+              item.kind || '',
+              item.version || '',
+              (item.tags && item.tags.length) ? item.tags.join(' ') : ''
+            ].join(' ').toLowerCase();
+            var isInstalled = !!installedSkillSet[String(name).trim().toLowerCase()];
+            var installedMark = isInstalled
+              ? '<span class="badge success" style="font-size:0.62rem;padding:0.08rem 0.35rem">installed</span>'
+              : '';
+            return '<label data-catalog-row="1" data-catalog-search="' + esc(searchText) + '" style="display:flex;align-items:flex-start;gap:0.6rem;padding:0.6rem 0.65rem;border:1px solid var(--border-soft);border-radius:6px;background:rgba(255,255,255,0.01)">'
+              + '<input type="checkbox" class="cat-skill-check" value="' + esc(name) + '"' + (isInstalled ? ' checked' : '') + ' data-installed="' + (isInstalled ? '1' : '0') + '">'
+              + '<div style="min-width:0;flex:1">'
+              + '<div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">'
+              + '<span style="font-family:var(--font-mono);font-size:0.82rem;color:var(--text)">' + esc(name) + '</span>'
+              + installedMark
+              + '</div>'
+              + '<div style="margin-top:0.18rem;font-size:0.75rem;color:var(--muted);line-height:1.35">' + esc(summary) + '</div>'
+              + (metaLine ? '<div style="margin-top:0.2rem;font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em">' + esc(metaLine) + '</div>' : '')
+              + '</div>'
+              + '</label>';
+          }).join('');
+          catalogHtml = ''
+            + '<div class="card" style="margin-bottom:1rem">'
+            + '  <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap">'
+            + '    <div><div class="card-title">catalog</div><div style="font-size:0.75rem;color:var(--muted)">registry skills (' + catalogItems.length + ')</div></div>'
+            + '    <div style="display:flex;gap:0.5rem;flex-wrap:wrap">'
+            + '      <button class="btn secondary" id="btn-catalog-refresh">' + uiBtnLabel('refresh', 'Refresh Catalog') + '</button>'
+            + '      <button class="btn secondary" id="btn-catalog-install">' + uiBtnLabel('download', 'Install selected') + '</button>'
+            + '      <button class="btn secondary" id="btn-catalog-activate">' + uiBtnLabel('power', 'Activate selected') + '</button>'
+            + '      <button class="btn" id="btn-catalog-install-activate">' + uiBtnLabel('spark', 'Install + Activate') + '</button>'
+            + '    </div>'
+            + '  </div>'
+            + '  <div style="margin-top:0.75rem">'
+            + '    <input type="text" id="catalog-filter-input" placeholder="Search catalog by name, description, tags..."'
+            + '      style="width:100%;padding:0.5rem 0.65rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--font)">'
+            + '  </div>'
+            + '  <div style="margin-top:0.75rem;max-height:min(62vh,680px);overflow:auto;padding-right:0.25rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:0.55rem">' + catRows + '</div>'
+            + '  <div id="catalog-filter-empty" style="display:none;margin-top:0.5rem;font-size:0.78rem;color:var(--muted)">No catalog skills match this filter.</div>'
+            + '</div>';
+        } else {
+          catalogHtml = ''
+            + '<div class="card" style="margin-bottom:1rem">'
+            + '  <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap">'
+            + '    <div><div class="card-title">catalog</div><div style="font-size:0.75rem;color:var(--muted)">registry skills (0)</div></div>'
+            + '    <div style="display:flex;gap:0.5rem;flex-wrap:wrap">'
+            + '      <button class="btn secondary" id="btn-catalog-refresh">' + uiBtnLabel('refresh', 'Refresh Catalog') + '</button>'
+            + '    </div>'
+            + '  </div>'
+            + '  <div style="margin-top:0.75rem;font-size:0.8125rem;color:var(--muted)">No registry catalog skills available.</div>'
+            + '</div>';
+        }
+
+        if (tab === 'catalog') {
+          return tabs + catalogHtml;
+        }
+
         if (skills.length === 0) {
-          return '<div style="display:flex;align-items:center;gap:1rem"><button class="btn" id="btn-reload-skills">Reload skills</button><span style="font-size:0.8125rem;color:var(--muted)">0 / 0 enabled</span></div><div class="card" style="margin-top:1rem;color:var(--muted)">No skills registered. Add skills on disk and click Reload skills.</div>';
+          return tabs + '<div style="display:flex;align-items:center;gap:1rem"><button class="btn" id="btn-reload-skills">' + uiBtnLabel('refresh', 'Reload skills') + '</button><span style="font-size:0.8125rem;color:var(--muted)">0 / 0 enabled</span></div><div class="card" style="margin-top:1rem;color:var(--muted)">No skills registered. Add skills on disk and click Reload skills.</div>';
         }
         var enabledCount = skills.filter(function(s) { return s.enabled; }).length;
         var cards = skills.map(function(s) {
@@ -1522,11 +1787,11 @@
           var toggleTitle = builtIn ? ' title="Built-in skills are always enabled"' : '';
           var toggleClass = builtIn ? 'toggle is-disabled' : 'toggle';
           if (s.id && !builtIn) {
-            actions = '<div style="display:flex;justify-content:flex-end;margin-top:0.75rem"><button class="btn secondary" data-skill-delete="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '" style="border-color:var(--error);color:var(--error);font-size:0.75rem;padding:0.25rem 0.6rem">Delete</button></div>';
+            actions = '<div style="display:flex;justify-content:flex-end;margin-top:0.75rem"><button class="btn secondary" data-skill-delete="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '" style="border-color:var(--error);color:var(--error);font-size:0.75rem;padding:0.25rem 0.6rem">' + uiBtnLabel('trash', 'Delete') + '</button></div>';
           }
           return '<div class="card skill-card" data-id="' + esc(s.id || '') + '"><div class="skill-header"><div class="skill-info"><div class="card-title" style="color:' + kindColor + '">' + esc(kindLabel) + builtInBadge + '</div><div class="card-value">' + esc(s.name || '') + builtInNameTag + '</div></div><label class="' + toggleClass + '"><input type="checkbox" data-skill-toggle="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '"' + (s.enabled ? ' checked' : '') + toggleDisabled + toggleTitle + '><span class="toggle-track"></span></label></div><p style="font-size:0.8125rem;color:var(--muted);margin-top:0.5rem">' + esc(s.description || '') + '</p>' + actions + '</div>';
         }).join('');
-        return '<div style="display:flex;align-items:center;gap:1rem"><button class="btn" id="btn-reload-skills">Reload skills</button><span style="font-size:0.8125rem;color:var(--muted)">' + enabledCount + ' / ' + skills.length + ' enabled</span></div><div class="skills-grid" style="margin-top:1rem">' + cards + '</div>';
+        return tabs + '<div style="display:flex;align-items:center;gap:1rem"><button class="btn" id="btn-reload-skills">' + uiBtnLabel('refresh', 'Reload skills') + '</button><span style="font-size:0.8125rem;color:var(--muted)">' + enabledCount + ' / ' + skills.length + ' enabled</span></div><div class="skills-grid" style="margin-top:1rem">' + cards + '</div>';
       });
     },
 
@@ -2029,7 +2294,12 @@
         modelNames.forEach(function(name) {
           var m = models[name];
           if (m.cache_hit_rate < 0.3 && m.total_turns > 5) {
-            tipList.push('<div style="padding:0.375rem 0;border-bottom:1px solid var(--border)"><span style="color:var(--warning)">\u25cf</span> <strong>' + esc(name) + '</strong> has a low cache hit rate (' + (m.cache_hit_rate * 100).toFixed(0) + '%). Consider enabling semantic caching for repeated queries.</div>');
+            tipList.push(
+              '<div style="padding:0.375rem 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:0.75rem;align-items:center;flex-wrap:wrap">'
+              + '<div><span style="color:var(--warning)">\u25cf</span> <strong>' + esc(name) + '</strong> has a low cache hit rate (' + (m.cache_hit_rate * 100).toFixed(0) + '%). Consider enabling semantic caching for repeated queries.</div>'
+              + '<button class="btn secondary" data-action="enable-semantic-cache" data-model="' + esc(name) + '" style="font-size:0.6875rem;padding:0.25rem 0.625rem;white-space:nowrap">Enable Caching</button>'
+              + '</div>'
+            );
           }
           if (m.cost.effective_per_turn > 0.05) {
             tipList.push('<div style="padding:0.375rem 0;border-bottom:1px solid var(--border)"><span style="color:var(--error)">\u25cf</span> <strong>' + esc(name) + '</strong> costs $' + m.cost.effective_per_turn.toFixed(4) + '/turn. Consider switching to a lighter model for simpler tasks.</div>');
@@ -2304,7 +2574,7 @@
       this._settingsDirty = JSON.stringify(draft) !== JSON.stringify(_cachedConfig);
       this._settingsJsonText = null;
     },
-    _KNOWN_MODELS: ['anthropic/claude-sonnet-4-20250514','openai/gpt-4o','openai/gpt-4o-mini','google/gemini-2.0-flash','ollama/qwen3:8b'],
+    _KNOWN_MODELS: ['anthropic/claude-sonnet-4-20250514','openai/gpt-4o','openai/gpt-4o-mini','google/gemini-2.0-flash','sglang/apertus-8b-instruct:latest','ollama/apertus-8b-instruct:latest','ollama/qwen3:8b'],
     _MODEL_CATALOG: [
       'anthropic/claude-opus-4-1-20250805','anthropic/claude-opus-4-20250514','anthropic/claude-sonnet-4-20250514','anthropic/claude-3-7-sonnet-20250219','anthropic/claude-3-5-sonnet-20241022','anthropic/claude-3-5-haiku-20241022',
       'openai/gpt-5','openai/gpt-5-mini','openai/gpt-4.1','openai/gpt-4.1-mini','openai/gpt-4o','openai/gpt-4o-mini','openai/o3','openai/o3-mini',
@@ -2318,7 +2588,7 @@
       'cohere/command-a','cohere/command-r-plus',
       'perplexity/sonar-pro','perplexity/sonar',
       'openrouter/anthropic/claude-sonnet-4','openrouter/openai/gpt-4o','openrouter/google/gemini-2.5-pro',
-      'ollama/qwen3:8b','ollama/qwen2.5-coder:14b','ollama/llama3.1:8b','ollama/llama3.1:70b','ollama/deepseek-r1:14b','ollama/mistral-small:24b'
+      'sglang/apertus-8b-instruct:latest','sglang/apertus-70b-instruct:latest','vllm/apertus-8b-instruct:latest','vllm/apertus-70b-instruct:latest','docker-model-runner/apertus-8b-instruct:latest','docker-model-runner/apertus-70b-instruct:latest','ollama/apertus-8b-instruct:latest','ollama/apertus-70b-instruct:latest','ollama/qwen3:8b','ollama/qwen2.5-coder:14b','ollama/llama3.1:8b','ollama/llama3.1:70b','ollama/deepseek-r1:14b','ollama/mistral-small:24b'
     ],
     _buildModelOptionEntries: function(opts) {
       opts = opts || {};
@@ -2390,13 +2660,18 @@
       if (proxy.mode === 'in_process') {
         alerts.push('<div class="card" style="border-color:var(--border);margin-bottom:0.6rem"><div style="font-size:0.72rem;color:var(--muted);font-weight:600">Provider routing mode: in-process</div><div style="font-size:0.72rem;color:var(--muted);margin-top:0.2rem">Dashboard discovery is server-mediated. Providers are contacted only by Ironclad backend APIs.</div></div>');
       }
+      if (proxy.legacy_loopback_support === 'removed_v0_8') {
+        alerts.push('<div class="card" style="border-color:var(--warning);margin-bottom:0.6rem"><div style="font-size:0.72rem;color:var(--warning);font-weight:600">Legacy loopback provider URLs are unsupported</div><div style="font-size:0.72rem;color:var(--muted);margin-top:0.2rem">127.0.0.1:8788 provider URLs are not supported in v0.8.0+. Update providers.*.url to direct upstream provider base URLs.</div></div>');
+      }
       Object.keys(reports).forEach(function(name) {
         var rep = reports[name] || {};
-        if (rep.status === 'proxy_unreachable' || rep.status === 'proxy_misconfigured') {
+        if (rep.status === 'proxy_unreachable' || rep.status === 'proxy_misconfigured' || rep.status === 'legacy_proxy_unsupported') {
           var hint = rep.hint || ('Local proxy for ' + name + ' is unavailable.');
           var title = rep.status === 'proxy_misconfigured'
             ? ('Proxy misconfigured: ' + name)
-            : ('Proxy unreachable: ' + name);
+            : (rep.status === 'legacy_proxy_unsupported'
+              ? ('Legacy loopback URL unsupported: ' + name)
+              : ('Proxy unreachable: ' + name));
           alerts.push('<div class="card" style="border-color:var(--warning);margin-bottom:0.6rem"><div style="font-size:0.72rem;color:var(--warning);font-weight:600">' + esc(title) + '</div><div style="font-size:0.72rem;color:var(--muted);margin-top:0.2rem">' + esc(hint) + '</div></div>');
         }
       });
@@ -2523,11 +2798,34 @@
       var self = this;
       return Promise.all([
         api('/api/subagents'),
-        self._loadAvailableModels({ nonBlocking: true, skipFetch: true })
+        self._loadAvailableModels({ nonBlocking: true, skipFetch: true }),
+        fetchWithFallback('/api/skills', { skills: [] }, 'skills')
       ]).then(function(arr) {
         var data = arr[0] || {};
         var discoveredModels = arr[1] || [];
+        var skillsData = (arr[2] && arr[2].data) ? arr[2].data : { skills: [] };
         var agents = data.agents || [];
+        var skillRecords = (skillsData.skills || []).filter(function(s) { return s && s.name; });
+        var skillNameSet = {};
+        var allSkillNames = [];
+        skillRecords.forEach(function(s) {
+          var key = String(s.name).toLowerCase();
+          if (!skillNameSet[key]) {
+            skillNameSet[key] = true;
+            allSkillNames.push(String(s.name));
+          }
+        });
+        allSkillNames.sort();
+        var enabledSkillNames = skillRecords
+          .filter(function(s) { return !!s.enabled; })
+          .map(function(s) { return String(s.name); });
+        var enabledSkillCount = enabledSkillNames.length;
+        var enabledSkillHint = enabledSkillNames.length
+          ? enabledSkillNames.slice(0, 10).join(', ') + (enabledSkillNames.length > 10 ? ' ...' : '')
+          : 'No enabled skills found. Enable skills from the Skills page first.';
+        var skillOptions = allSkillNames
+          .map(function(name) { return '<option value="' + esc(name) + '"></option>'; })
+          .join('');
         var specialists = agents.filter(function(a) { return a.role === 'subagent' || a.role === 'specialist'; });
         var proxies = agents.filter(function(a) { return a.role === 'model-proxy'; });
         var enabledCount = specialists.filter(function(a) { return a.enabled; }).length;
@@ -2541,6 +2839,7 @@
         var html = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem"><div>';
         html += '<span style="font-size:1.5rem;font-weight:700;color:var(--text)">' + specialists.length + ' Sub-Agents</span>';
         html += '<span style="margin-left:0.75rem;font-size:0.8125rem;color:var(--muted)">' + enabledCount + ' enabled</span>';
+        html += '<span style="margin-left:0.75rem;font-size:0.8125rem;color:var(--muted)">' + enabledSkillCount + ' shared runtime skills</span>';
         html += '</div>';
         html += '<button class="btn" id="sa-add-btn" style="font-size:0.75rem;padding:0.4rem 1rem">+ Add Agent</button>';
         html += '</div>';
@@ -2554,6 +2853,7 @@
         function agentCard(a) {
           var c = '';
           var skills = a.skills || [];
+          var fixedSkillCount = skills.length;
           var statusBadge = a.enabled
             ? '<span class="badge success">enabled</span>'
             : '<span class="badge" style="background:var(--surface);color:var(--muted)">disabled</span>';
@@ -2574,7 +2874,18 @@
           if (a.model) c += '<div><span style="color:var(--text-dim)">Model:</span> ' + esc(a.model) + '</div>';
           if (a.model_mode && a.model_mode !== 'fixed') c += '<div><span style="color:var(--text-dim)">Mode:</span> ' + esc(a.model_mode) + '</div>';
           if (a.resolved_model) c += '<div><span style="color:var(--text-dim)">Resolved:</span> ' + esc(a.resolved_model) + '</div>';
-          c += '<div><span style="color:var(--text-dim)">Skills:</span> ' + skills.length + '</div>';
+          c += '<div><span style="color:var(--text-dim)">Fixed skills:</span> '
+            + '<button class="sa-edit-skills"'
+            + ' data-name="' + esc(a.name) + '"'
+            + ' data-display="' + esc(a.display_name || '') + '"'
+            + ' data-model="' + esc(a.model || '') + '"'
+            + ' data-role="' + esc(a.role) + '"'
+            + ' data-skills="' + esc((a.skills || []).join(",")) + '"'
+            + ' data-desc="' + esc(a.description || '') + '"'
+            + ' style="margin-left:0.25rem;background:transparent;border:1px solid var(--border);border-radius:4px;padding:0.05rem 0.35rem;color:var(--text);cursor:pointer;font-size:0.7rem">'
+            + fixedSkillCount
+            + '</button></div>';
+          c += '<div><span style="color:var(--text-dim)">Shared skills:</span> ' + enabledSkillCount + '</div>';
           if (a.session_count > 0) c += '<div><span style="color:var(--text-dim)">Sessions:</span> ' + a.session_count + '</div>';
           if (a.description) c += '<div style="flex:1">' + esc(a.description) + '</div>';
           c += '</div>';
@@ -2613,7 +2924,9 @@
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Role</label>';
         html += '<select class="settings-input" id="sa-m-role" style="margin-bottom:0.75rem"><option value="subagent">subagent</option><option value="model-proxy">model-proxy</option></select>';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Fixed Skills (comma-separated)</label>';
-        html += '<input class="settings-input" id="sa-m-skills" placeholder="e.g. research,summarization" style="margin-bottom:0.75rem">';
+        html += '<input class="settings-input" id="sa-m-skills" list="sa-skill-options" placeholder="e.g. research,summarization" style="margin-bottom:0.35rem">';
+        html += '<datalist id="sa-skill-options">' + skillOptions + '</datalist>';
+        html += '<div id="sa-m-skills-help" style="font-size:0.6875rem;color:var(--muted);margin-bottom:0.75rem">Available: ' + esc(enabledSkillHint) + '</div>';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Description</label>';
         html += '<textarea class="settings-input" id="sa-m-desc" rows="2" placeholder="What does this agent do?" style="margin-bottom:1rem;resize:vertical"></textarea>';
         html += '<div style="display:flex;gap:0.5rem;justify-content:flex-end">';
@@ -2624,6 +2937,22 @@
         setTimeout(function() {
           var modal = document.getElementById('sa-modal');
           var editingName = null;
+          var skillsHelpDefault = 'Available: ' + enabledSkillHint;
+
+          function syncRoleSkillsState() {
+            var role = ((document.getElementById('sa-m-role') || {}).value || 'subagent').toLowerCase();
+            var skillsInput = document.getElementById('sa-m-skills');
+            var help = document.getElementById('sa-m-skills-help');
+            if (!skillsInput || !help) return;
+            if (role === 'model-proxy') {
+              skillsInput.disabled = true;
+              skillsInput.value = '';
+              help.textContent = 'Model proxies cannot own fixed skills. Set role to subagent to assign skills.';
+            } else {
+              skillsInput.disabled = false;
+              help.textContent = skillsHelpDefault;
+            }
+          }
 
           function openModal(title, vals) {
             if (!modal) return;
@@ -2637,6 +2966,7 @@
             var sk = document.getElementById('sa-m-skills'); if (sk) sk.value = vals.skills || '';
             var desc = document.getElementById('sa-m-desc'); if (desc) desc.value = vals.desc || '';
             editingName = vals.editing || null;
+            syncRoleSkillsState();
           }
 
           function closeModal() { if (modal) modal.style.display = 'none'; editingName = null; }
@@ -2648,6 +2978,8 @@
           if (cancelBtn) cancelBtn.onclick = closeModal;
 
           if (modal) modal.onclick = function(e) { if (e.target === modal) closeModal(); };
+          var roleSelect = document.getElementById('sa-m-role');
+          if (roleSelect) roleSelect.onchange = syncRoleSkillsState;
 
           var saveBtn = document.getElementById('sa-m-save');
           if (saveBtn) saveBtn.onclick = function() {
@@ -2693,6 +3025,22 @@
                 skills: this.getAttribute('data-skills'),
                 desc: this.getAttribute('data-desc')
               });
+            };
+          });
+
+          document.querySelectorAll('.sa-edit-skills').forEach(function(btn) {
+            btn.onclick = function() {
+              var n = this.getAttribute('data-name');
+              openModal('Edit skills: ' + n, {
+                name: n, editing: n,
+                display: this.getAttribute('data-display'),
+                model: this.getAttribute('data-model'),
+                role: this.getAttribute('data-role'),
+                skills: this.getAttribute('data-skills'),
+                desc: this.getAttribute('data-desc')
+              });
+              var input = document.getElementById('sa-m-skills');
+              if (input && !input.disabled) input.focus();
             };
           });
 
@@ -2900,6 +3248,12 @@
         var draft = self._getSettingsDraft();
         var dirty = self._settingsDirty;
         var dirtyDot = dirty ? '<span class="settings-dirty-dot" title="Unsaved changes"></span>' : '';
+        var hintsOn = hintsEnabled();
+        var hintSettings = '<div class="settings-section"><div class="settings-section-title">Dashboard Hints</div>'
+          + '<div class="settings-row"><div class="settings-label">Hints</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" id="dashboard-hints-toggle"' + (hintsOn ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (hintsOn ? 'On' : 'Off') + '</span></div></div>'
+          + '<div style="font-size:0.75rem;color:var(--muted)">Turn contextual hints on/off. Dismissed hints stay hidden unless reset.</div>'
+          + '<div style="margin-top:0.6rem"><button class="btn secondary" id="hints-reset-dismissed" style="font-size:0.7rem;padding:0.25rem 0.55rem">Reset dismissed hints</button></div>'
+          + '</div>';
 
         var tabs = '<div class="tabs" style="margin-bottom:1rem"><button class="' + (mode === 'form' ? 'active' : '') + '" data-settings-mode="form">Form</button><button class="' + (mode === 'models' ? 'active' : '') + '" data-settings-mode="models">Model Order</button><button class="' + (mode === 'json' ? 'active' : '') + '" data-settings-mode="json">JSON</button></div>';
         var actions = '<div class="settings-actions"><button class="btn" id="settings-save" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Save</button><button class="btn secondary" id="settings-apply" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Apply</button><button class="btn secondary" id="settings-cancel" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Cancel</button>' + dirtyDot + '</div>';
@@ -2908,7 +3262,7 @@
           var jsonText = self._settingsJsonText != null ? self._settingsJsonText : JSON.stringify(draft, null, 2);
           var lintMsg = '', lintCls = 'ok';
           try { JSON.parse(jsonText); lintMsg = '\u2713 Valid JSON'; } catch (e) { lintMsg = '\u2717 ' + e.message; lintCls = 'err'; }
-          return tabs + '<div class="settings-editor"><textarea id="settings-json-editor" spellcheck="false">' + esc(jsonText) + '</textarea><div class="settings-lint ' + lintCls + '">' + esc(lintMsg) + '</div></div>' + actions;
+          return tabs + hintSettings + '<div class="settings-editor"><textarea id="settings-json-editor" spellcheck="false">' + esc(jsonText) + '</textarea><div class="settings-lint ' + lintCls + '">' + esc(lintMsg) + '</div></div>' + actions;
         }
 
         if (mode === 'models') {
@@ -2941,6 +3295,7 @@
           var addRow = modelsImmutable ? '' : ('<div class="model-order-add"><input id="model-order-add-input" class="settings-input" list="model-order-known-list" type="text" placeholder="Add model (provider/name)"><datalist id="model-order-known-list">' + knownModelOptions + '</datalist><button class="btn secondary" id="model-order-add-btn">Add model</button></div>');
           var providerAlerts = self._renderProviderDiscoveryAlerts();
           return tabs
+            + hintSettings
             + '<div class="settings-form"><div class="settings-section"><div class="settings-section-title">Model Order</div>'
             + providerAlerts
             + immutableNote
@@ -2950,7 +3305,7 @@
             + actions;
         }
 
-        var html = tabs + '<div class="settings-form">';
+        var html = tabs + hintSettings + '<div class="settings-form">';
         var specialSections = ['models', 'providers', 'wallet'];
         var sections = Object.keys(draft);
         sections.forEach(function(section) {
@@ -2994,6 +3349,7 @@
           if (section === 'providers') {
             html += '<div class="settings-section"><div class="settings-section-title">Providers</div>';
             var providerKeys = Object.keys(sectionData);
+            var knownProviders = ['anthropic', 'openai', 'google', 'ollama', 'mistral', 'cohere', 'deepseek', 'groq', 'xai', 'together', 'openrouter'];
             providerKeys.forEach(function(pName) {
               var pData = sectionData[pName];
               if (typeof pData !== 'object' || pData === null) return;
@@ -3034,7 +3390,270 @@
               }
               html += '</div>';
             });
-            html += '<button class="settings-provider-add" id="add-provider">+ Add Provider</button></div>';
+            var providerSuggestions = {};
+            knownProviders.forEach(function(name) { providerSuggestions[name] = true; });
+            providerKeys.forEach(function(name) { providerSuggestions[name] = true; });
+            var providerOptions = Object.keys(providerSuggestions).sort().map(function(name) {
+              return '<option value="' + esc(name) + '"></option>';
+            }).join('');
+            html += '<div class="model-order-add" style="margin-top:0.5rem">'
+              + '<input id="add-provider-input" class="settings-input" list="provider-known-list" type="text" placeholder="Add provider (e.g. mistral, cohere, deepseek)">'
+              + '<datalist id="provider-known-list">' + providerOptions + '</datalist>'
+              + '<button class="btn secondary" id="add-provider">Add Provider</button>'
+              + '</div></div>';
+            return;
+          }
+
+          if (section === 'channels') {
+            html += '<div class="settings-section"><div class="settings-section-title">channels</div>';
+            var handledChannelKeys = {};
+            var renderListEditor = function(opts) {
+              var uniqMap = {};
+              (Array.isArray(opts.values) ? opts.values : []).forEach(function(v) {
+                var asStr = String(v == null ? '' : v).trim();
+                if (asStr) uniqMap[asStr] = true;
+              });
+              var values = Object.keys(uniqMap);
+              var suggMap = {};
+              (Array.isArray(opts.suggestions) ? opts.suggestions : []).forEach(function(v) {
+                var asStr = String(v == null ? '' : v).trim();
+                if (asStr) suggMap[asStr] = true;
+              });
+              values.forEach(function(v) { suggMap[v] = true; });
+              var optionHtml = Object.keys(suggMap).sort().map(function(v) { return '<option value="' + esc(v) + '"></option>'; }).join('');
+              var chipsHtml = values.map(function(v) {
+                return '<span class="badge muted" style="display:inline-flex;align-items:center;gap:0.3rem;margin:0.15rem 0.25rem 0.15rem 0">'
+                  + '<span>' + esc(v) + '</span>'
+                  + '<button class="btn secondary ' + esc(opts.removeClass) + '" ' + esc(opts.dataAttr) + '="' + esc(v) + '" style="font-size:0.6rem;padding:0.05rem 0.25rem;line-height:1">x</button>'
+                  + '</span>';
+              }).join('');
+              return '<div class="settings-row"><div class="settings-label">' + esc(opts.label) + '</div><div>'
+                + '<div class="model-order-add" style="margin-bottom:0.35rem">'
+                + '<input id="' + esc(opts.inputId) + '" class="settings-input" list="' + esc(opts.listId) + '" type="text" placeholder="' + esc(opts.placeholder || 'Add item') + '">'
+                + '<datalist id="' + esc(opts.listId) + '">' + optionHtml + '</datalist>'
+                + '<button class="btn secondary" id="' + esc(opts.addId) + '">Add</button>'
+                + '</div>'
+                + '<div>' + (chipsHtml || '<span style="font-size:0.72rem;color:var(--muted)">No values configured.</span>') + '</div>'
+                + '</div></div>';
+            };
+            var startupRaw = sectionData.startup_announcements;
+            var startupSelected = [];
+            if (Array.isArray(startupRaw)) startupSelected = startupRaw.map(function(v) { return String(v || '').trim().toLowerCase(); }).filter(Boolean);
+            else if (typeof startupRaw === 'string') startupSelected = startupRaw.split(',').map(function(v) { return String(v || '').trim().toLowerCase(); }).filter(Boolean);
+            var startupSet = {};
+            startupSelected.forEach(function(v) { startupSet[v] = true; });
+            var startupKnown = ['telegram', 'whatsapp', 'signal', 'discord', 'email', 'voice'];
+            var startupChecks = startupKnown.map(function(ch) {
+              return '<label style="display:inline-flex;align-items:center;gap:0.35rem;margin:0.2rem 0.5rem 0.2rem 0"><input type="checkbox" class="startup-ann-check" data-startup-channel="' + esc(ch) + '"' + (startupSet[ch] ? ' checked' : '') + '> <span style="font-size:0.75rem">' + esc(ch) + '</span></label>';
+            }).join('');
+            html += '<div class="settings-row"><div class="settings-label">startup_announcements</div><div>'
+              + '<div style="display:flex;flex-wrap:wrap">' + startupChecks + '</div>'
+              + '<div style="font-size:0.7rem;color:var(--muted);margin-top:0.35rem">Select channels to announce on startup. Leave all unchecked to disable announcements.</div>'
+              + '</div></div>';
+
+            var trustedList = Array.isArray(sectionData.trusted_sender_ids) ? sectionData.trusted_sender_ids.map(function(v) { return String(v || '').trim(); }).filter(Boolean) : [];
+            var suggestionSet = {};
+            var tg = sectionData.telegram || {};
+            var wa = sectionData.whatsapp || {};
+            var sig = sectionData.signal || {};
+            (Array.isArray(tg.allowed_chat_ids) ? tg.allowed_chat_ids : []).forEach(function(v) { suggestionSet[String(v)] = true; });
+            (Array.isArray(wa.allowed_numbers) ? wa.allowed_numbers : []).forEach(function(v) { suggestionSet[String(v)] = true; });
+            (Array.isArray(sig.allowed_numbers) ? sig.allowed_numbers : []).forEach(function(v) { suggestionSet[String(v)] = true; });
+            var suggestionOptions = Object.keys(suggestionSet).sort().map(function(v) { return '<option value="' + esc(v) + '"></option>'; }).join('');
+            var trustedBadges = trustedList.map(function(v) {
+              return '<span class="badge muted" style="display:inline-flex;align-items:center;gap:0.3rem;margin:0.15rem 0.25rem 0.15rem 0">'
+                + '<span>' + esc(v) + '</span>'
+                + '<button class="btn secondary trusted-sender-remove" data-trusted-sender="' + esc(v) + '" style="font-size:0.6rem;padding:0.05rem 0.25rem;line-height:1">x</button>'
+                + '</span>';
+            }).join('');
+            html += '<div class="settings-row"><div class="settings-label">trusted_sender_ids</div><div>'
+              + '<div class="model-order-add" style="margin-bottom:0.35rem">'
+              + '<input id="trusted-sender-input" class="settings-input" list="trusted-sender-known-list" type="text" placeholder="Add sender id and click Add">'
+              + '<datalist id="trusted-sender-known-list">' + suggestionOptions + '</datalist>'
+              + '<button class="btn secondary" id="trusted-sender-add">Add</button>'
+              + '</div>'
+              + '<div id="trusted-sender-chiplist">' + (trustedBadges || '<span style="font-size:0.72rem;color:var(--muted)">No trusted senders configured.</span>') + '</div>'
+              + '</div></div>';
+
+            var phoneSuggestions = trustedList.filter(function(v) { return /^\+?[0-9][0-9\-\s()]+$/.test(v); });
+            var chatIdSuggestions = trustedList.filter(function(v) { return /^-?[0-9]+$/.test(v); });
+            var emailSuggestions = trustedList.filter(function(v) { return String(v).indexOf('@') !== -1; });
+            if (sectionData.telegram && typeof sectionData.telegram === 'object') {
+              handledChannelKeys.telegram = true;
+              var tg = sectionData.telegram;
+              var tgVals = Array.isArray(tg.allowed_chat_ids) ? tg.allowed_chat_ids : [];
+              html += '<div class="settings-nested"><div style="font-size:0.625rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:0.5rem">telegram</div>';
+              html += renderListEditor({
+                label: 'allowed_chat_ids',
+                values: tgVals,
+                suggestions: chatIdSuggestions.concat(tgVals.map(function(v) { return String(v); })),
+                inputId: 'telegram-allowed-chat-input',
+                listId: 'telegram-allowed-chat-list',
+                addId: 'telegram-allowed-chat-add',
+                removeClass: 'telegram-allowed-chat-remove',
+                dataAttr: 'data-telegram-chat-id',
+                placeholder: 'Add allowed chat id (e.g. 123456789)'
+              });
+              Object.keys(tg).forEach(function(subKey) {
+                if (subKey === 'allowed_chat_ids') return;
+                var subVal = tg[subKey]; var subPath = 'channels.telegram.' + subKey;
+                var type = typeof subVal === 'number' ? 'number' : 'text';
+                if (typeof subVal === 'boolean') {
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(subPath) + '"' + (subVal ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (subVal ? 'On' : 'Off') + '</span></div></div>';
+                } else {
+                  var ssv = (subVal == null || subVal === '') ? '' : esc(String(subVal));
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(subPath) + '" value="' + ssv + '" placeholder="none"></div>';
+                }
+              });
+              html += '</div>';
+            }
+
+            if (sectionData.whatsapp && typeof sectionData.whatsapp === 'object') {
+              handledChannelKeys.whatsapp = true;
+              var waCfg = sectionData.whatsapp;
+              var waVals = Array.isArray(waCfg.allowed_numbers) ? waCfg.allowed_numbers : [];
+              html += '<div class="settings-nested"><div style="font-size:0.625rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:0.5rem">whatsapp</div>';
+              html += renderListEditor({
+                label: 'allowed_numbers',
+                values: waVals,
+                suggestions: phoneSuggestions.concat(waVals),
+                inputId: 'whatsapp-allowed-number-input',
+                listId: 'whatsapp-allowed-number-list',
+                addId: 'whatsapp-allowed-number-add',
+                removeClass: 'whatsapp-allowed-number-remove',
+                dataAttr: 'data-whatsapp-number',
+                placeholder: 'Add allowed number (e.g. +15551234567)'
+              });
+              Object.keys(waCfg).forEach(function(subKey) {
+                if (subKey === 'allowed_numbers') return;
+                var subVal = waCfg[subKey]; var subPath = 'channels.whatsapp.' + subKey;
+                var type = typeof subVal === 'number' ? 'number' : 'text';
+                if (typeof subVal === 'boolean') {
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(subPath) + '"' + (subVal ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (subVal ? 'On' : 'Off') + '</span></div></div>';
+                } else {
+                  var ssv = (subVal == null || subVal === '') ? '' : esc(String(subVal));
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(subPath) + '" value="' + ssv + '" placeholder="none"></div>';
+                }
+              });
+              html += '</div>';
+            }
+
+            if (sectionData.signal && typeof sectionData.signal === 'object') {
+              handledChannelKeys.signal = true;
+              var sigCfg = sectionData.signal;
+              var sigVals = Array.isArray(sigCfg.allowed_numbers) ? sigCfg.allowed_numbers : [];
+              html += '<div class="settings-nested"><div style="font-size:0.625rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:0.5rem">signal</div>';
+              html += renderListEditor({
+                label: 'allowed_numbers',
+                values: sigVals,
+                suggestions: phoneSuggestions.concat(sigVals),
+                inputId: 'signal-allowed-number-input',
+                listId: 'signal-allowed-number-list',
+                addId: 'signal-allowed-number-add',
+                removeClass: 'signal-allowed-number-remove',
+                dataAttr: 'data-signal-number',
+                placeholder: 'Add allowed number (e.g. +15551234567)'
+              });
+              Object.keys(sigCfg).forEach(function(subKey) {
+                if (subKey === 'allowed_numbers') return;
+                var subVal = sigCfg[subKey]; var subPath = 'channels.signal.' + subKey;
+                var type = typeof subVal === 'number' ? 'number' : 'text';
+                if (typeof subVal === 'boolean') {
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(subPath) + '"' + (subVal ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (subVal ? 'On' : 'Off') + '</span></div></div>';
+                } else {
+                  var ssv = (subVal == null || subVal === '') ? '' : esc(String(subVal));
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(subPath) + '" value="' + ssv + '" placeholder="none"></div>';
+                }
+              });
+              html += '</div>';
+            }
+
+            if (sectionData.discord && typeof sectionData.discord === 'object') {
+              handledChannelKeys.discord = true;
+              var dcCfg = sectionData.discord;
+              var dcVals = Array.isArray(dcCfg.allowed_guild_ids) ? dcCfg.allowed_guild_ids : [];
+              html += '<div class="settings-nested"><div style="font-size:0.625rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:0.5rem">discord</div>';
+              html += renderListEditor({
+                label: 'allowed_guild_ids',
+                values: dcVals,
+                suggestions: dcVals,
+                inputId: 'discord-allowed-guild-input',
+                listId: 'discord-allowed-guild-list',
+                addId: 'discord-allowed-guild-add',
+                removeClass: 'discord-allowed-guild-remove',
+                dataAttr: 'data-discord-guild-id',
+                placeholder: 'Add allowed guild id'
+              });
+              Object.keys(dcCfg).forEach(function(subKey) {
+                if (subKey === 'allowed_guild_ids') return;
+                var subVal = dcCfg[subKey]; var subPath = 'channels.discord.' + subKey;
+                var type = typeof subVal === 'number' ? 'number' : 'text';
+                if (typeof subVal === 'boolean') {
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(subPath) + '"' + (subVal ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (subVal ? 'On' : 'Off') + '</span></div></div>';
+                } else {
+                  var ssv = (subVal == null || subVal === '') ? '' : esc(String(subVal));
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(subPath) + '" value="' + ssv + '" placeholder="none"></div>';
+                }
+              });
+              html += '</div>';
+            }
+
+            if (sectionData.email && typeof sectionData.email === 'object') {
+              handledChannelKeys.email = true;
+              var emailCfg = sectionData.email;
+              var senderVals = Array.isArray(emailCfg.allowed_senders) ? emailCfg.allowed_senders : [];
+              html += '<div class="settings-nested"><div style="font-size:0.625rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:0.5rem">email</div>';
+              html += renderListEditor({
+                label: 'allowed_senders',
+                values: senderVals,
+                suggestions: emailSuggestions.concat(senderVals),
+                inputId: 'email-allowed-sender-input',
+                listId: 'email-allowed-sender-list',
+                addId: 'email-allowed-sender-add',
+                removeClass: 'email-allowed-sender-remove',
+                dataAttr: 'data-email-sender',
+                placeholder: 'Add allowed sender email'
+              });
+              Object.keys(emailCfg).forEach(function(subKey) {
+                if (subKey === 'allowed_senders') return;
+                var subVal = emailCfg[subKey]; var subPath = 'channels.email.' + subKey;
+                var type = typeof subVal === 'number' ? 'number' : 'text';
+                if (typeof subVal === 'boolean') {
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(subPath) + '"' + (subVal ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (subVal ? 'On' : 'Off') + '</span></div></div>';
+                } else {
+                  var ssv = (subVal == null || subVal === '') ? '' : esc(String(subVal));
+                  html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(subPath) + '" value="' + ssv + '" placeholder="none"></div>';
+                }
+              });
+              html += '</div>';
+            }
+
+            Object.keys(sectionData).forEach(function(key) {
+              if (key === 'startup_announcements' || key === 'trusted_sender_ids' || handledChannelKeys[key]) return;
+              var val = sectionData[key];
+              var path = section + '.' + key;
+              if (typeof val === 'boolean') {
+                html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(path) + '"' + (val ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (val ? 'On' : 'Off') + '</span></div></div>';
+              } else if (typeof val === 'object' && val !== null) {
+                html += '<div class="settings-nested"><div style="font-size:0.625rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin-bottom:0.5rem">' + esc(key) + '</div>';
+                Object.keys(val).forEach(function(subKey) {
+                  var subVal = val[subKey]; var subPath = path + '.' + subKey;
+                  var type = typeof subVal === 'number' ? 'number' : 'text';
+                  if (typeof subVal === 'boolean') {
+                    html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(subPath) + '"' + (subVal ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (subVal ? 'On' : 'Off') + '</span></div></div>';
+                  } else {
+                    var ssv = (subVal == null || subVal === '') ? '' : esc(String(subVal));
+                    html += '<div class="settings-row"><div class="settings-label">' + esc(subKey) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(subPath) + '" value="' + ssv + '" placeholder="none"></div>';
+                  }
+                });
+                html += '</div>';
+              } else {
+                var type = typeof val === 'number' ? 'number' : 'text';
+                var sv = (val == null || val === '') ? '' : esc(String(val));
+                html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(path) + '" value="' + sv + '" placeholder="none"></div>';
+              }
+            });
+            html += '</div>';
             return;
           }
 
@@ -3111,7 +3730,7 @@
     var hash = (window.location.hash || '#overview').slice(1) || 'overview';
     if (hash === 'roster') { hash = 'agents'; App._agentsTab = 'roster'; window.location.hash = 'agents'; return; }
     if (pages.indexOf(hash) === -1) hash = 'overview';
-    ensureAuth().then(function() { App.navigate(hash); });
+    ensureAuth().then(function() { maybePromptHintPreference(); App.navigate(hash); });
   }
 
   document.querySelectorAll('.sidebar-nav a, .mobile-nav a').forEach(function(a) {
@@ -3159,6 +3778,30 @@
 
   var content = document.getElementById('content');
   if (content) content.addEventListener('click', function(e) {
+    var enableCacheBtn = e.target.closest('[data-action="enable-semantic-cache"]');
+    if (enableCacheBtn) {
+      if (enableCacheBtn.disabled) return;
+      var modelName = enableCacheBtn.getAttribute('data-model') || 'model';
+      var oldText = enableCacheBtn.textContent;
+      enableCacheBtn.disabled = true;
+      enableCacheBtn.textContent = 'Applying...';
+      api('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cache: { enabled: true } })
+      }).then(function() {
+        if (!_cachedConfig) _cachedConfig = {};
+        if (!_cachedConfig.cache) _cachedConfig.cache = {};
+        _cachedConfig.cache.enabled = true;
+        toast('Semantic caching enabled for runtime (' + modelName + ').');
+        enableCacheBtn.textContent = 'Enabled';
+      }).catch(function(err) {
+        enableCacheBtn.disabled = false;
+        enableCacheBtn.textContent = oldText;
+        toast(err.message || 'Failed to enable semantic caching');
+      });
+      return;
+    }
     var navBtn = e.target.closest('[data-page-nav]');
     if (navBtn) {
       App.navigate(navBtn.getAttribute('data-page-nav'));
@@ -3177,6 +3820,14 @@
       if (onboarding) onboarding.style.display = 'none';
       return;
     }
+    var dismissHintBtn = e.target.closest('[data-dismiss-hint]');
+    if (dismissHintBtn) {
+      var hintId = dismissHintBtn.getAttribute('data-dismiss-hint');
+      dismissHint(hintId);
+      var hintNode = dismissHintBtn.closest('.hint-banner');
+      if (hintNode) hintNode.remove();
+      return;
+    }
     if (e.target.closest('#btn-back-sessions')) {
       App._activeSession = null; App.navigate('sessions'); return;
     }
@@ -3185,6 +3836,8 @@
         return api('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: agentId }) }).then(function(r) {
           var sid = r.session_id || r.id;
           App._activeSession = { id: sid, agent_id: agentId, agent_name: AGENT_DISPLAY_NAME || null };
+          dismissHint('sessions-helper');
+          try { window.localStorage.setItem('ic_sessions_helper_dismissed', '1'); } catch (_) {}
           toast('Session created');
           App.navigate('sessions');
         });
@@ -3677,6 +4330,65 @@
       api('/api/skills/reload', { method: 'POST' }).then(function() { toast('Skills reloaded'); App.refreshSkills(); }).catch(function(err) { toast(err.message || 'Failed'); });
       return;
     }
+    if (e.target.closest('#btn-catalog-refresh')) {
+      App.refreshSkills();
+      toast('Catalog refreshed');
+      return;
+    }
+    var catalogInstallBtn = e.target.closest('#btn-catalog-install');
+    var catalogActivateBtn = e.target.closest('#btn-catalog-activate');
+    var catalogInstallActivateBtn = e.target.closest('#btn-catalog-install-activate');
+    if (catalogInstallBtn || catalogActivateBtn || catalogInstallActivateBtn) {
+      var selectedRows = Array.prototype.slice.call(document.querySelectorAll('.cat-skill-check:checked'))
+        .map(function(el) {
+          return {
+            name: (el.value || '').trim(),
+            installed: el.getAttribute('data-installed') === '1'
+          };
+        })
+        .filter(function(v) { return !!v.name; });
+      if (selectedRows.length === 0) {
+        toast('Select at least one catalog skill');
+        return;
+      }
+      if (catalogActivateBtn) {
+        var selectedForActivate = selectedRows.map(function(row) { return row.name; });
+        api('/api/skills/catalog/activate', {
+          method: 'POST',
+          body: { skills: selectedForActivate }
+        }).then(function() {
+          toast('Activated selected catalog skills');
+          App.refreshSkills();
+        }).catch(function(err) {
+          toast(err.message || 'Catalog activation failed');
+        });
+        return;
+      }
+      var activateOnInstall = !!catalogInstallActivateBtn;
+      var selectedForInstall = selectedRows.filter(function(row) { return !row.installed; }).map(function(row) { return row.name; });
+      if (selectedForInstall.length === 0) {
+        toast('All selected catalog skills are already installed');
+        return;
+      }
+      var payload = { skills: selectedForInstall, activate: activateOnInstall };
+      api('/api/skills/catalog/install', { method: 'POST', body: payload })
+        .then(function(resp) {
+          var installed = (resp && resp.installed) ? resp.installed.length : selectedForInstall.length;
+          toast('Installed ' + installed + ' skill(s)' + (activateOnInstall ? ' and reloaded' : ''));
+          if (!activateOnInstall) {
+            return api('/api/skills/reload', { method: 'POST' }).then(function() {
+              toast('Skills reloaded');
+            });
+          }
+        })
+        .then(function() {
+          App.refreshSkills();
+        })
+        .catch(function(err) {
+          toast(err.message || 'Catalog install failed');
+        });
+      return;
+    }
     var skillDelete = e.target.closest('[data-skill-delete]');
     if (skillDelete) {
       var skillId = skillDelete.getAttribute('data-skill-delete');
@@ -3742,6 +4454,9 @@
     var agentsTab = e.target.closest('[data-agents-tab]');
     if (agentsTab) { App._agentsTab = agentsTab.getAttribute('data-agents-tab'); App.navigate('agents'); return; }
 
+    var skillsTab = e.target.closest('[data-skills-tab]');
+    if (skillsTab) { App._skillsTab = skillsTab.getAttribute('data-skills-tab'); App.navigate('skills'); return; }
+
     var settingsMode = e.target.closest('[data-settings-mode]');
     if (settingsMode) {
       var newMode = settingsMode.getAttribute('data-settings-mode');
@@ -3749,6 +4464,182 @@
       if (App._settingsMode === 'json' && newMode !== 'json' && App._settingsJsonText) { try { App._settingsDraft = JSON.parse(App._settingsJsonText); } catch(ex) {} }
       if (newMode === 'models') App._initModelOrderFromDraft();
       App._settingsMode = newMode; App.navigate('settings'); return;
+    }
+    if (e.target.closest('#hints-reset-dismissed')) {
+      clearHintDismissals();
+      setHintsEnabled(true);
+      try { window.localStorage.setItem(HINTS_PROMPTED_KEY, '1'); } catch (_) {}
+      toast('Dismissed hints reset');
+      App.navigate('settings');
+      return;
+    }
+    if (e.target.closest('#trusted-sender-add')) {
+      var senderInput = document.getElementById('trusted-sender-input');
+      var sender = (senderInput && senderInput.value || '').trim();
+      if (!sender) { toast('Enter a sender id first'); return; }
+      var draftTs = App._getSettingsDraft();
+      if (!draftTs.channels) draftTs.channels = {};
+      var curTs = Array.isArray(draftTs.channels.trusted_sender_ids) ? draftTs.channels.trusted_sender_ids.slice() : [];
+      if (curTs.indexOf(sender) !== -1) { toast('Sender already trusted'); return; }
+      curTs.push(sender);
+      draftTs.channels.trusted_sender_ids = curTs;
+      if (senderInput) senderInput.value = '';
+      App._settingsDirty = JSON.stringify(draftTs) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    var removeTrustedSenderBtn = e.target.closest('.trusted-sender-remove[data-trusted-sender]');
+    if (removeTrustedSenderBtn) {
+      var senderVal = removeTrustedSenderBtn.getAttribute('data-trusted-sender');
+      var draftTr = App._getSettingsDraft();
+      if (!draftTr.channels) draftTr.channels = {};
+      var curTr = Array.isArray(draftTr.channels.trusted_sender_ids) ? draftTr.channels.trusted_sender_ids.slice() : [];
+      draftTr.channels.trusted_sender_ids = curTr.filter(function(v) { return String(v) !== String(senderVal); });
+      App._settingsDirty = JSON.stringify(draftTr) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    if (e.target.closest('#telegram-allowed-chat-add')) {
+      var tgInput = document.getElementById('telegram-allowed-chat-input');
+      var tgRaw = (tgInput && tgInput.value || '').trim();
+      if (!tgRaw) { toast('Enter a chat id first'); return; }
+      if (!/^-?[0-9]+$/.test(tgRaw)) { toast('Chat id must be an integer'); return; }
+      var tgId = Number(tgRaw);
+      var draftTg = App._getSettingsDraft();
+      if (!draftTg.channels) draftTg.channels = {};
+      if (!draftTg.channels.telegram || typeof draftTg.channels.telegram !== 'object') draftTg.channels.telegram = {};
+      var tgList = Array.isArray(draftTg.channels.telegram.allowed_chat_ids) ? draftTg.channels.telegram.allowed_chat_ids.slice() : [];
+      if (tgList.indexOf(tgId) !== -1) { toast('Chat id already allowed'); return; }
+      tgList.push(tgId);
+      draftTg.channels.telegram.allowed_chat_ids = tgList;
+      if (tgInput) tgInput.value = '';
+      App._settingsDirty = JSON.stringify(draftTg) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    var tgRemoveBtn = e.target.closest('.telegram-allowed-chat-remove[data-telegram-chat-id]');
+    if (tgRemoveBtn) {
+      var tgRemoveVal = Number(tgRemoveBtn.getAttribute('data-telegram-chat-id'));
+      var draftTgR = App._getSettingsDraft();
+      if (!draftTgR.channels) draftTgR.channels = {};
+      if (!draftTgR.channels.telegram || typeof draftTgR.channels.telegram !== 'object') draftTgR.channels.telegram = {};
+      var tgCur = Array.isArray(draftTgR.channels.telegram.allowed_chat_ids) ? draftTgR.channels.telegram.allowed_chat_ids.slice() : [];
+      draftTgR.channels.telegram.allowed_chat_ids = tgCur.filter(function(v) { return Number(v) !== tgRemoveVal; });
+      App._settingsDirty = JSON.stringify(draftTgR) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    if (e.target.closest('#whatsapp-allowed-number-add')) {
+      var waInput = document.getElementById('whatsapp-allowed-number-input');
+      var waVal = (waInput && waInput.value || '').trim();
+      if (!waVal) { toast('Enter a number first'); return; }
+      var draftWa = App._getSettingsDraft();
+      if (!draftWa.channels) draftWa.channels = {};
+      if (!draftWa.channels.whatsapp || typeof draftWa.channels.whatsapp !== 'object') draftWa.channels.whatsapp = {};
+      var waList = Array.isArray(draftWa.channels.whatsapp.allowed_numbers) ? draftWa.channels.whatsapp.allowed_numbers.slice() : [];
+      if (waList.indexOf(waVal) !== -1) { toast('Number already allowed'); return; }
+      waList.push(waVal);
+      draftWa.channels.whatsapp.allowed_numbers = waList;
+      if (waInput) waInput.value = '';
+      App._settingsDirty = JSON.stringify(draftWa) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    var waRemoveBtn = e.target.closest('.whatsapp-allowed-number-remove[data-whatsapp-number]');
+    if (waRemoveBtn) {
+      var waRemoveVal = waRemoveBtn.getAttribute('data-whatsapp-number');
+      var draftWaR = App._getSettingsDraft();
+      if (!draftWaR.channels) draftWaR.channels = {};
+      if (!draftWaR.channels.whatsapp || typeof draftWaR.channels.whatsapp !== 'object') draftWaR.channels.whatsapp = {};
+      var waCur = Array.isArray(draftWaR.channels.whatsapp.allowed_numbers) ? draftWaR.channels.whatsapp.allowed_numbers.slice() : [];
+      draftWaR.channels.whatsapp.allowed_numbers = waCur.filter(function(v) { return String(v) !== String(waRemoveVal); });
+      App._settingsDirty = JSON.stringify(draftWaR) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    if (e.target.closest('#signal-allowed-number-add')) {
+      var sigInput = document.getElementById('signal-allowed-number-input');
+      var sigVal = (sigInput && sigInput.value || '').trim();
+      if (!sigVal) { toast('Enter a number first'); return; }
+      var draftSig = App._getSettingsDraft();
+      if (!draftSig.channels) draftSig.channels = {};
+      if (!draftSig.channels.signal || typeof draftSig.channels.signal !== 'object') draftSig.channels.signal = {};
+      var sigList = Array.isArray(draftSig.channels.signal.allowed_numbers) ? draftSig.channels.signal.allowed_numbers.slice() : [];
+      if (sigList.indexOf(sigVal) !== -1) { toast('Number already allowed'); return; }
+      sigList.push(sigVal);
+      draftSig.channels.signal.allowed_numbers = sigList;
+      if (sigInput) sigInput.value = '';
+      App._settingsDirty = JSON.stringify(draftSig) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    var sigRemoveBtn = e.target.closest('.signal-allowed-number-remove[data-signal-number]');
+    if (sigRemoveBtn) {
+      var sigRemoveVal = sigRemoveBtn.getAttribute('data-signal-number');
+      var draftSigR = App._getSettingsDraft();
+      if (!draftSigR.channels) draftSigR.channels = {};
+      if (!draftSigR.channels.signal || typeof draftSigR.channels.signal !== 'object') draftSigR.channels.signal = {};
+      var sigCur = Array.isArray(draftSigR.channels.signal.allowed_numbers) ? draftSigR.channels.signal.allowed_numbers.slice() : [];
+      draftSigR.channels.signal.allowed_numbers = sigCur.filter(function(v) { return String(v) !== String(sigRemoveVal); });
+      App._settingsDirty = JSON.stringify(draftSigR) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    if (e.target.closest('#discord-allowed-guild-add')) {
+      var dcInput = document.getElementById('discord-allowed-guild-input');
+      var dcVal = (dcInput && dcInput.value || '').trim();
+      if (!dcVal) { toast('Enter a guild id first'); return; }
+      var draftDc = App._getSettingsDraft();
+      if (!draftDc.channels) draftDc.channels = {};
+      if (!draftDc.channels.discord || typeof draftDc.channels.discord !== 'object') draftDc.channels.discord = {};
+      var dcList = Array.isArray(draftDc.channels.discord.allowed_guild_ids) ? draftDc.channels.discord.allowed_guild_ids.slice() : [];
+      if (dcList.indexOf(dcVal) !== -1) { toast('Guild id already allowed'); return; }
+      dcList.push(dcVal);
+      draftDc.channels.discord.allowed_guild_ids = dcList;
+      if (dcInput) dcInput.value = '';
+      App._settingsDirty = JSON.stringify(draftDc) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    var dcRemoveBtn = e.target.closest('.discord-allowed-guild-remove[data-discord-guild-id]');
+    if (dcRemoveBtn) {
+      var dcRemoveVal = dcRemoveBtn.getAttribute('data-discord-guild-id');
+      var draftDcR = App._getSettingsDraft();
+      if (!draftDcR.channels) draftDcR.channels = {};
+      if (!draftDcR.channels.discord || typeof draftDcR.channels.discord !== 'object') draftDcR.channels.discord = {};
+      var dcCur = Array.isArray(draftDcR.channels.discord.allowed_guild_ids) ? draftDcR.channels.discord.allowed_guild_ids.slice() : [];
+      draftDcR.channels.discord.allowed_guild_ids = dcCur.filter(function(v) { return String(v) !== String(dcRemoveVal); });
+      App._settingsDirty = JSON.stringify(draftDcR) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    if (e.target.closest('#email-allowed-sender-add')) {
+      var emInput = document.getElementById('email-allowed-sender-input');
+      var emVal = (emInput && emInput.value || '').trim();
+      if (!emVal) { toast('Enter an email sender first'); return; }
+      var draftEm = App._getSettingsDraft();
+      if (!draftEm.channels) draftEm.channels = {};
+      if (!draftEm.channels.email || typeof draftEm.channels.email !== 'object') draftEm.channels.email = {};
+      var emList = Array.isArray(draftEm.channels.email.allowed_senders) ? draftEm.channels.email.allowed_senders.slice() : [];
+      if (emList.indexOf(emVal) !== -1) { toast('Sender already allowed'); return; }
+      emList.push(emVal);
+      draftEm.channels.email.allowed_senders = emList;
+      if (emInput) emInput.value = '';
+      App._settingsDirty = JSON.stringify(draftEm) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    var emRemoveBtn = e.target.closest('.email-allowed-sender-remove[data-email-sender]');
+    if (emRemoveBtn) {
+      var emRemoveVal = emRemoveBtn.getAttribute('data-email-sender');
+      var draftEmR = App._getSettingsDraft();
+      if (!draftEmR.channels) draftEmR.channels = {};
+      if (!draftEmR.channels.email || typeof draftEmR.channels.email !== 'object') draftEmR.channels.email = {};
+      var emCur = Array.isArray(draftEmR.channels.email.allowed_senders) ? draftEmR.channels.email.allowed_senders.slice() : [];
+      draftEmR.channels.email.allowed_senders = emCur.filter(function(v) { return String(v) !== String(emRemoveVal); });
+      App._settingsDirty = JSON.stringify(draftEmR) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
     }
     if (e.target.closest('#model-order-add-btn')) {
       var addInput = document.getElementById('model-order-add-input');
@@ -3814,13 +4705,15 @@
       return;
     }
     if (e.target.closest('#add-provider')) {
-      var name = prompt('Provider name (e.g. mistral, cohere, deepseek):');
+      var providerInput = document.getElementById('add-provider-input');
+      var name = (providerInput && providerInput.value || '');
       if (!name || !name.trim()) return;
       name = name.trim().toLowerCase();
       var draft = App._getSettingsDraft();
       if (!draft.providers) draft.providers = {};
       if (draft.providers[name]) { toast('Provider "' + name + '" already exists'); return; }
       draft.providers[name] = { url: '', tier: 'T2', format: 'openai', chat_path: '/v1/chat/completions' };
+      if (providerInput) providerInput.value = '';
       App._settingsDirty = true; App._settingsJsonText = null;
       App.navigate('settings');
       return;
@@ -3932,6 +4825,8 @@
       var tds = row.querySelectorAll('td');
       var nickTd = tds[0]; var agentTd = tds[1];
       var nick = nickTd ? nickTd.textContent.trim() : '';
+      dismissHint('sessions-helper');
+      try { window.localStorage.setItem('ic_sessions_helper_dismissed', '1'); } catch (_) {}
       App._activeSession = {
         id: id,
         agent_id: agentTd ? agentTd.textContent : 'default',
@@ -4162,6 +5057,20 @@
       return;
     }
   });
+  if (content) content.addEventListener('input', function(e) {
+    if (!e.target || e.target.id !== 'catalog-filter-input') return;
+    var needle = String(e.target.value || '').trim().toLowerCase();
+    var rows = Array.prototype.slice.call(document.querySelectorAll('[data-catalog-row="1"]'));
+    var visible = 0;
+    rows.forEach(function(row) {
+      var hay = String(row.getAttribute('data-catalog-search') || '').toLowerCase();
+      var match = !needle || hay.indexOf(needle) !== -1;
+      row.style.display = match ? '' : 'none';
+      if (match) visible += 1;
+    });
+    var empty = document.getElementById('catalog-filter-empty');
+    if (empty) empty.style.display = visible === 0 ? '' : 'none';
+  });
 
   if (content) content.addEventListener('input', function(e) {
     if (e.target.id === 'cal-sched-interval' || e.target.id === 'cal-sched-hour' || e.target.id === 'cal-sched-minute') { var sched = App._readSchedFromUI(); var sumEl = document.getElementById('cal-sched-summary'); if (sumEl) sumEl.textContent = App._schedSummary(sched); return; }
@@ -4231,10 +5140,42 @@
   if (content) content.addEventListener('keydown', function(e) {
     if (e.target.id === 'session-msg-input' && e.key === 'Enter') { e.preventDefault(); if (App._sendingMessage) return; var btn = document.getElementById('btn-send-msg'); if (btn && !btn.disabled) btn.click(); return; }
     if (e.target.id === 'model-order-add-input' && e.key === 'Enter') { e.preventDefault(); var addBtn = document.getElementById('model-order-add-btn'); if (addBtn) addBtn.click(); return; }
+    if (e.target.id === 'add-provider-input' && e.key === 'Enter') { e.preventDefault(); var addProviderBtn = document.getElementById('add-provider'); if (addProviderBtn) addProviderBtn.click(); return; }
+    if (e.target.id === 'trusted-sender-input' && e.key === 'Enter') { e.preventDefault(); var addSenderBtn = document.getElementById('trusted-sender-add'); if (addSenderBtn) addSenderBtn.click(); return; }
+    if (e.target.id === 'telegram-allowed-chat-input' && e.key === 'Enter') { e.preventDefault(); var addTgBtn = document.getElementById('telegram-allowed-chat-add'); if (addTgBtn) addTgBtn.click(); return; }
+    if (e.target.id === 'whatsapp-allowed-number-input' && e.key === 'Enter') { e.preventDefault(); var addWaBtn = document.getElementById('whatsapp-allowed-number-add'); if (addWaBtn) addWaBtn.click(); return; }
+    if (e.target.id === 'signal-allowed-number-input' && e.key === 'Enter') { e.preventDefault(); var addSigBtn = document.getElementById('signal-allowed-number-add'); if (addSigBtn) addSigBtn.click(); return; }
+    if (e.target.id === 'discord-allowed-guild-input' && e.key === 'Enter') { e.preventDefault(); var addDcBtn = document.getElementById('discord-allowed-guild-add'); if (addDcBtn) addDcBtn.click(); return; }
+    if (e.target.id === 'email-allowed-sender-input' && e.key === 'Enter') { e.preventDefault(); var addEmBtn = document.getElementById('email-allowed-sender-add'); if (addEmBtn) addEmBtn.click(); return; }
     if (e.target.id === 'roster-model-custom' && e.key === 'Enter') { e.preventDefault(); var rosterAddBtn = document.getElementById('roster-model-order-add'); var rosterSaveBtn = document.getElementById('roster-model-save'); if (rosterAddBtn) rosterAddBtn.click(); else if (rosterSaveBtn) rosterSaveBtn.click(); return; }
     if (e.target.id === 'settings-json-editor' && e.key === 'Tab') { e.preventDefault(); var ta = e.target; var start = ta.selectionStart, end = ta.selectionEnd; ta.value = ta.value.substring(0, start) + '  ' + ta.value.substring(end); ta.selectionStart = ta.selectionEnd = start + 2; ta.dispatchEvent(new Event('input', { bubbles: true })); }
   });
   if (content) content.addEventListener('change', function(e) {
+    if (e.target.classList && e.target.classList.contains('startup-ann-check')) {
+      var draftSa = App._getSettingsDraft();
+      if (!draftSa.channels) draftSa.channels = {};
+      var checks = Array.prototype.slice.call(document.querySelectorAll('.startup-ann-check:checked')).map(function(el) { return String(el.getAttribute('data-startup-channel') || '').trim(); }).filter(Boolean);
+      draftSa.channels.startup_announcements = checks.length ? checks : null;
+      App._settingsDirty = JSON.stringify(draftSa) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      document.querySelectorAll('#settings-save,#settings-apply,#settings-cancel').forEach(function(b) { if (App._settingsDirty) { b.disabled = false; b.style.opacity = ''; b.style.pointerEvents = ''; } else { b.disabled = true; b.style.opacity = '0.4'; b.style.pointerEvents = 'none'; } });
+      return;
+    }
+    if (e.target.id === 'dashboard-hints-toggle') {
+      var enabled = !!e.target.checked;
+      if (enabled) {
+        setHintsEnabled(true);
+      } else {
+        disableAndClearHints();
+      }
+      try { window.localStorage.setItem(HINTS_PROMPTED_KEY, '1'); } catch (_) {}
+      var toggleWrap = e.target.closest('.settings-toggle-wrap');
+      if (toggleWrap) {
+        var toggleLbl = toggleWrap.querySelector('.settings-toggle-label');
+        if (toggleLbl) toggleLbl.textContent = enabled ? 'On' : 'Off';
+      }
+      toast(enabled ? 'Hints enabled' : 'Hints disabled');
+      return;
+    }
     if (e.target.id === 'cal-sched-freq') {
       var job = App._calEditJob || { name: '', schedule_kind: 'cron', schedule_expr: '' };
       var nameEl = document.getElementById('cal-job-name'); if (nameEl) job.name = nameEl.value;

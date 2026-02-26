@@ -5,10 +5,11 @@ use subtle::ConstantTimeEq;
 use axum::{
     Json,
     body::to_bytes,
-    extract::State,
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::AppState;
@@ -231,4 +232,55 @@ pub async fn get_channels_status(State(state): State<AppState>) -> impl IntoResp
         }));
     }
     Json(json!(result))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeadLetterQuery {
+    #[serde(default = "default_dead_letter_limit")]
+    pub limit: usize,
+}
+
+fn default_dead_letter_limit() -> usize {
+    50
+}
+
+pub async fn get_dead_letters(
+    State(state): State<AppState>,
+    Query(query): Query<DeadLetterQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.clamp(1, 500);
+    let dead_letters = state.channel_router.dead_letters(limit).await;
+    let payload: Vec<Value> = dead_letters
+        .into_iter()
+        .map(|item| {
+            json!({
+                "id": item.id,
+                "channel": item.channel,
+                "recipient_id": item.recipient_id,
+                "content": item.content,
+                "idempotency_key": item.idempotency_key,
+                "attempts": item.attempts,
+                "max_attempts": item.max_attempts,
+                "last_error": item.last_error,
+                "created_at": item.created_at,
+            })
+        })
+        .collect();
+    Json(json!({ "items": payload, "count": payload.len() }))
+}
+
+pub async fn replay_dead_letter(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let replayed = state.channel_router.replay_dead_letter(&id).await;
+    if replayed {
+        (StatusCode::OK, Json(json!({"ok": true, "id": id}))).into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "dead-letter item not found"})),
+        )
+            .into_response()
+    }
 }

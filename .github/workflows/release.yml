@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  attestations: write
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -54,10 +56,76 @@ jobs:
       - name: Run integration API suite
         run: 'cargo test -p ironclad-tests server_api:: --locked'
 
+  # ── Verify: regression battery on release tags ──────────
+  regression-battery:
+    name: Regression Battery
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run focused regression battery
+        run: just test-regression
+
+  # ── Verify: mandatory smoke + provenance preflight ──────
+  release-gates:
+    name: Release Gates
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Release-critical battery
+        run: just test-release-critical
+      - name: Provenance generator self-test
+        run: scripts/generate-provenance.sh --self-test
+
+  # ── Verify: UAT smoke stack (CLI + Web) ─────────────────
+  uat-smoke:
+    name: UAT Smoke
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run UAT stack
+        run: bash scripts/run-uat-stack.sh
+
+  # ── Verify: bounded soak/fuzz ───────────────────────────
+  soak-fuzz:
+    name: Soak/Fuzz
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install nightly toolchain for fuzzing
+        run: rustup toolchain install nightly --profile minimal
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Run soak/fuzz battery
+        env:
+          SOAK_ROUNDS: "4"
+          FUZZ_SECONDS: "45"
+        run: just test-soak-fuzz
+
+  # ── Verify: docs/release artifact consistency ───────────
+  release-doc-gate:
+    name: Release Docs Gate
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run release doc gate
+        env:
+          RELEASE_TARGET_VERSION: ${{ needs.preflight.outputs.version }}
+        run: just test-release-doc-gate
+
   # ── Build: cross-platform binary matrix ────────────────
   build:
     name: "Build (${{ matrix.target }})"
-    needs: [preflight, integration-tests]
+    needs: [preflight, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -155,11 +223,40 @@ jobs:
           name: binary-${{ matrix.os }}-${{ matrix.arch }}
           path: |
             ironclad-*.*
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ env.ARTIFACT }}
+
+  provenance:
+    name: Release Provenance Manifest
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: binary-*
+      - name: Build provenance JSON
+        run: |
+          mkdir -p release-assets
+          cp artifacts/binary-*/* release-assets/ || true
+          scripts/generate-provenance.sh \
+            --artifact-dir release-assets \
+            --output release-assets/PROVENANCE.json
+          jq -e '.artifacts | length > 0' release-assets/PROVENANCE.json >/dev/null
+      - name: Upload provenance manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-provenance
+          path: release-assets/PROVENANCE.json
 
   # ── Publish: crates.io in dependency order ─────────────
   publish:
     name: Publish Crates
-    needs: [preflight, integration-tests, build]
+    needs: [preflight, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, build, provenance]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
@@ -252,7 +349,7 @@ jobs:
   # ── Release: GitHub Release with binaries ──────────────
   release:
     name: Create GitHub Release
-    needs: [preflight, integration-tests, build, publish]
+    needs: [preflight, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, build, provenance, publish]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -262,6 +359,11 @@ jobs:
         with:
           path: artifacts
           pattern: binary-*
+      - name: Download provenance manifest
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/provenance
+          name: release-provenance
 
       - name: Prepare release assets
         env:
@@ -282,6 +384,7 @@ jobs:
           done
 
           cat release-assets/SHA256SUMS.txt
+          cp artifacts/provenance/PROVENANCE.json release-assets/PROVENANCE.json
 
       - name: Extract changelog section
         env:
@@ -317,7 +420,7 @@ jobs:
   # ── Sync Site: dispatch to ironclad.ai ─────────────────
   sync-site:
     name: Sync Site
-    needs: [preflight, integration-tests, build, release]
+    needs: [preflight, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, build, provenance, release]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

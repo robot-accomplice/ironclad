@@ -45,6 +45,17 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_html_contains_catalog_controls() {
+        let html = build_dashboard_html(None);
+        assert!(html.contains("/api/skills/catalog"));
+        assert!(html.contains("/api/skills/catalog/install"));
+        assert!(html.contains("/api/skills/catalog/activate"));
+        assert!(html.contains("btn-catalog-install"));
+        assert!(html.contains("btn-catalog-install-activate"));
+        assert!(html.contains("cat-skill-check"));
+    }
+
+    #[test]
     fn dashboard_html_without_key_has_api_health() {
         let html = build_dashboard_html(None);
         assert!(html.contains("<title>Ironclad Dashboard</title>"));

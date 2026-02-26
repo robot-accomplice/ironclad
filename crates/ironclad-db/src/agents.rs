@@ -1,4 +1,5 @@
 use ironclad_core::{IroncladError, Result};
+use std::collections::HashMap;
 
 use crate::Database;
 
@@ -79,6 +80,25 @@ pub fn list_enabled_sub_agents(db: &Database) -> Result<Vec<SubAgentRow>> {
     Ok(all.into_iter().filter(|a| a.enabled).collect())
 }
 
+pub fn list_session_counts_by_agent(db: &Database) -> Result<HashMap<String, i64>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare("SELECT agent_id, COUNT(*) FROM sessions GROUP BY agent_id")
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let agent_id: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((agent_id, count))
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    Ok(rows.into_iter().collect())
+}
+
 pub fn delete_sub_agent(db: &Database, name: &str) -> Result<bool> {
     let conn = db.conn();
     let deleted = conn
@@ -157,5 +177,32 @@ mod tests {
         assert!(delete_sub_agent(&db, "doomed").unwrap());
         assert!(!delete_sub_agent(&db, "doomed").unwrap());
         assert!(list_sub_agents(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn session_counts_by_agent_reads_sessions_table() {
+        let db = test_db();
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES (?1, ?2, 'agent', 'active')",
+                rusqlite::params!["s1", "alpha"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES (?1, ?2, 'agent', 'ended')",
+                rusqlite::params!["s2", "alpha"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES (?1, ?2, 'agent', 'active')",
+                rusqlite::params!["s3", "bravo"],
+            )
+            .unwrap();
+        }
+
+        let counts = list_session_counts_by_agent(&db).unwrap();
+        assert_eq!(counts.get("alpha"), Some(&2));
+        assert_eq!(counts.get("bravo"), Some(&1));
     }
 }

@@ -95,12 +95,14 @@ pub async fn cmd_models_scan(
             continue;
         }
 
-        let models_url =
-            if url.contains("localhost") || url.contains("127.0.0.1") || url.contains("11434") {
-                format!("{url}/api/tags")
-            } else {
-                format!("{url}/v1/models")
-            };
+        let name_l = name.to_lowercase();
+        let url_l = url.to_lowercase();
+        let ollama_like = name_l.contains("ollama") || url_l.contains("11434");
+        let models_url = if ollama_like {
+            format!("{url}/api/tags")
+        } else {
+            format!("{url}/v1/models")
+        };
 
         print!("  {CYAN}{name}{RESET} ({url}): ");
 

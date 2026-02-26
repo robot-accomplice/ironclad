@@ -266,7 +266,7 @@ pub fn list_messages(db: &Database, session_id: &str, limit: Option<i64>) -> Res
     let mut stmt = conn
         .prepare(
             "SELECT id, session_id, parent_id, role, content, usage_json, created_at \
-             FROM session_messages WHERE session_id = ?1 ORDER BY created_at ASC LIMIT ?2",
+             FROM session_messages WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC LIMIT ?2",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -616,7 +616,7 @@ pub fn list_turns_for_session(db: &Database, session_id: &str) -> Result<Vec<Tur
     let mut stmt = conn
         .prepare(
             "SELECT id, session_id, thinking, tool_calls_json, tokens_in, tokens_out, cost, model, created_at \
-             FROM turns WHERE session_id = ?1 ORDER BY created_at ASC",
+             FROM turns WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -1355,6 +1355,52 @@ mod tests {
         let db = test_db();
         let fbs = list_session_feedback(&db, "nonexistent").unwrap();
         assert!(fbs.is_empty());
+    }
+
+    #[test]
+    fn list_messages_stable_when_created_at_ties() {
+        let db = test_db();
+        let sid = create_new(&db, "agent-stable", Some(&SessionScope::Agent)).unwrap();
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO session_messages (id, session_id, role, content, created_at) VALUES (?1, ?2, 'assistant', 'm1', '2026-01-01 00:00:00')",
+                rusqlite::params!["msg-z", sid.clone()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO session_messages (id, session_id, role, content, created_at) VALUES (?1, ?2, 'assistant', 'm2', '2026-01-01 00:00:00')",
+                rusqlite::params!["msg-a", sid.clone()],
+            )
+            .unwrap();
+        }
+        let msgs = list_messages(&db, &sid, None).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].id, "msg-z");
+        assert_eq!(msgs[1].id, "msg-a");
+    }
+
+    #[test]
+    fn list_turns_stable_when_created_at_ties() {
+        let db = test_db();
+        let sid = create_new(&db, "agent-stable-turns", Some(&SessionScope::Agent)).unwrap();
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO turns (id, session_id, thinking, created_at) VALUES (?1, ?2, 't1', '2026-01-01 00:00:00')",
+                rusqlite::params!["turn-z", sid.clone()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO turns (id, session_id, thinking, created_at) VALUES (?1, ?2, 't2', '2026-01-01 00:00:00')",
+                rusqlite::params!["turn-a", sid.clone()],
+            )
+            .unwrap();
+        }
+        let turns = list_turns_for_session(&db, &sid).unwrap();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].id, "turn-z");
+        assert_eq!(turns[1].id, "turn-a");
     }
 
     #[test]

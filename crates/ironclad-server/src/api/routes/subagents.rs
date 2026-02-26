@@ -146,24 +146,28 @@ fn validate_subagent_contract(
 pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse {
     match ironclad_db::agents::list_sub_agents(&state.db) {
         Ok(agents) => {
+            let session_counts =
+                ironclad_db::agents::list_session_counts_by_agent(&state.db).unwrap_or_default();
             let items: Vec<serde_json::Value> = agents
                 .into_iter()
                 .map(|a| {
+                    let normalized_role = normalize_role(&a.role).unwrap_or(ROLE_SUBAGENT);
                     let skills = a
                         .skills_json
                         .as_deref()
                         .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
                         .unwrap_or_default();
+                    let session_count = session_counts.get(&a.name).copied().unwrap_or(a.session_count);
                     serde_json::json!({
                         "id": a.id,
                         "name": a.name,
                         "display_name": a.display_name,
                         "model": a.model,
-                        "role": a.role,
+                        "role": normalized_role,
                         "description": a.description,
                         "skills": skills,
                         "enabled": a.enabled,
-                        "session_count": a.session_count,
+                        "session_count": session_count,
                     })
                 })
                 .collect();
@@ -232,6 +236,7 @@ pub async fn create_sub_agent(
                     max_concurrent: 4,
                 };
                 let _ = state.registry.register(config).await;
+                let _ = state.registry.start_agent(&agent.name).await;
             }
             Ok(axum::Json(serde_json::json!({
                 "id": agent.id,
@@ -307,6 +312,27 @@ pub async fn update_sub_agent(
 
     ironclad_db::agents::upsert_sub_agent(&state.db, &updated).map_err(|e| internal_err(&e))?;
 
+    if updated.role == ROLE_SUBAGENT && updated.enabled {
+        if state.registry.get_agent(&updated.name).await.is_none() {
+            let config = ironclad_agent::subagents::AgentInstanceConfig {
+                id: updated.name.clone(),
+                name: updated
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| updated.name.clone()),
+                model: resolve_taskable_subagent_runtime_model(&state, &updated.model).await,
+                skills: merged_skills.clone(),
+                allowed_subagents: vec![],
+                max_concurrent: 4,
+            };
+            let _ = state.registry.register(config).await;
+        }
+        let _ = state.registry.start_agent(&updated.name).await;
+    } else {
+        let _ = state.registry.stop_agent(&updated.name).await;
+        let _ = state.registry.unregister(&updated.name).await;
+    }
+
     Ok(axum::Json(serde_json::json!({
         "updated": true,
         "name": name,
@@ -318,9 +344,13 @@ pub async fn delete_sub_agent(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
     match ironclad_db::agents::delete_sub_agent(&state.db, &name) {
-        Ok(true) => Ok(axum::Json(
-            serde_json::json!({ "deleted": true, "name": name }),
-        )),
+        Ok(true) => {
+            let _ = state.registry.stop_agent(&name).await;
+            let _ = state.registry.unregister(&name).await;
+            Ok(axum::Json(
+                serde_json::json!({ "deleted": true, "name": name }),
+            ))
+        }
         Ok(false) => Err((
             axum::http::StatusCode::NOT_FOUND,
             format!("sub-agent '{name}' not found"),
@@ -347,6 +377,32 @@ pub async fn toggle_sub_agent(
     updated.enabled = new_enabled;
 
     ironclad_db::agents::upsert_sub_agent(&state.db, &updated).map_err(|e| internal_err(&e))?;
+
+    if updated.role == ROLE_SUBAGENT && updated.enabled {
+        if state.registry.get_agent(&updated.name).await.is_none() {
+            let skills = updated
+                .skills_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                .unwrap_or_default();
+            let config = ironclad_agent::subagents::AgentInstanceConfig {
+                id: updated.name.clone(),
+                name: updated
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| updated.name.clone()),
+                model: resolve_taskable_subagent_runtime_model(&state, &updated.model).await,
+                skills,
+                allowed_subagents: vec![],
+                max_concurrent: 4,
+            };
+            let _ = state.registry.register(config).await;
+        }
+        let _ = state.registry.start_agent(&updated.name).await;
+    } else {
+        let _ = state.registry.stop_agent(&updated.name).await;
+        let _ = state.registry.unregister(&updated.name).await;
+    }
 
     Ok(axum::Json(serde_json::json!({
         "name": name,

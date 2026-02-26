@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use chrono::{DateTime, Duration, NaiveDateTime};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDateTime, Utc};
 
 /// Pure-function scheduler for cron, interval, and at-style schedule evaluation.
 /// No DB dependency — all state is passed in as arguments.
@@ -9,27 +9,36 @@ pub struct DurableScheduler;
 impl DurableScheduler {
     /// Evaluates whether a cron expression matches the current time.
     /// Uses standard 5-field cron syntax with full support for ranges, lists, and steps.
-    pub fn evaluate_cron(cron_expr: &str, _last_run: Option<&str>, now: &str) -> bool {
-        let now_dt = match parse_iso(now) {
+    pub fn evaluate_cron(cron_expr: &str, last_run: Option<&str>, now: &str) -> bool {
+        let now_dt = match parse_rfc3339(now) {
             Some(dt) => dt,
             None => return false,
         };
 
-        // The `cron` crate uses 7-field syntax: sec min hour dom month dow year
-        // Convert 5-field user syntax to 7-field by prepending "0" (seconds) and appending "*" (year)
-        let full_expr = format!("0 {cron_expr} *");
+        let (tz, expr) = split_schedule_timezone(cron_expr);
+        let full_expr = format!("0 {expr} *");
         let schedule = match cron::Schedule::from_str(&full_expr) {
             Ok(s) => s,
             Err(_) => return false,
         };
 
-        let now_utc = now_dt.and_utc();
-        // Check if any occurrence falls within a 60-second window around `now`
-        let window_start = now_utc - Duration::seconds(30);
-        schedule
-            .after(&window_start)
-            .take(1)
-            .any(|t| (t - now_utc).num_seconds().abs() < 60)
+        let now_in_tz = now_dt.with_timezone(&tz);
+        let probe_start = now_in_tz - Duration::seconds(61);
+        let Some(slot) = schedule.after(&probe_start).next() else {
+            return false;
+        };
+        let delta = now_in_tz.signed_duration_since(slot).num_seconds();
+        if !(0..60).contains(&delta) {
+            return false;
+        }
+
+        if let Some(last) = last_run.and_then(parse_rfc3339) {
+            let last_in_tz = last.with_timezone(&tz);
+            if last_in_tz >= slot {
+                return false;
+            }
+        }
+        true
     }
 
     /// Returns true if enough time has elapsed since `last_run` (or if there was no previous run).
@@ -90,14 +99,23 @@ impl DurableScheduler {
             }
             "cron" => {
                 let expr = schedule_expr?;
+                let (tz, expr) = split_schedule_timezone(expr);
                 let full_expr = format!("0 {expr} *");
                 let schedule = cron::Schedule::from_str(&full_expr).ok()?;
                 let now_utc = now_dt.and_utc();
-                schedule.after(&now_utc).next().map(|t| t.to_rfc3339())
+                let now_in_tz = now_utc.with_timezone(&tz);
+                schedule
+                    .after(&now_in_tz)
+                    .next()
+                    .map(|t| t.with_timezone(&Utc).to_rfc3339())
             }
             _ => None,
         }
     }
+}
+
+fn parse_rfc3339(s: &str) -> Option<DateTime<FixedOffset>> {
+    DateTime::parse_from_rfc3339(s).ok()
 }
 
 fn parse_iso(s: &str) -> Option<NaiveDateTime> {
@@ -105,6 +123,59 @@ fn parse_iso(s: &str) -> Option<NaiveDateTime> {
         .map(|dt| dt.naive_utc())
         .ok()
         .or_else(|| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok())
+}
+
+fn split_schedule_timezone(schedule: &str) -> (FixedOffset, &str) {
+    let schedule = schedule.trim();
+    for prefix in ["CRON_TZ=", "TZ="] {
+        if let Some(rest) = schedule.strip_prefix(prefix)
+            && let Some((tz_raw, expr)) = rest.split_once(' ')
+        {
+            let tz = parse_timezone(tz_raw).unwrap_or_else(zero_offset);
+            return (tz, expr.trim());
+        }
+    }
+    (zero_offset(), schedule)
+}
+
+fn parse_timezone(raw: &str) -> Option<FixedOffset> {
+    let tz = raw.trim();
+    if tz.eq_ignore_ascii_case("UTC") || tz.eq_ignore_ascii_case("Z") {
+        return Some(zero_offset());
+    }
+
+    let cleaned = tz
+        .strip_prefix("UTC")
+        .or_else(|| tz.strip_prefix("utc"))
+        .unwrap_or(tz);
+    parse_offset(cleaned)
+}
+
+fn parse_offset(raw: &str) -> Option<FixedOffset> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Some(zero_offset());
+    }
+    let sign = if raw.starts_with('-') { -1 } else { 1 };
+    let trimmed = raw.trim_start_matches(['+', '-']);
+
+    let (hours, minutes) = if let Some((h, m)) = trimmed.split_once(':') {
+        (h.parse::<i32>().ok()?, m.parse::<i32>().ok()?)
+    } else if trimmed.len() == 4 {
+        (
+            trimmed[..2].parse::<i32>().ok()?,
+            trimmed[2..].parse::<i32>().ok()?,
+        )
+    } else {
+        (trimmed.parse::<i32>().ok()?, 0)
+    };
+
+    let secs = sign * (hours * 3600 + minutes * 60);
+    FixedOffset::east_opt(secs)
+}
+
+fn zero_offset() -> FixedOffset {
+    FixedOffset::east_opt(0).expect("zero offset is valid")
 }
 
 #[cfg(test)]
@@ -278,6 +349,44 @@ mod tests {
             Some("2024-12-31T12:00:00+00:00"),
             "2025-01-01T12:00:00+00:00"
         ));
+    }
+
+    #[test]
+    fn cron_does_not_retrigger_same_slot() {
+        assert!(!DurableScheduler::evaluate_cron(
+            "0 12 * * *",
+            Some("2025-01-01T12:00:30+00:00"),
+            "2025-01-01T12:00:45+00:00"
+        ));
+    }
+
+    #[test]
+    fn cron_supports_timezone_prefix() {
+        assert!(DurableScheduler::evaluate_cron(
+            "CRON_TZ=UTC+02:00 0 9 * * *",
+            None,
+            "2025-01-01T07:00:10+00:00"
+        ));
+        assert!(!DurableScheduler::evaluate_cron(
+            "CRON_TZ=UTC+02:00 0 9 * * *",
+            None,
+            "2025-01-01T08:00:10+00:00"
+        ));
+    }
+
+    #[test]
+    fn next_run_cron_with_timezone_is_utc_normalized() {
+        let result = DurableScheduler::calculate_next_run(
+            "cron",
+            Some("CRON_TZ=UTC+02:00 0 9 * * *"),
+            None,
+            "2025-01-01T06:00:00+00:00",
+        )
+        .expect("next run");
+        assert!(
+            result.starts_with("2025-01-01T07:00:00"),
+            "expected UTC-normalized 07:00 run, got {result}"
+        );
     }
 
     #[test]

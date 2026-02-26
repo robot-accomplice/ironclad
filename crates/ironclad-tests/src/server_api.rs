@@ -11,6 +11,7 @@ use ironclad_llm::LlmService;
 use ironclad_llm::OAuthManager;
 use ironclad_plugin_sdk::registry::PluginRegistry;
 use ironclad_server::AppState;
+use ironclad_server::config_runtime::ConfigApplyStatus;
 use ironclad_server::EventBus;
 use ironclad_server::PersonalityState;
 use ironclad_server::build_router;
@@ -55,6 +56,10 @@ primary = "ollama/qwen3:8b"
     let retriever = Arc::new(ironclad_agent::retrieval::MemoryRetriever::new(
         config.memory.clone(),
     ));
+    let config_path = std::env::temp_dir().join(format!(
+        "ironclad-integration-config-{}.toml",
+        uuid::Uuid::new_v4()
+    ));
     AppState {
         db,
         config: Arc::new(RwLock::new(config)),
@@ -96,6 +101,9 @@ primary = "ollama/qwen3:8b"
         )),
         obsidian: None,
         started_at: std::time::Instant::now(),
+        config_path: Arc::new(config_path.clone()),
+        config_apply_status: Arc::new(RwLock::new(ConfigApplyStatus::new(&config_path))),
+        pending_specialist_proposals: Arc::new(RwLock::new(std::collections::HashMap::new())),
         policy_engine: {
             let mut engine = ironclad_agent::policy::PolicyEngine::new();
             engine.add_rule(Box::new(ironclad_agent::policy::AuthorityRule));
@@ -1188,7 +1196,7 @@ async fn admin_endpoints_cover_config_wallet_breaker_and_stats() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    assert!(body["immutable_sections"].is_array());
+    assert_eq!(body["immutable_sections"], serde_json::json!([]));
     assert!(body["mutable_sections"].is_array());
 
     let app = build_router(state.clone());
@@ -1203,7 +1211,7 @@ async fn admin_endpoints_cover_config_wallet_breaker_and_stats() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::OK);
 
     let app = build_router(state.clone());
     let resp = app

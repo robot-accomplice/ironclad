@@ -1,0 +1,8 @@
+source,snapshot_date,model_id,release_date,intelligence_index,output_tokens_per_sec,ttft_ms,blended_price_per_1m_usd,input_price_per_1m_usd,output_price_per_1m_usd,context_window_tokens,notes
+artificialanalysis,2026-02-25,gpt-5-mini-minimal,2025-08,21,67.9,660,0.69,0.25,2.00,400000,"model+provider pages"
+artificialanalysis,2026-02-25,claude-4-5-sonnet,2025-09,37,71.6,1130,6.00,3.00,15.00,,"anthropic provider values"
+artificialanalysis,2026-02-25,gemini-2-5-pro,2025-06,34,152.5,34940,3.44,1.25,10.00,1000000,"ai studio speed+latency, blended pricing shared"
+artificialanalysis,2026-02-25,llama-3-3-instruct-70b,2024-12,14,82.7,,0.64,0.58,0.71,128000,"model-page median across providers"
+artificialanalysis,2026-02-25,mistral-large-3,2025-12,23,51.3,590,0.75,0.50,1.50,,"mistral provider values"
+artificialanalysis,2026-02-25,llama-3-1-instruct-70b,2024-07,12,48.7,,0.56,0.56,0.56,128000,"model-page median across providers"
+artificialanalysis,2026-02-25,qwen2.5-32b-instruct,2024-09,13,,,,,,,"intelligence index available; provider performance unavailable"

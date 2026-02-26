@@ -10,6 +10,7 @@ mod skills;
 mod subagents;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
@@ -33,6 +34,7 @@ use ironclad_llm::LlmService;
 use ironclad_llm::OAuthManager;
 use ironclad_plugin_sdk::registry::PluginRegistry;
 use ironclad_wallet::WalletService;
+use crate::config_runtime::ConfigApplyStatus;
 
 use ironclad_agent::approvals::ApprovalManager;
 use ironclad_agent::obsidian::ObsidianVault;
@@ -198,6 +200,9 @@ pub struct AppState {
     pub keystore: Arc<ironclad_core::keystore::Keystore>,
     pub obsidian: Option<Arc<RwLock<ObsidianVault>>>,
     pub started_at: std::time::Instant,
+    pub config_path: Arc<PathBuf>,
+    pub config_apply_status: Arc<RwLock<ConfigApplyStatus>>,
+    pub pending_specialist_proposals: Arc<RwLock<HashMap<String, serde_json::Value>>>,
 }
 
 impl AppState {
@@ -223,7 +228,8 @@ pub fn build_router(state: AppState) -> Router {
         a2a_hello, breaker_reset, breaker_status, browser_action, browser_start, browser_status,
         browser_stop, change_agent_model, delete_provider_key, execute_plugin_tool,
         generate_deep_analysis, get_agents, get_available_models, get_cache_stats,
-        get_capacity_stats, get_config, get_config_capabilities, get_costs, get_efficiency,
+        get_capacity_stats, get_config, get_config_apply_status, get_config_capabilities,
+        get_costs, get_efficiency,
         get_mcp_runtime, get_overview_timeseries, get_plugins, get_recommendations,
         get_runtime_surfaces, get_transactions, list_discovered_agents, list_paired_devices,
         mcp_client_disconnect, mcp_client_discover, pair_device, register_discovered_agent, roster,
@@ -232,7 +238,7 @@ pub fn build_router(state: AppState) -> Router {
         workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
-    use channels::get_channels_status;
+    use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
     use cron::{
         create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs, list_cron_runs,
         update_cron_job,
@@ -249,7 +255,10 @@ pub fn build_router(state: AppState) -> Router {
         list_model_selection_events, list_session_turns, list_sessions, post_message,
         post_turn_feedback, put_turn_feedback,
     };
-    use skills::{audit_skills, delete_skill, get_skill, list_skills, reload_skills, toggle_skill};
+    use skills::{
+        audit_skills, catalog_activate, catalog_install, catalog_list, delete_skill, get_skill,
+        list_skills, reload_skills, toggle_skill,
+    };
     use subagents::{
         create_sub_agent, delete_sub_agent, list_sub_agents, toggle_sub_agent, update_sub_agent,
     };
@@ -259,6 +268,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/health", get(health))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/config/capabilities", get(get_config_capabilities))
+        .route("/api/config/status", get(get_config_apply_status))
         .route(
             "/api/providers/{name}/key",
             put(set_provider_key).delete(delete_provider_key),
@@ -329,6 +339,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/wallet/balance", get(wallet_balance))
         .route("/api/wallet/address", get(wallet_address))
         .route("/api/skills", get(list_skills))
+        .route("/api/skills/catalog", get(catalog_list))
+        .route("/api/skills/catalog/install", post(catalog_install))
+        .route("/api/skills/catalog/activate", post(catalog_activate))
         .route("/api/skills/audit", get(audit_skills))
         .route("/api/skills/{id}", get(get_skill).delete(delete_skill))
         .route("/api/skills/reload", post(reload_skills))
@@ -360,6 +373,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/roster/{name}/model", put(change_agent_model))
         .route("/api/a2a/hello", post(a2a_hello))
         .route("/api/channels/status", get(get_channels_status))
+        .route("/api/channels/dead-letter", get(get_dead_letters))
+        .route(
+            "/api/channels/dead-letter/{id}/replay",
+            post(replay_dead_letter),
+        )
         .route("/api/runtime/surfaces", get(get_runtime_surfaces))
         .route(
             "/api/runtime/discovery",
@@ -450,6 +468,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
     use tower::ServiceExt;
+    use crate::rate_limit::GlobalRateLimitLayer;
 
     use ironclad_agent::approvals::ApprovalManager;
     use ironclad_agent::tools::ToolRegistry;
@@ -500,6 +519,12 @@ primary = "ollama/qwen3:8b"
         let retriever = Arc::new(ironclad_agent::retrieval::MemoryRetriever::new(
             config.memory.clone(),
         ));
+        let config_path = std::env::temp_dir().join(format!(
+            "ironclad-test-config-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        let config_toml = toml::to_string_pretty(&config).expect("serialize test config");
+        std::fs::write(&config_path, config_toml).expect("write test config file");
         AppState {
             db,
             config: Arc::new(RwLock::new(config)),
@@ -542,6 +567,9 @@ primary = "ollama/qwen3:8b"
             )),
             obsidian: None,
             started_at: std::time::Instant::now(),
+            config_path: Arc::new(config_path.clone()),
+            config_apply_status: Arc::new(RwLock::new(ConfigApplyStatus::new(&config_path))),
+            pending_specialist_proposals: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -574,6 +602,10 @@ primary = "ollama/qwen3:8b"
 
     fn full_app(state: AppState) -> Router {
         build_router(state.clone()).merge(build_public_router(state))
+    }
+
+    fn expected_loopback_status() -> &'static str {
+        "legacy_proxy_unsupported"
     }
 
     async fn json_body(resp: axum::http::Response<Body>) -> serde_json::Value {
@@ -749,7 +781,8 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn put_config_updates_runtime_config() {
-        let app = build_router(test_state());
+        let state = test_state();
+        let app = build_router(state);
         let req = Request::builder()
             .method("PUT")
             .uri("/api/config")
@@ -762,11 +795,15 @@ primary = "ollama/qwen3:8b"
 
         let body = json_body(resp).await;
         assert_eq!(body["updated"], true);
+        assert_eq!(body["persisted"], true);
+        assert!(body["backup_path"].is_string());
     }
 
     #[tokio::test]
     async fn put_config_rejects_invalid() {
-        let app = build_router(test_state());
+        let state = test_state();
+        let old_name = state.config.read().await.agent.name.clone();
+        let app = build_router(state.clone());
         let req = Request::builder()
             .method("PUT")
             .uri("/api/config")
@@ -775,7 +812,9 @@ primary = "ollama/qwen3:8b"
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
-        assert!(resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let current_name = state.config.read().await.agent.name.clone();
+        assert_eq!(current_name, old_name);
     }
 
     #[tokio::test]
@@ -1653,6 +1692,37 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
+    async fn webhook_telegram_non_message_update_advances_offset() {
+        let state = test_state_with_telegram_webhook_secret("expected-secret");
+        let telegram = state.telegram.as_ref().expect("telegram adapter").clone();
+        let app = full_app(state);
+        let body = serde_json::json!({
+            "update_id": 42,
+            "edited_message": {"message_id": 99}
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/webhooks/telegram")
+                    .header("content-type", "application/json")
+                    .header("X-Telegram-Bot-Api-Secret-Token", "expected-secret")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let seen_offset = *telegram
+            .last_update_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert_eq!(seen_offset, 42);
+    }
+
+    #[tokio::test]
     async fn webhook_whatsapp_verify_no_adapter_returns_503() {
         let app = full_app(test_state());
         let response = app
@@ -1755,6 +1825,158 @@ params = { path = "README.md" }
         let body = json_body(response).await;
         let channels = body.as_array().unwrap();
         assert!(!channels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn channels_dead_letter_lists_items() {
+        let state = test_state();
+        let q = state.channel_router.delivery_queue();
+        q.enqueue(
+            "telegram".into(),
+            ironclad_channels::OutboundMessage {
+                content: "fail".into(),
+                recipient_id: "r1".into(),
+                metadata: None,
+            },
+        )
+        .await;
+        let item = q.next_ready().await.expect("queued");
+        q.requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/channels/dead-letter?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["count"].as_u64().unwrap_or(0), 1);
+        assert_eq!(
+            body["items"][0]["channel"].as_str().unwrap_or(""),
+            "telegram"
+        );
+    }
+
+    #[tokio::test]
+    async fn channels_dead_letter_limit_is_clamped() {
+        let state = test_state();
+        let q = state.channel_router.delivery_queue();
+        q.enqueue(
+            "telegram".into(),
+            ironclad_channels::OutboundMessage {
+                content: "fail".into(),
+                recipient_id: "r1".into(),
+                metadata: None,
+            },
+        )
+        .await;
+        let item = q.next_ready().await.expect("queued");
+        q.requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/channels/dead-letter?limit=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["count"].as_u64().unwrap_or(0), 1);
+    }
+
+    #[tokio::test]
+    async fn channels_dead_letter_replay_moves_item_back_to_pending() {
+        let state = test_state();
+        let q = state.channel_router.delivery_queue();
+        let id = q
+            .enqueue(
+                "telegram".into(),
+                ironclad_channels::OutboundMessage {
+                    content: "retry me".into(),
+                    recipient_id: "r2".into(),
+                    metadata: None,
+                },
+            )
+            .await;
+        let item = q.next_ready().await.expect("queued");
+        q.requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+
+        let app = build_router(state.clone());
+        let replay = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/channels/dead-letter/{id}/replay"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::OK);
+
+        let after = state.channel_router.dead_letters(10).await;
+        assert!(after.is_empty(), "item should no longer be in dead-letter state");
+    }
+
+    #[tokio::test]
+    async fn routes_return_429_when_rate_limited() {
+        let app = build_router(test_state()).layer(
+            GlobalRateLimitLayer::new(1, std::time::Duration::from_secs(60))
+                .with_per_ip_capacity(1)
+                .with_per_actor_capacity(1),
+        );
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn skills_catalog_list_returns_items() {
+        let app = build_router(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/skills/catalog")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        let items = body["items"].as_array().cloned().unwrap_or_default();
+        assert!(!items.is_empty(), "catalog should include builtin skills");
     }
 
     /// Policy engine denies high-risk tool calls in execute_plugin_tool (External + Caution -> Deny).
@@ -2510,6 +2732,10 @@ params = { path = "README.md" }
         let body = json_body(resp).await;
         assert_eq!(body["providers"]["google"]["status"], "ok");
         assert_eq!(body["proxy"]["mode"], "in_process");
+        assert_eq!(
+            body["proxy"]["legacy_loopback_support"],
+            "removed_v0_8"
+        );
         assert!(
             body["models"]
                 .as_array()
@@ -2563,7 +2789,7 @@ params = { path = "README.md" }
         let body = json_body(resp).await;
         assert_eq!(
             body["providers"]["anthropic"]["status"],
-            "proxy_unreachable"
+            expected_loopback_status()
         );
         assert!(
             body["providers"]["anthropic"]["hint"]
@@ -2611,13 +2837,13 @@ params = { path = "README.md" }
         let body = json_body(resp).await;
         assert_eq!(
             body["providers"]["anthropic"]["status"],
-            "proxy_misconfigured"
+            "legacy_proxy_unsupported"
         );
         assert!(
             body["providers"]["anthropic"]["hint"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("internal proxy routing")
+                .contains("unsupported in v0.8.0+")
         );
         mock_task.abort();
     }
@@ -2711,7 +2937,7 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
-    async fn put_config_rejects_immutable_server_key() {
+    async fn put_config_accepts_server_key_and_reports_deferred_apply() {
         let app = build_router(test_state());
         let resp = app
             .oneshot(
@@ -2724,11 +2950,15 @@ params = { path = "README.md" }
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["updated"], true);
+        assert_eq!(body["persisted"], true);
+        assert!(body["deferred_apply"].is_array());
     }
 
     #[tokio::test]
-    async fn put_config_rejects_immutable_wallet_key() {
+    async fn put_config_accepts_wallet_key() {
         let app = build_router(test_state());
         let resp = app
             .oneshot(
@@ -2741,11 +2971,11 @@ params = { path = "README.md" }
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn put_config_rejects_immutable_treasury_key() {
+    async fn put_config_accepts_treasury_key() {
         let app = build_router(test_state());
         let resp = app
             .oneshot(
@@ -2758,11 +2988,11 @@ params = { path = "README.md" }
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn put_config_rejects_immutable_a2a_key() {
+    async fn put_config_accepts_a2a_key() {
         let app = build_router(test_state());
         let resp = app
             .oneshot(
@@ -2775,7 +3005,25 @@ params = { path = "README.md" }
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_config_status_returns_apply_metadata() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["status"]["config_path"].is_string());
+        assert!(body["status"]["deferred_apply"].is_array());
     }
 
     #[tokio::test]

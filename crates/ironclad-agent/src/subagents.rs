@@ -118,6 +118,15 @@ impl SubagentRegistry {
         Ok(())
     }
 
+    pub async fn unregister(&self, agent_id: &str) -> bool {
+        let mut agents = self.agents.lock().await;
+        let removed = agents.remove(agent_id).is_some();
+        if removed {
+            debug!(id = agent_id, "agent unregistered");
+        }
+        removed
+    }
+
     pub async fn mark_error(&self, agent_id: &str, error: String) {
         let mut agents = self.agents.lock().await;
         if let Some(agent) = agents.get_mut(agent_id) {
@@ -251,6 +260,16 @@ mod tests {
         reg.register(test_config("b")).await.unwrap();
         reg.start_agent("a").await.unwrap();
         assert_eq!(reg.running_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn unregister_removes_agent() {
+        let reg = SubagentRegistry::new(4, vec![]);
+        reg.register(test_config("a")).await.unwrap();
+        assert_eq!(reg.agent_count().await, 1);
+        assert!(reg.unregister("a").await);
+        assert_eq!(reg.agent_count().await, 0);
+        assert!(!reg.unregister("a").await);
     }
 
     #[tokio::test]

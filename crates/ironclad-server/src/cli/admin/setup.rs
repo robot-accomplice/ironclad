@@ -135,6 +135,126 @@ pub fn write_starter_skills(skills_dir: &std::path::Path) -> std::io::Result<usi
     Ok(written)
 }
 
+const APERTUS_8B_SUFFIX: &str = "apertus-8b-instruct:latest";
+const APERTUS_70B_SUFFIX: &str = "apertus-70b-instruct:latest";
+
+fn detect_system_ram_gb() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("sh")
+            .args(["-c", "awk '/MemTotal/ {print $2}' /proc/meminfo"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let kb = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u64>()
+            .ok()?;
+        return Some(kb / 1024 / 1024);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let bytes = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u64>()
+            .ok()?;
+        return Some(bytes / 1024 / 1024 / 1024);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let bytes = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u64>()
+            .ok()?;
+        return Some(bytes / 1024 / 1024 / 1024);
+    }
+
+    #[allow(unreachable_code)]
+    None
+}
+
+fn aperture_options_for_provider(provider_prefix: &str, ram_gb: Option<u64>) -> Vec<String> {
+    let mut options = vec![format!("{provider_prefix}/{APERTUS_8B_SUFFIX}")];
+    if ram_gb.map(|v| v >= 64).unwrap_or(false) {
+        options.push(format!("{provider_prefix}/{APERTUS_70B_SUFFIX}"));
+    }
+    options
+}
+
+fn has_hf_model_cache() -> bool {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok();
+    let hf_home = std::env::var("HF_HOME")
+        .ok()
+        .or_else(|| home.as_ref().map(|h| format!("{h}/.cache/huggingface")));
+    let hub_dir = match hf_home {
+        Some(v) => std::path::PathBuf::from(v).join("hub"),
+        None => return false,
+    };
+    if !hub_dir.exists() {
+        return false;
+    }
+    std::fs::read_dir(&hub_dir)
+        .ok()
+        .map(|iter| {
+            iter.filter_map(Result::ok)
+                .any(|entry| entry.file_name().to_string_lossy().starts_with("models--"))
+        })
+        .unwrap_or(false)
+}
+
+fn has_ollama_models() -> bool {
+    if which_binary("ollama").is_none() {
+        return false;
+    }
+    let output = std::process::Command::new("ollama").arg("list").output();
+    let Ok(out) = output else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    let line_count = String::from_utf8_lossy(&out.stdout).lines().count();
+    line_count > 1
+}
+
+fn has_existing_local_model_stack() -> bool {
+    let has_framework = [
+        "sglang",
+        "vllm",
+        "docker",
+        "ollama",
+        "llama-server",
+        "llama_cpp",
+    ]
+    .iter()
+    .any(|bin| which_binary(bin).is_some());
+    has_framework || has_ollama_models() || has_hf_model_cache()
+}
+
 fn run_quick_personality_setup(
     workspace: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -278,31 +398,69 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
         .default("Roboticus".into())
         .interact_text()?;
 
+    let offer_apertus_onboarding = !has_existing_local_model_stack();
+    if !offer_apertus_onboarding {
+        println!(
+            "  {DETAIL} Existing local model framework/model cache detected; skipping automatic SGLang + Apertus recommendation."
+        );
+    }
+
     // 2. LLM provider
-    let providers = vec![
-        "Ollama (local)",
-        "OpenAI",
-        "Anthropic",
-        "Google AI",
-        "Moonshot",
-        "OpenRouter",
-        "llama-cpp (local)",
-    ];
+    let providers = if offer_apertus_onboarding {
+        vec![
+            "SGLang (local, recommended for Apertus)",
+            "vLLM (local)",
+            "Docker Model Runner (local)",
+            "Ollama (local)",
+            "OpenAI",
+            "Anthropic",
+            "Google AI",
+            "Moonshot",
+            "OpenRouter",
+            "llama-cpp (local)",
+        ]
+    } else {
+        vec![
+            "Ollama (local)",
+            "SGLang (local)",
+            "vLLM (local)",
+            "Docker Model Runner (local)",
+            "OpenAI",
+            "Anthropic",
+            "Google AI",
+            "Moonshot",
+            "OpenRouter",
+            "llama-cpp (local)",
+        ]
+    };
     let provider_idx = Select::new()
         .with_prompt("  Select LLM provider")
         .items(&providers)
-        .default(0)
+        .default(if offer_apertus_onboarding { 0 } else { 4 })
         .interact()?;
 
-    let (provider_prefix, needs_api_key) = match provider_idx {
-        0 => ("ollama", false),
-        1 => ("openai", true),
-        2 => ("anthropic", true),
-        3 => ("google", true),
-        4 => ("moonshot", true),
-        5 => ("openrouter", true),
-        6 => ("llama-cpp", false),
-        _ => ("ollama", false),
+    let (provider_prefix, needs_api_key) = match (offer_apertus_onboarding, provider_idx) {
+        (true, 0) => ("sglang", false),
+        (true, 1) => ("vllm", false),
+        (true, 2) => ("docker-model-runner", false),
+        (true, 3) => ("ollama", false),
+        (true, 4) => ("openai", true),
+        (true, 5) => ("anthropic", true),
+        (true, 6) => ("google", true),
+        (true, 7) => ("moonshot", true),
+        (true, 8) => ("openrouter", true),
+        (true, 9) => ("llama-cpp", false),
+        (false, 0) => ("ollama", false),
+        (false, 1) => ("sglang", false),
+        (false, 2) => ("vllm", false),
+        (false, 3) => ("docker-model-runner", false),
+        (false, 4) => ("openai", true),
+        (false, 5) => ("anthropic", true),
+        (false, 6) => ("google", true),
+        (false, 7) => ("moonshot", true),
+        (false, 8) => ("openrouter", true),
+        (false, 9) => ("llama-cpp", false),
+        _ => ("openai", true),
     };
 
     // 3. API key
@@ -317,20 +475,111 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // 4. Model selection
-    let default_model = match provider_idx {
-        0 => "ollama/qwen3:8b",
-        1 => "openai/gpt-4o",
-        2 => "anthropic/claude-sonnet-4-20250514",
-        3 => "google/gemini-3.1-pro-preview",
-        4 => "moonshot/kimi-k2.5",
-        5 => "openrouter/google/gemini-3.1-pro-preview",
-        6 => "llama-cpp/default",
-        _ => "ollama/qwen3:8b",
+    let ram_gb = detect_system_ram_gb();
+    let model = match provider_prefix {
+        "sglang" | "vllm" | "docker-model-runner" | "ollama" => {
+            if offer_apertus_onboarding {
+                if let Some(ram) = ram_gb {
+                    println!("  {DETAIL} Detected system RAM: {ram} GB");
+                } else {
+                    println!(
+                        "  {WARN} Could not detect system RAM. Only 8B Apertus is recommended by default."
+                    );
+                }
+
+                match provider_prefix {
+                    "sglang" if which_binary("sglang").is_none() => {
+                        println!("  {WARN} sglang binary not found.");
+                        let install_now = Confirm::new()
+                            .with_prompt("  Install SGLang now via pip? (recommended for Apertus)")
+                            .default(true)
+                            .interact()?;
+                        if install_now {
+                            let py_bin = which_binary("python3")
+                                .or_else(|| which_binary("python"))
+                                .unwrap_or_else(|| "python3".into());
+                            let status = std::process::Command::new(py_bin)
+                                .args(["-m", "pip", "install", "--user", "sglang[all]"])
+                                .status();
+                            if status.as_ref().map(|s| s.success()).unwrap_or(false) {
+                                println!("  {OK} SGLang install completed.");
+                            } else {
+                                println!(
+                                    "  {WARN} SGLang install failed. You can install it later and keep this model selection."
+                                );
+                            }
+                        }
+                    }
+                    "vllm" if which_binary("vllm").is_none() => {
+                        println!("  {WARN} vllm command not found.");
+                        let install_now = Confirm::new()
+                            .with_prompt("  Install vLLM now via pip?")
+                            .default(false)
+                            .interact()?;
+                        if install_now {
+                            let py_bin = which_binary("python3")
+                                .or_else(|| which_binary("python"))
+                                .unwrap_or_else(|| "python3".into());
+                            let status = std::process::Command::new(py_bin)
+                                .args(["-m", "pip", "install", "--user", "vllm"])
+                                .status();
+                            if status.as_ref().map(|s| s.success()).unwrap_or(false) {
+                                println!("  {OK} vLLM install completed.");
+                            } else {
+                                println!(
+                                    "  {WARN} vLLM install failed. You can install it later and keep this model selection."
+                                );
+                            }
+                        }
+                    }
+                    "docker-model-runner" if which_binary("docker").is_none() => {
+                        println!("  {WARN} Docker not found. Docker Model Runner requires Docker.");
+                    }
+                    "ollama" if which_binary("ollama").is_none() => {
+                        println!(
+                            "  {WARN} Ollama not found. Install from https://ollama.ai to run local models."
+                        );
+                    }
+                    _ => {}
+                }
+
+                let model_options = aperture_options_for_provider(provider_prefix, ram_gb);
+                let model_idx = Select::new()
+                    .with_prompt("  Select Apertus model")
+                    .items(&model_options)
+                    .default(0)
+                    .interact()?;
+                model_options[model_idx].clone()
+            } else {
+                let default_model = match provider_prefix {
+                    "ollama" => "ollama/qwen3:8b",
+                    "sglang" => "sglang/default",
+                    "vllm" => "vllm/default",
+                    "docker-model-runner" => "docker-model-runner/default",
+                    _ => "ollama/qwen3:8b",
+                };
+                Input::new()
+                    .with_prompt("  Model")
+                    .default(default_model.into())
+                    .interact_text()?
+            }
+        }
+        _ => {
+            let default_model = match provider_prefix {
+                "openai" => "openai/gpt-4o",
+                "anthropic" => "anthropic/claude-sonnet-4-20250514",
+                "google" => "google/gemini-3.1-pro-preview",
+                "moonshot" => "moonshot/kimi-k2.5",
+                "openrouter" => "openrouter/google/gemini-3.1-pro-preview",
+                "llama-cpp" => "llama-cpp/default",
+                _ => "sglang/apertus-8b-instruct:latest",
+            };
+            Input::new()
+                .with_prompt("  Model")
+                .default(default_model.into())
+                .interact_text()?
+        }
     };
-    let model: String = Input::new()
-        .with_prompt("  Model")
-        .default(default_model.into())
-        .interact_text()?;
 
     // 5. Server port
     let port: String = Input::new()
@@ -411,8 +660,9 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
     config.push_str("confidence_threshold = 0.9\n");
     config.push_str("local_first = true\n\n");
 
-    config
-        .push_str("# Bundled provider defaults (ollama, openai, anthropic, google, openrouter)\n");
+    config.push_str(
+        "# Bundled provider defaults (sglang, vllm, docker-model-runner, ollama, openai, anthropic, google, openrouter)\n",
+    );
     config.push_str("# are auto-merged. Override or add new providers here.\n");
     if api_key.is_some() {
         config.push_str(&format!(

@@ -116,6 +116,11 @@ impl MemoryRetriever {
         let mut used = estimate_tokens(&text);
 
         for entry in &entries {
+            // `turn_summary` mirrors prior assistant output and can cause
+            // repetitive self-priming when injected into subsequent prompts.
+            if entry.entry_type.eq_ignore_ascii_case("turn_summary") {
+                continue;
+            }
             let line = format!("- [{}] {}\n", entry.entry_type, entry.content);
             let line_tokens = estimate_tokens(&line);
             if used + line_tokens > budget_tokens {
@@ -436,6 +441,29 @@ mod tests {
         let result = retriever.retrieve(&db, &session_id, "hello", None, ComplexityLevel::L2);
         assert!(result.contains("Working Memory"));
         assert!(result.contains("find documentation"));
+    }
+
+    #[test]
+    fn retriever_skips_turn_summary_working_entries() {
+        let db = test_db();
+        let retriever = MemoryRetriever::new(default_config());
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
+
+        ironclad_db::memory::store_working(
+            &db,
+            &session_id,
+            "turn_summary",
+            "Good to be back on familiar ground.",
+            9,
+        )
+        .unwrap();
+        ironclad_db::memory::store_working(&db, &session_id, "goal", "fix Telegram loop", 8)
+            .unwrap();
+
+        let result = retriever.retrieve(&db, &session_id, "telegram", None, ComplexityLevel::L2);
+        assert!(result.contains("Working Memory"));
+        assert!(result.contains("fix Telegram loop"));
+        assert!(!result.contains("Good to be back on familiar ground."));
     }
 
     #[test]

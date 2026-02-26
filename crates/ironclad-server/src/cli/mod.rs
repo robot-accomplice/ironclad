@@ -117,6 +117,16 @@ impl IroncladClient {
         }
         Ok(resp.json().await?)
     }
+    async fn put(&self, path: &str, body: Value) -> Result<Value, Box<dyn std::error::Error>> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self.client.put(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("HTTP {status}: {text}").into());
+        }
+        Ok(resp.json().await?)
+    }
     fn check_connectivity_hint(e: &dyn std::error::Error) {
         let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
         let (OK, ACTION, WARN, DETAIL, ERR) = icons();
@@ -541,6 +551,14 @@ mod tests {
             .await;
     }
 
+    async fn mock_put(server: &MockServer, p: &str, body: serde_json::Value) {
+        Mock::given(method("PUT"))
+            .and(path(p))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
     // ── Skills ────────────────────────────────────────────────
 
     #[tokio::test]
@@ -623,6 +641,32 @@ mod tests {
         let s = MockServer::start().await;
         mock_post(&s, "/api/skills/reload", serde_json::json!({"ok": true})).await;
         super::cmd_skills_reload(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_skills_catalog_list_ok() {
+        let s = MockServer::start().await;
+        mock_get(
+            &s,
+            "/api/skills/catalog",
+            serde_json::json!({"items":[{"name":"foo","kind":"instruction","source":"registry"}]}),
+        )
+        .await;
+        super::cmd_skills_catalog_list(&s.uri(), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_skills_catalog_install_ok() {
+        let s = MockServer::start().await;
+        mock_post(
+            &s,
+            "/api/skills/catalog/install",
+            serde_json::json!({"ok":true,"installed":["foo.md"],"activated":true}),
+        )
+        .await;
+        super::cmd_skills_catalog_install(&s.uri(), &["foo".to_string()], true)
+            .await
+            .unwrap();
     }
 
     // ── Wallet ────────────────────────────────────────────────
@@ -731,6 +775,94 @@ mod tests {
         let s = MockServer::start().await;
         mock_get(&s, "/api/cron/jobs", serde_json::json!({"jobs": []})).await;
         super::cmd_schedule_list(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_schedule_recover_all_enables_paused_jobs() {
+        let s = MockServer::start().await;
+        mock_get(
+            &s,
+            "/api/cron/jobs",
+            serde_json::json!({
+                "jobs": [
+                    {
+                        "id": "job-1",
+                        "name": "calendar-monitor",
+                        "enabled": false,
+                        "last_status": "paused_unknown_action",
+                        "last_run_at": "2026-02-25 12:00:00"
+                    },
+                    {
+                        "id": "job-2",
+                        "name": "healthy-job",
+                        "enabled": true,
+                        "last_status": "success",
+                        "last_run_at": "2026-02-25 12:01:00"
+                    }
+                ]
+            }),
+        )
+        .await;
+        mock_put(&s, "/api/cron/jobs/job-1", serde_json::json!({"updated": true})).await;
+        super::cmd_schedule_recover(&s.uri(), &[], true, false)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_schedule_recover_dry_run_does_not_put() {
+        let s = MockServer::start().await;
+        mock_get(
+            &s,
+            "/api/cron/jobs",
+            serde_json::json!({
+                "jobs": [
+                    {
+                        "id": "job-1",
+                        "name": "calendar-monitor",
+                        "enabled": false,
+                        "last_status": "paused_unknown_action",
+                        "last_run_at": "2026-02-25 12:00:00"
+                    }
+                ]
+            }),
+        )
+        .await;
+        super::cmd_schedule_recover(&s.uri(), &[], true, true)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_schedule_recover_name_filter() {
+        let s = MockServer::start().await;
+        mock_get(
+            &s,
+            "/api/cron/jobs",
+            serde_json::json!({
+                "jobs": [
+                    {
+                        "id": "job-1",
+                        "name": "calendar-monitor",
+                        "enabled": false,
+                        "last_status": "paused_unknown_action",
+                        "last_run_at": "2026-02-25 12:00:00"
+                    },
+                    {
+                        "id": "job-2",
+                        "name": "revenue-check",
+                        "enabled": false,
+                        "last_status": "paused_unknown_action",
+                        "last_run_at": "2026-02-25 12:01:00"
+                    }
+                ]
+            }),
+        )
+        .await;
+        mock_put(&s, "/api/cron/jobs/job-2", serde_json::json!({"updated": true})).await;
+        super::cmd_schedule_recover(&s.uri(), &["revenue-check".to_string()], false, false)
+            .await
+            .unwrap();
     }
 
     // ── Memory ────────────────────────────────────────────────
@@ -1220,6 +1352,32 @@ mod tests {
             .mount(&s)
             .await;
         super::cmd_channels_status(&s.uri()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_channels_dead_letter_with_items() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/channels/dead-letter"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    {"id": "dl-1", "channel": "telegram", "attempts": 5, "max_attempts": 5, "last_error": "blocked"}
+                ]
+            })))
+            .mount(&s)
+            .await;
+        super::cmd_channels_dead_letter(&s.uri(), 10).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_channels_replay_ok() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channels/dead-letter/dl-1/replay"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&s)
+            .await;
+        super::cmd_channels_replay(&s.uri(), "dl-1").await.unwrap();
     }
 
     // ── Plugins ───────────────────────────────────────────────
@@ -1799,7 +1957,7 @@ mod tests {
         }
         std::fs::write(ironclad_dir.join("ironclad.toml"), "[server]").unwrap();
         unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
-        let _ = super::cmd_mechanic(&s.uri(), false).await;
+        let _ = super::cmd_mechanic(&s.uri(), false, false, &[]).await;
         unsafe { std::env::remove_var("HOME") };
     }
 
@@ -1813,7 +1971,7 @@ mod tests {
             .await;
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
-        let _ = super::cmd_mechanic(&s.uri(), false).await;
+        let _ = super::cmd_mechanic(&s.uri(), false, false, &[]).await;
         unsafe { std::env::remove_var("HOME") };
     }
 
@@ -1838,7 +1996,7 @@ mod tests {
             .await;
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
-        let _ = super::cmd_mechanic(&s.uri(), true).await;
+        let _ = super::cmd_mechanic(&s.uri(), true, false, &[]).await;
         assert!(dir.path().join(".ironclad").join("workspace").exists());
         unsafe { std::env::remove_var("HOME") };
     }

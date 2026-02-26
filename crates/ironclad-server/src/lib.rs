@@ -35,6 +35,7 @@
 pub mod api;
 pub mod auth;
 pub mod cli;
+pub mod config_runtime;
 pub mod daemon;
 pub mod dashboard;
 pub mod migrate;
@@ -188,6 +189,13 @@ fn resolve_token(
 
 /// Builds the application state and router from config. Used by the binary and by tests.
 pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn std::error::Error>> {
+    bootstrap_with_config_path(config, None).await
+}
+
+pub async fn bootstrap_with_config_path(
+    config: IroncladConfig,
+    config_path: Option<std::path::PathBuf>,
+) -> Result<axum::Router, Box<dyn std::error::Error>> {
     init_logging(&config);
 
     let personality_state = api::PersonalityState::from_workspace(&config.agent.workspace);
@@ -250,6 +258,8 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
             };
             if let Err(e) = registry.register(agent_config).await {
                 tracing::warn!(agent = %sa.name, err = %e, "failed to register sub-agent");
+            } else if let Err(e) = registry.start_agent(&sa.name).await {
+                tracing::warn!(agent = %sa.name, err = %e, "failed to auto-start sub-agent");
             }
         }
         if !sub_agents.is_empty() {
@@ -269,7 +279,7 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
     }
     let keystore = Arc::new(keystore);
 
-    let channel_router = Arc::new(ChannelRouter::new());
+    let channel_router = Arc::new(ChannelRouter::with_store(db.clone()));
     let telegram: Option<Arc<TelegramAdapter>> =
         if let Some(ref tg_config) = config.channels.telegram {
             if tg_config.enabled {
@@ -578,6 +588,8 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
         }
     }
 
+    let resolved_config_path =
+        config_path.unwrap_or_else(crate::config_runtime::resolve_default_config_path);
     let state = AppState {
         db,
         config: Arc::new(RwLock::new(config.clone())),
@@ -611,6 +623,9 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
         keystore,
         obsidian: obsidian_vault,
         started_at: std::time::Instant::now(),
+        config_path: Arc::new(resolved_config_path.clone()),
+        config_apply_status: crate::config_runtime::status_for_path(&resolved_config_path),
+        pending_specialist_proposals: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 
     // Periodic ANN index rebuild (every 10 minutes)
@@ -762,6 +777,122 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
         tracing::info!("Cron worker spawned");
     }
 
+    {
+        let startup_announce_channels = config.channels.startup_announcement_channels();
+
+        let announce_text = format!(
+            "Ironclad online\nagent: {} ({})\nmodel.primary: {}\nrouting: {}\nserver: {}:{}\nskills_dir: {}\nstarted_at: {}",
+            config.agent.name,
+            config.agent.id,
+            config.models.primary,
+            config.models.routing.mode,
+            config.server.bind,
+            config.server.port,
+            config.skills.skills_dir.display(),
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        );
+
+        if startup_announce_channels.iter().any(|c| c == "telegram") {
+            if let (Some(adapter), Some(tg_cfg)) = (state.telegram.clone(), config.channels.telegram.as_ref()) {
+                let announce_targets = tg_cfg.allowed_chat_ids.clone();
+                if announce_targets.is_empty() {
+                    tracing::warn!(
+                        "Telegram startup announcement skipped: channels.telegram.allowed_chat_ids is empty"
+                    );
+                } else {
+                    let text = announce_text.clone();
+                    tokio::spawn(async move {
+                        for chat_id in announce_targets {
+                            let chat = chat_id.to_string();
+                            match adapter
+                                .send(ironclad_channels::OutboundMessage {
+                                    content: text.clone(),
+                                    recipient_id: chat.clone(),
+                                    metadata: None,
+                                })
+                                .await
+                            {
+                                Ok(()) => tracing::info!(chat_id = %chat, "telegram startup announcement sent"),
+                                Err(e) => tracing::warn!(chat_id = %chat, error = %e, "telegram startup announcement failed"),
+                            }
+                        }
+                    });
+                }
+            } else {
+                tracing::warn!("Telegram startup announcement requested but telegram channel is not enabled/configured");
+            }
+        }
+
+        if startup_announce_channels.iter().any(|c| c == "whatsapp") {
+            if let (Some(adapter), Some(wa_cfg)) = (state.whatsapp.clone(), config.channels.whatsapp.as_ref()) {
+                let targets = wa_cfg.allowed_numbers.clone();
+                if targets.is_empty() {
+                    tracing::warn!(
+                        "WhatsApp startup announcement skipped: channels.whatsapp.allowed_numbers is empty"
+                    );
+                } else {
+                    let text = announce_text.clone();
+                    tokio::spawn(async move {
+                        for number in targets {
+                            match adapter
+                                .send(ironclad_channels::OutboundMessage {
+                                    content: text.clone(),
+                                    recipient_id: number.clone(),
+                                    metadata: None,
+                                })
+                                .await
+                            {
+                                Ok(()) => tracing::info!(recipient = %number, "whatsapp startup announcement sent"),
+                                Err(e) => tracing::warn!(recipient = %number, error = %e, "whatsapp startup announcement failed"),
+                            }
+                        }
+                    });
+                }
+            } else {
+                tracing::warn!("WhatsApp startup announcement requested but whatsapp channel is not enabled/configured");
+            }
+        }
+
+        if startup_announce_channels.iter().any(|c| c == "signal") {
+            if let (Some(adapter), Some(sig_cfg)) = (state.signal.clone(), config.channels.signal.as_ref()) {
+                let targets = sig_cfg.allowed_numbers.clone();
+                if targets.is_empty() {
+                    tracing::warn!(
+                        "Signal startup announcement skipped: channels.signal.allowed_numbers is empty"
+                    );
+                } else {
+                    let text = announce_text.clone();
+                    tokio::spawn(async move {
+                        for number in targets {
+                            match adapter
+                                .send(ironclad_channels::OutboundMessage {
+                                    content: text.clone(),
+                                    recipient_id: number.clone(),
+                                    metadata: None,
+                                })
+                                .await
+                            {
+                                Ok(()) => tracing::info!(recipient = %number, "signal startup announcement sent"),
+                                Err(e) => tracing::warn!(recipient = %number, error = %e, "signal startup announcement failed"),
+                            }
+                        }
+                    });
+                }
+            } else {
+                tracing::warn!("Signal startup announcement requested but signal channel is not enabled/configured");
+            }
+        }
+
+        for ch in &startup_announce_channels {
+            if ch != "telegram" && ch != "whatsapp" && ch != "signal" {
+                tracing::warn!(
+                    channel = %ch,
+                    "startup announcement requested for channel without recipient mapping support"
+                );
+            }
+        }
+    }
+
     if state.telegram.is_some() {
         let use_polling = config
             .channels
@@ -839,10 +970,15 @@ pub async fn bootstrap(config: IroncladConfig) -> Result<axum::Router, Box<dyn s
     let app = authed_routes
         .merge(public_routes)
         .layer(cors)
-        .layer(GlobalRateLimitLayer::new(
-            u64::from(config.server.rate_limit_requests),
-            Duration::from_secs(config.server.rate_limit_window_secs),
-        ));
+        .layer(
+            GlobalRateLimitLayer::new(
+                u64::from(config.server.rate_limit_requests),
+                Duration::from_secs(config.server.rate_limit_window_secs),
+            )
+            .with_per_ip_capacity(u64::from(config.server.per_ip_rate_limit_requests))
+            .with_per_actor_capacity(u64::from(config.server.per_actor_rate_limit_requests))
+            .with_trusted_proxy_cidrs(&config.server.trusted_proxy_cidrs),
+        );
     Ok(app)
 }
 

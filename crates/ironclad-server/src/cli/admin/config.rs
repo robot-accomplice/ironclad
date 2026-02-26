@@ -1,4 +1,6 @@
 use super::*;
+use crate::config_runtime;
+use ironclad_core::IroncladConfig;
 
 // ── Config (show from API) ────────────────────────────────────
 
@@ -223,6 +225,42 @@ pub fn cmd_config_unset(path: &str, file: &str) -> Result<(), Box<dyn std::error
         eprintln!("  Key not found: {path}");
     }
     Ok(())
+}
+
+pub fn cmd_config_lint(file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (OK, _, _, _, _) = icons();
+    let _cfg = IroncladConfig::from_file(std::path::Path::new(file))?;
+    println!("  {OK} Config lint passed: {file}");
+    Ok(())
+}
+
+pub fn cmd_config_backup(file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (OK, _, _, _, _) = icons();
+    let path = std::path::Path::new(file);
+    match config_runtime::backup_config_file(path)? {
+        Some(backup) => println!("  {OK} Backup created: {}", backup.display()),
+        None => println!("  {OK} No backup needed; config file does not exist: {file}"),
+    }
+    Ok(())
+}
+
+pub async fn cmd_config_apply(url: &str, file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (OK, _, WARN, _, _) = icons();
+    let cfg = IroncladConfig::from_file(std::path::Path::new(file))?;
+    let c = IroncladClient::new(url)?;
+    let payload = serde_json::to_value(cfg)?;
+    match c.put("/api/config", payload).await {
+        Ok(_) => {
+            println!("  {OK} Runtime apply succeeded via /api/config");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!(
+                "  {WARN} Config file updated, but runtime apply failed (server unavailable?): {e}"
+            );
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

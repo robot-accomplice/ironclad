@@ -636,6 +636,20 @@ mod tests {
     }
 
     #[test]
+    fn retrieve_working_is_session_isolated() {
+        let db = test_db();
+        store_working(&db, "sess-a", "note", "alpha", 5).unwrap();
+        store_working(&db, "sess-b", "note", "beta", 5).unwrap();
+
+        let a = retrieve_working(&db, "sess-a").unwrap();
+        let b = retrieve_working(&db, "sess-b").unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(b.len(), 1);
+        assert_eq!(a[0].content, "alpha");
+        assert_eq!(b[0].content, "beta");
+    }
+
+    #[test]
     fn retrieve_episodic_limit_zero() {
         let db = test_db();
         store_episodic(&db, "event", "something happened", 5).unwrap();

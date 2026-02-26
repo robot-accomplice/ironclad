@@ -1,0 +1,11 @@
+eval_run_id,runner_id,model_id,task_class,dataset_id,dataset_version,sample_count,accuracy,pass_at_k,schema_adherence,factuality_score,refusal_policy_score,ttft_ms,p95_token_ms,tokens_per_sec,success_rate
+AA-2026-02-25,sglang,llama-3-1-instruct-70b,coding,artificial-analysis-intelligence,model-page-v4:intel_index_12,,,,,,,,,,
+AA-2026-02-25,vllm,llama-3-1-instruct-70b,coding,artificial-analysis-intelligence,model-page-v4:intel_index_12,,,,,,,,,,
+AA-2026-02-25,ollama,qwen2.5-32b-instruct,summarization,artificial-analysis-intelligence,model-page-v4:intel_index_13,,,,,,,,,,
+TBD,docker_model_runner,mistral-nemo-instruct,tool_use,TBD,TBD,,,,,,,,,,
+AA-2026-02-25,airllm,llama-3-1-instruct-70b,summarization,artificial-analysis-intelligence,model-page-v4:intel_index_12,,,,,,,,,,
+AA-2026-02-25,openai_responses,gpt-5-mini-minimal,extraction,artificial-analysis-performance,providers+model-pages,,,,,,,660,,67.9,
+AA-2026-02-25,anthropic_messages,claude-4-5-sonnet,planning,artificial-analysis-performance,providers+model-pages,,,,,,,1130,,71.6,
+AA-2026-02-25,google_vertex_openai,gemini-2-5-pro,classification,artificial-analysis-performance,providers+model-pages,,,,,,,37880,,135.4,
+AA-2026-02-25,groq_openai,llama-3-3-instruct-70b,translation,artificial-analysis-performance,providers+model-pages,,,,,,,250,,335.5,
+AA-2026-02-25,mistral_api,mistral-large-3,safety_refusal,artificial-analysis-performance,providers+model-pages,,,,,,,590,,51.3,

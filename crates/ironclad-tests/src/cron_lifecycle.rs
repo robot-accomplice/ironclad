@@ -38,3 +38,17 @@ fn cron_schedule_evaluation_basics() {
     let result = DurableScheduler::evaluate_interval(Some("2026-02-21T11:58:00"), 60_000, now);
     assert!(result, "2 min ago with 60s interval should be due");
 }
+
+#[test]
+fn cron_schedule_rejects_invalid_timestamps() {
+    use ironclad_schedule::scheduler::DurableScheduler;
+    let result = DurableScheduler::evaluate_interval(None, 60_000, "not-a-timestamp");
+    assert!(!result, "invalid now timestamp should never evaluate as due");
+}
+
+#[test]
+fn cron_schedule_rejects_invalid_expressions() {
+    use ironclad_schedule::scheduler::DurableScheduler;
+    let result = DurableScheduler::evaluate_cron("not-a-cron", None, "2026-02-21T12:00:00+00:00");
+    assert!(!result, "invalid cron expression should be safely rejected");
+}

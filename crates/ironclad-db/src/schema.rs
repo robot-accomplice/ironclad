@@ -283,6 +283,7 @@ CREATE TABLE IF NOT EXISTS delivery_queue (
     channel TEXT NOT NULL,
     recipient_id TEXT NOT NULL,
     content TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 5,
@@ -291,6 +292,7 @@ CREATE TABLE IF NOT EXISTS delivery_queue (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_delivery_queue_status ON delivery_queue(status, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_delivery_queue_idem ON delivery_queue(idempotency_key);
 
 CREATE TABLE IF NOT EXISTS approval_requests (
     id TEXT PRIMARY KEY,
@@ -469,6 +471,18 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
     if !has_column(&conn, "tool_calls", "skill_hash")? {
         conn.execute("ALTER TABLE tool_calls ADD COLUMN skill_hash TEXT", [])
             .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "delivery_queue", "idempotency_key")? {
+        conn.execute(
+            "ALTER TABLE delivery_queue ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        conn.execute(
+            "UPDATE delivery_queue SET idempotency_key = id WHERE idempotency_key = ''",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
     }
     Ok(())
 }

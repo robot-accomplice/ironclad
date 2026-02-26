@@ -6,15 +6,84 @@
 
 ---
 
+## 0. Runtime Config Reload Dataflow
+
+`ironclad.toml` is now a runtime-reloadable source of truth. Update flows persist to disk first (with backup) and then apply to in-memory runtime state.
+
+```mermaid
+flowchart TD
+    subgraph requestLayer [RequestLayer]
+        op[OperatorCLIorAPI]
+        patch[ConfigPatchOrFileEdit]
+    end
+
+    subgraph validationLayer [ValidationLayer]
+        parse[ParseTomlOrJsonPatch]
+        validate[SchemaAndSemanticValidate]
+    end
+
+    subgraph persistenceLayer [PersistenceLayer]
+        backup[CreateTimestampedBackup]
+        atomicWrite[AtomicWriteIroncladToml]
+    end
+
+    subgraph runtimeLayer [RuntimeApplyLayer]
+        apply[ApplyToRuntimeState]
+        sync[SyncRouterAndA2A]
+        deferred[EmitDeferredApplyHints]
+    end
+
+    op --> patch
+    patch --> parse
+    parse --> validate
+    validate --> backup
+    backup --> atomicWrite
+    atomicWrite --> apply
+    apply --> sync
+    sync --> deferred
+```
+
 ## 1. Primary Request Dataflow
 <!-- last_updated: 2026-02-24, version: 0.6.0 -->
 
 End-to-end path from inbound user message to delivered response, entirely within one OS process.
 
 0.6.0 targeted additions reflected in the runtime:
+
 - Capacity-aware model selection now records per-provider throughput and feeds headroom + preemptive breaker pressure.
 - Session lookup/create is scope-aware (`agent`, `peer`, `group`) in web and channel paths.
 - Session and context UI rendering supports sanitized markdown in dashboard views.
+- Local model onboarding now supports Apertus with SGLang-first host recommendation and resource-aware model filtering.
+- Outbound channel retries are persisted in `delivery_queue` and recovered on restart before retry drain loops resume.
+- Session rotation now evaluates `session.reset_schedule` cron expressions directly (including timezone-prefixed schedules) instead of top-of-hour polling.
+
+```mermaid
+flowchart TD
+    subgraph installSetup [InstallAndSetup]
+        optIn[UserOptsInForApertus]
+        probe[ProbeSystemResources]
+        detect[DetectLocalHosts]
+        bootstrap[BootstrapLocalHost]
+        choose[ChooseEligibleModel]
+    end
+
+    subgraph hostAdapters [HostAdapters]
+        sglang[SGLangRecommended]
+        vllm[vLLMFallback]
+        dockerRunner[DockerModelRunnerFallback]
+        ollama[OllamaFallback]
+    end
+
+    optIn --> probe
+    probe --> detect
+    detect --> bootstrap
+    detect --> choose
+    bootstrap --> choose
+    choose --> sglang
+    choose --> vllm
+    choose --> dockerRunner
+    choose --> ollama
+```
 
 ```mermaid
 flowchart TD

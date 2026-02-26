@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Telegram invalid-token resilience**: Telegram `404/401` poll failures are now classified as likely invalid/revoked bot-token errors with explicit repair guidance and adaptive backoff to reduce noisy tight-loop logging.
+- **Subagent runtime activation sync**: Taskable subagents are now auto-started at boot and kept in sync with create/update/toggle/delete operations, fixing the `enabled > 0, running = 0` stall where configured subagents stayed idle.
+
+### Added
+
+- **v0.8.0 zero-regression release gate**: Added canonical `just test-v080-go-live` orchestration and release-blocking CI/release jobs for workspace tests, integration/regression batteries, bounded soak/fuzz checks, CLI+web UAT smoke, and release-doc/provenance consistency checks.
+
 ## [0.7.1] - 2026-02-25
 
 ### Fixed

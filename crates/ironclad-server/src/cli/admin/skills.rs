@@ -101,3 +101,81 @@ pub async fn cmd_skills_reload(url: &str) -> Result<(), Box<dyn std::error::Erro
     eprintln!();
     Ok(())
 }
+
+pub async fn cmd_skills_catalog_list(
+    url: &str,
+    query: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let c = IroncladClient::new(url)?;
+    let path = if let Some(q) = query {
+        format!("/api/skills/catalog?q={}", crate::cli::urlencoding(q))
+    } else {
+        "/api/skills/catalog".to_string()
+    };
+    let data = c.get(&path).await?;
+    heading("Skills Catalog");
+    let items = data["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        empty_state("No catalog skills found");
+        eprintln!();
+        return Ok(());
+    }
+    let widths = [28, 12, 16];
+    table_header(&["Name", "Kind", "Source"], &widths);
+    for item in items {
+        let name = item
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let kind = item
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let source = item
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        table_row(&[name, kind, source], &widths);
+    }
+    eprintln!();
+    Ok(())
+}
+
+pub async fn cmd_skills_catalog_install(
+    url: &str,
+    skills: &[String],
+    activate: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let c = IroncladClient::new(url)?;
+    let data = c
+        .post(
+            "/api/skills/catalog/install",
+            serde_json::json!({ "skills": skills, "activate": activate }),
+        )
+        .await?;
+    heading("Catalog Install");
+    kv("Installed", &data["installed"].to_string());
+    kv("Activated", &data["activated"].to_string());
+    eprintln!();
+    Ok(())
+}
+
+pub async fn cmd_skills_catalog_activate(
+    url: &str,
+    skills: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let c = IroncladClient::new(url)?;
+    let _ = c
+        .post(
+            "/api/skills/catalog/activate",
+            serde_json::json!({ "skills": skills }),
+        )
+        .await?;
+    heading("Catalog Activate");
+    kv("Requested", &skills.join(", "));
+    eprintln!();
+    Ok(())
+}

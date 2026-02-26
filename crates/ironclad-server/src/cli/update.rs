@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,6 +13,7 @@ use crate::cli::{CRT_DRAW_MS, theme};
 const DEFAULT_REGISTRY_URL: &str = "https://roboticus.ai/registry/manifest.json";
 const CRATES_IO_API: &str = "https://crates.io/api/v1/crates/ironclad-server";
 const CRATE_NAME: &str = "ironclad-server";
+const RELEASE_BASE_URL: &str = "https://github.com/robot-accomplice/ironclad/releases/download";
 
 // ── Registry manifest (remote) ───────────────────────────────
 
@@ -210,8 +213,300 @@ fn is_newer(remote: &str, local: &str) -> bool {
     parse_semver(remote) > parse_semver(local)
 }
 
-fn should_skip_inplace_binary_update(os: &str) -> bool {
-    os == "windows"
+fn platform_archive_name(version: &str) -> Option<String> {
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        _ => return None,
+    };
+    let os = match std::env::consts::OS {
+        "linux" => "linux",
+        "macos" => "darwin",
+        "windows" => "windows",
+        _ => return None,
+    };
+    let ext = if os == "windows" { "zip" } else { "tar.gz" };
+    Some(format!("ironclad-{version}-{arch}-{os}.{ext}"))
+}
+
+fn parse_sha256sums_for_artifact(sha256sums: &str, artifact: &str) -> Option<String> {
+    for raw in sha256sums.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let hash = parts.next()?;
+        let file = parts.next()?;
+        if file == artifact {
+            return Some(hash.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+fn find_file_recursive(root: &Path, filename: &str) -> io::Result<Option<PathBuf>> {
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file_recursive(&path, filename)? {
+                return Ok(Some(found));
+            }
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n == filename)
+            .unwrap_or(false)
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn install_binary_bytes(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe()?;
+        let staging_dir = std::env::temp_dir().join(format!(
+            "ironclad-update-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_millis()
+        ));
+        std::fs::create_dir_all(&staging_dir)?;
+        let staged_exe = staging_dir.join("ironclad-staged.exe");
+        std::fs::write(&staged_exe, bytes)?;
+        let script_path = staging_dir.join("apply-update.cmd");
+        let script = format!(
+            "@echo off\r\nsetlocal\r\nset SRC={src}\r\nset DST={dst}\r\nfor /L %%i in (1,1,120) do (\r\n  copy /Y \"%SRC%\" \"%DST%\" >nul 2>nul && goto :ok\r\n  timeout /t 1 /nobreak >nul\r\n)\r\nexit /b 1\r\n:ok\r\ndel /Q \"%SRC%\" >nul 2>nul\r\ndel /Q \"%~f0\" >nul 2>nul\r\nexit /b 0\r\n",
+            src = staged_exe.display(),
+            dst = exe.display()
+        );
+        std::fs::write(&script_path, script)?;
+        let _child = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg(script_path.to_string_lossy().as_ref())
+            .spawn()?;
+        return Ok(());
+    }
+
+    #[cfg(not(windows))]
+    {
+    let exe = std::env::current_exe()?;
+    let tmp = exe.with_extension("new");
+    std::fs::write(&tmp, bytes)?;
+    #[cfg(unix)]
+    {
+        let mode = std::fs::metadata(&exe)
+            .map(|m| m.permissions().mode())
+            .unwrap_or(0o755);
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+    }
+    std::fs::rename(&tmp, &exe)?;
+    Ok(())
+    }
+}
+
+async fn apply_binary_download_update(
+    client: &reqwest::Client,
+    latest: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let archive = platform_archive_name(latest).ok_or_else(|| {
+        format!(
+            "No release archive mapping for platform {}/{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    })?;
+    let tag = format!("v{latest}");
+    let sha_url = format!("{RELEASE_BASE_URL}/{tag}/SHA256SUMS.txt");
+    let archive_url = format!("{RELEASE_BASE_URL}/{tag}/{archive}");
+
+    let sha_resp = client.get(&sha_url).send().await?;
+    if !sha_resp.status().is_success() {
+        return Err(format!("Failed to fetch SHA256SUMS.txt: HTTP {}", sha_resp.status()).into());
+    }
+    let sha_body = sha_resp.text().await?;
+    let expected = parse_sha256sums_for_artifact(&sha_body, &archive)
+        .ok_or_else(|| format!("No checksum found for artifact {archive}"))?;
+
+    let archive_resp = client.get(&archive_url).send().await?;
+    if !archive_resp.status().is_success() {
+        return Err(
+            format!("Failed to download release archive: HTTP {}", archive_resp.status()).into(),
+        );
+    }
+    let archive_bytes = archive_resp.bytes().await?.to_vec();
+    let actual = bytes_sha256(&archive_bytes);
+    if actual != expected {
+        return Err(format!(
+            "SHA256 mismatch for {archive}: expected {expected}, got {actual}"
+        )
+        .into());
+    }
+
+    let temp_root = std::env::temp_dir().join(format!(
+        "ironclad-update-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_millis()
+    ));
+    std::fs::create_dir_all(&temp_root)?;
+    let archive_path = if archive.ends_with(".zip") {
+        temp_root.join("ironclad.zip")
+    } else {
+        temp_root.join("ironclad.tar.gz")
+    };
+    std::fs::write(&archive_path, &archive_bytes)?;
+
+    if archive.ends_with(".zip") {
+        let status = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &format!(
+                    "Expand-Archive -Path \"{}\" -DestinationPath \"{}\" -Force",
+                    archive_path.display(),
+                    temp_root.display()
+                ),
+            ])
+            .status()?;
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&temp_root);
+            return Err(format!("Failed to extract {archive} with PowerShell Expand-Archive").into());
+        }
+    } else {
+        let status = std::process::Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive_path)
+            .arg("-C")
+            .arg(&temp_root)
+            .status()?;
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&temp_root);
+            return Err(format!("Failed to extract {archive} with tar").into());
+        }
+    }
+
+    let bin_name = if std::env::consts::OS == "windows" {
+        "ironclad.exe"
+    } else {
+        "ironclad"
+    };
+    let extracted = find_file_recursive(&temp_root, bin_name)?
+        .ok_or_else(|| format!("Could not locate extracted {bin_name} binary"))?;
+    let bytes = std::fs::read(&extracted)?;
+    install_binary_bytes(&bytes)?;
+    let _ = std::fs::remove_dir_all(&temp_root);
+    Ok(())
+}
+
+fn c_compiler_available() -> bool {
+    #[cfg(windows)]
+    {
+        if std::process::Command::new("cmd")
+            .args(["/C", "where", "cl"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        if std::process::Command::new("gcc")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        return std::process::Command::new("clang")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(windows))]
+    {
+        if std::process::Command::new("cc")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        if std::process::Command::new("clang")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        std::process::Command::new("gcc")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+fn apply_binary_cargo_update(latest: &str) -> bool {
+    let (DIM, _, _, _, _, _, _, RESET, _) = colors();
+    let (OK, _, WARN, DETAIL, ERR) = icons();
+    if !c_compiler_available() {
+        println!("    {WARN} Local build toolchain check failed: no C compiler found in PATH");
+        println!(
+            "    {DETAIL} `--method build` requires a C compiler (and related native build tools)."
+        );
+        println!("    {DETAIL} Recommended: use `ironclad update binary --method download --yes`.");
+        #[cfg(windows)]
+        {
+            println!(
+                "    {DETAIL} Windows: install Visual Studio Build Tools (MSVC) or clang/gcc."
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            println!("    {DETAIL} macOS: run `xcode-select --install`.");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            println!(
+                "    {DETAIL} Linux: install build tools (for example `build-essential` on Debian/Ubuntu)."
+            );
+        }
+        return false;
+    }
+    println!("    Installing v{latest} via cargo install...");
+    println!("    {DIM}This may take a few minutes.{RESET}");
+
+    let status = std::process::Command::new("cargo")
+        .args(["install", CRATE_NAME])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("    {OK} Binary updated to v{latest}");
+            true
+        }
+        Ok(s) => {
+            println!(
+                "    {ERR} cargo install exited with code {}",
+                s.code().unwrap_or(-1)
+            );
+            false
+        }
+        Err(e) => {
+            println!("    {ERR} Failed to run cargo install: {e}");
+            println!("    {DIM}Ensure cargo is in your PATH{RESET}");
+            false
+        }
+    }
 }
 
 // ── TOML diff ────────────────────────────────────────────────
@@ -289,11 +584,12 @@ async fn check_binary_version(
     Ok(latest)
 }
 
-async fn apply_binary_update(yes: bool) -> Result<bool, Box<dyn std::error::Error>> {
+async fn apply_binary_update(yes: bool, method: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let (DIM, BOLD, _, GREEN, _, _, _, RESET, MONO) = colors();
     let (OK, _, WARN, DETAIL, ERR) = icons();
     let current = env!("CARGO_PKG_VERSION");
     let client = http_client()?;
+    let method = method.to_ascii_lowercase();
 
     println!("\n  {BOLD}Binary Update{RESET}\n");
     println!("    Current version: {MONO}v{current}{RESET}");
@@ -316,15 +612,14 @@ async fn apply_binary_update(yes: bool) -> Result<bool, Box<dyn std::error::Erro
     println!("    {GREEN}New version available: v{latest}{RESET}");
     println!();
 
-    if should_skip_inplace_binary_update(std::env::consts::OS) {
-        println!("    {WARN} In-place self-update is disabled on Windows");
+    if std::env::consts::OS == "windows" && method == "build" {
+        println!("    {WARN} Build method is not supported in-process on Windows");
         println!(
-            "    {DETAIL} Windows locks running executables, so `cargo install` cannot replace `ironclad.exe` while this process is active."
+            "    {DETAIL} Running executables are file-locked. Use `--method download` (recommended),"
         );
-        println!("    {DETAIL} Upgrade manually from a fresh PowerShell session:");
-        println!("      1) ironclad daemon stop");
-        println!("      2) cargo install {CRATE_NAME} --locked --force");
-        println!("      3) ironclad daemon start");
+        println!(
+            "    {DETAIL} or run `cargo install {CRATE_NAME} --force` from a separate PowerShell session."
+        );
         return Ok(false);
     }
 
@@ -333,34 +628,52 @@ async fn apply_binary_update(yes: bool) -> Result<bool, Box<dyn std::error::Erro
         return Ok(false);
     }
 
-    println!("    Installing v{latest} via cargo install...");
-    println!("    {DIM}This may take a few minutes.{RESET}");
+    let mut updated = false;
+    if method == "download" {
+        println!("    Attempting platform binary download + fingerprint verification...");
+        match apply_binary_download_update(&client, &latest).await {
+            Ok(()) => {
+                println!("    {OK} Binary downloaded and verified (SHA256)");
+                if std::env::consts::OS == "windows" {
+                    println!(
+                        "    {DETAIL} Update staged. The replacement finalizes after this process exits."
+                    );
+                    println!("    {DETAIL} Re-run `ironclad version` in a few seconds to confirm.");
+                }
+                updated = true;
+            }
+            Err(e) => {
+                println!("    {WARN} Download update failed: {e}");
+                if std::env::consts::OS == "windows" {
+                    println!(
+                        "    {DETAIL} On Windows, fallback build-in-place is blocked by executable locks."
+                    );
+                    println!(
+                        "    {DETAIL} Retry `ironclad update binary --method download` or run build update from a separate shell."
+                    );
+                } else if yes || confirm_action("Fall back to cargo build update?", true) {
+                    updated = apply_binary_cargo_update(&latest);
+                } else {
+                    println!("    Skipped fallback build.");
+                }
+            }
+        }
+    } else {
+        updated = apply_binary_cargo_update(&latest);
+    }
 
-    let status = std::process::Command::new("cargo")
-        .args(["install", CRATE_NAME, "--locked"])
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {
-            println!("    {OK} Binary updated to v{latest}");
-            let mut state = UpdateState::load();
-            state.binary_version = latest;
-            state.last_check = now_iso();
-            state.save().ok();
-            Ok(true)
+    if updated {
+        println!("    {OK} Binary updated to v{latest}");
+        let mut state = UpdateState::load();
+        state.binary_version = latest;
+        state.last_check = now_iso();
+        state.save().ok();
+        Ok(true)
+    } else {
+        if method == "download" {
+            println!("    {ERR} Binary update did not complete");
         }
-        Ok(s) => {
-            println!(
-                "    {ERR} cargo install exited with code {}",
-                s.code().unwrap_or(-1)
-            );
-            Ok(false)
-        }
-        Err(e) => {
-            println!("    {ERR} Failed to run cargo install: {e}");
-            println!("    {DIM}Ensure cargo is in your PATH{RESET}");
-            Ok(false)
-        }
+        Ok(false)
     }
 }
 
@@ -798,7 +1111,7 @@ pub async fn cmd_update_all(
     let (_, BOLD, _, _, _, _, _, RESET, _) = colors();
     heading("Ironclad Update");
 
-    apply_binary_update(yes).await?;
+    apply_binary_update(yes, "download").await?;
 
     let registry_url = resolve_registry_url(registry_url_override, config_path);
     apply_providers_update(yes, &registry_url, config_path).await?;
@@ -811,9 +1124,10 @@ pub async fn cmd_update_all(
 pub async fn cmd_update_binary(
     _channel: &str,
     yes: bool,
+    method: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     heading("Ironclad Binary Update");
-    apply_binary_update(yes).await?;
+    apply_binary_update(yes, method).await?;
     println!();
     Ok(())
 }
@@ -1121,10 +1435,11 @@ mod tests {
     }
 
     #[test]
-    fn should_skip_inplace_binary_update_windows_only() {
-        assert!(should_skip_inplace_binary_update("windows"));
-        assert!(!should_skip_inplace_binary_update("linux"));
-        assert!(!should_skip_inplace_binary_update("macos"));
+    fn platform_archive_name_supported() {
+        let name = platform_archive_name("1.2.3");
+        if let Some(n) = name {
+            assert!(n.contains("ironclad-1.2.3-"));
+        }
     }
 
     #[test]

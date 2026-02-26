@@ -219,6 +219,11 @@ impl TelegramAdapter {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown error");
             error!(status = %status, description = desc, "Telegram API error");
+            if status.as_u16() == 404 || status.as_u16() == 401 {
+                return Err(IroncladError::Network(format!(
+                    "Telegram API {status}: {desc} (likely invalid/revoked bot token)"
+                )));
+            }
             return Err(IroncladError::Network(format!(
                 "Telegram API {status}: {desc}"
             )));
@@ -518,6 +523,34 @@ mod tests {
         });
         let result = adapter.process_webhook_update(&update).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn process_webhook_update_advances_id_without_rewinding() {
+        let adapter = TelegramAdapter::new("tok".into());
+
+        let newer = json!({
+            "update_id": 200,
+            "edited_message": {}
+        });
+        let older = json!({
+            "update_id": 150,
+            "edited_message": {}
+        });
+
+        let _ = adapter.process_webhook_update(&newer).unwrap();
+        let after_newer = *adapter
+            .last_update_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert_eq!(after_newer, 200);
+
+        let _ = adapter.process_webhook_update(&older).unwrap();
+        let after_older = *adapter
+            .last_update_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert_eq!(after_older, 200, "update offset must never move backwards");
     }
 
     #[test]

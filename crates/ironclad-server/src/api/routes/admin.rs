@@ -13,6 +13,7 @@ use ironclad_agent::policy::{PolicyContext, ToolCallRequest};
 use ironclad_core::{
     InputAuthority, IroncladConfig, PolicyDecision, SurvivalTier, input_capability_scan,
 };
+use crate::config_runtime;
 
 use super::{AppState, internal_err};
 
@@ -306,14 +307,20 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
 
 pub async fn get_config_capabilities() -> impl IntoResponse {
     axum::Json(json!({
-        "immutable_sections": ["server", "treasury", "a2a", "wallet"],
-        "mutable_sections": ["agent", "models", "memory", "channels", "providers", "circuit_breaker", "obsidian", "approvals", "plugins", "browser", "interview"],
+        "immutable_sections": [],
+        "mutable_sections": ["agent", "server", "database", "models", "memory", "cache", "treasury", "yield", "wallet", "a2a", "skills", "channels", "circuit_breaker", "providers", "context", "approvals", "plugins", "browser", "daemon", "update", "tier_adapt", "personality", "session", "digest", "multimodal", "knowledge", "workspace_config", "mcp", "devices", "discovery", "obsidian"],
         "notes": {
-            "server": "requires file edit + restart",
-            "treasury": "requires file edit + restart",
-            "a2a": "requires file edit + restart",
-            "wallet": "requires file edit + restart"
+            "runtime_reload": "all sections are accepted and persisted to ironclad.toml with validation",
+            "deferred_apply_examples": ["server.bind", "server.port", "wallet", "treasury.policy_engine", "browser.runtime"],
+            "deferred_apply_behavior": "changes marked deferred are persisted immediately but may require restart for full runtime effect"
         }
+    }))
+}
+
+pub async fn get_config_apply_status(State(state): State<AppState>) -> impl IntoResponse {
+    let status = state.config_apply_status.read().await.clone();
+    axum::Json(json!({
+        "status": status
     }))
 }
 
@@ -360,6 +367,10 @@ fn is_loopback_url(url: &str) -> bool {
     lower.contains("127.0.0.1") || lower.contains("localhost")
 }
 
+fn legacy_loopback_support_state() -> &'static str {
+    "removed_v0_8"
+}
+
 fn classify_provider_connectivity_status(
     provider_name: &str,
     provider_url: &str,
@@ -370,9 +381,9 @@ fn classify_provider_connectivity_status(
     let remote_discovery_target = models_url.contains("/v1/models");
     if !localish && is_loopback_url(provider_url) && remote_discovery_target {
         return (
-            "proxy_unreachable",
+            "legacy_proxy_unsupported",
             Some(format!(
-                "legacy loopback proxy URL detected for provider '{provider_name}' at {provider_url}; update providers.{provider_name}.url to a direct provider base URL"
+                "legacy loopback provider URL is unsupported in v0.8.0+: update providers.{provider_name}.url to a direct provider base URL"
             )),
         );
     }
@@ -480,13 +491,13 @@ pub async fn get_available_models(
                 let has_openai_shape = body.get("data").and_then(|v| v.as_array()).is_some();
                 if !has_ollama_shape && !has_openai_shape {
                     let status = if !localish && is_loopback_url(&url) {
-                        "proxy_misconfigured"
+                        "legacy_proxy_unsupported"
                     } else {
                         "error"
                     };
-                    let hint = if status == "proxy_misconfigured" {
+                    let hint = if status == "legacy_proxy_unsupported" {
                         Some(format!(
-                            "provider '{name}' returned a non-models payload at {models_url}; verify internal proxy routing for /v1/models"
+                            "legacy loopback provider URL is unsupported in v0.8.0+: update providers.{name}.url to a direct provider base URL"
                         ))
                     } else {
                         None
@@ -594,7 +605,8 @@ pub async fn get_available_models(
         "validation_level": validation_level,
         "proxy": {
             "mode": "in_process",
-            "loopback_listener_required": false
+            "loopback_listener_required": false,
+            "legacy_loopback_support": legacy_loopback_support_state()
         },
         "providers": provider_reports,
     }))
@@ -604,46 +616,62 @@ pub async fn update_config(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<UpdateConfigRequest>,
 ) -> impl IntoResponse {
-    const IMMUTABLE_KEYS: &[&str] = &["server", "treasury", "a2a", "wallet"];
-    if let Some(obj) = body.patch.as_object() {
-        for key in IMMUTABLE_KEYS {
-            if obj.contains_key(*key) {
-                return Err((
-                    StatusCode::FORBIDDEN,
-                    format!("cannot modify '{key}' at runtime; edit ironclad.toml and restart"),
-                ));
-            }
-        }
+    {
+        let mut status = state.config_apply_status.write().await;
+        status.last_attempt_at = Some(chrono::Utc::now().to_rfc3339());
+        status.last_error = None;
     }
 
-    let mut config = state.config.write().await;
-    let mut current = serde_json::to_value(&*config).map_err(|e| internal_err(&e))?;
+    let runtime_cfg = state.config.read().await.clone();
+    let mut current = match config_runtime::config_value_from_file_or_runtime(
+        state.config_path.as_ref(),
+        &runtime_cfg,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = e.to_string();
+            state.config_apply_status.write().await.last_error = Some(msg.clone());
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, msg));
+        }
+    };
 
     merge_json(&mut current, &body.patch);
+    let updated: IroncladConfig = match serde_json::from_value(current) {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = format!("invalid config: {e}");
+            state.config_apply_status.write().await.last_error = Some(msg.clone());
+            return Err((StatusCode::BAD_REQUEST, msg));
+        }
+    };
+    if let Err(e) = updated.validate() {
+        let msg = format!("validation failed: {e}");
+        state.config_apply_status.write().await.last_error = Some(msg.clone());
+        return Err((StatusCode::BAD_REQUEST, msg));
+    }
 
-    let updated: IroncladConfig = serde_json::from_value(current)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid config: {e}")))?;
+    let report = match config_runtime::apply_runtime_config(&state, updated).await {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = e.to_string();
+            state.config_apply_status.write().await.last_error = Some(msg.clone());
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, msg));
+        }
+    };
 
-    updated
-        .validate()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("validation failed: {e}")))?;
-
-    *config = updated.clone();
-    drop(config);
-
-    // Keep active router in sync with runtime config mutations.
     {
-        let mut llm = state.llm.write().await;
-        llm.router.sync_runtime(
-            updated.models.primary.clone(),
-            updated.models.fallbacks.clone(),
-            updated.models.routing.clone(),
-        );
+        let mut status = state.config_apply_status.write().await;
+        status.last_success_at = Some(chrono::Utc::now().to_rfc3339());
+        status.last_backup_path = report.backup_path.clone();
+        status.deferred_apply = report.deferred_apply.clone();
     }
 
     Ok::<_, (StatusCode, String)>(axum::Json(json!({
         "updated": true,
-        "message": "configuration updated (runtime only, not persisted to disk)",
+        "persisted": true,
+        "message": "configuration updated and reloaded from disk-backed state",
+        "backup_path": report.backup_path,
+        "deferred_apply": report.deferred_apply,
     })))
 }
 
@@ -1528,6 +1556,8 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         .unwrap_or_default();
 
     let sub_agents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let session_counts = ironclad_db::agents::list_session_counts_by_agent(&state.db)
+        .unwrap_or_default();
     let taskable_sub_agents: Vec<&ironclad_db::agents::SubAgentRow> = sub_agents
         .iter()
         .filter(|sa| !sa.role.eq_ignore_ascii_case(ROLE_MODEL_PROXY))
@@ -1604,7 +1634,7 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
             "enabled": sa.enabled,
             "color": color,
             "state": state_str,
-            "session_count": sa.session_count,
+            "session_count": session_counts.get(&sa.name).copied().unwrap_or(sa.session_count),
             "description": sa.description,
             "skills": sa.skills_json.as_ref().and_then(|s| serde_json::from_str::<Vec<String>>(s).ok()).unwrap_or_default(),
             "supervisor": config.agent.id,
@@ -2526,7 +2556,7 @@ mod tests {
             "error sending request for url: connect: connection refused",
             false,
         );
-        assert_eq!(status, "proxy_unreachable");
+        assert_eq!(status, "legacy_proxy_unsupported");
         assert!(hint.unwrap_or_default().contains("providers.anthropic.url"));
     }
 
@@ -2534,5 +2564,10 @@ mod tests {
     fn loopback_nonlocal_proxy_can_be_marked_misconfigured() {
         assert!(is_loopback_url("http://127.0.0.1:8788/anthropic"));
         assert!(!is_loopback_url("https://api.anthropic.com"));
+    }
+
+    #[test]
+    fn legacy_loopback_support_state_is_removed() {
+        assert_eq!(legacy_loopback_support_state(), "removed_v0_8");
     }
 }

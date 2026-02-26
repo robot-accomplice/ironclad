@@ -10,6 +10,7 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::StreamExt;
 use ironclad_agent::agent_loop::{AgentLoop, ReactAction, ReactState};
+use ironclad_agent::orchestration::{OrchestrationPattern, Orchestrator};
 use ironclad_agent::script_runner::ScriptRunner;
 use ironclad_agent::tools::ToolContext;
 use ironclad_channels::ChannelAdapter;
@@ -67,6 +68,113 @@ fn parse_tool_call(response: &str) -> Option<(String, serde_json::Value)> {
     let name = tool_call.get("name")?.as_str()?.to_string();
     let params = tool_call.get("params").cloned().unwrap_or(json!({}));
     Some((name, params))
+}
+
+fn claims_unverified_subagent_output(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    let markers = [
+        "[delegating to subagent",
+        "came directly from the running subagent",
+        "came directly from a running subagent",
+        "subagent status - live",
+        "geopolitical flash update",
+    ];
+    markers.iter().any(|m| lower.contains(m))
+}
+
+fn enforce_subagent_claim_guard(response: String, provenance: &DelegationProvenance) -> String {
+    let allow_claim = provenance.subagent_task_started
+        && provenance.subagent_task_completed
+        && provenance.subagent_result_attached;
+    if allow_claim || !claims_unverified_subagent_output(&response) {
+        return response;
+    }
+    tracing::warn!("Blocking unverified channel response that claims subagent-produced output");
+    "I can't claim live subagent-produced output unless I actually run a delegated subagent/tool turn in this reply. If you want proof, ask me to run a concrete delegated task and I will return that output directly."
+        .to_string()
+}
+
+#[derive(Debug, Clone)]
+struct SpecialistProposal {
+    name: String,
+    display_name: String,
+    description: String,
+    skills: Vec<String>,
+    model: String,
+}
+
+#[derive(Debug, Clone)]
+struct DelegationPlan {
+    subtasks: Vec<String>,
+    rationale: String,
+    expected_utility_margin: f64,
+}
+
+#[derive(Debug, Clone)]
+enum DecompositionDecision {
+    Centralized {
+        rationale: String,
+        expected_utility_margin: f64,
+    },
+    Delegated(DelegationPlan),
+    RequiresSpecialistCreation {
+        proposal: SpecialistProposal,
+        rationale: String,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+struct DelegationProvenance {
+    subagent_task_started: bool,
+    subagent_task_completed: bool,
+    subagent_result_attached: bool,
+}
+
+fn split_subtasks(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for part in input
+        .split(&['\n', ';'][..])
+        .flat_map(|p| p.split(" then "))
+        .flat_map(|p| p.split(" and "))
+    {
+        let trimmed = part.trim();
+        if !trimmed.is_empty() {
+            out.push(trimmed.to_string());
+        }
+    }
+    out.dedup();
+    out
+}
+
+fn capability_tokens(text: &str) -> Vec<String> {
+    text.to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| t.len() >= 4)
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn utility_margin_for_delegation(
+    complexity_score: f64,
+    subtask_count: usize,
+    capability_fit_ratio: f64,
+) -> f64 {
+    let complexity_gain = complexity_score * 0.5;
+    let parallel_gain = ((subtask_count.saturating_sub(1)) as f64) * 0.12;
+    let fit_gain = capability_fit_ratio * 0.45;
+    let orchestration_cost = 0.25 + ((subtask_count as f64) * 0.04);
+    complexity_gain + parallel_gain + fit_gain - orchestration_cost
+}
+
+fn proposal_to_json(proposal: &SpecialistProposal, rationale: &str) -> serde_json::Value {
+    json!({
+        "name": proposal.name,
+        "display_name": proposal.display_name,
+        "description": proposal.description,
+        "skills": proposal.skills,
+        "model": proposal.model,
+        "rationale": rationale,
+    })
 }
 
 fn provider_failure_user_message(last_error: &str, message_already_stored: bool) -> String {
@@ -493,6 +601,11 @@ async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiagnostics {
 }
 
 fn diagnostics_system_note(diag: &RuntimeDiagnostics) -> String {
+    let delegation_policy = if diag.taskable_subagents_running == 0 && diag.taskable_subagents_enabled > 0 {
+        "Delegation policy: subagent execution is currently unavailable (enabled>0, running=0). If the user asks for a subagent-produced result, explicitly say it is unavailable and do NOT simulate or fabricate subagent output."
+    } else {
+        "Delegation policy: never claim a subagent produced content unless a real delegated subagent turn occurred."
+    };
     // Guardrails: aggregate-only metrics; no secrets, no raw error strings, no IDs.
     [
         "Runtime diagnostics (internal, bounded):",
@@ -524,6 +637,7 @@ fn diagnostics_system_note(diag: &RuntimeDiagnostics) -> String {
         ),
         &format!("- uptime_seconds={}", diag.uptime_seconds),
         "Security policy: do not proactively disclose internal diagnostics. Share high-level status only when asked; never fabricate details.",
+        delegation_policy,
     ]
     .join("\n")
 }
@@ -2798,6 +2912,207 @@ fn resolve_channel_scope(
     ironclad_db::sessions::SessionScope::Agent
 }
 
+fn parse_skills_json(skills_json: Option<&str>) -> Vec<String> {
+    skills_json
+        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default()
+}
+
+async fn evaluate_decomposition_gate(
+    state: &AppState,
+    user_content: &str,
+    complexity_score: f64,
+) -> DecompositionDecision {
+    let cfg = state.config.read().await;
+    if !cfg.agent.delegation_enabled {
+        return DecompositionDecision::Centralized {
+            rationale: "delegation disabled by configuration".to_string(),
+            expected_utility_margin: -1.0,
+        };
+    }
+    let min_complexity = cfg.agent.delegation_min_complexity;
+    let min_margin = cfg.agent.delegation_min_utility_margin;
+    drop(cfg);
+
+    let subtasks = split_subtasks(user_content);
+    if subtasks.len() <= 1 || complexity_score < min_complexity {
+        return DecompositionDecision::Centralized {
+            rationale: "task is single-step or below decomposition complexity threshold".to_string(),
+            expected_utility_margin: -0.1,
+        };
+    }
+
+    let subagents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let taskable: Vec<_> = subagents
+        .into_iter()
+        .filter(|a| !is_model_proxy_role(&a.role) && a.enabled)
+        .collect();
+    if taskable.is_empty() {
+        return DecompositionDecision::Centralized {
+            rationale: "no enabled taskable specialists available".to_string(),
+            expected_utility_margin: -0.3,
+        };
+    }
+
+    let required = capability_tokens(user_content);
+    let mut fit_hits = 0usize;
+    for agent in &taskable {
+        let skills = parse_skills_json(agent.skills_json.as_deref());
+        let skill_tokens: HashSet<String> = skills
+            .iter()
+            .flat_map(|s| capability_tokens(s))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .collect();
+        if required.iter().any(|t| skill_tokens.contains(t)) {
+            fit_hits += 1;
+        }
+    }
+    let capability_fit_ratio = if taskable.is_empty() {
+        0.0
+    } else {
+        fit_hits as f64 / taskable.len() as f64
+    };
+    let margin = utility_margin_for_delegation(complexity_score, subtasks.len(), capability_fit_ratio);
+    if capability_fit_ratio < 0.2 {
+        let proposal = SpecialistProposal {
+            name: "proposed-specialist".to_string(),
+            display_name: "Proposed Specialist".to_string(),
+            description: "Auto-proposed specialist for uncovered capability gap".to_string(),
+            skills: required.into_iter().take(8).collect(),
+            model: "auto".to_string(),
+        };
+        return DecompositionDecision::RequiresSpecialistCreation {
+            proposal,
+            rationale:
+                "existing specialists do not satisfy required capability fit; proposal required"
+                    .to_string(),
+        };
+    }
+
+    if margin < min_margin {
+        return DecompositionDecision::Centralized {
+            rationale: format!(
+                "delegation utility margin {:.2} below threshold {:.2}",
+                margin, min_margin
+            ),
+            expected_utility_margin: margin,
+        };
+    }
+
+    DecompositionDecision::Delegated(DelegationPlan {
+        subtasks,
+        rationale: format!(
+            "decomposed into subtasks with estimated delegation margin {:.2}",
+            margin
+        ),
+        expected_utility_margin: margin,
+    })
+}
+
+async fn maybe_handle_specialist_creation_controls(
+    state: &AppState,
+    session_id: &str,
+    user_content: &str,
+) -> Option<String> {
+    let lower = user_content.to_ascii_lowercase();
+    if !(lower.contains("approve specialist")
+        || lower.contains("review specialist config")
+        || lower.contains("show specialist config"))
+        && !lower.contains("deny specialist creation")
+    {
+        return None;
+    }
+
+    let proposal = {
+        let map = state.pending_specialist_proposals.read().await;
+        map.get(session_id).cloned()
+    }?;
+
+    if lower.contains("review specialist config") || lower.contains("show specialist config") {
+        return Some(format!(
+            "Proposed specialist configuration preview:\n\n```json\n{}\n```\n\nReply with `approve specialist creation` to create it, or `deny specialist creation` to keep centralized execution.",
+            serde_json::to_string_pretty(&proposal).unwrap_or_else(|_| "{}".to_string())
+        ));
+    }
+
+    if lower.contains("approve specialist") {
+        let name = proposal
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("proposed-specialist")
+            .to_string();
+        let display_name = proposal
+            .get("display_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Proposed Specialist")
+            .to_string();
+        let description = proposal
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Auto-created specialist")
+            .to_string();
+        let skills: Vec<String> = proposal
+            .get("skills")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let model = proposal
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("auto")
+            .to_string();
+        let row = ironclad_db::agents::SubAgentRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: name.clone(),
+            display_name: Some(display_name.clone()),
+            model: model.clone(),
+            role: "subagent".to_string(),
+            description: Some(description),
+            skills_json: Some(serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string())),
+            enabled: true,
+            session_count: 0,
+        };
+        if let Err(e) = ironclad_db::agents::upsert_sub_agent(&state.db, &row) {
+            return Some(format!("Failed to create specialist: {e}"));
+        }
+        let config = ironclad_agent::subagents::AgentInstanceConfig {
+            id: name.clone(),
+            name: display_name,
+            model: row.model.clone(),
+            skills,
+            allowed_subagents: vec![],
+            max_concurrent: 4,
+        };
+        let _ = state.registry.register(config).await;
+        let _ = state.registry.start_agent(&name).await;
+        {
+            let mut map = state.pending_specialist_proposals.write().await;
+            map.remove(session_id);
+        }
+        return Some(format!(
+            "Approved. Created specialist `{name}`. I can now decompose and delegate this task."
+        ));
+    }
+
+    if lower.contains("deny specialist creation") {
+        {
+            let mut map = state.pending_specialist_proposals.write().await;
+            map.remove(session_id);
+        }
+        return Some(
+            "Understood. I will keep execution centralized for this task and include rationale."
+                .to_string(),
+        );
+    }
+
+    None
+}
+
 pub async fn process_channel_message(
     state: &AppState,
     inbound: ironclad_channels::InboundMessage,
@@ -2910,12 +3225,103 @@ pub async fn process_channel_message(
         drop(llm);
         return Err(e.to_string());
     }
+    if let Some(reply) = maybe_handle_specialist_creation_controls(state, &session_id, &user_content).await
+    {
+        state
+            .channel_router
+            .send_reply(&platform, &chat_id, reply)
+            .await
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to send specialist control reply"))
+            .ok();
+        let mut llm = state.llm.write().await;
+        llm.dedup.release(&dedup_fp);
+        drop(llm);
+        return Ok(());
+    }
 
     let channel_turn_id = uuid::Uuid::new_v4().to_string();
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
+    let gate_decision = evaluate_decomposition_gate(state, &user_content, complexity).await;
+    let mut delegation_workflow_note: Option<String> = None;
+    match &gate_decision {
+        DecompositionDecision::RequiresSpecialistCreation { proposal, rationale } => {
+            let payload = proposal_to_json(proposal, rationale);
+            {
+                let mut pending = state.pending_specialist_proposals.write().await;
+                pending.insert(session_id.clone(), payload.clone());
+            }
+            let prompt = format!(
+                "I identified a capability gap and can create a new specialist with your approval.\n\nProposed: `{}`\nRationale: {}\n\nReply with:\n- `review specialist config` to inspect full config\n- `approve specialist creation` to create it\n- `deny specialist creation` to continue with main-agent execution",
+                proposal.name, rationale
+            );
+            state
+                .channel_router
+                .send_reply(&platform, &chat_id, prompt)
+                .await
+                .inspect_err(|e| tracing::warn!(error = %e, "failed to send specialist proposal"))
+                .ok();
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Ok(());
+        }
+        DecompositionDecision::Centralized { rationale, expected_utility_margin } => {
+            tracing::info!(
+                decision = "centralized",
+                rationale = %rationale,
+                expected_utility_margin = *expected_utility_margin,
+                "decomposition gate decision"
+            );
+        }
+        DecompositionDecision::Delegated(plan) => {
+            let mut orch = Orchestrator::new();
+            let wf_input = plan
+                .subtasks
+                .iter()
+                .map(|s| (s.clone(), capability_tokens(s)))
+                .collect::<Vec<_>>();
+            let wf_id = orch.create_workflow(
+                "channel_decomposition",
+                OrchestrationPattern::Parallel,
+                wf_input,
+            );
+            let available_agents = ironclad_db::agents::list_sub_agents(&state.db)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|a| !is_model_proxy_role(&a.role) && a.enabled)
+                .map(|a| (a.name, parse_skills_json(a.skills_json.as_deref())))
+                .collect::<Vec<_>>();
+            let matches = orch
+                .match_capabilities(&wf_id, &available_agents)
+                .unwrap_or_default();
+            for (task_id, agent_id) in &matches {
+                let _ = orch.assign_agent(&wf_id, task_id, agent_id);
+            }
+            let assignments = matches
+                .iter()
+                .map(|(task, agent)| format!("{task}->{agent}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            delegation_workflow_note = Some(format!(
+                "workflow_id={wf_id}; assignments={}",
+                if assignments.is_empty() {
+                    "none".to_string()
+                } else {
+                    assignments
+                }
+            ));
+            tracing::info!(
+                decision = "delegated",
+                rationale = %plan.rationale,
+                subtask_count = plan.subtasks.len(),
+                expected_utility_margin = plan.expected_utility_margin,
+                "decomposition gate decision"
+            );
+        }
+    }
     let model_audit = select_routed_model_with_audit(state, &user_content).await;
-    let model = model_audit.selected_model.clone();
+    let mut model = model_audit.selected_model.clone();
     let complexity_label = format!("{complexity:?}");
     persist_model_selection_audit(
         state,
@@ -2939,6 +3345,18 @@ pub async fn process_channel_message(
     let firmware_text = personality.firmware_text.clone();
     drop(personality);
     drop(config);
+
+    let mut model_switch_notice: Option<String> = None;
+    if matches!(gate_decision, DecompositionDecision::Delegated(_))
+        && complexity > 0.8
+        && model != primary_model
+    {
+        model_switch_notice = Some(format!(
+            "Model suitability update: switching delegated execution from `{}` to `{}` for this task.",
+            model, primary_model
+        ));
+        model = primary_model.clone();
+    }
 
     // Resolve tier for message adaptation
     let tier = {
@@ -3035,6 +3453,40 @@ pub async fn process_channel_message(
         content: diagnostics_system_note(&runtime_diag),
         parts: None,
     });
+    let gate_system_note = match &gate_decision {
+        DecompositionDecision::Centralized {
+            rationale,
+            expected_utility_margin,
+        } => format!(
+            "Delegation decision: centralized. rationale='{}' expected_utility_margin={:.2}",
+            rationale, expected_utility_margin
+        ),
+        DecompositionDecision::Delegated(plan) => {
+            let subtask_lines = plan
+                .subtasks
+                .iter()
+                .enumerate()
+                .map(|(idx, s)| format!("{}. {}", idx + 1, s))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut note = format!(
+                "Delegation decision: delegated.\nRationale: {}\nExpected utility margin: {:.2}\nSubtasks:\n{}",
+                plan.rationale, plan.expected_utility_margin, subtask_lines
+            );
+            if let Some(workflow_note) = delegation_workflow_note.as_ref() {
+                note.push_str(&format!("\nWorkflow: {workflow_note}"));
+            }
+            note
+        }
+        DecompositionDecision::RequiresSpecialistCreation { .. } => {
+            "Delegation decision: specialist creation required with user approval.".to_string()
+        }
+    };
+    messages.push(ironclad_llm::format::UnifiedMessage {
+        role: "system".into(),
+        content: gate_system_note,
+        parts: None,
+    });
     if messages.last().is_none_or(|m| m.content != user_content) {
         messages.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
@@ -3069,6 +3521,14 @@ pub async fn process_channel_message(
 
     // Send a thinking indicator when expected latency exceeds threshold (all chat channels)
     {
+        if let Some(notice) = model_switch_notice.as_ref() {
+            state
+                .channel_router
+                .send_reply(&platform, &chat_id, notice.clone())
+                .await
+                .inspect_err(|e| tracing::warn!(error = %e, "failed to send model switch notice"))
+                .ok();
+        }
         let estimated_latency =
             estimate_inference_latency(tier, user_content.len(), &model, &primary_model, state)
                 .await;
@@ -3121,6 +3581,7 @@ pub async fn process_channel_message(
         }
     };
     let mut channel_react = AgentLoop::new(10);
+    let mut delegation_provenance = DelegationProvenance::default();
     let response_content = if let Some((tool_name, tool_params)) =
         parse_tool_call(&response_content)
     {
@@ -3143,10 +3604,23 @@ pub async fn process_channel_message(
                 tool_name: tn.clone(),
                 params: tp.to_string(),
             });
+            if tn.to_ascii_lowercase().contains("subagent")
+                || tn.to_ascii_lowercase().contains("delegate")
+            {
+                delegation_provenance.subagent_task_started = true;
+            }
             let tool_result =
                 execute_tool_call(state, tn, tp, &channel_turn_id, channel_authority).await;
             let obs = match tool_result {
-                Ok(out) => format!("[Tool {tn} succeeded]: {out}"),
+                Ok(out) => {
+                    if tn.to_ascii_lowercase().contains("subagent")
+                        || tn.to_ascii_lowercase().contains("delegate")
+                    {
+                        delegation_provenance.subagent_task_completed = true;
+                        delegation_provenance.subagent_result_attached = !out.trim().is_empty();
+                    }
+                    format!("[Tool {tn} succeeded]: {out}")
+                }
                 Err(err) => format!("[Tool {tn} failed]: {err}"),
             };
             channel_react.transition(ReactAction::Observe);
@@ -3195,6 +3669,7 @@ pub async fn process_channel_message(
     } else {
         response_content
     };
+    let response_content = enforce_subagent_claim_guard(response_content, &delegation_provenance);
 
     ironclad_db::sessions::append_message(&state.db, &session_id, "assistant", &response_content)
         .inspect_err(|e| tracing::warn!(error = %e, "failed to store channel assistant message"))
@@ -3271,10 +3746,12 @@ pub async fn telegram_poll_loop(state: AppState) {
     };
 
     tracing::info!("Telegram long-poll loop started");
+    let mut consecutive_auth_failures: u32 = 0;
 
     loop {
         match adapter.recv().await {
             Ok(Some(inbound)) => {
+                consecutive_auth_failures = 0;
                 state.channel_router.record_received("telegram").await;
                 let state = state.clone();
                 let semaphore = Arc::clone(&CHANNEL_SEMAPHORE);
@@ -3308,10 +3785,42 @@ pub async fn telegram_poll_loop(state: AppState) {
                     }
                 });
             }
-            Ok(None) => {}
+            Ok(None) => {
+                consecutive_auth_failures = 0;
+            }
             Err(e) => {
-                tracing::error!(error = %e, "Telegram poll error, backing off 5s");
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let err_text = e.to_string();
+                let looks_like_auth = err_text.contains("Telegram API 404")
+                    || err_text.contains("Telegram API 401")
+                    || err_text.to_ascii_lowercase().contains("invalid/revoked bot token");
+                if looks_like_auth {
+                    consecutive_auth_failures = consecutive_auth_failures.saturating_add(1);
+                    let backoff = if consecutive_auth_failures < 3 {
+                        15
+                    } else if consecutive_auth_failures < 10 {
+                        30
+                    } else {
+                        60
+                    };
+                    if consecutive_auth_failures == 1 || consecutive_auth_failures % 10 == 0 {
+                        tracing::error!(
+                            error = %e,
+                            failures = consecutive_auth_failures,
+                            "Telegram poll authentication failed (likely invalid/revoked token). Repair with: `ironclad keystore set telegram_bot_token \"<TOKEN>\"` then restart."
+                        );
+                    } else {
+                        tracing::warn!(
+                            error = %e,
+                            failures = consecutive_auth_failures,
+                            "Telegram auth failure persists; backing off"
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+                } else {
+                    consecutive_auth_failures = 0;
+                    tracing::error!(error = %e, "Telegram poll error, backing off 5s");
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
             }
         }
     }
@@ -3515,6 +4024,56 @@ scope_mode = "{scope_mode}"
         let (name, params) = result.unwrap();
         assert_eq!(name, "read_file");
         assert_eq!(params["path"], "test.rs");
+    }
+
+    #[test]
+    fn subagent_claim_guard_blocks_unverified_live_delegation() {
+        let fabricated = "[delegating to subagent: geopolitical specialist]\n\nGEOPOLITICAL FLASH UPDATE ...";
+        let guarded =
+            enforce_subagent_claim_guard(fabricated.to_string(), &DelegationProvenance::default());
+        assert!(guarded.contains("I can't claim live subagent-produced output"));
+    }
+
+    #[test]
+    fn subagent_claim_guard_allows_when_delegated_this_turn() {
+        let content = "[delegating to subagent: geopolitical specialist]";
+        let guarded = enforce_subagent_claim_guard(
+            content.to_string(),
+            &DelegationProvenance {
+                subagent_task_started: true,
+                subagent_task_completed: true,
+                subagent_result_attached: true,
+            },
+        );
+        assert_eq!(guarded, content);
+    }
+
+    #[test]
+    fn split_subtasks_detects_multi_step_inputs() {
+        let parts = split_subtasks("research impact and draft summary then propose next steps");
+        assert!(parts.len() >= 3);
+    }
+
+    #[test]
+    fn utility_margin_penalizes_low_fit() {
+        let low_fit = utility_margin_for_delegation(0.6, 3, 0.1);
+        let high_fit = utility_margin_for_delegation(0.6, 3, 0.9);
+        assert!(high_fit > low_fit);
+    }
+
+    #[test]
+    fn proposal_json_contains_reviewable_config() {
+        let proposal = SpecialistProposal {
+            name: "geo-specialist".into(),
+            display_name: "Geo Specialist".into(),
+            description: "Monitors geopolitical risk".into(),
+            skills: vec!["geopolitical".into(), "risk-analysis".into()],
+            model: "auto".into(),
+        };
+        let payload = proposal_to_json(&proposal, "coverage gap");
+        assert_eq!(payload["name"], "geo-specialist");
+        assert!(payload["skills"].is_array());
+        assert_eq!(payload["model"], "auto");
     }
 
     #[test]

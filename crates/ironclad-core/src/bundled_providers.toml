@@ -10,6 +10,33 @@ is_local = true
 cost_per_input_token = 0.0
 cost_per_output_token = 0.0
 
+[providers.sglang]
+url = "http://localhost:30000"
+tier = "T1"
+format = "openai"
+chat_path = "/v1/chat/completions"
+is_local = true
+cost_per_input_token = 0.0
+cost_per_output_token = 0.0
+
+[providers.vllm]
+url = "http://localhost:8000"
+tier = "T1"
+format = "openai"
+chat_path = "/v1/chat/completions"
+is_local = true
+cost_per_input_token = 0.0
+cost_per_output_token = 0.0
+
+[providers.docker-model-runner]
+url = "http://localhost:12434"
+tier = "T1"
+format = "openai"
+chat_path = "/v1/chat/completions"
+is_local = true
+cost_per_input_token = 0.0
+cost_per_output_token = 0.0
+
 [providers.openai]
 url = "https://api.openai.com"
 tier = "T3"

@@ -415,6 +415,14 @@ pub struct AgentConfig {
     pub workspace: PathBuf,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    #[serde(default = "default_true")]
+    pub delegation_enabled: bool,
+    #[serde(default = "default_min_decomposition_complexity")]
+    pub delegation_min_complexity: f64,
+    #[serde(default = "default_min_delegation_utility_margin")]
+    pub delegation_min_utility_margin: f64,
+    #[serde(default = "default_true")]
+    pub specialist_creation_requires_approval: bool,
 }
 
 fn default_workspace() -> PathBuf {
@@ -423,6 +431,14 @@ fn default_workspace() -> PathBuf {
 
 fn default_log_level() -> String {
     "info".into()
+}
+
+fn default_min_decomposition_complexity() -> f64 {
+    0.35
+}
+
+fn default_min_delegation_utility_margin() -> f64 {
+    0.15
 }
 
 fn default_log_dir() -> PathBuf {
@@ -469,6 +485,12 @@ pub struct ServerConfig {
     pub rate_limit_requests: u32,
     #[serde(default = "default_rate_limit_window_secs")]
     pub rate_limit_window_secs: u64,
+    #[serde(default = "default_per_ip_rate_limit_requests")]
+    pub per_ip_rate_limit_requests: u32,
+    #[serde(default = "default_per_actor_rate_limit_requests")]
+    pub per_actor_rate_limit_requests: u32,
+    #[serde(default)]
+    pub trusted_proxy_cidrs: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -481,6 +503,9 @@ impl Default for ServerConfig {
             log_max_days: default_log_max_days(),
             rate_limit_requests: default_rate_limit_requests(),
             rate_limit_window_secs: default_rate_limit_window_secs(),
+            per_ip_rate_limit_requests: default_per_ip_rate_limit_requests(),
+            per_actor_rate_limit_requests: default_per_actor_rate_limit_requests(),
+            trusted_proxy_cidrs: Vec::new(),
         }
     }
 }
@@ -491,6 +516,14 @@ fn default_rate_limit_requests() -> u32 {
 
 fn default_rate_limit_window_secs() -> u64 {
     60
+}
+
+fn default_per_ip_rate_limit_requests() -> u32 {
+    300
+}
+
+fn default_per_actor_rate_limit_requests() -> u32 {
+    200
 }
 
 fn default_port() -> u16 {
@@ -1113,6 +1146,11 @@ pub struct ChannelsConfig {
     /// always send, or a very large value to effectively disable. Default: 30.
     #[serde(default = "default_thinking_threshold")]
     pub thinking_threshold_seconds: u64,
+    /// Optional list of channels that should receive a direct startup
+    /// announcement (for example: ["telegram", "whatsapp", "signal"]).
+    /// If unset/empty/false/"none"/"null", startup announcements are disabled.
+    #[serde(default)]
+    pub startup_announcements: Option<StartupAnnouncementsConfig>,
 }
 
 impl Default for ChannelsConfig {
@@ -1126,7 +1164,43 @@ impl Default for ChannelsConfig {
             voice: VoiceChannelConfig::default(),
             trusted_sender_ids: Vec::new(),
             thinking_threshold_seconds: default_thinking_threshold(),
+            startup_announcements: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StartupAnnouncementsConfig {
+    Flag(bool),
+    Text(String),
+    Channels(Vec<String>),
+}
+
+impl ChannelsConfig {
+    pub fn startup_announcement_channels(&self) -> Vec<String> {
+        fn normalize_channel(s: &str) -> Option<String> {
+            let v = s.trim().to_ascii_lowercase();
+            if v.is_empty() || v == "none" || v == "null" || v == "false" {
+                None
+            } else {
+                Some(v)
+            }
+        }
+
+        let mut out = match &self.startup_announcements {
+            None => Vec::new(),
+            Some(StartupAnnouncementsConfig::Flag(_)) => Vec::new(),
+            Some(StartupAnnouncementsConfig::Text(v)) => normalize_channel(v)
+                .map(|s| vec![s])
+                .unwrap_or_default(),
+            Some(StartupAnnouncementsConfig::Channels(v)) => {
+                v.iter().filter_map(|s| normalize_channel(s)).collect()
+            }
+        };
+        out.sort();
+        out.dedup();
+        out
     }
 }
 
@@ -1421,6 +1495,8 @@ pub struct UpdateConfig {
     pub check_on_start: bool,
     #[serde(default = "default_update_channel")]
     pub channel: String,
+    #[serde(default = "default_update_registry_url")]
+    pub registry_url: String,
 }
 
 impl Default for UpdateConfig {
@@ -1428,12 +1504,17 @@ impl Default for UpdateConfig {
         Self {
             check_on_start: true,
             channel: default_update_channel(),
+            registry_url: default_update_registry_url(),
         }
     }
 }
 
 fn default_update_channel() -> String {
     "stable".into()
+}
+
+fn default_update_registry_url() -> String {
+    "https://roboticus.ai/registry/manifest.json".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1947,6 +2028,32 @@ reset_schedule = "0 0 * * *"
         assert_eq!(cfg.session.ttl_seconds, 3600);
         assert_eq!(cfg.session.scope_mode, "peer");
         assert_eq!(cfg.session.reset_schedule.as_deref(), Some("0 0 * * *"));
+    }
+
+    #[test]
+    fn session_reset_schedule_accepts_timezone_prefix() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[session]
+reset_schedule = "CRON_TZ=UTC+02:00 0 9 * * *"
+"#;
+        let cfg = IroncladConfig::from_str(toml).unwrap();
+        assert_eq!(
+            cfg.session.reset_schedule.as_deref(),
+            Some("CRON_TZ=UTC+02:00 0 9 * * *")
+        );
     }
 
     #[test]

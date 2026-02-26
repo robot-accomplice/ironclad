@@ -7,7 +7,7 @@ use tracing::info;
 
 use ironclad_core::config::IroncladConfig;
 use ironclad_core::style::Theme;
-use ironclad_server::{bootstrap, cli};
+use ironclad_server::cli;
 
 #[derive(Parser)]
 #[command(
@@ -112,6 +112,12 @@ enum Commands {
         /// Attempt to auto-repair issues
         #[arg(long, short = 'r', alias = "rep")]
         repair: bool,
+        /// Emit machine-readable JSON findings
+        #[arg(long)]
+        json: bool,
+        /// Allowlisted paused cron job names to re-enable in --repair mode
+        #[arg(long = "allow-job", value_delimiter = ',')]
+        allow_job: Vec<String>,
     },
     /// View and tail logs
     #[command(next_help_heading = "Operations")]
@@ -304,6 +310,18 @@ enum MemoryCmd {
 enum ScheduleCmd {
     /// List scheduled tasks
     List,
+    /// Re-enable paused cron jobs after unknown-action containment
+    Recover {
+        /// Re-enable all paused jobs
+        #[arg(long)]
+        all: bool,
+        /// Re-enable only specific job names (repeatable)
+        #[arg(long = "name")]
+        names: Vec<String>,
+        /// Preview what would be changed without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -342,6 +360,14 @@ enum CircuitCmd {
 enum ChannelsCmd {
     /// List channel adapters and their status
     List,
+    /// List dead-letter channel deliveries
+    DeadLetter {
+        /// Maximum number of dead-letter rows to show
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Replay a dead-letter delivery by id
+    Replay { id: String },
 }
 
 #[derive(Subcommand)]
@@ -403,12 +429,30 @@ enum ConfigCmd {
         /// Config file to modify
         #[arg(short, long, default_value = "ironclad.toml")]
         file: String,
+        /// Skip immediate runtime apply via API
+        #[arg(long, default_value_t = false)]
+        no_apply: bool,
     },
     /// Remove a config key
     Unset {
         /// TOML path to remove
         path: String,
         /// Config file to modify
+        #[arg(short, long, default_value = "ironclad.toml")]
+        file: String,
+        /// Skip immediate runtime apply via API
+        #[arg(long, default_value_t = false)]
+        no_apply: bool,
+    },
+    /// Lint/validate a config file without applying it
+    Lint {
+        /// Config file to validate
+        #[arg(short, long, default_value = "ironclad.toml")]
+        file: String,
+    },
+    /// Create a timestamped backup of a config file
+    Backup {
+        /// Config file to back up
         #[arg(short, long, default_value = "ironclad.toml")]
         file: String,
     },
@@ -422,6 +466,25 @@ enum SkillsCmd {
     Show { id: String },
     /// Reload skills from disk
     Reload,
+    /// List/search remote skills catalog entries
+    CatalogList {
+        /// Optional case-insensitive search query
+        #[arg(long)]
+        query: Option<String>,
+    },
+    /// Install skills from the catalog
+    CatalogInstall {
+        /// Skill names to install (accepts names or filenames)
+        skills: Vec<String>,
+        /// Activate (reload) after install
+        #[arg(long)]
+        activate: bool,
+    },
+    /// Activate installed skills (reload)
+    CatalogActivate {
+        /// Optional skill names for operator context
+        skills: Vec<String>,
+    },
     /// Import skills from an OpenClaw workspace or archive
     Import {
         /// Path to OpenClaw workspace/skills directory or .tar.gz archive
@@ -571,7 +634,7 @@ enum UpdateCmd {
         #[arg(long, env = "IRONCLAD_REGISTRY_URL")]
         registry_url: Option<String>,
     },
-    /// Update the Ironclad binary via cargo install
+    /// Update the Ironclad binary (download or build)
     Binary {
         /// Update channel: stable, beta, dev
         #[arg(long, default_value = "stable")]
@@ -579,6 +642,9 @@ enum UpdateCmd {
         /// Auto-accept if newer version is available
         #[arg(long)]
         yes: bool,
+        /// Update method: download (default) or build
+        #[arg(long, default_value = "download", value_parser = ["download", "build"])]
+        method: String,
     },
     /// Update bundled provider configurations
     Providers {
@@ -678,7 +744,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await
                 }
-                UpdateCmd::Binary { channel, yes } => cli::cmd_update_binary(&channel, yes).await,
+                UpdateCmd::Binary {
+                    channel,
+                    yes,
+                    method,
+                } => cli::cmd_update_binary(&channel, yes, &method).await,
                 UpdateCmd::Providers { yes, registry_url } => {
                     cli::cmd_update_providers(yes, registry_url.as_deref(), config_path).await
                 }
@@ -690,7 +760,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // ── Operations ──────────────────────────────────────
         Some(Commands::Status) => cli::cmd_status(url).await,
-        Some(Commands::Mechanic { repair }) => cli::cmd_mechanic(url, repair).await,
+        Some(Commands::Mechanic {
+            repair,
+            json,
+            allow_job,
+        }) => cli::cmd_mechanic(url, repair, json, &allow_job).await,
         Some(Commands::Logs {
             lines,
             follow,
@@ -725,6 +799,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SkillsCmd::List => cli::cmd_skills_list(url).await,
             SkillsCmd::Show { id } => cli::cmd_skill_detail(url, &id).await,
             SkillsCmd::Reload => cli::cmd_skills_reload(url).await,
+            SkillsCmd::CatalogList { query } => {
+                cli::cmd_skills_catalog_list(url, query.as_deref()).await
+            }
+            SkillsCmd::CatalogInstall { skills, activate } => {
+                cli::cmd_skills_catalog_install(url, &skills, activate).await
+            }
+            SkillsCmd::CatalogActivate { skills } => {
+                cli::cmd_skills_catalog_activate(url, &skills).await
+            }
             SkillsCmd::Import {
                 source,
                 no_safety_check,
@@ -740,6 +823,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Some(Commands::Schedule(sub)) => match sub {
             ScheduleCmd::List => cli::cmd_schedule_list(url).await,
+            ScheduleCmd::Recover {
+                all,
+                names,
+                dry_run,
+            } => cli::cmd_schedule_recover(url, &names, all, dry_run).await,
         },
         Some(Commands::Metrics(sub)) => match sub {
             MetricsCmd::Costs => cli::cmd_metrics(url, "costs", None).await,
@@ -768,8 +856,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Config(sub)) => match sub {
             ConfigCmd::Show => cli::cmd_config(url).await,
             ConfigCmd::Get { path } => cli::cmd_config_get(&path),
-            ConfigCmd::Set { path, value, file } => cli::cmd_config_set(&path, &value, &file),
-            ConfigCmd::Unset { path, file } => cli::cmd_config_unset(&path, &file),
+            ConfigCmd::Set {
+                path,
+                value,
+                file,
+                no_apply,
+            } => {
+                cli::cmd_config_set(&path, &value, &file)?;
+                if !no_apply {
+                    cli::cmd_config_apply(url, &file).await?;
+                }
+                Ok(())
+            }
+            ConfigCmd::Unset {
+                path,
+                file,
+                no_apply,
+            } => {
+                cli::cmd_config_unset(&path, &file)?;
+                if !no_apply {
+                    cli::cmd_config_apply(url, &file).await?;
+                }
+                Ok(())
+            }
+            ConfigCmd::Lint { file } => cli::cmd_config_lint(&file),
+            ConfigCmd::Backup { file } => cli::cmd_config_backup(&file),
         },
         Some(Commands::Models(sub)) => match sub {
             ModelsCmd::List => cli::cmd_models_list(url).await,
@@ -806,6 +917,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Some(Commands::Channels(sub)) => match sub {
             ChannelsCmd::List => cli::cmd_channels_status(url).await,
+            ChannelsCmd::DeadLetter { limit } => cli::cmd_channels_dead_letter(url, limit).await,
+            ChannelsCmd::Replay { id } => cli::cmd_channels_replay(url, &id).await,
         },
         Some(Commands::Security(sub)) => match sub {
             SecurityCmd::Audit { config } => cli::cmd_security_audit(&config),
@@ -1302,20 +1415,45 @@ async fn cmd_serve(
         config.server.bind = b;
     }
 
-    let migrations =
-        migrate_legacy_proxy_urls(&mut config, resolved_path.as_deref().map(Path::new))?;
-    if !migrations.is_empty() {
-        step_warn(
-            t,
-            2,
-            STEPS,
-            &format!(
-                "Migrated {} legacy provider URL(s) from loopback proxy to in-process routing",
-                migrations.len()
-            ),
-        );
-        for m in &migrations {
-            step_detail(t, &format!("providers.{}", m.provider), &m.to_url);
+    match legacy_loopback_mode() {
+        LegacyLoopbackMode::MigrateDeprecated => {
+            let migrations =
+                migrate_legacy_proxy_urls(&mut config, resolved_path.as_deref().map(Path::new))?;
+            if !migrations.is_empty() {
+                step_warn(
+                    t,
+                    2,
+                    STEPS,
+                    &format!(
+                        "Migrated {} legacy provider URL(s) from loopback proxy to in-process routing",
+                        migrations.len()
+                    ),
+                );
+                for m in &migrations {
+                    step_detail(t, &format!("providers.{}", m.provider), &m.to_url);
+                }
+                step_warn(
+                    t,
+                    2,
+                    STEPS,
+                    "Legacy loopback provider URLs are deprecated and will be removed in v0.8.0",
+                );
+            }
+        }
+        LegacyLoopbackMode::Unsupported => {
+            if let Err(msg) =
+                validate_legacy_loopback_urls_for_mode(&config, LegacyLoopbackMode::Unsupported)
+            {
+                let (er, r) = (t.error(), t.reset());
+                let err_icon = t.icon_error();
+                eprintln!(
+                    "  {er}{err_icon}{r} Legacy loopback provider URLs are not supported in v0.8.0+"
+                );
+                for item in collect_legacy_loopback_providers(&config) {
+                    step_detail(t, "update required", &item);
+                }
+                return Err(msg.into());
+            }
         }
     }
 
@@ -1349,7 +1487,11 @@ async fn cmd_serve(
         return Err("Refusing to start on non-localhost without API key".into());
     }
 
-    let app = bootstrap(config.clone()).await?;
+    let app = ironclad_server::bootstrap_with_config_path(
+        config.clone(),
+        resolved_path.clone().map(std::path::PathBuf::from),
+    )
+    .await?;
     step(t, 3, STEPS, "Tracing initialized");
     step_detail(t, "level", &config.agent.log_level);
 
@@ -1427,20 +1569,6 @@ async fn cmd_serve(
     step_detail(t, "bind", &bind_addr);
     step_detail(t, "dashboard", &format!("http://{bind_addr}"));
 
-    let elapsed = boot_start.elapsed();
-    let (a, b, r) = (t.accent(), t.bold(), t.reset());
-    eprintln!();
-    let action_icon = t.icon_action();
-    eprint!("  {action_icon} ");
-    t.typewrite(&format!("{b}Ready{r} in {a}{:.0?}{r}", elapsed), 25);
-    eprintln!();
-    eprintln!();
-
-    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
-        ironclad_server::enable_stderr_logging();
-    }
-    info!("Ironclad listening on http://{bind_addr}");
-
     let shutdown_signal = async {
         let ctrl_c = tokio::signal::ctrl_c();
 
@@ -1501,6 +1629,20 @@ async fn cmd_serve(
         }
         Err(e) => return Err(e.into()),
     };
+    let elapsed = boot_start.elapsed();
+    let (a, b, r) = (t.accent(), t.bold(), t.reset());
+    eprintln!();
+    let action_icon = t.icon_action();
+    eprint!("  {action_icon} ");
+    t.typewrite(&format!("{b}Ready{r} in {a}{:.0?}{r}", elapsed), 25);
+    eprintln!();
+    eprintln!();
+
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        ironclad_server::enable_stderr_logging();
+    }
+    info!("Ironclad listening on http://{bind_addr}");
+
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal)
         .await?;
@@ -1551,6 +1693,27 @@ struct ProviderUrlMigration {
     provider: String,
     from_url: String,
     to_url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyLoopbackMode {
+    MigrateDeprecated,
+    Unsupported,
+}
+
+fn legacy_loopback_mode_for_version(version: &str) -> LegacyLoopbackMode {
+    let mut it = version.split('.');
+    let major = it.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    let minor = it.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    if major > 0 || minor >= 8 {
+        LegacyLoopbackMode::Unsupported
+    } else {
+        LegacyLoopbackMode::MigrateDeprecated
+    }
+}
+
+fn legacy_loopback_mode() -> LegacyLoopbackMode {
+    legacy_loopback_mode_for_version(env!("CARGO_PKG_VERSION"))
 }
 
 fn canonical_provider_base_url(provider_name: &str) -> Option<&'static str> {
@@ -1696,6 +1859,37 @@ fn migrate_legacy_proxy_urls(
     }
 
     Ok(migrations)
+}
+
+fn collect_legacy_loopback_providers(config: &IroncladConfig) -> Vec<String> {
+    let mut providers = Vec::new();
+    for (name, provider) in &config.providers {
+        if provider.is_local.unwrap_or(false) {
+            continue;
+        }
+        if parse_legacy_proxy_url(name, &provider.url) {
+            providers.push(format!("providers.{name}.url={}", provider.url));
+        }
+    }
+    providers
+}
+
+fn validate_legacy_loopback_urls_for_mode(
+    config: &IroncladConfig,
+    mode: LegacyLoopbackMode,
+) -> Result<(), String> {
+    if mode != LegacyLoopbackMode::Unsupported {
+        return Ok(());
+    }
+    let legacy = collect_legacy_loopback_providers(config);
+    if legacy.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "unsupported legacy provider URLs detected (replace with direct provider bases): {}",
+            legacy.join(", ")
+        ))
+    }
 }
 
 fn ensure_internal_proxies_reachable(
@@ -2112,5 +2306,49 @@ tier = "T3"
         );
         let persisted = std::fs::read_to_string(&path).unwrap();
         assert!(persisted.contains("url = \"https://api.anthropic.com\""));
+    }
+
+    #[test]
+    fn legacy_loopback_mode_for_version_changes_at_0_8() {
+        assert_eq!(
+            legacy_loopback_mode_for_version("0.7.1"),
+            LegacyLoopbackMode::MigrateDeprecated
+        );
+        assert_eq!(
+            legacy_loopback_mode_for_version("0.8.0"),
+            LegacyLoopbackMode::Unsupported
+        );
+    }
+
+    #[test]
+    fn collect_legacy_loopback_providers_finds_legacy_urls() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+
+[providers.google]
+url = "https://generativelanguage.googleapis.com"
+tier = "T2"
+"#,
+        );
+        let legacy = collect_legacy_loopback_providers(&cfg);
+        assert_eq!(legacy.len(), 1);
+        assert!(legacy[0].contains("providers.anthropic.url"));
+    }
+
+    #[test]
+    fn validate_legacy_loopback_urls_for_mode_rejects_in_0_8_mode() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#,
+        );
+        let err = validate_legacy_loopback_urls_for_mode(&cfg, LegacyLoopbackMode::Unsupported)
+            .expect_err("v0.8 mode must reject legacy loopback");
+        assert!(err.contains("providers.anthropic.url"));
     }
 }

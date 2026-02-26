@@ -15,6 +15,7 @@
 #   IRONCLAD_VERSION  Specific version to install (default: latest)
 #   IRONCLAD_NO_INIT  Skip "ironclad init" after install (set to 1)
 #   IRONCLAD_YES      Skip all confirmation prompts (set to 1)
+#   IRONCLAD_INSTALL_LOCKED  Use cargo --locked (default: 1, set to 0 for non-locked)
 #   CARGO_HOME        Custom cargo home (respected if set)
 
 set -euo pipefail
@@ -23,6 +24,11 @@ CRATE="ironclad-server"
 VERSION="${IRONCLAD_VERSION:-}"
 MIN_RUST="1.85.0"
 AUTO_YES="${IRONCLAD_YES:-0}"
+INSTALL_LOCKED="${IRONCLAD_INSTALL_LOCKED:-1}"
+APERTUS_8B_REPO="${APERTUS_8B_REPO:-swiss-ai/Apertus-8B-Instruct}"
+APERTUS_70B_REPO="${APERTUS_70B_REPO:-swiss-ai/Apertus-70B-Instruct}"
+APERTUS_8B_OLLAMA="${APERTUS_8B_OLLAMA:-apertus:8b-instruct}"
+APERTUS_70B_OLLAMA="${APERTUS_70B_OLLAMA:-apertus:70b-instruct}"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -83,6 +89,161 @@ abort_if_declined() {
     fi
 }
 
+detect_total_ram_gb() {
+    case "$(uname -s)" in
+        Darwin)
+            local mem
+            mem="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+            echo $((mem / 1024 / 1024 / 1024))
+            ;;
+        Linux)
+            local kb
+            kb="$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+            echo $((kb / 1024 / 1024))
+            ;;
+        *)
+            echo 0
+            ;;
+    esac
+}
+
+detect_gpu_vram_gb() {
+    if command_exists nvidia-smi; then
+        local mb
+        mb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1 || echo 0)"
+        echo $((mb / 1024))
+        return
+    fi
+    echo 0
+}
+
+host_ready() {
+    case "$1" in
+        sglang) command_exists sglang ;;
+        vllm) command_exists vllm ;;
+        docker-model-runner) command_exists docker ;;
+        ollama) command_exists ollama ;;
+        *) return 1 ;;
+    esac
+}
+
+host_has_models() {
+    case "$1" in
+        ollama)
+            if ! command_exists ollama; then
+                return 1
+            fi
+            local lines
+            lines="$(ollama list 2>/dev/null | wc -l | tr -d ' ')"
+            [ "${lines:-0}" -gt 1 ]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+has_hf_model_cache() {
+    local cache_root="${HF_HOME:-$HOME/.cache/huggingface}/hub"
+    [ -d "$cache_root" ] || return 1
+    compgen -G "$cache_root/models--*" >/dev/null 2>&1
+}
+
+has_existing_local_model_stack() {
+    for h in sglang vllm docker-model-runner ollama; do
+        if host_ready "$h"; then
+            return 0
+        fi
+    done
+
+    if host_has_models "ollama"; then
+        return 0
+    fi
+
+    if has_hf_model_cache; then
+        return 0
+    fi
+
+    return 1
+}
+
+attempt_host_install() {
+    local host="$1"
+    case "$host" in
+        sglang)
+            local pybin=""
+            if command_exists python3; then pybin="python3"; elif command_exists python; then pybin="python"; fi
+            if [ -z "$pybin" ]; then
+                warn "Python not found. Cannot auto-install SGLang."
+                return 1
+            fi
+            "$pybin" -m pip install --user "sglang[all]"
+            ;;
+        vllm)
+            local pybin=""
+            if command_exists python3; then pybin="python3"; elif command_exists python; then pybin="python"; fi
+            if [ -z "$pybin" ]; then
+                warn "Python not found. Cannot auto-install vLLM."
+                return 1
+            fi
+            "$pybin" -m pip install --user vllm
+            ;;
+        docker-model-runner)
+            warn "Automatic Docker installation is not supported by this installer."
+            info "Install Docker Desktop/Engine first, then re-run setup."
+            return 1
+            ;;
+        ollama)
+            warn "Automatic Ollama installation is not supported by this installer."
+            info "Install Ollama from https://ollama.ai and re-run setup."
+            return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+install_apertus_for_host() {
+    local host="$1"
+    local variant="$2"
+    local repo=""
+    local ollama_model=""
+    if [ "$variant" = "70b" ]; then
+        repo="$APERTUS_70B_REPO"
+        ollama_model="$APERTUS_70B_OLLAMA"
+    else
+        repo="$APERTUS_8B_REPO"
+        ollama_model="$APERTUS_8B_OLLAMA"
+    fi
+
+    case "$host" in
+        ollama)
+            if ! command_exists ollama; then
+                warn "Ollama is not installed; cannot pull Apertus."
+                return 1
+            fi
+            ollama pull "$ollama_model"
+            ;;
+        sglang|vllm|docker-model-runner)
+            local pybin=""
+            if command_exists python3; then pybin="python3"; elif command_exists python; then pybin="python"; fi
+            if [ -z "$pybin" ]; then
+                warn "Python not found. Cannot pre-download Apertus weights."
+                return 1
+            fi
+            "$pybin" - <<PY
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id="${repo}")
+print("Downloaded ${repo}")
+PY
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # ── Banner ───────────────────────────────────────────────────────────────────
 
 # Source of truth: banner.txt in the project root
@@ -111,6 +272,10 @@ fi
 
 CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
 VERSION_DISPLAY="${VERSION:-latest}"
+LOCKED_DISPLAY="enabled"
+if [ "$INSTALL_LOCKED" = "0" ]; then
+    LOCKED_DISPLAY="disabled"
+fi
 
 step "Installation plan"
 info "This installer will:"
@@ -120,6 +285,7 @@ info "  2. Install or update the Rust toolchain (>= $MIN_RUST)"
 info "  3. Install Ironclad from crates.io (cargo install $CRATE)"
 info ""
 info "Version:          $(bold "$VERSION_DISPLAY")"
+info "Cargo --locked:   $(bold "$LOCKED_DISPLAY")"
 info "Binary location:  $(bold "$CARGO_BIN/ironclad")"
 
 abort_if_declined "Proceed with installation?"
@@ -214,9 +380,12 @@ fi
 step "Install from crates.io"
 
 if [ -n "$VERSION" ]; then
-    INSTALL_CMD="cargo install $CRATE --version $VERSION --locked"
+    INSTALL_CMD="cargo install $CRATE --version $VERSION"
 else
-    INSTALL_CMD="cargo install $CRATE --locked"
+    INSTALL_CMD="cargo install $CRATE"
+fi
+if [ "$INSTALL_LOCKED" != "0" ]; then
+    INSTALL_CMD="$INSTALL_CMD --locked"
 fi
 
 info "This will run:"
@@ -271,6 +440,99 @@ if [ "${IRONCLAD_NO_INIT:-0}" != "1" ]; then
         info "Workspace ready ✓"
     else
         info "You can initialize later with: $(bold "ironclad init")"
+    fi
+fi
+
+# ── Optional Apertus bootstrap ───────────────────────────────────────────────
+
+step "Optional local Apertus model setup"
+info "Ironclad supports local hosts for Apertus: SGLang (recommended), vLLM,"
+info "Docker Model Runner, and Ollama."
+if has_existing_local_model_stack; then
+    info "Detected an existing local model framework or model cache."
+    info "Skipping SGLang + Apertus onboarding recommendation."
+    info "Use 'ironclad setup' if you want to switch to Apertus manually."
+elif confirm "Install a local Apertus model now?" "y"; then
+    RAM_GB="$(detect_total_ram_gb)"
+    VRAM_GB="$(detect_gpu_vram_gb)"
+    info "Detected RAM: ${RAM_GB} GB"
+    if [ "$VRAM_GB" -gt 0 ]; then
+        info "Detected GPU VRAM: ${VRAM_GB} GB"
+    else
+        info "GPU VRAM not detected (CPU-only assumptions will be used)"
+    fi
+
+    CAN_USE_8B=0
+    CAN_USE_70B=0
+    if [ "$RAM_GB" -ge 16 ] || [ "$VRAM_GB" -ge 8 ]; then
+        CAN_USE_8B=1
+    fi
+    if [ "$RAM_GB" -ge 64 ] || [ "$VRAM_GB" -ge 40 ]; then
+        CAN_USE_70B=1
+    fi
+
+    if [ "$CAN_USE_8B" -ne 1 ] && [ "$CAN_USE_70B" -ne 1 ]; then
+        warn "System resources appear below recommended minimum for Apertus local runtime."
+        info "Skipping model download. You can configure a lighter model in ironclad setup."
+    else
+        HOSTS=()
+        for h in sglang vllm docker-model-runner ollama; do
+            if host_ready "$h"; then
+                HOSTS+=("$h")
+            fi
+        done
+
+        if [ "${#HOSTS[@]}" -eq 0 ]; then
+            warn "No supported local host detected."
+            if confirm "Install/configure a host now? (SGLang recommended)" "y"; then
+                if confirm "Use SGLang (recommended)?" "y"; then
+                    attempt_host_install "sglang" || true
+                    host_ready "sglang" && HOSTS+=("sglang")
+                elif confirm "Use vLLM?" "y"; then
+                    attempt_host_install "vllm" || true
+                    host_ready "vllm" && HOSTS+=("vllm")
+                elif confirm "Use Docker Model Runner?" "y"; then
+                    attempt_host_install "docker-model-runner" || true
+                    host_ready "docker-model-runner" && HOSTS+=("docker-model-runner")
+                elif confirm "Use Ollama?" "y"; then
+                    attempt_host_install "ollama" || true
+                    host_ready "ollama" && HOSTS+=("ollama")
+                fi
+            fi
+        fi
+
+        if [ "${#HOSTS[@]}" -gt 0 ]; then
+            SELECTED_HOST="${HOSTS[0]}"
+            info "Recommended host: ${SELECTED_HOST}"
+            if [ "${#HOSTS[@]}" -gt 1 ]; then
+                if ! confirm "Use recommended host (${SELECTED_HOST})?" "y"; then
+                    info "Available hosts: ${HOSTS[*]}"
+                    printf "    Enter host name to use: "
+                    read -r entered_host </dev/tty
+                    for h in "${HOSTS[@]}"; do
+                        if [ "$h" = "$entered_host" ]; then
+                            SELECTED_HOST="$h"
+                            break
+                        fi
+                    done
+                fi
+            fi
+
+            SELECTED_MODEL_VARIANT="8b"
+            if [ "$CAN_USE_70B" -eq 1 ] && ! confirm "Use Apertus 8B Instruct (recommended default)?" "y"; then
+                SELECTED_MODEL_VARIANT="70b"
+            fi
+
+            info "Downloading Apertus (${SELECTED_MODEL_VARIANT}) for host ${SELECTED_HOST}..."
+            if install_apertus_for_host "$SELECTED_HOST" "$SELECTED_MODEL_VARIANT"; then
+                info "Apertus download complete ✓"
+            else
+                warn "Apertus download failed; continuing installation."
+                info "You can retry later with ironclad setup."
+            fi
+        else
+            warn "No local host available after bootstrap attempt; skipping Apertus download."
+        fi
     fi
 fi
 
