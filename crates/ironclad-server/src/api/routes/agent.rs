@@ -3022,8 +3022,8 @@ async fn maybe_handle_specialist_creation_controls(
     let lower = user_content.to_ascii_lowercase();
     if !(lower.contains("approve specialist")
         || lower.contains("review specialist config")
-        || lower.contains("show specialist config"))
-        && !lower.contains("deny specialist creation")
+        || lower.contains("show specialist config")
+        || lower.contains("deny specialist creation"))
     {
         return None;
     }
@@ -3815,7 +3815,9 @@ pub async fn telegram_poll_loop(state: AppState) {
                     } else {
                         60
                     };
-                    if consecutive_auth_failures == 1 || consecutive_auth_failures % 10 == 0 {
+                    if consecutive_auth_failures == 1
+                        || consecutive_auth_failures.is_multiple_of(10)
+                    {
                         tracing::error!(
                             error = %e,
                             failures = consecutive_auth_failures,

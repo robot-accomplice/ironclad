@@ -132,6 +132,7 @@ struct MechanicJsonReport {
     actions: RepairActionSummary,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finding(
     id: &str,
     severity: &str,
@@ -1311,16 +1312,17 @@ pub async fn cmd_mechanic(
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             == "paused_unknown_action";
-                        if paused && allowset.contains(name) && !id.is_empty() {
-                            if let Ok(r) = client
+                        if paused
+                            && allowset.contains(name)
+                            && !id.is_empty()
+                            && let Ok(r) = client
                                 .put(format!("{base_url}/api/cron/jobs/{id}"))
                                 .json(&serde_json::json!({ "enabled": true }))
                                 .send()
                                 .await
-                                && r.status().is_success()
-                            {
-                                recovered.push(name.to_string());
-                            }
+                            && r.status().is_success()
+                        {
+                            recovered.push(name.to_string());
                         }
                     }
                     if !recovered.is_empty() {

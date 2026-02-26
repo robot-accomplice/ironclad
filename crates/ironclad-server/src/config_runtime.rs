@@ -187,12 +187,13 @@ pub async fn apply_runtime_config(
     let backup_path = backup_config_file(&config_path)?;
     write_config_atomic(&config_path, &updated)?;
 
-    let mut deferred_apply = Vec::new();
-    deferred_apply.push("server.bind".to_string());
-    deferred_apply.push("server.port".to_string());
-    deferred_apply.push("wallet".to_string());
-    deferred_apply.push("treasury.policy_engine".to_string());
-    deferred_apply.push("browser.runtime".to_string());
+    let deferred_apply = vec![
+        "server.bind".to_string(),
+        "server.port".to_string(),
+        "wallet".to_string(),
+        "treasury.policy_engine".to_string(),
+        "browser.runtime".to_string(),
+    ];
 
     let apply_result: Result<(), ConfigRuntimeError> = async {
         {

@@ -80,33 +80,80 @@ gemini = read_text("gemini25_providers.txt")
 llama = read_text("llama33_providers.txt")
 mistral = read_text("mistrall3_providers.txt")
 
-# Parse provider-specific values from FAQ/list sections.
+def section_between(text: str, start: str, end: str, label: str) -> str:
+    pattern = re.compile(start + r"(.*?)" + end, flags=re.IGNORECASE | re.DOTALL)
+    m = pattern.search(text)
+    if not m:
+        raise RuntimeError(f"unable to locate section {label}")
+    return m.group(1)
+
+def extract_provider_value(section: str, provider_label: str, unit_label: str, label: str) -> float:
+    # Extract value from ranking cards where provider and value are in the same row.
+    # unit_label should be one of: "t/s", "s", "$".
+    if unit_label == "$":
+        pattern = rf">{re.escape(provider_label)}</span></div><span[^>]*>\s*<span class=\"text-xs text-gray-400\">\$</span><span[^>]*>([0-9.]+)</span>"
+    elif unit_label == "t/s":
+        pattern = rf">{re.escape(provider_label)}</span></div><span[^>]*>\s*<span[^>]*>([0-9.]+)</span><span class=\"text-xs text-gray-400\">\s*<!-- -->t/s</span>"
+    elif unit_label == "s":
+        pattern = rf">{re.escape(provider_label)}</span></div><span[^>]*>\s*<span[^>]*>([0-9.]+)</span><span class=\"text-xs text-gray-400\">\s*<!-- -->s</span>"
+    else:
+        raise RuntimeError(f"unsupported unit label: {unit_label}")
+    m = re.search(pattern, section, flags=re.IGNORECASE | re.DOTALL)
+    if not m:
+        raise RuntimeError(f"unable to parse {label} for provider {provider_label}")
+    return float(m.group(1))
+
+# Parse provider-specific values from top summary cards.
+gpt_speed_section = section_between(gpt, r"Fastest</h3>", r"<p>Output speed</p>", "gpt speed")
+gpt_latency_section = section_between(gpt, r"Lowest Latency</h3>", r"<p>Time to first token</p>", "gpt latency")
+gpt_price_section = section_between(gpt, r"Lowest Price</h3>", r"<p>Blended price \(per 1M tokens\)</p>", "gpt price")
+
+claude_speed_section = section_between(claude, r"Fastest</h3>", r"<p>Output speed</p>", "claude speed")
+claude_latency_section = section_between(claude, r"Lowest Latency</h3>", r"<p>Time to first token</p>", "claude latency")
+claude_price_section = section_between(claude, r"Lowest Price</h3>", r"<p>Blended price \(per 1M tokens\)</p>", "claude price")
+
+gemini_speed_section = section_between(gemini, r"Fastest</h3>", r"<p>Output speed</p>", "gemini speed")
+gemini_latency_section = section_between(gemini, r"Lowest Latency</h3>", r"<p>Time to first token</p>", "gemini latency")
+gemini_price_section = section_between(gemini, r"Lowest Price</h3>", r"<p>Blended price \(per 1M tokens\)</p>", "gemini price")
+
+llama_speed_section = section_between(llama, r"Fastest</h3>", r"<p>Output speed</p>", "llama speed")
+llama_latency_section = section_between(llama, r"Lowest Latency</h3>", r"<p>Time to first token</p>", "llama latency")
+llama_price_section = section_between(llama, r"Lowest Price</h3>", r"<p>Blended price \(per 1M tokens\)</p>", "llama price")
+
+mistral_speed_section = section_between(mistral, r"Fastest</h3>", r"<p>Output speed</p>", "mistral speed")
+mistral_latency_section = section_between(mistral, r"Lowest Latency</h3>", r"<p>Time to first token</p>", "mistral latency")
+mistral_price_section = section_between(mistral, r"Lowest Price</h3>", r"<p>Blended price \(per 1M tokens\)</p>", "mistral price")
+
 metrics = {
     "openai_responses": {
-        "ttft_ms": int(round(extract(gpt, r"OpenAI\)\(([0-9.]+)s\)", "gpt ttft") * 1000)),
-        "tokens_per_sec": extract(gpt, r"OpenAI\)\(([0-9.]+)\s*t/s\)", "gpt speed"),
-        "blended_per_1m": extract(gpt, r"OpenAI\)\(\$([0-9.]+)\s*per 1M tokens\)", "gpt blended"),
+        "ttft_ms": int(round(extract_provider_value(gpt_latency_section, "OpenAI", "s", "gpt ttft") * 1000)),
+        "tokens_per_sec": extract_provider_value(gpt_speed_section, "OpenAI", "t/s", "gpt speed"),
+        "blended_per_1m": extract_provider_value(gpt_price_section, "OpenAI", "$", "gpt blended"),
     },
     "anthropic_messages": {
-        "ttft_ms": int(round(extract(claude, r"Anthropic\)\(([0-9.]+)s\)", "claude ttft") * 1000)),
-        "tokens_per_sec": extract(claude, r"Anthropic\)\(([0-9.]+)\s*t/s\)", "claude speed"),
-        "blended_per_1m": extract(claude, r"Anthropic\)\(\$([0-9.]+)\s*per 1M tokens\)", "claude blended"),
+        "ttft_ms": int(round(extract_provider_value(claude_latency_section, "Anthropic", "s", "claude ttft") * 1000)),
+        "tokens_per_sec": extract_provider_value(claude_speed_section, "Anthropic", "t/s", "claude speed"),
+        "blended_per_1m": extract_provider_value(claude_price_section, "Anthropic", "$", "claude blended"),
     },
     "google_vertex_openai": {
-        "ttft_ms": int(round(extract(gemini, r"Google Vertex\)\(([0-9.]+)s\)", "gemini vertex ttft") * 1000)),
-        "tokens_per_sec": extract(gemini, r"Google Vertex\)\(([0-9.]+)\s*t/s\)", "gemini vertex speed"),
-        "blended_per_1m": extract(gemini, r"Google Vertex\)\(\$([0-9.]+)\s*per 1M tokens\)", "gemini vertex blended"),
+        "ttft_ms": int(round(extract_provider_value(gemini_latency_section, "Google Vertex", "s", "gemini vertex ttft") * 1000)),
+        "tokens_per_sec": extract_provider_value(gemini_speed_section, "Google Vertex", "t/s", "gemini vertex speed"),
+        "blended_per_1m": extract_provider_value(gemini_price_section, "Google Vertex", "$", "gemini vertex blended"),
     },
     "groq_openai": {
-        "ttft_ms": int(round(extract(llama, r"Groq\)\(([0-9.]+)s\)", "llama groq ttft") * 1000)),
-        "tokens_per_sec": extract(llama, r"Groq\)\(([0-9.]+)\s*t/s\)", "llama groq speed"),
-        # Groq price is not consistently in the top-price FAQ bullets; keep existing baseline.
-        "blended_per_1m": None,
+        "ttft_ms": int(round(extract_provider_value(llama_latency_section, "Groq", "s", "llama groq ttft") * 1000)),
+        "tokens_per_sec": extract_provider_value(llama_speed_section, "Groq", "t/s", "llama groq speed"),
+        # Groq price is not always in the "Lowest Price" ranking card; keep existing baseline if absent.
+        "blended_per_1m": (
+            extract_provider_value(llama_price_section, "Groq", "$", "llama groq blended")
+            if "Groq" in llama_price_section
+            else None
+        ),
     },
     "mistral_api": {
-        "ttft_ms": int(round(extract(mistral, r"Mistral\)\(([0-9.]+)s\)", "mistral ttft") * 1000)),
-        "tokens_per_sec": extract(mistral, r"Mistral\)\(([0-9.]+)\s*t/s\)", "mistral speed"),
-        "blended_per_1m": extract(mistral, r"Mistral\)\(\$([0-9.]+)\s*per 1M tokens\)", "mistral blended"),
+        "ttft_ms": int(round(extract_provider_value(mistral_latency_section, "Mistral", "s", "mistral ttft") * 1000)),
+        "tokens_per_sec": extract_provider_value(mistral_speed_section, "Mistral", "t/s", "mistral speed"),
+        "blended_per_1m": extract_provider_value(mistral_price_section, "Mistral", "$", "mistral blended"),
     },
 }
 

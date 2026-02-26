@@ -143,6 +143,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: "Warn if cloud benchmark snapshot is stale"
+        run: |
+          python3 - <<'PY'
+          import datetime as dt
+          import pathlib
+          import re
+
+          path = pathlib.Path("docs/evals/CLOUD_BENCHMARK_SOURCES.md")
+          if not path.exists():
+              print("::warning::Cloud benchmark sources file is missing: docs/evals/CLOUD_BENCHMARK_SOURCES.md")
+              raise SystemExit(0)
+
+          text = path.read_text(encoding="utf-8", errors="ignore")
+          match = re.search(r"Snapshot date:\s*`(\d{4}-\d{2}-\d{2})`", text)
+          if not match:
+              print("::warning::Unable to parse cloud benchmark snapshot date from docs/evals/CLOUD_BENCHMARK_SOURCES.md")
+              raise SystemExit(0)
+
+          snapshot = dt.date.fromisoformat(match.group(1))
+          age_days = (dt.date.today() - snapshot).days
+          if age_days > 45:
+              print(
+                  f"::warning::Cloud benchmark snapshot is {age_days} days old (>45). "
+                  "Run scripts/refresh-cloud-baselines.sh --write to refresh baseline values."
+              )
+          else:
+              print(f"Cloud benchmark snapshot age is {age_days} days (within 45-day window).")
+          PY
       - name: "Run release docs/artifact gate"
         env:
           RELEASE_TARGET_VERSION: "0.8.0"
