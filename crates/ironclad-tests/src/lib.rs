@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod a2a_protocol;
 #[cfg(test)]
+mod fault_injection;
+#[cfg(test)]
 mod agent_loop;
 #[cfg(test)]
 mod cron_lifecycle;

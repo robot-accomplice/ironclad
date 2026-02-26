@@ -7,9 +7,9 @@
 | Severity | Open | In Progress | Fixed | Verified |
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
-| High     | 7    | 0           | 0     | 0        |
-| Medium   | 14   | 0           | 32    | 0        |
-| Low      | 4    | 0           | 28    | 0        |
+| High     | 8    | 0           | 0     | 0        |
+| Medium   | 17   | 0           | 32    | 0        |
+| Low      | 5    | 0           | 28    | 0        |
 
 ## Entries
 
@@ -100,3 +100,8 @@
 | BUG-083 | coverage-gap | ironclad-server | T5 | Medium | coverage-gap | `migrate/transform.rs` has 61% line coverage (776 of 1995 lines missed) with 77 of 163 functions uncovered; data migration transforms for schema upgrades are partially untested — migration transform errors during upgrades could corrupt user data | `crates/ironclad-server/src/migrate/transform.rs` lines 1-3353 | Open |
 | BUG-084 | coverage-gap | ironclad-agent | T3 | Low | coverage-gap | `governor.rs` `compact_before_archive()` (lines 63-88) has 0% coverage; session compaction logic that trims conversation history before archival is untested — incorrect trimming could lose important context or produce malformed summaries | `crates/ironclad-agent/src/governor.rs` lines 63-88 | Open |
 | BUG-085 | coverage-gap | ironclad-db | T1 | Medium | coverage-gap | `cron.rs` has 77% line coverage with 31 of 58 functions (46%) uncovered; cron job scheduling, lease acquisition, and run recording have significant gaps — lease contention and error handling paths for scheduled task execution untested | `crates/ironclad-db/src/cron.rs` lines 1-892 | Open |
+| BUG-086 | mutation-test | ironclad-core | T0 | Medium | weak-test | ~30 `default_*()` config functions survive mutation (76 mutants across `default_port`, `default_db_path`, `default_confidence_floor`, `default_log_level`, `default_workspace`, `default_rate_limit_*`, `default_cb_*`, `default_*_pct`, `default_yield_*`, `default_min_deposit`, etc.); serde defaults have no direct assertion tests — any accidental change to a default value would go undetected | `crates/ironclad-core/src/config.rs` lines 57-980 | Open |
+| BUG-087 | mutation-test | ironclad-core | T0 | Medium | weak-test | 3 validation boundary mutations in `IroncladConfig::validate()` survive: `> vs >=` (line 380), `< vs ==` and `< vs <=` (line 392), `!= vs ==` (line 398); edge-case boundary tests missing for rate-limit-sum and per-actor-limit validation conditions | `crates/ironclad-core/src/config.rs` lines 380-398 | Open |
+| BUG-088 | mutation-test | ironclad-plugin-sdk | T4 | High | weak-test | `ScriptPlugin::is_tool_dangerous()` (line 169) and `ScriptPlugin::validate_script_path()` (line 122) survive mutation — security-critical methods that determine whether a tool is dangerous and whether a script path is valid have no tests asserting their return values; `is_tool_dangerous` returning wrong value could allow unsafe tool execution | `crates/ironclad-plugin-sdk/src/script.rs` lines 122, 169 | Open |
+| BUG-089 | mutation-test | ironclad-plugin-sdk | T4 | Medium | weak-test | 9 manifest validation boundary mutations survive in `validate_plugin_name` (3x `\|\|` vs `&&`), `validate_plugin_version` (`>` vs `>=`, `==` vs `!=`), `validate_tool_name` (3x `\|\|` vs `&&`); validation functions accept inputs they should reject (or vice versa) without any test catching the difference | `crates/ironclad-plugin-sdk/src/manifest.rs` lines 61-114 | Open |
+| BUG-090 | mutation-test | ironclad-plugin-sdk | T4 | Low | weak-test | `ScriptPlugin::find_script()` (line 74), `has_recognized_shebang()` (line 99), `PluginRegistry::shutdown_all()` (line 150), and `ScriptPlugin::shutdown()` (line 302) survive mutation; script discovery, shebang validation, and plugin lifecycle cleanup untested | `crates/ironclad-plugin-sdk/src/script.rs` lines 74-302 | Open |
