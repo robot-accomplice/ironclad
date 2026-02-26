@@ -22,6 +22,8 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-plugin-sdk.md` | 1 (flowchart) | 0 | 0 | 0 | 1 stale ToolDef fields, 1 stale dep-by list | Drifted |
 | `ironclad-dataflow.md` | 20 (flowcharts) | 0 | 0 | 4 behavioral mismatches | 5 stale counts/labels | Drifted |
 | `ironclad-sequences.md` | 13 (sequence diagrams) | 1 unimplemented diagram (TLS) | 0 | 3 behavioral mismatches | 8 stale counts/labels, 4 phantom types, 2 wrong table names | Drifted |
+| `circuit-breaker-audit.md` | 3 (sequences) + 1 (flowchart) | 0 | 0 | 3 of 5 findings now fixed; 1 stale diagram path | 1 dead config field | Mostly fixed |
+| `router-audit.md` | 3 (sequences) + 1 (flowchart) | 0 | 0 | 1 of 4 findings now fixed; 1 stale diagram path | 0 | Partially fixed |
 
 ## Detailed Findings
 
@@ -1372,3 +1374,180 @@ supports TLS natively.
 tend to describe well-isolated subsystems (cache, wallet, injection, approval, browser)
 while the drifted diagrams describe system-wide orchestration (bootstrap, scheduling,
 observatory) where v0.5.0-to-v0.8.0 growth was concentrated.
+
+---
+
+### circuit-breaker-audit.md
+
+**Audit scope:** 1 flowchart (Current Runtime Dataflow), 3 sequence diagrams (Transient
+Failure Recovery, Credit Error Path, Bounded Fallback Policy), and 5 audit findings,
+cross-referenced against v0.8.0 code in `circuit.rs`, `router.rs`, `agent.rs`,
+`interview.rs`, and `cli/admin/misc.rs`.
+
+#### Diagrams confirmed accurate
+
+The core circuit breaker state machine (Closed/Open/HalfOpen) is accurately represented:
+- `CircuitState` enum with 3 variants confirmed in `circuit.rs` lines 6-11
+- `credit_tripped` sticky behavior confirmed (line 24, 48-49, 146-151)
+- Cooldown-based effective HalfOpen transition confirmed (lines 51-54)
+- Exponential backoff on HalfOpen failure confirmed (lines 126-127)
+- `record_success`, `record_failure`, `record_credit_error` methods confirmed
+- `reset()` clears all state including `credit_tripped` and `preemptive_half_open`
+- Default thresholds: threshold=3, window=60s, cooldown=60s, max_cooldown=900s
+
+Sequence diagram 1 (Transient Failure Recovery) is accurate.
+Sequence diagram 2 (Credit Error Path) is accurate.
+Sequence diagram 3 (Bounded Fallback Policy) is accurate.
+
+#### CB-1: Finding #1 resolved -- CLI reset endpoint now correct
+
+The audit document's finding #1 ("CLI currently posts to `/api/breaker/reset` (no
+provider path)") has been **fixed** in v0.8.0. The CLI `cmd_circuit_reset()` in
+`cli/admin/misc.rs` lines 555-604 now:
+1. Fetches `GET /api/breaker/status` to get the provider list
+2. Iterates each provider and posts to `POST /api/breaker/reset/{provider}` (line 591)
+
+**Status:** Fixed. Audit finding is now stale.
+
+#### CB-2: Finding #2 resolved -- Streaming path now uses fallback loop
+
+The audit document's finding #2 ("Streaming path bypasses fallback loop") has been
+**fixed** in v0.8.0. The `agent_message_stream()` in `agent.rs` lines 2069-2094 now:
+1. Builds the same `fallback_candidates()` list as non-stream inference
+2. Iterates candidates with `breakers.is_blocked()` check (line 2085)
+3. Records `record_success` on successful stream (line 2137)
+4. Continues to next candidate on failure
+
+The comment at line 2069 explicitly states "Use the same fallback surface as
+non-stream inference."
+
+**Status:** Fixed. Audit finding is now stale.
+
+#### CB-3: Finding #3 resolved -- Interview path now uses fallback
+
+The audit document's finding #3 ("Interview path bypasses routing/fallback/breaker
+accounting") has been **fixed** in v0.8.0. The `interview_turn()` in `interview.rs`
+line 93 now calls `select_routed_model()` for model selection, and line 106 calls
+`infer_content_with_fallback()` which delegates to `infer_with_fallback()`.
+
+**Status:** Fixed. Audit finding is now stale.
+
+#### CB-4: Findings #4 and #5 still valid
+
+Finding #4 (Runtime control-plane drift risk): `sync_runtime()` exists
+(config_runtime.rs line 205, admin.rs line 1763) but formal verification that ALL
+mutation paths trigger synchronization is not tested.
+
+Finding #5 (Insufficient integration coverage for breaker lifecycle): Integration
+tests exist in `ironclad-tests/src/router_integration.rs` but do not yet cover the
+full API-level breaker lifecycle end-to-end.
+
+**Status:** Still valid. These are testing/verification gaps, not code defects.
+
+#### CB-5: Stale dataflow diagram -- streaming path now uses fallback
+
+The flowchart (lines 48-49) shows `A2 -> E1["single model/provider resolution"] ->
+E2["stream_to_provider()"]` as a separate non-fallback path. This is now stale: the
+streaming path uses the same candidate loop as `infer_with_fallback()`.
+
+**Impact:** Medium -- diagram shows an architecture that no longer exists.
+
+#### CB-6: Missing preemptive_half_open in diagrams
+
+The `preemptive_half_open` field (circuit.rs line 27) allows capacity pressure to
+soft-transition a Closed breaker to effective HalfOpen (line 58). This is set by
+`set_capacity_pressure()` (line 186) and deprioritizes a provider before hard
+failures occur. None of the three sequence diagrams show this path. It is a fourth
+state transition pattern alongside: threshold trip, cooldown recovery, and credit trip.
+
+**Impact:** Low -- the feature is a performance optimization, not a correctness issue.
+
+#### CB-7: Dead config field -- credit_cooldown_seconds
+
+The `CircuitBreakerConfig` struct includes `credit_cooldown_seconds` (default 300s)
+in config.rs line 751, but this field is **never read** by `circuit.rs`. The
+`CircuitBreaker::new()` constructor only uses `cooldown_seconds` and
+`max_cooldown_seconds`. Credit-tripped breakers use `credit_tripped` boolean to
+prevent auto-recovery entirely, so a separate cooldown is moot.
+
+**Impact:** Low -- dead config field; no behavioral consequence.
+
+#### Summary of circuit-breaker audit drift
+
+| Category | Count | Severity | Details |
+|---|---|---|---|
+| Fixed findings | 3 | -- | CLI reset (CB-1), stream fallback (CB-2), interview fallback (CB-3) |
+| Stale diagram path | 1 | Medium | Streaming shown as single-provider (CB-5) |
+| Missing behavior | 1 | Low | preemptive_half_open not in diagrams (CB-6) |
+| Dead config | 1 | Low | credit_cooldown_seconds never consumed (CB-7) |
+| Still valid findings | 2 | Low | Sync verification gap (CB-4), integration test gap (CB-4) |
+
+---
+
+### router-audit.md
+
+**Audit scope:** 1 flowchart (Current Router Dataflow), 3 sequence diagrams
+(Complexity-Aware, Cost-Aware, Bounded Fallback), and 4 audit findings,
+cross-referenced against v0.8.0 code in `router.rs`, `agent.rs`, `interview.rs`,
+and `config.rs`.
+
+#### Diagrams confirmed accurate
+
+The core router behavior is accurately represented:
+- Three selection modes: `primary`, `round-robin`, complexity-aware default (router.rs)
+- `select_for_complexity()` with override check, breaker filtering, capacity filtering
+  (router.rs line 106)
+- `select_cheapest_qualified()` with breaker/capacity pruning before cost selection
+  (router.rs line 178)
+- `set_override()` / `clear_override()` short-circuit confirmed (lines 81, 86)
+- `sync_runtime()` for config-to-router synchronization confirmed (line 277)
+- `local_first` threshold check confirmed in `select_for_complexity()`
+
+Sequence diagram 1 (Complexity-Aware Routing) is accurate.
+Sequence diagram 2 (Cost-Aware Routing) is accurate.
+Sequence diagram 3 (Bounded Fallback Execution) is accurate.
+
+#### RT-1: Finding #1 partially resolved -- stream and interview paths now use fallback
+
+The audit document's finding #1 ("Route-family inconsistency") noted that
+`agent_message_stream()` and `interview_turn()` use single-provider calls. Both
+paths have been **fixed** in v0.8.0:
+- Streaming: `agent.rs` lines 2069-2094 uses candidate loop with breaker checks
+- Interview: `interview.rs` line 106 uses `infer_content_with_fallback()`
+
+**Status:** Fixed. All four entry paths (E1-E4) now use bounded fallback.
+
+#### RT-2: Stale dataflow diagram -- E2 and E4 paths
+
+The flowchart shows `E2 -> S1` and `E2 -> X2` where X2 is "single provider call
+(stream/interview paths)". This dual path is stale: E2 (streaming) now goes through
+the same `S1 -> S2 -> ... -> X1` path as E1. Similarly, E4 (interview) now goes
+through `select_routed_model` and `infer_content_with_fallback` rather than X2.
+The `X2` node should be removed entirely.
+
+**Impact:** Medium -- diagram shows a divergent architecture that no longer exists.
+
+#### RT-3: Findings #2, #3, #4 still valid
+
+Finding #2 (Config-vs-router drift risk): `sync_runtime()` exists but no formal
+proof that all mutation paths trigger it. The `config_runtime::apply_runtime_config()`
+and `admin` routes both call it, but any new mutation path could miss it.
+
+Finding #3 (Override observability gap): `set_override` is callable via chat command;
+no dedicated audit event is emitted when an override is set or cleared.
+
+Finding #4 (Unused `model_overrides` config map): `models.model_overrides` field
+exists in `config.rs` line 563 with `ModelOverride` struct at line 706, but NO code
+in `router.rs` or `agent.rs` reads this field. The runtime `set_override()` uses a
+separate `override_model: Option<String>` field on the router struct. The config-level
+`model_overrides` HashMap is dead code.
+
+**Status:** All three still valid.
+
+#### Summary of router audit drift
+
+| Category | Count | Severity | Details |
+|---|---|---|---|
+| Fixed findings | 1 | -- | Route-family inconsistency resolved (RT-1) |
+| Stale diagram path | 1 | Medium | E2/E4 -> X2 single-provider path (RT-2) |
+| Still valid findings | 3 | Low-Medium | Sync gap (RT-3), observability (RT-3), dead config (RT-3) |

@@ -8,8 +8,8 @@
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
 | High     | 0    | 0           | 0     | 0        |
-| Medium   | 30   | 0           | 0     | 0        |
-| Low      | 24   | 0           | 0     | 0        |
+| Medium   | 32   | 0           | 0     | 0        |
+| Low      | 26   | 0           | 0     | 0        |
 
 ## Entries
 
@@ -69,3 +69,7 @@
 | BUG-052 | audit-seq | docs | -- | Medium | doc drift | Diagram 10 (Context Observatory) references TransformPipeline, TurnRecorder, and Observatory Analyzer as participants but none exist as structs; tables `turn_observations` and `observatory_grades` also do not exist in schema.rs; diagram describes unimplemented subsystem architecture | `docs/architecture/ironclad-sequences.md` lines 695-731 | Open |
 | BUG-053 | audit-seq | docs | -- | Medium | doc drift | Diagram 11 (Outcome Grading) lines 754-762 reference `INSERT outcome_feedback` but actual table is `turn_feedback` (schema.rs line 369); `MetricEngine` participant does not exist as a struct; cross-reference matrix line 906 also uses wrong table name | `docs/architecture/ironclad-sequences.md` lines 754-762 | Open |
 | BUG-054 | audit-seq | docs | -- | Medium | doc drift | Diagram 12 (Network Binding) describes complete TLS configuration (TlsAcceptor, rustls ServerConfig, ALPN, TLS 1.3 handshake, cert/key loading) that does not exist; no TlsConfig in IroncladConfig, no InterfaceResolver struct, server uses plain `axum::serve(listener, app)` with TcpListener::bind; entire TLS section is unimplemented | `docs/architecture/ironclad-sequences.md` lines 806-826 | Open |
+| BUG-055 | audit-cb | docs | -- | Medium | doc drift | Circuit-breaker audit flowchart shows streaming path as `A2 -> E1 -> E2["stream_to_provider()"]` single-provider path, but v0.8.0 streaming at `agent.rs` lines 2069-2094 now uses same `fallback_candidates()` loop with breaker checks as non-stream inference; diagram describes architecture that no longer exists | `docs/architecture/circuit-breaker-audit.md` lines 48-49 | Open |
+| BUG-056 | audit-cb | ironclad-llm | T2 | Low | doc drift | `preemptive_half_open` field in `CircuitBreaker` (circuit.rs line 27) allows capacity pressure to soft-transition Closed to effective HalfOpen via `set_capacity_pressure()` (line 186); none of the three sequence diagrams in circuit-breaker-audit.md show this fourth state transition pattern | `docs/architecture/circuit-breaker-audit.md` diagrams 1-3 | Open |
+| BUG-057 | audit-cb | ironclad-core | T0 | Low | dead config | `CircuitBreakerConfig::credit_cooldown_seconds` (config.rs line 751, default 300s) is never read by `circuit.rs`; `CircuitBreaker::new()` only uses `cooldown_seconds` and `max_cooldown_seconds`; credit-tripped breakers use boolean `credit_tripped` to prevent auto-recovery entirely, making a separate cooldown moot | `crates/ironclad-core/src/config.rs` line 751 | Open |
+| BUG-058 | audit-rt | docs | -- | Medium | doc drift | Router audit flowchart shows `E2 -> X2` and `E4 -> X2` where X2 is "single provider call (stream/interview paths)" but v0.8.0 E2 (streaming) and E4 (interview) both use bounded fallback via `infer_with_fallback()`; X2 node should be removed entirely from diagram | `docs/architecture/router-audit.md` flowchart | Open |
