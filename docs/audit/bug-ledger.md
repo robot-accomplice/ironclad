@@ -8,7 +8,7 @@
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
 | High     | 0    | 0           | 0     | 0        |
-| Medium   | 15   | 0           | 0     | 0        |
+| Medium   | 17   | 0           | 0     | 0        |
 | Low      | 11   | 0           | 0     | 0        |
 
 ## Entries
@@ -41,3 +41,5 @@
 | BUG-024 | audit-c4 | ironclad-llm | T2 | Low | doc drift | `transform.rs` shown in C4 diagram and referenced in lib.rs doc comment, but NOT declared as `pub mod transform` in lib.rs -- file is dead code (11,158 bytes), unreachable from other crates | `docs/architecture/ironclad-c4-llm.md` line 30 | Open |
 | BUG-025 | audit-c4 | ironclad-llm | T2 | Low | doc drift | `LlmService` top-level facade struct (the primary public API of the crate, composing cache+breakers+dedup+router+client+providers+capacity+embedding) not shown in C4 diagram | `docs/architecture/ironclad-c4-llm.md` lines 11-143 | Open |
 | BUG-026 | audit-c4 | ironclad-wallet | T3 | Low | doc drift | `money.rs` shown as child of `wallet.rs` subgraph in diagram but is actually a separate `pub mod money` peer module in `lib.rs`; readers may look for `Money` type inside `wallet.rs` instead of `money.rs` | `docs/architecture/ironclad-c4-wallet.md` line 19 | Open |
+| BUG-027 | audit-c4 | ironclad-channels | T4 | Medium | doc drift | Dependencies section states "Internal crates: ironclad-core (types, config)" but `Cargo.toml` also depends on `ironclad-db` (used in delivery.rs, router.rs for delivery queue); same root cause as BUG-012 but independently wrong in this diagram | `docs/architecture/ironclad-c4-channels.md` line 138 | Open |
+| BUG-028 | audit-c4 | ironclad-channels | T4 | Medium | doc drift | SharedTrait subgraph shows `InboundMessage` with fields "source, text, media, platform_metadata" and `OutboundMessage` with "text, attachments, reply_to, format_hints" but actual structs have different fields: InboundMessage has id/platform/sender_id/content/timestamp/metadata; OutboundMessage has content/recipient_id/metadata | `docs/architecture/ironclad-c4-channels.md` lines 60-61 | Open |

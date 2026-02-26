@@ -15,6 +15,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-llm.md` | 1 (flowchart) | 1 phantom module (transform.rs not in pub mod), 1 missing top-level struct (LlmService) | 0 | 0 | 0 | Minor drift |
 | `ironclad-c4-agent.md` | 2 (flowchart + sequence) | 0 missing modules | 0 | 0 | 0 | Accurate |
 | `ironclad-c4-wallet.md` | 2 (flowchart + sequence) | 0 | 0 | 0 | 1 (money.rs misplaced as wallet.rs child) | Minor drift |
+| `ironclad-c4-channels.md` | 2 (flowchart + sequence) | 0 | 0 | 0 | 1 stale dep list, 1 stale struct field names | Drifted |
 
 ## Detailed Findings
 
@@ -645,3 +646,72 @@ hierarchically. A reader might look for `Money` inside `wallet.rs` instead of
 - The Financial Flow sequence diagram accurately represents the yield engine flow.
 - Dependencies are correctly listed.
 - Overall this is a well-maintained diagram with only a minor organizational issue.
+
+### ironclad-c4-channels.md
+
+**Audit scope:** All nodes in the Mermaid `flowchart TB` block (lines 10-98), detail
+subgraphs, the SharedTrait subgraph, and the Dependencies section, cross-referenced
+against v0.8.0 source code in `crates/ironclad-channels/src/`.
+
+**Method:** Compared every component node and detail subgraph in the diagram against
+the actual `lib.rs` `pub mod` declarations and source files. Verified dependency claims
+against Cargo.toml.
+
+#### Modules confirmed present and accurately described
+
+All 11 `pub mod` modules in `lib.rs` have corresponding component nodes in the diagram:
+
+| Diagram Module | Code File | Status |
+|---|---|---|
+| `router.rs` | `router.rs` | OK |
+| `telegram.rs` | `telegram.rs` | OK |
+| `whatsapp.rs` | `whatsapp.rs` | OK |
+| `web.rs` | `web.rs` | OK |
+| `a2a.rs` | `a2a.rs` | OK |
+| `delivery.rs` | `delivery.rs` | OK |
+| `discord.rs` | `discord.rs` | OK |
+| `signal.rs` | `signal.rs` | OK |
+| `voice.rs` | `voice.rs` | OK |
+| `email.rs` | `email.rs` | OK |
+| `filter.rs` | `filter.rs` | OK |
+
+#### CHANNELS-1: Stale "Internal crates" dependency list
+
+The Dependencies section (line 138) states: "Internal crates: `ironclad-core` (types,
+config)". However, `ironclad-channels/Cargo.toml` also declares `ironclad-db.workspace
+= true`. The `delivery.rs` and `router.rs` modules use `ironclad_db::Database` for
+the delivery queue. This was already identified in the container audit (BUG-012) but
+the channels diagram independently repeats the error.
+
+**Impact:** Medium. Same as BUG-012. The channels crate has a real compile-time
+dependency on ironclad-db that is invisible in this diagram's Dependencies section.
+
+#### CHANNELS-2: Stale InboundMessage / OutboundMessage field names in diagram
+
+The SharedTrait subgraph (line 60-61) shows:
+- `InboundMessage: source, text, media, platform_metadata`
+- `OutboundMessage: text, attachments, reply_to, format_hints`
+
+The actual structs in `lib.rs` have different field names:
+- `InboundMessage`: `id`, `platform`, `sender_id`, `content`, `timestamp`, `metadata`
+- `OutboundMessage`: `content`, `recipient_id`, `metadata`
+
+The diagram's field names do not match the actual struct fields. This is a naming drift
+that could mislead developers expecting to find fields named `source`, `text`, `media`,
+`platform_metadata`, `attachments`, `reply_to`, or `format_hints`.
+
+**Impact:** Medium. The actual struct API is significantly different from what the
+diagram shows. A developer using the diagram as reference would write code against
+non-existent field names.
+
+#### Notes
+
+- The **detail subgraphs** for each adapter (Telegram, WhatsApp, Web, A2A, Discord,
+  Signal, Voice, Email, Filter) are comprehensive and provide useful internal
+  documentation.
+- The **A2A Handshake Sequence** diagram is well-documented and appears accurate.
+- The `ChannelAdapter` trait signature in the diagram simplifies the actual signatures
+  (omits `&self`, `Result<Option<...>>` wrapping, `Send + Sync` bounds). This is
+  acceptable for a high-level diagram.
+- The `sanitize_platform()` function and `InboundMessage::sanitize()` method added in
+  v0.8.0 are not shown in the diagram, but these are minor additions.
