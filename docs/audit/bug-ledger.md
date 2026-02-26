@@ -8,8 +8,8 @@
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
 | High     | 0    | 0           | 0     | 0        |
-| Medium   | 13   | 0           | 0     | 0        |
-| Low      | 6    | 0           | 0     | 0        |
+| Medium   | 15   | 0           | 0     | 0        |
+| Low      | 8    | 0           | 0     | 0        |
 
 ## Entries
 
@@ -34,3 +34,7 @@
 | BUG-017 | audit-c4 | ironclad-core | T0 | Low | doc drift | `IroncladError` variant count stated as 13 in diagram but actual code has 14 variants (Keystore variant added post-v0.5.0) | `docs/architecture/ironclad-c4-core.md` line 81 | Open |
 | BUG-018 | audit-c4 | ironclad-core | T0 | Medium | doc drift | `ChannelsConfig` shown with only "telegram, whatsapp" fields but actual struct has 8+ fields including discord, signal, email, voice, trusted_sender_ids, thinking_threshold_seconds, startup_announcements | `docs/architecture/ironclad-c4-core.md` line 29 | Open |
 | BUG-019 | audit-c4 | ironclad-core | T0 | Medium | doc drift | 18+ config structs missing from diagram: config.rs grew from ~15 to 40+ pub structs; missing groups include Context, Approvals, Plugins, Browser, Daemon, MCP, Multimodal, Knowledge, Discovery, Device, Session, Update, TieredInference, TierAdapt, ModelOverride, Workspace | `docs/architecture/ironclad-c4-core.md` lines 21-53 | Open |
+| BUG-020 | audit-c4 | ironclad-db | T1 | Medium | doc drift | `delivery_queue` module (8,810 bytes, pub mod in lib.rs) manages outbound channel delivery state but has no component node in C4 db diagram; table is listed in Tables Managed but module is invisible in component diagram | `docs/architecture/ironclad-c4-db.md` lines 11-114 | Open |
+| BUG-021 | audit-c4 | ironclad-db | T1 | Medium | doc drift | `efficiency` module (25,454 bytes, second-largest in crate) for efficiency metrics tracking is completely absent from C4 db diagram -- no component node, no detail subgraph, not in module doc comment | `docs/architecture/ironclad-c4-db.md` lines 11-114 | Open |
+| BUG-022 | audit-c4 | ironclad-db | T1 | Low | doc drift | `approvals` module (1,317 bytes) and `model_selection` module (4,232 bytes) exist as pub mods but have no component nodes in C4 db diagram | `docs/architecture/ironclad-c4-db.md` lines 11-114 | Open |
+| BUG-023 | audit-c4 | ironclad-db | T1 | Low | doc drift | "Depended on by" list omits `ironclad-channels` (which depends on ironclad-db for delivery_queue) and `ironclad-tests` | `docs/architecture/ironclad-c4-db.md` line 158 | Open |

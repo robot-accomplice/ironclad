@@ -11,6 +11,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-system-context.md` | 1 (C4Context) | 7 missing nodes, 1 stale node | 2 relationship-label gaps | 0 | 1 vague label | Drifted |
 | `ironclad-c4-container.md` | 1 (C4Container) | 0 | 2 spurious arrows, 1 missing arrow, 1 missing table dep, 8 missing `core` arrows, 6 missing `server` arrows | 0 | 0 | Drifted |
 | `ironclad-c4-core.md` | 1 (flowchart) | 1 missing module, 18+ missing config structs | 0 | 0 | 2 stale labels (error variant count, ChannelsConfig fields) | Drifted |
+| `ironclad-c4-db.md` | 1 (flowchart) | 3 missing modules | 0 | 0 | 1 stale "Depended on by" list | Drifted |
 
 ## Detailed Findings
 
@@ -385,3 +386,94 @@ source for the full configuration schema.
   responsibilities (load OS/soul/firmware, compose identity text) remain accurate.
 - The `style.rs` module has also grown (18,496 bytes) but its documented
   responsibilities remain accurate.
+
+### ironclad-c4-db.md
+
+**Audit scope:** All nodes in the Mermaid `flowchart TB` block (lines 11-114), the
+Tables Managed table, and the Dependencies section, cross-referenced against v0.8.0
+source code in `crates/ironclad-db/src/`.
+
+**Method:** Compared every component node and subgraph in the diagram against the
+actual `lib.rs` module declarations and source files in the `src/` directory.
+
+#### Modules confirmed present and accurately described
+
+| Diagram Module | Code File | Status |
+|---|---|---|
+| `schema.rs` | `schema.rs` (23,535 bytes) | OK |
+| `sessions.rs` | `sessions.rs` (47,207 bytes) | OK |
+| `memory.rs` | `memory.rs` (25,511 bytes) | OK |
+| `tools.rs` | `tools.rs` (9,772 bytes) | OK |
+| `policy.rs` | `policy.rs` (4,578 bytes) | OK |
+| `metrics.rs` | `metrics.rs` (5,969 bytes) | OK |
+| `cron.rs` | `cron.rs` (18,456 bytes) | OK |
+| `skills.rs` | `skills.rs` (17,538 bytes) | OK |
+| `embeddings.rs` | `embeddings.rs` (13,069 bytes) | OK |
+| `ann.rs` | `ann.rs` (11,834 bytes) | OK |
+| `cache.rs` | `cache.rs` (7,793 bytes) | OK |
+| `hippocampus.rs` | `hippocampus.rs` (19,055 bytes) | OK |
+| `checkpoint.rs` | `checkpoint.rs` (5,793 bytes) | OK |
+| `backend.rs` | `backend.rs` (10,062 bytes) | OK |
+| `agents.rs` | `agents.rs` (6,820 bytes) | OK |
+| `migrations/` | `migrations/` directory | OK |
+
+#### DB-1: Missing module -- `approvals`
+
+`lib.rs` line 33 declares `pub mod approvals;`. The file `approvals.rs` (1,317 bytes)
+provides CRUD operations for the `approval_requests` table (gated tool approvals with
+pending/approved/denied states and timeout). The table IS listed in the Tables Managed
+section (line 144) but has no component node in the diagram and no detail subgraph.
+
+**Impact:** Low. The table is documented but the module is not shown as a component.
+
+#### DB-2: Missing module -- `delivery_queue`
+
+`lib.rs` line 38 declares `pub mod delivery_queue;`. The file `delivery_queue.rs`
+(8,810 bytes) provides CRUD operations for the `delivery_queue` table (outbound channel
+message delivery with status tracking, retry logic, and next_retry_at). The table IS
+listed in the Tables Managed section (line 143) but has no component node in the
+diagram and no detail subgraph.
+
+**Impact:** Medium. This is a significant module (8,810 bytes) that manages outbound
+message delivery state. It is used by `ironclad-channels` for reliable message delivery.
+
+#### DB-3: Missing module -- `efficiency`
+
+`lib.rs` line 39 declares `pub mod efficiency;`. The file `efficiency.rs` (25,454
+bytes) provides efficiency metrics tracking and queries. This is a substantial module
+-- larger than `memory.rs` -- with no representation in the diagram at all. It is not
+listed in the module doc comment's module list, though it does exist as a `pub mod`
+declaration.
+
+**Impact:** Medium. This is one of the largest modules in the crate (25,454 bytes) and
+is completely invisible in the diagram.
+
+#### DB-4: Missing module -- `model_selection`
+
+`lib.rs` line 44 declares `pub mod model_selection;`. The file `model_selection.rs`
+(4,232 bytes) provides model selection history tracking and queries. No representation
+in the diagram.
+
+**Impact:** Low. Smaller module but still a public API surface.
+
+#### DB-5: Stale "Depended on by" list
+
+The Dependencies section (line 158) states: "Depended on by: ironclad-agent,
+ironclad-schedule, ironclad-wallet, ironclad-server". This omits `ironclad-channels`,
+which depends on `ironclad-db` in its Cargo.toml and uses it for the delivery queue.
+Also omits `ironclad-tests`.
+
+**Impact:** Low. This was already identified in the container diagram audit (C-3/
+BUG-012) but is independently wrong in this diagram's Dependencies section.
+
+#### Notes
+
+- The **Tables Managed** section is impressively comprehensive. It lists 28 tables
+  including `delivery_queue`, `approval_requests`, `plugins`, and `turn_feedback` --
+  all of which are accurately described. The table documentation is more up-to-date
+  than the component diagram itself.
+- The `sessions.rs` module has grown to 47,207 bytes, making it the largest module in
+  the crate. The diagram's detail subgraph shows 5 functions which is a reasonable
+  high-level summary.
+- The `efficiency.rs` module at 25,454 bytes is the second-largest and completely
+  absent from the diagram, making it the most significant omission.
