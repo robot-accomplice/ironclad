@@ -8,8 +8,8 @@
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
 | High     | 0    | 0           | 0     | 0        |
-| Medium   | 7    | 0           | 0     | 0        |
-| Low      | 3    | 0           | 0     | 0        |
+| Medium   | 10   | 0           | 0     | 0        |
+| Low      | 5    | 0           | 0     | 0        |
 
 ## Entries
 
@@ -25,3 +25,8 @@
 | BUG-008 | audit-c4 | docs | -- | Low | doc drift | Groq has explicit `System_Ext` node in diagram but is NOT a bundled provider (absent from `bundled_providers.toml`); should be demoted to "Other LLM Providers" or removed | `docs/architecture/ironclad-c4-system-context.md` line 20 | Open |
 | BUG-009 | audit-c4 | docs | -- | Low | doc drift | Creator relationship label (line 31) lists only "Telegram / WhatsApp / WebSocket / HTTP API / Dashboard" but omits Discord, Signal, Email, and Voice channels | `docs/architecture/ironclad-c4-system-context.md` line 31 | Open |
 | BUG-010 | audit-c4 | docs | -- | Low | doc drift | "Other LLM Providers" label says "Google, Moonshot, etc." but v0.8.0 bundles 11 providers including SGLang, vLLM, Docker Model Runner, llama-cpp, and OpenRouter | `docs/architecture/ironclad-c4-system-context.md` line 21 | Open |
+| BUG-011 | audit-c4 | docs | -- | Medium | doc drift | Spurious `Rel(channels, agent)` arrow: `ironclad-channels` does NOT depend on `ironclad-agent` in Cargo.toml; the channel-to-agent wiring is server-mediated at runtime, not a compile-time dependency | `docs/architecture/ironclad-c4-container.md` line 46 | Open |
+| BUG-012 | audit-c4 | docs | -- | Medium | doc drift | Missing `Rel(channels, db)` arrow and table dep: `ironclad-channels/Cargo.toml` depends on `ironclad-db` (used for delivery queue in `delivery.rs`, `router.rs`) but diagram has no arrow and table says channels depends only on `ironclad-core` | `docs/architecture/ironclad-c4-container.md` lines 46, 72 | Open |
+| BUG-013 | audit-c4 | docs | -- | Medium | doc drift | Missing 6 of 9 `ironclad-server` dependency arrows: diagram shows only `server->agent`, `server->pluginSdk`, `server->browser` but Cargo.toml also has `server->db`, `server->llm`, `server->wallet`, `server->schedule`, `server->channels`, `server->core` | `docs/architecture/ironclad-c4-container.md` lines 43-59 | Open |
+| BUG-014 | audit-c4 | docs | -- | Low | doc drift | Spurious `Rel(llm, db)` arrow: `ironclad-llm` does NOT depend on `ironclad-db` in Cargo.toml; label says "indirect via server" but C4 Rel edges imply direct coupling; should be removed or converted to a note | `docs/architecture/ironclad-c4-container.md` line 50 | Open |
+| BUG-015 | audit-c4 | docs | -- | Low | doc drift | No `Rel` arrows to `ironclad-core` from any container despite 8 crates depending on it; diagram should add a note "All containers depend on ironclad-core; arrows omitted for clarity" to acknowledge the omission | `docs/architecture/ironclad-c4-container.md` lines 9-60 | Open |

@@ -9,6 +9,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | File | Diagrams | Structural | Relationship | Behavioral | Naming | Status |
 |------|----------|-----------|-------------|-----------|--------|--------|
 | `ironclad-c4-system-context.md` | 1 (C4Context) | 7 missing nodes, 1 stale node | 2 relationship-label gaps | 0 | 1 vague label | Drifted |
+| `ironclad-c4-container.md` | 1 (C4Container) | 0 | 2 spurious arrows, 1 missing arrow, 1 missing table dep, 8 missing `core` arrows, 6 missing `server` arrows | 0 | 0 | Drifted |
 
 ## Detailed Findings
 
@@ -126,3 +127,145 @@ individual nodes for the most significant ones.
 - The local inference providers (SGLang, vLLM, Docker Model Runner, llama-cpp) are
   arguably peers to Ollama and could share a "Local Inference Runtimes" `System_Ext`
   node rather than individual nodes.
+
+### ironclad-c4-container.md
+
+**Audit scope:** All `Container` nodes, the `Crates (Workspace Members)` table, and
+every `Rel` edge in the Mermaid `C4Container` block (lines 9-60), cross-referenced
+against the actual `Cargo.toml` inter-crate dependencies for all 11 workspace members
+in v0.8.0.
+
+**Method:** Ran `grep 'ironclad-' crates/ironclad-*/Cargo.toml` to extract every
+inter-crate dependency, then compared against both the Mermaid relationship arrows and
+the "Depends On" column in the crate table.
+
+#### Containers confirmed present and accurately described
+
+All 10 production containers are present in the diagram with correct names and
+descriptions. `ironclad-tests` is listed in the table as "Integration tests" and
+correctly omitted from the Mermaid diagram itself.
+
+| Container | Cargo.toml deps | Diagram Table "Depends On" | Table Match? |
+|---|---|---|---|
+| `ironclad-core` | -- | -- | OK |
+| `ironclad-db` | core | core | OK |
+| `ironclad-llm` | core | core | OK |
+| `ironclad-agent` | core, db, llm | core, db, llm | OK |
+| `ironclad-wallet` | core, db | core, db | OK |
+| `ironclad-schedule` | core, db, agent, wallet | core, db, agent, wallet | OK |
+| `ironclad-channels` | **core, db** | **core only** | **MISMATCH** |
+| `ironclad-plugin-sdk` | core | core | OK |
+| `ironclad-browser` | core | core | OK |
+| `ironclad-server` | core, db, llm, agent, wallet, schedule, channels, plugin-sdk, browser | "All of the above (except tests)" | OK (vague) |
+| `ironclad-tests` | core, db, llm, agent, wallet, schedule, channels, server, plugin-sdk, browser | "Multiple crates" | OK (vague) |
+
+#### C-1: Spurious arrow -- `channels -> agent` (no Cargo.toml dependency)
+
+Line 46: `Rel(channels, agent, "In-process")` implies `ironclad-channels` directly
+depends on `ironclad-agent`. **In reality, `ironclad-channels/Cargo.toml` lists only
+`ironclad-core` and `ironclad-db` as dependencies.** The channel-to-agent wiring is
+performed by `ironclad-server`, which depends on both crates and connects them at
+bootstrap. This arrow is structurally wrong -- it shows a direct dependency that does
+not exist in the crate graph.
+
+**Impact:** Medium. This misrepresents the dependency graph and could mislead
+developers about crate layering. A developer might expect to find agent imports in the
+channels crate and fail.
+
+**Recommendation:** Remove `Rel(channels, agent, ...)` from the Mermaid diagram. Add
+`Rel(server, channels, "In-process")` (which is a real dependency). The runtime
+channel-to-agent dispatch should be documented as server-mediated, not as a direct
+dependency.
+
+#### C-2: Spurious arrow -- `llm -> db` (no Cargo.toml dependency)
+
+Line 50: `Rel(llm, db, "Indirect via server: inference_costs recording mediated by
+ironclad-server")` shows an arrow from `ironclad-llm` to `ironclad-db`. **However,
+`ironclad-llm/Cargo.toml` lists only `ironclad-core` as a dependency.** The label
+acknowledges the relationship is "indirect via server", but drawing it as a `Rel` edge
+in a C4 Container diagram implies a direct dependency. C4 Rel edges represent runtime
+communication or compile-time coupling. This is neither -- it is a server-mediated
+side-effect.
+
+**Impact:** Low-Medium. The label is honest about the indirection, but the arrow is
+still misleading in a dependency-graph context.
+
+**Recommendation:** Remove the `Rel(llm, db, ...)` arrow. If the cost-recording
+pathway needs documentation, add it as a note or document it on the `server -> llm`
+and `server -> db` arrows.
+
+#### C-3: Missing dependency -- `channels -> db` (in Cargo.toml, absent from diagram)
+
+`ironclad-channels/Cargo.toml` declares `ironclad-db.workspace = true`.
+`ironclad-channels/src/delivery.rs` and `src/router.rs` import and use
+`ironclad_db::Database` directly. The diagram has NO `Rel(channels, db, ...)` arrow,
+and the crate table lists channels as depending only on `ironclad-core`.
+
+**Impact:** Medium. This is a real compile-time dependency that is completely invisible
+in the diagram. The channels crate uses the DB for its delivery queue system.
+
+**Recommendation:** Add `Rel(channels, db, "In-process: delivery queue")` to the
+Mermaid diagram. Update the table row for `ironclad-channels` to read
+`ironclad-core`, `ironclad-db`.
+
+#### C-4: Missing `ironclad-core` dependency arrows (8 arrows)
+
+Every crate except `ironclad-core` itself depends on `ironclad-core` per Cargo.toml:
+`db`, `llm`, `agent`, `wallet`, `schedule`, `channels`, `plugin-sdk`, `browser`. The
+Mermaid diagram shows **zero** `Rel(*, core, ...)` arrows. While omitting foundational
+dependencies is a common C4 diagram simplification to reduce visual clutter, this
+means the diagram does not accurately represent the dependency graph.
+
+**Impact:** Low. This is a deliberate diagram simplification. The crate table correctly
+lists `ironclad-core` in the "Depends On" column for all crates that use it. However,
+since this diagram is described as defining "the dependency graph that drives our
+inside-out validation strategy," the omission is more significant than in a typical
+overview diagram.
+
+**Recommendation:** Either (a) add a diagram note stating "All containers depend on
+ironclad-core; arrows omitted for clarity" or (b) add the arrows. Option (a) is
+preferred for readability.
+
+#### C-5: Missing `ironclad-server` dependency arrows (6 arrows)
+
+`ironclad-server/Cargo.toml` depends on 9 internal crates: core, db, llm, agent,
+wallet, schedule, channels, plugin-sdk, browser. The diagram shows only 3 arrows from
+server: `server -> agent`, `server -> pluginSdk`, `server -> browser`. Missing arrows:
+
+- `server -> core`
+- `server -> db`
+- `server -> llm`
+- `server -> wallet`
+- `server -> schedule`
+- `server -> channels`
+
+**Impact:** Medium. The server is the integration hub and top-level crate. Missing 6
+of 9 dependency arrows (including the critical `server -> channels` arrow) obscures
+the actual dependency fan-out and makes the diagram unreliable for understanding the
+build graph.
+
+**Recommendation:** Add at minimum `Rel(server, db, ...)`, `Rel(server, llm, ...)`,
+`Rel(server, schedule, ...)`, `Rel(server, wallet, ...)`, and `Rel(server, channels,
+...)`. The `server -> core` arrow can be omitted along with other core arrows per
+the recommendation in C-4.
+
+#### Notes
+
+- **Omitted core arrows are a recognized C4 convention.** Many C4 diagrams omit
+  arrows to foundational/utility containers to reduce clutter. The crate table
+  compensates for this. If the project decides this is acceptable, C-4 can be
+  downgraded to informational. However, the missing `server` arrows (C-5) and the
+  missing `channels -> db` arrow (C-3) are NOT justifiable as simplification -- they
+  represent real, non-obvious dependency paths.
+
+- **The `Rel(channels, agent)` arrow (C-1) is the most significant finding.** It
+  represents a dependency that does not exist and inverts the actual architecture (the
+  server mediates the connection). This could mislead someone attempting to refactor
+  the channels crate or reason about its compile-time surface.
+
+- **The diagram table is mostly accurate.** Only one cell is wrong (channels missing
+  db). The table provides a useful ground truth even where the arrows are incomplete.
+
+- **ironclad-tests** is correctly excluded from the Mermaid diagram but present in the
+  table. Its "Multiple crates" description is vague but acceptable since it depends on
+  10 of 11 workspace members.
