@@ -8,8 +8,8 @@
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
 | High     | 0    | 0           | 0     | 0        |
-| Medium   | 10   | 0           | 0     | 0        |
-| Low      | 5    | 0           | 0     | 0        |
+| Medium   | 13   | 0           | 0     | 0        |
+| Low      | 6    | 0           | 0     | 0        |
 
 ## Entries
 
@@ -30,3 +30,7 @@
 | BUG-013 | audit-c4 | docs | -- | Medium | doc drift | Missing 6 of 9 `ironclad-server` dependency arrows: diagram shows only `server->agent`, `server->pluginSdk`, `server->browser` but Cargo.toml also has `server->db`, `server->llm`, `server->wallet`, `server->schedule`, `server->channels`, `server->core` | `docs/architecture/ironclad-c4-container.md` lines 43-59 | Open |
 | BUG-014 | audit-c4 | docs | -- | Low | doc drift | Spurious `Rel(llm, db)` arrow: `ironclad-llm` does NOT depend on `ironclad-db` in Cargo.toml; label says "indirect via server" but C4 Rel edges imply direct coupling; should be removed or converted to a note | `docs/architecture/ironclad-c4-container.md` line 50 | Open |
 | BUG-015 | audit-c4 | docs | -- | Low | doc drift | No `Rel` arrows to `ironclad-core` from any container despite 8 crates depending on it; diagram should add a note "All containers depend on ironclad-core; arrows omitted for clarity" to acknowledge the omission | `docs/architecture/ironclad-c4-container.md` lines 9-60 | Open |
+| BUG-016 | audit-c4 | ironclad-core | T0 | Medium | doc drift | `input_capability_scan` module (`pub mod input_capability_scan` in lib.rs) has no representation in C4 core component diagram; this security-relevant module provides `InputCapabilityScan` struct and `scan_input_capabilities()` for detecting filesystem/network/env access in tool inputs | `docs/architecture/ironclad-c4-core.md` lines 11-97 | Open |
+| BUG-017 | audit-c4 | ironclad-core | T0 | Low | doc drift | `IroncladError` variant count stated as 13 in diagram but actual code has 14 variants (Keystore variant added post-v0.5.0) | `docs/architecture/ironclad-c4-core.md` line 81 | Open |
+| BUG-018 | audit-c4 | ironclad-core | T0 | Medium | doc drift | `ChannelsConfig` shown with only "telegram, whatsapp" fields but actual struct has 8+ fields including discord, signal, email, voice, trusted_sender_ids, thinking_threshold_seconds, startup_announcements | `docs/architecture/ironclad-c4-core.md` line 29 | Open |
+| BUG-019 | audit-c4 | ironclad-core | T0 | Medium | doc drift | 18+ config structs missing from diagram: config.rs grew from ~15 to 40+ pub structs; missing groups include Context, Approvals, Plugins, Browser, Daemon, MCP, Multimodal, Knowledge, Discovery, Device, Session, Update, TieredInference, TierAdapt, ModelOverride, Workspace | `docs/architecture/ironclad-c4-core.md` lines 21-53 | Open |

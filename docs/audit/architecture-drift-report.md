@@ -10,6 +10,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 |------|----------|-----------|-------------|-----------|--------|--------|
 | `ironclad-c4-system-context.md` | 1 (C4Context) | 7 missing nodes, 1 stale node | 2 relationship-label gaps | 0 | 1 vague label | Drifted |
 | `ironclad-c4-container.md` | 1 (C4Container) | 0 | 2 spurious arrows, 1 missing arrow, 1 missing table dep, 8 missing `core` arrows, 6 missing `server` arrows | 0 | 0 | Drifted |
+| `ironclad-c4-core.md` | 1 (flowchart) | 1 missing module, 18+ missing config structs | 0 | 0 | 2 stale labels (error variant count, ChannelsConfig fields) | Drifted |
 
 ## Detailed Findings
 
@@ -269,3 +270,118 @@ the recommendation in C-4.
 - **ironclad-tests** is correctly excluded from the Mermaid diagram but present in the
   table. Its "Multiple crates" description is vague but acceptable since it depends on
   10 of 11 workspace members.
+
+### ironclad-c4-core.md
+
+**Audit scope:** All nodes in the Mermaid `flowchart TB` block (lines 11-97),
+cross-referenced against v0.8.0 source code in `crates/ironclad-core/src/`.
+
+**Method:** Compared every component and subgraph node declared in the diagram against
+the actual `lib.rs` module declarations, `config.rs` struct definitions, `types.rs`
+enum/struct definitions, and `error.rs` variant list.
+
+#### Modules confirmed present and accurately described
+
+| Diagram Module | Code File | Status |
+|---|---|---|
+| `config.rs` | `config.rs` (57,556 bytes) | OK |
+| `error.rs` | `error.rs` (7,509 bytes) | OK |
+| `types.rs` | `types.rs` (7,057 bytes) | OK |
+| `personality.rs` | `personality.rs` (39,289 bytes) | OK |
+| `style.rs` | `style.rs` (18,496 bytes) | OK |
+| `keystore.rs` | `keystore.rs` (18,198 bytes) | OK |
+
+#### Types confirmed present and accurate
+
+| Diagram Type | Code Evidence | Status |
+|---|---|---|
+| `SurvivalTier` | `types.rs` line 6: 5 variants (High, Normal, LowCompute, Critical, Dead) | OK |
+| `AgentState` | `types.rs` line 31: 5 variants (Setup, Waking, Running, Sleeping, Dead) | OK |
+| `ApiFormat` | `types.rs` line 40: 4 variants (AnthropicMessages, OpenAiCompletions, OpenAiResponses, GoogleGenerativeAi) | OK |
+| `ModelTier` | `types.rs` line 48: T1-T4 | OK |
+| `PolicyDecision` | `types.rs` line 56: Allow, Deny | OK |
+| `RiskLevel` | `types.rs` line 68: Safe, Caution, Dangerous, Forbidden | OK |
+| `InputAuthority` | `types.rs` line 131: Creator, SelfGenerated, Peer, External | OK |
+| `SkillKind` | `types.rs` line 76: Structured, Instruction | OK |
+| `SkillTrigger` | `types.rs` line 82: struct with keywords, tool_names, regex_patterns | OK |
+| `SkillManifest` | `types.rs` line 92 | OK |
+| `InstructionSkill` | `types.rs` line 113 | OK |
+| `ToolChainStep` | `types.rs` line 107 | OK |
+| `ScheduleKind` | `types.rs` line 139: Cron, Every, At | OK |
+
+#### CORE-1: Missing module -- `input_capability_scan`
+
+`lib.rs` line 26 declares `pub mod input_capability_scan;`. This module
+(`input_capability_scan.rs`, 199 lines) provides `InputCapabilityScan` struct and
+`scan_input_capabilities()` function that analyzes JSON tool inputs to detect
+filesystem, network, and environment access requirements. This is a security-relevant
+module used by the policy engine. It has no representation in the diagram -- not as a
+component, not in the module table.
+
+**Impact:** Medium. This is a public module that other crates can use for input
+sandboxing decisions. Its absence from the diagram means the security scanning
+capability of `ironclad-core` is invisible.
+
+#### CORE-2: Stale label -- IroncladError variant count
+
+The diagram (line 81) and the module table state `IroncladError` has "13 variants".
+The actual code (`error.rs`) has **14 variants**: Config, Channel, Database, Llm,
+Network, Policy, Tool, Wallet, Injection, Schedule, A2a, Io, Skill, **Keystore**. The
+`Keystore` variant was added after the diagram was written.
+
+**Impact:** Low. The variant list in the diagram node (line 81) enumerates 13 names
+and omits Keystore. This is a minor label staleness.
+
+#### CORE-3: Stale label -- ChannelsConfig field list
+
+The diagram (line 29) shows `ChannelsConfig` with fields "telegram, whatsapp". The
+actual `ChannelsConfig` struct in `config.rs` (line 1126) has **8 fields**: `telegram`,
+`whatsapp`, `discord`, `signal`, `email`, `voice`, `trusted_sender_ids`,
+`thinking_threshold_seconds`, plus `startup_announcements`. This significantly
+understates the channel configuration surface.
+
+**Impact:** Medium. The diagram gives the impression that only Telegram and WhatsApp
+are configured here, when in fact Discord, Signal, Email, and Voice are all first-class
+channel configs.
+
+#### CORE-4: Missing config structs (18+ structs absent from diagram)
+
+The diagram's `ConfigDetail` subgraph shows 13 config structs organized into 4
+groups (Infrastructure, AI Pipeline, Financial, Extensions). The actual `config.rs`
+contains **40+ pub structs**. The following significant structs are absent from the
+diagram:
+
+**Infrastructure:** `ContextConfig`, `ApprovalsConfig`, `PluginsConfig`,
+`BrowserConfig`, `DaemonConfig`, `UpdateConfig`, `PersonalityConfig`, `SessionConfig`,
+`McpConfig`, `McpClientConfig`, `DiscoveryConfig`, `DeviceConfig`, `WorkspaceConfig`
+
+**AI Pipeline:** `TieredInferenceConfig`, `TierAdaptConfig`, `ModelOverride`,
+`MultimodalConfig`, `KnowledgeConfig`, `KnowledgeSourceEntry`, `DigestConfig`
+
+**Channel-specific:** `DiscordConfig`, `SignalConfig`, `EmailConfig`,
+`VoiceChannelConfig`, `TelegramConfig`, `WhatsAppConfig` (last two are present
+indirectly but not as nodes)
+
+**Impact:** Medium. The config.rs file has grown from ~15 structs to 40+. The diagram
+captures fewer than a third of the actual configuration surface. New subsystems
+(browser automation, MCP integration, plugins, approvals, context management, daemon
+mode, auto-update, multimodal, knowledge/digest) all have configuration structs that
+are invisible in the diagram.
+
+**Recommendation:** Either (a) add the missing config groups (at minimum: Context,
+Approvals, Plugins, Browser, Daemon, MCP, Multimodal, Knowledge) as subgraph nodes, or
+(b) add a note acknowledging the diagram shows a subset and pointing readers to the
+source for the full configuration schema.
+
+#### Notes
+
+- The **ApiFormat "4 variants"** label is currently correct. The `OpenAiResponses`
+  variant was likely added post-v0.5.0 but the count was already stated as 4 in the
+  diagram, so this happens to be accurate.
+- The `bundled_providers.toml` file exists in the `ironclad-core/src/` directory but
+  is not a Rust module -- it is an embedded data file. The diagram does not mention it,
+  which is acceptable since it is consumed by `config.rs` at compile time.
+- The `personality.rs` module has grown substantially (39,289 bytes) but its documented
+  responsibilities (load OS/soul/firmware, compose identity text) remain accurate.
+- The `style.rs` module has also grown (18,496 bytes) but its documented
+  responsibilities remain accurate.
