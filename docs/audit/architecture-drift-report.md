@@ -18,6 +18,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-channels.md` | 2 (flowchart + sequence) | 0 | 0 | 0 | 1 stale dep list, 1 stale struct field names | Drifted |
 | `ironclad-c4-schedule.md` | 2 (flowchart + sequence) | 0 | 0 | 1 (agentTurn is legacy noop) | 1 stale enum variant count | Minor drift |
 | `ironclad-c4-server.md` | 1 (flowchart) | 5 missing modules from diagram (present in table) | 0 | 0 | 0 | Drifted |
+| `ironclad-c4-browser.md` | 1 (flowchart) | 0 | 0 | 0 | 0 | Accurate |
 
 ## Detailed Findings
 
@@ -832,3 +833,42 @@ documented in the table.
 - Dependencies are correctly listed: "All workspace crates".
 - The diagram is better understood as a high-level architecture overview rather than a
   complete module inventory. The table sections provide the detail that the diagram lacks.
+
+### ironclad-c4-browser.md
+
+**Audit scope:** All nodes in the Mermaid `flowchart TB` block (lines 10-68), the Types
+table, the Browser Automation Capabilities table, and the Dependencies section,
+cross-referenced against v0.8.0 source code in `crates/ironclad-browser/src/`.
+
+**Method:** Compared every component node and detail subgraph against `lib.rs` `pub mod`
+declarations, struct definitions, and the `BrowserAction` enum in `actions.rs`.
+
+#### Result: Fully accurate
+
+All 4 `pub mod` modules in `lib.rs` have corresponding component nodes. The `Browser`
+facade struct and `BrowserConfig` re-export are also correctly represented. The
+`BrowserAction` enum has exactly 12 variants matching the diagram and the Capabilities
+table.
+
+| Code Module/Type | Diagram Node | Status |
+|---|---|---|
+| `pub mod actions` | `ACTIONS` | OK |
+| `pub mod cdp` | `CDP_CLIENT` | OK |
+| `pub mod manager` | `MANAGER` | OK |
+| `pub mod session` | `SESSION` | OK |
+| `pub struct Browser` | `BROWSER` | OK |
+| `BrowserConfig` (re-export) | `CONFIG` | OK |
+| 12 `BrowserAction` variants | `ActionsDetail` subgraph | OK |
+| `PageInfo`, `ScreenshotResult`, `PageContent` | Types table | OK |
+| `ActionResult`, `ActionExecutor` | Types table | OK |
+| `SharedBrowser` (Arc alias) | Not shown | Minor (alias) |
+
+#### Notes
+
+- This diagram is **fully accurate**. No bugs filed.
+- Dependencies correctly list ironclad-core only (confirmed by Cargo.toml).
+- The `SharedBrowser` type alias (`Arc<Browser>`) defined in `lib.rs` is not shown, but
+  this is a trivial alias, not a separate component.
+- The detail subgraphs for Browser, BrowserManager, CdpSession, and BrowserAction
+  accurately describe the public API surface.
+- The Capabilities table correctly maps each action to its CDP method.
