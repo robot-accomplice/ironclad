@@ -74,7 +74,7 @@ impl EmailAdapter {
 
     /// Parse a raw email into an InboundMessage.
     ///
-    /// Body content exceeding [`MAX_EMAIL_BODY_BYTES`] (1 MB) is truncated to
+    /// Body content exceeding `MAX_EMAIL_BODY_BYTES` (1 MB) is truncated to
     /// prevent excessive memory use from oversized messages.
     pub fn parse_email(
         from: &str,

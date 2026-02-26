@@ -45,7 +45,7 @@ use serde_json::Value;
 /// Maximum allowed length for the `platform` field on [`InboundMessage`].
 const MAX_PLATFORM_LEN: usize = 64;
 
-/// Strip control characters and truncate to [`MAX_PLATFORM_LEN`] bytes.
+/// Strip control characters and truncate to `MAX_PLATFORM_LEN` bytes.
 /// Callers constructing an [`InboundMessage`] should pass the platform name
 /// through this function to ensure it contains only printable characters and
 /// stays within a reasonable length.

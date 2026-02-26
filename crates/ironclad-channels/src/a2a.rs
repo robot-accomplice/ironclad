@@ -18,7 +18,7 @@ pub struct A2aSession {
     pub peer_did: String,
     /// ECDH-derived session key for AES-256-GCM; set after key agreement.
     ///
-    /// **Callers MUST check `session_key.is_some()` (or use [`is_established`])
+    /// **Callers MUST check `session_key.is_some()` (or use `is_established`)
     /// before calling `encrypt_message` / `decrypt_message`.**  Passing a
     /// zero-initialised key silently produces insecure ciphertext.
     pub session_key: Option<[u8; 32]>,
