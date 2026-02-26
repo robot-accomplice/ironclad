@@ -3989,12 +3989,12 @@ pub async fn process_channel_message(
         &memories,
         &history,
     );
-    let runtime_diag = collect_runtime_diagnostics(state).await;
-    messages.push(ironclad_llm::format::UnifiedMessage {
-        role: "system".into(),
-        content: diagnostics_system_note(&runtime_diag),
-        parts: None,
-    });
+    // NOTE: Runtime diagnostics are intentionally NOT injected into channel
+    // context. Exposing operational metrics (subagent counts, breaker states,
+    // cache stats) causes the LLM to regurgitate internal state as
+    // conversational content. Post-hoc guards (enforce_subagent_claim_guard,
+    // enforce_non_repetition) handle policy enforcement without leaking data
+    // into the prompt.
     let gate_system_note = match &gate_decision {
         DecompositionDecision::Centralized {
             rationale,
