@@ -32,8 +32,12 @@ path = "${TMP_DIR}/state.db"
 primary = "ollama/qwen3:8b"
 EOF
 
+echo "Building ironclad binary for UAT..."
+cargo build --bin ironclad --locked 2>&1
+IRONCLAD_BIN="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | jq -r '.target_directory')/debug/ironclad"
+
 echo "Starting local server for UAT: ${BASE_URL}"
-cargo run --bin ironclad -- serve -c "$CONFIG_FILE" >"$SERVER_LOG" 2>&1 &
+"$IRONCLAD_BIN" serve -c "$CONFIG_FILE" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
 if command -v ghola >/dev/null 2>&1; then
