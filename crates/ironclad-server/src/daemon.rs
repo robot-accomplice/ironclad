@@ -66,14 +66,20 @@ WantedBy=default.target
     )
 }
 
-pub fn plist_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+fn plist_path_for(home: &str) -> PathBuf {
     PathBuf::from(home).join("Library/LaunchAgents/com.ironclad.agent.plist")
 }
 
-pub fn systemd_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+pub fn plist_path() -> PathBuf {
+    plist_path_for(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+}
+
+fn systemd_path_for(home: &str) -> PathBuf {
     PathBuf::from(home).join(".config/systemd/user/ironclad.service")
+}
+
+pub fn systemd_path() -> PathBuf {
+    systemd_path_for(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
 }
 
 fn windows_service_marker_path() -> PathBuf {
@@ -194,11 +200,11 @@ fn cleanup_legacy_windows_service() {
     let _ = run_cmd("sc.exe", &["delete", WINDOWS_DAEMON_NAME]);
 }
 
-pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result<PathBuf> {
+fn install_daemon_to(binary_path: &str, config_path: &str, port: u16, home: &str) -> Result<PathBuf> {
     let os = std::env::consts::OS;
     let (content, path) = match os {
-        "macos" => (launchd_plist(binary_path, config_path, port), plist_path()),
-        "linux" => (systemd_unit(binary_path, config_path, port), systemd_path()),
+        "macos" => (launchd_plist(binary_path, config_path, port), plist_path_for(home)),
+        "linux" => (systemd_unit(binary_path, config_path, port), systemd_path_for(home)),
         "windows" => {
             cleanup_legacy_windows_service();
             let marker = windows_service_marker_path();
@@ -224,6 +230,13 @@ pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result
 
     std::fs::write(&path, &content)?;
     Ok(path)
+}
+
+pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result<PathBuf> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/tmp".into());
+    install_daemon_to(binary_path, config_path, port, &home)
 }
 
 pub fn start_daemon() -> Result<()> {
@@ -664,12 +677,13 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_str().unwrap();
         let bin = dir.path().join("ironclad");
         std::fs::write(&bin, "").unwrap();
         let cfg = dir.path().join("ironclad.toml");
         std::fs::write(&cfg, "").unwrap();
 
-        let result = install_daemon(bin.to_str().unwrap(), cfg.to_str().unwrap(), 18789);
+        let result = install_daemon_to(bin.to_str().unwrap(), cfg.to_str().unwrap(), 18789, home);
         assert!(result.is_ok());
         let path = result.unwrap();
         assert!(path.exists());
