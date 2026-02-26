@@ -2039,7 +2039,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path_var = std::ffi::OsString::from(dir.path().to_str().unwrap());
         assert!(path_contains_dir_in(dir.path(), &path_var));
-        assert!(!path_contains_dir_in(Path::new("/definitely/not/here"), &path_var));
+        assert!(!path_contains_dir_in(
+            Path::new("/definitely/not/here"),
+            &path_var
+        ));
 
         let gopath = tempfile::tempdir().unwrap();
         let bin_dir = gopath.path().join("bin");
@@ -2049,7 +2052,10 @@ mod tests {
         #[cfg(not(windows))]
         let gosh = bin_dir.join("gosh");
         std::fs::write(&gosh, "stub").unwrap();
-        assert_eq!(find_gosh_in_go_bins_with(gopath.path().to_str()), Some(gosh));
+        assert_eq!(
+            find_gosh_in_go_bins_with(gopath.path().to_str()),
+            Some(gosh)
+        );
     }
 
     #[test]

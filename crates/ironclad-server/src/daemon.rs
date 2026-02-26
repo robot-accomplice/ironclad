@@ -200,11 +200,22 @@ fn cleanup_legacy_windows_service() {
     let _ = run_cmd("sc.exe", &["delete", WINDOWS_DAEMON_NAME]);
 }
 
-fn install_daemon_to(binary_path: &str, config_path: &str, port: u16, home: &str) -> Result<PathBuf> {
+fn install_daemon_to(
+    binary_path: &str,
+    config_path: &str,
+    port: u16,
+    home: &str,
+) -> Result<PathBuf> {
     let os = std::env::consts::OS;
     let (content, path) = match os {
-        "macos" => (launchd_plist(binary_path, config_path, port), plist_path_for(home)),
-        "linux" => (systemd_unit(binary_path, config_path, port), systemd_path_for(home)),
+        "macos" => (
+            launchd_plist(binary_path, config_path, port),
+            plist_path_for(home),
+        ),
+        "linux" => (
+            systemd_unit(binary_path, config_path, port),
+            systemd_path_for(home),
+        ),
         "windows" => {
             cleanup_legacy_windows_service();
             let marker = windows_service_marker_path();

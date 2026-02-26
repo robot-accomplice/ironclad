@@ -564,3 +564,37 @@ install-gosh: check-go
             echo "✔ gosh built. Ensure \$GOPATH/bin (or \$HOME/go/bin) is in your PATH."
         fi
     fi
+
+# ── Stabilization Discovery ────────────────────────────
+
+# Run cargo-deny checks (licenses, bans, advisories)
+deny:
+    cargo deny check
+
+# Run semver compatibility check against previous release
+semver-check:
+    cargo semver-checks check-release --baseline-rev v0.7.1
+
+# Run mutation testing for a specific crate
+mutants crate:
+    cargo mutants -p ironclad-{{crate}} --timeout 60
+
+# Run mutation testing workspace-wide (slow — use per-crate for iteration)
+mutants-all:
+    cargo mutants --workspace --timeout 60
+
+# Run expanded fuzz targets (requires nightly)
+fuzz-all seconds="300":
+    bash scripts/run-expanded-fuzz.sh {{seconds}}
+
+# Per-crate coverage with missing lines shown
+coverage-gaps crate:
+    cargo llvm-cov -p ironclad-{{crate}} --show-missing-lines
+
+# Run CLI/web parity tests
+test-parity:
+    cargo test -p ironclad-tests parity::
+
+# Run cross-platform regression battery
+test-platform:
+    cargo test --workspace -- --include-ignored platform_
