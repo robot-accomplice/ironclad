@@ -1,4 +1,4 @@
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 # C4 Level 3: Component Diagram -- ironclad-db
 
 *Database layer providing typed CRUD operations over a single unified SQLite database (rusqlite). All tables, indexes, FTS5 virtual table `memory_fts`, and triggers are defined in `schema.rs`; migrations run from `migrations/` in version order.*
@@ -26,6 +26,10 @@ flowchart TB
         CHECKPOINT["checkpoint.rs<br/>Session Checkpoint +<br/>Restore"]
         BACKEND["backend.rs<br/>Storage Backend<br/>Abstraction"]
         AGENTS["agents.rs<br/>Sub-Agent Registry +<br/>Enabled Agent CRUD"]
+        DELIVERY_Q["delivery_queue.rs<br/>Outbound Channel<br/>Delivery State"]
+        EFFICIENCY_MOD["efficiency.rs<br/>Efficiency Metrics<br/>Tracking + Computation"]
+        APPROVALS_MOD["approvals.rs<br/>Gated Tool Approval<br/>Request CRUD"]
+        MODEL_SEL["model_selection.rs<br/>Model Selection<br/>Metrics + History"]
     end
 
     subgraph SchemaDetail ["schema.rs internals"]
@@ -155,4 +159,4 @@ flowchart TB
 
 **Internal crates**: `ironclad-core` (types, config, errors)
 
-**Depended on by**: `ironclad-agent`, `ironclad-schedule`, `ironclad-wallet`, `ironclad-server`
+**Depended on by**: `ironclad-agent`, `ironclad-schedule`, `ironclad-wallet`, `ironclad-channels`, `ironclad-server`, `ironclad-tests`

@@ -1,4 +1,4 @@
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 # Ironclad: Architecture Design Document
 

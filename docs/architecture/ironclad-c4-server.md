@@ -1,4 +1,4 @@
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 # C4 Level 3: Component Diagram -- ironclad-server
 
 *Top-level binary crate that wires all other crates together: HTTP server (axum), REST API, embedded dashboard, WebSocket push, and application bootstrap.*
@@ -15,6 +15,12 @@ flowchart TB
         DASHBOARD["dashboard.rs<br/>Dashboard Serving"]
         WS["ws.rs<br/>WebSocket Push"]
         CLI["cli/<br/>CLI Commands"]
+        AUTH["auth.rs<br/>API Key Middleware"]
+        CONFIG_RT["config_runtime.rs<br/>Runtime Config Reload"]
+        DAEMON["daemon.rs<br/>Daemon Install/Status"]
+        MIGRATE["migrate/<br/>Migration + Skill Import/Export"]
+        PLUGINS_SRV["plugins.rs<br/>Plugin Loading"]
+        RATE_LIMIT["rate_limit.rs<br/>Global + Per-IP Rate Limiting"]
     end
 
     subgraph MainDetail ["main.rs - Bootstrap Sequence"]

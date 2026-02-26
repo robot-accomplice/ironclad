@@ -45,8 +45,8 @@ flowchart TD
   C5 --> C6
   C6 --> C1
 
-  A2 --> E1["single model/provider resolution"]
-  E1 --> E2["stream_to_provider()"]
+  A2 --> B1
+  Note right of A2: v0.8.0: streaming now uses same<br/>fallback_candidates() loop with breaker checks
 
   D1 --> F1["CircuitBreakerRegistry::list_providers()"]
   D2 --> F2["CircuitBreakerRegistry::reset(provider)"]
@@ -106,7 +106,26 @@ sequenceDiagram
   B-->>S: Closed
 ```
 
-### 3) Bounded Fallback Policy (Only Configured Candidates)
+### 3) Preemptive Half-Open via Capacity Pressure
+
+```mermaid
+sequenceDiagram
+  participant Cap as CapacityTracker
+  participant B as BreakerRegistry
+  participant S as infer_with_fallback()
+  participant P as Provider
+
+  Note over Cap: Provider approaching capacity limits
+  Cap->>B: set_capacity_pressure(provider, true)
+  Note over B: preemptive_half_open = true<br/>(Closed -> effective HalfOpen)
+  S->>B: is_blocked(provider)?
+  B-->>S: false (still allows requests)
+  Note over B: But capacity-aware routing<br/>may prefer other providers
+  Cap->>B: set_capacity_pressure(provider, false)
+  Note over B: preemptive_half_open = false<br/>(back to normal Closed)
+```
+
+### 4) Bounded Fallback Policy (Only Configured Candidates)
 
 ```mermaid
 sequenceDiagram
@@ -150,9 +169,8 @@ sequenceDiagram
    - Server route is `/api/breaker/reset/{provider}`.
    - Result: `ironclad circuit reset` can return non-success and not actually reset breakers.
 
-2. **Streaming path bypasses fallback loop**
-   - `agent_message_stream()` performs single-provider stream call and does not run `infer_with_fallback()` chain.
-   - Intended behavior is to remain within bounded fallback policy for all chat surfaces.
+2. **~~Streaming path bypasses fallback loop~~ (RESOLVED in v0.8.0)**
+   - `agent_message_stream()` now uses `fallback_candidates()` loop with breaker checks, matching non-stream inference path.
 
 3. **Interview path bypasses routing/fallback/breaker accounting**
    - `interview_turn` uses direct provider call from `models.primary`.

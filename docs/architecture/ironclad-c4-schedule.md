@@ -32,21 +32,15 @@ flowchart TB
 
     subgraph TasksDetail ["tasks.rs"]
         direction LR
-        TASK_ENUM["HeartbeatTask enum:<br/>SurvivalCheck, UsdcMonitor,<br/>YieldTask, MemoryPrune,<br/>CacheEvict, MetricSnapshot,<br/>AgentCardRefresh"]
+        TASK_ENUM["HeartbeatTask enum (8 variants):<br/>SurvivalCheck, UsdcMonitor,<br/>YieldTask, MemoryPrune,<br/>CacheEvict, MetricSnapshot,<br/>AgentCardRefresh, SessionGovernor"]
     end
 
     subgraph Execution ["Job Execution"]
         PAYLOAD_KIND{"payload_json.kind?"}
-        AGENT_TURN["agentTurn → inject message"]
+        AGENT_TURN["agentTurn → DEPRECATED<br/>(noop with warning log;<br/>agent_turn_legacy)"]
         SYS_EVENT["systemEvent → handler"]
-        SESSION_SELECT{"session_target?"}
-        MAIN_SESSION["main session"]
-        ISO_SESSION["isolated session"]
         PAYLOAD_KIND --> AGENT_TURN
         PAYLOAD_KIND --> SYS_EVENT
-        AGENT_TURN --> SESSION_SELECT
-        SESSION_SELECT --> MAIN_SESSION
-        SESSION_SELECT --> ISO_SESSION
     end
 
     subgraph PostExec ["Post-Execution"]
