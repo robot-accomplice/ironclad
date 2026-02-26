@@ -747,6 +747,9 @@ pub struct CircuitBreakerConfig {
     pub window_seconds: u64,
     #[serde(default = "default_cb_cooldown")]
     pub cooldown_seconds: u64,
+    /// DEPRECATED (v0.8.0): This field is never read by `circuit.rs`.
+    /// Credit-tripped breakers use `credit_tripped` bool to prevent auto-recovery
+    /// entirely, making a separate cooldown moot.  Kept for TOML backwards compat.
     #[serde(default = "default_cb_credit_cooldown")]
     pub credit_cooldown_seconds: u64,
     #[serde(default = "default_cb_max_cooldown")]
