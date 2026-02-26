@@ -65,7 +65,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install just
-        run: cargo install just --locked
+        run: cargo install just --locked && sudo apt-get update -qq && sudo apt-get install -yqq ripgrep
       - name: Run focused regression battery
         run: just test-regression
 
@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install just
-        run: cargo install just --locked
+        run: cargo install just --locked && sudo apt-get update -qq && sudo apt-get install -yqq ripgrep
       - name: Release-critical battery
         run: just test-release-critical
       - name: Provenance generator self-test
@@ -92,6 +92,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -yqq ripgrep
       - name: Run UAT stack
         run: bash scripts/run-uat-stack.sh
 
@@ -106,7 +108,7 @@ jobs:
       - name: Install nightly toolchain for fuzzing
         run: rustup toolchain install nightly --profile minimal
       - name: Install just and cargo-fuzz
-        run: cargo install just cargo-fuzz --locked
+        run: cargo install just cargo-fuzz --locked && sudo apt-get update -qq && sudo apt-get install -yqq ripgrep
       - name: Run soak/fuzz battery
         env:
           SOAK_ROUNDS: "4"
@@ -122,7 +124,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install just
-        run: cargo install just --locked
+        run: cargo install just --locked && sudo apt-get update -qq && sudo apt-get install -yqq ripgrep
       - name: Run release doc gate
         env:
           RELEASE_TARGET_VERSION: ${{ needs.preflight.outputs.version }}
