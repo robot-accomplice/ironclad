@@ -412,6 +412,7 @@ On first boot, `initialize_db()` populates the hippocampus with all system table
 **Model efficacy assessment workstream (planning-only)**:
 
 Reference template: `docs/MODEL_RUNNER_EVAL_TEMPLATE.md` (v1).
+Scoring contract reference: `docs/evals/METASCORE_V1_SPEC.md` (spec-only).
 
 - Define a canonical task taxonomy and eval sets per class: coding, summarization, extraction, planning, tool-use, classification, translation, and safety/refusal behavior.
 - Establish scorecards per task class with explicit metrics (accuracy/pass@k, factuality/hallucination rate, schema adherence, latency-to-quality curve, and retry sensitivity).
@@ -696,6 +697,20 @@ Competitive learnings captured as **robot subroutines** for roadmap shaping. The
 - Feed traits into metascore orchestration so model selection can favor this dock for privacy/locality-constrained tasks while penalizing latency-sensitive paths.
 - Add dashboard explainability reasons and simulation toggles ("why selected AirLLM dock" + side-by-side route outcomes against SGLang/vLLM).
 - Define safety rails: max-context guards, disk-space preflight checks, and operator warnings for interactive session expectations.
+
+### Subroutine O — Agentic Loop Stability Pilot (`Qwen3.5-35B-A3B`)
+
+**Signal**: local agents become far more usable when tool-calling and loop stability are reliable at low active-parameter budgets.
+
+**Plan fit**: direct accelerator for `2.19 Model metascore routing profiles` by adding a strong local candidate for `tool_use` and multi-step orchestration tasks.
+
+**Scope draft**:
+
+- Add `qwen3.5-35b-a3b` as a priority benchmark candidate across local runners (SGLang-first, with vLLM/Ollama where compatible).
+- Expand task-efficacy slices for agent loops: tool schema adherence, retry/recovery behavior, loop completion rate, and long-horizon drift rate.
+- Capture and surface loop-stability deltas in explainability panels ("selected due to higher loop stability/tool success on this task class").
+- Add simulation scenarios that compare this profile against existing local/cloud choices under privacy-first and latency-first policy presets.
+- Define readiness gates for promotion into default local-routing recommendations (minimum tool success + loop completion thresholds).
 
 ### Mission-Kernel Freeze Guard
 

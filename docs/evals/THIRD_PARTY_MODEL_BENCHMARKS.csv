@@ -6,3 +6,4 @@ artificialanalysis,2026-02-25,llama-3-3-instruct-70b,2024-12,14,82.7,,0.64,0.58,
 artificialanalysis,2026-02-25,mistral-large-3,2025-12,23,51.3,590,0.75,0.50,1.50,,"mistral provider values"
 artificialanalysis,2026-02-25,llama-3-1-instruct-70b,2024-07,12,48.7,,0.56,0.56,0.56,128000,"model-page median across providers"
 artificialanalysis,2026-02-25,qwen2.5-32b-instruct,2024-09,13,,,,,,,"intelligence index available; provider performance unavailable"
+planned_candidate,TBD,qwen3.5-35b-a3b,TBD,,,,,,,,"priority local agentic-loop benchmark candidate; pending reliable third-party benchmark snapshot"

@@ -10,6 +10,7 @@ This folder is the **v1 baseline matrix** for evaluating local and cloud model r
 - `CLOUD_BENCHMARK_SOURCES.md`: provenance for cloud baseline performance/cost values.
 - `THIRD_PARTY_MODEL_BENCHMARKS.csv`: prefilled third-party model benchmarks (partial rows allowed).
 - `CLOUD_BASELINE_REFRESH_SPEC.md`: monthly auto-refresh behavior and runbook.
+- `METASCORE_V1_SPEC.md`: deterministic scorer contract + explainability/simulation payload shape.
 
 ## Included Runner Families
 
