@@ -397,4 +397,64 @@ mod tests {
             "2025-01-01T00:01:00+00:00"
         ));
     }
+
+    // ── property-based tests (v0.8.0 stabilization) ────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn proptest_calculate_next_run_is_after_now(interval_ms in 1000i64..86_400_000) {
+            let now = "2025-06-15T12:00:00+00:00";
+            if let Some(next) = DurableScheduler::calculate_next_run(
+                "interval",
+                None,
+                Some(interval_ms),
+                now,
+            ) {
+                prop_assert!(next > now.to_string(), "next_run must be after now");
+            }
+        }
+
+        #[test]
+        fn proptest_evaluate_interval_elapsed_returns_true(interval_ms in 1000i64..3_600_000) {
+            // last_run = 36 hours ago, so any interval <= 36h should be elapsed
+            let now = "2025-06-15T12:00:00+00:00";
+            let last_run = "2025-06-14T00:00:00+00:00";
+            let result = DurableScheduler::evaluate_interval(Some(last_run), interval_ms, now);
+            prop_assert!(result, "interval {}ms should have elapsed since 36h ago", interval_ms);
+        }
+
+        #[test]
+        fn proptest_evaluate_interval_not_elapsed_returns_false(interval_ms in 120_000i64..86_400_000) {
+            // last_run = 1 second ago, so any interval >= 2 minutes should NOT be elapsed
+            let now = "2025-06-15T12:00:01+00:00";
+            let last_run = "2025-06-15T12:00:00+00:00";
+            let result = DurableScheduler::evaluate_interval(Some(last_run), interval_ms, now);
+            prop_assert!(!result, "interval {}ms should not have elapsed after 1 second", interval_ms);
+        }
+
+        #[test]
+        fn proptest_calculate_next_run_is_valid_rfc3339(interval_ms in 1000i64..86_400_000) {
+            let now = "2025-06-15T12:00:00+00:00";
+            if let Some(next) = DurableScheduler::calculate_next_run(
+                "interval",
+                None,
+                Some(interval_ms),
+                now,
+            ) {
+                let parsed = chrono::DateTime::parse_from_rfc3339(&next);
+                prop_assert!(parsed.is_ok(), "next_run '{}' must be valid RFC3339", next);
+            }
+        }
+
+        #[test]
+        fn proptest_evaluate_cron_no_last_run_matches_now(minute in 0u32..60) {
+            // Build a cron expression that matches "now" at any given minute
+            let now = format!("2025-06-15T12:{:02}:00+00:00", minute);
+            let cron_expr = format!("{} 12 * * *", minute);
+            let result = DurableScheduler::evaluate_cron(&cron_expr, None, &now);
+            prop_assert!(result, "cron '{}' should match now '{}'", cron_expr, now);
+        }
+    }
 }

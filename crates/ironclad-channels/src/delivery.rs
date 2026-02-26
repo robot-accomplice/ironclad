@@ -486,4 +486,42 @@ mod tests {
         assert_eq!(item.content, "persist");
         recovered.mark_success(&item.id).await;
     }
+
+    // ── property-based tests (v0.8.0 stabilization) ────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn proptest_backoff_delay_is_monotonic(a in 0u32..10, b in 0u32..10) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            prop_assert!(
+                DeliveryItem::backoff_delay(hi) >= DeliveryItem::backoff_delay(lo),
+                "backoff_delay({}) < backoff_delay({})", hi, lo
+            );
+        }
+
+        #[test]
+        fn proptest_backoff_delay_zero_is_zero(_seed in 0u32..100) {
+            let delay = DeliveryItem::backoff_delay(0);
+            prop_assert_eq!(delay, Duration::seconds(0),
+                "backoff_delay(0) should always be zero");
+        }
+
+        #[test]
+        fn proptest_is_permanent_error_false_for_empty(_seed in 0u32..100) {
+            prop_assert!(!DeliveryItem::is_permanent_error(""),
+                "empty string should not be a permanent error");
+        }
+
+        #[test]
+        fn proptest_is_permanent_error_false_for_transient(
+            error in "(timeout|network error|rate limited|connection reset|500 Internal Server Error|502 Bad Gateway|503 Service Unavailable)"
+        ) {
+            prop_assert!(
+                !DeliveryItem::is_permanent_error(&error),
+                "transient error {:?} should not be permanent", error
+            );
+        }
+    }
 }

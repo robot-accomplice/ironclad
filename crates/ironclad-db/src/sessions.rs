@@ -1422,4 +1422,51 @@ mod tests {
         let all = list_session_feedback(&db, &sid).unwrap();
         assert_eq!(all.len(), 1, "upsert should not create duplicate rows");
     }
+
+    // ── property-based tests (v0.8.0 stabilization) ────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn proptest_derive_nickname_never_empty(input in "\\PC{1,200}") {
+            let result = derive_nickname(&input);
+            prop_assert!(!result.is_empty(), "nickname should never be empty for input: {:?}", input);
+        }
+
+        #[test]
+        fn proptest_derive_nickname_bounded_length(input in "\\PC{1,500}") {
+            let result = derive_nickname(&input);
+            // Max is 50 chars + 3 for "..." = 53, but multibyte chars can push it slightly.
+            // The function uses char_boundary(50) + possible "..." so 60 is a safe upper bound.
+            prop_assert!(result.len() <= 60, "nickname too long: {} chars for input: {:?}", result.len(), input);
+        }
+
+        #[test]
+        fn proptest_derive_nickname_first_char_uppercase(input in "[a-z][a-zA-Z ]{0,100}") {
+            let result = derive_nickname(&input);
+            if result != "Untitled" {
+                let first_char = result.chars().next().unwrap();
+                if first_char.is_alphabetic() {
+                    prop_assert!(first_char.is_uppercase(),
+                        "first char '{}' should be uppercase in result: {:?}", first_char, result);
+                }
+            }
+        }
+
+        #[test]
+        fn proptest_derive_nickname_strips_greeting_prefix(
+            greeting in prop::sample::select(vec!["hey ", "hi ", "hello ", "yo "]),
+            rest in "[a-zA-Z]{3,30}"
+        ) {
+            let input = format!("{}{}", greeting, rest);
+            let result = derive_nickname(&input);
+            let greeting_trimmed = greeting.trim();
+            // The result should not start with the greeting prefix (case-insensitive)
+            prop_assert!(
+                !result.to_lowercase().starts_with(greeting_trimmed),
+                "result {:?} should not start with greeting {:?}", result, greeting_trimmed
+            );
+        }
+    }
 }
