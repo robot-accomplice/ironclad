@@ -12,6 +12,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-container.md` | 1 (C4Container) | 0 | 2 spurious arrows, 1 missing arrow, 1 missing table dep, 8 missing `core` arrows, 6 missing `server` arrows | 0 | 0 | Drifted |
 | `ironclad-c4-core.md` | 1 (flowchart) | 1 missing module, 18+ missing config structs | 0 | 0 | 2 stale labels (error variant count, ChannelsConfig fields) | Drifted |
 | `ironclad-c4-db.md` | 1 (flowchart) | 3 missing modules | 0 | 0 | 1 stale "Depended on by" list | Drifted |
+| `ironclad-c4-llm.md` | 1 (flowchart) | 1 phantom module (transform.rs not in pub mod), 1 missing top-level struct (LlmService) | 0 | 0 | 0 | Minor drift |
 
 ## Detailed Findings
 
@@ -477,3 +478,70 @@ BUG-012) but is independently wrong in this diagram's Dependencies section.
   high-level summary.
 - The `efficiency.rs` module at 25,454 bytes is the second-largest and completely
   absent from the diagram, making it the most significant omission.
+
+### ironclad-c4-llm.md
+
+**Audit scope:** All nodes in the Mermaid `flowchart TB` block (lines 11-143),
+the Request Pipeline section, and the Dependencies section, cross-referenced against
+v0.8.0 source code in `crates/ironclad-llm/src/`.
+
+**Method:** Compared every component node in the diagram against the actual `lib.rs`
+`pub mod` declarations and source files.
+
+#### Modules confirmed present and accurately described
+
+All 17 diagram component nodes map to actual source files:
+
+| Diagram Module | Code File | `pub mod`? | Status |
+|---|---|---|---|
+| `cache.rs` | `cache.rs` (22,557 bytes) | Yes | OK |
+| `router.rs` | `router.rs` (30,209 bytes) | Yes | OK |
+| `circuit.rs` | `circuit.rs` (11,655 bytes) | Yes | OK |
+| `dedup.rs` | `dedup.rs` (3,738 bytes) | Yes | OK |
+| `format.rs` | `format.rs` (29,240 bytes) | Yes | OK |
+| `tier.rs` | `tier.rs` (8,262 bytes) | Yes | OK |
+| `client.rs` | `client.rs` (8,355 bytes) | Yes | OK |
+| `provider.rs` | `provider.rs` (10,320 bytes) | Yes | OK |
+| `embedding.rs` | `embedding.rs` (23,656 bytes) | Yes | OK |
+| `uniroute.rs` | `uniroute.rs` (8,681 bytes) | Yes | OK |
+| `tiered.rs` | `tiered.rs` (8,426 bytes) | Yes | OK |
+| `ml_router.rs` | `ml_router.rs` (10,355 bytes) | Yes | OK |
+| `cascade.rs` | `cascade.rs` (6,912 bytes) | Yes | OK |
+| `capacity.rs` | `capacity.rs` (8,518 bytes) | Yes | OK |
+| `accuracy.rs` | `accuracy.rs` (9,713 bytes) | Yes | OK |
+| `compression.rs` | `compression.rs` (8,809 bytes) | Yes | OK |
+| `oauth.rs` | `oauth.rs` (16,534 bytes) | Yes | OK |
+
+#### LLM-1: Phantom module -- `transform.rs` in diagram but not in `pub mod`
+
+The diagram (line 30) shows `TRANSFORM["transform.rs<br/>Request/Response<br/>Transform Pipeline"]`
+and the file `transform.rs` (11,158 bytes) exists on disk. However, `lib.rs` does NOT
+declare `pub mod transform;`. The file is dead code -- present in the repository but
+not wired into the module tree, making it unreachable from other crates.
+
+The doc comment in `lib.rs` line 36 references it (`//! - \`transform\` -- Request/
+response transform pipeline`), so the doc comment is also stale.
+
+**Impact:** Low. The diagram shows a module that technically exists as a file but is
+not compiled into the crate. This could mislead a developer who reads the diagram and
+expects to `use ironclad_llm::transform::*`.
+
+#### LLM-2: Missing top-level struct -- `LlmService`
+
+`lib.rs` defines `pub struct LlmService` (line 83) which is the top-level facade
+composing all pipeline stages (cache, breakers, dedup, router, client, providers,
+capacity, embedding). This is the main entry point for the crate and is not shown in
+the diagram. The `SseChunkStream` adapter struct is also defined in `lib.rs` but not
+shown.
+
+**Impact:** Low. The LlmService is an integration struct, and the diagram focuses on
+individual modules. However, it is the primary public API surface of the crate.
+
+#### Notes
+
+- The LLM crate diagram is **the most accurate** of all component diagrams audited
+  so far. All 17 `pub mod` modules have corresponding diagram nodes.
+- The pipeline flow arrows (lines 127-142) accurately reflect the request processing
+  order documented in the Request Pipeline section.
+- The detail subgraphs provide useful function-level documentation that matches the
+  actual code.

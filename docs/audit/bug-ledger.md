@@ -9,7 +9,7 @@
 | Critical | 0    | 0           | 0     | 0        |
 | High     | 0    | 0           | 0     | 0        |
 | Medium   | 15   | 0           | 0     | 0        |
-| Low      | 8    | 0           | 0     | 0        |
+| Low      | 10   | 0           | 0     | 0        |
 
 ## Entries
 
@@ -38,3 +38,5 @@
 | BUG-021 | audit-c4 | ironclad-db | T1 | Medium | doc drift | `efficiency` module (25,454 bytes, second-largest in crate) for efficiency metrics tracking is completely absent from C4 db diagram -- no component node, no detail subgraph, not in module doc comment | `docs/architecture/ironclad-c4-db.md` lines 11-114 | Open |
 | BUG-022 | audit-c4 | ironclad-db | T1 | Low | doc drift | `approvals` module (1,317 bytes) and `model_selection` module (4,232 bytes) exist as pub mods but have no component nodes in C4 db diagram | `docs/architecture/ironclad-c4-db.md` lines 11-114 | Open |
 | BUG-023 | audit-c4 | ironclad-db | T1 | Low | doc drift | "Depended on by" list omits `ironclad-channels` (which depends on ironclad-db for delivery_queue) and `ironclad-tests` | `docs/architecture/ironclad-c4-db.md` line 158 | Open |
+| BUG-024 | audit-c4 | ironclad-llm | T2 | Low | doc drift | `transform.rs` shown in C4 diagram and referenced in lib.rs doc comment, but NOT declared as `pub mod transform` in lib.rs -- file is dead code (11,158 bytes), unreachable from other crates | `docs/architecture/ironclad-c4-llm.md` line 30 | Open |
+| BUG-025 | audit-c4 | ironclad-llm | T2 | Low | doc drift | `LlmService` top-level facade struct (the primary public API of the crate, composing cache+breakers+dedup+router+client+providers+capacity+embedding) not shown in C4 diagram | `docs/architecture/ironclad-c4-llm.md` lines 11-143 | Open |
