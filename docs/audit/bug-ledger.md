@@ -4,11 +4,11 @@
 
 ## Summary
 
-| Severity | Fixed | In Progress | Fixed | Verified |
+| Severity | Open | In Progress | Fixed | Verified |
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
-| High     | 0    | 0           | 0     | 0        |
-| Medium   | 0    | 0           | 32    | 0        |
+| High     | 2    | 0           | 0     | 0        |
+| Medium   | 1    | 0           | 32    | 0        |
 | Low      | 0    | 0           | 28    | 0        |
 
 ## Entries
@@ -75,3 +75,6 @@
 | BUG-058 | audit-rt | docs | -- | Medium | doc drift | Router audit flowchart shows `E2 -> X2` and `E4 -> X2` where X2 is "single provider call (stream/interview paths)" but v0.8.0 E2 (streaming) and E4 (interview) both use bounded fallback via `infer_with_fallback()`; X2 node should be removed entirely from diagram | `docs/architecture/router-audit.md` flowchart | Fixed |
 | BUG-059 | audit-wiring | ironclad-wallet | T3 | Low | vestigial dep | `ironclad-wallet/Cargo.toml` declares `ironclad-db` as a dependency but no source file in the crate imports anything from `ironclad_db`; dependency is vestigial and should be removed to keep the dependency graph minimal | `crates/ironclad-wallet/Cargo.toml` | Fixed |
 | BUG-060 | audit-wiring | ironclad-agent | T3 | Low | silent degrade | `agent::memory::ingest_turn()` returns `()` instead of `Result<()>`; five independent `db.store_*()` calls are each wrapped in `if let Err(e) = ... { warn!(...) }`, meaning any combination of memory-ingestion failures is silently degraded with no caller visibility; consider returning a `Result` or at minimum a count of failed operations | `crates/ironclad-agent/src/memory.rs` ~line 95-154 | Fixed |
+| BUG-061 | user-report | ironclad-channels | T4 | High | parity violation | Telegram channel exhibits canned/repetitive agent responses that do not appear on other channels; agent delegation reports appear incorrect (tasks not correctly delegated to subagents) — Telegram-specific; all channels should follow the same path through proxy to models with only routing varying | `crates/ironclad-channels/src/telegram.rs`, `crates/ironclad-agent/src/lib.rs` | Open |
+| BUG-062 | user-report | ironclad-channels | T4 | High | parity violation | Agent task delegation confidence is low through Telegram — subagent dispatch reports may be fabricated or stale; need to trace full request→agent→subagent→response path comparing Telegram vs WebSocket/HTTP to identify where divergence occurs | `crates/ironclad-agent/src/lib.rs`, `crates/ironclad-channels/src/telegram.rs` | Open |
+| BUG-063 | user-report | ironclad-server | T5 | Medium | platform delta | Windows installation historically problematic (executable replacement, daemon/service behavior); needs end-to-end validation on Windows platform — currently under active testing | `crates/ironclad-server/src/daemon.rs`, build scripts | Open |
