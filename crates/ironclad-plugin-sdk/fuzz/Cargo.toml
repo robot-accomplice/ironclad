@@ -1,0 +1,24 @@
+[package]
+name = "ironclad-plugin-sdk-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ironclad-plugin-sdk = { path = ".." }
+
+[[bin]]
+name = "fuzz_manifest_parse"
+path = "fuzz_targets/fuzz_manifest_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_manifest_validate"
+path = "fuzz_targets/fuzz_manifest_validate.rs"
+doc = false
+
+[workspace]
