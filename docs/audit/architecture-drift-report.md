@@ -19,6 +19,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-schedule.md` | 2 (flowchart + sequence) | 0 | 0 | 1 (agentTurn is legacy noop) | 1 stale enum variant count | Minor drift |
 | `ironclad-c4-server.md` | 1 (flowchart) | 5 missing modules from diagram (present in table) | 0 | 0 | 0 | Drifted |
 | `ironclad-c4-browser.md` | 1 (flowchart) | 0 | 0 | 0 | 0 | Accurate |
+| `ironclad-c4-plugin-sdk.md` | 1 (flowchart) | 0 | 0 | 0 | 1 stale ToolDef fields, 1 stale dep-by list | Drifted |
 
 ## Detailed Findings
 
@@ -872,3 +873,82 @@ table.
 - The detail subgraphs for Browser, BrowserManager, CdpSession, and BrowserAction
   accurately describe the public API surface.
 - The Capabilities table correctly maps each action to its CDP method.
+
+### ironclad-c4-plugin-sdk.md
+
+**Audit scope:** All nodes in the Mermaid `flowchart TB` block (lines 10-55), the Types
+table, the lifecycle description, and the Dependencies section, cross-referenced against
+v0.8.0 source code in `crates/ironclad-plugin-sdk/src/`.
+
+**Method:** Compared every component node, type definition, and detail subgraph against the
+actual `lib.rs` `pub mod` declarations, struct/trait definitions, and `manifest.rs` types.
+Verified dependency claims against Cargo.toml files of both this crate and claimed dependents.
+
+#### Modules confirmed present and accurately described
+
+All 4 `pub mod` modules in `lib.rs` have corresponding component nodes in the diagram:
+
+| Diagram Module | Code File | Status |
+|---|---|---|
+| `loader.rs` | `loader.rs` | OK |
+| `manifest.rs` | `manifest.rs` | OK |
+| `registry.rs` | `registry.rs` | OK |
+| `script.rs` | `script.rs` | OK |
+
+#### Types confirmed present and accurate
+
+| Diagram Type | Code Evidence | Status |
+|---|---|---|
+| `Plugin` trait | `lib.rs` line 54: async trait with name, version, tools, init, execute_tool, shutdown | OK |
+| `ToolResult` | `lib.rs` line 47: success, output, metadata | OK |
+| `PluginStatus` | `lib.rs` line 64: Loaded, Active, Disabled, Error | OK |
+| `PluginManifest` | `manifest.rs`: name, version, description, author, permissions, tools | OK |
+
+#### PLUGIN-SDK-1: Stale ToolDef field list
+
+The diagram's `TOOL_DEF` node (line 13) shows `ToolDef` with 3 fields: `name, description,
+parameters`. The actual struct in `lib.rs` (lines 32-41) has **5 fields**:
+
+- `name: String`
+- `description: String`
+- `parameters: Value` (JSON Schema)
+- `risk_level: RiskLevel` (defaults to `Caution` via serde default)
+- `permissions: Vec<String>` (defaults to empty vec via serde default)
+
+The `risk_level` and `permissions` fields were added post-v0.5.0 as part of the security
+hardening effort. `risk_level` uses the `RiskLevel` enum from `ironclad-core` (Safe, Caution,
+Dangerous, Forbidden) and defaults to `Caution` when missing from serialized input. The
+`permissions` field declares what capabilities a tool requires.
+
+**Impact:** Medium. These are security-relevant fields that affect tool execution policy.
+A developer reading the diagram would not know that `ToolDef` carries risk classification
+and permission declarations, which are essential for understanding the plugin security model.
+
+#### PLUGIN-SDK-2: Stale "Depended on by" list claims ironclad-agent
+
+The Dependencies section (line 95) states: "Depended on by: `ironclad-server` (wires
+discovery, registry, and `/api/plugins/*`), `ironclad-agent` (tool registry can include
+plugin tools)".
+
+`ironclad-agent/Cargo.toml` does NOT list `ironclad-plugin-sdk` as a dependency. The agent
+crate depends on `ironclad-core`, `ironclad-db`, and `ironclad-llm` only. The plugin tool
+integration is server-mediated: `ironclad-server` registers plugin tools and exposes them
+through its API, but the agent crate does not directly import or depend on the plugin SDK.
+
+`ironclad-server/Cargo.toml` DOES list `ironclad-plugin-sdk` -- this part is correct.
+
+**Impact:** Low. The incorrect "Depended on by" claim could mislead a developer into
+expecting plugin SDK imports in the agent crate. The actual architecture has the server as
+the integration point between plugins and the agent.
+
+#### Notes
+
+- The **lifecycle description** (Discovery, Registration, Initialization, Execution, Toggle)
+  is comprehensive and accurate.
+- The **detail subgraphs** for ManifestDetail, RegistryDetail, LoaderDetail, and ScriptDetail
+  provide useful internal documentation that matches the actual code.
+- The **ScriptPlugin** interpreter list in the diagram matches the code (gosh, go, sh, py,
+  rb, js).
+- The `PluginInfo` struct and `DiscoveredPlugin` struct documented in the Types table are
+  accurate.
+- Internal dependency is correctly listed as `ironclad-core` only (confirmed by Cargo.toml).

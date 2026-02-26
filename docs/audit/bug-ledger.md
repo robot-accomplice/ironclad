@@ -8,8 +8,8 @@
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
 | High     | 0    | 0           | 0     | 0        |
-| Medium   | 19   | 0           | 0     | 0        |
-| Low      | 12   | 0           | 0     | 0        |
+| Medium   | 20   | 0           | 0     | 0        |
+| Low      | 13   | 0           | 0     | 0        |
 
 ## Entries
 
@@ -46,3 +46,5 @@
 | BUG-029 | audit-c4 | ironclad-schedule | T4 | Low | doc drift | `HeartbeatTask` enum shown with 7 variants in diagram but actual code has 8 variants (missing `SessionGovernor` which invokes session governor for timeout/cleanup) | `docs/architecture/ironclad-c4-schedule.md` line 35 | Open |
 | BUG-030 | audit-c4 | ironclad-schedule | T4 | Medium | doc drift | Execution subgraph shows `agentTurn -> inject message` as active pathway with session selection, but actual code treats `agent_turn_legacy` as noop with warning log; diagram implies a feature that was deprecated | `docs/architecture/ironclad-c4-schedule.md` lines 38-50 | Open |
 | BUG-031 | audit-c4 | ironclad-server | T5 | Medium | doc drift | Diagram component view shows only 5 of 10 pub modules; missing: `auth` (API key middleware), `config_runtime`, `daemon`, `migrate`, `plugins`, `rate_limit`; these ARE documented in the Server Module Layout table but invisible in the visual diagram | `docs/architecture/ironclad-c4-server.md` lines 12-18 | Open |
+| BUG-032 | audit-c4 | ironclad-plugin-sdk | T5 | Medium | doc drift | `ToolDef` shown with 3 fields (name, description, parameters) but actual struct has 5 fields: adds `risk_level: RiskLevel` (defaults to Caution) and `permissions: Vec<String>`; these security-relevant fields affect tool execution policy | `docs/architecture/ironclad-c4-plugin-sdk.md` line 13 | Open |
+| BUG-033 | audit-c4 | ironclad-plugin-sdk | T5 | Low | doc drift | "Depended on by" list claims both `ironclad-server` and `ironclad-agent` but `ironclad-agent/Cargo.toml` does NOT list `ironclad-plugin-sdk`; plugin-to-agent integration is server-mediated, not a direct dependency | `docs/architecture/ironclad-c4-plugin-sdk.md` line 95 | Open |
