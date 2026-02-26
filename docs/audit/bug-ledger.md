@@ -8,8 +8,8 @@
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
 | High     | 8    | 0           | 0     | 0        |
-| Medium   | 17   | 0           | 32    | 0        |
-| Low      | 5    | 0           | 28    | 0        |
+| Medium   | 19   | 0           | 32    | 0        |
+| Low      | 7    | 0           | 28    | 0        |
 
 ## Entries
 
@@ -105,3 +105,7 @@
 | BUG-088 | mutation-test | ironclad-plugin-sdk | T4 | High | weak-test | `ScriptPlugin::is_tool_dangerous()` (line 169) and `ScriptPlugin::validate_script_path()` (line 122) survive mutation — security-critical methods that determine whether a tool is dangerous and whether a script path is valid have no tests asserting their return values; `is_tool_dangerous` returning wrong value could allow unsafe tool execution | `crates/ironclad-plugin-sdk/src/script.rs` lines 122, 169 | Open |
 | BUG-089 | mutation-test | ironclad-plugin-sdk | T4 | Medium | weak-test | 9 manifest validation boundary mutations survive in `validate_plugin_name` (3x `\|\|` vs `&&`), `validate_plugin_version` (`>` vs `>=`, `==` vs `!=`), `validate_tool_name` (3x `\|\|` vs `&&`); validation functions accept inputs they should reject (or vice versa) without any test catching the difference | `crates/ironclad-plugin-sdk/src/manifest.rs` lines 61-114 | Open |
 | BUG-090 | mutation-test | ironclad-plugin-sdk | T4 | Low | weak-test | `ScriptPlugin::find_script()` (line 74), `has_recognized_shebang()` (line 99), `PluginRegistry::shutdown_all()` (line 150), and `ScriptPlugin::shutdown()` (line 302) survive mutation; script discovery, shebang validation, and plugin lifecycle cleanup untested | `crates/ironclad-plugin-sdk/src/script.rs` lines 74-302 | Open |
+| BUG-091 | mutation-test | ironclad-schedule | T4 | Medium | weak-test | `heartbeat::run()` has 22 surviving mutants across comparison, arithmetic, and boolean operators (lines 124-231); the async heartbeat loop body is entirely untested (overlaps BUG-076); mutations to interval adjustment, tick context evaluation, and balance/yield tracking all survive | `crates/ironclad-schedule/src/heartbeat.rs` lines 109-231 | Open |
+| BUG-092 | mutation-test | ironclad-schedule | T4 | Medium | weak-test | `run_cron_worker()` has 6 surviving mutants: replacement with `()`, match arm deletions for `"cron"` and `"every"` kinds, and negation deletions (lines 35-91); the async cron worker loop is untested — schedule type dispatch could silently skip jobs | `crates/ironclad-schedule/src/lib.rs` lines 35-91 | Open |
+| BUG-093 | mutation-test | ironclad-schedule | T4 | Low | weak-test | `legacy_kind_to_action()` and `normalize_schedule_kind()` have 5 surviving match-arm deletions (lines 232-243); legacy schedule kind mapping untested — incorrect normalization could cause jobs to use wrong schedule types | `crates/ironclad-schedule/src/lib.rs` lines 232-243 | Open |
+| BUG-094 | mutation-test | ironclad-schedule | T4 | Low | weak-test | `parse_offset()` has 4 surviving arithmetic/comparison mutations and `parse_timezone()` has 1 `\|\|` vs `&&` survivor; timezone offset parsing could produce wrong offsets without test detection | `crates/ironclad-schedule/src/scheduler.rs` lines 143-173 | Open |

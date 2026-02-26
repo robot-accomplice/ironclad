@@ -252,6 +252,27 @@ jobs:
           fi
           echo "No coverage regression detected"
 
+  # ── Stage 3g: Cross-Platform Delta Tests ───────────────
+  # Runs platform-specific tests (Task 36, v0.8.0 stabilization) on macOS,
+  # Linux, and Windows to verify daemon paths, file permissions, tilde
+  # expansion, config parsing with CRLF/LF, and platform-gated defaults.
+  cross-platform:
+    name: "Platform Tests (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cross-platform-${{ matrix.os }}
+      - name: "Run platform delta tests"
+        run: cargo test -p ironclad-tests platform --verbose --locked
+
   # ── Stage 4: Build ─────────────────────────────────────
   build:
     name: "Build (${{ matrix.profile }})"
@@ -323,7 +344,7 @@ jobs:
     name: "CI Pass"
     runs-on: ubuntu-latest
     if: always()
-    needs: [format, lint, test, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, coverage, build, audit, docs]
+    needs: [format, lint, test, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, coverage, build, audit, docs, cross-platform]
     steps:
       - name: "Verify all required jobs passed"
         env:
@@ -340,6 +361,7 @@ jobs:
           R_BUILD: ${{ needs.build.result }}
           R_AUDIT: ${{ needs.audit.result }}
           R_DOCS: ${{ needs.docs.result }}
+          R_CROSS_PLATFORM: ${{ needs.cross-platform.result }}
         run: |
           echo "format:   $R_FORMAT"
           echo "lint:     $R_LINT"
@@ -354,6 +376,7 @@ jobs:
           echo "build:    $R_BUILD"
           echo "audit:    $R_AUDIT"
           echo "docs:     $R_DOCS"
+          echo "cross-platform: $R_CROSS_PLATFORM"
           if [ "$R_FORMAT"   != "success" ] || \
              [ "$R_LINT"     != "success" ] || \
              [ "$R_TEST"     != "success" ] || \
@@ -366,7 +389,8 @@ jobs:
              [ "$R_COVERAGE" != "success" ] || \
              [ "$R_BUILD"    != "success" ] || \
              [ "$R_AUDIT"    != "success" ] || \
-             [ "$R_DOCS"     != "success" ]; then
+             [ "$R_DOCS"     != "success" ] || \
+             [ "$R_CROSS_PLATFORM" != "success" ]; then
             echo "::error::One or more CI stages failed"
             exit 1
           fi
