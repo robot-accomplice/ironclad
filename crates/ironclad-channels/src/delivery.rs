@@ -203,7 +203,10 @@ impl DeliveryQueue {
                     .collect::<VecDeque<_>>();
                 if let Ok(mut items) = self.items.try_lock() {
                     *items = recovered;
-                    debug!(count = items.len(), "recovered delivery queue items from database");
+                    debug!(
+                        count = items.len(),
+                        "recovered delivery queue items from database"
+                    );
                 }
             }
             Err(e) => warn!(error = %e, "failed to recover delivery queue from database"),

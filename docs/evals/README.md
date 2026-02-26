@@ -9,6 +9,7 @@ This folder is the **v1 baseline matrix** for evaluating local and cloud model r
 - `task_weights.v1.csv`: default metric weights by task class.
 - `CLOUD_BENCHMARK_SOURCES.md`: provenance for cloud baseline performance/cost values.
 - `THIRD_PARTY_MODEL_BENCHMARKS.csv`: prefilled third-party model benchmarks (partial rows allowed).
+- `CLOUD_BASELINE_REFRESH_SPEC.md`: monthly auto-refresh behavior and runbook.
 
 ## Included Runner Families
 
@@ -35,3 +36,8 @@ This folder is the **v1 baseline matrix** for evaluating local and cloud model r
 - Keep runner-specific measured fields blank if only model-level public values exist.
 - Prefer partial provenance-backed rows over guessed values.
 - When importing model-level indices (for example, AA Intelligence Index), store them in provenance fields (such as `dataset_version`) unless they map cleanly to an existing metric column.
+
+## Monthly Refresh
+
+- Dry-run: `scripts/refresh-cloud-baselines.sh`
+- Apply: `scripts/refresh-cloud-baselines.sh --write`

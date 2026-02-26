@@ -601,7 +601,9 @@ async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiagnostics {
 }
 
 fn diagnostics_system_note(diag: &RuntimeDiagnostics) -> String {
-    let delegation_policy = if diag.taskable_subagents_running == 0 && diag.taskable_subagents_enabled > 0 {
+    let delegation_policy = if diag.taskable_subagents_running == 0
+        && diag.taskable_subagents_enabled > 0
+    {
         "Delegation policy: subagent execution is currently unavailable (enabled>0, running=0). If the user asks for a subagent-produced result, explicitly say it is unavailable and do NOT simulate or fabricate subagent output."
     } else {
         "Delegation policy: never claim a subagent produced content unless a real delegated subagent turn occurred."
@@ -2937,7 +2939,8 @@ async fn evaluate_decomposition_gate(
     let subtasks = split_subtasks(user_content);
     if subtasks.len() <= 1 || complexity_score < min_complexity {
         return DecompositionDecision::Centralized {
-            rationale: "task is single-step or below decomposition complexity threshold".to_string(),
+            rationale: "task is single-step or below decomposition complexity threshold"
+                .to_string(),
             expected_utility_margin: -0.1,
         };
     }
@@ -2973,7 +2976,8 @@ async fn evaluate_decomposition_gate(
     } else {
         fit_hits as f64 / taskable.len() as f64
     };
-    let margin = utility_margin_for_delegation(complexity_score, subtasks.len(), capability_fit_ratio);
+    let margin =
+        utility_margin_for_delegation(complexity_score, subtasks.len(), capability_fit_ratio);
     if capability_fit_ratio < 0.2 {
         let proposal = SpecialistProposal {
             name: "proposed-specialist".to_string(),
@@ -3225,7 +3229,8 @@ pub async fn process_channel_message(
         drop(llm);
         return Err(e.to_string());
     }
-    if let Some(reply) = maybe_handle_specialist_creation_controls(state, &session_id, &user_content).await
+    if let Some(reply) =
+        maybe_handle_specialist_creation_controls(state, &session_id, &user_content).await
     {
         state
             .channel_router
@@ -3245,7 +3250,10 @@ pub async fn process_channel_message(
     let gate_decision = evaluate_decomposition_gate(state, &user_content, complexity).await;
     let mut delegation_workflow_note: Option<String> = None;
     match &gate_decision {
-        DecompositionDecision::RequiresSpecialistCreation { proposal, rationale } => {
+        DecompositionDecision::RequiresSpecialistCreation {
+            proposal,
+            rationale,
+        } => {
             let payload = proposal_to_json(proposal, rationale);
             {
                 let mut pending = state.pending_specialist_proposals.write().await;
@@ -3266,7 +3274,10 @@ pub async fn process_channel_message(
             drop(llm);
             return Ok(());
         }
-        DecompositionDecision::Centralized { rationale, expected_utility_margin } => {
+        DecompositionDecision::Centralized {
+            rationale,
+            expected_utility_margin,
+        } => {
             tracing::info!(
                 decision = "centralized",
                 rationale = %rationale,
@@ -3792,7 +3803,9 @@ pub async fn telegram_poll_loop(state: AppState) {
                 let err_text = e.to_string();
                 let looks_like_auth = err_text.contains("Telegram API 404")
                     || err_text.contains("Telegram API 401")
-                    || err_text.to_ascii_lowercase().contains("invalid/revoked bot token");
+                    || err_text
+                        .to_ascii_lowercase()
+                        .contains("invalid/revoked bot token");
                 if looks_like_auth {
                     consecutive_auth_failures = consecutive_auth_failures.saturating_add(1);
                     let backoff = if consecutive_auth_failures < 3 {
@@ -4028,7 +4041,8 @@ scope_mode = "{scope_mode}"
 
     #[test]
     fn subagent_claim_guard_blocks_unverified_live_delegation() {
-        let fabricated = "[delegating to subagent: geopolitical specialist]\n\nGEOPOLITICAL FLASH UPDATE ...";
+        let fabricated =
+            "[delegating to subagent: geopolitical specialist]\n\nGEOPOLITICAL FLASH UPDATE ...";
         let guarded =
             enforce_subagent_claim_guard(fabricated.to_string(), &DelegationProvenance::default());
         assert!(guarded.contains("I can't claim live subagent-produced output"));

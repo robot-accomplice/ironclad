@@ -1191,9 +1191,9 @@ impl ChannelsConfig {
         let mut out = match &self.startup_announcements {
             None => Vec::new(),
             Some(StartupAnnouncementsConfig::Flag(_)) => Vec::new(),
-            Some(StartupAnnouncementsConfig::Text(v)) => normalize_channel(v)
-                .map(|s| vec![s])
-                .unwrap_or_default(),
+            Some(StartupAnnouncementsConfig::Text(v)) => {
+                normalize_channel(v).map(|s| vec![s]).unwrap_or_default()
+            }
             Some(StartupAnnouncementsConfig::Channels(v)) => {
                 v.iter().filter_map(|s| normalize_channel(s)).collect()
             }

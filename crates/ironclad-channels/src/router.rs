@@ -293,8 +293,8 @@ impl Default for ChannelRouter {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use ironclad_db::Database;
     use ironclad_core::IroncladError;
+    use ironclad_db::Database;
 
     struct MockAdapter {
         name: String,
@@ -501,7 +501,10 @@ mod tests {
         };
 
         let result = router.send_to("telegram", msg).await;
-        assert!(result.is_ok(), "router should swallow send failure into status");
+        assert!(
+            result.is_ok(),
+            "router should swallow send failure into status"
+        );
         assert_eq!(
             router.delivery_queue().queue_size().await,
             0,

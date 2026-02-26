@@ -254,7 +254,10 @@ async fn cmd_mechanic_json(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for file in [ironclad_dir.join("wallet.json"), ironclad_dir.join("state.db")] {
+        for file in [
+            ironclad_dir.join("wallet.json"),
+            ironclad_dir.join("state.db"),
+        ] {
             if file.exists() {
                 let meta = std::fs::metadata(&file)?;
                 let mode = meta.permissions().mode() & 0o777;
@@ -275,7 +278,9 @@ async fn cmd_mechanic_json(
                         perms.set_mode(0o600);
                         std::fs::set_permissions(&file, perms)?;
                         f.auto_repaired = true;
-                        actions.permissions_hardened.push(file.display().to_string());
+                        actions
+                            .permissions_hardened
+                            .push(file.display().to_string());
                     }
                     findings.push(f);
                 }
@@ -352,7 +357,10 @@ async fn cmd_mechanic_json(
                     "Telegram connected but zero traffic",
                     "No messages received/sent; verify token, polling/webhook, and chat allowlist.",
                     "Inspect channel status and logs for transport/auth errors.",
-                    vec!["ironclad channels status".to_string(), "ironclad logs -n 200".to_string()],
+                    vec![
+                        "ironclad channels status".to_string(),
+                        "ironclad logs -n 200".to_string(),
+                    ],
                     false,
                     false,
                 ));
@@ -415,7 +423,8 @@ async fn cmd_mechanic_json(
 
     let log_snapshot = recent_log_snapshot(&ironclad_dir.join("logs"), 350_000);
     if let Some(snapshot) = log_snapshot.as_deref() {
-        let tg_404_count = count_occurrences(snapshot, "Telegram API error\",\"status\":\"404 Not Found");
+        let tg_404_count =
+            count_occurrences(snapshot, "Telegram API error\",\"status\":\"404 Not Found");
         let tg_poll_err_count = count_occurrences(snapshot, "Telegram poll error, backing off 5s");
         if tg_404_count >= 3 || tg_poll_err_count >= 3 {
             findings.push(finding(
@@ -457,7 +466,9 @@ async fn cmd_mechanic_json(
     }
 
     let report = MechanicJsonReport {
-        ok: findings.iter().all(|f| f.severity == "info" || f.auto_repaired),
+        ok: findings
+            .iter()
+            .all(|f| f.severity == "info" || f.auto_repaired),
         repair_mode: repair,
         findings,
         actions,
@@ -1119,7 +1130,10 @@ pub async fn cmd_mechanic(
                 println!("  {OK} Runtime diagnostics available");
             }
             Ok(resp) => {
-                println!("  {WARN} Agent status endpoint returned HTTP {}", resp.status());
+                println!(
+                    "  {WARN} Agent status endpoint returned HTTP {}",
+                    resp.status()
+                );
             }
             Err(e) => {
                 println!("  {WARN} Agent status check failed: {e}");
@@ -1184,16 +1198,15 @@ pub async fn cmd_mechanic(
         // Smart diagnostics from recent logs + channel telemetry.
         let log_snapshot = recent_log_snapshot(&ironclad_dir.join("logs"), 350_000);
         if let Some(snapshot) = log_snapshot.as_deref() {
-            let tg_404_count = count_occurrences(snapshot, "Telegram API error\",\"status\":\"404 Not Found");
+            let tg_404_count =
+                count_occurrences(snapshot, "Telegram API error\",\"status\":\"404 Not Found");
             let tg_poll_err_count =
                 count_occurrences(snapshot, "Telegram poll error, backing off 5s");
             if tg_404_count >= 3 || tg_poll_err_count >= 3 {
                 println!(
                     "  {WARN} Detected repeated Telegram transport failures (404/poll backoff loop)."
                 );
-                println!(
-                    "         Likely cause: invalid/revoked Telegram bot token in keystore."
-                );
+                println!("         Likely cause: invalid/revoked Telegram bot token in keystore.");
                 println!(
                     "         Repair: `ironclad keystore set telegram_bot_token \"<TOKEN>\"` then `ironclad daemon restart`"
                 );
@@ -1228,9 +1241,7 @@ pub async fn cmd_mechanic(
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
                 if connected && received == 0 && sent == 0 {
-                    println!(
-                        "  {WARN} Telegram appears connected but has zero traffic."
-                    );
+                    println!("  {WARN} Telegram appears connected but has zero traffic.");
                     println!(
                         "         If this is unexpected, run `ironclad channels status` and inspect logs for poll/webhook errors."
                     );

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -293,18 +293,18 @@ fn install_binary_bytes(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> 
 
     #[cfg(not(windows))]
     {
-    let exe = std::env::current_exe()?;
-    let tmp = exe.with_extension("new");
-    std::fs::write(&tmp, bytes)?;
-    #[cfg(unix)]
-    {
-        let mode = std::fs::metadata(&exe)
-            .map(|m| m.permissions().mode())
-            .unwrap_or(0o755);
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
-    }
-    std::fs::rename(&tmp, &exe)?;
-    Ok(())
+        let exe = std::env::current_exe()?;
+        let tmp = exe.with_extension("new");
+        std::fs::write(&tmp, bytes)?;
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(&exe)
+                .map(|m| m.permissions().mode())
+                .unwrap_or(0o755);
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+        }
+        std::fs::rename(&tmp, &exe)?;
+        Ok(())
     }
 }
 
@@ -333,17 +333,18 @@ async fn apply_binary_download_update(
 
     let archive_resp = client.get(&archive_url).send().await?;
     if !archive_resp.status().is_success() {
-        return Err(
-            format!("Failed to download release archive: HTTP {}", archive_resp.status()).into(),
-        );
+        return Err(format!(
+            "Failed to download release archive: HTTP {}",
+            archive_resp.status()
+        )
+        .into());
     }
     let archive_bytes = archive_resp.bytes().await?.to_vec();
     let actual = bytes_sha256(&archive_bytes);
     if actual != expected {
-        return Err(format!(
-            "SHA256 mismatch for {archive}: expected {expected}, got {actual}"
-        )
-        .into());
+        return Err(
+            format!("SHA256 mismatch for {archive}: expected {expected}, got {actual}").into(),
+        );
     }
 
     let temp_root = std::env::temp_dir().join(format!(
@@ -375,7 +376,9 @@ async fn apply_binary_download_update(
             .status()?;
         if !status.success() {
             let _ = std::fs::remove_dir_all(&temp_root);
-            return Err(format!("Failed to extract {archive} with PowerShell Expand-Archive").into());
+            return Err(
+                format!("Failed to extract {archive} with PowerShell Expand-Archive").into(),
+            );
         }
     } else {
         let status = std::process::Command::new("tar")

@@ -58,7 +58,11 @@ impl std::fmt::Display for ConfigRuntimeError {
             Self::JsonSerialize(e) => write!(f, "JSON serialize error: {e}"),
             Self::Validation(e) => write!(f, "validation failed: {e}"),
             Self::MissingParent(p) => {
-                write!(f, "config parent directory is missing for '{}'", p.display())
+                write!(
+                    f,
+                    "config parent directory is missing for '{}'",
+                    p.display()
+                )
             }
         }
     }
@@ -143,7 +147,9 @@ pub fn write_config_atomic(path: &Path, cfg: &IroncladConfig) -> Result<(), Conf
     let content = toml::to_string_pretty(cfg)?;
     let tmp_name = format!(
         ".{}.tmp.{}",
-        path.file_name().and_then(|v| v.to_str()).unwrap_or("ironclad"),
+        path.file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("ironclad"),
         uuid::Uuid::new_v4()
     );
     let tmp_path = parent.join(tmp_name);
@@ -298,4 +304,3 @@ primary = "ollama/qwen3:8b"
         assert!(written.contains("primary = \"ollama/qwen3:8b\""));
     }
 }
-

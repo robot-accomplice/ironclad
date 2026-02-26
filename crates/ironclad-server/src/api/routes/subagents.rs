@@ -157,7 +157,10 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
                         .as_deref()
                         .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
                         .unwrap_or_default();
-                    let session_count = session_counts.get(&a.name).copied().unwrap_or(a.session_count);
+                    let session_count = session_counts
+                        .get(&a.name)
+                        .copied()
+                        .unwrap_or(a.session_count);
                     serde_json::json!({
                         "id": a.id,
                         "name": a.name,

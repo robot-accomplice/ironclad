@@ -269,7 +269,8 @@ async fn reload_skills_internal(
         let desc = skill.description();
         let (tool_chain_json, policy_overrides_json, script_path, risk_level) = if let Some(
             manifest,
-        ) = skill.structured_manifest()
+        ) =
+            skill.structured_manifest()
         {
             if manifest
                 .tool_chain

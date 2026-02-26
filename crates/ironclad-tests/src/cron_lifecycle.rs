@@ -43,7 +43,10 @@ fn cron_schedule_evaluation_basics() {
 fn cron_schedule_rejects_invalid_timestamps() {
     use ironclad_schedule::scheduler::DurableScheduler;
     let result = DurableScheduler::evaluate_interval(None, 60_000, "not-a-timestamp");
-    assert!(!result, "invalid now timestamp should never evaluate as due");
+    assert!(
+        !result,
+        "invalid now timestamp should never evaluate as due"
+    );
 }
 
 #[test]

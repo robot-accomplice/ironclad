@@ -9,11 +9,11 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::config_runtime;
 use ironclad_agent::policy::{PolicyContext, ToolCallRequest};
 use ironclad_core::{
     InputAuthority, IroncladConfig, PolicyDecision, SurvivalTier, input_capability_scan,
 };
-use crate::config_runtime;
 
 use super::{AppState, internal_err};
 
@@ -1556,8 +1556,8 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         .unwrap_or_default();
 
     let sub_agents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
-    let session_counts = ironclad_db::agents::list_session_counts_by_agent(&state.db)
-        .unwrap_or_default();
+    let session_counts =
+        ironclad_db::agents::list_session_counts_by_agent(&state.db).unwrap_or_default();
     let taskable_sub_agents: Vec<&ironclad_db::agents::SubAgentRow> = sub_agents
         .iter()
         .filter(|sa| !sa.role.eq_ignore_ascii_case(ROLE_MODEL_PROXY))

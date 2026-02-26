@@ -652,7 +652,9 @@ mod tests {
             serde_json::json!({"items":[{"name":"foo","kind":"instruction","source":"registry"}]}),
         )
         .await;
-        super::cmd_skills_catalog_list(&s.uri(), None).await.unwrap();
+        super::cmd_skills_catalog_list(&s.uri(), None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -803,7 +805,12 @@ mod tests {
             }),
         )
         .await;
-        mock_put(&s, "/api/cron/jobs/job-1", serde_json::json!({"updated": true})).await;
+        mock_put(
+            &s,
+            "/api/cron/jobs/job-1",
+            serde_json::json!({"updated": true}),
+        )
+        .await;
         super::cmd_schedule_recover(&s.uri(), &[], true, false)
             .await
             .unwrap();
@@ -859,7 +866,12 @@ mod tests {
             }),
         )
         .await;
-        mock_put(&s, "/api/cron/jobs/job-2", serde_json::json!({"updated": true})).await;
+        mock_put(
+            &s,
+            "/api/cron/jobs/job-2",
+            serde_json::json!({"updated": true}),
+        )
+        .await;
         super::cmd_schedule_recover(&s.uri(), &["revenue-check".to_string()], false, false)
             .await
             .unwrap();

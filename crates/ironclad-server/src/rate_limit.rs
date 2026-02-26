@@ -443,7 +443,8 @@ mod tests {
 
     #[tokio::test]
     async fn actor_limits_enforced() {
-        let layer = GlobalRateLimitLayer::new(1000, Duration::from_secs(60)).with_per_actor_capacity(2);
+        let layer =
+            GlobalRateLimitLayer::new(1000, Duration::from_secs(60)).with_per_actor_capacity(2);
         let mut svc = layer.layer(dummy_service().into_service());
         for _ in 0..2 {
             let req = Request::builder()

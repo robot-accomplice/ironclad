@@ -793,7 +793,9 @@ pub async fn bootstrap_with_config_path(
         );
 
         if startup_announce_channels.iter().any(|c| c == "telegram") {
-            if let (Some(adapter), Some(tg_cfg)) = (state.telegram.clone(), config.channels.telegram.as_ref()) {
+            if let (Some(adapter), Some(tg_cfg)) =
+                (state.telegram.clone(), config.channels.telegram.as_ref())
+            {
                 let announce_targets = tg_cfg.allowed_chat_ids.clone();
                 if announce_targets.is_empty() {
                     tracing::warn!(
@@ -812,19 +814,27 @@ pub async fn bootstrap_with_config_path(
                                 })
                                 .await
                             {
-                                Ok(()) => tracing::info!(chat_id = %chat, "telegram startup announcement sent"),
-                                Err(e) => tracing::warn!(chat_id = %chat, error = %e, "telegram startup announcement failed"),
+                                Ok(()) => {
+                                    tracing::info!(chat_id = %chat, "telegram startup announcement sent")
+                                }
+                                Err(e) => {
+                                    tracing::warn!(chat_id = %chat, error = %e, "telegram startup announcement failed")
+                                }
                             }
                         }
                     });
                 }
             } else {
-                tracing::warn!("Telegram startup announcement requested but telegram channel is not enabled/configured");
+                tracing::warn!(
+                    "Telegram startup announcement requested but telegram channel is not enabled/configured"
+                );
             }
         }
 
         if startup_announce_channels.iter().any(|c| c == "whatsapp") {
-            if let (Some(adapter), Some(wa_cfg)) = (state.whatsapp.clone(), config.channels.whatsapp.as_ref()) {
+            if let (Some(adapter), Some(wa_cfg)) =
+                (state.whatsapp.clone(), config.channels.whatsapp.as_ref())
+            {
                 let targets = wa_cfg.allowed_numbers.clone();
                 if targets.is_empty() {
                     tracing::warn!(
@@ -842,19 +852,27 @@ pub async fn bootstrap_with_config_path(
                                 })
                                 .await
                             {
-                                Ok(()) => tracing::info!(recipient = %number, "whatsapp startup announcement sent"),
-                                Err(e) => tracing::warn!(recipient = %number, error = %e, "whatsapp startup announcement failed"),
+                                Ok(()) => {
+                                    tracing::info!(recipient = %number, "whatsapp startup announcement sent")
+                                }
+                                Err(e) => {
+                                    tracing::warn!(recipient = %number, error = %e, "whatsapp startup announcement failed")
+                                }
                             }
                         }
                     });
                 }
             } else {
-                tracing::warn!("WhatsApp startup announcement requested but whatsapp channel is not enabled/configured");
+                tracing::warn!(
+                    "WhatsApp startup announcement requested but whatsapp channel is not enabled/configured"
+                );
             }
         }
 
         if startup_announce_channels.iter().any(|c| c == "signal") {
-            if let (Some(adapter), Some(sig_cfg)) = (state.signal.clone(), config.channels.signal.as_ref()) {
+            if let (Some(adapter), Some(sig_cfg)) =
+                (state.signal.clone(), config.channels.signal.as_ref())
+            {
                 let targets = sig_cfg.allowed_numbers.clone();
                 if targets.is_empty() {
                     tracing::warn!(
@@ -872,14 +890,20 @@ pub async fn bootstrap_with_config_path(
                                 })
                                 .await
                             {
-                                Ok(()) => tracing::info!(recipient = %number, "signal startup announcement sent"),
-                                Err(e) => tracing::warn!(recipient = %number, error = %e, "signal startup announcement failed"),
+                                Ok(()) => {
+                                    tracing::info!(recipient = %number, "signal startup announcement sent")
+                                }
+                                Err(e) => {
+                                    tracing::warn!(recipient = %number, error = %e, "signal startup announcement failed")
+                                }
                             }
                         }
                     });
                 }
             } else {
-                tracing::warn!("Signal startup announcement requested but signal channel is not enabled/configured");
+                tracing::warn!(
+                    "Signal startup announcement requested but signal channel is not enabled/configured"
+                );
             }
         }
 
@@ -967,18 +991,15 @@ pub async fn bootstrap_with_config_path(
 
     let public_routes = build_public_router(state);
 
-    let app = authed_routes
-        .merge(public_routes)
-        .layer(cors)
-        .layer(
-            GlobalRateLimitLayer::new(
-                u64::from(config.server.rate_limit_requests),
-                Duration::from_secs(config.server.rate_limit_window_secs),
-            )
-            .with_per_ip_capacity(u64::from(config.server.per_ip_rate_limit_requests))
-            .with_per_actor_capacity(u64::from(config.server.per_actor_rate_limit_requests))
-            .with_trusted_proxy_cidrs(&config.server.trusted_proxy_cidrs),
-        );
+    let app = authed_routes.merge(public_routes).layer(cors).layer(
+        GlobalRateLimitLayer::new(
+            u64::from(config.server.rate_limit_requests),
+            Duration::from_secs(config.server.rate_limit_window_secs),
+        )
+        .with_per_ip_capacity(u64::from(config.server.per_ip_rate_limit_requests))
+        .with_per_actor_capacity(u64::from(config.server.per_actor_rate_limit_requests))
+        .with_trusted_proxy_cidrs(&config.server.trusted_proxy_cidrs),
+    );
     Ok(app)
 }
 

@@ -240,7 +240,8 @@ impl Keystore {
         if let Ok(meta) = file.metadata() {
             use std::os::unix::fs::PermissionsExt;
             if meta.permissions().mode() & 0o777 != 0o600 {
-                let _ = std::fs::set_permissions(&audit_path, std::fs::Permissions::from_mode(0o600));
+                let _ =
+                    std::fs::set_permissions(&audit_path, std::fs::Permissions::from_mode(0o600));
             }
         }
 

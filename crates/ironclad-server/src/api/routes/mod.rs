@@ -20,6 +20,7 @@ use axum::{
 };
 use tokio::sync::RwLock;
 
+use crate::config_runtime::ConfigApplyStatus;
 use ironclad_agent::policy::PolicyEngine;
 use ironclad_agent::subagents::SubagentRegistry;
 use ironclad_browser::Browser;
@@ -34,7 +35,6 @@ use ironclad_llm::LlmService;
 use ironclad_llm::OAuthManager;
 use ironclad_plugin_sdk::registry::PluginRegistry;
 use ironclad_wallet::WalletService;
-use crate::config_runtime::ConfigApplyStatus;
 
 use ironclad_agent::approvals::ApprovalManager;
 use ironclad_agent::obsidian::ObsidianVault;
@@ -229,13 +229,12 @@ pub fn build_router(state: AppState) -> Router {
         browser_stop, change_agent_model, delete_provider_key, execute_plugin_tool,
         generate_deep_analysis, get_agents, get_available_models, get_cache_stats,
         get_capacity_stats, get_config, get_config_apply_status, get_config_capabilities,
-        get_costs, get_efficiency,
-        get_mcp_runtime, get_overview_timeseries, get_plugins, get_recommendations,
-        get_runtime_surfaces, get_transactions, list_discovered_agents, list_paired_devices,
-        mcp_client_disconnect, mcp_client_discover, pair_device, register_discovered_agent, roster,
-        set_provider_key, start_agent, stop_agent, toggle_plugin, unpair_device, update_config,
-        verify_discovered_agent, verify_paired_device, wallet_address, wallet_balance,
-        workspace_state,
+        get_costs, get_efficiency, get_mcp_runtime, get_overview_timeseries, get_plugins,
+        get_recommendations, get_runtime_surfaces, get_transactions, list_discovered_agents,
+        list_paired_devices, mcp_client_disconnect, mcp_client_discover, pair_device,
+        register_discovered_agent, roster, set_provider_key, start_agent, stop_agent,
+        toggle_plugin, unpair_device, update_config, verify_discovered_agent, verify_paired_device,
+        wallet_address, wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
@@ -446,6 +445,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use crate::rate_limit::GlobalRateLimitLayer;
     use axum::Json;
     use axum::body::Body;
     use axum::extract::{Query, State as AxumState};
@@ -468,7 +468,6 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
     use tower::ServiceExt;
-    use crate::rate_limit::GlobalRateLimitLayer;
 
     use ironclad_agent::approvals::ApprovalManager;
     use ironclad_agent::tools::ToolRegistry;
@@ -1927,7 +1926,10 @@ params = { path = "README.md" }
         assert_eq!(replay.status(), StatusCode::OK);
 
         let after = state.channel_router.dead_letters(10).await;
-        assert!(after.is_empty(), "item should no longer be in dead-letter state");
+        assert!(
+            after.is_empty(),
+            "item should no longer be in dead-letter state"
+        );
     }
 
     #[tokio::test]
@@ -2732,10 +2734,7 @@ params = { path = "README.md" }
         let body = json_body(resp).await;
         assert_eq!(body["providers"]["google"]["status"], "ok");
         assert_eq!(body["proxy"]["mode"], "in_process");
-        assert_eq!(
-            body["proxy"]["legacy_loopback_support"],
-            "removed_v0_8"
-        );
+        assert_eq!(body["proxy"]["legacy_loopback_support"], "removed_v0_8");
         assert!(
             body["models"]
                 .as_array()

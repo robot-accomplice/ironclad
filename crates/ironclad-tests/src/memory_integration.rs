@@ -1,6 +1,6 @@
+use ironclad_agent::context::ComplexityLevel;
 use ironclad_agent::memory::MemoryBudgetManager;
 use ironclad_agent::retrieval::MemoryRetriever;
-use ironclad_agent::context::ComplexityLevel;
 use ironclad_core::config::MemoryConfig;
 use ironclad_db::Database;
 
@@ -199,7 +199,8 @@ fn scoped_sessions_remain_isolated_between_peer_and_group() {
         channel: "telegram".into(),
     };
 
-    let peer_session = ironclad_db::sessions::find_or_create(&db, "scope-agent", Some(&peer_scope)).unwrap();
+    let peer_session =
+        ironclad_db::sessions::find_or_create(&db, "scope-agent", Some(&peer_scope)).unwrap();
     let group_session =
         ironclad_db::sessions::find_or_create(&db, "scope-agent", Some(&group_scope)).unwrap();
     assert_ne!(peer_session, group_session);
