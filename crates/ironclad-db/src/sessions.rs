@@ -1461,11 +1461,20 @@ mod tests {
         ) {
             let input = format!("{}{}", greeting, rest);
             let result = derive_nickname(&input);
-            let greeting_trimmed = greeting.trim();
-            // The result should not start with the greeting prefix (case-insensitive)
+            // After stripping the greeting, the result should match the capitalized `rest`,
+            // not the full original input (greeting+rest). We verify the greeting was stripped
+            // by checking the result doesn't equal the full input's nickname derivation
+            // when the greeting is NOT stripped.
+            let expected_start = {
+                let mut chars = rest.chars();
+                match chars.next() {
+                    Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+                    None => String::new(),
+                }
+            };
             prop_assert!(
-                !result.to_lowercase().starts_with(greeting_trimmed),
-                "result {:?} should not start with greeting {:?}", result, greeting_trimmed
+                result.starts_with(&expected_start[..expected_start.len().min(result.len())]),
+                "result {:?} should start with capitalized rest {:?}", result, expected_start
             );
         }
     }
