@@ -13,6 +13,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-core.md` | 1 (flowchart) | 1 missing module, 18+ missing config structs | 0 | 0 | 2 stale labels (error variant count, ChannelsConfig fields) | Drifted |
 | `ironclad-c4-db.md` | 1 (flowchart) | 3 missing modules | 0 | 0 | 1 stale "Depended on by" list | Drifted |
 | `ironclad-c4-llm.md` | 1 (flowchart) | 1 phantom module (transform.rs not in pub mod), 1 missing top-level struct (LlmService) | 0 | 0 | 0 | Minor drift |
+| `ironclad-c4-agent.md` | 2 (flowchart + sequence) | 0 missing modules | 0 | 0 | 0 | Accurate |
 
 ## Detailed Findings
 
@@ -545,3 +546,64 @@ individual modules. However, it is the primary public API surface of the crate.
   order documented in the Request Pipeline section.
 - The detail subgraphs provide useful function-level documentation that matches the
   actual code.
+
+### ironclad-c4-agent.md
+
+**Audit scope:** All nodes in the Mermaid `flowchart TB` block (lines 11-182), the
+sequence diagram (lines 186-232), and the Dependencies section, cross-referenced
+against v0.8.0 source code in `crates/ironclad-agent/src/`.
+
+**Method:** Compared every component node and detail subgraph in the diagram against
+the actual `lib.rs` `pub mod` declarations and source files.
+
+#### Result: Fully accurate
+
+All 31 `pub mod` modules in `lib.rs` have corresponding component nodes in the
+diagram. Every source file in `src/` is represented. The diagram includes detail
+subgraphs for the most significant modules (loop, tools, policy, injection, prompt,
+context, memory, retrieval, skills, script_runner, analyzer, orchestration, obsidian)
+and grouped summaries for smaller modules.
+
+| Code Module | Diagram Node | Status |
+|---|---|---|
+| `agent_loop` (loop.rs) | `LOOP` | OK |
+| `tools` | `TOOLS` | OK |
+| `policy` | `POLICY` | OK |
+| `prompt` | `PROMPT` | OK |
+| `context` | `CONTEXT` | OK |
+| `injection` | `INJECTION` | OK |
+| `memory` | `MEMORY` | OK |
+| `retrieval` | `RETRIEVAL` | OK |
+| `skills` | `SKILLS_MOD` | OK |
+| `script_runner` | `SCRIPT_RUN` | OK |
+| `approvals` | `APPROVALS` | OK |
+| `interview` | `INTERVIEW` | OK |
+| `subagents` | `SUBAGENTS` | OK |
+| `analyzer` | `ANALYZER` | OK |
+| `recommendations` | `RECOMMENDATIONS` | OK |
+| `workspace` | `WORKSPACE` | OK |
+| `knowledge` | `KNOWLEDGE` | OK |
+| `discovery` | `DISCOVERY` | OK |
+| `digest` | `DIGEST` | OK |
+| `device` | `DEVICE` | OK |
+| `governor` | `GOVERNOR` | OK |
+| `manifest` | `MANIFEST` | OK |
+| `services` | `SERVICES` | OK |
+| `orchestration` | `ORCHESTRATION` | OK |
+| `mcp` | `MCP` | OK |
+| `spawning` | `SPAWNING` | OK |
+| `speculative` | `SPECULATIVE` | OK |
+| `typestate` | `TYPESTATE` | OK |
+| `wasm` | `WASM` | OK |
+| `obsidian` | `VAULT` (in subgraph) | OK |
+| `obsidian_tools` | `OBS_READ/WRITE/SEARCH` (in subgraph) | OK |
+
+#### Notes
+
+- This is the **most comprehensive** C4 component diagram in the project. Despite
+  the agent crate being the largest (31 modules, ~400K bytes total), every module is
+  accounted for.
+- The sequence diagram accurately represents the ReAct loop flow including all 4
+  injection layers, skill matching, embedding, retrieval, and persistence.
+- The dependency section correctly states ironclad-core, ironclad-db, ironclad-llm.
+- No bugs filed -- diagram is current.
