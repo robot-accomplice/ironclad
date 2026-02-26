@@ -17,6 +17,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-wallet.md` | 2 (flowchart + sequence) | 0 | 0 | 0 | 1 (money.rs misplaced as wallet.rs child) | Minor drift |
 | `ironclad-c4-channels.md` | 2 (flowchart + sequence) | 0 | 0 | 0 | 1 stale dep list, 1 stale struct field names | Drifted |
 | `ironclad-c4-schedule.md` | 2 (flowchart + sequence) | 0 | 0 | 1 (agentTurn is legacy noop) | 1 stale enum variant count | Minor drift |
+| `ironclad-c4-server.md` | 1 (flowchart) | 5 missing modules from diagram (present in table) | 0 | 0 | 0 | Drifted |
 
 ## Detailed Findings
 
@@ -771,3 +772,63 @@ configure scheduled agent interactions.
   the Post-Execution subgraph (UPDATE cron_jobs, INSERT cron_runs).
 - The Wake Signal Flow sequence diagram describes MPSC channel integration that is
   implemented in `heartbeat.rs` via the wallet and agent governor imports.
+
+### ironclad-c4-server.md
+
+**Audit scope:** All nodes in the Mermaid `flowchart TB` block (lines 10-78), the API
+Route Map table (lines 84-143), the Server Module Layout table (lines 145-169), the CLI
+Commands section, and the Dependencies section, cross-referenced against v0.8.0 source
+code in `crates/ironclad-server/src/`.
+
+**Method:** Compared every component node and detail subgraph in the diagram against the
+actual `lib.rs` `pub mod` declarations and source file listing. Cross-referenced the
+API Route Map and Module Layout tables against the actual code.
+
+#### Modules shown in diagram (5)
+
+| Diagram Module | Code Evidence | Status |
+|---|---|---|
+| `main.rs` | `main.rs` (entry point) | OK |
+| `api/routes/` | `pub mod api` in lib.rs | OK |
+| `dashboard.rs` | `pub mod dashboard` in lib.rs | OK |
+| `ws.rs` | `pub mod ws` in lib.rs | OK |
+| `cli/` | `pub mod cli` in lib.rs | OK |
+
+#### SERVER-1: 5 pub modules missing from diagram component nodes
+
+`lib.rs` declares 10 `pub mod` entries. The Mermaid diagram's top-level `IroncladServer`
+subgraph shows only 5 nodes (main.rs, api, dashboard, ws, cli). The following 5 modules
+have no diagram component node:
+
+- `auth` -- API key authentication middleware layer (mentioned only in Server Module
+  Layout table as `auth.rs`)
+- `config_runtime` -- Runtime configuration hot-reload (added post-v0.5.0)
+- `daemon` -- Daemon install/status/uninstall (mentioned in table as `daemon.rs`)
+- `migrate` -- Migration engine, skill import/export (mentioned in table as
+  `migrate/*.rs`)
+- `plugins` -- Plugin registry initialization (mentioned in table as `plugins.rs`)
+- `rate_limit` -- Global + per-IP rate limiting middleware (mentioned in table as
+  `rate_limit.rs`)
+
+Note: `config_runtime` is 6th missing module but may have been added after v0.5.0. The
+other 5 modules (`auth`, `daemon`, `migrate`, `plugins`, `rate_limit`) are all mentioned
+in the Server Module Layout table, so they are documented but not visible in the diagram.
+
+**Impact:** Medium. The diagram's component view is incomplete -- it shows only 5 of 10
+modules. Security-relevant modules (`auth`, `rate_limit`) and operational modules
+(`daemon`, `plugins`, `migrate`) are invisible in the visual diagram despite being
+documented in the table.
+
+#### Notes
+
+- The **Server Module Layout** table is comprehensive and accurately lists all source
+  files with their responsibilities. It compensates for the diagram's incomplete module
+  coverage.
+- The **API Route Map** table (54 routes) appears thorough and matches the actual route
+  structure.
+- The **Bootstrap Sequence** detail subgraph (steps 1-12) matches the actual bootstrap
+  flow in `lib.rs::bootstrap()`.
+- The **CLI Commands** section is comprehensive.
+- Dependencies are correctly listed: "All workspace crates".
+- The diagram is better understood as a high-level architecture overview rather than a
+  complete module inventory. The table sections provide the detail that the diagram lacks.
