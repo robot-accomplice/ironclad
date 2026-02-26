@@ -64,6 +64,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install just
+        run: cargo install just --locked
       - name: Run focused regression battery
         run: just test-regression
 
@@ -75,6 +77,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install just
+        run: cargo install just --locked
       - name: Release-critical battery
         run: just test-release-critical
       - name: Provenance generator self-test
@@ -101,8 +105,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install nightly toolchain for fuzzing
         run: rustup toolchain install nightly --profile minimal
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+      - name: Install just and cargo-fuzz
+        run: cargo install just cargo-fuzz --locked
       - name: Run soak/fuzz battery
         env:
           SOAK_ROUNDS: "4"
@@ -117,6 +121,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install just
+        run: cargo install just --locked
       - name: Run release doc gate
         env:
           RELEASE_TARGET_VERSION: ${{ needs.preflight.outputs.version }}
