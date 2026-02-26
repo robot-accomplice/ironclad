@@ -95,6 +95,16 @@ pub fn classify_turn(
 }
 
 /// Ingests a completed turn into the appropriate memory tiers.
+///
+/// # Silent Degradation
+///
+/// This function returns `()` by design: each `db.store_*()` call is
+/// independently wrapped in `if let Err(e) = ... { warn!(...) }`, so any
+/// combination of memory-tier writes can fail without aborting the turn.
+/// This is intentional -- memory ingestion runs in a background
+/// `tokio::spawn` and must not block the response path.  A future
+/// improvement could return a count of failed operations for
+/// observability (see BUG-060 in the bug ledger).
 pub fn ingest_turn(
     db: &ironclad_db::Database,
     session_id: &str,
