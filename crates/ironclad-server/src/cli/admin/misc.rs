@@ -23,11 +23,8 @@ fn prompt_yes_no(question: &str) -> bool {
     matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
-fn path_contains_dir(dir: &Path) -> bool {
-    let Some(path_var) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path_var).any(|p| {
+fn path_contains_dir_in(dir: &Path, path_var: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(path_var).any(|p| {
         #[cfg(windows)]
         {
             p.to_string_lossy().to_ascii_lowercase() == dir.to_string_lossy().to_ascii_lowercase()
@@ -39,10 +36,17 @@ fn path_contains_dir(dir: &Path) -> bool {
     })
 }
 
-fn go_bin_candidates() -> Vec<PathBuf> {
+fn path_contains_dir(dir: &Path) -> bool {
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    path_contains_dir_in(dir, &path_var)
+}
+
+fn go_bin_candidates_with(gopath: Option<&str>) -> Vec<PathBuf> {
     let mut out = Vec::new();
 
-    if let Ok(gopath) = std::env::var("GOPATH") {
+    if let Some(gopath) = gopath {
         out.push(PathBuf::from(gopath).join("bin"));
     }
 
@@ -59,16 +63,24 @@ fn go_bin_candidates() -> Vec<PathBuf> {
     out
 }
 
-fn find_gosh_in_go_bins() -> Option<PathBuf> {
+fn go_bin_candidates() -> Vec<PathBuf> {
+    go_bin_candidates_with(std::env::var("GOPATH").ok().as_deref())
+}
+
+fn find_gosh_in_go_bins_with(gopath: Option<&str>) -> Option<PathBuf> {
     #[cfg(windows)]
     let gosh_name = "gosh.exe";
     #[cfg(not(windows))]
     let gosh_name = "gosh";
 
-    go_bin_candidates()
+    go_bin_candidates_with(gopath)
         .into_iter()
         .map(|d| d.join(gosh_name))
         .find(|p| p.is_file())
+}
+
+fn find_gosh_in_go_bins() -> Option<PathBuf> {
+    find_gosh_in_go_bins_with(std::env::var("GOPATH").ok().as_deref())
 }
 
 fn recent_log_snapshot(log_dir: &Path, max_bytes: usize) -> Option<String> {
@@ -2024,14 +2036,12 @@ mod tests {
 
     #[test]
     fn path_contains_dir_and_go_bin_detection() {
-        let _lock = env_lock().lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let _path_guard = EnvGuard::set("PATH", dir.path().to_str().unwrap());
-        assert!(path_contains_dir(dir.path()));
-        assert!(!path_contains_dir(Path::new("/definitely/not/here")));
+        let path_var = std::ffi::OsString::from(dir.path().to_str().unwrap());
+        assert!(path_contains_dir_in(dir.path(), &path_var));
+        assert!(!path_contains_dir_in(Path::new("/definitely/not/here"), &path_var));
 
         let gopath = tempfile::tempdir().unwrap();
-        let _gopath_guard = EnvGuard::set("GOPATH", gopath.path().to_str().unwrap());
         let bin_dir = gopath.path().join("bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
         #[cfg(windows)]
@@ -2039,7 +2049,7 @@ mod tests {
         #[cfg(not(windows))]
         let gosh = bin_dir.join("gosh");
         std::fs::write(&gosh, "stub").unwrap();
-        assert_eq!(find_gosh_in_go_bins(), Some(gosh));
+        assert_eq!(find_gosh_in_go_bins_with(gopath.path().to_str()), Some(gosh));
     }
 
     #[test]

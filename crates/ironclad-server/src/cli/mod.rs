@@ -314,7 +314,7 @@ pub(crate) fn urlencoding(s: &str) -> String {
         .replace('#', "%23")
 }
 
-fn which_binary_in_path(name: &str, path_var: &std::ffi::OsStr) -> Option<String> {
+pub(crate) fn which_binary_in_path(name: &str, path_var: &std::ffi::OsStr) -> Option<String> {
     let candidates: Vec<String> = {
         #[cfg(windows)]
         {
@@ -443,11 +443,13 @@ mod tests {
     }
     #[test]
     fn which_binary_finds_sh() {
-        assert!(which_binary("sh").is_some());
+        let path = std::env::var_os("PATH").expect("PATH must be set");
+        assert!(which_binary_in_path("sh", &path).is_some());
     }
     #[test]
     fn which_binary_returns_none_for_nonsense() {
-        assert!(which_binary("__ironclad_nonexistent_binary_98765__").is_none());
+        let path = std::env::var_os("PATH").expect("PATH must be set");
+        assert!(which_binary_in_path("__ironclad_nonexistent_binary_98765__", &path).is_none());
     }
 
     #[cfg(windows)]

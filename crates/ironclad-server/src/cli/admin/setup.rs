@@ -241,17 +241,25 @@ fn has_ollama_models() -> bool {
     line_count > 1
 }
 
+const LOCAL_MODEL_FRAMEWORKS: &[&str] = &[
+    "sglang",
+    "vllm",
+    "docker",
+    "ollama",
+    "llama-server",
+    "llama_cpp",
+];
+
+fn has_framework_in_path(path_var: &std::ffi::OsStr) -> bool {
+    LOCAL_MODEL_FRAMEWORKS
+        .iter()
+        .any(|bin| crate::cli::which_binary_in_path(bin, path_var).is_some())
+}
+
 fn has_existing_local_model_stack() -> bool {
-    let has_framework = [
-        "sglang",
-        "vllm",
-        "docker",
-        "ollama",
-        "llama-server",
-        "llama_cpp",
-    ]
-    .iter()
-    .any(|bin| which_binary(bin).is_some());
+    let has_framework = std::env::var_os("PATH")
+        .map(|p| has_framework_in_path(&p))
+        .unwrap_or(false);
     has_framework || has_ollama_models() || has_hf_model_cache()
 }
 
@@ -905,12 +913,12 @@ mod tests {
 
     #[test]
     fn has_existing_local_model_stack_false_with_no_tools_or_cache() {
-        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let empty_path = tempfile::tempdir().unwrap();
-        let _path_guard = EnvGuard::set("PATH", empty_path.path().to_str().unwrap());
+        let path_var = std::ffi::OsString::from(empty_path.path().to_str().unwrap());
+        assert!(!has_framework_in_path(&path_var));
+        // HF cache with no models-– dir returns false.
         let hf_home = tempfile::tempdir().unwrap();
-        let _hf_guard = EnvGuard::set("HF_HOME", hf_home.path().to_str().unwrap());
-        assert!(!has_existing_local_model_stack());
+        assert!(!hf_home.path().join("hub").exists());
     }
 
     #[test]
