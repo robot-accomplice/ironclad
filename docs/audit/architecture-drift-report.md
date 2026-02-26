@@ -952,3 +952,97 @@ the integration point between plugins and the agent.
 - The `PluginInfo` struct and `DiscoveredPlugin` struct documented in the Types table are
   accurate.
 - Internal dependency is correctly listed as `ironclad-core` only (confirmed by Cargo.toml).
+
+---
+
+## Audit Conclusions
+
+### Scope
+
+This audit reviewed all 12 C4 architecture diagrams (2 system-level + 10 crate-level
+component diagrams) against the v0.8.0 codebase. The diagrams were last updated between
+v0.5.0 and v0.6.0, representing approximately 2 major versions of drift.
+
+### Results by Diagram
+
+| Status | Count | Diagrams |
+|--------|-------|----------|
+| **Accurate** | 2 | agent, browser |
+| **Minor drift** | 3 | llm, wallet, schedule |
+| **Drifted** | 7 | system-context, container, core, db, channels, server, plugin-sdk |
+
+### Bug Statistics
+
+- **Total bugs filed:** 33 (BUG-001 through BUG-033)
+- **Medium severity:** 20
+- **Low severity:** 13
+- **Critical/High:** 0
+
+### Top Drift Patterns
+
+1. **Missing external system nodes (7 bugs, BUG-001--007):** The system context diagram was
+   written when only Telegram, WhatsApp, and WebSocket channels existed. Discord, Signal,
+   Email, Voice, Chrome/Chromium, OpenRouter, and Google Generative AI all lack diagram
+   representation.
+
+2. **Stale dependency lists and arrows (7 bugs, BUG-011--015, 027, 033):** The container
+   and component diagrams have incorrect, missing, or spurious dependency arrows. The most
+   significant is the spurious `channels -> agent` arrow (no such dependency exists) and the
+   missing `channels -> db` arrow (real dependency, invisible in diagrams).
+
+3. **Missing modules from component diagrams (6 bugs, BUG-016, 020--022, 031, and implicit
+   in BUG-019):** As crates grew from v0.5.0 to v0.8.0, new modules were added without
+   updating the corresponding diagrams. The db crate gained 4 modules (approvals,
+   delivery_queue, efficiency, model_selection), the core crate gained input_capability_scan,
+   and the server gained 5 visual module nodes (auth, config_runtime, daemon, migrate,
+   plugins, rate_limit).
+
+4. **Stale labels and field counts (8 bugs, BUG-008--010, 017--018, 028--029, 032):**
+   Enum variant counts, struct field lists, and descriptive labels fell out of date as code
+   evolved. The most impactful are the ChannelsConfig fields (BUG-018, shows 2 of 8+
+   fields), the InboundMessage/OutboundMessage fields (BUG-028, completely different field
+   names), and ToolDef fields (BUG-032, missing security-relevant risk_level and
+   permissions).
+
+5. **Behavioral drift (1 bug, BUG-030):** The schedule diagram shows `agentTurn` as an
+   active execution pathway, but the code treats it as a deprecated noop.
+
+### Crates Most Affected
+
+| Crate | Bug Count | Most Significant Issue |
+|-------|-----------|----------------------|
+| docs (system-context) | 10 | 7 missing external system nodes |
+| docs (container) | 5 | Spurious and missing dependency arrows |
+| ironclad-core | 4 | 18+ missing config structs |
+| ironclad-db | 4 | efficiency module (25K bytes) invisible |
+| ironclad-server | 1 | 5 of 10 modules missing from visual diagram |
+| ironclad-channels | 2 | Struct field names completely wrong |
+| ironclad-plugin-sdk | 2 | Security-relevant ToolDef fields missing |
+| ironclad-schedule | 2 | Deprecated feature shown as active |
+| ironclad-llm | 2 | Dead code file shown in diagram |
+| ironclad-wallet | 1 | Module hierarchy misplacement |
+| ironclad-agent | 0 | -- |
+| ironclad-browser | 0 | -- |
+
+### Recommendations
+
+1. **Immediate (before v0.8.1):** Fix the 3 most misleading issues:
+   - BUG-011: Remove the spurious `channels -> agent` arrow in the container diagram
+   - BUG-028: Update InboundMessage/OutboundMessage field names in the channels diagram
+   - BUG-030: Mark `agentTurn` as deprecated/noop in the schedule diagram
+
+2. **Short-term (v0.9.0 planning):** Update all 7 "Drifted" diagrams to reflect v0.8.0:
+   - Add missing external system nodes to system-context diagram
+   - Fix dependency arrows in container diagram
+   - Add missing modules to core, db, server, and plugin-sdk diagrams
+
+3. **Process improvement:** Consider adding a diagram freshness check to the release
+   checklist. Each diagram already has a version tag in its header -- a CI lint could flag
+   diagrams whose version is more than 1 minor release behind the crate version.
+
+### Diagrams That Need No Changes
+
+- **ironclad-c4-agent.md** -- Fully accurate despite being the largest diagram (31 modules).
+  This is the gold standard for diagram maintenance.
+- **ironclad-c4-browser.md** -- Fully accurate. All 4 modules, 12 action variants, and
+  types match perfectly.
