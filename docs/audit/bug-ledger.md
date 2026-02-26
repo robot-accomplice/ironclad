@@ -7,9 +7,9 @@
 | Severity | Open | In Progress | Fixed | Verified |
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
-| High     | 2    | 0           | 0     | 0        |
-| Medium   | 1    | 0           | 32    | 0        |
-| Low      | 0    | 0           | 28    | 0        |
+| High     | 3    | 0           | 0     | 0        |
+| Medium   | 3    | 0           | 32    | 0        |
+| Low      | 2    | 0           | 28    | 0        |
 
 ## Entries
 
@@ -78,3 +78,8 @@
 | BUG-061 | user-report | ironclad-channels | T4 | High | parity violation | Telegram channel exhibits canned/repetitive agent responses that do not appear on other channels; agent delegation reports appear incorrect (tasks not correctly delegated to subagents) — Telegram-specific; all channels should follow the same path through proxy to models with only routing varying | `crates/ironclad-channels/src/telegram.rs`, `crates/ironclad-agent/src/lib.rs` | Open |
 | BUG-062 | user-report | ironclad-channels | T4 | High | parity violation | Agent task delegation confidence is low through Telegram — subagent dispatch reports may be fabricated or stale; need to trace full request→agent→subagent→response path comparing Telegram vs WebSocket/HTTP to identify where divergence occurs | `crates/ironclad-agent/src/lib.rs`, `crates/ironclad-channels/src/telegram.rs` | Open |
 | BUG-063 | user-report | ironclad-server | T5 | Medium | platform delta | Windows installation historically problematic (executable replacement, daemon/service behavior); needs end-to-end validation on Windows platform — currently under active testing | `crates/ironclad-server/src/daemon.rs`, build scripts | Open |
+| BUG-064 | static-analysis | ironclad-llm | T2 | High | anti-pattern | SECURITY TODO: OAuth tokens stored as plaintext JSON in `~/.ironclad/oauth_tokens.json`; comment explicitly states encryption via Keystore is required before GA; tokens for LLM provider OAuth flows are at risk of disclosure if filesystem is compromised | `crates/ironclad-llm/src/oauth.rs` line 31 | Open |
+| BUG-065 | static-analysis | ironclad-plugin-sdk | T4 | Medium | anti-pattern | Plugin `permissions` field is declared in `PluginManifest` and parsed from TOML but explicitly NOT enforced at runtime; a plugin declaring `permissions = ["filesystem"]` currently has no sandbox restriction applied; TODO comment acknowledges gap | `crates/ironclad-plugin-sdk/src/manifest.rs` line 19 | Open |
+| BUG-066 | static-analysis | ironclad-agent | T3 | Medium | supply-chain | Yanked crates `crypto-common` 0.2.0 and `digest` 0.11.0 in dependency tree via `wasmer-types` -> `sha2` 0.11.0-rc.5; yanked crates may contain known bugs or security issues; `cargo update -p digest -p crypto-common` should pull non-yanked versions | `Cargo.lock` lines 124, 144 | Open |
+| BUG-067 | static-analysis | ironclad-core | T0 | Low | clippy | Keystore mutex guards (`MutexGuard`) held longer than necessary in 5 methods (`set`, `remove`, `import`, `save`); `significant_drop_tightening` lint; guard scope extends past last use, increasing lock contention window in security-critical keystore code | `crates/ironclad-core/src/keystore.rs` lines 122, 145, 179, 272, 277 | Open |
+| BUG-068 | static-analysis | ironclad-core | T0 | Low | clippy | `Peekable` iterator created but `peek()` never called in `typewrite_chars()` at 2 locations; suggests incomplete refactor — the `.peekable()` call allocates tracking state that is never used; either the peek-based logic was removed or was never implemented | `crates/ironclad-core/src/style.rs` lines 249, 284 | Open |
