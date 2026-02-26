@@ -9,7 +9,7 @@
 | Critical | 0    | 0           | 0     | 0        |
 | High     | 0    | 0           | 0     | 0        |
 | Medium   | 32   | 0           | 0     | 0        |
-| Low      | 26   | 0           | 0     | 0        |
+| Low      | 28   | 0           | 0     | 0        |
 
 ## Entries
 
@@ -73,3 +73,5 @@
 | BUG-056 | audit-cb | ironclad-llm | T2 | Low | doc drift | `preemptive_half_open` field in `CircuitBreaker` (circuit.rs line 27) allows capacity pressure to soft-transition Closed to effective HalfOpen via `set_capacity_pressure()` (line 186); none of the three sequence diagrams in circuit-breaker-audit.md show this fourth state transition pattern | `docs/architecture/circuit-breaker-audit.md` diagrams 1-3 | Open |
 | BUG-057 | audit-cb | ironclad-core | T0 | Low | dead config | `CircuitBreakerConfig::credit_cooldown_seconds` (config.rs line 751, default 300s) is never read by `circuit.rs`; `CircuitBreaker::new()` only uses `cooldown_seconds` and `max_cooldown_seconds`; credit-tripped breakers use boolean `credit_tripped` to prevent auto-recovery entirely, making a separate cooldown moot | `crates/ironclad-core/src/config.rs` line 751 | Open |
 | BUG-058 | audit-rt | docs | -- | Medium | doc drift | Router audit flowchart shows `E2 -> X2` and `E4 -> X2` where X2 is "single provider call (stream/interview paths)" but v0.8.0 E2 (streaming) and E4 (interview) both use bounded fallback via `infer_with_fallback()`; X2 node should be removed entirely from diagram | `docs/architecture/router-audit.md` flowchart | Open |
+| BUG-059 | audit-wiring | ironclad-wallet | T3 | Low | vestigial dep | `ironclad-wallet/Cargo.toml` declares `ironclad-db` as a dependency but no source file in the crate imports anything from `ironclad_db`; dependency is vestigial and should be removed to keep the dependency graph minimal | `crates/ironclad-wallet/Cargo.toml` | Open |
+| BUG-060 | audit-wiring | ironclad-agent | T3 | Low | silent degrade | `agent::memory::ingest_turn()` returns `()` instead of `Result<()>`; five independent `db.store_*()` calls are each wrapped in `if let Err(e) = ... { warn!(...) }`, meaning any combination of memory-ingestion failures is silently degraded with no caller visibility; consider returning a `Result` or at minimum a count of failed operations | `crates/ironclad-agent/src/memory.rs` ~line 95-154 | Open |
