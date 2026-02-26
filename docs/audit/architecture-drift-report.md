@@ -21,6 +21,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-browser.md` | 1 (flowchart) | 0 | 0 | 0 | 0 | Accurate |
 | `ironclad-c4-plugin-sdk.md` | 1 (flowchart) | 0 | 0 | 0 | 1 stale ToolDef fields, 1 stale dep-by list | Drifted |
 | `ironclad-dataflow.md` | 20 (flowcharts) | 0 | 0 | 4 behavioral mismatches | 5 stale counts/labels | Drifted |
+| `ironclad-sequences.md` | 13 (sequence diagrams) | 1 unimplemented diagram (TLS) | 0 | 3 behavioral mismatches | 8 stale counts/labels, 4 phantom types, 2 wrong table names | Drifted |
 
 ## Detailed Findings
 
@@ -1199,3 +1200,175 @@ for cross-reference with the sequence diagram audit.
 9, 10, 11, 15, 17, 18, 19. This is a notably better accuracy rate than the C4 component
 diagrams, suggesting the dataflow diagrams were maintained more recently or describe more
 stable subsystems.
+
+---
+
+### ironclad-sequences.md
+
+**Audit scope:** All 13 cross-crate sequence diagrams plus the cross-reference matrix
+(lines 1-918), cross-referenced against v0.8.0 source code across all crates. Version
+tags in the diagrams claim v0.5.0; the document has not been updated for v0.8.0.
+
+#### Sequence diagrams confirmed accurate
+
+7 of 13 sequence diagrams are accurate with no meaningful drift:
+
+| # | Diagram | Status |
+|---|---------|--------|
+| 1 | End-to-End Request Lifecycle | Accurate -- participant ordering, function labels, injection layers, cache levels, memory retrieval, prompt HMAC, and ReAct loop all match v0.8.0 code |
+| 2 | Cache-Augmented Inference Pipeline | Accurate -- SemanticCache L1/L2/L3 levels, n-gram cosine fallback, tool-TTL, and provider deduplication match `cache.rs` |
+| 3 | x402 Payment-Gated Inference | Accurate -- X402Handler, parse_payment_requirements, build_payment_header, wallet sign_message all confirmed in `x402.rs` |
+| 5 | Injection Attack Blocked | Accurate -- L1-L4 layers, ThreatScore thresholds, scan_output L4, HMAC trust boundaries all match `injection.rs` |
+| 6 | Skill-Triggered Script Execution | Accurate -- skill matching, policy evaluation, sandboxed execution confirmed |
+| 8 | Approval Workflow: Gated Tool Execution | Accurate -- ApprovalManager, oneshot channel, EventBus, timeout handling all confirmed in `approvals.rs` |
+| 13 | Browser Tool: CDP Session Lifecycle | Accurate -- BrowserManager, CdpSession, Target.createTarget, idle timeout all confirmed in `ironclad-browser/` |
+
+#### SQ-1: Title and step count mismatch -- "13-Step Bootstrap" is 12 steps
+
+**Diagram 4** (line 285) is titled "13-Step Bootstrap Sequence" but `main.rs` line 1388
+declares `const STEPS: u32 = 12` and the step calls go from `step(1)` through
+`step(12)`. The diagram itself actually shows steps 1-12 plus "Step 12: Await shutdown"
+which is correct content-wise, but the title claims 13. The cross-reference matrix
+(line 899) also says "13-Step Bootstrap".
+
+**Impact:** Medium -- the title creates a search/reference mismatch. Developers looking
+for "step 13" will find nothing.
+
+#### SQ-2: Stale sub-struct count -- "14 sub-structs" vs ~30 actual
+
+**Diagram 4** line 307 says `parse all 14 sub-structs, validate budget pct sum=100`.
+The actual `IroncladConfig` struct in `config.rs` lines 101-160 has approximately 30
+sub-struct fields. The budget pct sum=100 validation IS correct (confirmed at config.rs
+lines 374-382), but the sub-struct count is stale since v0.5.0.
+
+**Impact:** Low -- the count is informational; the validation behavior is correct.
+
+#### SQ-3: Stale table count -- "28 tables" vs 34 actual
+
+**Diagram 4** line 313 says `run_migrations() (28 tables incl. indexes + FTS5)` but
+`schema.rs` line 587 comments say 34 tables total (30 regular + FTS5 + sub_agents +
+hippocampus + turn_feedback + context_snapshots + model_selection_events). The count
+was accurate at v0.5.0 but grew significantly since.
+
+**Impact:** Low -- informational count; migration behavior is correct.
+
+#### SQ-4: Stale tool count -- "10 categories" vs ~8 individual tools
+
+**Diagram 4** line 339 says `register built-in tools (10 categories)`. The actual
+`ToolRegistry` in `lib.rs` lines 473-491 registers approximately 8 individual tools
+plus optional Obsidian tools. The number "10 categories" does not match any
+observable grouping in the code.
+
+**Impact:** Low -- informational label; tool registration behavior is correct.
+
+#### SQ-5: Wrong scheduler struct name -- "DurableScheduler::start" vs HeartbeatDaemon::new
+
+**Diagram 4** line 349 says `DurableScheduler::start(config, db, agent)`. The actual
+code at `main.rs` line 1543 uses `HeartbeatDaemon::new(60_000)`. `DurableScheduler`
+does exist as a struct in `scheduler.rs` line 7, but it is a stateless utility for
+cron/interval evaluation, not the daemon. The daemon is `HeartbeatDaemon`. The diagram
+also implies `DurableScheduler::start()` takes `(config, db, agent)` args; in reality
+`HeartbeatDaemon::new()` takes only `interval_ms`.
+
+**Impact:** Medium -- developers trying to trace startup would look for a
+`DurableScheduler::start()` call that does not exist.
+
+#### SQ-6: Stale default task count -- "6 default tasks" vs 8 actual
+
+**Diagram 4** line 351 says `register 6 default tasks`. The actual `default_tasks()` in
+`heartbeat.rs` lines 76-87 returns 8 tasks: SurvivalCheck, UsdcMonitor, YieldTask,
+MemoryPrune, CacheEvict, MetricSnapshot, AgentCardRefresh, SessionGovernor. Same root
+cause as BUG-029 and BUG-037.
+
+**Impact:** Low -- informational count; heartbeat behavior is correct.
+
+#### SQ-7: Massively stale route count -- "42 REST API routes" vs ~98 actual
+
+**Diagram 4** line 366 says `mount 42 REST API routes + dashboard SPA + WebSocket
+upgrade`. The actual router in `routes/mod.rs` lines 293-456 mounts 98 `.route()` calls
+covering 95 distinct `/api/` paths plus `/`, `/.well-known/agent.json`, and a Telegram
+webhook. The count has more than doubled since v0.5.0 with additions for approvals,
+interviews, runtime surfaces, MCP, devices, subagents, and more.
+
+**Impact:** Low -- informational count; routing behavior is correct.
+
+#### SQ-8: agentTurn shown as active execution -- is legacy noop
+
+**Diagram 7** (Cron Lease Acquisition) lines 571-574 show the `agentTurn` path as
+active execution: `inject message -> run ReAct loop turn -> turn result`. The actual
+code in `schedule/lib.rs` lines 212-219 treats `agent_turn_legacy` as a noop that logs
+a warning. Same root cause as BUG-030 and BUG-036.
+
+**Impact:** Medium -- diagram suggests a working feature that is deprecated.
+
+#### SQ-9: Streaming diagram uses wrong endpoint -- "/api/chat" vs "/api/agent/message/stream"
+
+**Diagram 9** (Streaming Response) line 659 shows `POST /api/chat (stream: true)`.
+The actual streaming endpoint is `POST /api/agent/message/stream` (routes/mod.rs
+line 364). There is no `/api/chat` endpoint. The endpoint name and streaming model
+(dedicated SSE endpoint vs query parameter) are both wrong.
+
+**Impact:** Medium -- developers would look for a non-existent endpoint.
+
+#### SQ-10: Context Observatory references phantom types
+
+**Diagram 10** (Context Observatory) references `TransformPipeline` (line 695/702),
+`TurnRecorder` (line 707), and `Observatory Analyzer` (line 698) as distinct
+participants. None of these exist as structs in the codebase:
+- `TransformPipeline`: dead code in `transform.rs`, not in pub mod list
+- `TurnRecorder`: no matches anywhere in codebase
+- `Observatory Analyzer`: not a real type; efficiency computation is via
+  `compute_efficiency()` free function in `efficiency.rs`
+
+The tables `turn_observations` and `observatory_grades` referenced in the diagram
+(lines 711, 726) do NOT exist in `schema.rs`. Actual tables are `turn_feedback` and
+the efficiency metrics are computed on-the-fly from existing tables.
+
+**Impact:** Medium -- diagram describes an entire subsystem architecture that does
+not exist in the form shown.
+
+#### SQ-11: Outcome Grading uses wrong table name -- "outcome_feedback" vs "turn_feedback"
+
+**Diagram 11** (Outcome Grading) lines 754, 758, 762 reference `INSERT outcome_feedback`.
+The actual table name is `turn_feedback` (schema.rs line 369). The `outcome_feedback`
+table does not exist. The cross-reference matrix (line 906) also references
+`outcome_feedback`. Additionally, `MetricEngine` (line 747) does not exist as a struct;
+metrics aggregation uses `compute_efficiency()` free function.
+
+**Impact:** Medium -- wrong table name would cause confusion during implementation
+or debugging.
+
+#### SQ-12: Network Binding TLS section describes unimplemented feature
+
+**Diagram 12** (Network Binding) lines 806-826 describe a complete TLS configuration
+flow: `TlsAcceptor`, rustls `ServerConfig`, ALPN negotiation, TLS 1.3 handshake, and
+certificate loading. None of this exists in the codebase:
+- No `TlsConfig`, `cert_path`, or `key_path` in `IroncladConfig`
+- No `TlsAcceptor` or rustls server config in `ironclad-server`
+- No `InterfaceResolver` struct (line 787) exists
+- The actual server uses plain `axum::serve(listener, app)` with
+  `TcpListener::bind()` (main.rs lines 1592-1646)
+- The only rustls usage is in reqwest for outbound HTTPS client connections
+
+The "development mode" plain-HTTP branch (lines 821-825) is the ONLY mode that
+actually exists. The entire TLS section is aspirational.
+
+**Impact:** Medium -- diagram describes a security feature (TLS termination) that
+does not exist, which could mislead security auditors into thinking the server
+supports TLS natively.
+
+#### Summary of sequence diagram drift by category
+
+| Category | Count | Severity | Key Issues |
+|---|---|---|---|
+| Unimplemented diagram | 1 | Medium | TLS Network Binding (SQ-12) |
+| Behavioral mismatch | 3 | Medium | agentTurn noop (SQ-8), wrong endpoint (SQ-9), phantom types in Observatory (SQ-10) |
+| Wrong table/type names | 4 | Medium | outcome_feedback (SQ-11), TransformPipeline/TurnRecorder/MetricEngine (SQ-10), DurableScheduler::start (SQ-5) |
+| Stale counts/labels | 5 | Low | 13 vs 12 steps (SQ-1), 14 vs 30 sub-structs (SQ-2), 28 vs 34 tables (SQ-3), 10 vs 8 tools (SQ-4), 6 vs 8 tasks (SQ-6), 42 vs 98 routes (SQ-7) |
+
+#### Sequence diagrams that are fully accurate
+
+7 of 13 diagrams are accurate: diagrams 1, 2, 3, 5, 6, 8, 13. The accurate diagrams
+tend to describe well-isolated subsystems (cache, wallet, injection, approval, browser)
+while the drifted diagrams describe system-wide orchestration (bootstrap, scheduling,
+observatory) where v0.5.0-to-v0.8.0 growth was concentrated.
