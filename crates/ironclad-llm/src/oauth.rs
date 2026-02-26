@@ -183,9 +183,7 @@ impl OAuthManager {
         let mut tokens = self.tokens.write().await;
         let removed = tokens.remove(provider_name).is_some();
         drop(tokens);
-        if removed
-            && let Err(e) = self.persist().await
-        {
+        if removed && let Err(e) = self.persist().await {
             error!(provider = provider_name, error = %e, "failed to persist OAuth token removal");
         }
         removed

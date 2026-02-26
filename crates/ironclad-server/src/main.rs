@@ -2552,8 +2552,8 @@ url = "http://127.0.0.1:8788/should-not-change"
     #[test]
     fn legacy_loopback_mode_matches_current_package_version_rule() {
         let mode = legacy_loopback_mode();
-        // Current package version in this workspace is pre-0.8.
-        assert_eq!(mode, LegacyLoopbackMode::MigrateDeprecated);
+        // Current package version in this workspace is 0.8+.
+        assert_eq!(mode, LegacyLoopbackMode::Unsupported);
     }
 
     #[test]
