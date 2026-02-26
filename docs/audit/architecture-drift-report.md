@@ -16,6 +16,7 @@ Diagrams audited against v0.8.0 code. Diagrams were last updated at v0.5.0-v0.6.
 | `ironclad-c4-agent.md` | 2 (flowchart + sequence) | 0 missing modules | 0 | 0 | 0 | Accurate |
 | `ironclad-c4-wallet.md` | 2 (flowchart + sequence) | 0 | 0 | 0 | 1 (money.rs misplaced as wallet.rs child) | Minor drift |
 | `ironclad-c4-channels.md` | 2 (flowchart + sequence) | 0 | 0 | 0 | 1 stale dep list, 1 stale struct field names | Drifted |
+| `ironclad-c4-schedule.md` | 2 (flowchart + sequence) | 0 | 0 | 1 (agentTurn is legacy noop) | 1 stale enum variant count | Minor drift |
 
 ## Detailed Findings
 
@@ -715,3 +716,58 @@ non-existent field names.
   acceptable for a high-level diagram.
 - The `sanitize_platform()` function and `InboundMessage::sanitize()` method added in
   v0.8.0 are not shown in the diagram, but these are minor additions.
+
+### ironclad-c4-schedule.md
+
+**Audit scope:** All nodes in the Mermaid `flowchart TB` block (lines 10-66), the Wake
+Signal Flow sequence diagram (lines 70-85), and the Dependencies section,
+cross-referenced against v0.8.0 source code in `crates/ironclad-schedule/src/`.
+
+**Method:** Compared every component node, detail subgraph, and enum variant in the
+diagram against the actual `lib.rs` module declarations, struct/enum definitions in
+`heartbeat.rs`, `scheduler.rs`, and `tasks.rs`.
+
+#### Modules confirmed present and accurately described
+
+| Diagram Module | Code File | Status |
+|---|---|---|
+| `heartbeat.rs` | `heartbeat.rs` | OK |
+| `scheduler.rs` | `scheduler.rs` | OK |
+| `tasks.rs` | `tasks.rs` | OK |
+
+#### SCHEDULE-1: Stale HeartbeatTask enum variant count
+
+The diagram's TasksDetail subgraph (line 35) lists 7 `HeartbeatTask` variants:
+`SurvivalCheck`, `UsdcMonitor`, `YieldTask`, `MemoryPrune`, `CacheEvict`,
+`MetricSnapshot`, `AgentCardRefresh`. The actual enum in `tasks.rs` has **8 variants**,
+adding `SessionGovernor` which invokes `ironclad_agent::governor::SessionGovernor` to
+enforce session timeout/cleanup policies.
+
+**Impact:** Low. One variant missing from the enum listing. The `SessionGovernor` task
+is a meaningful addition that ties heartbeat execution to session lifecycle management.
+
+#### SCHEDULE-2: Stale Execution subgraph -- agentTurn is legacy noop
+
+The diagram's Execution subgraph (lines 38-50) shows `agentTurn -> inject message` as
+an active execution pathway with session selection (main vs. isolated). However, in the
+actual code (`lib.rs` lines 212-220), the `agent_turn_legacy` action explicitly logs a
+warning and returns `("success", None)` as a noop: "legacy agentTurn cron payload
+detected; treating as noop". The diagram implies agent turns are actively executed by
+the scheduler, but they are not.
+
+**Impact:** Medium. The diagram shows a feature (cron-triggered agent turns with session
+selection) that was deprecated and is now a noop. This could mislead someone trying to
+configure scheduled agent interactions.
+
+#### Notes
+
+- The **DurableScheduler** struct and its evaluation methods (`evaluate_cron`,
+  `evaluate_interval`, and the at-style evaluator) match the diagram's description.
+- The **HeartbeatDaemon** tier-based interval adjustment logic matches the diagram
+  (LowCompute 2x, Critical 2x, Dead 10x).
+- Dependencies are **correctly listed**: ironclad-core, ironclad-db, ironclad-agent,
+  ironclad-wallet (all confirmed in Cargo.toml and code imports).
+- The `run_cron_worker()` function in `lib.rs` is a complete implementation matching
+  the Post-Execution subgraph (UPDATE cron_jobs, INSERT cron_runs).
+- The Wake Signal Flow sequence diagram describes MPSC channel integration that is
+  implemented in `heartbeat.rs` via the wallet and agent governor imports.

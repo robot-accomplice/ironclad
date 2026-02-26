@@ -8,8 +8,8 @@
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
 | High     | 0    | 0           | 0     | 0        |
-| Medium   | 17   | 0           | 0     | 0        |
-| Low      | 11   | 0           | 0     | 0        |
+| Medium   | 18   | 0           | 0     | 0        |
+| Low      | 12   | 0           | 0     | 0        |
 
 ## Entries
 
@@ -43,3 +43,5 @@
 | BUG-026 | audit-c4 | ironclad-wallet | T3 | Low | doc drift | `money.rs` shown as child of `wallet.rs` subgraph in diagram but is actually a separate `pub mod money` peer module in `lib.rs`; readers may look for `Money` type inside `wallet.rs` instead of `money.rs` | `docs/architecture/ironclad-c4-wallet.md` line 19 | Open |
 | BUG-027 | audit-c4 | ironclad-channels | T4 | Medium | doc drift | Dependencies section states "Internal crates: ironclad-core (types, config)" but `Cargo.toml` also depends on `ironclad-db` (used in delivery.rs, router.rs for delivery queue); same root cause as BUG-012 but independently wrong in this diagram | `docs/architecture/ironclad-c4-channels.md` line 138 | Open |
 | BUG-028 | audit-c4 | ironclad-channels | T4 | Medium | doc drift | SharedTrait subgraph shows `InboundMessage` with fields "source, text, media, platform_metadata" and `OutboundMessage` with "text, attachments, reply_to, format_hints" but actual structs have different fields: InboundMessage has id/platform/sender_id/content/timestamp/metadata; OutboundMessage has content/recipient_id/metadata | `docs/architecture/ironclad-c4-channels.md` lines 60-61 | Open |
+| BUG-029 | audit-c4 | ironclad-schedule | T4 | Low | doc drift | `HeartbeatTask` enum shown with 7 variants in diagram but actual code has 8 variants (missing `SessionGovernor` which invokes session governor for timeout/cleanup) | `docs/architecture/ironclad-c4-schedule.md` line 35 | Open |
+| BUG-030 | audit-c4 | ironclad-schedule | T4 | Medium | doc drift | Execution subgraph shows `agentTurn -> inject message` as active pathway with session selection, but actual code treats `agent_turn_legacy` as noop with warning log; diagram implies a feature that was deprecated | `docs/architecture/ironclad-c4-schedule.md` lines 38-50 | Open |
