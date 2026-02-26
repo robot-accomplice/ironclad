@@ -1617,6 +1617,7 @@ def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn apply_providers_update_fetches_and_writes_local_file() {
         let _lock = env_lock().lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
@@ -1648,6 +1649,7 @@ def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn apply_skills_update_installs_and_then_reports_up_to_date() {
         let _lock = env_lock().lock().unwrap();
         let temp = tempfile::tempdir().unwrap();

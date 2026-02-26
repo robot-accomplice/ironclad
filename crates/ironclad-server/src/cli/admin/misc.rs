@@ -2102,6 +2102,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn mechanic_json_repair_mode_creates_default_layout() {
         let _lock = env_lock().lock().unwrap();
         let home = tempfile::tempdir().unwrap();
