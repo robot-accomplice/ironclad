@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use ironclad_core::{IroncladError, Result};
 
@@ -28,6 +28,10 @@ struct TokenFile {
     tokens: Vec<StoredTokens>,
 }
 
+// SECURITY TODO: encrypt tokens at rest using the Keystore.
+// Tokens are currently stored as plaintext JSON in ~/.ironclad/oauth_tokens.json.
+// This is acceptable only as a temporary measure; a future release must use
+// OS-level keychain integration or an encrypted envelope before GA.
 fn token_file_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(home)
@@ -125,6 +129,16 @@ impl OAuthManager {
             .await
             .map_err(|e| IroncladError::Network(format!("invalid token response: {e}")))?;
 
+        if let Some(ref tt) = token_resp.token_type
+            && !tt.eq_ignore_ascii_case("bearer")
+        {
+            warn!(
+                provider = provider_name,
+                token_type = tt.as_str(),
+                "unexpected token_type in OAuth response (expected \"Bearer\")"
+            );
+        }
+
         let expires_at = token_resp
             .expires_in
             .map(|secs| chrono::Utc::now().timestamp() + secs);
@@ -149,24 +163,30 @@ impl OAuthManager {
             tokens.insert(provider_name.to_string(), new_stored);
         }
 
-        self.persist().await;
+        if let Err(e) = self.persist().await {
+            error!(provider = provider_name, error = %e, "failed to persist refreshed OAuth tokens");
+        }
         Ok(token_resp.access_token)
     }
 
     pub async fn store_tokens(&self, stored: StoredTokens) {
         let name = stored.provider.clone();
         let mut tokens = self.tokens.write().await;
-        tokens.insert(name, stored);
+        tokens.insert(name.clone(), stored);
         drop(tokens);
-        self.persist().await;
+        if let Err(e) = self.persist().await {
+            error!(provider = %name, error = %e, "failed to persist stored OAuth tokens");
+        }
     }
 
     pub async fn remove_tokens(&self, provider_name: &str) -> bool {
         let mut tokens = self.tokens.write().await;
         let removed = tokens.remove(provider_name).is_some();
         drop(tokens);
-        if removed {
-            self.persist().await;
+        if removed
+            && let Err(e) = self.persist().await
+        {
+            error!(provider = provider_name, error = %e, "failed to persist OAuth token removal");
         }
         removed
     }
@@ -189,33 +209,38 @@ impl OAuthManager {
             .collect()
     }
 
-    async fn persist(&self) {
+    async fn persist(&self) -> Result<()> {
         let tokens = self.tokens.read().await;
         let file = TokenFile {
             tokens: tokens.values().cloned().collect(),
         };
         let path = token_file_path();
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent).map_err(|e| {
+                IroncladError::Config(format!(
+                    "failed to create token directory {}: {e}",
+                    parent.display()
+                ))
+            })?;
         }
-        match serde_json::to_string_pretty(&file) {
-            Ok(json) => {
-                let tmp = path.with_extension("tmp");
-                if let Err(e) = std::fs::write(&tmp, &json) {
-                    warn!(error = %e, "failed to write OAuth token temp file");
-                    return;
-                }
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-                }
-                if let Err(e) = std::fs::rename(&tmp, &path) {
-                    warn!(error = %e, "failed to rename OAuth token file into place");
-                }
-            }
-            Err(e) => warn!(error = %e, "failed to serialize OAuth tokens"),
+        let json = serde_json::to_string_pretty(&file)
+            .map_err(|e| IroncladError::Config(format!("failed to serialize OAuth tokens: {e}")))?;
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &json).map_err(|e| {
+            IroncladError::Config(format!(
+                "failed to write OAuth token file {}: {e}",
+                tmp.display()
+            ))
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
         }
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            IroncladError::Config(format!("failed to rename OAuth token file into place: {e}"))
+        })?;
+        Ok(())
     }
 }
 
@@ -233,7 +258,6 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<i64>,
-    #[allow(dead_code)]
     token_type: Option<String>,
 }
 

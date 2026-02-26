@@ -580,7 +580,43 @@ pub async fn catalog_install(
             ));
         }
 
+        // Path traversal guard: reject filenames containing path separators or
+        // parent-directory components so that a malicious registry manifest
+        // cannot write outside skills_dir.
+        if filename.contains('/')
+            || filename.contains('\\')
+            || filename.contains("..")
+            || filename.starts_with('.')
+        {
+            // Roll back any files already touched.
+            for (path, old) in rollback_existing.drain(..) {
+                let _ = std::fs::write(path, old);
+            }
+            for path in rollback_new.drain(..) {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("invalid filename rejected: {filename}"),
+            ));
+        }
+
         let target = skills_dir.join(filename);
+        // Canonicalize and verify the resolved path stays inside skills_dir.
+        // We check the parent directory (which must exist) since the file
+        // itself may not exist yet.
+        let target_parent = target.parent().unwrap_or(&skills_dir);
+        let canonical_parent = std::fs::canonicalize(target_parent)
+            .map_err(|e| internal_err(&format!("failed to resolve target directory: {e}")))?;
+        let canonical_skills_dir = std::fs::canonicalize(&skills_dir)
+            .map_err(|e| internal_err(&format!("failed to resolve skills_dir: {e}")))?;
+        if !canonical_parent.starts_with(&canonical_skills_dir) {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("filename escapes skills directory: {filename}"),
+            ));
+        }
+
         if target.exists() {
             let old = std::fs::read(&target)
                 .map_err(|e| internal_err(&format!("failed to backup {filename}: {e}")))?;
@@ -854,5 +890,117 @@ pub async fn delete_skill(
             format!("skill {id} not found"),
         )),
         Err(e) => Err(internal_err(&e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_record(name: &str, kind: &str) -> ironclad_db::skills::SkillRecord {
+        ironclad_db::skills::SkillRecord {
+            id: "s1".into(),
+            name: name.into(),
+            kind: kind.into(),
+            description: Some("desc".into()),
+            source_path: "/tmp/skill.md".into(),
+            content_hash: "abc".into(),
+            triggers_json: None,
+            tool_chain_json: None,
+            policy_overrides_json: None,
+            script_path: None,
+            risk_level: "Caution".into(),
+            enabled: true,
+            last_loaded_at: None,
+            created_at: "now".into(),
+        }
+    }
+
+    #[test]
+    fn builtin_skill_detection_is_case_insensitive() {
+        assert!(is_builtin_skill_name("SELF-DIAGNOSTICS"));
+        assert!(is_builtin_skill(&sample_record(
+            "self-diagnostics",
+            "instruction"
+        )));
+        assert!(is_builtin_skill(&sample_record("custom", "builtin")));
+        assert!(!is_builtin_skill(&sample_record("custom", "instruction")));
+    }
+
+    #[test]
+    fn canonical_in_root_accepts_files_and_rejects_escape() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("scripts");
+        std::fs::create_dir_all(&nested).unwrap();
+        let script = nested.join("run.sh");
+        std::fs::write(&script, "echo ok\n").unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+
+        let canonical = canonical_in_root(
+            &canonical_root,
+            &canonical_root,
+            FsPath::new("scripts/run.sh"),
+        )
+        .expect("path inside root should resolve");
+        assert!(canonical.ends_with("run.sh"));
+
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let escaped = canonical_in_root(&canonical_root, &canonical_root, outside.path());
+        assert!(escaped.is_err());
+    }
+
+    #[test]
+    fn validate_policy_overrides_accepts_allowed_boolean_keys() {
+        let ok = serde_json::json!({
+            "require_creator": true,
+            "deny_external": false,
+            "disabled": false
+        });
+        assert!(validate_policy_overrides(&ok).is_ok());
+
+        let bad_key = serde_json::json!({"nope": true});
+        assert!(validate_policy_overrides(&bad_key).is_err());
+
+        let bad_type = serde_json::json!({"disabled": "yes"});
+        assert!(validate_policy_overrides(&bad_type).is_err());
+    }
+
+    #[test]
+    fn normalize_risk_level_canonicalizes_supported_values() {
+        assert_eq!(normalize_risk_level("safe").unwrap(), "Safe");
+        assert_eq!(normalize_risk_level("CAUTION").unwrap(), "Caution");
+        assert_eq!(normalize_risk_level("Dangerous").unwrap(), "Dangerous");
+        assert_eq!(normalize_risk_level("forbidden").unwrap(), "Forbidden");
+        assert!(normalize_risk_level("unknown").is_err());
+    }
+
+    #[test]
+    fn registry_base_url_and_query_matching_behave() {
+        assert_eq!(
+            registry_base_url("https://example.com/catalog/manifest.json"),
+            "https://example.com/catalog"
+        );
+        assert_eq!(registry_base_url("manifest.json"), "manifest.json");
+
+        assert!(skill_item_matches_query("self-diagnostics", None));
+        assert!(skill_item_matches_query("self-diagnostics", Some("Diag")));
+        assert!(!skill_item_matches_query(
+            "self-diagnostics",
+            Some("wallet")
+        ));
+    }
+
+    #[test]
+    fn validate_policy_overrides_rejects_non_object() {
+        assert!(validate_policy_overrides(&serde_json::json!("not-object")).is_err());
+    }
+
+    #[test]
+    fn canonical_in_root_rejects_directory_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+        std::fs::create_dir_all(canonical_root.join("scripts")).unwrap();
+        let result = canonical_in_root(&canonical_root, &canonical_root, FsPath::new("scripts"));
+        assert!(result.is_err());
     }
 }

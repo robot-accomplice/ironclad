@@ -59,6 +59,12 @@ impl X402Handler {
             })?
             .to_string();
 
+        if !is_valid_eth_address(&recipient) {
+            return Err(IroncladError::Wallet(format!(
+                "invalid recipient address format: must start with '0x' followed by 40 hex characters, got '{recipient}'"
+            )));
+        }
+
         let chain_id = body
             .get("chain_id")
             .and_then(|v| v.as_u64())
@@ -80,6 +86,12 @@ impl Default for X402Handler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Validates that a string is a well-formed Ethereum address: starts with "0x"
+/// followed by exactly 40 hexadecimal characters.
+fn is_valid_eth_address(addr: &str) -> bool {
+    addr.len() == 42 && addr.starts_with("0x") && addr[2..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -127,8 +139,29 @@ mod tests {
 
     #[test]
     fn parse_payment_requirements_missing_chain_id() {
-        let body = serde_json::json!({"amount": 1.0, "recipient": "0x123"});
+        let body = serde_json::json!({"amount": 1.0, "recipient": "0xabcdef1234567890abcdef1234567890abcdef12"});
         assert!(X402Handler::parse_payment_requirements(&body).is_err());
+    }
+
+    #[test]
+    fn parse_payment_requirements_invalid_recipient_too_short() {
+        let body = serde_json::json!({"amount": 1.0, "recipient": "0x123", "chain_id": 1});
+        let err = X402Handler::parse_payment_requirements(&body).unwrap_err();
+        assert!(err.to_string().contains("invalid recipient address format"));
+    }
+
+    #[test]
+    fn parse_payment_requirements_invalid_recipient_no_prefix() {
+        let body = serde_json::json!({"amount": 1.0, "recipient": "abcdef1234567890abcdef1234567890abcdef12ab", "chain_id": 1});
+        let err = X402Handler::parse_payment_requirements(&body).unwrap_err();
+        assert!(err.to_string().contains("invalid recipient address format"));
+    }
+
+    #[test]
+    fn parse_payment_requirements_invalid_recipient_non_hex() {
+        let body = serde_json::json!({"amount": 1.0, "recipient": "0xZZZZZZ1234567890abcdef1234567890abcdef12", "chain_id": 1});
+        let err = X402Handler::parse_payment_requirements(&body).unwrap_err();
+        assert!(err.to_string().contains("invalid recipient address format"));
     }
 
     #[tokio::test]

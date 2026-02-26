@@ -23,6 +23,31 @@ struct PluginEntry {
     status: PluginStatus,
 }
 
+/// Central registry that owns all loaded plugin instances.
+///
+/// ## Lock acquisition pattern
+///
+/// This registry uses a two-level locking scheme:
+///
+/// 1. **Outer lock** (`self.plugins`): A `tokio::sync::Mutex<HashMap<...>>` that
+///    guards the plugin map itself (registration, removal, iteration).
+/// 2. **Inner lock** (each `PluginEntry::plugin`): A per-plugin
+///    `Arc<tokio::sync::Mutex<Box<dyn Plugin>>>` that guards access to individual
+///    plugin instances.
+///
+/// Several methods (e.g., `execute_tool`, `find_tool`, `list_plugins`,
+/// `list_all_tools`) acquire the outer lock and then, while still holding it,
+/// acquire one or more inner plugin locks. This nested acquisition is safe from
+/// deadlocks because the inner locks are never held when attempting to acquire
+/// the outer lock. However, it means that a slow plugin `init()` or
+/// `execute_tool()` call can block all other registry operations for the
+/// duration.
+///
+/// `tools()` on the `Plugin` trait is expected to be non-blocking (it returns a
+/// `Vec<ToolDef>` synchronously) so the inner lock contention during tool
+/// lookups should be negligible. If plugin execution latency becomes a concern,
+/// consider cloning the `Arc` outside the outer lock and releasing the outer
+/// lock before awaiting the inner one (as `execute_tool` already does).
 pub struct PluginRegistry {
     plugins: Mutex<HashMap<String, PluginEntry>>,
     allow_list: Vec<String>,
@@ -198,6 +223,26 @@ impl PluginRegistry {
         Ok(())
     }
 
+    /// Removes a plugin from the registry entirely, shutting it down first.
+    ///
+    /// Unlike `disable_plugin` (which keeps the entry around so it can be
+    /// re-enabled), `unregister` drops the plugin and frees all associated
+    /// resources. This should be used when a plugin is permanently removed
+    /// (e.g., uninstalled or revoked by policy).
+    pub async fn unregister(&self, name: &str) -> Result<()> {
+        let mut plugins = self.plugins.lock().await;
+        let entry = plugins
+            .remove(name)
+            .ok_or_else(|| IroncladError::Config(format!("plugin '{name}' not found")))?;
+        // Best-effort shutdown -- log but do not propagate errors.
+        let mut plugin = entry.plugin.lock().await;
+        if let Err(e) = plugin.shutdown().await {
+            warn!(name, error = %e, "plugin shutdown failed during unregister");
+        }
+        debug!(name, "plugin unregistered");
+        Ok(())
+    }
+
     pub async fn plugin_count(&self) -> usize {
         let plugins = self.plugins.lock().await;
         plugins.len()
@@ -369,6 +414,42 @@ mod tests {
         reg.enable_plugin("p").await.unwrap();
         let result = reg.execute_tool("p_tool", &serde_json::json!({})).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn unregister_removes_plugin() {
+        let reg = PluginRegistry::new(vec![], vec![]);
+        reg.register(Box::new(MockPlugin::new("removable")))
+            .await
+            .unwrap();
+        assert_eq!(reg.plugin_count().await, 1);
+
+        reg.unregister("removable").await.unwrap();
+        assert_eq!(reg.plugin_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn unregister_nonexistent_fails() {
+        let reg = PluginRegistry::new(vec![], vec![]);
+        let result = reg.unregister("ghost").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn unregister_makes_tool_unavailable() {
+        let reg = PluginRegistry::new(vec![], vec![]);
+        reg.register(Box::new(MockPlugin::new("p1"))).await.unwrap();
+        reg.init_all().await;
+
+        // Tool should be available before unregister.
+        assert!(reg.find_tool("p1_tool").await.is_some());
+
+        reg.unregister("p1").await.unwrap();
+
+        // Tool should be gone after unregister.
+        assert!(reg.find_tool("p1_tool").await.is_none());
+        let result = reg.execute_tool("p1_tool", &serde_json::json!({})).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

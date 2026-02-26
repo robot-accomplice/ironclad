@@ -17,12 +17,26 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 pub struct A2aSession {
     pub peer_did: String,
     /// ECDH-derived session key for AES-256-GCM; set after key agreement.
+    ///
+    /// **Callers MUST check `session_key.is_some()` (or use [`is_established`])
+    /// before calling `encrypt_message` / `decrypt_message`.**  Passing a
+    /// zero-initialised key silently produces insecure ciphertext.
     pub session_key: Option<[u8; 32]>,
     pub established_at: DateTime<Utc>,
     pub last_activity: DateTime<Utc>,
 }
 
+impl A2aSession {
+    /// Returns `true` when the ECDH key agreement has completed and the session
+    /// is ready for encrypted communication.
+    pub fn is_established(&self) -> bool {
+        self.session_key.is_some()
+    }
+}
+
 const MAX_A2A_SESSIONS: usize = 256;
+/// Maximum number of entries in `rate_windows` before stale-entry eviction.
+const MAX_RATE_WINDOW_ENTRIES: usize = 1000;
 
 pub struct A2aProtocol {
     pub config: A2aConfig,
@@ -97,6 +111,15 @@ impl A2aProtocol {
 
         let now = Instant::now();
         let window = std::time::Duration::from_secs(60);
+
+        // Evict stale rate-window entries to prevent unbounded growth.
+        if self.rate_windows.len() > MAX_RATE_WINDOW_ENTRIES {
+            let stale_threshold = std::time::Duration::from_secs(3600);
+            self.rate_windows.retain(|_, ts| {
+                ts.back()
+                    .is_some_and(|&last| now.duration_since(last) < stale_threshold)
+            });
+        }
 
         let timestamps = self.rate_windows.entry(peer_did.to_string()).or_default();
 

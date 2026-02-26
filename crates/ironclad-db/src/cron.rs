@@ -276,11 +276,12 @@ pub fn acquire_lease(db: &Database, job_id: &str, instance_id: &str) -> Result<b
     Ok(changed > 0)
 }
 
-pub fn release_lease(db: &Database, job_id: &str) -> Result<()> {
+pub fn release_lease(db: &Database, job_id: &str, lease_holder: &str) -> Result<()> {
     let conn = db.conn();
     conn.execute(
-        "UPDATE cron_jobs SET lease_holder = NULL, lease_expires_at = NULL WHERE id = ?1",
-        [job_id],
+        "UPDATE cron_jobs SET lease_holder = NULL, lease_expires_at = NULL \
+         WHERE id = ?1 AND lease_holder = ?2",
+        rusqlite::params![job_id, lease_holder],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(())
@@ -407,7 +408,7 @@ mod tests {
         // Second acquire by a different instance should fail (lease not expired)
         assert!(!acquire_lease(&db, &job_id, "instance-2").unwrap());
 
-        release_lease(&db, &job_id).unwrap();
+        release_lease(&db, &job_id, "instance-1").unwrap();
         assert!(acquire_lease(&db, &job_id, "instance-2").unwrap());
     }
 
@@ -531,7 +532,7 @@ mod tests {
     #[test]
     fn release_lease_nonexistent_job() {
         let db = test_db();
-        release_lease(&db, "no-such-job").unwrap();
+        release_lease(&db, "no-such-job", "inst-1").unwrap();
     }
 
     #[test]

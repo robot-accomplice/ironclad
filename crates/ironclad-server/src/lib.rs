@@ -53,7 +53,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::RwLock;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 
 use auth::ApiKeyLayer;
 use ironclad_agent::policy::{
@@ -951,40 +951,30 @@ pub async fn bootstrap_with_config_path(
     }
 
     let auth_layer = ApiKeyLayer::new(config.server.api_key.clone());
-    let cors = if config.server.api_key.is_some() {
-        let origin = format!("http://{}:{}", config.server.bind, config.server.port);
-        CorsLayer::new()
-            .allow_origin(
-                origin
-                    .parse::<axum::http::HeaderValue>()
-                    .unwrap_or_else(|_| axum::http::HeaderValue::from_static("*")),
-            )
-            .allow_methods([
-                axum::http::Method::GET,
-                axum::http::Method::POST,
-                axum::http::Method::PUT,
-                axum::http::Method::DELETE,
-            ])
-            .allow_headers([
-                axum::http::header::CONTENT_TYPE,
-                axum::http::header::AUTHORIZATION,
-                axum::http::HeaderName::from_static("x-api-key"),
-            ])
-    } else {
-        CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods([
-                axum::http::Method::GET,
-                axum::http::Method::POST,
-                axum::http::Method::PUT,
-                axum::http::Method::DELETE,
-            ])
-            .allow_headers([
-                axum::http::header::CONTENT_TYPE,
-                axum::http::header::AUTHORIZATION,
-                axum::http::HeaderName::from_static("x-api-key"),
-            ])
-    };
+    let local_origin = format!("http://{}:{}", config.server.bind, config.server.port);
+    let origin_header = local_origin
+        .parse::<axum::http::HeaderValue>()
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                origin = %local_origin,
+                error = %e,
+                "CORS origin failed to parse, falling back to 127.0.0.1 loopback"
+            );
+            axum::http::HeaderValue::from_static("http://127.0.0.1:3000")
+        });
+    let cors = CorsLayer::new()
+        .allow_origin(origin_header)
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderName::from_static("x-api-key"),
+        ]);
     let authed_routes = build_router(state.clone())
         .route("/ws", ws_route(event_bus.clone()))
         .layer(auth_layer);
@@ -1006,6 +996,8 @@ pub async fn bootstrap_with_config_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
 
     const BOOTSTRAP_CONFIG: &str = r#"
 [agent]
@@ -1072,5 +1064,74 @@ primary = "ollama/qwen3:8b"
         assert!(is_taskable_subagent_role("specialist"));
         assert!(is_taskable_subagent_role("SubAgent"));
         assert!(!is_taskable_subagent_role("model-proxy"));
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old = std::env::var_os(key);
+            // SAFETY: test-local env change restored on Drop.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.old {
+                // SAFETY: restoring previous env state.
+                unsafe { std::env::set_var(self.key, v) };
+            } else {
+                // SAFETY: restoring previous env state.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn resolve_token_prefers_keystore_reference_then_env_then_empty() {
+        let _lock = env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let keystore_path = dir.path().join("keystore.enc");
+        let keystore = ironclad_core::keystore::Keystore::new(keystore_path);
+        keystore.unlock("pw").unwrap();
+        keystore.set("telegram_bot_token", "from_keystore").unwrap();
+
+        let _env = EnvGuard::set("TEST_TELEGRAM_TOKEN", "from_env");
+        let token = resolve_token(
+            &Some("keystore:telegram_bot_token".to_string()),
+            "TEST_TELEGRAM_TOKEN",
+            &keystore,
+        );
+        assert_eq!(token, "from_keystore");
+
+        let fallback = resolve_token(
+            &Some("keystore:missing".to_string()),
+            "TEST_TELEGRAM_TOKEN",
+            &keystore,
+        );
+        assert_eq!(fallback, "from_env");
+
+        let empty = resolve_token(&None, "", &keystore);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn cleanup_old_logs_can_prune_when_window_is_zero_days() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_log = dir.path().join("old.log");
+        std::fs::write(&old_log, "stale").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cleanup_old_logs(dir.path(), 0);
+        assert!(!old_log.exists());
     }
 }

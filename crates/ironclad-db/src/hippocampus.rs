@@ -56,7 +56,11 @@ pub fn get_table(db: &Database, table_name: &str) -> Result<Option<SchemaEntry>>
         [table_name],
         |row| {
             let columns_json: String = row.get(2)?;
-            let columns: Vec<ColumnDef> = serde_json::from_str(&columns_json).unwrap_or_default();
+            let columns: Vec<ColumnDef> =
+                serde_json::from_str(&columns_json).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "failed to deserialize column definitions, using empty list");
+                    Vec::new()
+                });
             Ok(SchemaEntry {
                 table_name: row.get(0)?,
                 description: row.get(1)?,
@@ -85,7 +89,11 @@ pub fn list_tables(db: &Database) -> Result<Vec<SchemaEntry>> {
     let rows = stmt
         .query_map([], |row| {
             let columns_json: String = row.get(2)?;
-            let columns: Vec<ColumnDef> = serde_json::from_str(&columns_json).unwrap_or_default();
+            let columns: Vec<ColumnDef> =
+                serde_json::from_str(&columns_json).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "failed to deserialize column definitions, using empty list");
+                    Vec::new()
+                });
             Ok(SchemaEntry {
                 table_name: row.get(0)?,
                 description: row.get(1)?,
@@ -115,7 +123,11 @@ pub fn list_agent_tables(db: &Database, agent_id: &str) -> Result<Vec<SchemaEntr
     let rows = stmt
         .query_map([agent_id], |row| {
             let columns_json: String = row.get(2)?;
-            let columns: Vec<ColumnDef> = serde_json::from_str(&columns_json).unwrap_or_default();
+            let columns: Vec<ColumnDef> =
+                serde_json::from_str(&columns_json).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "failed to deserialize column definitions, using empty list");
+                    Vec::new()
+                });
             Ok(SchemaEntry {
                 table_name: row.get(0)?,
                 description: row.get(1)?,
@@ -152,10 +164,7 @@ pub fn create_agent_table(
 ) -> Result<String> {
     let table_name = format!("{agent_id}_{table_suffix}");
 
-    if !table_name
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-    {
+    if !table_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return Err(IroncladError::Database(
             "table name contains invalid characters".into(),
         ));

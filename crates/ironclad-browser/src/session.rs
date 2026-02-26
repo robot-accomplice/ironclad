@@ -17,6 +17,15 @@ type WsStream =
 /// Commands are serialized through a mutex so concurrent callers
 /// don't interleave frames. Responses are matched by the `id` field
 /// that CDP mirrors from the request.
+///
+/// # Lock contention
+///
+/// The `ws` mutex is held for the entire duration of a command -- from
+/// sending the request through reading frames until the matching response
+/// arrives. This means concurrent `send_command` calls will queue behind
+/// the mutex. A per-command timeout (default 30 s, configurable via
+/// [`set_timeout`](Self::set_timeout)) bounds how long a single caller
+/// can hold the lock, preventing indefinite blocking.
 pub struct CdpSession {
     ws: Mutex<WsStream>,
     command_id: AtomicU64,
@@ -76,6 +85,9 @@ impl CdpSession {
             .await
             .map_err(|e| IroncladError::Network(format!("CDP send failed: {e}")))?;
 
+        // The deadline bounds total wall-clock time spent holding the ws
+        // mutex for this command. Without it, a hung browser could block
+        // all other callers indefinitely.
         let timeout = self.timeout();
         let deadline = tokio::time::Instant::now() + timeout;
 

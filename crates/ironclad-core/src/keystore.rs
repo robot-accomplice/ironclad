@@ -27,10 +27,12 @@ struct KeystoreData {
     entries: HashMap<String, String>,
 }
 
+type SecureEntries = Arc<Mutex<Option<HashMap<String, Zeroizing<String>>>>>;
+
 #[derive(Clone)]
 pub struct Keystore {
     path: PathBuf,
-    entries: Arc<Mutex<Option<HashMap<String, String>>>>,
+    entries: SecureEntries,
     passphrase: Arc<Mutex<Option<Zeroizing<String>>>>,
 }
 
@@ -85,7 +87,12 @@ impl Keystore {
         let store: KeystoreData = serde_json::from_slice(&plaintext)
             .map_err(|e| IroncladError::Keystore(format!("corrupt keystore data: {e}")))?;
 
-        *lock_or_recover(&self.entries) = Some(store.entries);
+        let zeroized_entries: HashMap<String, Zeroizing<String>> = store
+            .entries
+            .into_iter()
+            .map(|(k, v)| (k, Zeroizing::new(v)))
+            .collect();
+        *lock_or_recover(&self.entries) = Some(zeroized_entries);
         *lock_or_recover(&self.passphrase) = Some(Zeroizing::new(passphrase.to_string()));
         Ok(())
     }
@@ -107,7 +114,7 @@ impl Keystore {
     pub fn get(&self, key: &str) -> Option<String> {
         lock_or_recover(&self.entries)
             .as_ref()
-            .and_then(|m| m.get(key).cloned())
+            .and_then(|m| m.get(key).map(|v| (**v).clone()))
     }
 
     pub fn set(&self, key: &str, value: &str) -> Result<()> {
@@ -116,7 +123,7 @@ impl Keystore {
             let entries = guard
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
-            entries.insert(key.to_string(), value.to_string());
+            entries.insert(key.to_string(), Zeroizing::new(value.to_string()));
         }
         let save_res = self.save();
         let audit_res = self.append_audit_event(
@@ -173,7 +180,7 @@ impl Keystore {
             let entries = guard
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
-            entries.extend(new_entries);
+            entries.extend(new_entries.into_iter().map(|(k, v)| (k, Zeroizing::new(v))));
         }
         let save_res = self.save();
         let audit_res = self.append_audit_event(
@@ -245,10 +252,11 @@ impl Keystore {
             }
         }
 
+        let redacted_key = key.map(redact_key_name);
         let record = json!({
             "timestamp": Utc::now().to_rfc3339(),
             "operation": operation,
-            "key": key,
+            "key": redacted_key,
             "pid": std::process::id(),
             "process": std::env::args().next().unwrap_or_else(|| "unknown".to_string()),
             "keystore_path": self.path,
@@ -275,7 +283,10 @@ impl Keystore {
         let key = derive_key(passphrase, &salt)?;
 
         let store = KeystoreData {
-            entries: entries.clone(),
+            entries: entries
+                .iter()
+                .map(|(k, v)| (k.clone(), (**v).clone()))
+                .collect(),
         };
         let plaintext = serde_json::to_vec(&store)?;
 
@@ -332,6 +343,20 @@ fn fresh_salt() -> [u8; SALT_LEN] {
     salt
 }
 
+/// Redact a key name for audit logging: show the first 3 characters followed
+/// by `***` so that logs are useful for debugging without exposing full names.
+fn redact_key_name(key: &str) -> String {
+    let visible = &key[..key.len().min(3)];
+    format!("{visible}***")
+}
+
+// SECURITY WARNING: `machine_passphrase` derives its passphrase from the local
+// hostname and username -- values that are trivially discoverable by any process
+// on the same machine. This provides protection only against casual access (e.g.
+// the keystore file being copied to a different machine). It does NOT protect
+// against targeted local attackers who can read environment variables or run
+// `whoami`/`hostname`. For secrets requiring real confidentiality, callers should
+// use `Keystore::unlock()` with a user-supplied passphrase instead.
 fn machine_passphrase() -> String {
     let hostname = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("HOST"))
@@ -522,7 +547,9 @@ mod tests {
         assert!(audit.contains("\"operation\":\"set\""));
         assert!(audit.contains("\"operation\":\"remove\""));
         assert!(audit.contains("\"operation\":\"rekey\""));
-        assert!(audit.contains("\"key\":\"telegram_bot_token\""));
+        // Key names are redacted: only first 3 chars visible, followed by ***
+        assert!(audit.contains("\"key\":\"tel***\""));
+        assert!(!audit.contains("telegram_bot_token"));
         assert!(!audit.contains("secret"));
     }
 }

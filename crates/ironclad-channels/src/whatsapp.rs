@@ -31,7 +31,7 @@ impl WhatsAppAdapter {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
-                .unwrap_or_default(),
+                .expect("HTTP client initialization - check TLS certificates"),
             allowed_numbers: Vec::new(),
             api_version: "v21.0".into(),
             app_secret: None,
@@ -154,7 +154,7 @@ impl WhatsAppAdapter {
 
     /// Verifies the X-Hub-Signature-256 HMAC from Meta webhook payloads.
     /// Returns Ok(()) if verification passes, Err if the signature is invalid.
-    /// Skips verification if no app_secret is configured (with a warning).
+    /// Returns Err if no app_secret is configured -- operators must set it.
     pub fn verify_webhook_signature(
         &self,
         raw_body: &[u8],
@@ -163,10 +163,11 @@ impl WhatsAppAdapter {
         let secret = match &self.app_secret {
             Some(s) if !s.is_empty() => s,
             _ => {
-                warn!(
-                    "WhatsApp app_secret not configured; skipping webhook signature verification"
-                );
-                return Ok(());
+                error!("WhatsApp app_secret not configured; rejecting webhook for security");
+                return Err(IroncladError::Channel(
+                    "WhatsApp webhook signature verification requires app_secret configuration"
+                        .into(),
+                ));
             }
         };
 
@@ -807,9 +808,9 @@ mod tests {
     }
 
     #[test]
-    fn verify_webhook_signature_no_secret_skips() {
+    fn verify_webhook_signature_no_secret_rejects() {
         let adapter = WhatsAppAdapter::new("tok".into(), "ph".into());
         let result = adapter.verify_webhook_signature(b"body", None);
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 }

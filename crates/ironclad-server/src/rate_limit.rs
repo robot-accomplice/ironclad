@@ -122,8 +122,10 @@ fn too_many_requests_response() -> Response<Body> {
     Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap()
+        .body(Body::from(
+            serde_json::to_vec(&body).expect("static error body serialization"),
+        ))
+        .expect("error response construction")
 }
 
 fn stable_token_fingerprint(raw: &str) -> String {

@@ -67,7 +67,7 @@ impl CapacityTracker {
 
     /// Register a provider with its capacity limits.
     pub fn register(&self, name: &str, tpm_limit: Option<u64>, rpm_limit: Option<u64>) {
-        let mut providers = self.providers.lock().expect("mutex poisoned");
+        let mut providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
         providers.insert(
             name.to_string(),
             ProviderCapacity::new(tpm_limit, rpm_limit),
@@ -76,7 +76,7 @@ impl CapacityTracker {
 
     /// Record a completed request with token usage.
     pub fn record(&self, provider: &str, tokens: u64) {
-        let mut providers = self.providers.lock().expect("mutex poisoned");
+        let mut providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(cap) = providers.get_mut(provider) {
             let now = Instant::now();
             cap.token_events.push((now, tokens));
@@ -88,7 +88,7 @@ impl CapacityTracker {
 
     /// Returns a headroom score from 0.0 (saturated) to 1.0 (idle) for a provider.
     pub fn headroom(&self, provider: &str) -> f64 {
-        let providers = self.providers.lock().expect("mutex poisoned");
+        let providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
         let cap = match providers.get(provider) {
             Some(c) => c,
             None => return 1.0,
@@ -133,7 +133,7 @@ impl CapacityTracker {
     }
 
     pub fn stats(&self, provider: &str) -> Option<ProviderCapacityStats> {
-        let mut providers = self.providers.lock().expect("mutex poisoned");
+        let mut providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
         let cap = providers.get_mut(provider)?;
         let cutoff = Instant::now() - self.window;
         cap.prune(cutoff);
@@ -164,7 +164,7 @@ impl CapacityTracker {
 
     pub fn list_stats(&self) -> Vec<(String, ProviderCapacityStats)> {
         let names: Vec<String> = {
-            let providers = self.providers.lock().expect("mutex poisoned");
+            let providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
             providers.keys().cloned().collect()
         };
         names

@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 
 use aes_gcm::aead::Aead;
@@ -15,15 +16,16 @@ use zeroize::Zeroizing;
 const ENCRYPTION_SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 
-fn derive_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
+fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32]> {
     use argon2::Argon2;
-    let params = argon2::Params::new(65536, 3, 1, Some(32)).expect("valid Argon2 params");
+    let params = argon2::Params::new(65536, 3, 1, Some(32))
+        .map_err(|e| IroncladError::Wallet(format!("invalid Argon2 params: {e}")))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     let mut key = [0u8; 32];
     argon2
         .hash_password_into(passphrase.as_bytes(), salt, &mut key)
-        .expect("Argon2id hash with valid params cannot fail");
-    key
+        .map_err(|e| IroncladError::Wallet(format!("Argon2id key derivation failed: {e}")))?;
+    Ok(key)
 }
 
 fn derive_key_legacy_hkdf(passphrase: &str, salt: &[u8]) -> [u8; 32] {
@@ -34,26 +36,27 @@ fn derive_key_legacy_hkdf(passphrase: &str, salt: &[u8]) -> [u8; 32] {
     key
 }
 
-fn encrypt_wallet_data(data: &[u8], passphrase: &str) -> Vec<u8> {
+fn encrypt_wallet_data(data: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     use rand::RngCore;
     let mut salt = [0u8; ENCRYPTION_SALT_LEN];
     rand::rngs::OsRng.fill_bytes(&mut salt);
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
 
-    let key = derive_key(passphrase, &salt);
-    let cipher = Aes256Gcm::new_from_slice(&key).expect("AES-256-GCM key is 32 bytes");
+    let key = derive_key(passphrase, &salt)?;
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|e| IroncladError::Wallet(format!("AES-256-GCM key init failed: {e}")))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, data)
-        .expect("AES-GCM encryption failed");
+        .map_err(|e| IroncladError::Wallet(format!("AES-GCM encryption failed: {e}")))?;
 
     // Format: salt (16) || nonce (12) || ciphertext
     let mut result = Vec::with_capacity(ENCRYPTION_SALT_LEN + NONCE_LEN + ciphertext.len());
     result.extend_from_slice(&salt);
     result.extend_from_slice(&nonce_bytes);
     result.extend_from_slice(&ciphertext);
-    result
+    Ok(result)
 }
 
 fn decrypt_wallet_data(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
@@ -65,7 +68,7 @@ fn decrypt_wallet_data(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     let ciphertext = &encrypted[ENCRYPTION_SALT_LEN + NONCE_LEN..];
 
     // Try Argon2id-derived key first
-    let key = derive_key(passphrase, salt);
+    let key = derive_key(passphrase, salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| IroncladError::Wallet(format!("cipher init failed: {e}")))?;
     let nonce = Nonce::from_slice(nonce_bytes);
@@ -90,11 +93,21 @@ fn decrypt_wallet_data(encrypted: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct WalletFile {
     address: String,
     chain_id: u64,
     private_key_hex: String,
+}
+
+impl fmt::Debug for WalletFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WalletFile")
+            .field("address", &self.address)
+            .field("chain_id", &self.chain_id)
+            .field("private_key_hex", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,7 +163,9 @@ impl Wallet {
                 .map_err(|e| IroncladError::Wallet(format!("failed to read wallet file: {e}")))?;
 
             let wallet_file = if let Ok(s) = String::from_utf8(raw.clone()) {
-                serde_json::from_str::<WalletFile>(&s).ok()
+                serde_json::from_str::<WalletFile>(&s).ok().inspect(|_wf| {
+                    warn!("SECURITY: wallet file loaded as plaintext JSON without encryption. Re-encrypt with a passphrase for production use.");
+                })
             } else {
                 None
             }
@@ -219,14 +234,14 @@ impl Wallet {
 
             let to_write: Vec<u8> = match std::env::var("IRONCLAD_WALLET_PASSPHRASE") {
                 Ok(passphrase) if !passphrase.is_empty() => {
-                    encrypt_wallet_data(&json_bytes, &passphrase)
+                    encrypt_wallet_data(&json_bytes, &passphrase)?
                 }
                 _ => {
                     let machine_pass = Self::machine_passphrase();
                     warn!(
                         "IRONCLAD_WALLET_PASSPHRASE not set; encrypting with machine-derived key"
                     );
-                    encrypt_wallet_data(&json_bytes, &machine_pass)
+                    encrypt_wallet_data(&json_bytes, &machine_pass)?
                 }
             };
             tokio::fs::write(wallet_path, to_write)
@@ -326,6 +341,9 @@ impl Wallet {
         let raw = u128::from_str_radix(hex, 16)
             .map_err(|e| IroncladError::Wallet(format!("failed to parse balance hex: {e}")))?;
 
+        // NOTE: u128-to-f64 cast loses precision for balances above ~2^53 base units
+        // (~9.007 ETH at 18 decimals). A future refactor should use the Money type for
+        // lossless arithmetic. For typical agent balances this is acceptable.
         // 18 decimals for native ETH
         Ok(raw as f64 / 1e18)
     }
@@ -372,6 +390,8 @@ impl Wallet {
         let raw = u128::from_str_radix(hex, 16)
             .map_err(|e| IroncladError::Wallet(format!("failed to parse balance hex: {e}")))?;
 
+        // NOTE: u128-to-f64 cast loses precision for balances above ~2^53 base units.
+        // A future refactor should use the Money type for lossless arithmetic.
         let divisor = 10f64.powi(decimals as i32);
         Ok(raw as f64 / divisor)
     }
@@ -703,7 +723,7 @@ mod tests {
     #[test]
     fn decrypt_wallet_data_wrong_passphrase() {
         let data = b"some wallet data to encrypt";
-        let encrypted = encrypt_wallet_data(data, "correct-password");
+        let encrypted = encrypt_wallet_data(data, "correct-password").unwrap();
         let result = decrypt_wallet_data(&encrypted, "wrong-password");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("wrong passphrase"));
@@ -712,7 +732,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt_roundtrip_unit() {
         let original = b"hello wallet world";
-        let encrypted = encrypt_wallet_data(original, "my-pass");
+        let encrypted = encrypt_wallet_data(original, "my-pass").unwrap();
         let decrypted = decrypt_wallet_data(&encrypted, "my-pass").unwrap();
         assert_eq!(&decrypted, original);
     }

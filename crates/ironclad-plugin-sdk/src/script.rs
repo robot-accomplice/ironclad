@@ -12,7 +12,15 @@ use crate::manifest::PluginManifest;
 use crate::{Plugin, ToolDef, ToolResult};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-const SCRIPT_EXTENSIONS: &[&str] = &["gosh", "go", "sh", "py", "rb", "js", ""];
+const SCRIPT_EXTENSIONS: &[&str] = &[
+    "gosh", "go", "sh", "py", "rb", "js",
+    // Empty string matches extensionless files (e.g., `tool_name` without `.sh`).
+    // This is checked last so that recognized extensions take priority. Extensionless
+    // files are only accepted if they begin with a recognized shebang line; see
+    // `validate_shebang()`. Without the shebang check an attacker could place an
+    // arbitrary binary in the plugin directory and have it executed.
+    "",
+];
 
 /// A concrete `Plugin` implementation that executes external scripts.
 ///
@@ -68,10 +76,44 @@ impl ScriptPlugin {
                     warn!(tool = %tool_name, error = %e, "script path rejected");
                     return None;
                 }
+                // Extensionless files must have a recognized shebang line so we
+                // don't accidentally execute an arbitrary binary.
+                if ext.is_empty() && !Self::has_recognized_shebang(&path) {
+                    warn!(
+                        tool = %tool_name,
+                        path = %path.display(),
+                        "extensionless script rejected: missing recognized shebang"
+                    );
+                    continue;
+                }
                 return Some(path);
             }
         }
         None
+    }
+
+    /// Returns `true` if the file starts with a shebang (`#!`) whose interpreter
+    /// is one we recognize. This prevents extensionless arbitrary binaries from
+    /// being executed as plugin scripts.
+    fn has_recognized_shebang(path: &Path) -> bool {
+        const RECOGNIZED_INTERPRETERS: &[&str] = &[
+            "sh", "bash", "zsh", "python", "python3", "ruby", "node", "gosh", "go",
+        ];
+
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        let Some(first_line) = content.lines().next() else {
+            return false;
+        };
+        if !first_line.starts_with("#!") {
+            return false;
+        }
+        // Extract the interpreter name from e.g. "#!/usr/bin/env python3" or "#!/bin/sh"
+        let shebang = first_line.trim_start_matches("#!");
+        let last_token = shebang.split_whitespace().last().unwrap_or("");
+        let interpreter = last_token.rsplit('/').next().unwrap_or(last_token);
+        RECOGNIZED_INTERPRETERS.contains(&interpreter)
     }
 
     /// Ensures a resolved script path is contained within the plugin directory.

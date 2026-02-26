@@ -2351,4 +2351,240 @@ tier = "T3"
             .expect_err("v0.8 mode must reject legacy loopback");
         assert!(err.contains("providers.anthropic.url"));
     }
+
+    #[test]
+    fn canonical_provider_base_url_is_case_insensitive() {
+        assert_eq!(
+            canonical_provider_base_url("AnThRoPiC"),
+            Some("https://api.anthropic.com")
+        );
+        assert_eq!(
+            canonical_provider_base_url("GOOGLE"),
+            Some("https://generativelanguage.googleapis.com")
+        );
+        assert_eq!(canonical_provider_base_url("unknown"), None);
+    }
+
+    #[test]
+    fn parse_legacy_proxy_url_rejects_wrong_path_prefix() {
+        assert!(!parse_legacy_proxy_url(
+            "anthropic",
+            "http://127.0.0.1:8788/google"
+        ));
+    }
+
+    #[test]
+    fn rewrite_provider_urls_in_toml_noop_without_migrations() {
+        let source = r#"[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#;
+        let (rewritten, changed) = rewrite_provider_urls_in_toml(source, &[]);
+        assert!(!changed);
+        assert_eq!(rewritten, source);
+    }
+
+    #[test]
+    fn persist_provider_url_migrations_writes_backup_and_new_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("ironclad.toml");
+        std::fs::write(
+            &config_path,
+            r#"[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#,
+        )
+        .unwrap();
+        let migrations = vec![ProviderUrlMigration {
+            provider: "anthropic".into(),
+            from_url: "http://127.0.0.1:8788/anthropic".into(),
+            to_url: "https://api.anthropic.com".into(),
+        }];
+        persist_provider_url_migrations(&config_path, &migrations).unwrap();
+        let updated = std::fs::read_to_string(&config_path).unwrap();
+        assert!(updated.contains("https://api.anthropic.com"));
+        assert!(config_path.with_extension("toml.bak").exists());
+    }
+
+    #[test]
+    fn ensure_internal_proxies_reachable_skips_non_loopback_providers() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "https://api.anthropic.com"
+tier = "T3"
+"#,
+        );
+        let result = ensure_internal_proxies_reachable(&cfg);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_init_then_cmd_check_succeeds_for_generated_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        cmd_init(dir.path().to_str().unwrap()).expect("init should succeed");
+        let cfg_path = dir.path().join("ironclad.toml");
+        assert!(cfg_path.exists());
+        cmd_check(cfg_path.to_str().unwrap()).expect("check should succeed");
+    }
+
+    #[test]
+    fn provider_requires_internal_proxy_false_for_invalid_url() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "not-a-url"
+tier = "T3"
+"#,
+        );
+        let p = cfg.providers.get("anthropic").unwrap();
+        assert!(!provider_requires_internal_proxy("anthropic", p));
+    }
+
+    #[test]
+    fn parse_legacy_proxy_url_rejects_non_loopback_hosts() {
+        assert!(!parse_legacy_proxy_url(
+            "anthropic",
+            "http://10.0.0.1:8788/anthropic"
+        ));
+    }
+
+    #[test]
+    fn persist_provider_url_migrations_is_noop_for_missing_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.toml");
+        let migrations = vec![ProviderUrlMigration {
+            provider: "anthropic".into(),
+            from_url: "http://127.0.0.1:8788/anthropic".into(),
+            to_url: "https://api.anthropic.com".into(),
+        }];
+        persist_provider_url_migrations(&missing, &migrations).unwrap();
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn collect_legacy_loopback_providers_ignores_local_flagged_provider() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.ollama]
+url = "http://127.0.0.1:8788/ollama"
+tier = "T1"
+is_local = true
+"#,
+        );
+        let legacy = collect_legacy_loopback_providers(&cfg);
+        assert!(legacy.is_empty());
+    }
+
+    #[test]
+    fn validate_legacy_loopback_urls_for_mode_allows_pre_0_8_mode() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#,
+        );
+        let result =
+            validate_legacy_loopback_urls_for_mode(&cfg, LegacyLoopbackMode::MigrateDeprecated);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ensure_internal_proxies_reachable_returns_error_for_unreachable_loopback_proxy() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "http://127.0.0.1:9/anthropic"
+tier = "T3"
+"#,
+        );
+        let result = ensure_internal_proxies_reachable(&cfg);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn migrate_legacy_proxy_urls_noop_for_already_canonical_urls() {
+        let cfg_text = r#"
+[agent]
+name = "T"
+id = "t"
+[server]
+bind = "127.0.0.1"
+port = 18789
+[database]
+path = ":memory:"
+[models]
+primary = "anthropic/x"
+[providers.anthropic]
+url = "https://api.anthropic.com"
+tier = "T3"
+"#;
+        let mut cfg = IroncladConfig::from_str(cfg_text).unwrap();
+        let migrations = migrate_legacy_proxy_urls(&mut cfg, None).unwrap();
+        assert!(migrations.is_empty());
+        assert_eq!(
+            cfg.providers.get("anthropic").unwrap().url,
+            "https://api.anthropic.com"
+        );
+    }
+
+    #[test]
+    fn rewrite_provider_urls_in_toml_only_changes_top_level_provider_section_url_field() {
+        let source = r#"[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+[providers.anthropic.extra]
+url = "http://127.0.0.1:8788/should-not-change"
+"#;
+        let migrations = vec![ProviderUrlMigration {
+            provider: "anthropic".into(),
+            from_url: "http://127.0.0.1:8788/anthropic".into(),
+            to_url: "https://api.anthropic.com".into(),
+        }];
+        let (rewritten, changed) = rewrite_provider_urls_in_toml(source, &migrations);
+        assert!(changed);
+        assert!(rewritten.contains("url = \"https://api.anthropic.com\""));
+        assert!(rewritten.contains("url = \"http://127.0.0.1:8788/should-not-change\""));
+    }
+
+    #[test]
+    fn legacy_loopback_mode_matches_current_package_version_rule() {
+        let mode = legacy_loopback_mode();
+        // Current package version in this workspace is pre-0.8.
+        assert_eq!(mode, LegacyLoopbackMode::MigrateDeprecated);
+    }
+
+    #[test]
+    fn canonical_provider_base_url_covers_known_providers() {
+        assert_eq!(
+            canonical_provider_base_url("openrouter"),
+            Some("https://openrouter.ai/api")
+        );
+        assert_eq!(
+            canonical_provider_base_url("moonshot"),
+            Some("https://api.moonshot.ai")
+        );
+        assert_eq!(canonical_provider_base_url("unknown-provider"), None);
+    }
+
+    #[test]
+    fn cmd_init_is_idempotent_when_config_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("ironclad.toml");
+        std::fs::write(&cfg_path, "sentinel").unwrap();
+        cmd_init(dir.path().to_str().unwrap()).unwrap();
+        let after = std::fs::read_to_string(&cfg_path).unwrap();
+        assert_eq!(after, "sentinel");
+    }
+
+    #[test]
+    fn find_listeners_returns_empty_for_closed_ephemeral_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let pids = find_listeners(port).unwrap();
+        assert!(pids.is_empty());
+    }
 }

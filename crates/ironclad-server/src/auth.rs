@@ -38,6 +38,17 @@ pub struct ApiKeyMiddleware<S> {
     key: Option<Arc<str>>,
 }
 
+/// Returns `true` for paths that must be reachable without an API key.
+///
+/// - `/` and `/api/health` -- uptime probes; read-only, no side-effects.
+/// - `/api/webhooks/*` -- inbound from Telegram/WhatsApp; these services
+///   cannot supply our API key, so they authenticate via HMAC or provider
+///   token validation inside the handler itself.
+/// - `/.well-known/agent.json` -- public A2A agent-card discovery.
+///
+/// NOTE: All exempt paths are still subject to the global and per-IP rate
+/// limiter. If you add a new exempt path, ensure it cannot be abused to
+/// amplify work (e.g. trigger LLM calls) without its own auth check.
 fn is_exempt(path: &str) -> bool {
     path == "/"
         || path == "/api/health"
@@ -92,8 +103,10 @@ fn unauthorized_response() -> Response<Body> {
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap()
+        .body(Body::from(
+            serde_json::to_vec(&body).expect("static error body serialization"),
+        ))
+        .expect("error response construction")
 }
 
 impl<S> Service<Request<Body>> for ApiKeyMiddleware<S>

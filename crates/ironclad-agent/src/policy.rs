@@ -336,7 +336,7 @@ impl PolicyRule for RateLimitRule {
     fn evaluate(&self, call: &ToolCallRequest, _ctx: &PolicyContext) -> PolicyDecision {
         let now = Instant::now();
         let window_start = now - Duration::from_secs(60);
-        let mut guard = self.calls.lock().expect("rate limit mutex");
+        let mut guard = self.calls.lock().unwrap_or_else(|e| e.into_inner());
         let cuts = guard.entry(call.tool_name.clone()).or_default();
         Self::prune_older_than(cuts, window_start);
         if cuts.len() >= self.max_calls_per_minute as usize {

@@ -9,6 +9,25 @@ use ironclad_core::{IroncladError, Result};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Percent-encode a string for safe inclusion as a URL query parameter value.
+/// Encodes all bytes outside the unreserved set (RFC 3986 section 2.3).
+fn pct_encode_query_value(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(char::from(b"0123456789ABCDEF"[(b >> 4) as usize]));
+                out.push(char::from(b"0123456789ABCDEF"[(b & 0x0F) as usize]));
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     http: Client,
@@ -55,7 +74,8 @@ impl LlmClient {
         let effective_url;
         let mut request = if let Some(param_name) = auth_header.strip_prefix("query:") {
             let separator = if url.contains('?') { '&' } else { '?' };
-            effective_url = format!("{url}{separator}{param_name}={api_key}");
+            let encoded_key = pct_encode_query_value(api_key);
+            effective_url = format!("{url}{separator}{param_name}={encoded_key}");
             self.http
                 .post(&effective_url)
                 .header("Content-Type", "application/json")

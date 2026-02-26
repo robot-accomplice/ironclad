@@ -438,7 +438,10 @@ pub fn initialize_db(db: &Database) -> Result<()> {
 
 fn has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> Result<bool> {
     let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
+        .prepare(&format!(
+            "PRAGMA table_info(\"{}\")",
+            table.replace('"', "\"\"")
+        ))
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     let rows = stmt
         .query_map([], |row| row.get::<_, String>(1))
@@ -560,8 +563,8 @@ fn version_from_name(name: &str) -> i64 {
         .unwrap_or(0)
 }
 
-#[allow(dead_code)]
-pub fn table_count(db: &Database) -> Result<usize> {
+#[cfg(test)]
+pub(crate) fn table_count(db: &Database) -> Result<usize> {
     let conn = db.conn();
     let count: usize = conn
         .query_row(

@@ -168,11 +168,11 @@ coverage-check:
     output=$(cargo llvm-cov --workspace 2>&1 | grep '^TOTAL')
     pct=$(echo "$output" | awk '{print $4}' | tr -d '%')
     echo "Total line coverage: ${pct}%"
-    if (( $(echo "$pct < 70.0" | bc -l) )); then
-        echo "FAIL: Coverage ${pct}% is below the 70% minimum"
+    if (( $(echo "$pct < 80.0" | bc -l) )); then
+        echo "FAIL: Coverage ${pct}% is below the 80% minimum"
         exit 1
-    elif (( $(echo "$pct < 80.0" | bc -l) )); then
-        echo "WARN: Coverage ${pct}% is below the 80% goal"
+    elif (( $(echo "$pct < 85.0" | bc -l) )); then
+        echo "WARN: Coverage ${pct}% is below the 85% goal"
     else
         echo "PASS: Coverage ${pct}% meets the 80% goal"
     fi
@@ -185,7 +185,7 @@ run config="":
 
 # Run the server (release build)
 run-release config="":
-    {{ if config == "" { "cargo run --release --bin ironclad-server -- serve" } else { "cargo run --release --bin ironclad-server -- serve -c " + config } }}
+    {{ if config == "" { "cargo run --release --bin ironclad -- serve" } else { "cargo run --release --bin ironclad -- serve -c " + config } }}
 
 # Run local source with installed config/data paths (~/.ironclad by default)
 run-installed-config config="~/.ironclad/ironclad.toml":
@@ -377,8 +377,8 @@ ci-test:
         echo ""
         echo "  Total coverage: ${COVERAGE_PCT}%"
 
-        if (( $(echo "$COVERAGE_PCT < 70.0" | bc -l) )); then
-            echo "  FAIL: Coverage ${COVERAGE_PCT}% is below the 70% minimum"
+        if (( $(echo "$COVERAGE_PCT < 80.0" | bc -l) )); then
+            echo "  FAIL: Coverage ${COVERAGE_PCT}% is below the 80% minimum"
             return 1
         fi
 

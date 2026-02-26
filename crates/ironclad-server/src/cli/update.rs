@@ -1164,6 +1164,104 @@ pub async fn cmd_update_skills(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Json, Router, extract::State, routing::get};
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+    use tokio::net::TcpListener;
+
+    #[derive(Clone)]
+    struct MockRegistry {
+        manifest: String,
+        providers: String,
+        skill_hello: String,
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old = std::env::var_os(key);
+            // SAFETY: test-scoped environment mutation restored on Drop.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.old {
+                // SAFETY: restoring previous process env value.
+                unsafe { std::env::set_var(self.key, v) };
+            } else {
+                // SAFETY: restoring previous process env value.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    async fn start_mock_registry(
+        providers: String,
+        skill_hello: String,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let providers_hash = bytes_sha256(providers.as_bytes());
+        let hello_hash = bytes_sha256(skill_hello.as_bytes());
+        let manifest = serde_json::json!({
+            "version": "0.8.0",
+            "packs": {
+                "providers": {
+                    "sha256": providers_hash,
+                    "path": "registry/providers.toml"
+                },
+                "skills": {
+                    "sha256": null,
+                    "path": "registry/skills/",
+                    "files": {
+                        "hello.md": hello_hash
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let state = MockRegistry {
+            manifest,
+            providers,
+            skill_hello,
+        };
+
+        async fn manifest_h(State(st): State<MockRegistry>) -> Json<serde_json::Value> {
+            Json(serde_json::from_str(&st.manifest).unwrap())
+        }
+        async fn providers_h(State(st): State<MockRegistry>) -> String {
+            st.providers
+        }
+        async fn skill_h(State(st): State<MockRegistry>) -> String {
+            st.skill_hello
+        }
+
+        let app = Router::new()
+            .route("/manifest.json", get(manifest_h))
+            .route("/registry/providers.toml", get(providers_h))
+            .route("/registry/skills/hello.md", get(skill_h))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (
+            format!("http://{}:{}/manifest.json", addr.ip(), addr.port()),
+            handle,
+        )
+    }
 
     #[test]
     fn update_state_serde_roundtrip() {
@@ -1475,5 +1573,114 @@ mod tests {
         let ic = InstalledContent::default();
         assert!(ic.skills.is_none());
         assert!(ic.providers.is_none());
+    }
+
+    #[test]
+    fn parse_sha256sums_for_artifact_finds_exact_entry() {
+        let sums = "\
+abc123  ironclad-0.8.0-darwin-aarch64.tar.gz\n\
+def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
+        let hash = parse_sha256sums_for_artifact(sums, "ironclad-0.8.0-linux-x86_64.tar.gz");
+        assert_eq!(hash.as_deref(), Some("def456"));
+    }
+
+    #[test]
+    fn find_file_recursive_finds_nested_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        let target = nested.join("needle.txt");
+        std::fs::write(&target, "x").unwrap();
+        let found = find_file_recursive(dir.path(), "needle.txt").unwrap();
+        assert_eq!(found.as_deref(), Some(target.as_path()));
+    }
+
+    #[test]
+    fn local_path_helpers_fallback_when_config_missing() {
+        let p = providers_local_path("/no/such/file.toml");
+        let s = skills_local_dir("/no/such/file.toml");
+        assert!(p.ends_with("providers.toml"));
+        assert!(s.ends_with("skills"));
+    }
+
+    #[test]
+    fn parse_sha256sums_for_artifact_returns_none_when_missing() {
+        let sums = "abc123  file-a.tar.gz\n";
+        assert!(parse_sha256sums_for_artifact(sums, "file-b.tar.gz").is_none());
+    }
+
+    #[test]
+    fn find_file_recursive_returns_none_when_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let found = find_file_recursive(dir.path(), "does-not-exist.txt").unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_providers_update_fetches_and_writes_local_file() {
+        let _lock = env_lock().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", temp.path().to_str().unwrap());
+        let config_path = temp.path().join("ironclad.toml");
+        let providers_path = temp.path().join("providers.toml");
+        std::fs::write(
+            &config_path,
+            format!("providers_file = \"{}\"\n", providers_path.display()),
+        )
+        .unwrap();
+
+        let providers = "[providers.openai]\nurl = \"https://api.openai.com\"\n".to_string();
+        let (registry_url, handle) =
+            start_mock_registry(providers.clone(), "# hello\nbody\n".to_string()).await;
+
+        let changed = apply_providers_update(true, &registry_url, config_path.to_str().unwrap())
+            .await
+            .unwrap();
+        assert!(changed);
+        assert_eq!(std::fs::read_to_string(&providers_path).unwrap(), providers);
+
+        let changed_second =
+            apply_providers_update(true, &registry_url, config_path.to_str().unwrap())
+                .await
+                .unwrap();
+        assert!(!changed_second);
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn apply_skills_update_installs_and_then_reports_up_to_date() {
+        let _lock = env_lock().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", temp.path().to_str().unwrap());
+        let skills_dir = temp.path().join("skills");
+        let config_path = temp.path().join("ironclad.toml");
+        std::fs::write(
+            &config_path,
+            format!("[skills]\nskills_dir = \"{}\"\n", skills_dir.display()),
+        )
+        .unwrap();
+
+        let hello = "# hello\nfrom registry\n".to_string();
+        let (registry_url, handle) = start_mock_registry(
+            "[providers.openai]\nurl=\"https://api.openai.com\"\n".to_string(),
+            hello.clone(),
+        )
+        .await;
+
+        let changed = apply_skills_update(true, &registry_url, config_path.to_str().unwrap())
+            .await
+            .unwrap();
+        assert!(changed);
+        assert_eq!(
+            std::fs::read_to_string(skills_dir.join("hello.md")).unwrap(),
+            hello
+        );
+
+        let changed_second =
+            apply_skills_update(true, &registry_url, config_path.to_str().unwrap())
+                .await
+                .unwrap();
+        assert!(!changed_second);
+        handle.abort();
     }
 }

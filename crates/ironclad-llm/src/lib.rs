@@ -189,12 +189,21 @@ impl LlmService {
     }
 }
 
+/// Maximum SSE buffer size (10 MB). Streams exceeding this are terminated to
+/// prevent unbounded memory growth from a misbehaving provider.
+const MAX_SSE_BUFFER: usize = 10 * 1024 * 1024;
+
 /// A `Stream` adapter that converts raw SSE byte chunks from an LLM provider
-/// into parsed `StreamChunk` items. Handles buffering across chunk boundaries.
+/// into parsed `StreamChunk` items. Handles buffering across chunk boundaries
+/// with proper incremental UTF-8 decoding.
 pub struct SseChunkStream {
     inner: Pin<Box<dyn Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send>>,
     format: ApiFormat,
-    buffer: String,
+    /// Validated UTF-8 text ready for line parsing.
+    text_buffer: String,
+    /// Raw byte buffer holding trailing bytes from an incomplete UTF-8 sequence.
+    /// These bytes are prepended to the next incoming chunk before decoding.
+    raw_tail: Vec<u8>,
     /// Chunks parsed from the buffer remainder when the inner stream ends.
     /// Drained before returning `None` to avoid dropping trailing data.
     pending: std::collections::VecDeque<format::StreamChunk>,
@@ -209,7 +218,8 @@ impl SseChunkStream {
         Self {
             inner,
             format,
-            buffer: String::new(),
+            text_buffer: String::new(),
+            raw_tail: Vec::new(),
             pending: std::collections::VecDeque::new(),
             inner_done: false,
         }
@@ -231,10 +241,10 @@ impl Stream for SseChunkStream {
         }
 
         loop {
-            // First, try to parse a complete line from the buffer
-            if let Some(newline_pos) = this.buffer.find('\n') {
-                let line = this.buffer[..newline_pos].trim().to_string();
-                this.buffer = this.buffer[newline_pos + 1..].to_string();
+            // First, try to parse a complete line from the text buffer
+            if let Some(newline_pos) = this.text_buffer.find('\n') {
+                let line = this.text_buffer[..newline_pos].trim().to_string();
+                this.text_buffer = this.text_buffer[newline_pos + 1..].to_string();
 
                 if line.is_empty() {
                     continue;
@@ -246,10 +256,40 @@ impl Stream for SseChunkStream {
                 continue;
             }
 
-            // No complete line in buffer — poll for more bytes
+            // No complete line in buffer -- poll for more bytes
             match Pin::new(&mut this.inner).poll_next(cx) {
                 Poll::Ready(Some(Ok(bytes))) => {
-                    this.buffer.push_str(&String::from_utf8_lossy(&bytes));
+                    // Prepend any leftover incomplete UTF-8 bytes from the previous chunk
+                    let combined = if this.raw_tail.is_empty() {
+                        bytes.to_vec()
+                    } else {
+                        let mut buf = std::mem::take(&mut this.raw_tail);
+                        buf.extend_from_slice(&bytes);
+                        buf
+                    };
+
+                    // Decode as much valid UTF-8 as possible, keeping any
+                    // incomplete trailing sequence for the next chunk.
+                    match std::str::from_utf8(&combined) {
+                        Ok(valid) => {
+                            this.text_buffer.push_str(valid);
+                        }
+                        Err(e) => {
+                            let valid_up_to = e.valid_up_to();
+                            // Safety: `valid_up_to` is a confirmed UTF-8 boundary.
+                            let valid =
+                                unsafe { std::str::from_utf8_unchecked(&combined[..valid_up_to]) };
+                            this.text_buffer.push_str(valid);
+                            this.raw_tail = combined[valid_up_to..].to_vec();
+                        }
+                    }
+
+                    // Guard against unbounded buffer growth
+                    if this.text_buffer.len() + this.raw_tail.len() > MAX_SSE_BUFFER {
+                        return Poll::Ready(Some(Err(ironclad_core::IroncladError::Llm(
+                            "SSE stream buffer exceeded 10 MB limit".into(),
+                        ))));
+                    }
                 }
                 Poll::Ready(Some(Err(e))) => {
                     return Poll::Ready(Some(Err(ironclad_core::IroncladError::Network(format!(
@@ -258,9 +298,17 @@ impl Stream for SseChunkStream {
                 }
                 Poll::Ready(None) => {
                     this.inner_done = true;
+
+                    // Convert any remaining raw tail bytes lossily (stream ended
+                    // mid-character, so these are genuinely malformed).
+                    if !this.raw_tail.is_empty() {
+                        let tail = std::mem::take(&mut this.raw_tail);
+                        this.text_buffer.push_str(&String::from_utf8_lossy(&tail));
+                    }
+
                     // Parse ALL remaining lines and queue them for delivery
-                    if !this.buffer.trim().is_empty() {
-                        let remaining = std::mem::take(&mut this.buffer);
+                    if !this.text_buffer.trim().is_empty() {
+                        let remaining = std::mem::take(&mut this.text_buffer);
                         for line in remaining.lines() {
                             let line = line.trim();
                             if line.is_empty() {

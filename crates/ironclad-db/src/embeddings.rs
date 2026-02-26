@@ -96,6 +96,14 @@ fn load_embedding_from_row(blob: Option<Vec<u8>>, json_text: &str) -> Option<Vec
     None
 }
 
+/// Brute-force cosine similarity search over all stored embeddings.
+///
+/// **Complexity**: O(N) where N is the number of stored embeddings. Every row is loaded
+/// into memory and compared. For production workloads with large embedding tables,
+/// use `AnnIndex` (approximate nearest neighbor) instead.
+///
+/// A `LIMIT 10000` cap is applied to the SQL query to prevent unbounded memory usage
+/// while the AnnIndex integration is pending.
 pub fn search_similar(
     db: &Database,
     query_embedding: &[f32],
@@ -106,7 +114,7 @@ pub fn search_similar(
     let mut stmt = conn
         .prepare(
             "SELECT source_table, source_id, content_preview, embedding_blob, embedding_json \
-             FROM embeddings",
+             FROM embeddings LIMIT 10000",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -207,8 +215,8 @@ pub fn hybrid_search(
     Ok(fts_results)
 }
 
-#[allow(dead_code)]
-pub fn embedding_count(db: &Database) -> Result<usize> {
+#[cfg(test)]
+pub(crate) fn embedding_count(db: &Database) -> Result<usize> {
     let conn = db.conn();
     let count: usize = conn
         .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))

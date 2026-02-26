@@ -811,3 +811,113 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old = std::env::var_os(key);
+            // SAFETY: test-scoped environment mutation restored on Drop.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.old {
+                // SAFETY: restoring previous process env value.
+                unsafe { std::env::set_var(self.key, v) };
+            } else {
+                // SAFETY: restoring previous process env value.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn write_starter_skills_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = write_starter_skills(dir.path()).unwrap();
+        assert_eq!(first, STARTER_SKILLS.len());
+
+        let second = write_starter_skills(dir.path()).unwrap();
+        assert_eq!(second, 0);
+    }
+
+    #[test]
+    fn aperture_options_include_70b_only_for_high_ram() {
+        let low = aperture_options_for_provider("sglang", Some(32));
+        assert!(low.iter().any(|m| m.ends_with(APERTUS_8B_SUFFIX)));
+        assert!(!low.iter().any(|m| m.ends_with(APERTUS_70B_SUFFIX)));
+
+        let high = aperture_options_for_provider("sglang", Some(128));
+        assert!(high.iter().any(|m| m.ends_with(APERTUS_8B_SUFFIX)));
+        assert!(high.iter().any(|m| m.ends_with(APERTUS_70B_SUFFIX)));
+    }
+
+    #[test]
+    fn starter_skills_contain_expected_frontmatter() {
+        for (name, content) in STARTER_SKILLS {
+            assert!(name.ends_with(".md"));
+            assert!(content.starts_with("---"));
+            assert!(content.contains("name:"));
+            assert!(content.contains("description:"));
+            assert!(content.contains("triggers:"));
+        }
+    }
+
+    #[test]
+    fn has_hf_model_cache_detects_models_directory() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let hf_home = dir.path().join(".cache").join("huggingface");
+        let hub = hf_home.join("hub");
+        std::fs::create_dir_all(&hub).unwrap();
+        std::fs::create_dir_all(hub.join("models--test--foo")).unwrap();
+        let _guard = EnvGuard::set("HF_HOME", hf_home.to_str().unwrap());
+        assert!(has_hf_model_cache());
+    }
+
+    #[test]
+    fn has_hf_model_cache_false_when_unset_or_empty() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let hf_home = dir.path().join("empty_hf");
+        std::fs::create_dir_all(&hf_home).unwrap();
+        let _guard = EnvGuard::set("HF_HOME", hf_home.to_str().unwrap());
+        assert!(!has_hf_model_cache());
+    }
+
+    #[test]
+    fn has_existing_local_model_stack_false_with_no_tools_or_cache() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let empty_path = tempfile::tempdir().unwrap();
+        let _path_guard = EnvGuard::set("PATH", empty_path.path().to_str().unwrap());
+        let hf_home = tempfile::tempdir().unwrap();
+        let _hf_guard = EnvGuard::set("HF_HOME", hf_home.path().to_str().unwrap());
+        assert!(!has_existing_local_model_stack());
+    }
+
+    #[test]
+    fn detect_system_ram_gb_returns_reasonable_value_when_present() {
+        let ram = detect_system_ram_gb();
+        if let Some(v) = ram {
+            assert!(v > 0);
+        }
+    }
+}

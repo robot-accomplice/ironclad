@@ -86,8 +86,16 @@ pub async fn run_cron_worker(db: ironclad_db::Database, instance_id: String) {
                 continue;
             }
 
-            if !ironclad_db::cron::acquire_lease(&db, &job.id, &instance_id).unwrap_or(false) {
-                continue;
+            match ironclad_db::cron::acquire_lease(&db, &job.id, &instance_id) {
+                Ok(acquired) => {
+                    if !acquired {
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(job_id = %job.id, error = %e, "failed to acquire cron lease");
+                    continue;
+                }
             }
 
             tracing::debug!(job = %job.name, "Executing cron job");
@@ -96,15 +104,18 @@ pub async fn run_cron_worker(db: ironclad_db::Database, instance_id: String) {
             let (result_status, error_msg) = execute_cron_job(&db, job);
             let duration = start.elapsed().as_millis() as i64;
 
-            ironclad_db::cron::record_run(
+            if let Err(e) = ironclad_db::cron::record_run(
                 &db,
                 &job.id,
                 result_status,
                 Some(duration),
                 error_msg.as_deref(),
-            )
-            .ok();
-            ironclad_db::cron::release_lease(&db, &job.id).ok();
+            ) {
+                tracing::warn!(job_id = %job.id, error = %e, "failed to record cron run");
+            }
+            if let Err(e) = ironclad_db::cron::release_lease(&db, &job.id, &instance_id) {
+                tracing::warn!(job_id = %job.id, error = %e, "failed to release cron lease");
+            }
         }
     }
 }
@@ -238,8 +249,8 @@ fn parse_interval_expr_to_ms(expr: &str) -> Option<i64> {
     if expr.is_empty() {
         return None;
     }
-    let unit = expr.chars().last()?;
-    let qty = expr[..expr.len().saturating_sub(1)].parse::<i64>().ok()?;
+    let (unit_byte_offset, unit) = expr.char_indices().last()?;
+    let qty = expr[..unit_byte_offset].parse::<i64>().ok()?;
     let ms = match unit {
         's' | 'S' => qty.saturating_mul(1_000),
         'm' | 'M' => qty.saturating_mul(60_000),

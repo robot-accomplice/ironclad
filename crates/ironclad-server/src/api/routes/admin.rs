@@ -145,6 +145,8 @@ pub async fn list_approvals(State(state): State<AppState>) -> impl IntoResponse 
     }))
 }
 
+const MAX_DECIDED_BY_LEN: usize = 256;
+
 #[derive(Deserialize)]
 pub struct ApprovalDecisionRequest {
     #[serde(default = "default_decided_by")]
@@ -154,12 +156,25 @@ fn default_decided_by() -> String {
     "api".into()
 }
 
+/// Sanitize the `decided_by` field: enforce max length and strip control characters.
+fn sanitize_decided_by(raw: &str) -> Result<String, (StatusCode, String)> {
+    if raw.len() > MAX_DECIDED_BY_LEN {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("decided_by exceeds max length of {MAX_DECIDED_BY_LEN} characters"),
+        ));
+    }
+    let sanitized: String = raw.chars().filter(|c| !c.is_control()).collect();
+    Ok(sanitized)
+}
+
 pub async fn approve_request(
     State(state): State<AppState>,
     Path(id): Path<String>,
     axum::Json(body): axum::Json<ApprovalDecisionRequest>,
 ) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
-    match state.approvals.approve(&id, &body.decided_by) {
+    let decided_by = sanitize_decided_by(&body.decided_by)?;
+    match state.approvals.approve(&id, &decided_by) {
         Ok(req) => Ok(Json(json!(req))),
         Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
     }
@@ -170,7 +185,8 @@ pub async fn deny_request(
     Path(id): Path<String>,
     axum::Json(body): axum::Json<ApprovalDecisionRequest>,
 ) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
-    match state.approvals.deny(&id, &body.decided_by) {
+    let decided_by = sanitize_decided_by(&body.decided_by)?;
+    match state.approvals.deny(&id, &decided_by) {
         Ok(req) => Ok(Json(json!(req))),
         Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
     }
@@ -248,12 +264,26 @@ pub struct A2aHelloRequest {
     pub hello: Value,
 }
 
+const MERGE_JSON_MAX_DEPTH: usize = 10;
+
 fn merge_json(base: &mut Value, patch: &Value) {
+    merge_json_inner(base, patch, 0);
+}
+
+fn merge_json_inner(base: &mut Value, patch: &Value, depth: usize) {
+    if depth > MERGE_JSON_MAX_DEPTH {
+        tracing::warn!(
+            depth,
+            "merge_json exceeded max recursion depth, replacing subtree"
+        );
+        *base = patch.clone();
+        return;
+    }
     match (base, patch) {
         (Value::Object(base_map), Value::Object(patch_map)) => {
             for (k, v) in patch_map {
                 let entry = base_map.entry(k.clone()).or_insert(Value::Null);
-                merge_json(entry, v);
+                merge_json_inner(entry, v, depth + 1);
             }
         }
         (base, patch) => {
@@ -288,11 +318,18 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
                 p.insert("_key_source".into(), json!(key_source));
                 p.insert("_provider_name".into(), json!(name.clone()));
 
+                // Blocklist approach: strip all known secret-bearing fields.
+                // WARNING: when adding new provider config fields that contain
+                // secrets, you MUST add them here or they will be exposed via
+                // the GET /api/config endpoint.
                 p.remove("api_key");
                 p.remove("api_key_env");
                 p.remove("api_key_ref");
                 p.remove("secret");
                 p.remove("token");
+                p.remove("password");
+                p.remove("auth_token");
+                p.remove("client_secret");
             }
         }
     }
@@ -301,6 +338,8 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     {
         w.remove("private_key");
         w.remove("mnemonic");
+        w.remove("secret");
+        w.remove("password");
     }
     axum::Json(cfg)
 }
@@ -2569,5 +2608,102 @@ mod tests {
     #[test]
     fn legacy_loopback_support_state_is_removed() {
         assert_eq!(legacy_loopback_support_state(), "removed_v0_8");
+    }
+
+    #[test]
+    fn parse_db_timestamp_supports_rfc3339_and_sqlite_formats() {
+        let rfc = parse_db_timestamp_utc("2026-02-26T10:11:12Z").unwrap();
+        assert_eq!(rfc.to_rfc3339(), "2026-02-26T10:11:12+00:00");
+
+        let sqlite = parse_db_timestamp_utc("2026-02-26 10:11:12").unwrap();
+        assert_eq!(sqlite.to_rfc3339(), "2026-02-26T10:11:12+00:00");
+
+        assert!(parse_db_timestamp_utc("not-a-time").is_none());
+    }
+
+    #[test]
+    fn is_recent_activity_respects_window() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-02-26T10:12:00+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(is_recent_activity("2026-02-26T10:11:10Z", now));
+        assert!(!is_recent_activity("2026-02-26T10:00:00Z", now));
+    }
+
+    #[test]
+    fn has_tool_token_matches_exact_split_tokens_only() {
+        assert!(has_tool_token("plugin-rg-runner", "rg"));
+        assert!(!has_tool_token("merge", "rg"));
+        assert!(!has_tool_token("larger", "rg"));
+    }
+
+    #[test]
+    fn format_balance_rounds_and_appends_symbol() {
+        assert_eq!(format_balance(1.2345, "USDC"), "1.23");
+        assert_eq!(format_balance(0.0, "ETH"), "0.000000");
+        assert_eq!(format_balance(0.123456789, "WBTC"), "0.12345679");
+        assert_eq!(format_balance(0.123456, "OTHER"), "0.1235");
+    }
+
+    #[test]
+    fn workspace_files_snapshot_filters_hidden_and_sorts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("z.txt"), "z").unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join(".hidden"), "h").unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+
+        let snap = workspace_files_snapshot(dir.path());
+        let entries = snap["top_level_entries"].as_array().unwrap();
+        let names: Vec<String> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["a.txt", "sub", "z.txt"]);
+        assert_eq!(snap["entry_count"].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn derive_workspace_activity_prefers_recent_tool_call_then_turn_then_idle() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES (?1, ?2, 'agent', 'active')",
+            rusqlite::params!["s1", "agent-1"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turns (id, session_id, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["t1", "s1", "2026-02-26T10:11:50Z"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_calls (id, turn_id, tool_name, input, status, created_at) VALUES (?1, ?2, ?3, '{}', 'ok', ?4)",
+            rusqlite::params!["tc1", "t1", "read_file", "2026-02-26T10:11:59Z"],
+        )
+        .unwrap();
+        drop(conn);
+
+        let now = chrono::DateTime::parse_from_rfc3339("2026-02-26T10:12:00+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let active = derive_workspace_activity(&db, "agent-1", true, now);
+        assert_eq!(active.0, Some("files"));
+        assert_eq!(active.1, "tool_execution");
+        assert_eq!(active.2.as_deref(), Some("read_file"));
+
+        let conn = db.conn();
+        conn.execute("DELETE FROM tool_calls", []).unwrap();
+        drop(conn);
+        let turn_only = derive_workspace_activity(&db, "agent-1", true, now);
+        assert_eq!(turn_only.0, Some("llm"));
+        assert_eq!(turn_only.1, "inference");
+
+        let idle_now = chrono::DateTime::parse_from_rfc3339("2026-02-26T10:30:00+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let idle = derive_workspace_activity(&db, "agent-1", true, idle_now);
+        assert_eq!(idle.0, Some("standby"));
+        assert_eq!(idle.1, "idle");
     }
 }

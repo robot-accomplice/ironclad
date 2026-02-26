@@ -14,6 +14,8 @@ pub struct TickContext {
 #[derive(Debug)]
 pub struct HeartbeatDaemon {
     pub interval_ms: u64,
+    /// The original configured interval, used to recover when tier returns to Normal/High.
+    pub original_interval_ms: u64,
     pub running: bool,
 }
 
@@ -21,26 +23,40 @@ impl HeartbeatDaemon {
     pub fn new(interval_ms: u64) -> Self {
         Self {
             interval_ms,
+            original_interval_ms: interval_ms,
             running: false,
         }
     }
 
-    /// Returns a new interval if the current tier warrants slowing down the tick loop.
+    /// Returns a new interval if the current tier warrants adjusting the tick loop.
+    /// Degraded tiers slow the interval down; recovering to Normal or High restores
+    /// the original configured interval.
     pub fn should_adjust_interval(&self, tier: &SurvivalTier) -> Option<u64> {
         const MAX_HEARTBEAT_INTERVAL_MS: u64 = 3_600_000; // 1 hour max
         const MIN_HEARTBEAT_INTERVAL_MS: u64 = 10_000; // 10 second min
 
-        let new = match tier {
-            SurvivalTier::LowCompute => self.interval_ms * 2,
-            SurvivalTier::Critical => self.interval_ms * 2,
-            SurvivalTier::Dead => self.interval_ms * 10,
-            _ => return None,
-        };
-        let max = match tier {
-            SurvivalTier::Dead => MAX_HEARTBEAT_INTERVAL_MS,
-            _ => 300_000, // 5 minutes max for non-dead tiers
-        };
-        Some(new.clamp(MIN_HEARTBEAT_INTERVAL_MS, max))
+        match tier {
+            SurvivalTier::Normal | SurvivalTier::High => {
+                if self.interval_ms != self.original_interval_ms {
+                    Some(self.original_interval_ms)
+                } else {
+                    None
+                }
+            }
+            _ => {
+                let new = match tier {
+                    SurvivalTier::LowCompute => self.interval_ms * 2,
+                    SurvivalTier::Critical => self.interval_ms * 2,
+                    SurvivalTier::Dead => self.interval_ms * 10,
+                    _ => unreachable!(),
+                };
+                let max = match tier {
+                    SurvivalTier::Dead => MAX_HEARTBEAT_INTERVAL_MS,
+                    _ => 300_000, // 5 minutes max for non-dead tiers
+                };
+                Some(new.clamp(MIN_HEARTBEAT_INTERVAL_MS, max))
+            }
+        }
     }
 }
 
@@ -66,6 +82,7 @@ pub fn default_tasks() -> Vec<crate::tasks::HeartbeatTask> {
         HeartbeatTask::MemoryPrune,
         HeartbeatTask::CacheEvict,
         HeartbeatTask::MetricSnapshot,
+        HeartbeatTask::AgentCardRefresh,
         HeartbeatTask::SessionGovernor,
     ]
 }
@@ -192,7 +209,10 @@ pub async fn run(
                     }
                 }
             }
-            ironclad_db::cron::record_run(
+            // Note: heartbeat_* IDs are virtual job IDs not linked to `cron_jobs` table
+            // rows. Heartbeat tasks are not cron jobs; these run records exist solely for
+            // observability and historical auditing in the `cron_runs` table.
+            if let Err(e) = ironclad_db::cron::record_run(
                 &db,
                 &format!("heartbeat_{:?}", task).to_lowercase(),
                 if result.success { "success" } else { "error" },
@@ -202,8 +222,9 @@ pub async fn run(
                 } else {
                     Some(&result.message)
                 },
-            )
-            .ok();
+            ) {
+                tracing::warn!(error = %e, "failed to record heartbeat run");
+            }
         }
 
         if let Some(new_interval) = daemon.should_adjust_interval(&ctx.survival_tier)
@@ -252,6 +273,7 @@ mod tests {
     fn interval_adjustment_by_tier() {
         let daemon = HeartbeatDaemon::new(1000);
 
+        // When interval == original, Normal/High return None (no change needed)
         assert_eq!(daemon.should_adjust_interval(&SurvivalTier::High), None);
         assert_eq!(daemon.should_adjust_interval(&SurvivalTier::Normal), None);
         // Clamped to MIN 10s ..= MAX 1h
@@ -283,19 +305,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn interval_recovers_to_original_on_normal_tier() {
+        let mut daemon = HeartbeatDaemon::new(30_000);
+        // Simulate degradation: interval was increased but original is preserved
+        daemon.interval_ms = 120_000;
+        assert_eq!(
+            daemon.should_adjust_interval(&SurvivalTier::Normal),
+            Some(30_000)
+        );
+        assert_eq!(
+            daemon.should_adjust_interval(&SurvivalTier::High),
+            Some(30_000)
+        );
+    }
+
     // Phase 4I: default_tasks() returns expected task set
     #[test]
     fn default_tasks_returns_expected_set() {
         use crate::tasks::HeartbeatTask;
         let tasks = default_tasks();
-        assert_eq!(tasks.len(), 7);
+        assert_eq!(tasks.len(), 8);
         assert_eq!(tasks[0], HeartbeatTask::SurvivalCheck);
         assert_eq!(tasks[1], HeartbeatTask::UsdcMonitor);
         assert_eq!(tasks[2], HeartbeatTask::YieldTask);
         assert_eq!(tasks[3], HeartbeatTask::MemoryPrune);
         assert_eq!(tasks[4], HeartbeatTask::CacheEvict);
         assert_eq!(tasks[5], HeartbeatTask::MetricSnapshot);
-        assert_eq!(tasks[6], HeartbeatTask::SessionGovernor);
+        assert_eq!(tasks[6], HeartbeatTask::AgentCardRefresh);
+        assert_eq!(tasks[7], HeartbeatTask::SessionGovernor);
     }
 
     // Phase 4I: HeartbeatDaemon::new creates with correct interval

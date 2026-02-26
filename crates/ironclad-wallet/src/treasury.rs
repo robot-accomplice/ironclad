@@ -6,11 +6,11 @@ use crate::money::Money;
 
 #[derive(Debug, Clone)]
 pub struct TreasuryPolicy {
-    pub per_payment_cap: f64,
-    pub hourly_transfer_limit: f64,
-    pub daily_transfer_limit: f64,
-    pub minimum_reserve: f64,
-    pub daily_inference_budget: f64,
+    per_payment_cap: f64,
+    hourly_transfer_limit: f64,
+    daily_transfer_limit: f64,
+    minimum_reserve: f64,
+    daily_inference_budget: f64,
 }
 
 impl TreasuryPolicy {
@@ -22,6 +22,26 @@ impl TreasuryPolicy {
             minimum_reserve: config.minimum_reserve,
             daily_inference_budget: config.daily_inference_budget,
         }
+    }
+
+    pub fn per_payment_cap(&self) -> f64 {
+        self.per_payment_cap
+    }
+
+    pub fn hourly_transfer_limit(&self) -> f64 {
+        self.hourly_transfer_limit
+    }
+
+    pub fn daily_transfer_limit(&self) -> f64 {
+        self.daily_transfer_limit
+    }
+
+    pub fn minimum_reserve(&self) -> f64 {
+        self.minimum_reserve
+    }
+
+    pub fn daily_inference_budget(&self) -> f64 {
+        self.daily_inference_budget
     }
 
     /// Ensures a single payment amount is within the per-payment cap.
@@ -175,18 +195,24 @@ impl TreasuryPolicy {
     }
 }
 
+impl Default for TreasuryPolicy {
+    fn default() -> Self {
+        Self::new(&TreasuryConfig::default())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn default_policy() -> TreasuryPolicy {
-        TreasuryPolicy {
+        TreasuryPolicy::new(&TreasuryConfig {
             per_payment_cap: 100.0,
             hourly_transfer_limit: 500.0,
             daily_transfer_limit: 2000.0,
             minimum_reserve: 5.0,
             daily_inference_budget: 50.0,
-        }
+        })
     }
 
     #[test]
@@ -293,8 +319,8 @@ mod tests {
     fn from_treasury_config() {
         let config = TreasuryConfig::default();
         let policy = TreasuryPolicy::new(&config);
-        assert!((policy.per_payment_cap - 100.0).abs() < f64::EPSILON);
-        assert!((policy.minimum_reserve - 5.0).abs() < f64::EPSILON);
+        assert!((policy.per_payment_cap() - 100.0).abs() < f64::EPSILON);
+        assert!((policy.minimum_reserve() - 5.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -338,13 +364,13 @@ mod tests {
     // Phase 4K: Treasury with all caps at zero rejects everything
     #[test]
     fn treasury_all_caps_zero_rejects_everything() {
-        let policy = TreasuryPolicy {
+        let policy = TreasuryPolicy::new(&TreasuryConfig {
             per_payment_cap: 0.0,
             hourly_transfer_limit: 0.0,
             daily_transfer_limit: 0.0,
             minimum_reserve: 0.0,
             daily_inference_budget: 0.0,
-        };
+        });
         assert!(policy.check_per_payment(0.01).is_err());
         assert!(policy.check_per_payment(1.0).is_err());
         assert!(policy.check_hourly_limit(0.0, 0.01).is_err());

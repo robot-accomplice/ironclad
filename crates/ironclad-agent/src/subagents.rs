@@ -11,6 +11,7 @@ use ironclad_core::{IroncladError, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentRunState {
     Idle,
+    Starting,
     Running,
     Stopped,
     Error,
@@ -90,20 +91,37 @@ impl SubagentRegistry {
     }
 
     pub async fn start_agent(&self, agent_id: &str) -> Result<()> {
+        {
+            let mut agents = self.agents.lock().await;
+            let agent = agents
+                .get_mut(agent_id)
+                .ok_or_else(|| IroncladError::Config(format!("agent '{agent_id}' not found")))?;
+
+            if matches!(
+                agent.state,
+                AgentRunState::Running | AgentRunState::Starting
+            ) {
+                return Ok(());
+            }
+
+            agent.state = AgentRunState::Starting;
+            agent.last_error = None;
+            debug!(id = agent_id, "agent booting");
+        }
+
+        // Yield once so booting state is observable to status pollers.
+        tokio::task::yield_now().await;
+
         let mut agents = self.agents.lock().await;
         let agent = agents
             .get_mut(agent_id)
             .ok_or_else(|| IroncladError::Config(format!("agent '{agent_id}' not found")))?;
-
-        if agent.state == AgentRunState::Running {
-            return Ok(());
+        if agent.state == AgentRunState::Starting {
+            agent.state = AgentRunState::Running;
+            agent.started_at = Some(Utc::now());
+            agent.last_error = None;
+            debug!(id = agent_id, "agent started");
         }
-
-        agent.state = AgentRunState::Running;
-        agent.started_at = Some(Utc::now());
-        agent.last_error = None;
-
-        debug!(id = agent_id, "agent started");
         Ok(())
     }
 
@@ -293,6 +311,7 @@ mod tests {
     fn agent_run_state_serde() {
         for state in [
             AgentRunState::Idle,
+            AgentRunState::Starting,
             AgentRunState::Running,
             AgentRunState::Stopped,
             AgentRunState::Error,

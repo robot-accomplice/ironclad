@@ -7,14 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-02-26
+
+### Security
+
+- **CORS hardening**: Removed wildcard `Access-Control-Allow-Origin: *` fallback when no API key is configured; CORS now always restricts to the configured bind address origin.
+- **Wallet key zeroing**: Decrypted API keys in the keystore and child agent wallet secrets are now wrapped in `Zeroizing<String>` so key material is zeroed on drop.
+- **WalletFile Debug redaction**: `WalletFile` no longer derives `Debug`; a manual impl redacts `private_key_hex` to prevent accidental key leakage in logs or panics.
+- **Plaintext wallet detection**: Loading an unencrypted wallet file now emits a `SECURITY` warning at `warn!` level instead of silently succeeding.
+- **Webhook signature enforcement**: WhatsApp webhook verification now rejects requests with an error when `app_secret` is unconfigured, instead of silently skipping verification.
+- **OAuth token persistence errors surfaced**: `OAuthManager::persist()` now returns `Result<()>` and callers log failures at `error!` level instead of silently swallowing write errors.
+- **Skill catalog path traversal prevention**: Skill download filenames from remote registries are now validated and canonicalized to prevent `../` path traversal.
+- **API key URL encoding**: The `query:` auth mode now percent-encodes API keys before appending to URLs, preventing malformed requests and log leakage.
+- **Script runner absolute path rejection**: `resolve_script_path` now unconditionally rejects absolute paths instead of accepting them.
+- **Script file permission check**: Script runner validates that script files are not world-writable on Unix before execution.
+- **Subagent name validation**: Subagent names are now restricted to max 128 characters, alphanumeric + hyphens + underscores only.
+- **Plugin name/version validation**: Plugin manifest validation now enforces character restrictions on plugin names and versions matching tool name rules.
+- **Audit log key redaction**: Keystore audit log entries now redact key names to first 3 characters instead of logging full key identifiers.
+- **x402 recipient address validation**: Payment authorization now validates that recipient addresses match Ethereum address format (0x + 40 hex chars).
+- **JSON merge depth limit**: `update_config` recursive merge is now bounded to 10 levels of nesting to prevent stack overflow.
+- **Error message sanitization**: `sanitize_error_message` now strips content after common sensitive prefixes (file paths, SQLite errors, stack traces).
+- **Decided-by field sanitization**: Approval decision `decided_by` field is now limited to 256 characters with control characters stripped.
+
 ### Fixed
 
 - **Telegram invalid-token resilience**: Telegram `404/401` poll failures are now classified as likely invalid/revoked bot-token errors with explicit repair guidance and adaptive backoff to reduce noisy tight-loop logging.
 - **Subagent runtime activation sync**: Taskable subagents are now auto-started at boot and kept in sync with create/update/toggle/delete operations, fixing the `enabled > 0, running = 0` stall where configured subagents stayed idle.
+- **FTS duplicate row accumulation**: `store_semantic` and `store_working` now delete existing FTS entries before re-inserting, preventing unbounded duplicate growth in `memory_fts` on upserts.
+- **SSE stream UTF-8 corruption**: `SseChunkStream` now uses proper incremental UTF-8 decoding instead of `from_utf8_lossy`, preserving multi-byte characters split across HTTP chunks.
+- **SSE buffer unbounded growth**: SSE chunk stream buffer is now capped at 10 MB to prevent unbounded memory growth from long SSE lines.
+- **Heartbeat interval recovery**: Heartbeat daemon interval now recovers to the original configured value when the survival tier returns to Normal, instead of permanently remaining at the degraded rate.
+- **AgentCardRefresh task activation**: `HeartbeatTask::AgentCardRefresh` is now included in `default_tasks()` instead of being a dead variant.
+- **Hippocampus identifier consistency**: Table name validation in `create_agent_table` no longer allows hyphens, matching `validate_identifier` behavior.
+- **Negative hours SQL comment injection**: `query_transactions` now clamps `hours` to positive values, preventing negative values from producing SQL comments.
+- **PRAGMA identifier quoting**: `has_column` now quotes table names in `PRAGMA table_info` statements.
+- **Cron lease identity verification**: `release_lease` now requires the `lease_holder` parameter and verifies ownership before releasing.
+- **Coverage gate alignment**: Local `justfile` coverage threshold now matches CI at 80% minimum.
+- **`just run-release` binary name**: Fixed reference from `ironclad-server` to `ironclad`.
+- **Smoke test default port**: `run-smoke.sh` default port corrected from 8787 to 18789.
+- **CORS fallback logging**: Invalid CORS origin parse now logs a warning and falls back to `127.0.0.1` loopback instead of silently becoming wildcard `*`.
+- **Crypto function error propagation**: `derive_key`, `encrypt_wallet_data` in wallet now return `Result` instead of panicking with `expect`.
+- **CapacityTracker mutex resilience**: All `expect("mutex poisoned")` calls replaced with `unwrap_or_else(|e| e.into_inner())` for graceful recovery.
+- **Rate limit / approval mutex resilience**: Same mutex poison recovery applied to policy engine and approval manager.
+- **Cron lease/run error logging**: `acquire_lease`, `record_run`, and `release_lease` errors are now logged at `warn` level instead of silently discarded.
+- **Interval expression UTF-8 safety**: `parse_interval_expr_to_ms` now uses `char_indices()` for correct byte-offset slicing of multi-byte characters.
+- **TOML serialization error propagation**: `generate_operator_toml` and `generate_directives_toml` now return `Result<String>` instead of silently returning empty strings.
+- **Floating-point tier threshold**: `SurvivalTier::from_balance` uses 0.999 epsilon for the `hours_below_zero` check to handle floating-point rounding.
 
 ### Added
 
 - **v0.8.0 zero-regression release gate**: Added canonical `just test-v080-go-live` orchestration and release-blocking CI/release jobs for workspace tests, integration/regression batteries, bounded soak/fuzz checks, CLI+web UAT smoke, and release-doc/provenance consistency checks.
+- **WASM execution timeout enforcement**: WASM plugin execution now tracks elapsed time against the configured `execution_timeout_ms` and logs warnings when exceeded.
+- **WASM memory bounds validation**: WASM input writes check memory size before writing; output reads validate `ptr + len` against module memory bounds.
+- **Browser evaluate length limit**: `BrowserAction::Evaluate` rejects expressions exceeding 100,000 characters.
+- **Email body size limit**: Email adapter truncates message bodies exceeding 1 MB.
+- **A2a session establishment check**: Added `is_established()` method and documentation for session key typestate.
+- **A2a rate window eviction**: Rate limit windows now evict stale entries (>1 hour idle) when exceeding 1,000 tracked peers.
+- **InboundMessage platform sanitization**: Added `sanitize_platform()` to strip control characters and enforce 64-char limit.
+- **YieldEngine field encapsulation**: All fields made private with getter methods.
+- **TreasuryPolicy field encapsulation**: All fields made private with constructor and getter methods.
+- **Zero-amount deposit/withdraw rejection**: `YieldEngine::deposit()` and `withdraw()` now reject amounts <= 0.
+- **Plugin registry unregister**: Added `unregister()` method to fully remove plugin entries.
+- **Script shebang validation**: Extensionless script files now require a recognized shebang line.
+- **Docker HEALTHCHECK**: Dockerfile now includes a health check against `/api/health`.
+- **Docker build reproducibility**: Dockerfile now uses `--locked`, MSRV-pinned Rust image, and dependency layer caching.
+- **Release CI supply-chain hardening**: `cross` installation pinned to versioned release instead of git HEAD.
+
+### Changed
+
+- **WhatsApp client initialization**: `reqwest::Client` builder now uses `expect()` instead of `unwrap_or_default()` to surface TLS initialization failures.
+- **CDP client initialization**: Same `expect()` change applied to browser CDP HTTP client.
+- **Semantic search scan limit**: `search_similar` now includes `LIMIT 10000` to bound memory usage pending AnnIndex integration.
+- **SemanticCache thread safety documentation**: Documented `&mut self` requirement and external synchronization expectations.
 
 ## [0.7.1] - 2026-02-25
 

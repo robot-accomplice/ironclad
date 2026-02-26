@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::error::Result;
+
 // ---------------------------------------------------------------------------
 // OS.toml -- personality, voice, tone
 // ---------------------------------------------------------------------------
@@ -571,13 +573,13 @@ rule = "Never impersonate a human or claim to be one"
 }
 
 /// Generate OPERATOR.toml from interview-gathered user profile data.
-pub fn generate_operator_toml(op: &OperatorConfig) -> String {
-    toml::to_string(op).unwrap_or_default()
+pub fn generate_operator_toml(op: &OperatorConfig) -> Result<String> {
+    Ok(toml::to_string(op)?)
 }
 
 /// Generate DIRECTIVES.toml from interview-gathered goals and missions.
-pub fn generate_directives_toml(dir: &DirectivesConfig) -> String {
-    toml::to_string(dir).unwrap_or_default()
+pub fn generate_directives_toml(dir: &DirectivesConfig) -> Result<String> {
+    Ok(toml::to_string(dir)?)
 }
 
 /// Attempt to parse four TOML blocks out of LLM interview output.
@@ -644,7 +646,7 @@ pub struct InterviewOutput {
 
 impl InterviewOutput {
     /// Validate that all present TOML blocks parse into their expected types.
-    pub fn validate(&self) -> Result<(), Vec<String>> {
+    pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
         let mut errors = Vec::new();
         if let Some(ref s) = self.os_toml
             && toml::from_str::<OsConfig>(s).is_err()
@@ -862,7 +864,7 @@ domain = "developer"
             },
             context: "Building an autonomous agent platform.".into(),
         };
-        let toml_str = generate_operator_toml(&op);
+        let toml_str = generate_operator_toml(&op).unwrap();
         let parsed: OperatorConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.identity.name, "Jon");
         assert_eq!(parsed.identity.role, "Founder");
@@ -889,7 +891,7 @@ domain = "developer"
             ],
             context: "Early-stage startup.".into(),
         };
-        let toml_str = generate_directives_toml(&dir);
+        let toml_str = generate_directives_toml(&dir).unwrap();
         let parsed: DirectivesConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.missions.len(), 2);
         assert_eq!(parsed.missions[0].name, "Launch MVP");
@@ -1010,7 +1012,7 @@ this is not valid toml {{{
             preferences: OperatorPreferences::default(),
             context: "Works on backend systems.".into(),
         };
-        let toml_str = generate_operator_toml(&op);
+        let toml_str = generate_operator_toml(&op).unwrap();
         std::fs::write(dir.path().join("OPERATOR.toml"), &toml_str).unwrap();
         let loaded = load_operator(dir.path()).unwrap();
         assert_eq!(loaded.identity.name, "Alice");
@@ -1029,7 +1031,7 @@ this is not valid toml {{{
             }],
             context: "Startup phase.".into(),
         };
-        let toml_str = generate_directives_toml(&directives);
+        let toml_str = generate_directives_toml(&directives).unwrap();
         std::fs::write(dir.path().join("DIRECTIVES.toml"), &toml_str).unwrap();
         let loaded = load_directives(dir.path()).unwrap();
         assert_eq!(loaded.missions.len(), 1);

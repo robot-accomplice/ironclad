@@ -1,6 +1,6 @@
 //! Agent message, channel processing, and Telegram poll.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -74,10 +74,16 @@ fn claims_unverified_subagent_output(response: &str) -> bool {
     let lower = response.to_ascii_lowercase();
     let markers = [
         "[delegating to subagent",
+        "delegating to geopolitical specialist now",
         "came directly from the running subagent",
         "came directly from a running subagent",
         "subagent status - live",
         "geopolitical flash update",
+        "standing by for tasking",
+        "taskable subagents operational",
+        "subagent-generated sitrep",
+        "subagent-generated",
+        "geopolitical specialist is live",
     ];
     markers.iter().any(|m| lower.contains(m))
 }
@@ -92,6 +98,61 @@ fn enforce_subagent_claim_guard(response: String, provenance: &DelegationProvena
     tracing::warn!("Blocking unverified channel response that claims subagent-produced output");
     "I can't claim live subagent-produced output unless I actually run a delegated subagent/tool turn in this reply. If you want proof, ask me to run a concrete delegated task and I will return that output directly."
         .to_string()
+}
+
+fn repeat_tokens(text: &str) -> HashSet<String> {
+    text.to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|tok| tok.len() >= 3)
+        .map(|tok| tok.to_string())
+        .collect()
+}
+
+fn common_prefix_ratio(a: &str, b: &str) -> f64 {
+    let aa = a.as_bytes();
+    let bb = b.as_bytes();
+    let max_len = aa.len().max(bb.len());
+    if max_len == 0 {
+        return 0.0;
+    }
+    let mut i = 0usize;
+    while i < aa.len() && i < bb.len() && aa[i] == bb[i] {
+        i += 1;
+    }
+    i as f64 / max_len as f64
+}
+
+fn looks_repetitive(current: &str, previous: &str) -> bool {
+    let cur = current.trim();
+    let prev = previous.trim();
+    if cur.is_empty() || prev.is_empty() {
+        return false;
+    }
+    if cur.eq_ignore_ascii_case(prev) {
+        return true;
+    }
+    if cur.len() < 80 || prev.len() < 80 {
+        return false;
+    }
+
+    let a = repeat_tokens(cur);
+    let b = repeat_tokens(prev);
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let overlap = a.intersection(&b).count() as f64;
+    let denom = a.len().max(b.len()) as f64;
+    let overlap_ratio = overlap / denom;
+    let prefix_ratio = common_prefix_ratio(&cur.to_ascii_lowercase(), &prev.to_ascii_lowercase());
+    overlap_ratio >= 0.86 || (overlap_ratio >= 0.72 && prefix_ratio >= 0.55)
+}
+
+fn enforce_non_repetition(response: String, previous_assistant: Option<&str>) -> String {
+    if previous_assistant.is_some_and(|prev| looks_repetitive(&response, prev)) {
+        return "I don't have a new verified update beyond my previous reply. I can run a fresh check now and report only what changed."
+            .to_string();
+    }
+    response
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +252,313 @@ fn provider_failure_user_message(last_error: &str, message_already_stored: bool)
     }
 }
 
+fn is_virtual_delegation_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name.trim().to_ascii_lowercase().as_str(),
+        "orchestrate-subagents"
+            | "orchestrate_subagents"
+            | "assign-tasks"
+            | "assign_tasks"
+            | "delegate-subagent"
+            | "delegate_subagent"
+            | "select-subagent-model"
+            | "select_subagent_model"
+    )
+}
+
+async fn resolve_subagent_runtime_model(
+    state: &AppState,
+    subagent: &ironclad_db::agents::SubAgentRow,
+    task: &str,
+) -> String {
+    let configured = subagent.model.trim();
+    if configured.eq_ignore_ascii_case("auto") {
+        return select_routed_model(state, task).await;
+    }
+    if configured.eq_ignore_ascii_case("commander") {
+        let llm = state.llm.read().await;
+        return llm.router.select_model().to_string();
+    }
+    if configured.is_empty() {
+        return select_routed_model(state, task).await;
+    }
+    configured.to_string()
+}
+
+fn pick_running_subagent<'a>(
+    task: &str,
+    specialist_hint: Option<&str>,
+    taskable_subagents: &'a [ironclad_db::agents::SubAgentRow],
+    runtime_by_name: &HashMap<String, ironclad_agent::subagents::AgentInstance>,
+) -> Option<&'a ironclad_db::agents::SubAgentRow> {
+    let running: Vec<&ironclad_db::agents::SubAgentRow> = taskable_subagents
+        .iter()
+        .filter(|sa| {
+            runtime_by_name
+                .get(&sa.name.to_ascii_lowercase())
+                .is_some_and(|inst| inst.state == ironclad_agent::subagents::AgentRunState::Running)
+        })
+        .collect();
+    if running.is_empty() {
+        return None;
+    }
+
+    if let Some(hint_raw) = specialist_hint {
+        let hint = hint_raw.trim().to_ascii_lowercase();
+        if !hint.is_empty()
+            && let Some(chosen) = running.iter().find(|sa| {
+                sa.name.eq_ignore_ascii_case(&hint)
+                    || sa
+                        .display_name
+                        .as_deref()
+                        .is_some_and(|d| d.to_ascii_lowercase().contains(&hint))
+            })
+        {
+            return Some(chosen);
+        }
+    }
+
+    let required = capability_tokens(task);
+    let mut scored: Vec<(&ironclad_db::agents::SubAgentRow, usize)> = running
+        .iter()
+        .map(|sa| {
+            let skills = parse_skills_json(sa.skills_json.as_deref());
+            let skill_tokens: HashSet<String> =
+                skills.iter().flat_map(|s| capability_tokens(s)).collect();
+            let overlap = required
+                .iter()
+                .filter(|tok| skill_tokens.contains(*tok))
+                .count();
+            (*sa, overlap)
+        })
+        .collect();
+    scored.sort_by_key(|(_, overlap)| std::cmp::Reverse(*overlap));
+    scored
+        .first()
+        .map(|(sa, _)| *sa)
+        .or_else(|| running.first().copied())
+}
+
+async fn execute_virtual_subagent_tool_call(
+    state: &AppState,
+    tool_name: &str,
+    params: &serde_json::Value,
+    turn_id: &str,
+    authority: InputAuthority,
+    tier: ironclad_core::SurvivalTier,
+) -> Result<String, String> {
+    let policy_result = check_tool_policy(
+        &state.policy_engine,
+        tool_name,
+        params,
+        authority,
+        tier,
+        ironclad_core::RiskLevel::Caution,
+    );
+    let (decision_str, rule_name, reason) = match &policy_result {
+        Ok(()) => ("allow".to_string(), None, None),
+        Err((_status, msg)) => (
+            "deny".to_string(),
+            Some("policy_engine"),
+            Some(msg.as_str()),
+        ),
+    };
+    ironclad_db::policy::record_policy_decision(
+        &state.db,
+        Some(turn_id),
+        tool_name,
+        &decision_str,
+        rule_name,
+        reason,
+    )
+    .inspect_err(|e| tracing::warn!(error = %e, "failed to record policy decision"))
+    .ok();
+    if let Err((_status, msg)) = policy_result {
+        return Err(format!("Policy denied: {msg}"));
+    }
+
+    match state.approvals.check_tool(tool_name) {
+        Ok(ironclad_agent::approvals::ToolClassification::Gated) => {
+            let request = state
+                .approvals
+                .request_approval(tool_name, &params.to_string(), Some(turn_id))
+                .map_err(|e| format!("Approval error: {e}"))?;
+            ironclad_db::approvals::record_approval_request(
+                &state.db,
+                &request.id,
+                &request.tool_name,
+                &request.tool_input,
+                request.session_id.as_deref(),
+                "pending",
+                &request.timeout_at.to_rfc3339(),
+            )
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to persist approval request"))
+            .ok();
+            return Err(format!(
+                "Tool '{tool_name}' requires approval (request: {})",
+                request.id
+            ));
+        }
+        Err(e) => return Err(format!("Tool blocked: {e}")),
+        Ok(_) => {}
+    }
+
+    let action = tool_name.trim().to_ascii_lowercase();
+    let mut task = params
+        .get("task")
+        .and_then(|v| v.as_str())
+        .or_else(|| params.get("query").and_then(|v| v.as_str()))
+        .or_else(|| params.get("prompt").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let specialist_hint = params
+        .get("specialist")
+        .and_then(|v| v.as_str())
+        .or_else(|| params.get("subagent").and_then(|v| v.as_str()));
+
+    let subtasks: Vec<String> = params
+        .get("subtasks")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .take(6)
+                .collect()
+        })
+        .unwrap_or_default();
+    if task.is_empty() && !subtasks.is_empty() {
+        task = subtasks.join("; ");
+    }
+    if task.is_empty() {
+        return Err("delegation tool requires `task` (or `subtasks`)".to_string());
+    }
+
+    let all_subagents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let taskable_subagents: Vec<ironclad_db::agents::SubAgentRow> = all_subagents
+        .into_iter()
+        .filter(|sa| !is_model_proxy_role(&sa.role) && sa.enabled)
+        .collect();
+    if taskable_subagents.is_empty() {
+        return Err("no enabled taskable subagents are configured".to_string());
+    }
+
+    let runtime_by_name: HashMap<String, ironclad_agent::subagents::AgentInstance> = state
+        .registry
+        .list_agents()
+        .await
+        .into_iter()
+        .map(|a| (a.id.to_ascii_lowercase(), a))
+        .collect();
+
+    let booting_count = runtime_by_name
+        .values()
+        .filter(|a| {
+            matches!(
+                a.state,
+                ironclad_agent::subagents::AgentRunState::Starting
+                    | ironclad_agent::subagents::AgentRunState::Idle
+            )
+        })
+        .count();
+    let running_count = runtime_by_name
+        .values()
+        .filter(|a| a.state == ironclad_agent::subagents::AgentRunState::Running)
+        .count();
+
+    if action == "select-subagent-model" || action == "select_subagent_model" {
+        let chosen = pick_running_subagent(
+            &task,
+            specialist_hint,
+            &taskable_subagents,
+            &runtime_by_name,
+        )
+        .or_else(|| taskable_subagents.first())
+        .ok_or_else(|| "no candidate subagent found for model selection".to_string())?;
+        let model = resolve_subagent_runtime_model(state, chosen, &task).await;
+        return Ok(format!(
+            "selected_subagent={} resolved_model={} running={} booting={}",
+            chosen.name, model, running_count, booting_count
+        ));
+    }
+
+    let chosen = pick_running_subagent(
+        &task,
+        specialist_hint,
+        &taskable_subagents,
+        &runtime_by_name,
+    )
+    .ok_or_else(|| {
+        format!(
+            "no running taskable subagents are available (running={}, booting={})",
+            running_count, booting_count
+        )
+    })?;
+    let model = resolve_subagent_runtime_model(state, chosen, &task).await;
+    let model_for_api = model
+        .split_once('/')
+        .map(|(_, m)| m)
+        .unwrap_or(&model)
+        .to_string();
+
+    let task_list = if subtasks.is_empty() {
+        vec![task.clone()]
+    } else {
+        subtasks
+    };
+    let mut outputs = Vec::new();
+    for (idx, subtask) in task_list.iter().enumerate() {
+        let skills = parse_skills_json(chosen.skills_json.as_deref());
+        let system_prompt = format!(
+            "You are specialist subagent `{}`. Skills: {}.\nYou report to the commander. Complete only the assigned task and return concise factual output plus caveats.",
+            chosen.name,
+            if skills.is_empty() {
+                "(none)".to_string()
+            } else {
+                skills.join(", ")
+            }
+        );
+        let req = ironclad_llm::format::UnifiedRequest {
+            model: model_for_api.clone(),
+            messages: vec![
+                ironclad_llm::format::UnifiedMessage {
+                    role: "system".into(),
+                    content: system_prompt,
+                    parts: None,
+                },
+                ironclad_llm::format::UnifiedMessage {
+                    role: "user".into(),
+                    content: subtask.clone(),
+                    parts: None,
+                },
+            ],
+            max_tokens: Some(1200),
+            temperature: None,
+            system: None,
+            quality_target: None,
+        };
+        let result = infer_with_fallback(state, &req, &model).await?;
+        outputs.push(format!(
+            "subtask {} -> {}\n{}",
+            idx + 1,
+            chosen.name,
+            result.content.trim()
+        ));
+        if action == "assign-tasks" || action == "assign_tasks" {
+            // assign-tasks executes one delegated unit per call.
+            break;
+        }
+    }
+
+    Ok(format!(
+        "delegated_subagent={} model={}\n{}",
+        chosen.name,
+        model,
+        outputs.join("\n\n")
+    ))
+}
+
 /// Execute a tool call through the ToolRegistry, enforcing policy and recording audit trails.
 pub(crate) async fn execute_tool_call(
     state: &AppState,
@@ -210,6 +578,32 @@ pub(crate) async fn execute_tool_call(
     }
     let balance = state.wallet.wallet.get_usdc_balance().await.unwrap_or(0.0);
     let tier = ironclad_core::SurvivalTier::from_balance(balance, 0.0);
+    if is_virtual_delegation_tool(tool_name) {
+        let start = std::time::Instant::now();
+        let result =
+            execute_virtual_subagent_tool_call(state, tool_name, params, turn_id, authority, tier)
+                .await;
+        let duration_ms = start.elapsed().as_millis() as i64;
+        let (output, status) = match &result {
+            Ok(out) => (out.clone(), "success"),
+            Err(err) => (err.clone(), "error"),
+        };
+        ironclad_db::tools::record_tool_call_with_skill(
+            &state.db,
+            turn_id,
+            tool_name,
+            &params.to_string(),
+            Some(&output),
+            status,
+            Some(duration_ms),
+            None,
+            None,
+            None,
+        )
+        .inspect_err(|e| tracing::warn!(error = %e, "failed to record virtual tool call"))
+        .ok();
+        return result;
+    }
     let tool = match state.tools.get(tool_name) {
         Some(t) => t,
         None => return Err(format!("Unknown tool: {tool_name}")),
@@ -482,8 +876,10 @@ struct RuntimeDiagnostics {
     pending_approvals: usize,
     taskable_subagents_total: usize,
     taskable_subagents_enabled: usize,
+    taskable_subagents_booting: usize,
     taskable_subagents_running: usize,
     taskable_subagents_error: usize,
+    delegation_tools_available: bool,
     channels_total: usize,
     channels_with_errors: usize,
 }
@@ -565,6 +961,17 @@ async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiagnostics {
         .filter(|a| !model_proxy_names.contains(&a.id.to_ascii_lowercase()))
         .filter(|a| a.state == ironclad_agent::subagents::AgentRunState::Running)
         .count();
+    let taskable_subagents_booting = runtime_agents
+        .iter()
+        .filter(|a| !model_proxy_names.contains(&a.id.to_ascii_lowercase()))
+        .filter(|a| {
+            matches!(
+                a.state,
+                ironclad_agent::subagents::AgentRunState::Starting
+                    | ironclad_agent::subagents::AgentRunState::Idle
+            )
+        })
+        .count();
     let taskable_subagents_error = runtime_agents
         .iter()
         .filter(|a| !model_proxy_names.contains(&a.id.to_ascii_lowercase()))
@@ -579,6 +986,14 @@ async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiagnostics {
         .filter(|a| !is_model_proxy_role(&a.role) && a.enabled)
         .count();
     let pending_approvals = state.approvals.list_pending().len();
+    let delegation_tools_available = {
+        let cfg = state.config.read().await;
+        cfg.agent.delegation_enabled
+            && (state.tools.list().iter().any(|t| {
+                let name = t.name().to_ascii_lowercase();
+                name.contains("subagent") || name.contains("delegate")
+            }) || is_virtual_delegation_tool("orchestrate-subagents"))
+    };
 
     RuntimeDiagnostics {
         uptime_seconds: state.started_at.elapsed().as_secs(),
@@ -593,17 +1008,21 @@ async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiagnostics {
         pending_approvals,
         taskable_subagents_total,
         taskable_subagents_enabled,
+        taskable_subagents_booting,
         taskable_subagents_running,
         taskable_subagents_error,
+        delegation_tools_available,
         channels_total: channels.len(),
         channels_with_errors,
     }
 }
 
 fn diagnostics_system_note(diag: &RuntimeDiagnostics) -> String {
-    let delegation_policy = if diag.taskable_subagents_running == 0
-        && diag.taskable_subagents_enabled > 0
-    {
+    let delegation_policy = if !diag.delegation_tools_available {
+        "Delegation policy: delegated subagent tools are unavailable in this runtime. Do NOT claim delegation, stand-by status, or subagent-produced output."
+    } else if diag.taskable_subagents_booting > 0 && diag.taskable_subagents_running == 0 {
+        "Delegation policy: subagents are booting and are not taskable yet. Report booting status and wait for running>0 before claiming delegated execution."
+    } else if diag.taskable_subagents_running == 0 && diag.taskable_subagents_enabled > 0 {
         "Delegation policy: subagent execution is currently unavailable (enabled>0, running=0). If the user asks for a subagent-produced result, explicitly say it is unavailable and do NOT simulate or fabricate subagent output."
     } else {
         "Delegation policy: never claim a subagent produced content unless a real delegated subagent turn occurred."
@@ -627,11 +1046,16 @@ fn diagnostics_system_note(diag: &RuntimeDiagnostics) -> String {
             diag.cache_entries, diag.cache_hit_rate_pct
         ),
         &format!(
-            "- taskable_subagents: total={} enabled={} running={} error={}",
+            "- taskable_subagents: total={} enabled={} booting={} running={} error={}",
             diag.taskable_subagents_total,
             diag.taskable_subagents_enabled,
+            diag.taskable_subagents_booting,
             diag.taskable_subagents_running,
             diag.taskable_subagents_error
+        ),
+        &format!(
+            "- delegation_tools_available={}",
+            diag.delegation_tools_available
         ),
         &format!(
             "- approvals_pending={} channels={} channels_with_errors={}",
@@ -991,6 +1415,11 @@ pub async fn agent_message(
     // Load conversation history
     let history_messages =
         ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).unwrap_or_default();
+    let previous_assistant_before_turn = history_messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .map(|m| m.content.clone());
     let history: Vec<ironclad_llm::format::UnifiedMessage> = history_messages
         .iter()
         .rev()
@@ -1221,7 +1650,8 @@ pub async fn agent_message(
         }
     }
 
-    let assistant_content = final_content;
+    let assistant_content =
+        enforce_non_repetition(final_content, previous_assistant_before_turn.as_deref());
 
     // Store assistant response
     let asst_id = match ironclad_db::sessions::append_message(
@@ -2615,7 +3045,7 @@ pub(crate) async fn handle_bot_command(
 }
 
 const HELP_TEXT: &str = "\
-/status  — agent health & model info\n\
+/status  — agent + subagent runtime health\n\
 /model   — show current model & override\n\
 /model <provider/name> — force a model override\n\
 /model reset — clear override, resume normal routing\n\
@@ -2791,6 +3221,12 @@ async fn build_status_reply(state: &AppState) -> String {
     let diag = collect_runtime_diagnostics(state).await;
     let balance = state.wallet.wallet.get_usdc_balance().await.unwrap_or(0.0);
     let channels = state.channel_router.channel_status().await;
+    let runtime_agents = state.registry.list_agents().await;
+    let runtime_by_name: HashMap<String, ironclad_agent::subagents::AgentRunState> = runtime_agents
+        .into_iter()
+        .map(|a| (a.id.to_ascii_lowercase(), a.state))
+        .collect();
+    let configured_subagents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
     let channel_summary: Vec<String> = channels
         .iter()
         .map(|c| {
@@ -2804,6 +3240,34 @@ async fn build_status_reply(state: &AppState) -> String {
             )
         })
         .collect();
+    let mut subagent_breakdown: Vec<String> = configured_subagents
+        .iter()
+        .filter(|a| !is_model_proxy_role(&a.role))
+        .map(|a| {
+            let state_label = if let Some(state) = runtime_by_name.get(&a.name.to_ascii_lowercase())
+            {
+                match state {
+                    ironclad_agent::subagents::AgentRunState::Starting => "booting",
+                    ironclad_agent::subagents::AgentRunState::Running => "running",
+                    ironclad_agent::subagents::AgentRunState::Error => "error",
+                    ironclad_agent::subagents::AgentRunState::Stopped => "stopped",
+                    ironclad_agent::subagents::AgentRunState::Idle => {
+                        if a.enabled {
+                            "booting"
+                        } else {
+                            "stopped"
+                        }
+                    }
+                }
+            } else if a.enabled {
+                "booting"
+            } else {
+                "stopped"
+            };
+            format!("{}={}", a.name, state_label)
+        })
+        .collect();
+    subagent_breakdown.sort();
 
     let mut lines = vec![
         format!("🤖 {} ({})", config.agent.name, config.agent.id),
@@ -2823,11 +3287,21 @@ async fn build_status_reply(state: &AppState) -> String {
             diag.cache_entries, diag.cache_hit_rate_pct
         ),
         format!(
-            "  taskable subagents: total={} enabled={} running={} error={}",
+            "  taskable subagents: total={} enabled={} booting={} running={} error={}",
             diag.taskable_subagents_total,
             diag.taskable_subagents_enabled,
+            diag.taskable_subagents_booting,
             diag.taskable_subagents_running,
             diag.taskable_subagents_error
+        ),
+        format!(
+            "  subagent taskability: {} taskable now{}",
+            diag.taskable_subagents_running,
+            if diag.delegation_tools_available {
+                String::new()
+            } else {
+                ", delegation tools unavailable".to_string()
+            }
         ),
         format!(
             "  breakers: {} open, {} half-open",
@@ -2845,6 +3319,9 @@ async fn build_status_reply(state: &AppState) -> String {
     if !channel_summary.is_empty() {
         lines.push("  channels:".into());
         lines.extend(channel_summary);
+    }
+    if !subagent_breakdown.is_empty() {
+        lines.push(format!("  subagents: {}", subagent_breakdown.join(", ")));
     }
 
     lines.join("\n")
@@ -3351,6 +3828,17 @@ pub async fn process_channel_message(
     let agent_id = config.agent.id.clone();
     let primary_model = config.models.primary.clone();
     let thinking_threshold = config.channels.thinking_threshold_seconds;
+    let trusted = config.channels.trusted_sender_ids.clone();
+    let channel_authority = {
+        let sender_trusted = !trusted.is_empty()
+            && (trusted.iter().any(|id| id == &chat_id)
+                || trusted.iter().any(|id| id == &inbound.sender_id));
+        if threat.is_caution() || !sender_trusted {
+            InputAuthority::External
+        } else {
+            InputAuthority::Creator
+        }
+    };
     let personality = state.personality.read().await;
     let soul_text = personality.soul_text.clone();
     let firmware_text = personality.firmware_text.clone();
@@ -3368,6 +3856,44 @@ pub async fn process_channel_message(
         ));
         model = primary_model.clone();
     }
+
+    // Concrete delegation path: when decomposition chooses delegated execution,
+    // execute delegated subagent work in this turn and pass result into context.
+    let mut precomputed_delegation_provenance = DelegationProvenance::default();
+    let delegated_execution_note = if let DecompositionDecision::Delegated(plan) = &gate_decision {
+        let delegated_params = serde_json::json!({
+            "task": user_content,
+            "subtasks": plan.subtasks,
+        });
+        match execute_tool_call(
+            state,
+            "orchestrate-subagents",
+            &delegated_params,
+            &channel_turn_id,
+            channel_authority,
+        )
+        .await
+        {
+            Ok(output) => {
+                precomputed_delegation_provenance.subagent_task_started = true;
+                precomputed_delegation_provenance.subagent_task_completed = true;
+                precomputed_delegation_provenance.subagent_result_attached =
+                    !output.trim().is_empty();
+                Some(format!(
+                    "Delegated subagent execution completed this turn. Verified output:\n{}",
+                    output
+                ))
+            }
+            Err(err) => {
+                precomputed_delegation_provenance.subagent_task_started = true;
+                Some(format!(
+                    "Delegation was attempted this turn but failed: {err}"
+                ))
+            }
+        }
+    } else {
+        None
+    };
 
     // Resolve tier for message adaptation
     let tier = {
@@ -3402,6 +3928,11 @@ pub async fn process_channel_message(
 
     let history_messages =
         ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).unwrap_or_default();
+    let previous_assistant_before_turn = history_messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .map(|m| m.content.clone());
     let history: Vec<ironclad_llm::format::UnifiedMessage> = history_messages
         .iter()
         .rev()
@@ -3487,6 +4018,9 @@ pub async fn process_channel_message(
             if let Some(workflow_note) = delegation_workflow_note.as_ref() {
                 note.push_str(&format!("\nWorkflow: {workflow_note}"));
             }
+            note.push_str(
+                "\nExecution directive: perform real delegation by emitting a tool_call for `orchestrate-subagents` (or `assign-tasks`) with the delegated task payload. Do not simulate delegated output.",
+            );
             note
         }
         DecompositionDecision::RequiresSpecialistCreation { .. } => {
@@ -3498,6 +4032,13 @@ pub async fn process_channel_message(
         content: gate_system_note,
         parts: None,
     });
+    if let Some(note) = delegated_execution_note.as_ref() {
+        messages.push(ironclad_llm::format::UnifiedMessage {
+            role: "system".into(),
+            content: note.clone(),
+            parts: None,
+        });
+    }
     if messages.last().is_none_or(|m| m.content != user_content) {
         messages.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),
@@ -3579,20 +4120,8 @@ pub async fn process_channel_message(
     };
 
     // ReAct loop for channel messages: execute tool calls if detected
-    let channel_authority = {
-        let cfg = state.config.read().await;
-        let trusted = &cfg.channels.trusted_sender_ids;
-        let sender_trusted = !trusted.is_empty()
-            && (trusted.iter().any(|id| id == &chat_id)
-                || trusted.iter().any(|id| id == &inbound.sender_id));
-        if threat.is_caution() || !sender_trusted {
-            InputAuthority::External
-        } else {
-            InputAuthority::Creator
-        }
-    };
     let mut channel_react = AgentLoop::new(10);
-    let mut delegation_provenance = DelegationProvenance::default();
+    let mut delegation_provenance = precomputed_delegation_provenance;
     let response_content = if let Some((tool_name, tool_params)) =
         parse_tool_call(&response_content)
     {
@@ -3681,6 +4210,8 @@ pub async fn process_channel_message(
         response_content
     };
     let response_content = enforce_subagent_claim_guard(response_content, &delegation_provenance);
+    let response_content =
+        enforce_non_repetition(response_content, previous_assistant_before_turn.as_deref());
 
     ironclad_db::sessions::append_message(&state.db, &session_id, "assistant", &response_content)
         .inspect_err(|e| tracing::warn!(error = %e, "failed to store channel assistant message"))
@@ -4065,6 +4596,42 @@ scope_mode = "{scope_mode}"
     }
 
     #[test]
+    fn subagent_claim_guard_blocks_standing_by_claim_without_provenance() {
+        let fabricated = "Good. The subagents are actually running now - all 10 taskable subagents operational.\n\nGeopolitical Specialist: Standing by for tasking.";
+        let guarded =
+            enforce_subagent_claim_guard(fabricated.to_string(), &DelegationProvenance::default());
+        assert!(guarded.contains("I can't claim live subagent-produced output"));
+    }
+
+    #[test]
+    fn subagent_claim_guard_blocks_subagent_generated_claim_without_provenance() {
+        let fabricated =
+            "Subagent-generated sitrep: geopolitical flash update with live delegated output.";
+        let guarded =
+            enforce_subagent_claim_guard(fabricated.to_string(), &DelegationProvenance::default());
+        assert!(guarded.contains("I can't claim live subagent-produced output"));
+    }
+
+    #[test]
+    fn non_repetition_guard_rewrites_near_duplicate_output() {
+        let prev = "The system appears stable. Monitoring remains active across all channels with no critical errors. I can continue watching and report any changes immediately.";
+        let current = "The system appears stable. Monitoring remains active across all channels with no critical errors. I can continue watching and report any changes immediately.";
+        let guarded = enforce_non_repetition(current.to_string(), Some(prev));
+        assert!(guarded.contains("fresh check now"));
+        assert_ne!(guarded, current);
+    }
+
+    #[test]
+    fn non_repetition_guard_keeps_distinct_output() {
+        let prev =
+            "Provider health is degraded and retries are being attempted through fallback models.";
+        let current =
+            "Two subagents are now running, one is still booting, and delegation is available.";
+        let guarded = enforce_non_repetition(current.to_string(), Some(prev));
+        assert_eq!(guarded, current);
+    }
+
+    #[test]
     fn split_subtasks_detects_multi_step_inputs() {
         let parts = split_subtasks("research impact and draft summary then propose next steps");
         assert!(parts.len() >= 3);
@@ -4225,8 +4792,10 @@ scope_mode = "{scope_mode}"
             pending_approvals: 1,
             taskable_subagents_total: 2,
             taskable_subagents_enabled: 1,
+            taskable_subagents_booting: 0,
             taskable_subagents_running: 1,
             taskable_subagents_error: 0,
+            delegation_tools_available: true,
             channels_total: 2,
             channels_with_errors: 0,
         };
@@ -4236,6 +4805,60 @@ scope_mode = "{scope_mode}"
         assert!(note.contains("provider:"));
         assert!(note.contains("cache:"));
         assert!(note.contains("approvals_pending"));
+        assert!(note.contains("delegation_tools_available"));
+    }
+
+    #[test]
+    fn diagnostics_system_note_warns_when_delegation_tools_unavailable() {
+        let diag = RuntimeDiagnostics {
+            uptime_seconds: 42,
+            primary_model: "ollama/qwen3:8b".into(),
+            active_model: "ollama/qwen3:8b".into(),
+            primary_provider: "ollama".into(),
+            primary_provider_state: "closed".into(),
+            breaker_open_count: 0,
+            breaker_half_open_count: 0,
+            cache_entries: 3,
+            cache_hit_rate_pct: 50.0,
+            pending_approvals: 1,
+            taskable_subagents_total: 10,
+            taskable_subagents_enabled: 10,
+            taskable_subagents_booting: 0,
+            taskable_subagents_running: 10,
+            taskable_subagents_error: 0,
+            delegation_tools_available: false,
+            channels_total: 2,
+            channels_with_errors: 0,
+        };
+        let note = diagnostics_system_note(&diag);
+        assert!(note.contains("delegated subagent tools are unavailable"));
+    }
+
+    #[test]
+    fn diagnostics_system_note_reports_booting_not_taskable() {
+        let diag = RuntimeDiagnostics {
+            uptime_seconds: 42,
+            primary_model: "ollama/qwen3:8b".into(),
+            active_model: "ollama/qwen3:8b".into(),
+            primary_provider: "ollama".into(),
+            primary_provider_state: "closed".into(),
+            breaker_open_count: 0,
+            breaker_half_open_count: 0,
+            cache_entries: 3,
+            cache_hit_rate_pct: 50.0,
+            pending_approvals: 1,
+            taskable_subagents_total: 4,
+            taskable_subagents_enabled: 4,
+            taskable_subagents_booting: 4,
+            taskable_subagents_running: 0,
+            taskable_subagents_error: 0,
+            delegation_tools_available: true,
+            channels_total: 2,
+            channels_with_errors: 0,
+        };
+        let note = diagnostics_system_note(&diag);
+        assert!(note.contains("subagents are booting and are not taskable yet"));
+        assert!(note.contains("booting=4"));
     }
 
     #[test]
@@ -4378,5 +5001,98 @@ scope_mode = "{scope_mode}"
 
         let cfg_group = test_config_with_scope("group");
         assert!(resolve_web_scope(&cfg_group, &req).is_err());
+    }
+
+    #[test]
+    fn provider_failure_message_varies_by_persistence_behavior() {
+        let msg_retry = provider_failure_user_message("timeout", true);
+        assert!(msg_retry.contains("stored"));
+        assert!(msg_retry.contains("retry"));
+
+        let msg_try_again = provider_failure_user_message("timeout", false);
+        assert!(msg_try_again.contains("Please try again"));
+    }
+
+    #[test]
+    fn summarize_user_excerpt_limits_token_count_and_length() {
+        let long = (0..100)
+            .map(|i| format!("tok{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let summary = summarize_user_excerpt(&long);
+        assert!(summary.split_whitespace().count() <= 20);
+        assert!(summary.len() <= 240);
+    }
+
+    #[test]
+    fn fallback_candidates_preserve_primary_and_dedup_primary_from_fallbacks() {
+        let cfg = ironclad_core::IroncladConfig::from_str(
+            r#"
+[agent]
+name = "TestBot"
+id = "test-agent"
+
+[server]
+port = 0
+
+[database]
+path = ":memory:"
+
+[models]
+primary = "openai/gpt-4o"
+fallbacks = ["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514", "google/gemini-3.1-pro-preview"]
+"#,
+        )
+        .unwrap();
+        let cands = fallback_candidates(&cfg, "openai/gpt-4o");
+        assert_eq!(cands[0], "openai/gpt-4o");
+        assert_eq!(cands.len(), 3);
+        assert!(cands.contains(&"anthropic/claude-sonnet-4-20250514".to_string()));
+    }
+
+    #[test]
+    fn parse_skills_json_handles_none_invalid_and_valid_payloads() {
+        assert!(parse_skills_json(None).is_empty());
+        assert!(parse_skills_json(Some("not-json")).is_empty());
+        let parsed = parse_skills_json(Some(r#"["geo","risk-analysis"]"#));
+        assert_eq!(parsed, vec!["geo".to_string(), "risk-analysis".to_string()]);
+    }
+
+    #[test]
+    fn claim_detection_catches_live_delegation_markers() {
+        assert!(claims_unverified_subagent_output(
+            "[delegating to subagent: geo specialist]"
+        ));
+        assert!(claims_unverified_subagent_output(
+            "Subagent Status - LIVE: running now"
+        ));
+        assert!(!claims_unverified_subagent_output(
+            "Normal response without delegation claims."
+        ));
+    }
+
+    #[test]
+    fn capability_tokens_extracts_lowercase_wordlike_tokens() {
+        let tokens = capability_tokens("Geo-Political analysis, RISK_123 and alerts!");
+        assert!(tokens.contains(&"political".to_string()));
+        assert!(tokens.contains(&"analysis".to_string()));
+        assert!(tokens.contains(&"risk".to_string()));
+        assert!(tokens.contains(&"alerts".to_string()));
+    }
+
+    #[test]
+    fn split_subtasks_returns_single_item_for_simple_prompt() {
+        let parts = split_subtasks("summarize this report");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0], "summarize this report");
+    }
+
+    #[test]
+    fn utility_margin_increases_with_complexity_and_falls_with_low_fit() {
+        let base = utility_margin_for_delegation(0.3, 2, 0.9);
+        let more_complex = utility_margin_for_delegation(0.3, 4, 0.9);
+        let lower_fit = utility_margin_for_delegation(0.3, 4, 0.2);
+        assert!(more_complex > base);
+        assert!(lower_fit < more_complex);
     }
 }

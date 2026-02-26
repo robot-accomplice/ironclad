@@ -5,3 +5,5 @@ scripts/
 docs/
 .cursor/
 .github/
+crates/ironclad-agent/fuzz/target/
+crates/ironclad-agent/fuzz/corpus/

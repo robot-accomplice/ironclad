@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tracing::debug;
 
 use crate::session::CdpSession;
+
+/// Maximum allowed length (in characters) for `BrowserAction::Evaluate` expressions.
+const MAX_EXPRESSION_LENGTH: usize = 100_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
@@ -279,7 +283,26 @@ impl ActionExecutor {
         }
     }
 
+    // SECURITY: expressions are controlled by the agent, not end users.
+    // The length limit guards against accidental megabyte-sized payloads
+    // from prompt injection or runaway template expansion.
     async fn evaluate(session: &CdpSession, expression: &str) -> ActionResult {
+        if expression.len() > MAX_EXPRESSION_LENGTH {
+            return ActionResult::err(
+                "evaluate",
+                format!(
+                    "expression too large ({} chars, max {})",
+                    expression.len(),
+                    MAX_EXPRESSION_LENGTH
+                ),
+            );
+        }
+
+        debug!(
+            expression_len = expression.len(),
+            "evaluating JS expression"
+        );
+
         match session
             .send_command(
                 "Runtime.evaluate",

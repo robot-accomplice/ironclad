@@ -614,6 +614,60 @@ async fn agent_message_requires_peer_identity_in_peer_scope_mode() {
 }
 
 #[tokio::test]
+async fn agent_message_slash_commands_execute_without_llm_inference() {
+    let state = test_state();
+    let app = build_router(state.clone());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/agent/message")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"content":"/help"}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(!content.trim().is_empty());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/agent/message")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"content":"/models"}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(!content.trim().is_empty());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/agent/message")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"content":"/breaker"}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(!content.trim().is_empty());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/agent/message")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"content":"/retry"}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(!content.trim().is_empty());
+}
+
+#[tokio::test]
 async fn session_turn_and_context_endpoints_work() {
     let state = test_state();
     let session_id =

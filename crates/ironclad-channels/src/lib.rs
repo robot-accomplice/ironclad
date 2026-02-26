@@ -42,6 +42,22 @@ use ironclad_core::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Maximum allowed length for the `platform` field on [`InboundMessage`].
+const MAX_PLATFORM_LEN: usize = 64;
+
+/// Strip control characters and truncate to [`MAX_PLATFORM_LEN`] bytes.
+/// Callers constructing an [`InboundMessage`] should pass the platform name
+/// through this function to ensure it contains only printable characters and
+/// stays within a reasonable length.
+pub fn sanitize_platform(raw: &str) -> String {
+    let cleaned: String = raw.chars().filter(|c| !c.is_control()).collect();
+    if cleaned.len() <= MAX_PLATFORM_LEN {
+        cleaned
+    } else {
+        cleaned.chars().take(MAX_PLATFORM_LEN).collect()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundMessage {
     pub id: String,
@@ -50,6 +66,14 @@ pub struct InboundMessage {
     pub content: String,
     pub timestamp: DateTime<Utc>,
     pub metadata: Option<Value>,
+}
+
+impl InboundMessage {
+    /// Sanitize fields that accept untrusted input.
+    /// Currently normalizes `platform` (strips control chars, caps length).
+    pub fn sanitize(&mut self) {
+        self.platform = sanitize_platform(&self.platform);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +191,38 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: InboundMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.content.len(), msg.content.len());
+    }
+
+    #[test]
+    fn sanitize_platform_strips_control_chars() {
+        assert_eq!(sanitize_platform("telegram\n<script>"), "telegram<script>");
+        assert_eq!(sanitize_platform("ok\x00bad\x1F"), "okbad");
+    }
+
+    #[test]
+    fn sanitize_platform_truncates_long_input() {
+        let long = "a".repeat(200);
+        assert_eq!(sanitize_platform(&long).len(), MAX_PLATFORM_LEN);
+    }
+
+    #[test]
+    fn sanitize_platform_passes_clean_input() {
+        assert_eq!(sanitize_platform("whatsapp"), "whatsapp");
+        assert_eq!(sanitize_platform(""), "");
+    }
+
+    #[test]
+    fn inbound_message_sanitize_method() {
+        let mut msg = InboundMessage {
+            id: "s-1".into(),
+            platform: "bad\x00name\nhere".into(),
+            sender_id: "u1".into(),
+            content: "hi".into(),
+            timestamp: Utc::now(),
+            metadata: None,
+        };
+        msg.sanitize();
+        assert_eq!(msg.platform, "badnamehere");
     }
 
     // Phase 4K: Empty message platform name works

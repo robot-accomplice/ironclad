@@ -49,6 +49,13 @@ use crate::ws::EventBus;
 // ── Helpers (used by submodules) ──────────────────────────────
 
 /// Sanitizes error messages before returning to clients (strip paths, internal details, cap length).
+///
+/// LIMITATIONS: This is a best-effort filter that strips known wrapper
+/// prefixes and truncates. It does NOT guarantee that internal details
+/// (file paths, SQL fragments, stack traces) are fully redacted. If a new
+/// error source leaks sensitive info, add its prefix to the stripping list
+/// below or, better, ensure the call site maps the error before it reaches
+/// this function.
 pub(crate) fn sanitize_error_message(msg: &str) -> String {
     let sanitized = msg.lines().next().unwrap_or(msg);
 
@@ -57,6 +64,26 @@ pub(crate) fn sanitize_error_message(msg: &str) -> String {
         .trim_end_matches("\")")
         .trim_start_matches("Wallet(\"")
         .trim_end_matches("\")");
+
+    // Strip content after common internal-detail prefixes that may leak
+    // implementation specifics (connection strings, file paths, etc.).
+    let sensitive_prefixes = [
+        "at /", // stack trace file paths
+        "called `Result::unwrap()` on an `Err` value:",
+        "SQLITE_",            // raw SQLite error codes
+        "Connection refused", // infra details
+    ];
+    let sanitized = {
+        let mut s = sanitized.to_string();
+        for prefix in &sensitive_prefixes {
+            if let Some(pos) = s.find(prefix) {
+                s.truncate(pos);
+                s.push_str("[details redacted]");
+                break;
+            }
+        }
+        s
+    };
 
     if sanitized.len() > 200 {
         let boundary = sanitized
@@ -67,7 +94,7 @@ pub(crate) fn sanitize_error_message(msg: &str) -> String {
             .unwrap_or(0);
         format!("{}...", &sanitized[..boundary])
     } else {
-        sanitized.to_string()
+        sanitized
     }
 }
 
@@ -446,6 +473,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::rate_limit::GlobalRateLimitLayer;
+    use async_trait::async_trait;
     use axum::Json;
     use axum::body::Body;
     use axum::extract::{Query, State as AxumState};
@@ -458,6 +486,7 @@ mod tests {
     use ironclad_channels::router::ChannelRouter;
     use ironclad_channels::telegram::TelegramAdapter;
     use ironclad_channels::whatsapp::WhatsAppAdapter;
+    use ironclad_channels::{ChannelAdapter, InboundMessage, OutboundMessage};
     use ironclad_core::InputAuthority;
     use ironclad_db::Database;
     use ironclad_llm::LlmService;
@@ -2108,6 +2137,153 @@ params = { path = "README.md" }
             err.contains("requires Creator authority"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn virtual_select_subagent_model_tool_executes() {
+        let state = test_state();
+        let row = ironclad_db::agents::SubAgentRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "geo-specialist".to_string(),
+            display_name: Some("Geopolitical Specialist".to_string()),
+            model: "auto".to_string(),
+            role: "subagent".to_string(),
+            description: Some("Tracks geopolitical risk".to_string()),
+            skills_json: Some(r#"["geopolitics","risk-analysis"]"#.to_string()),
+            enabled: true,
+            session_count: 0,
+        };
+        ironclad_db::agents::upsert_sub_agent(&state.db, &row).unwrap();
+        state
+            .registry
+            .register(ironclad_agent::subagents::AgentInstanceConfig {
+                id: row.name.clone(),
+                name: row.display_name.clone().unwrap_or_else(|| row.name.clone()),
+                model: "ollama/qwen3:8b".to_string(),
+                skills: vec!["geopolitics".to_string()],
+                allowed_subagents: vec![],
+                max_concurrent: 4,
+            })
+            .await
+            .unwrap();
+        state.registry.start_agent(&row.name).await.unwrap();
+
+        let sid =
+            ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
+        let turn_id =
+            ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None).unwrap();
+
+        let output = agent::execute_tool_call(
+            &state,
+            "select-subagent-model",
+            &serde_json::json!({
+                "specialist": "geo-specialist",
+                "task": "geopolitical sitrep last 24h"
+            }),
+            &turn_id,
+            InputAuthority::Creator,
+        )
+        .await
+        .unwrap();
+        assert!(output.contains("selected_subagent=geo-specialist"));
+        assert!(output.contains("resolved_model="));
+    }
+
+    #[tokio::test]
+    async fn virtual_orchestrate_subagents_executes_and_returns_output() {
+        let state = test_state();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(|| async {
+                Json(serde_json::json!({
+                    "model": "test-subagent-model",
+                    "choices": [{
+                        "message": {"role": "assistant", "content": "Delegated geopolitical summary: calm with elevated monitoring."},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 10}
+                }))
+            }),
+        );
+        let mock_task = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        {
+            let mut llm = state.llm.write().await;
+            llm.providers.register(ironclad_llm::Provider {
+                name: "mock".to_string(),
+                url: format!("http://{}", addr),
+                tier: ironclad_core::ModelTier::T2,
+                api_key_env: "MOCK_API_KEY".to_string(),
+                format: ironclad_core::ApiFormat::OpenAiCompletions,
+                chat_path: "/v1/chat/completions".to_string(),
+                embedding_path: None,
+                embedding_model: None,
+                embedding_dimensions: None,
+                is_local: true,
+                cost_per_input_token: 0.0,
+                cost_per_output_token: 0.0,
+                auth_header: "Authorization".to_string(),
+                extra_headers: HashMap::new(),
+                tpm_limit: None,
+                rpm_limit: None,
+                auth_mode: "api_key".to_string(),
+                oauth_client_id: None,
+                api_key_ref: None,
+            });
+        }
+
+        let row = ironclad_db::agents::SubAgentRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "geo-specialist".to_string(),
+            display_name: Some("Geopolitical Specialist".to_string()),
+            model: "mock/subagent".to_string(),
+            role: "subagent".to_string(),
+            description: Some("Tracks geopolitical risk".to_string()),
+            skills_json: Some(r#"["geopolitics","risk-analysis"]"#.to_string()),
+            enabled: true,
+            session_count: 0,
+        };
+        ironclad_db::agents::upsert_sub_agent(&state.db, &row).unwrap();
+        state
+            .registry
+            .register(ironclad_agent::subagents::AgentInstanceConfig {
+                id: row.name.clone(),
+                name: row.display_name.clone().unwrap_or_else(|| row.name.clone()),
+                model: row.model.clone(),
+                skills: vec!["geopolitics".to_string()],
+                allowed_subagents: vec![],
+                max_concurrent: 4,
+            })
+            .await
+            .unwrap();
+        state.registry.start_agent(&row.name).await.unwrap();
+
+        let sid =
+            ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
+        let turn_id =
+            ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None).unwrap();
+
+        let output = agent::execute_tool_call(
+            &state,
+            "orchestrate-subagents",
+            &serde_json::json!({
+                "task": "geopolitical sitrep, last 24h",
+                "subtasks": ["collect high-impact events", "summarize executive impacts"]
+            }),
+            &turn_id,
+            InputAuthority::Creator,
+        )
+        .await
+        .unwrap();
+        assert!(output.contains("delegated_subagent=geo-specialist"));
+        assert!(output.contains("subtask 1 -> geo-specialist"));
+        assert!(output.contains("Delegated geopolitical summary"));
+
+        mock_task.abort();
     }
 
     #[tokio::test]
@@ -3768,6 +3944,48 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
+    async fn list_subagents_includes_runtime_state_and_taskable_flag() {
+        let state = test_state();
+        let app = build_router(state);
+        let create_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/subagents")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"booting-check","model":"test/model","role":"subagent"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_resp.status(), StatusCode::OK);
+
+        let list_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/subagents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body = json_body(list_resp).await;
+        assert!(body["runtime_summary"]["running"].is_number());
+        assert!(body["runtime_summary"]["booting"].is_number());
+        let agents = body["agents"].as_array().unwrap();
+        let created = agents
+            .iter()
+            .find(|agent| agent["name"] == "booting-check")
+            .expect("created subagent should be listed");
+        assert!(created["runtime_state"].is_string());
+        assert!(created["taskable"].is_boolean());
+    }
+
+    #[tokio::test]
     async fn toggle_nonexistent_subagent_returns_404() {
         let state = test_state();
         let app = build_router(state);
@@ -3815,6 +4033,68 @@ params = { path = "README.md" }
         assert!(reply.contains("/breaker"));
         assert!(reply.contains("/retry"));
         assert!(reply.contains("/help"));
+    }
+
+    #[tokio::test]
+    async fn slash_status_includes_subagent_runtime_summary() {
+        let state = test_state();
+        let reply = agent::handle_bot_command(&state, "/status", None)
+            .await
+            .unwrap();
+        assert!(reply.contains("taskable subagents"));
+        assert!(reply.contains("subagent taskability"));
+    }
+
+    #[tokio::test]
+    async fn slash_status_includes_per_subagent_breakdown() {
+        let state = test_state();
+        let running = ironclad_db::agents::SubAgentRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "econ-analyst".to_string(),
+            display_name: Some("Economic Analyst".to_string()),
+            model: "ollama/qwen3:8b".to_string(),
+            role: "subagent".to_string(),
+            description: Some("Economic monitoring".to_string()),
+            skills_json: Some(r#"["macro","markets"]"#.to_string()),
+            enabled: true,
+            session_count: 0,
+        };
+        let booting = ironclad_db::agents::SubAgentRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "geopolitical-specialist".to_string(),
+            display_name: Some("Geopolitical Specialist".to_string()),
+            model: "ollama/qwen3:8b".to_string(),
+            role: "subagent".to_string(),
+            description: Some("Geopolitical monitoring".to_string()),
+            skills_json: Some(r#"["geopolitics"]"#.to_string()),
+            enabled: true,
+            session_count: 0,
+        };
+        ironclad_db::agents::upsert_sub_agent(&state.db, &running).unwrap();
+        ironclad_db::agents::upsert_sub_agent(&state.db, &booting).unwrap();
+        state
+            .registry
+            .register(ironclad_agent::subagents::AgentInstanceConfig {
+                id: running.name.clone(),
+                name: running
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| running.name.clone()),
+                model: running.model.clone(),
+                skills: vec!["macro".to_string()],
+                allowed_subagents: vec![],
+                max_concurrent: 4,
+            })
+            .await
+            .unwrap();
+        state.registry.start_agent(&running.name).await.unwrap();
+
+        let reply = agent::handle_bot_command(&state, "/status", None)
+            .await
+            .unwrap();
+        assert!(reply.contains("subagents:"));
+        assert!(reply.contains("econ-analyst=running"));
+        assert!(reply.contains("geopolitical-specialist=booting"));
     }
 
     #[tokio::test]
@@ -3953,5 +4233,119 @@ params = { path = "README.md" }
             .await
             .unwrap();
         assert!(reply.contains("requires a channel context"));
+    }
+
+    struct CaptureAdapter {
+        name: String,
+        sent: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl CaptureAdapter {
+        fn new(name: &str, sent: Arc<Mutex<Vec<String>>>) -> Self {
+            Self {
+                name: name.to_string(),
+                sent,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ChannelAdapter for CaptureAdapter {
+        fn platform_name(&self) -> &str {
+            &self.name
+        }
+
+        async fn recv(&self) -> ironclad_core::Result<Option<InboundMessage>> {
+            Ok(None)
+        }
+
+        async fn send(&self, msg: OutboundMessage) -> ironclad_core::Result<()> {
+            self.sent.lock().await.push(msg.content);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_non_repetition_guard_rewrites_second_repeated_reply() {
+        let state = test_state();
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        state
+            .channel_router
+            .register(Arc::new(CaptureAdapter::new("telegram", Arc::clone(&sent))))
+            .await;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock = Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(|| async {
+                Json(serde_json::json!({
+                    "model": "qwen3:8b",
+                    "choices": [{
+                        "message": {"role": "assistant", "content": "System status unchanged. Monitoring active. No new events."},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 10}
+                }))
+            }),
+        );
+        let mock_task = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        {
+            let mut llm = state.llm.write().await;
+            llm.providers.register(ironclad_llm::Provider {
+                name: "ollama".to_string(),
+                url: format!("http://{}", addr),
+                tier: ironclad_core::ModelTier::T1,
+                api_key_env: "IGNORED".to_string(),
+                format: ironclad_core::ApiFormat::OpenAiCompletions,
+                chat_path: "/v1/chat/completions".to_string(),
+                embedding_path: None,
+                embedding_model: None,
+                embedding_dimensions: None,
+                is_local: true,
+                cost_per_input_token: 0.0,
+                cost_per_output_token: 0.0,
+                auth_header: "Authorization".to_string(),
+                extra_headers: HashMap::new(),
+                tpm_limit: None,
+                rpm_limit: None,
+                auth_mode: "api_key".to_string(),
+                oauth_client_id: None,
+                api_key_ref: None,
+            });
+        }
+
+        let inbound_1 = InboundMessage {
+            id: "m1".into(),
+            platform: "telegram".into(),
+            sender_id: "user-1".into(),
+            content: "status update?".into(),
+            timestamp: chrono::Utc::now(),
+            metadata: None,
+        };
+        let inbound_2 = InboundMessage {
+            id: "m2".into(),
+            platform: "telegram".into(),
+            sender_id: "user-1".into(),
+            content: "status update?".into(),
+            timestamp: chrono::Utc::now(),
+            metadata: None,
+        };
+
+        agent::process_channel_message(&state, inbound_1)
+            .await
+            .unwrap();
+        agent::process_channel_message(&state, inbound_2)
+            .await
+            .unwrap();
+
+        let msgs = sent.lock().await.clone();
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[0].contains("System status unchanged"));
+        assert!(msgs[1].contains("fresh check now"));
+
+        mock_task.abort();
     }
 }

@@ -183,6 +183,20 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
+### 1.19 `agent-browser` External Runtime Support
+
+**Current state**: Browser automation is implemented via Ironclad's native browser tooling (`1.3`) and does not yet support the external `agent-browser` runtime/CLI contract.
+
+**Target**: Add optional `agent-browser` compatibility so browser actions can run through the external runtime while preserving Ironclad policy controls, provenance, and auditability.
+
+**Builds on**: `1.3 Browser as agent tool`, tool registry, command safety/policy engine, runtime config + dashboard observability.
+
+**Scope**: Introduce a browser backend abstraction with a new `agent-browser` backend implementation. Map the core action set (`open`, `snapshot`, `click`, `fill`, `wait`, `get text`, `screenshot`) to `agent-browser` commands with structured result parsing (`--json` mode). Add config for binary path, provider/session/profile defaults, domain allowlist, and output-size limits. Preserve existing safety rails (`RiskLevel`, approvals where required) and emit clear provenance for backend selection/fallback events. Add integration tests with a mock `agent-browser` binary and release-smoke checks for backend availability.
+
+**Release posture**: Discovery/design can proceed now; implementation is planned for `v0.9.x` and is not part of locked `v0.8.0` release gates.
+
+---
+
 ## Tier 2 — New Capabilities
 
 Features that require significant new code but have clear implementation paths. Medium-to-high effort.
@@ -905,6 +919,7 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 1.16 | Durable channel delivery queue | 1 | channels delivery router, DB persistence | Medium |
 | 1.17 | Production-grade abuse protection | 1 | rate limiter, auth, deployment config | Medium |
 | 1.18 | Cron-conformant session rotation | 1 | SessionGovernor, scheduler heartbeat | Medium |
+| 1.19 | `agent-browser` external runtime support | 1 | 1.3 Browser tool, policy engine, runtime config | Medium |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
 | 2.3 | Tiered inference pipeline | 2 | Fallback chain, local model config | Medium |

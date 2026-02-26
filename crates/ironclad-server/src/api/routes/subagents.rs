@@ -4,6 +4,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 
 use super::{AppState, internal_err};
 
@@ -52,6 +53,34 @@ pub struct UpdateSubAgentRequest {
     #[serde(default)]
     pub personality: Option<Value>,
     pub enabled: Option<bool>,
+}
+
+const MAX_SUBAGENT_NAME_LEN: usize = 128;
+
+fn validate_subagent_name(name: &str) -> Result<(), (axum::http::StatusCode, String)> {
+    if name.is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "subagent name cannot be empty".to_string(),
+        ));
+    }
+    if name.len() > MAX_SUBAGENT_NAME_LEN {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("subagent name exceeds max length of {MAX_SUBAGENT_NAME_LEN} characters"),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "subagent name may only contain alphanumeric characters, hyphens, and underscores"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_role(raw: &str) -> Option<&'static str> {
@@ -143,15 +172,35 @@ fn validate_subagent_contract(
     Ok(())
 }
 
+fn runtime_state_label(state: ironclad_agent::subagents::AgentRunState) -> &'static str {
+    match state {
+        ironclad_agent::subagents::AgentRunState::Idle => "idle",
+        ironclad_agent::subagents::AgentRunState::Starting => "booting",
+        ironclad_agent::subagents::AgentRunState::Running => "running",
+        ironclad_agent::subagents::AgentRunState::Stopped => "stopped",
+        ironclad_agent::subagents::AgentRunState::Error => "error",
+    }
+}
+
 pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse {
     match ironclad_db::agents::list_sub_agents(&state.db) {
         Ok(agents) => {
+            let runtime = state.registry.list_agents().await;
+            let runtime_by_name: HashMap<String, ironclad_agent::subagents::AgentInstance> =
+                runtime
+                    .into_iter()
+                    .map(|a| (a.id.to_ascii_lowercase(), a))
+                    .collect();
             let session_counts =
                 ironclad_db::agents::list_session_counts_by_agent(&state.db).unwrap_or_default();
+            let mut booting = 0usize;
+            let mut running = 0usize;
+            let mut errored = 0usize;
             let items: Vec<serde_json::Value> = agents
                 .into_iter()
                 .map(|a| {
                     let normalized_role = normalize_role(&a.role).unwrap_or(ROLE_SUBAGENT);
+                    let runtime_entry = runtime_by_name.get(&a.name.to_ascii_lowercase());
                     let skills = a
                         .skills_json
                         .as_deref()
@@ -161,6 +210,24 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
                         .get(&a.name)
                         .copied()
                         .unwrap_or(a.session_count);
+                    let runtime_state = if normalized_role == ROLE_MODEL_PROXY {
+                        "n/a".to_string()
+                    } else if let Some(inst) = runtime_entry {
+                        runtime_state_label(inst.state).to_string()
+                    } else if a.enabled {
+                        "booting".to_string()
+                    } else {
+                        "stopped".to_string()
+                    };
+                    let taskable = a.enabled && runtime_state == "running";
+                    if normalized_role != ROLE_MODEL_PROXY {
+                        match runtime_state.as_str() {
+                            "booting" | "idle" => booting += 1,
+                            "running" => running += 1,
+                            "error" => errored += 1,
+                            _ => {}
+                        }
+                    }
                     serde_json::json!({
                         "id": a.id,
                         "name": a.name,
@@ -171,13 +238,21 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
                         "skills": skills,
                         "enabled": a.enabled,
                         "session_count": session_count,
+                        "runtime_state": runtime_state,
+                        "taskable": taskable,
                     })
                 })
                 .collect();
             let count = items.len();
-            Ok(axum::Json(
-                serde_json::json!({ "agents": items, "count": count }),
-            ))
+            Ok(axum::Json(serde_json::json!({
+                "agents": items,
+                "count": count,
+                "runtime_summary": {
+                    "booting": booting,
+                    "running": running,
+                    "error": errored,
+                }
+            })))
         }
         Err(e) => Err(internal_err(&e)),
     }
@@ -187,6 +262,7 @@ pub async fn create_sub_agent(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<CreateSubAgentRequest>,
 ) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+    validate_subagent_name(&body.name)?;
     let role = normalize_role(&body.role)
         .ok_or_else(|| {
             (

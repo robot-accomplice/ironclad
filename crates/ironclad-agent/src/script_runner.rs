@@ -99,6 +99,12 @@ impl ScriptRunner {
     ///
     /// This canonicalizes both root and script path and enforces containment.
     pub fn resolve_script_path(&self, requested: &Path) -> Result<std::path::PathBuf> {
+        if requested.is_absolute() {
+            return Err(IroncladError::Config(
+                "absolute script paths are not allowed".into(),
+            ));
+        }
+
         let root =
             std::fs::canonicalize(&self.config.skills_dir).map_err(|e| IroncladError::Tool {
                 tool: "script_runner".into(),
@@ -107,11 +113,7 @@ impl ScriptRunner {
                     self.config.skills_dir.display()
                 ),
             })?;
-        let joined = if requested.is_absolute() {
-            requested.to_path_buf()
-        } else {
-            root.join(requested)
-        };
+        let joined = root.join(requested);
         let canonical = std::fs::canonicalize(&joined).map_err(|e| IroncladError::Tool {
             tool: "script_runner".into(),
             message: format!("failed to resolve script path '{}': {e}", joined.display()),
@@ -132,6 +134,27 @@ impl ScriptRunner {
                 message: format!("script path '{}' is not a file", canonical.display()),
             });
         }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = std::fs::metadata(&canonical).map_err(|e| IroncladError::Tool {
+                tool: "script_runner".into(),
+                message: format!("failed to read metadata for '{}': {e}", canonical.display()),
+            })?;
+            let mode = metadata.permissions().mode();
+            if mode & 0o002 != 0 {
+                return Err(IroncladError::Tool {
+                    tool: "script_runner".into(),
+                    message: format!(
+                        "script '{}' is world-writable (mode {:o})",
+                        canonical.display(),
+                        mode
+                    ),
+                });
+            }
+        }
+
         Ok(canonical)
     }
 }
@@ -289,7 +312,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_script_outside_skills_dir() {
+    async fn rejects_absolute_script_path() {
         let skills_dir = tempfile::tempdir().unwrap();
         let outside_dir = tempfile::tempdir().unwrap();
         let script = outside_dir.path().join("escape.sh");
@@ -303,7 +326,7 @@ mod tests {
         let result = runner.execute(&script, &[]).await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("escapes skills_dir"));
+        assert!(msg.contains("absolute script paths are not allowed"));
     }
 
     #[test]

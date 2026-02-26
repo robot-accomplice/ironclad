@@ -8,9 +8,12 @@ use lettre::message::{Mailbox, MessageBuilder};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use serde_json::json;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{ChannelAdapter, InboundMessage, OutboundMessage};
+
+/// Maximum email body size (1 MB). Content beyond this limit is truncated.
+const MAX_EMAIL_BODY_BYTES: usize = 1_048_576;
 
 /// Email channel adapter for bidirectional email communication.
 pub struct EmailAdapter {
@@ -70,6 +73,9 @@ impl EmailAdapter {
     }
 
     /// Parse a raw email into an InboundMessage.
+    ///
+    /// Body content exceeding [`MAX_EMAIL_BODY_BYTES`] (1 MB) is truncated to
+    /// prevent excessive memory use from oversized messages.
     pub fn parse_email(
         from: &str,
         subject: &str,
@@ -77,10 +83,27 @@ impl EmailAdapter {
         message_id: Option<&str>,
         in_reply_to: Option<&str>,
     ) -> InboundMessage {
-        let content = if subject.is_empty() {
-            body.to_string()
+        let truncated_body = if body.len() > MAX_EMAIL_BODY_BYTES {
+            warn!(
+                from = from,
+                original_len = body.len(),
+                "email body exceeds {} bytes; truncating",
+                MAX_EMAIL_BODY_BYTES
+            );
+            // Truncate at a char boundary to avoid splitting a multi-byte character.
+            let mut end = MAX_EMAIL_BODY_BYTES;
+            while end > 0 && !body.is_char_boundary(end) {
+                end -= 1;
+            }
+            &body[..end]
         } else {
-            format!("[Subject: {subject}] {body}")
+            body
+        };
+
+        let content = if subject.is_empty() {
+            truncated_body.to_string()
+        } else {
+            format!("[Subject: {subject}] {truncated_body}")
         };
 
         InboundMessage {

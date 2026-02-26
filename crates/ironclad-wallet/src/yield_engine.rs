@@ -24,15 +24,15 @@ const USDC_SCALE: f64 = 1_000_000.0;
 
 #[derive(Debug, Clone)]
 pub struct YieldEngine {
-    pub enabled: bool,
-    pub protocol: String,
-    pub chain: String,
-    pub min_deposit: f64,
-    pub withdrawal_threshold: f64,
-    pub chain_rpc_url: Option<String>,
-    pub pool_address: String,
-    pub usdc_address: String,
-    pub a_token_address: String,
+    enabled: bool,
+    protocol: String,
+    chain: String,
+    min_deposit: f64,
+    withdrawal_threshold: f64,
+    chain_rpc_url: Option<String>,
+    pool_address: String,
+    usdc_address: String,
+    a_token_address: String,
 }
 
 impl YieldEngine {
@@ -51,6 +51,42 @@ impl YieldEngine {
                 .clone()
                 .unwrap_or_else(|| "0x4d8e6968b67a2a216b2e5928b793663415377c2e".into()),
         }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn protocol(&self) -> &str {
+        &self.protocol
+    }
+
+    pub fn chain(&self) -> &str {
+        &self.chain
+    }
+
+    pub fn min_deposit(&self) -> f64 {
+        self.min_deposit
+    }
+
+    pub fn withdrawal_threshold(&self) -> f64 {
+        self.withdrawal_threshold
+    }
+
+    pub fn chain_rpc_url(&self) -> Option<&str> {
+        self.chain_rpc_url.as_deref()
+    }
+
+    pub fn pool_address(&self) -> &str {
+        &self.pool_address
+    }
+
+    pub fn usdc_address(&self) -> &str {
+        &self.usdc_address
+    }
+
+    pub fn a_token_address(&self) -> &str {
+        &self.a_token_address
     }
 
     /// Excess = balance - minimum_reserve - operational_buffer (10% of minimum_reserve).
@@ -77,6 +113,11 @@ impl YieldEngine {
         agent_address: Option<&str>,
         private_key: Option<&[u8]>,
     ) -> Result<String> {
+        if amount <= 0.0 {
+            return Err(IroncladError::Wallet(format!(
+                "deposit amount must be positive, got {amount}"
+            )));
+        }
         if !self.enabled {
             return Err(IroncladError::Wallet("yield engine is disabled".into()));
         }
@@ -104,6 +145,11 @@ impl YieldEngine {
         agent_address: Option<&str>,
         private_key: Option<&[u8]>,
     ) -> Result<String> {
+        if amount <= 0.0 {
+            return Err(IroncladError::Wallet(format!(
+                "withdrawal amount must be positive, got {amount}"
+            )));
+        }
         if !self.enabled {
             return Err(IroncladError::Wallet("yield engine is disabled".into()));
         }
@@ -400,19 +446,32 @@ mod tests {
         assert!(engine.withdraw(50.0, None, None).await.is_err());
     }
 
-    // 9C: Edge cases — zero amount deposit/withdraw (mock still returns hash)
     #[tokio::test]
-    async fn zero_amount_deposit_mock_returns_hash() {
+    async fn zero_amount_deposit_rejected() {
         let engine = YieldEngine::new(&enabled_config());
-        let tx = engine.deposit(0.0, None, None).await.unwrap();
-        assert!(tx.starts_with("0x"));
+        let err = engine.deposit(0.0, None, None).await.unwrap_err();
+        assert!(err.to_string().contains("positive"));
     }
 
     #[tokio::test]
-    async fn zero_amount_withdraw_mock_returns_hash() {
+    async fn zero_amount_withdraw_rejected() {
         let engine = YieldEngine::new(&enabled_config());
-        let tx = engine.withdraw(0.0, None, None).await.unwrap();
-        assert!(tx.starts_with("0x"));
+        let err = engine.withdraw(0.0, None, None).await.unwrap_err();
+        assert!(err.to_string().contains("positive"));
+    }
+
+    #[tokio::test]
+    async fn negative_amount_deposit_rejected() {
+        let engine = YieldEngine::new(&enabled_config());
+        let err = engine.deposit(-10.0, None, None).await.unwrap_err();
+        assert!(err.to_string().contains("positive"));
+    }
+
+    #[tokio::test]
+    async fn negative_amount_withdraw_rejected() {
+        let engine = YieldEngine::new(&enabled_config());
+        let err = engine.withdraw(-5.0, None, None).await.unwrap_err();
+        assert!(err.to_string().contains("positive"));
     }
 
     #[test]
@@ -423,7 +482,7 @@ mod tests {
             .unwrap();
         assert_eq!(referral_code, 0);
         assert_eq!(amount, amount_to_raw(100.5));
-        assert_eq!(asset, parse_address(&engine.usdc_address).unwrap());
+        assert_eq!(asset, parse_address(engine.usdc_address()).unwrap());
         assert_eq!(
             on_behalf_of,
             parse_address("0x0000000000000000000000000000000000000001").unwrap()
@@ -437,7 +496,7 @@ mod tests {
             .build_withdraw_call_params(50.25, "0x0000000000000000000000000000000000000002")
             .unwrap();
         assert_eq!(amount, amount_to_raw(50.25));
-        assert_eq!(asset, parse_address(&engine.usdc_address).unwrap());
+        assert_eq!(asset, parse_address(engine.usdc_address()).unwrap());
         assert_eq!(
             to,
             parse_address("0x0000000000000000000000000000000000000002").unwrap()
@@ -567,7 +626,7 @@ mod tests {
         let mut cfg = enabled_config();
         cfg.atoken_address = None;
         let engine = YieldEngine::new(&cfg);
-        assert!(!engine.a_token_address.is_empty());
+        assert!(!engine.a_token_address().is_empty());
     }
 
     #[test]
@@ -614,15 +673,15 @@ mod tests {
     fn new_engine_copies_all_config_fields() {
         let cfg = enabled_config();
         let engine = YieldEngine::new(&cfg);
-        assert!(engine.enabled);
-        assert_eq!(engine.protocol, "aave");
-        assert_eq!(engine.chain, "base");
-        assert!((engine.min_deposit - 50.0).abs() < f64::EPSILON);
-        assert!((engine.withdrawal_threshold - 30.0).abs() < f64::EPSILON);
-        assert!(engine.chain_rpc_url.is_none());
-        assert!(!engine.pool_address.is_empty());
-        assert!(!engine.usdc_address.is_empty());
-        assert!(!engine.a_token_address.is_empty());
+        assert!(engine.enabled());
+        assert_eq!(engine.protocol(), "aave");
+        assert_eq!(engine.chain(), "base");
+        assert!((engine.min_deposit() - 50.0).abs() < f64::EPSILON);
+        assert!((engine.withdrawal_threshold() - 30.0).abs() < f64::EPSILON);
+        assert!(engine.chain_rpc_url().is_none());
+        assert!(!engine.pool_address().is_empty());
+        assert!(!engine.usdc_address().is_empty());
+        assert!(!engine.a_token_address().is_empty());
     }
 
     #[test]

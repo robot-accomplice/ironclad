@@ -1984,3 +1984,230 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old = std::env::var_os(key);
+            // SAFETY: test-local environment mutation restored on Drop.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.old {
+                // SAFETY: restoring previous process env value.
+                unsafe { std::env::set_var(self.key, v) };
+            } else {
+                // SAFETY: restoring previous process env value.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn path_contains_dir_and_go_bin_detection() {
+        let _lock = env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _path_guard = EnvGuard::set("PATH", dir.path().to_str().unwrap());
+        assert!(path_contains_dir(dir.path()));
+        assert!(!path_contains_dir(Path::new("/definitely/not/here")));
+
+        let gopath = tempfile::tempdir().unwrap();
+        let _gopath_guard = EnvGuard::set("GOPATH", gopath.path().to_str().unwrap());
+        let bin_dir = gopath.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        #[cfg(windows)]
+        let gosh = bin_dir.join("gosh.exe");
+        #[cfg(not(windows))]
+        let gosh = bin_dir.join("gosh");
+        std::fs::write(&gosh, "stub").unwrap();
+        assert_eq!(find_gosh_in_go_bins(), Some(gosh));
+    }
+
+    #[test]
+    fn recent_log_snapshot_and_count_occurrences_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let older = dir.path().join("ironclad.log");
+        let newer = dir.path().join("ironclad.stderr.log");
+        std::fs::write(&older, "old line").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&newer, "abc abc abc").unwrap();
+
+        let snap = recent_log_snapshot(dir.path(), 8).unwrap();
+        assert!(snap.contains("abc"));
+        assert_eq!(count_occurrences("abc abc abc", "abc"), 3);
+    }
+
+    #[test]
+    fn finding_builder_sets_repair_metadata() {
+        let f = finding(
+            "id-1",
+            "high",
+            0.9,
+            "summary",
+            "details",
+            "plan",
+            vec!["cmd".into()],
+            true,
+            false,
+        );
+        assert_eq!(f.id, "id-1");
+        assert_eq!(f.severity, "high");
+        assert!(f.repair_plan.safe_auto_repair);
+        assert!(!f.repair_plan.requires_human_approval);
+        assert_eq!(f.repair_plan.commands, vec!["cmd"]);
+    }
+
+    #[test]
+    fn normalize_schema_safe_updates_legacy_subagent_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sub_agents (role TEXT, skills_json TEXT);
+             INSERT INTO sub_agents (role, skills_json) VALUES ('specialist', NULL);",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(normalize_schema_safe(&db_path).unwrap());
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let (role, skills): (String, String) = conn
+            .query_row(
+                "SELECT role, skills_json FROM sub_agents LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(role, "subagent");
+        assert_eq!(skills, "[]");
+    }
+
+    #[tokio::test]
+    async fn mechanic_json_repair_mode_creates_default_layout() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
+        let ironclad_dir = home.path().join(".ironclad");
+        let logs_dir = ironclad_dir.join("logs");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        std::fs::write(
+            logs_dir.join("ironclad.log"),
+            "Telegram API error\",\"status\":\"404 Not Found\"\n\
+             Telegram API error\",\"status\":\"404 Not Found\"\n\
+             Telegram API error\",\"status\":\"404 Not Found\"\n\
+             unknown action: unknown\nunknown action: unknown\nunknown action: unknown\n",
+        )
+        .unwrap();
+
+        let state_db = ironclad_dir.join("state.db");
+        let conn = rusqlite::Connection::open(&state_db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sub_agents (role TEXT, skills_json TEXT);
+             INSERT INTO sub_agents (role, skills_json) VALUES ('specialist', NULL);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let wallet = ironclad_dir.join("wallet.json");
+        std::fs::write(&wallet, "{}").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&wallet).unwrap().permissions();
+            perms.set_mode(0o644);
+            std::fs::set_permissions(&wallet, perms).unwrap();
+        }
+
+        cmd_mechanic_json("http://127.0.0.1:9", true, &[])
+            .await
+            .expect("mechanic should complete with unreachable gateway");
+
+        let conn = rusqlite::Connection::open(&state_db).unwrap();
+        let role: String = conn
+            .query_row("SELECT role FROM sub_agents LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(role, "subagent");
+    }
+
+    #[test]
+    fn cmd_reset_yes_removes_state_and_preserves_wallet() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
+        let ironclad_dir = home.path().join(".ironclad");
+        let logs_dir = ironclad_dir.join("logs");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        std::fs::write(ironclad_dir.join("state.db"), "db").unwrap();
+        std::fs::write(
+            ironclad_dir.join("ironclad.toml"),
+            "[agent]\nname='x'\nid='x'\n",
+        )
+        .unwrap();
+        std::fs::write(ironclad_dir.join("wallet.json"), "{}").unwrap();
+
+        cmd_reset(true).unwrap();
+
+        assert!(!ironclad_dir.join("state.db").exists());
+        assert!(!ironclad_dir.join("ironclad.toml").exists());
+        assert!(!logs_dir.exists());
+        assert!(ironclad_dir.join("wallet.json").exists());
+    }
+
+    #[test]
+    fn cmd_uninstall_purge_removes_data_dir() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
+        let ironclad_dir = home.path().join(".ironclad");
+        std::fs::create_dir_all(&ironclad_dir).unwrap();
+        std::fs::write(ironclad_dir.join("state.db"), "db").unwrap();
+
+        cmd_uninstall(true).unwrap();
+        assert!(!ironclad_dir.exists());
+    }
+
+    #[test]
+    fn cmd_security_audit_runs_against_local_config() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let cfg_path = cfg_dir.path().join("ironclad.toml");
+        std::fs::write(
+            &cfg_path,
+            r#"[agent]
+name = "Test"
+id = "test"
+[server]
+bind = "127.0.0.1"
+port = 18789
+[database]
+path = ":memory:"
+[models]
+primary = "ollama/qwen3:8b"
+"#,
+        )
+        .unwrap();
+
+        cmd_security_audit(cfg_path.to_str().unwrap()).unwrap();
+    }
+}

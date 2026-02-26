@@ -33,10 +33,12 @@ struct PatternSet {
 }
 
 impl PatternSet {
-    /// Patterns are compile-time constants; unwrap is safe.
     fn compile(patterns: &[&str], weight: f64) -> Self {
         Self {
-            regexes: patterns.iter().map(|p| Regex::new(p).unwrap()).collect(),
+            regexes: patterns
+                .iter()
+                .map(|p| Regex::new(p).expect("injection detection regex must be valid"))
+                .collect(),
             weight,
         }
     }
@@ -106,7 +108,6 @@ static FINANCIAL_PATTERNS: LazyLock<PatternSet> = LazyLock::new(|| {
     )
 });
 
-// Patterns are compile-time constants; unwrap is safe.
 static STRIP_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         r"(?i)ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)",
@@ -116,11 +117,10 @@ static STRIP_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)override\s+(all\s+)?(safety|security|rules?)",
     ]
     .iter()
-    .map(|p| Regex::new(p).unwrap())
+    .map(|p| Regex::new(p).expect("injection detection regex must be valid"))
     .collect()
 });
 
-// Patterns are compile-time constants; unwrap is safe.
 static OUTPUT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         r"(?i)ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)",
@@ -131,7 +131,7 @@ static OUTPUT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?i)disregard\s+(your|all|the)\s+(instructions?|rules?|guidelines?)",
     ]
     .iter()
-    .map(|p| Regex::new(p).unwrap())
+    .map(|p| Regex::new(p).expect("injection detection regex must be valid"))
     .collect()
 });
 

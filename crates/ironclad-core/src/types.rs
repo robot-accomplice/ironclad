@@ -13,7 +13,7 @@ pub enum SurvivalTier {
 
 impl SurvivalTier {
     pub fn from_balance(usd: f64, hours_below_zero: f64) -> Self {
-        if usd < 0.0 && hours_below_zero >= 1.0 {
+        if usd < 0.0 && hours_below_zero >= 0.999 {
             Self::Dead
         } else if usd < 0.10 {
             Self::Critical

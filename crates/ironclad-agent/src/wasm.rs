@@ -2,7 +2,7 @@ use ironclad_core::{IroncladError, Result, input_capability_scan};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Configuration for a WASM plugin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,13 +145,42 @@ impl WasmPlugin {
             && let Ok(input_bytes) = serde_json::to_vec(input)
         {
             let view = memory.view(&store);
-            let _ = view.write(0, &input_bytes);
+            let mem_size = view.data_size() as usize;
+            if input_bytes.len() <= mem_size {
+                if let Err(e) = view.write(0, &input_bytes) {
+                    warn!(
+                        plugin = %self.config.name,
+                        error = %e,
+                        "failed to write input to WASM memory"
+                    );
+                }
+            } else {
+                warn!(
+                    plugin = %self.config.name,
+                    input_len = input_bytes.len(),
+                    mem_size,
+                    "input exceeds WASM memory size, skipping write"
+                );
+            }
         }
 
+        let deadline = std::time::Duration::from_millis(self.config.execution_timeout_ms);
+
         if let Ok(func) = instance.exports.get_function("process") {
+            let start = std::time::Instant::now();
             let results = func
                 .call(&mut store, &[])
                 .map_err(|e| IroncladError::Config(format!("WASM execution failed: {e}")))?;
+
+            let elapsed = start.elapsed();
+            if elapsed > deadline {
+                warn!(
+                    plugin = %self.config.name,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    deadline_ms = self.config.execution_timeout_ms,
+                    "WASM execution exceeded configured timeout"
+                );
+            }
 
             let result_values: Vec<serde_json::Value> =
                 results.iter().map(wasmer_value_to_json).collect();
@@ -164,6 +193,14 @@ impl WasmPlugin {
                     .filter(|&v| v > 0 && v <= 10_000_000)
             {
                 let view = memory.view(&store);
+                let mem_size = view.data_size();
+                let end = (ptr as u64).saturating_add(len as u64);
+                if end > mem_size {
+                    return Err(IroncladError::Config(format!(
+                        "WASM memory read out of bounds: ptr={ptr}, len={len}, memory_size={mem_size}"
+                    )));
+                }
+
                 let mut buf = vec![0u8; len as usize];
                 if view.read(ptr as u64, &mut buf).is_ok()
                     && let Ok(text) = String::from_utf8(buf)
@@ -197,8 +234,19 @@ impl WasmPlugin {
         }
 
         if let Ok(func) = instance.exports.get_function("_start") {
+            let start = std::time::Instant::now();
             func.call(&mut store, &[])
                 .map_err(|e| IroncladError::Config(format!("WASM execution failed: {e}")))?;
+
+            let elapsed = start.elapsed();
+            if elapsed > deadline {
+                warn!(
+                    plugin = %self.config.name,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    deadline_ms = self.config.execution_timeout_ms,
+                    "WASM execution exceeded configured timeout"
+                );
+            }
             return Ok(serde_json::json!({
                 "status": "executed",
                 "plugin": self.config.name,

@@ -20,6 +20,9 @@ impl BrowserManager {
         }
     }
 
+    // SECURITY: `executable_path` comes from the server configuration file
+    // which is trusted (written by an administrator). We do not sanitize
+    // or restrict the path beyond checking that the file exists.
     fn find_chrome_executable(&self) -> Option<String> {
         if let Some(ref path) = self.config.executable_path
             && Path::new(path).exists()
@@ -74,7 +77,12 @@ impl BrowserManager {
             args.push("--headless=new".to_string());
         }
 
-        info!(executable = %executable, port = self.config.cdp_port, "starting browser");
+        info!(
+            executable_path = %executable,
+            port = self.config.cdp_port,
+            headless = self.config.headless,
+            "starting browser"
+        );
 
         let child = Command::new(&executable)
             .args(&args)
@@ -87,9 +95,14 @@ impl BrowserManager {
             })?;
 
         self.process = Some(child);
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        debug!("browser started");
+        // Brief grace period for the browser process to initialize its CDP
+        // listener. The caller (Browser::start in lib.rs) retries
+        // cdp.list_targets() up to 10 times with 300ms back-off, so this
+        // initial delay only needs to cover typical startup jitter.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        debug!("browser process spawned, CDP listener may still be initializing");
         Ok(())
     }
 

@@ -15,6 +15,14 @@ pub struct CachedResponse {
     pub embedding: Option<Vec<f32>>,
 }
 
+/// An in-memory multi-level cache (exact hash, tool-aware TTL, semantic cosine).
+///
+/// **Thread safety**: `SemanticCache` uses `&mut self` for all mutating
+/// operations and is **not internally synchronized**. Callers that share a
+/// cache across threads or tasks must wrap it in an external lock (e.g.
+/// `tokio::sync::RwLock<SemanticCache>` or `std::sync::Mutex<SemanticCache>`).
+/// The `LlmService` struct owns the cache directly and accesses it from a
+/// single task context, so no internal locking is required today.
 #[derive(Debug)]
 pub struct SemanticCache {
     enabled: bool,

@@ -706,4 +706,23 @@ mod tests {
         assert_eq!(parsed.port, 18789);
         assert_eq!(parsed.pid, None);
     }
+
+    #[test]
+    fn parse_windows_daemon_marker_rejects_missing_required_fields() {
+        let missing_binary =
+            "name=IroncladAgent\nmode=user_process\nconfig=C:\\x\\ironclad.toml\nport=18789\n";
+        assert!(parse_windows_daemon_marker(missing_binary).is_none());
+        let missing_port = "name=IroncladAgent\nmode=user_process\nbinary=C:\\x\\ironclad.exe\nconfig=C:\\x\\ironclad.toml\n";
+        assert!(parse_windows_daemon_marker(missing_port).is_none());
+    }
+
+    #[test]
+    fn benign_stop_errors_are_classified() {
+        let err = IroncladError::Config("service has not been started".into());
+        assert!(is_benign_stop_error(&err));
+        let err = IroncladError::Config("not loaded".into());
+        assert!(is_benign_stop_error(&err));
+        let err = IroncladError::Config("permission denied".into());
+        assert!(!is_benign_stop_error(&err));
+    }
 }

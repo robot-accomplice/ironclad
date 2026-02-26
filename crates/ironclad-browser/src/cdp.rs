@@ -17,6 +17,15 @@ pub struct CdpTarget {
     pub ws_url: Option<String>,
 }
 
+/// Low-level HTTP client for the Chrome DevTools Protocol JSON endpoints.
+///
+/// # Security
+///
+/// The CDP port (`http://127.0.0.1:<port>`) is accessible to **all** local
+/// processes. Any program running on the same host can list targets, attach
+/// debuggers, and execute arbitrary JavaScript in browser contexts. In
+/// production deployments, callers should consider firewall rules or network
+/// namespaces to restrict access to the CDP port.
 pub struct CdpClient {
     http_base: String,
     client: reqwest::Client,
@@ -30,7 +39,7 @@ impl CdpClient {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
-                .unwrap_or_default(),
+                .expect("HTTP client initialization - check TLS certificates"),
             command_id: AtomicU64::new(1),
         }
     }

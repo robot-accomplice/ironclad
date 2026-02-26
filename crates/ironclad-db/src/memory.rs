@@ -32,6 +32,12 @@ pub fn store_working(
         rusqlite::params![id, session_id, entry_type, content, importance],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
+    // Remove any existing FTS row before inserting to avoid duplicates.
+    tx.execute(
+        "DELETE FROM memory_fts WHERE source_table = 'working' AND source_id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
     tx.execute(
         "INSERT INTO memory_fts (content, category, source_table, source_id) VALUES (?1, ?2, 'working', ?3)",
         rusqlite::params![content, entry_type, id],
@@ -192,6 +198,12 @@ pub fn store_semantic(
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
+    // Remove any existing FTS row before re-inserting to avoid duplicates on upsert.
+    tx.execute(
+        "DELETE FROM memory_fts WHERE source_table = 'semantic' AND source_id = ?1",
+        rusqlite::params![actual_id],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
     tx.execute(
         "INSERT INTO memory_fts (content, category, source_table, source_id) VALUES (?1, ?2, 'semantic', ?3)",
         rusqlite::params![value, category, actual_id],
@@ -442,6 +454,8 @@ pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<String>>
     }
 
     // LIKE fallback for tables not in FTS: procedural_memory.steps, relationship_memory.interaction_summary.
+    // Safety: table and column names below are hardcoded constants, not user input,
+    // so the string interpolation into SQL is safe from injection.
     // Escape % and _ so they are literal, and use ESCAPE '\\'.
     let escaped_query = query
         .replace('\\', "\\\\")

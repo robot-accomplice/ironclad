@@ -51,6 +51,12 @@ impl From<toml::de::Error> for IroncladError {
     }
 }
 
+impl From<toml::ser::Error> for IroncladError {
+    fn from(e: toml::ser::Error) -> Self {
+        Self::Config(format!("TOML serialization error: {e}"))
+    }
+}
+
 impl From<serde_json::Error> for IroncladError {
     fn from(e: serde_json::Error) -> Self {
         Self::Config(format!("JSON parse error: {e}"))
