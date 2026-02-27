@@ -388,10 +388,7 @@ pub fn cmd_skill_export(output: &str, ids: &[String]) -> Result<(), Box<dyn std:
 // ── Helpers ────────────────────────────────────────────────────────────
 
 fn default_ironclad_root() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"))
-        .join(".ironclad")
+    ironclad_core::home_dir().join(".ironclad")
 }
 
 pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {

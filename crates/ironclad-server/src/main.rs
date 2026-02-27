@@ -949,8 +949,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let abs_config = std::path::Path::new(&config)
                     .canonicalize()
                     .or_else(|_| {
-                        let home = std::env::var("HOME").unwrap_or_default();
-                        let home_cfg = std::path::PathBuf::from(home)
+                        let home_cfg = ironclad_core::home_dir()
                             .join(".ironclad")
                             .join(&config);
                         home_cfg.canonicalize()
@@ -1086,8 +1085,7 @@ async fn cmd_auth_login(
     let client_id = client_id_override
         .map(String::from)
         .or_else(|| {
-            let home = std::env::var("HOME").ok()?;
-            let path = std::path::PathBuf::from(home)
+            let path = ironclad_core::home_dir()
                 .join(".ironclad")
                 .join("ironclad.toml");
             let cfg = IroncladConfig::from_file(&path).ok()?;
@@ -1388,8 +1386,7 @@ async fn cmd_serve(
     const STEPS: u32 = 12;
 
     let resolved_path = config_path.or_else(|| {
-        let home = std::env::var("HOME").ok()?;
-        let home_config = Path::new(&home).join(".ironclad").join("ironclad.toml");
+        let home_config = ironclad_core::home_dir().join(".ironclad").join("ironclad.toml");
         home_config
             .exists()
             .then(|| home_config.to_string_lossy().into_owned())

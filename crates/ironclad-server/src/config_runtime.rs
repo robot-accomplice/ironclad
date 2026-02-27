@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use ironclad_core::IroncladConfig;
+use ironclad_core::{home_dir, IroncladConfig};
 
 use crate::api::AppState;
 
@@ -99,11 +99,9 @@ pub fn resolve_default_config_path() -> PathBuf {
     if local.exists() {
         return local;
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let home_cfg = Path::new(&home).join(".ironclad").join("ironclad.toml");
-        if home_cfg.exists() {
-            return home_cfg;
-        }
+    let home_cfg = home_dir().join(".ironclad").join("ironclad.toml");
+    if home_cfg.exists() {
+        return home_cfg;
     }
     local
 }

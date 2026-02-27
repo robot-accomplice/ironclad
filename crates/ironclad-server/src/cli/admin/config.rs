@@ -63,8 +63,7 @@ fn find_config_file() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> 
 }
 
 fn dirs_home() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    std::path::PathBuf::from(home).join(".ironclad")
+    ironclad_core::home_dir().join(".ironclad")
 }
 
 fn navigate_toml<'a>(table: &'a toml::Value, path: &str) -> Option<&'a toml::Value> {

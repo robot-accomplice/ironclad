@@ -191,8 +191,7 @@ async fn cmd_mechanic_json(
     repair: bool,
     allow_jobs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let ironclad_dir = std::path::PathBuf::from(&home).join(".ironclad");
+    let ironclad_dir = ironclad_core::home_dir().join(".ironclad");
     let mut findings: Vec<MechanicFinding> = vec![];
     let mut actions = RepairActionSummary::default();
 
@@ -778,8 +777,7 @@ pub async fn cmd_mechanic(
         if repair { " (--repair mode)" } else { "" }
     );
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let ironclad_dir = std::path::PathBuf::from(&home).join(".ironclad");
+    let ironclad_dir = ironclad_core::home_dir().join(".ironclad");
     let mut fixed = 0u32;
 
     // Check directories
@@ -1444,8 +1442,7 @@ pub fn cmd_uninstall(purge: bool) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if purge {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        let data_dir = std::path::Path::new(&home).join(".ironclad");
+        let data_dir = ironclad_core::home_dir().join(".ironclad");
         if data_dir.exists() {
             std::fs::remove_dir_all(&data_dir)?;
             println!("  {OK} Removed {}", data_dir.display());
@@ -1480,8 +1477,7 @@ pub fn cmd_reset(yes: bool) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let ironclad_dir = std::path::Path::new(&home).join(".ironclad");
+    let ironclad_dir = ironclad_core::home_dir().join(".ironclad");
 
     let db_path = ironclad_dir.join("state.db");
     if db_path.exists() {
@@ -1691,8 +1687,7 @@ pub async fn cmd_metrics(
 fn try_read_log_file(lines: usize, _level: &str) {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let log_dir = std::path::PathBuf::from(&home)
+    let log_dir = ironclad_core::home_dir()
         .join(".ironclad")
         .join("logs");
 
@@ -1898,8 +1893,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     }
 
     // 4. Check wallet file permissions
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let wallet_path = std::path::PathBuf::from(&home)
+    let wallet_path = ironclad_core::home_dir()
         .join(".ironclad")
         .join("wallet.json");
     if wallet_path.exists() {
@@ -1930,7 +1924,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     }
 
     // 5. Check database file permissions
-    let db_path = std::path::PathBuf::from(&home)
+    let db_path = ironclad_core::home_dir()
         .join(".ironclad")
         .join("state.db");
     if db_path.exists() {
@@ -1972,7 +1966,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     }
 
     // 7. Check PID file
-    let pid_path = std::path::PathBuf::from(&home)
+    let pid_path = ironclad_core::home_dir()
         .join(".ironclad")
         .join("ironclad.pid");
     if pid_path.exists() {

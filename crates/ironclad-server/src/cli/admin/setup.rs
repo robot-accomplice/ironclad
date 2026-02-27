@@ -204,12 +204,11 @@ fn aperture_options_for_provider(provider_prefix: &str, ram_gb: Option<u64>) -> 
 }
 
 fn has_hf_model_cache() -> bool {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok();
+    let home = ironclad_core::home_dir();
+    let home_str = home.to_string_lossy().to_string();
     let hf_home = std::env::var("HF_HOME")
         .ok()
-        .or_else(|| home.as_ref().map(|h| format!("{h}/.cache/huggingface")));
+        .or_else(|| Some(format!("{home_str}/.cache/huggingface")));
     let hub_dir = match hf_home {
         Some(v) => std::path::PathBuf::from(v).join("hub"),
         None => return false,
@@ -626,7 +625,8 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // 7. Workspace directory
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let home = ironclad_core::home_dir();
+    let home = home.to_string_lossy();
     let default_workspace = format!("{home}/.ironclad/workspace");
     let workspace: String = Input::new()
         .with_prompt("  Workspace directory")

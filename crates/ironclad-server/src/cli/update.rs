@@ -2,10 +2,14 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use ironclad_core::home_dir;
 
 use super::{colors, heading, icons};
 use crate::cli::{CRT_DRAW_MS, theme};
@@ -96,15 +100,13 @@ impl UpdateState {
 }
 
 fn state_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home)
+    home_dir()
         .join(".ironclad")
         .join("update_state.json")
 }
 
 fn ironclad_home() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".ironclad")
+    home_dir().join(".ironclad")
 }
 
 fn now_iso() -> String {
@@ -277,16 +279,37 @@ fn install_binary_bytes(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> 
         std::fs::create_dir_all(&staging_dir)?;
         let staged_exe = staging_dir.join("ironclad-staged.exe");
         std::fs::write(&staged_exe, bytes)?;
+        let log_file = staging_dir.join("apply-update.log");
         let script_path = staging_dir.join("apply-update.cmd");
+        // The script retries the copy for up to 60 seconds, logs success/failure,
+        // and cleans up the staging directory on success.
         let script = format!(
-            "@echo off\r\nsetlocal\r\nset SRC={src}\r\nset DST={dst}\r\nfor /L %%i in (1,1,120) do (\r\n  copy /Y \"%SRC%\" \"%DST%\" >nul 2>nul && goto :ok\r\n  timeout /t 1 /nobreak >nul\r\n)\r\nexit /b 1\r\n:ok\r\ndel /Q \"%SRC%\" >nul 2>nul\r\ndel /Q \"%~f0\" >nul 2>nul\r\nexit /b 0\r\n",
+            "@echo off\r\n\
+             setlocal\r\n\
+             set SRC={src}\r\n\
+             set DST={dst}\r\n\
+             set LOG={log}\r\n\
+             echo [%DATE% %TIME%] Starting binary replacement >> \"%LOG%\"\r\n\
+             for /L %%i in (1,1,60) do (\r\n\
+               copy /Y \"%SRC%\" \"%DST%\" >nul 2>nul && goto :ok\r\n\
+               timeout /t 1 /nobreak >nul\r\n\
+             )\r\n\
+             echo [%DATE% %TIME%] FAILED: could not replace binary after 60 attempts >> \"%LOG%\"\r\n\
+             exit /b 1\r\n\
+             :ok\r\n\
+             echo [%DATE% %TIME%] SUCCESS: binary replaced >> \"%LOG%\"\r\n\
+             del /Q \"%SRC%\" >nul 2>nul\r\n\
+             del /Q \"%~f0\" >nul 2>nul\r\n\
+             exit /b 0\r\n",
             src = staged_exe.display(),
-            dst = exe.display()
+            dst = exe.display(),
+            log = log_file.display(),
         );
-        std::fs::write(&script_path, script)?;
+        std::fs::write(&script_path, &script)?;
         let _child = std::process::Command::new("cmd")
             .arg("/C")
             .arg(script_path.to_string_lossy().as_ref())
+            .creation_flags(0x00000008) // DETACHED_PROCESS
             .spawn()?;
         return Ok(());
     }
@@ -1107,18 +1130,34 @@ pub async fn cmd_update_check(
 pub async fn cmd_update_all(
     channel: &str,
     yes: bool,
-    _no_restart: bool,
+    no_restart: bool,
     registry_url_override: Option<&str>,
     config_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (_, BOLD, _, _, _, _, _, RESET, _) = colors();
+    let (OK, _, WARN, DETAIL, _) = icons();
     heading("Ironclad Update");
 
-    apply_binary_update(yes, "download").await?;
+    let binary_updated = apply_binary_update(yes, "download").await?;
 
     let registry_url = resolve_registry_url(registry_url_override, config_path);
     apply_providers_update(yes, &registry_url, config_path).await?;
     apply_skills_update(yes, &registry_url, config_path).await?;
+
+    // Restart the daemon if a binary update was applied and --no-restart was not passed.
+    if binary_updated && !no_restart && crate::daemon::is_installed() {
+        println!("\n    Restarting daemon to apply update...");
+        match crate::daemon::restart_daemon() {
+            Ok(()) => println!("    {OK} Daemon restarted"),
+            Err(e) => {
+                println!("    {WARN} Could not restart daemon: {e}");
+                println!("    {DETAIL} Run `ironclad daemon restart` manually.");
+            }
+        }
+    } else if binary_updated && no_restart {
+        println!("\n    {DETAIL} Skipping daemon restart (--no-restart).");
+        println!("    {DETAIL} Run `ironclad daemon restart` to apply the update.");
+    }
 
     println!("\n  {BOLD}Update complete.{RESET}\n");
     Ok(())

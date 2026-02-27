@@ -134,8 +134,7 @@ pub fn cmd_plugin_install(source: &str) -> Result<(), Box<dyn std::error::Error>
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let plugins_dir = std::path::PathBuf::from(&home)
+    let plugins_dir = ironclad_core::home_dir()
         .join(".ironclad")
         .join("plugins");
     let dest = plugins_dir.join(plugin_name);
@@ -158,8 +157,7 @@ pub fn cmd_plugin_install(source: &str) -> Result<(), Box<dyn std::error::Error>
 pub fn cmd_plugin_uninstall(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let plugin_dir = std::path::PathBuf::from(&home)
+    let plugin_dir = ironclad_core::home_dir()
         .join(".ironclad")
         .join("plugins")
         .join(name);

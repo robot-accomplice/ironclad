@@ -454,10 +454,13 @@ fn dirs_next() -> PathBuf {
     home_dir().join(".ironclad")
 }
 
-fn home_dir() -> PathBuf {
+/// Returns the user's home directory, checking `HOME` first (Unix / MSYS2 / Git Bash)
+/// then `USERPROFILE` (native Windows). Falls back to the platform temp directory.
+pub fn home_dir() -> PathBuf {
     std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"))
+        .unwrap_or_else(|_| std::env::temp_dir())
 }
 
 /// Expands a leading `~` in `path` to the user's home directory; otherwise returns the path unchanged.

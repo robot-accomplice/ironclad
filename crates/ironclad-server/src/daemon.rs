@@ -1,12 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::{home_dir, IroncladError, Result};
 
 const WINDOWS_DAEMON_NAME: &str = "IroncladAgent";
 
 pub fn launchd_plist(binary_path: &str, config_path: &str, port: u16) -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/var/log".into());
-    let log_dir = PathBuf::from(&home).join(".ironclad").join("logs");
+    let log_dir = home_dir().join(".ironclad").join("logs");
     let stdout_log = log_dir.join("ironclad.stdout.log");
     let stderr_log = log_dir.join("ironclad.stderr.log");
 
@@ -71,7 +70,7 @@ fn plist_path_for(home: &str) -> PathBuf {
 }
 
 pub fn plist_path() -> PathBuf {
-    plist_path_for(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+    plist_path_for(&home_dir().to_string_lossy())
 }
 
 fn systemd_path_for(home: &str) -> PathBuf {
@@ -79,14 +78,11 @@ fn systemd_path_for(home: &str) -> PathBuf {
 }
 
 pub fn systemd_path() -> PathBuf {
-    systemd_path_for(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+    systemd_path_for(&home_dir().to_string_lossy())
 }
 
 fn windows_service_marker_path() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home)
+    home_dir()
         .join(".ironclad")
         .join("windows-service-install.txt")
 }
@@ -158,13 +154,24 @@ fn windows_pid_running(pid: u32) -> Result<bool> {
     if std::env::consts::OS != "windows" {
         return Ok(false);
     }
-    let pid_filter = format!("PID eq {pid}");
-    let out = command_output("tasklist", &["/FI", &pid_filter, "/FO", "CSV", "/NH"])?;
+    // Use PowerShell Get-Process which is locale-independent, unlike tasklist
+    // whose text output varies by Windows display language.
+    let script = format!(
+        "try {{ $null = Get-Process -Id {pid} -ErrorAction Stop; Write-Output 'RUNNING' }} catch {{ Write-Output 'NOTFOUND' }}"
+    );
+    let out = command_output("powershell", &["-NoProfile", "-Command", &script])?;
     if !out.status.success() {
-        return Ok(false);
+        // Fallback to tasklist if PowerShell is unavailable
+        let pid_filter = format!("PID eq {pid}");
+        let out = command_output("tasklist", &["/FI", &pid_filter, "/FO", "CSV", "/NH"])?;
+        if !out.status.success() {
+            return Ok(false);
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        return Ok(stdout.contains(&format!("\"{pid}\"")));
     }
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    Ok(stdout.contains(&format!("\"{pid}\"")))
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Ok(stdout.trim() == "RUNNING")
 }
 
 fn spawn_windows_daemon_process(install: &WindowsDaemonInstall) -> Result<u32> {
@@ -196,8 +203,18 @@ fn cleanup_legacy_windows_service() {
     if std::env::consts::OS != "windows" {
         return;
     }
-    let _ = run_cmd("sc.exe", &["stop", WINDOWS_DAEMON_NAME]);
-    let _ = run_cmd("sc.exe", &["delete", WINDOWS_DAEMON_NAME]);
+    // sc.exe requires Administrator privileges; only attempt if running elevated.
+    let is_admin = std::process::Command::new("net")
+        .args(["session"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if is_admin {
+        let _ = run_cmd("sc.exe", &["stop", WINDOWS_DAEMON_NAME]);
+        let _ = run_cmd("sc.exe", &["delete", WINDOWS_DAEMON_NAME]);
+    }
 }
 
 fn install_daemon_to(
@@ -244,10 +261,57 @@ fn install_daemon_to(
 }
 
 pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "/tmp".into());
-    install_daemon_to(binary_path, config_path, port, &home)
+    let home = home_dir();
+    let result = install_daemon_to(binary_path, config_path, port, &home.to_string_lossy())?;
+
+    // On Windows, register a Task Scheduler entry so the daemon starts at logon,
+    // matching the RunAtLoad (macOS) and systemd enable (Linux) behavior.
+    #[cfg(windows)]
+    {
+        let task_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger><Enabled>true</Enabled></LogonTrigger>
+  </Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Hidden>false</Hidden>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>{binary}</Command>
+      <Arguments>serve -c "{config}" -p {port}</Arguments>
+    </Exec>
+  </Actions>
+</Task>"#,
+            binary = binary_path,
+            config = config_path,
+            port = port,
+        );
+        let task_file = std::env::temp_dir().join("ironclad-task.xml");
+        if std::fs::write(&task_file, &task_xml).is_ok() {
+            // schtasks /Create works without admin for the current user
+            let _ = std::process::Command::new("schtasks")
+                .args([
+                    "/Create",
+                    "/TN",
+                    "IroncladAgent",
+                    "/XML",
+                    &task_file.to_string_lossy(),
+                    "/F",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            let _ = std::fs::remove_file(&task_file);
+        }
+    }
+
+    Ok(result)
 }
 
 pub fn start_daemon() -> Result<()> {
@@ -464,7 +528,7 @@ fn verify_launchd_running() -> Result<()> {
                 .trim_end_matches(';')
                 .trim();
             if code != "0" {
-                let stderr_path = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                let stderr_path = home_dir()
                     .join(".ironclad/logs/ironclad.stderr.log");
                 let hint = if stderr_path.exists() {
                     format!(" (see {})", stderr_path.display())
@@ -533,6 +597,12 @@ pub fn uninstall_daemon() -> Result<()> {
     }
     if std::env::consts::OS == "windows" {
         cleanup_legacy_windows_service();
+        // Remove the logon Task Scheduler entry if present
+        let _ = std::process::Command::new("schtasks")
+            .args(["/Delete", "/TN", "IroncladAgent", "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
         let marker = windows_service_marker_path();
         if marker.exists()
             && let Err(e) = std::fs::remove_file(&marker)
