@@ -335,19 +335,6 @@ jobs:
           shared-key: docs
       - run: cargo doc --workspace --no-deps --document-private-items
 
-  # ── Stage 7: Docker ────────────────────────────────────
-  docker:
-    name: "Docker"
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-      - name: "Build Docker image"
-        env:
-          GIT_SHA: ${{ github.sha }}
-        run: docker build -t "ironclad:ci-${GIT_SHA}" .
-
   # ── Gate: All Passed ───────────────────────────────────
   ci-pass:
     name: "CI Pass"
