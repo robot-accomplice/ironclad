@@ -1,12 +1,15 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use subtle::ConstantTimeEq;
 
 use axum::body::Body;
+use axum::extract::connect_info::ConnectInfo;
 use axum::http::{Request, Response, StatusCode};
 use futures_util::future::BoxFuture;
 use tower::{Layer, Service};
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct ApiKeyLayer {
@@ -127,14 +130,28 @@ where
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
+            let path = req.uri().path().to_string();
             if let Some(ref expected) = key {
-                let path = req.uri().path();
-                if !is_exempt(path) {
+                if !is_exempt(&path) {
                     match extract_api_key(&req) {
                         Some(provided)
                             if bool::from(provided.as_bytes().ct_eq(expected.as_bytes())) => {}
                         _ => return Ok(unauthorized_response()),
                     }
+                }
+            } else if !is_exempt(&path) {
+                // No API key configured — restrict to loopback addresses only.
+                let is_loopback = req
+                    .extensions()
+                    .get::<ConnectInfo<SocketAddr>>()
+                    .map(|ci| ci.0.ip().is_loopback())
+                    .unwrap_or(false);
+                if !is_loopback {
+                    warn!(
+                        path = %path,
+                        "rejected non-loopback request: no API key configured — set server.api_key"
+                    );
+                    return Ok(unauthorized_response());
                 }
             }
             inner.call(req).await
@@ -233,6 +250,63 @@ mod tests {
     fn unknown_webhook_not_exempt() {
         assert!(!is_exempt("/api/webhooks/unknown"));
         assert!(!is_exempt("/api/webhooks/"));
+    }
+
+    #[test]
+    fn no_key_rejects_non_loopback() {
+        // Without ConnectInfo in extensions, the middleware treats it as non-loopback
+        let mut req = Request::builder()
+            .uri("/api/sessions")
+            .body(Body::empty())
+            .unwrap();
+        // Insert a non-loopback ConnectInfo
+        let addr: SocketAddr = "192.168.1.5:12345".parse().unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        let is_loopback = req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.0.ip().is_loopback())
+            .unwrap_or(false);
+        assert!(!is_loopback);
+    }
+
+    #[test]
+    fn no_key_allows_loopback() {
+        let mut req = Request::builder()
+            .uri("/api/sessions")
+            .body(Body::empty())
+            .unwrap();
+        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        let is_loopback = req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.0.ip().is_loopback())
+            .unwrap_or(false);
+        assert!(is_loopback);
+    }
+
+    #[test]
+    fn no_key_allows_exempt_paths() {
+        // Exempt paths should be allowed regardless of loopback status
+        assert!(is_exempt("/"));
+        assert!(is_exempt("/api/health"));
+        assert!(is_exempt("/.well-known/agent.json"));
+    }
+
+    #[test]
+    fn no_key_no_connect_info_rejects() {
+        // Without ConnectInfo extension, default is non-loopback (fail closed)
+        let req = Request::builder()
+            .uri("/api/sessions")
+            .body(Body::empty())
+            .unwrap();
+        let is_loopback = req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.0.ip().is_loopback())
+            .unwrap_or(false);
+        assert!(!is_loopback, "missing ConnectInfo should default to reject");
     }
 
     #[test]
