@@ -6839,4 +6839,774 @@ params = { path = "README.md" }
         assert_eq!(msgs[0]["role"], "user");
         assert_eq!(msgs[0]["content"], "hello world");
     }
+
+    // ══════════════════════════════════════════════════════════════
+    //  Phase 4 — Skills, Model Selection, Feedback, Context, Channels
+    // ══════════════════════════════════════════════════════════════
+
+    // ── GET /api/skills/:id (found) ─────────────────────────────
+
+    #[tokio::test]
+    async fn get_skill_found() {
+        let state = test_state();
+        let skill_id = ironclad_db::skills::register_skill_full(
+            &state.db,
+            "test-skill",
+            "instruction",
+            Some("A test skill"),
+            "/tmp/test.md",
+            "hash123",
+            None,
+            None,
+            None,
+            None,
+            "Safe",
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/skills/{skill_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["name"], "test-skill");
+        assert_eq!(body["kind"], "instruction");
+        assert_eq!(body["built_in"], false);
+        assert_eq!(body["enabled"], true);
+    }
+
+    // ── GET /api/skills/:id (not found) ─────────────────────────
+
+    #[tokio::test]
+    async fn get_skill_by_id_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/skills/nonexistent-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── PUT /api/skills/:id/toggle (not found) ──────────────────
+
+    #[tokio::test]
+    async fn toggle_skill_not_found() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/skills/nonexistent/toggle")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── PUT /api/skills/:id/toggle (success) ──────────────────
+
+    #[tokio::test]
+    async fn toggle_skill_success() {
+        let state = test_state();
+        let skill_id = ironclad_db::skills::register_skill_full(
+            &state.db,
+            "toggleable",
+            "instruction",
+            None,
+            "/tmp/t.md",
+            "h1",
+            None,
+            None,
+            None,
+            None,
+            "Safe",
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/skills/{skill_id}/toggle"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["id"], skill_id);
+        // Was enabled (true), after toggle should be false
+        assert_eq!(body["enabled"], false);
+    }
+
+    // ── PUT /api/skills/:id/toggle (forbidden for builtin) ──────
+
+    #[tokio::test]
+    async fn toggle_skill_forbidden_for_builtin() {
+        let state = test_state();
+        let skill_id = ironclad_db::skills::register_skill_full(
+            &state.db,
+            "builtin-skill",
+            "builtin",
+            None,
+            "/tmp/b.md",
+            "h2",
+            None,
+            None,
+            None,
+            None,
+            "Safe",
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/skills/{skill_id}/toggle"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ── DELETE /api/skills/:id (success) ─────────────────────────
+
+    #[tokio::test]
+    async fn delete_skill_success() {
+        let state = test_state();
+        let skill_id = ironclad_db::skills::register_skill_full(
+            &state.db,
+            "deletable",
+            "instruction",
+            None,
+            "/tmp/d.md",
+            "h3",
+            None,
+            None,
+            None,
+            None,
+            "Safe",
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/skills/{skill_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["deleted"], true);
+        assert_eq!(body["name"], "deletable");
+    }
+
+    // ── DELETE /api/skills/:id (not found) ───────────────────────
+
+    #[tokio::test]
+    async fn delete_skill_not_found() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/skills/nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── DELETE /api/skills/:id (forbidden for builtin) ───────────
+
+    #[tokio::test]
+    async fn delete_skill_forbidden_for_builtin() {
+        let state = test_state();
+        let skill_id = ironclad_db::skills::register_skill_full(
+            &state.db,
+            "builtin-del",
+            "builtin",
+            None,
+            "/tmp/bd.md",
+            "h4",
+            None,
+            None,
+            None,
+            None,
+            "Safe",
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/skills/{skill_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ── GET /api/model-selection/turns/:id (not found) ──────────
+
+    #[tokio::test]
+    async fn get_turn_model_selection_not_found() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/model-selection/turns/nonexistent-turn")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── GET /api/turns/:id/model-selection (found) ──────────────
+
+    #[tokio::test]
+    async fn get_turn_model_selection_found() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-ms", None).unwrap();
+        let tid = ironclad_db::sessions::create_turn(
+            &state.db,
+            &sid,
+            Some("claude-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+        let evt = ironclad_db::model_selection::ModelSelectionEventRow {
+            id: "mse-test-1".into(),
+            turn_id: tid.clone(),
+            session_id: sid.clone(),
+            agent_id: "agent-ms".into(),
+            channel: "cli".into(),
+            selected_model: "claude-4".into(),
+            strategy: "complexity".into(),
+            primary_model: "claude-4".into(),
+            override_model: None,
+            complexity: Some("high".into()),
+            user_excerpt: "test".into(),
+            candidates_json: r#"["claude-4"]"#.into(),
+            created_at: "2025-01-01T00:00:00".into(),
+        };
+        ironclad_db::model_selection::record_model_selection_event(&state.db, &evt).unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/turns/{tid}/model-selection"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["selected_model"], "claude-4");
+        assert_eq!(body["strategy"], "complexity");
+        assert!(body["candidates"].is_array());
+    }
+
+    // ── GET /api/models/selections (empty) ──────────────────────
+
+    #[tokio::test]
+    async fn list_model_selection_events_empty() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/selections")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["count"], 0);
+        assert_eq!(body["events"].as_array().unwrap().len(), 0);
+    }
+
+    // ── GET /api/models/selections?limit=2 ──────────────────────
+
+    #[tokio::test]
+    async fn list_model_selection_events_with_limit() {
+        let state = test_state();
+        for i in 0..3 {
+            let evt = ironclad_db::model_selection::ModelSelectionEventRow {
+                id: format!("mse-list-{i}"),
+                turn_id: format!("turn-list-{i}"),
+                session_id: "sess-list".into(),
+                agent_id: "agent-list".into(),
+                channel: "cli".into(),
+                selected_model: "gpt-4".into(),
+                strategy: "default".into(),
+                primary_model: "gpt-4".into(),
+                override_model: None,
+                complexity: None,
+                user_excerpt: "hello".into(),
+                candidates_json: "[]".into(),
+                created_at: format!("2025-01-0{i}T00:00:00"),
+            };
+            ironclad_db::model_selection::record_model_selection_event(&state.db, &evt).unwrap();
+        }
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/selections?limit=2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["count"], 2);
+    }
+
+    // ── PUT /api/turns/:id/feedback (update existing) ───────────
+
+    #[tokio::test]
+    async fn put_turn_feedback_updates_grade() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-fb", None).unwrap();
+        let tid = ironclad_db::sessions::create_turn(
+            &state.db,
+            &sid,
+            Some("claude-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+        // Seed initial feedback
+        ironclad_db::sessions::record_feedback(
+            &state.db,
+            &tid,
+            &sid,
+            3,
+            "dashboard",
+            Some("ok"),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/turns/{tid}/feedback"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"grade":5,"comment":"great"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["grade"], 5);
+        assert_eq!(body["updated"], true);
+    }
+
+    // ── PUT /api/turns/:id/feedback (invalid grade) ─────────────
+
+    #[tokio::test]
+    async fn put_turn_feedback_rejects_invalid_grade() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/turns/any-turn/feedback")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"grade":0}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── GET /api/sessions/:id/feedback (empty) ──────────────────
+
+    #[tokio::test]
+    async fn get_session_feedback_empty() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-fb-empty", None).unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{sid}/feedback"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["feedback"].as_array().unwrap().len(), 0);
+    }
+
+    // ── GET /api/sessions/:id/feedback (with data) ──────────────
+
+    #[tokio::test]
+    async fn get_session_feedback_with_entries() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-fb2", None).unwrap();
+        let t1 = ironclad_db::sessions::create_turn(
+            &state.db, &sid, None, Some(10), Some(5), Some(0.001),
+        )
+        .unwrap();
+        let t2 = ironclad_db::sessions::create_turn(
+            &state.db, &sid, None, Some(20), Some(10), Some(0.002),
+        )
+        .unwrap();
+        ironclad_db::sessions::record_feedback(&state.db, &t1, &sid, 4, "dashboard", None)
+            .unwrap();
+        ironclad_db::sessions::record_feedback(&state.db, &t2, &sid, 2, "dashboard", Some("bad"))
+            .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{sid}/feedback"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["feedback"].as_array().unwrap().len(), 2);
+    }
+
+    // ── GET /api/turns/:id/context (found) ──────────────────────
+
+    #[tokio::test]
+    async fn get_turn_context_found() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-ctx", None).unwrap();
+        let tid = ironclad_db::sessions::create_turn(
+            &state.db,
+            &sid,
+            Some("claude-4"),
+            Some(500),
+            Some(200),
+            Some(0.05),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/turns/{tid}/context"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["turn_id"], tid);
+        assert_eq!(body["tokens_in"], 500);
+        assert_eq!(body["tokens_out"], 200);
+        assert_eq!(body["tool_call_count"], 0);
+        assert_eq!(body["tool_failure_count"], 0);
+    }
+
+    // ── GET /api/turns/:id/context (not found) ──────────────────
+
+    #[tokio::test]
+    async fn get_turn_context_not_found() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/nonexistent/context")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── GET /api/turns/:id/tools (empty) ────────────────────────
+
+    #[tokio::test]
+    async fn get_turn_tools_returns_empty_list() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-tools", None).unwrap();
+        let tid = ironclad_db::sessions::create_turn(
+            &state.db, &sid, None, Some(10), Some(5), Some(0.001),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/turns/{tid}/tools"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["tool_calls"].as_array().unwrap().len(), 0);
+    }
+
+    // ── GET /api/turns/:id/tips (found, no tool calls) ──────────
+
+    #[tokio::test]
+    async fn get_turn_tips_found() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-tips", None).unwrap();
+        let tid = ironclad_db::sessions::create_turn(
+            &state.db,
+            &sid,
+            Some("claude-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/turns/{tid}/tips"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["turn_id"], tid);
+        assert!(body["tips"].is_array());
+        assert!(body["tip_count"].is_number());
+    }
+
+    // ── GET /api/turns/:id/tips (not found) ─────────────────────
+
+    #[tokio::test]
+    async fn get_turn_tips_not_found() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/nonexistent/tips")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── GET /api/sessions/:id/insights (empty session) ──────────
+
+    #[tokio::test]
+    async fn get_session_insights_empty() {
+        let state = test_state();
+        let sid =
+            ironclad_db::sessions::create_new(&state.db, "agent-insights", None).unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{sid}/insights"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["session_id"], sid);
+        assert!(body["insights"].is_array());
+        assert_eq!(body["turn_count"], 0);
+    }
+
+    // ── GET /api/sessions/:id/insights (with turns) ─────────────
+
+    #[tokio::test]
+    async fn get_session_insights_with_turns() {
+        let state = test_state();
+        let sid =
+            ironclad_db::sessions::create_new(&state.db, "agent-insights2", None).unwrap();
+        ironclad_db::sessions::create_turn(
+            &state.db,
+            &sid,
+            Some("claude-4"),
+            Some(1000),
+            Some(500),
+            Some(0.1),
+        )
+        .unwrap();
+        ironclad_db::sessions::create_turn(
+            &state.db,
+            &sid,
+            Some("gpt-4"),
+            Some(2000),
+            Some(1000),
+            Some(0.2),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{sid}/insights"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["turn_count"], 2);
+    }
+
+    // ── POST /api/webhooks/telegram (not configured) ─────────────
+
+    #[tokio::test]
+    async fn telegram_webhook_not_configured() {
+        let app = build_public_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/webhooks/telegram")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"update_id":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = json_body(resp).await;
+        assert_eq!(body["ok"], false);
+    }
+
+    // ── GET /api/webhooks/whatsapp (not configured) ────────────
+
+    #[tokio::test]
+    async fn whatsapp_verify_not_configured() {
+        let app = build_public_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=abc&hub.challenge=test123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ── POST /api/webhooks/whatsapp (not configured) ───────────
+
+    #[tokio::test]
+    async fn whatsapp_webhook_not_configured() {
+        let app = build_public_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/webhooks/whatsapp")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"entry":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ── GET /api/channels/dead-letter (empty) ───────────────────
+
+    #[tokio::test]
+    async fn dead_letters_empty() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/channels/dead-letter")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["count"], 0);
+    }
+
+    // ── POST /api/channels/dead-letter/:id/replay (not found) ──
+
+    #[tokio::test]
+    async fn replay_dead_letter_not_found() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/channels/dead-letter/fake-id/replay")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
 }
