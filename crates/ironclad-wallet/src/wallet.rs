@@ -762,9 +762,8 @@ mod tests {
             rpc_url: "https://rpc.example.com".into(),
         };
         // We need `dir` to live long enough, so leak a reference (test only).
-        let wallet = Wallet::load_or_generate(&config).await.unwrap();
         // dir dropped here but wallet already loaded key
-        wallet
+        Wallet::load_or_generate(&config).await.unwrap()
     }
 
     // --- network_name coverage ---

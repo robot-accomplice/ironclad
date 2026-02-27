@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn x402_handler_default_creates_instance() {
-        let handler = X402Handler::default();
+        let handler = X402Handler;
         let debug = format!("{:?}", handler);
         assert!(debug.contains("X402Handler"));
     }

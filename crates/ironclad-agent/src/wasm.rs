@@ -1007,19 +1007,19 @@ mod tests {
 
     #[test]
     fn wasmer_value_to_json_f32() {
-        let v = wasmer::Value::F32(3.14);
+        let v = wasmer::Value::F32(1.5);
         let json = wasmer_value_to_json(&v);
         assert!(json.is_number());
         let n = json.as_f64().unwrap();
-        assert!((n - 3.14).abs() < 0.01);
+        assert!((n - 1.5).abs() < 0.01);
     }
 
     #[test]
     fn wasmer_value_to_json_f64() {
-        let v = wasmer::Value::F64(2.71828);
+        let v = wasmer::Value::F64(1.23456);
         let json = wasmer_value_to_json(&v);
         let n = json.as_f64().unwrap();
-        assert!((n - 2.71828).abs() < 0.001);
+        assert!((n - 1.23456).abs() < 0.001);
     }
 
     // ── enforce_capabilities explicit capability parsing ─────────────
