@@ -412,7 +412,7 @@ mod tests {
                 Some(interval_ms),
                 now,
             ) {
-                prop_assert!(next > now.to_string(), "next_run must be after now");
+                prop_assert!(next.as_str() > now, "next_run must be after now");
             }
         }
 
