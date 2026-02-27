@@ -169,6 +169,8 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 **Scope**: Add explicit trusted-proxy CIDR handling for client IP extraction, token/user-level quotas alongside IP limits, optional shared limiter backend for multi-instance deployments, and dashboard/API observability for throttle events and top offenders.
 
+**Release target**: `v0.9.1`. Required before any internet-facing deployment; deliberately sequenced after `v0.9.0` core to avoid scope overload while keeping it on the near-term critical path.
+
 ---
 
 ### 1.18 Cron-Conformant Session Rotation
@@ -437,6 +439,36 @@ Scoring contract reference: `docs/evals/METASCORE_V1_SPEC.md` (spec-only).
 
 ---
 
+### 2.20 Voice Channels
+
+**Promoted from Tier 3 (was 3.6).** Voice interaction is becoming a baseline expectation for agent runtimes; promoting to Tier 2 reflects user demand and the maturity of local STT/TTS tooling.
+
+**Current state**: Text-only channels (Telegram, WhatsApp, Discord, WebSocket). No voice input or output capability.
+
+**Target**: Voice input/output via Telegram voice messages, WhatsApp audio, and a WebRTC channel for the dashboard. TTS output as a standalone near-term deliverable before full WebRTC.
+
+**Builds on**: `ChannelAdapter` trait, channel router, dashboard SPA, existing audio codec infrastructure in channel adapters (WhatsApp/Telegram already handle voice message payloads).
+
+**Scope**: Speech-to-text via `whisper-rs` (native Rust, local-first) with cloud STT as opt-in fallback. Text-to-speech as a separately shippable milestone: support local TTS models (Piper, Coqui) as the default, consistent with the local-first philosophy, with cloud TTS (provider APIs) as opt-in. Config: `[channels.voice]` with `stt_model`, `tts_model`, `tts_voice`. Stream audio via WebRTC for real-time voice conversation on the dashboard. Store transcripts in session history alongside audio references.
+
+**Phasing**: Ship TTS output first (lowest complexity, immediate UX impact). STT for inbound voice messages second. WebRTC dashboard voice third.
+
+---
+
+### 2.21 Skill Registry Protocol
+
+**Current state**: Skills are loaded from local directories. `2.14 Skills Catalog` adds CLI/dashboard browse and install for first-party skills, but there is no protocol for community-contributed skill distribution. As agent runtimes mature, ecosystem breadth becomes a key differentiator — a registry protocol enables community participation without centralizing control.
+
+**Target**: A fetchable skill registry protocol that enables community skill distribution without requiring Ironclad to host a centralized marketplace.
+
+**Builds on**: `SkillLoader`/`SkillRegistry`, `2.14 Skills Catalog` (CLI + dashboard), skill manifest format, integrity verification.
+
+**Scope**: Define a `SkillRegistryIndex` JSON schema: skill metadata (name, version, description, author, tags, compatibility range, checksum, source URL). Implement `ironclad skills search <query>` and `ironclad skills install <name>` CLI flows that resolve against one or more configured registry URLs. Registries can be static JSON files (GitHub repo, S3 bucket), Git repositories, or HTTP endpoints. Default registry ships as a curated GitHub repo of verified community skills. Add signature verification for registry entries (reuse existing wallet/ECDSA infrastructure). Support multiple registries with priority ordering and conflict resolution. Extend dashboard catalog UI (`2.14`) to surface community registry results alongside first-party skills. Config: `[skills.registries]` with URL list, trust levels, and auto-update policy.
+
+**Non-goals for v1**: Hosted marketplace, payment for skills, skill review/curation workflow (manual curation via PR to the registry repo is sufficient initially).
+
+---
+
 ## Tier 3 — Frontier
 
 Ambitious capabilities that push the architecture into new territory. High effort, high potential.
@@ -495,15 +527,13 @@ Ambitious capabilities that push the architecture into new territory. High effor
 **Remaining**:
 5. **Document ingestion pipeline** — Ingest external documents (PDF, markdown, code files) into the memory system. Parse, chunk, embed, and store for retrieval. Extends the agent's knowledge base beyond conversation history.
 
+**Release target**: Document ingestion (item 5) is targeted for `v0.10.0`. With items 1–4 complete, the retrieval infrastructure is production-ready — ingestion is the natural next step to let operators feed domain knowledge directly into the memory system rather than relying solely on conversation history.
+
 ---
 
 ### 3.6 Voice Channels
 
-**Current state**: Text-only channels (Telegram, WhatsApp, Discord, WebSocket). No voice input or output capability.
-
-**Target**: Voice input/output via Telegram voice messages, WhatsApp audio, and a WebRTC channel for the dashboard. TTS output as a standalone near-term deliverable before full WebRTC.
-
-**Scope**: Speech-to-text via `whisper-rs` (native Rust, local-first) with cloud STT as opt-in fallback. Text-to-speech as a separately shippable milestone: support local TTS models (Piper, Coqui) as the default, consistent with the local-first philosophy, with cloud TTS (provider APIs) as opt-in. Config: `[channels.voice]` with `stt_model`, `tts_model`, `tts_voice`. Stream audio via WebRTC for real-time voice conversation on the dashboard. Store transcripts in session history alongside audio references.
+**Moved to Tier 2 as 2.20.** See `2.20 Voice Channels` for current spec.
 
 ---
 
@@ -939,12 +969,14 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 2.17 | Apertus native local onboarding (SGLang-first) | 2 | install scripts, setup wizard, local host detection, model discovery | Medium |
 | 2.18 | Compliance-first self-funding portfolio + profit taxation | 2 | ServiceManager, wallet/treasury, transactions ledger, specialist routing | High |
 | 2.19 | Model metascore routing profiles | 2 | ModelRouter, provider registry/config, cost/capacity telemetry, orchestration | High |
+| 2.20 | Voice channels (promoted from 3.6) | 2 | Channel adapters, whisper-rs, local TTS | High |
+| 2.21 | Skill registry protocol | 2 | SkillLoader, 2.14 skills catalog, skill manifests, wallet/ECDSA | Medium |
 | 3.1 | Compile-time agent safety | 3 | Agent loop, policy engine | High |
 | 3.2 | ~~MCP integration~~ ✅ | 3 | Tool registry, config | ~~High~~ Done |
 | 3.3 | Multi-agent orchestration (partial) | 3 | SubagentRegistry, A2A, 2.9 | High |
 | 3.4 | Agent spawning + wallet provisioning | 3 | SubagentRegistry, wallet | High |
 | 3.5 | Advanced RAG infrastructure (4/5 done ✅) | 3 | 1.5, 1.7, embeddings.rs | ~~High~~ Remaining: doc ingestion |
-| 3.6 | Voice channels (TTS + STT + WebRTC) | 3 | Channel adapters, whisper-rs, local TTS | High |
+| 3.6 | ~~Voice channels~~ → promoted to 2.20 | ~~3~~ 2 | Channel adapters, whisper-rs, local TTS | High |
 | 3.7 | UniRoute model vectors | 3 | Provider registry, router | High |
 | 3.8 | Game-theoretic cascades | 3 | Fallback chain, inference_costs logs | Medium |
 | 3.9 | Storage backend trait | 3 | ironclad-db, schema.rs | High |
