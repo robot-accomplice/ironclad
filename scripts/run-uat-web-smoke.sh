@@ -17,20 +17,20 @@ fetch_to_file() {
   local out="$2"
   if [[ "$HTTP_BIN" == "ghola" ]]; then
     if [[ -n "$API_KEY" ]]; then
-      ghola -H "Authorization: Bearer ${API_KEY}" -o "$out" "$url" >/dev/null 2>&1 || true
+      ghola -H "x-api-key: ${API_KEY}" -o "$out" "$url" >/dev/null 2>&1 || true
     else
       ghola -o "$out" "$url" >/dev/null 2>&1 || true
     fi
     if [[ ! -s "$out" ]] || grep -qE "Ghola Snoop Mode|Snoop End" "$out"; then
       if [[ -n "$API_KEY" ]]; then
-        curl -fsS -H "Authorization: Bearer ${API_KEY}" "$url" -o "$out"
+        curl -fsS -H "x-api-key: ${API_KEY}" "$url" -o "$out"
       else
         curl -fsS "$url" -o "$out"
       fi
     fi
   else
     if [[ -n "$API_KEY" ]]; then
-      curl -fsS -H "Authorization: Bearer ${API_KEY}" "$url" -o "$out"
+      curl -fsS -H "x-api-key: ${API_KEY}" "$url" -o "$out"
     else
       curl -fsS "$url" -o "$out"
     fi

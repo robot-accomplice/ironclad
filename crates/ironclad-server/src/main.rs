@@ -1,4 +1,4 @@
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use std::time::Instant;
 
@@ -1654,9 +1654,12 @@ async fn cmd_serve(
     }
     info!("Ironclad listening on http://{bind_addr}");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal)
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal)
+    .await?;
 
     info!("Server shut down");
     Ok(())
