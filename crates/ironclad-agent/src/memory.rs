@@ -66,15 +66,25 @@ pub fn classify_turn(
     if !tool_results.is_empty() {
         return TurnType::ToolUse;
     }
-    let combined = format!("{user_msg} {assistant_msg}").to_lowercase();
-    if combined.contains("transfer")
-        || combined.contains("balance")
-        || combined.contains("wallet")
-        || combined.contains("payment")
-        || combined.contains("usdc")
-    {
+    // BUG-08: Only check user_msg for financial keywords, and require >= 2 matches
+    // to avoid false-positives (e.g. "balance" in generic error messages).
+    let user_lower = user_msg.to_lowercase();
+    let financial_keywords = [
+        "transfer",
+        "balance",
+        "wallet",
+        "payment",
+        "usdc",
+        "send funds",
+    ];
+    let financial_hits = financial_keywords
+        .iter()
+        .filter(|kw| user_lower.contains(*kw))
+        .count();
+    if financial_hits >= 2 {
         return TurnType::Financial;
     }
+    let combined = format!("{user_msg} {assistant_msg}").to_lowercase();
     if combined.contains("hello")
         || combined.contains("thanks")
         || combined.contains("please")
@@ -416,8 +426,13 @@ mod tests {
 
     #[test]
     fn classify_turn_financial_payment() {
+        // BUG-08: need >= 2 financial keywords to classify as Financial
         assert_eq!(
-            classify_turn("make a payment of $50", "Processing payment", &[]),
+            classify_turn(
+                "make a payment of $50 from wallet",
+                "Processing payment",
+                &[]
+            ),
             TurnType::Financial
         );
     }

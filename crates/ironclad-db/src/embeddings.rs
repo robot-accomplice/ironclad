@@ -444,12 +444,14 @@ mod tests {
     fn search_similar_skips_row_without_embedding() {
         let db = test_db();
         // Insert a row with empty embedding data (both blob and json empty)
-        let conn = db.conn();
-        conn.execute(
-            "INSERT INTO embeddings (id, source_table, source_id, content_preview, embedding_json, embedding_blob, dimensions) \
-             VALUES ('e-no-emb', 'test', 't1', 'no embedding here', '', NULL, 0)",
-            [],
-        ).unwrap();
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO embeddings (id, source_table, source_id, content_preview, embedding_json, embedding_blob, dimensions) \
+                 VALUES ('e-no-emb', 'test', 't1', 'no embedding here', '', NULL, 0)",
+                [],
+            ).unwrap();
+        }
         // Also insert one with a real embedding
         store_embedding(&db, "e-real", "test", "t2", "has embedding", &[1.0, 0.0]).unwrap();
 

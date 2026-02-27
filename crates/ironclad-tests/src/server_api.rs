@@ -150,7 +150,7 @@ async fn session_create_and_list() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let session_id = body["session_id"].as_str().unwrap().to_string();
+    let session_id = body["id"].as_str().unwrap().to_string();
     assert!(!session_id.is_empty());
 
     // Creating again for same agent should rotate the active agent-scope
@@ -166,7 +166,7 @@ async fn session_create_and_list() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let session_id_2 = body["session_id"].as_str().unwrap().to_string();
+    let session_id_2 = body["id"].as_str().unwrap().to_string();
     assert!(!session_id_2.is_empty());
     assert_ne!(session_id_2, session_id);
 
@@ -1351,6 +1351,13 @@ async fn admin_endpoints_cover_config_wallet_breaker_and_stats() {
     let body = json_body(resp).await;
     assert!(body["providers"].is_object());
     assert!(body["config"].is_object());
+
+    // BUG-04: resetting an unknown provider now returns 404 instead of silently
+    // creating a breaker entry. Register "ollama" first via a credit error, then reset.
+    {
+        let mut llm = state.llm.write().await;
+        llm.breakers.record_credit_error("ollama");
+    }
 
     let app = build_router(state.clone());
     let resp = app

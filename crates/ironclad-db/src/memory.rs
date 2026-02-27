@@ -830,12 +830,14 @@ mod tests {
     fn fts_search_like_fallback_relationship() {
         let db = test_db();
         // Store a relationship with an interaction_summary that can be found via LIKE fallback
-        let conn = db.conn();
-        conn.execute(
-            "INSERT INTO relationship_memory (id, entity_id, entity_name, trust_score, interaction_summary) \
-             VALUES ('r1', 'user-99', 'TestUser', 0.8, 'discussed the quantum physics experiment')",
-            [],
-        ).unwrap();
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO relationship_memory (id, entity_id, entity_name, trust_score, interaction_summary) \
+                 VALUES ('r1', 'user-99', 'TestUser', 0.8, 'discussed the quantum physics experiment')",
+                [],
+            ).unwrap();
+        }
 
         let hits = fts_search(&db, "quantum physics", 10).unwrap();
         assert!(

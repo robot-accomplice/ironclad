@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::AppState;
+#[cfg(test)]
+use super::JsonError;
 
 /// RAII guard that releases a dedup fingerprint when dropped.
 /// Ensures cleanup on all exit paths, including async stream disconnects.
@@ -357,7 +359,7 @@ async fn execute_virtual_subagent_tool_call(
     );
     let (decision_str, rule_name, reason) = match &policy_result {
         Ok(()) => ("allow".to_string(), None, None),
-        Err((_status, msg)) => (
+        Err(super::JsonError(_status, msg)) => (
             "deny".to_string(),
             Some("policy_engine"),
             Some(msg.as_str()),
@@ -373,7 +375,7 @@ async fn execute_virtual_subagent_tool_call(
     )
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record policy decision"))
     .ok();
-    if let Err((_status, msg)) = policy_result {
+    if let Err(super::JsonError(_status, msg)) = policy_result {
         return Err(format!("Policy denied: {msg}"));
     }
 
@@ -697,7 +699,7 @@ pub(crate) async fn execute_tool_call(
 
     let (decision_str, rule_name, reason) = match &policy_result {
         Ok(()) => ("allow".to_string(), None, None),
-        Err((_status, msg)) => (
+        Err(super::JsonError(_status, msg)) => (
             "deny".to_string(),
             Some("policy_engine"),
             Some(msg.as_str()),
@@ -715,7 +717,7 @@ pub(crate) async fn execute_tool_call(
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record policy decision"))
     .ok();
 
-    if let Err((_status, msg)) = policy_result {
+    if let Err(super::JsonError(_status, msg)) = policy_result {
         return Err(format!("Policy denied: {msg}"));
     }
 
@@ -3000,7 +3002,7 @@ pub fn check_tool_policy(
     authority: ironclad_core::InputAuthority,
     tier: ironclad_core::SurvivalTier,
     risk_level: ironclad_core::RiskLevel,
-) -> Result<(), (StatusCode, String)> {
+) -> Result<(), super::JsonError> {
     let call = ironclad_agent::policy::ToolCallRequest {
         tool_name: tool_name.into(),
         params: params.clone(),
@@ -3015,7 +3017,10 @@ pub fn check_tool_policy(
         ironclad_core::PolicyDecision::Allow => Ok(()),
         ironclad_core::PolicyDecision::Deny { rule, reason } => {
             tracing::warn!(tool = tool_name, rule = %rule, reason = %reason, "Policy denied tool call");
-            Err((StatusCode::FORBIDDEN, format!("Policy denied: {reason}")))
+            Err(super::JsonError(
+                StatusCode::FORBIDDEN,
+                format!("Policy denied: {reason}"),
+            ))
         }
     }
 }
@@ -4709,7 +4714,7 @@ scope_mode = "{scope_mode}"
             ironclad_core::SurvivalTier::Normal,
             ironclad_core::RiskLevel::Dangerous,
         );
-        let (status, reason) = result.unwrap_err();
+        let JsonError(status, reason) = result.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(!reason.is_empty());
     }

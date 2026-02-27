@@ -32,6 +32,7 @@ pub fn register_skill(
     tool_chain_json: Option<&str>,
     policy_overrides_json: Option<&str>,
     script_path: Option<&str>,
+    risk_level: Option<&str>,
 ) -> Result<String> {
     register_skill_full(
         db,
@@ -44,7 +45,7 @@ pub fn register_skill(
         tool_chain_json,
         policy_overrides_json,
         script_path,
-        "Caution",
+        risk_level.unwrap_or("Caution"),
     )
 }
 
@@ -64,10 +65,11 @@ pub fn register_skill_full(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO skills (id, name, kind, description, source_path, content_hash, \
-         triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, last_loaded_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             id,
             name,
@@ -80,6 +82,7 @@ pub fn register_skill_full(
             policy_overrides_json,
             script_path,
             risk_level,
+            now,
         ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -304,6 +307,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -327,6 +331,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         register_skill(
@@ -336,6 +341,7 @@ mod tests {
             None,
             "/s2.toml",
             "h2",
+            None,
             None,
             None,
             None,
@@ -359,6 +365,7 @@ mod tests {
             None,
             "/s1.toml",
             "old-hash",
+            None,
             None,
             None,
             None,
@@ -393,6 +400,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -422,6 +430,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         register_skill(
@@ -432,6 +441,7 @@ mod tests {
             "/t.toml",
             "h",
             Some(r#"{"keywords":["test","ci"]}"#),
+            None,
             None,
             None,
             None,
@@ -470,6 +480,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let results = find_by_trigger(&db, "nonexistent-keyword").unwrap();
@@ -487,6 +498,7 @@ mod tests {
             "/d.toml",
             "h",
             Some(r#"{"keywords":["deploy"]}"#),
+            None,
             None,
             None,
             None,
@@ -521,6 +533,7 @@ mod tests {
             Some(r#"["tool_a","tool_b"]"#),
             Some(r#"{"allow_web":true}"#),
             Some("/scripts/full.sh"),
+            None,
         )
         .unwrap();
 
@@ -550,14 +563,17 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let skill = get_skill(&db, &id).unwrap().unwrap();
-        assert!(skill.last_loaded_at.is_none());
+        // last_loaded_at is set during registration
+        assert!(skill.last_loaded_at.is_some(), "set on register");
 
         update_skill(&db, &id, "new", None, None).unwrap();
         let skill = get_skill(&db, &id).unwrap().unwrap();
-        assert!(skill.last_loaded_at.is_some());
+        assert!(skill.last_loaded_at.is_some(), "still set after update");
+        assert_eq!(skill.content_hash, "new");
     }
 
     #[test]
@@ -632,6 +648,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -676,6 +693,7 @@ mod tests {
             Some(r#"["tool"]"#),
             Some(r#"{"p":true}"#),
             Some("/scripts/test.sh"),
+            None,
         )
         .unwrap();
 
@@ -801,6 +819,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -823,6 +842,7 @@ mod tests {
             None,
             "/s.toml",
             "h",
+            None,
             None,
             None,
             None,

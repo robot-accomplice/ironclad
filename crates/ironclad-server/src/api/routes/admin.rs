@@ -15,7 +15,7 @@ use ironclad_core::{
     InputAuthority, IroncladConfig, PolicyDecision, SurvivalTier, input_capability_scan,
 };
 
-use super::{AppState, internal_err};
+use super::{AppState, JsonError, bad_request, internal_err, not_found};
 
 // ── Key resolution helper ────────────────────────────────────
 
@@ -157,12 +157,11 @@ fn default_decided_by() -> String {
 }
 
 /// Sanitize the `decided_by` field: enforce max length and strip control characters.
-fn sanitize_decided_by(raw: &str) -> Result<String, (StatusCode, String)> {
+fn sanitize_decided_by(raw: &str) -> Result<String, JsonError> {
     if raw.len() > MAX_DECIDED_BY_LEN {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("decided_by exceeds max length of {MAX_DECIDED_BY_LEN} characters"),
-        ));
+        return Err(bad_request(format!(
+            "decided_by exceeds max length of {MAX_DECIDED_BY_LEN} characters"
+        )));
     }
     let sanitized: String = raw.chars().filter(|c| !c.is_control()).collect();
     Ok(sanitized)
@@ -172,11 +171,11 @@ pub async fn approve_request(
     State(state): State<AppState>,
     Path(id): Path<String>,
     axum::Json(body): axum::Json<ApprovalDecisionRequest>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let decided_by = sanitize_decided_by(&body.decided_by)?;
     match state.approvals.approve(&id, &decided_by) {
         Ok(req) => Ok(Json(json!(req))),
-        Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
+        Err(e) => Err(not_found(e.to_string())),
     }
 }
 
@@ -184,11 +183,11 @@ pub async fn deny_request(
     State(state): State<AppState>,
     Path(id): Path<String>,
     axum::Json(body): axum::Json<ApprovalDecisionRequest>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let decided_by = sanitize_decided_by(&body.decided_by)?;
     match state.approvals.deny(&id, &decided_by) {
         Ok(req) => Ok(Json(json!(req))),
-        Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
+        Err(e) => Err(not_found(e.to_string())),
     }
 }
 
@@ -197,13 +196,13 @@ pub async fn deny_request(
 pub async fn get_policy_audit(
     State(state): State<AppState>,
     Path(turn_id): Path<String>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let decisions =
         ironclad_db::policy::get_decisions_for_turn(&state.db, &turn_id).map_err(|e| {
             tracing::error!(error = %e, "failed to fetch policy audit");
-            (
+            JsonError(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal server error".to_string(),
+                "internal server error".into(),
             )
         })?;
     Ok(Json(json!({
@@ -222,7 +221,7 @@ pub async fn get_policy_audit(
 pub async fn get_tool_audit(
     State(state): State<AppState>,
     Path(turn_id): Path<String>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let calls = ironclad_db::tools::get_tool_calls_for_turn(&state.db, &turn_id).map_err(|e| {
         tracing::error!(error = %e, "failed to fetch tool audit");
         (
@@ -670,7 +669,7 @@ pub async fn update_config(
         Err(e) => {
             let msg = e.to_string();
             state.config_apply_status.write().await.last_error = Some(msg.clone());
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, msg));
+            return Err(JsonError(StatusCode::INTERNAL_SERVER_ERROR, msg));
         }
     };
 
@@ -680,13 +679,13 @@ pub async fn update_config(
         Err(e) => {
             let msg = format!("invalid config: {e}");
             state.config_apply_status.write().await.last_error = Some(msg.clone());
-            return Err((StatusCode::BAD_REQUEST, msg));
+            return Err(bad_request(msg));
         }
     };
     if let Err(e) = updated.validate() {
         let msg = format!("validation failed: {e}");
         state.config_apply_status.write().await.last_error = Some(msg.clone());
-        return Err((StatusCode::BAD_REQUEST, msg));
+        return Err(bad_request(msg));
     }
 
     let report = match config_runtime::apply_runtime_config(&state, updated).await {
@@ -694,7 +693,7 @@ pub async fn update_config(
         Err(e) => {
             let msg = e.to_string();
             state.config_apply_status.write().await.last_error = Some(msg.clone());
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, msg));
+            return Err(JsonError(StatusCode::INTERNAL_SERVER_ERROR, msg));
         }
     };
 
@@ -705,7 +704,7 @@ pub async fn update_config(
         status.deferred_apply = report.deferred_apply.clone();
     }
 
-    Ok::<_, (StatusCode, String)>(axum::Json(json!({
+    Ok::<_, JsonError>(axum::Json(json!({
         "updated": true,
         "persisted": true,
         "message": "configuration updated and reloaded from disk-backed state",
@@ -740,7 +739,7 @@ pub async fn get_costs(State(state): State<AppState>) -> impl IntoResponse {
         .map_err(|e| internal_err(&e))?;
 
     let costs: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
-    Ok::<_, (StatusCode, String)>(axum::Json(json!({ "costs": costs })))
+    Ok::<_, JsonError>(axum::Json(json!({ "costs": costs })))
 }
 
 #[derive(Deserialize)]
@@ -884,7 +883,7 @@ pub async fn get_overview_timeseries(
         };
     }
 
-    Ok::<_, (StatusCode, String)>(axum::Json(json!({
+    Ok::<_, JsonError>(axum::Json(json!({
         "hours": hours,
         "labels": labels,
         "series": {
@@ -1112,7 +1111,7 @@ pub async fn get_plugins(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn toggle_plugin(
     State(state): State<AppState>,
     axum::extract::Path(name): axum::extract::Path<String>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let plugins = state.plugins.list_plugins().await;
     let current = plugins.iter().find(|p| p.name == name);
 
@@ -1140,7 +1139,7 @@ pub async fn toggle_plugin(
                 Err(e) => Err(internal_err(&e)),
             }
         }
-        None => Err((StatusCode::NOT_FOUND, format!("plugin '{name}' not found"))),
+        None => Err(not_found(format!("plugin '{name}' not found"))),
     }
 }
 
@@ -1148,7 +1147,7 @@ pub async fn execute_plugin_tool(
     State(state): State<AppState>,
     axum::extract::Path((name, tool)): axum::extract::Path<(String, String)>,
     Json(body): Json<Value>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let found = state.plugins.find_tool(&tool).await;
     match found {
         Some((plugin_name, tool_def)) if plugin_name == name => {
@@ -1164,7 +1163,7 @@ pub async fn execute_plugin_tool(
                 .filter(|need| !declared_permissions.iter().any(|p| p == need))
                 .collect();
             if !missing.is_empty() {
-                return Err((
+                return Err(JsonError(
                     StatusCode::FORBIDDEN,
                     format!(
                         "plugin '{}' tool '{}' missing required permissions: {}",
@@ -1189,7 +1188,7 @@ pub async fn execute_plugin_tool(
                     PolicyDecision::Deny { reason, .. } => reason.clone(),
                     _ => "policy denied".into(),
                 };
-                return Err((StatusCode::FORBIDDEN, reason));
+                return Err(JsonError(StatusCode::FORBIDDEN, reason));
             }
             match state.plugins.execute_tool(&tool, &body).await {
                 Ok(result) => Ok(Json(json!({
@@ -1200,14 +1199,12 @@ pub async fn execute_plugin_tool(
                 Err(e) => Err(internal_err(&e)),
             }
         }
-        Some((other_plugin, _)) => Err((
-            StatusCode::BAD_REQUEST,
-            format!("tool '{tool}' belongs to plugin '{other_plugin}', not '{name}'"),
-        )),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            format!("tool '{tool}' not found in plugin '{name}'"),
-        )),
+        Some((other_plugin, _)) => Err(bad_request(format!(
+            "tool '{tool}' belongs to plugin '{other_plugin}', not '{name}'"
+        ))),
+        None => Err(not_found(format!(
+            "tool '{tool}' not found in plugin '{name}'"
+        ))),
     }
 }
 
@@ -1224,7 +1221,7 @@ pub async fn browser_status(State(state): State<AppState>) -> impl IntoResponse 
 
 pub async fn browser_start(
     State(state): State<AppState>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     if state.browser.is_running().await {
         return Ok(Json(json!({"status": "already_running"})));
     }
@@ -1239,7 +1236,7 @@ pub async fn browser_start(
 
 pub async fn browser_stop(
     State(state): State<AppState>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     match state.browser.stop().await {
         Ok(()) => Ok(Json(json!({"status": "stopped"}))),
         Err(e) => Err(internal_err(&e)),
@@ -1268,12 +1265,8 @@ pub async fn get_agents(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn start_agent(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    state
-        .registry
-        .start_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+) -> Result<impl IntoResponse, JsonError> {
+    state.registry.start_agent(&id).await.map_err(not_found)?;
     let event = json!({"type": "agent_started", "agent_id": id});
     state.event_bus.publish(event.to_string());
     Ok(Json(json!({"id": id, "action": "started"})))
@@ -1282,12 +1275,8 @@ pub async fn start_agent(
 pub async fn stop_agent(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    state
-        .registry
-        .stop_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+) -> Result<impl IntoResponse, JsonError> {
+    state.registry.stop_agent(&id).await.map_err(not_found)?;
     let event = json!({"type": "agent_stopped", "agent_id": id});
     state.event_bus.publish(event.to_string());
     Ok(Json(json!({"id": id, "action": "stopped"})))
@@ -1717,10 +1706,10 @@ pub async fn change_agent_model(
     State(state): State<AppState>,
     Path(agent_name): Path<String>,
     axum::Json(body): axum::Json<ChangeModelRequest>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     let model = body.model.trim().to_string();
     if model.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "model cannot be empty".into()));
+        return Err(bad_request("model cannot be empty"));
     }
     let normalize_fallbacks = |primary: &str, candidates: Vec<String>| -> Vec<String> {
         let mut cleaned = Vec::new();
@@ -1779,9 +1768,8 @@ pub async fn change_agent_model(
         })))
     } else {
         if body.fallbacks.is_some() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "fallback ordering is only supported for the commander agent".into(),
+            return Err(bad_request(
+                "fallback ordering is only supported for the commander agent",
             ));
         }
         let agents =
@@ -1826,13 +1814,13 @@ pub async fn agent_card(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn a2a_hello(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<A2aHelloRequest>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let peer_did = ironclad_channels::a2a::A2aProtocol::verify_hello(&body.hello)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+) -> Result<impl IntoResponse, JsonError> {
+    let peer_did =
+        ironclad_channels::a2a::A2aProtocol::verify_hello(&body.hello).map_err(bad_request)?;
 
     let mut a2a = state.a2a.write().await;
     a2a.check_rate_limit(&peer_did)
-        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e.to_string()))?;
+        .map_err(|e| JsonError(StatusCode::TOO_MANY_REQUESTS, e.to_string()))?;
     drop(a2a);
 
     let config = state.config.read().await;
@@ -1862,18 +1850,15 @@ pub async fn set_provider_key(
     State(state): State<AppState>,
     Path(name): Path<String>,
     axum::Json(body): axum::Json<SetProviderKeyRequest>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let key = body.api_key.trim();
     if key.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "api_key cannot be empty".into()));
+        return Err(bad_request("api_key cannot be empty"));
     }
 
     let config = state.config.read().await;
     if !config.providers.contains_key(&name) {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("provider '{name}' not found in config"),
-        ));
+        return Err(not_found(format!("provider '{name}' not found in config")));
     }
     drop(config);
 
@@ -1898,13 +1883,10 @@ pub async fn set_provider_key(
 pub async fn delete_provider_key(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let config = state.config.read().await;
     if !config.providers.contains_key(&name) {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("provider '{name}' not found in config"),
-        ));
+        return Err(not_found(format!("provider '{name}' not found in config")));
     }
     drop(config);
 
@@ -2025,7 +2007,7 @@ pub async fn generate_deep_analysis(
 async fn run_llm_recommendation_analysis(
     state: &AppState,
     prompt: &str,
-) -> Result<serde_json::Value, (StatusCode, String)> {
+) -> Result<serde_json::Value, JsonError> {
     let model = {
         let llm = state.llm.read().await;
         llm.router.select_model().to_string()
@@ -2052,7 +2034,7 @@ async fn run_llm_recommendation_analysis(
     let provider = match llm.providers.get_by_model(&model) {
         Some(p) => p.clone(),
         None => {
-            return Err((
+            return Err(JsonError(
                 StatusCode::SERVICE_UNAVAILABLE,
                 format!("no provider configured for model {model}"),
             ));
@@ -2072,7 +2054,7 @@ async fn run_llm_recommendation_analysis(
     .await
     .unwrap_or_default();
     if !provider.is_local && key.is_empty() {
-        return Err((
+        return Err(JsonError(
             StatusCode::SERVICE_UNAVAILABLE,
             format!("missing API key for provider {}", provider.name),
         ));
@@ -2726,7 +2708,7 @@ mod tests {
         let long_input = "a".repeat(MAX_DECIDED_BY_LEN + 1);
         let result = sanitize_decided_by(&long_input);
         assert!(result.is_err());
-        let (status, msg) = result.unwrap_err();
+        let JsonError(status, msg) = result.unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(msg.contains("max length"));
     }

@@ -113,6 +113,17 @@ pub async fn run_cron_worker(db: ironclad_db::Database, instance_id: String) {
             ) {
                 tracing::warn!(job_id = %job.id, error = %e, "failed to record cron run");
             }
+            // Persist next_run_at so the API can expose it
+            let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+            let next = DurableScheduler::calculate_next_run(
+                kind,
+                job.schedule_expr.as_deref(),
+                job.schedule_every_ms,
+                &now_str,
+            );
+            if let Err(e) = ironclad_db::cron::update_next_run_at(&db, &job.id, next.as_deref()) {
+                tracing::warn!(job_id = %job.id, error = %e, "failed to update next_run_at");
+            }
             if let Err(e) = ironclad_db::cron::release_lease(&db, &job.id, &instance_id) {
                 tracing::warn!(job_id = %job.id, error = %e, "failed to release cron lease");
             }

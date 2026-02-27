@@ -6,7 +6,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::{AppState, internal_err};
+use super::{
+    AppState, JsonError, bad_request, internal_err, not_found, sanitize_html, validate_long,
+    validate_short,
+};
 
 const ROLE_SUBAGENT: &str = "subagent";
 const ROLE_MODEL_PROXY: &str = "model-proxy";
@@ -57,27 +60,21 @@ pub struct UpdateSubAgentRequest {
 
 const MAX_SUBAGENT_NAME_LEN: usize = 128;
 
-fn validate_subagent_name(name: &str) -> Result<(), (axum::http::StatusCode, String)> {
+fn validate_subagent_name(name: &str) -> Result<(), JsonError> {
     if name.is_empty() {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "subagent name cannot be empty".to_string(),
-        ));
+        return Err(bad_request("subagent name cannot be empty"));
     }
     if name.len() > MAX_SUBAGENT_NAME_LEN {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            format!("subagent name exceeds max length of {MAX_SUBAGENT_NAME_LEN} characters"),
-        ));
+        return Err(bad_request(format!(
+            "subagent name exceeds max length of {MAX_SUBAGENT_NAME_LEN} characters"
+        )));
     }
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "subagent name may only contain alphanumeric characters, hyphens, and underscores"
-                .to_string(),
+        return Err(bad_request(
+            "subagent name may only contain alphanumeric characters, hyphens, and underscores",
         ));
     }
     Ok(())
@@ -134,7 +131,7 @@ fn validate_subagent_contract(
     model: &str,
     skills: &[String],
     personality: Option<&Value>,
-) -> Result<(), (axum::http::StatusCode, String)> {
+) -> Result<(), JsonError> {
     let normalized = normalize_role(role).ok_or_else(|| {
         (
             axum::http::StatusCode::BAD_REQUEST,
@@ -142,31 +139,23 @@ fn validate_subagent_contract(
         )
     })?;
     if personality.is_some() {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "personality is not supported for subagents; subagents must be personality-free"
-                .to_string(),
+        return Err(bad_request(
+            "personality is not supported for subagents; subagents must be personality-free",
         ));
     }
     if normalized == ROLE_MODEL_PROXY && !skills.is_empty() {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "model-proxy entries cannot own skills; only taskable subagents may have fixed skills"
-                .to_string(),
+        return Err(bad_request(
+            "model-proxy entries cannot own skills; only taskable subagents may have fixed skills",
         ));
     }
     if model.trim().is_empty() {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "model cannot be empty; use a concrete provider/model, 'auto', or 'commander'"
-                .to_string(),
+        return Err(bad_request(
+            "model cannot be empty; use a concrete provider/model, 'auto', or 'commander'",
         ));
     }
     if normalized == ROLE_MODEL_PROXY && is_model_mode(model) {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "model-proxy entries require a concrete provider/model, not 'auto' or 'commander'"
-                .to_string(),
+        return Err(bad_request(
+            "model-proxy entries require a concrete provider/model, not 'auto' or 'commander'",
         ));
     }
     Ok(())
@@ -261,7 +250,17 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
 pub async fn create_sub_agent(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<CreateSubAgentRequest>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
+    validate_short("name", &body.name)?;
+    if let Some(ref d) = body.description {
+        validate_long("description", d)?;
+    }
+    let body = CreateSubAgentRequest {
+        name: sanitize_html(&body.name),
+        description: body.description.as_deref().map(sanitize_html),
+        display_name: body.display_name.as_deref().map(sanitize_html),
+        ..body
+    };
     validate_subagent_name(&body.name)?;
     let role = normalize_role(&body.role)
         .ok_or_else(|| {
@@ -331,7 +330,13 @@ pub async fn update_sub_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
     axum::Json(body): axum::Json<UpdateSubAgentRequest>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
+    if let Some(ref d) = body.description {
+        validate_long("description", d)?;
+    }
+    if let Some(ref d) = body.display_name {
+        validate_short("display_name", d)?;
+    }
     let agents = ironclad_db::agents::list_sub_agents(&state.db).map_err(|e| internal_err(&e))?;
 
     let existing = agents.iter().find(|a| a.name == name).ok_or_else(|| {
@@ -421,7 +426,7 @@ pub async fn update_sub_agent(
 pub async fn delete_sub_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     match ironclad_db::agents::delete_sub_agent(&state.db, &name) {
         Ok(true) => {
             let _ = state.registry.stop_agent(&name).await;
@@ -430,10 +435,7 @@ pub async fn delete_sub_agent(
                 serde_json::json!({ "deleted": true, "name": name }),
             ))
         }
-        Ok(false) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("sub-agent '{name}' not found"),
-        )),
+        Ok(false) => Err(not_found(format!("sub-agent '{name}' not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -441,7 +443,7 @@ pub async fn delete_sub_agent(
 pub async fn toggle_sub_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     let agents = ironclad_db::agents::list_sub_agents(&state.db).map_err(|e| internal_err(&e))?;
 
     let existing = agents.iter().find(|a| a.name == name).ok_or_else(|| {

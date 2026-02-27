@@ -5,7 +5,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{AppState, internal_err};
+use super::{AppState, JsonError, internal_err, not_found};
 
 #[derive(Deserialize)]
 pub struct CreateCronJobRequest {
@@ -146,7 +146,7 @@ pub async fn list_cron_runs(
 pub async fn get_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     match ironclad_db::cron::get_job(&state.db, &id) {
         Ok(Some(job)) => Ok(axum::Json(serde_json::json!({
             "id": job.id,
@@ -169,10 +169,7 @@ pub async fn get_cron_job(
             "next_run_at": job.next_run_at,
             "last_error": job.last_error,
         }))),
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("cron job {id} not found"),
-        )),
+        Ok(None) => Err(not_found(format!("cron job {id} not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -181,7 +178,7 @@ pub async fn update_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
     axum::Json(body): axum::Json<UpdateCronJobRequest>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     let schedule_kind = body
         .schedule_kind
         .as_deref()
@@ -203,10 +200,7 @@ pub async fn update_cron_job(
         body.enabled,
     ) {
         Ok(true) => Ok(axum::Json(serde_json::json!({ "updated": true, "id": id }))),
-        Ok(false) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("cron job {id} not found"),
-        )),
+        Ok(false) => Err(not_found(format!("cron job {id} not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -214,13 +208,10 @@ pub async fn update_cron_job(
 pub async fn delete_cron_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     match ironclad_db::cron::delete_job(&state.db, &id) {
         Ok(true) => Ok(axum::Json(serde_json::json!({ "deleted": true, "id": id }))),
-        Ok(false) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("cron job {id} not found"),
-        )),
+        Ok(false) => Err(not_found(format!("cron job {id} not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }

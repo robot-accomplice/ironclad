@@ -46,6 +46,36 @@ use ironclad_channels::voice::VoicePipeline;
 
 use crate::ws::EventBus;
 
+// ── JSON error response type ─────────────────────────────────
+
+/// A JSON-formatted API error response. All error paths in the API return
+/// `{"error": "<message>"}` with the appropriate HTTP status code.
+#[derive(Debug)]
+pub(crate) struct JsonError(pub axum::http::StatusCode, pub String);
+
+impl axum::response::IntoResponse for JsonError {
+    fn into_response(self) -> axum::response::Response {
+        let body = serde_json::json!({ "error": self.1 });
+        (self.0, axum::Json(body)).into_response()
+    }
+}
+
+impl From<(axum::http::StatusCode, String)> for JsonError {
+    fn from((status, msg): (axum::http::StatusCode, String)) -> Self {
+        Self(status, msg)
+    }
+}
+
+/// Shorthand for a 400 Bad Request JSON error.
+pub(crate) fn bad_request(msg: impl std::fmt::Display) -> JsonError {
+    JsonError(axum::http::StatusCode::BAD_REQUEST, msg.to_string())
+}
+
+/// Shorthand for a 404 Not Found JSON error.
+pub(crate) fn not_found(msg: impl std::fmt::Display) -> JsonError {
+    JsonError(axum::http::StatusCode::NOT_FOUND, msg.to_string())
+}
+
 // ── Helpers (used by submodules) ──────────────────────────────
 
 /// Sanitizes error messages before returning to clients (strip paths, internal details, cap length).
@@ -98,13 +128,54 @@ pub(crate) fn sanitize_error_message(msg: &str) -> String {
     }
 }
 
-/// Logs the full error and returns (INTERNAL_SERVER_ERROR, sanitized message) for API responses.
-pub(crate) fn internal_err(e: &impl std::fmt::Display) -> (axum::http::StatusCode, String) {
+/// Logs the full error and returns a JSON 500 error for API responses.
+pub(crate) fn internal_err(e: &impl std::fmt::Display) -> JsonError {
     tracing::error!(error = %e, "request failed");
-    (
+    JsonError(
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         sanitize_error_message(&e.to_string()),
     )
+}
+
+// ── Input validation helpers ──────────────────────────────────
+
+/// Maximum allowed length for short identifier fields (agent_id, name, etc.).
+const MAX_SHORT_FIELD: usize = 256;
+/// Maximum allowed length for long text fields (description, content, etc.).
+const MAX_LONG_FIELD: usize = 4096;
+
+/// Validate a user-supplied string field: reject null bytes and enforce length.
+pub(crate) fn validate_field(
+    field_name: &str,
+    value: &str,
+    max_len: usize,
+) -> Result<(), JsonError> {
+    if value.contains('\0') {
+        return Err(bad_request(format!(
+            "{field_name} must not contain null bytes"
+        )));
+    }
+    if value.len() > max_len {
+        return Err(bad_request(format!(
+            "{field_name} exceeds max length ({max_len})"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate a short identifier field (agent_id, name, session_id, etc.).
+pub(crate) fn validate_short(field_name: &str, value: &str) -> Result<(), JsonError> {
+    validate_field(field_name, value, MAX_SHORT_FIELD)
+}
+
+/// Validate a long text field (description, content, etc.).
+pub(crate) fn validate_long(field_name: &str, value: &str) -> Result<(), JsonError> {
+    validate_field(field_name, value, MAX_LONG_FIELD)
+}
+
+/// Strip HTML tags from a string to prevent injection in stored values.
+pub(crate) fn sanitize_html(input: &str) -> String {
+    input.replace('<', "&lt;").replace('>', "&gt;")
 }
 
 // ── Shared state and types ────────────────────────────────────
@@ -440,6 +511,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/interview/finish", post(interview::finish_interview))
         .route("/api/audit/policy/{turn_id}", get(admin::get_policy_audit))
         .route("/api/audit/tools/{turn_id}", get(admin::get_tool_audit))
+        .route(
+            "/favicon.ico",
+            get(|| async { axum::http::StatusCode::NO_CONTENT }),
+        )
+        .fallback(|| async { JsonError(axum::http::StatusCode::NOT_FOUND, "not found".into()) })
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB
         .with_state(state)
 }
@@ -704,7 +780,7 @@ primary = "ollama/qwen3:8b"
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = json_body(resp).await;
-        let session_id = body["session_id"].as_str().unwrap().to_string();
+        let session_id = body["id"].as_str().unwrap().to_string();
         assert!(!session_id.is_empty());
     }
 
@@ -1237,7 +1313,13 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn breaker_reset_returns_success() {
-        let app = build_router(test_state());
+        let state = test_state();
+        // Register "ollama" as a known provider so the reset endpoint finds it
+        {
+            let mut llm = state.llm.write().await;
+            llm.breakers.record_credit_error("ollama");
+        }
+        let app = build_router(state);
         let req = Request::builder()
             .method("POST")
             .uri("/api/breaker/reset/ollama")
@@ -1371,6 +1453,7 @@ primary = "ollama/qwen3:8b"
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let app = build_router(state);
@@ -1488,6 +1571,7 @@ params = { path = "README.md" }
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1533,6 +1617,7 @@ params = { path = "README.md" }
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1557,6 +1642,7 @@ params = { path = "README.md" }
             Some("To be deleted"),
             "/skills/delete-me",
             "abc123",
+            None,
             None,
             None,
             None,
@@ -1608,6 +1694,7 @@ params = { path = "README.md" }
             Some("Core continuity protocol"),
             "/skills/context-continuity",
             "abc123",
+            None,
             None,
             None,
             None,
@@ -3495,7 +3582,7 @@ params = { path = "README.md" }
             ironclad_core::RiskLevel::Dangerous,
         );
         assert!(result.is_err());
-        let (status, msg) = result.unwrap_err();
+        let JsonError(status, msg) = result.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(
             msg.contains("denied") || msg.contains("Policy"),
@@ -4516,7 +4603,7 @@ params = { path = "README.md" }
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = json_body(resp).await;
-        assert!(body["session_id"].as_str().is_some());
+        assert!(body["id"].as_str().is_some());
     }
 
     #[tokio::test]
@@ -4560,7 +4647,7 @@ params = { path = "README.md" }
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = json_body(resp).await;
-        let session_id = body["session_id"].as_str().unwrap();
+        let session_id = body["id"].as_str().unwrap();
 
         // Try to post with invalid role
         let app = build_router(state);
@@ -4590,7 +4677,7 @@ params = { path = "README.md" }
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = json_body(resp).await;
-        let session_id = body["session_id"].as_str().unwrap();
+        let session_id = body["id"].as_str().unwrap();
 
         // Post a valid user message
         let app = build_router(state);
@@ -4618,7 +4705,7 @@ params = { path = "README.md" }
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = json_body(resp).await;
-        let session_id = body["session_id"].as_str().unwrap();
+        let session_id = body["id"].as_str().unwrap();
 
         // List turns
         let app = build_router(state);
