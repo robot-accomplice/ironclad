@@ -18,8 +18,31 @@ Ironclad is an autonomous agent runtime built in Rust as a single optimized bina
 
 ## Installation
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap robot-accomplice/ironclad
+brew install ironclad
+```
+
+### Winget (Windows)
+
+```powershell
+winget install -e --id RobotAccomplice.Ironclad
+```
+
+### Cargo (from source)
+
 ```bash
 cargo install ironclad-server
+```
+
+### Installer Scripts
+
+macOS / Linux:
+
+```bash
+curl -fsSL https://roboticus.ai/install.sh | bash
 ```
 
 Windows (PowerShell):
@@ -38,6 +61,13 @@ ironclad serve
 ### Quick Upgrade
 
 ```bash
+# Homebrew
+brew upgrade ironclad
+
+# Winget
+winget upgrade RobotAccomplice.Ironclad
+
+# Self-update (any install method)
 ironclad update binary --method download --yes
 ```
 

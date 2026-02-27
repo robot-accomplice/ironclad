@@ -199,6 +199,20 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
+### 1.20 Homebrew & Winget Package Manager Distribution
+
+**Current state**: Ironclad distributes pre-built binaries via GitHub Releases (5 targets), crates.io (source install), Docker image, and platform installer scripts (`install.sh`, `install.ps1`). Users on macOS/Linux must use installer scripts or `cargo install`; Windows users must use the PowerShell script or `cargo install`. No native package manager integration exists.
+
+**Target**: One-command installation via native package managers — `brew install ironclad` (macOS/Linux) and `winget install RobotAccomplice.Ironclad` (Windows). Auto-updated on each release with zero manual intervention.
+
+**Builds on**: Existing `release.yml` binary matrix, SHA256 checksum pipeline, and GitHub Releases infrastructure.
+
+**Scope**: Create `robot-accomplice/homebrew-ironclad` tap repository with a pre-built binary formula covering macOS (x86_64/aarch64) and Linux (x86_64/aarch64). Submit initial `RobotAccomplice.Ironclad` manifest to `microsoft/winget-pkgs` for the Windows zip artifact (portable installer type). Add two new jobs to `release.yml`: `update-homebrew` (pushes updated formula with version + SHA256 to the tap on each release) and `update-winget` (submits a winget-pkgs manifest update PR via `winget-releaser`). Update README installation section to prioritize `brew` and `winget` commands. Requires two new GitHub secrets: `HOMEBREW_TAP_PAT` (push access to tap repo) and `WINGET_TOKEN` (public_repo scope for winget-pkgs PRs).
+
+**Release posture**: Planned for `v0.9.x`. Homebrew tap can be created and populated immediately; winget initial submission requires manual review by Microsoft. Automation jobs activate on next tagged release.
+
+---
+
 ## Tier 2 — New Capabilities
 
 Features that require significant new code but have clear implementation paths. Medium-to-high effort.
