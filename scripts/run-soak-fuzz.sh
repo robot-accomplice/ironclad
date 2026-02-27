@@ -15,7 +15,7 @@ done
 
 echo "2) bounded fuzz targets (ironclad-agent)"
 if command -v cargo-fuzz >/dev/null 2>&1; then
-  if ! rustup toolchain list | rg -q '^nightly'; then
+  if ! rustup toolchain list | grep -q '^nightly'; then
     echo "nightly Rust toolchain is required for cargo-fuzz sanitizers"
     echo "Install with: rustup toolchain install nightly"
     exit 1

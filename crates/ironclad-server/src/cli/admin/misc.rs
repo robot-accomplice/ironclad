@@ -1837,6 +1837,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
 
     let mut pass_count = 0u32;
     let mut warn_count = 0u32;
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut fail_count = 0u32;
 
     // 1. Check config file permissions
