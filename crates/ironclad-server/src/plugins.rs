@@ -4,7 +4,7 @@ use tracing::{debug, info, warn};
 
 use ironclad_core::config::PluginsConfig;
 use ironclad_plugin_sdk::loader::discover_plugins;
-use ironclad_plugin_sdk::registry::PluginRegistry;
+use ironclad_plugin_sdk::registry::{PermissionPolicy, PluginRegistry};
 use ironclad_plugin_sdk::script::ScriptPlugin;
 
 /// Discover plugin manifests, instantiate `ScriptPlugin`s, and register them.
@@ -12,6 +12,10 @@ pub async fn init_plugin_registry(config: &PluginsConfig) -> Arc<PluginRegistry>
     let registry = Arc::new(PluginRegistry::new(
         config.allow.clone(),
         config.deny.clone(),
+        PermissionPolicy {
+            strict: config.strict_permissions,
+            allowed: config.allowed_permissions.clone(),
+        },
     ));
 
     let plugins_dir = &config.dir;
@@ -76,6 +80,8 @@ mod tests {
             dir: PathBuf::from("/nonexistent/plugins"),
             allow: vec![],
             deny: vec![],
+            strict_permissions: false,
+            allowed_permissions: vec![],
         };
         let registry = init_plugin_registry(&config).await;
         assert_eq!(registry.plugin_count().await, 0);
@@ -88,6 +94,8 @@ mod tests {
             dir: dir.path().to_path_buf(),
             allow: vec![],
             deny: vec![],
+            strict_permissions: false,
+            allowed_permissions: vec![],
         };
         let registry = init_plugin_registry(&config).await;
         assert_eq!(registry.plugin_count().await, 0);
@@ -117,6 +125,8 @@ description = "Says hello"
             dir: dir.path().to_path_buf(),
             allow: vec![],
             deny: vec![],
+            strict_permissions: false,
+            allowed_permissions: vec![],
         };
         let registry = init_plugin_registry(&config).await;
         assert_eq!(registry.plugin_count().await, 1);
@@ -141,6 +151,8 @@ description = "Says hello"
             dir: dir.path().to_path_buf(),
             allow: vec![],
             deny: vec!["blocked".into()],
+            strict_permissions: false,
+            allowed_permissions: vec![],
         };
         let registry = init_plugin_registry(&config).await;
         assert_eq!(registry.plugin_count().await, 0);
@@ -172,6 +184,8 @@ description = "Echoes input"
             dir: dir.path().to_path_buf(),
             allow: vec![],
             deny: vec![],
+            strict_permissions: false,
+            allowed_permissions: vec![],
         };
         let registry = init_plugin_registry(&config).await;
 

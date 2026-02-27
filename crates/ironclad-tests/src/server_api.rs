@@ -48,7 +48,14 @@ primary = "ollama/qwen3:8b"
         treasury,
         yield_engine,
     };
-    let plugins = Arc::new(PluginRegistry::new(vec![], vec![]));
+    let plugins = Arc::new(PluginRegistry::new(
+        vec![],
+        vec![],
+        ironclad_plugin_sdk::registry::PermissionPolicy {
+            strict: false,
+            allowed: vec![],
+        },
+    ));
     let browser = Arc::new(Browser::new(ironclad_core::config::BrowserConfig::default()));
     let registry = Arc::new(SubagentRegistry::new(4, vec![]));
     let event_bus = EventBus::new(16);

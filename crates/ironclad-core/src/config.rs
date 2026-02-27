@@ -1430,6 +1430,10 @@ pub struct PluginsConfig {
     pub allow: Vec<String>,
     #[serde(default)]
     pub deny: Vec<String>,
+    #[serde(default)]
+    pub strict_permissions: bool,
+    #[serde(default)]
+    pub allowed_permissions: Vec<String>,
 }
 
 impl Default for PluginsConfig {
@@ -1438,6 +1442,8 @@ impl Default for PluginsConfig {
             dir: default_plugins_dir(),
             allow: Vec::new(),
             deny: Vec::new(),
+            strict_permissions: false,
+            allowed_permissions: Vec::new(),
         }
     }
 }

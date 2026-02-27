@@ -101,6 +101,10 @@ impl PluginManifest {
         Ok(())
     }
 
+    pub fn declared_permissions(&self) -> &[String] {
+        &self.permissions
+    }
+
     pub fn is_tool_dangerous(&self, tool_name: &str) -> bool {
         self.tools
             .iter()

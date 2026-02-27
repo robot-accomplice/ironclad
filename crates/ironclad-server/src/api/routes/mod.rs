@@ -723,7 +723,14 @@ primary = "ollama/qwen3:8b"
             yield_engine,
         };
 
-        let plugins = Arc::new(PluginRegistry::new(vec![], vec![]));
+        let plugins = Arc::new(PluginRegistry::new(
+            vec![],
+            vec![],
+            ironclad_plugin_sdk::registry::PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        ));
         let mut policy_engine = PolicyEngine::new();
         policy_engine.add_rule(Box::new(AuthorityRule));
         policy_engine.add_rule(Box::new(CommandSafetyRule));
@@ -3966,7 +3973,14 @@ params = { path = "README.md" }
 
         let mut state = test_state();
         state.policy_engine = Arc::new(PolicyEngine::new());
-        let registry = PluginRegistry::new(vec![], vec![]);
+        let registry = PluginRegistry::new(
+            vec![],
+            vec![],
+            ironclad_plugin_sdk::registry::PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         registry.register(Box::new(TestPlugin)).await.unwrap();
         registry.init_all().await;
         state.plugins = Arc::new(registry);
