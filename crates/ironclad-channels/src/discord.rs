@@ -913,9 +913,15 @@ mod tests {
     // ── async method tests (exercise error paths via connection refusal) ──
 
     fn fast_fail_adapter() -> DiscordAdapter {
+        // Route discord.com to a non-routable TEST-NET address (RFC 5737) so
+        // requests fail deterministically regardless of CI network speed.
         let mut adapter = DiscordAdapter::new("test-bot-token".into());
         adapter.client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(50))
+            .resolve(
+                "discord.com",
+                std::net::SocketAddr::from(([192, 0, 2, 1], 443)),
+            )
             .build()
             .unwrap();
         adapter

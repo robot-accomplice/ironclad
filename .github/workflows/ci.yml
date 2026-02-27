@@ -97,6 +97,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: regression-battery
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
       - name: "Run focused regression battery"
         run: just test-regression
 
@@ -129,6 +132,9 @@ jobs:
         run: rustup toolchain install nightly --profile minimal
       - name: "Install cargo-fuzz"
         run: cargo install cargo-fuzz --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
       - name: "Run bounded soak/fuzz battery"
         env:
           SOAK_ROUNDS: "2"
@@ -171,6 +177,9 @@ jobs:
           else:
               print(f"Cloud benchmark snapshot age is {age_days} days (within 45-day window).")
           PY
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
       - name: "Run release docs/artifact gate"
         env:
           RELEASE_TARGET_VERSION: "0.8.0"
