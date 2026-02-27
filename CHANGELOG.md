@@ -7,19 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.3] - 2026-02-27
+## [0.8.2] - 2026-02-27
 
 ### Added
 
-- **100+ API route integration tests**: Comprehensive test coverage for sessions, turns, interviews, feedback, skills, model selection, channels, webhooks, dead letters, admin, memory, cron, context, and approvals endpoints. Tests exercise both success and error paths including validation, 404s, auth, and edge cases.
+- **100+ API route integration tests**: Comprehensive test coverage for sessions, turns, interviews, feedback, skills, model selection, channels, webhooks, dead letters, admin, memory, cron, context, and approvals endpoints. Tests exercise both success and error paths including validation, 404s, auth, and edge cases. Workspace test count now at 3,316.
 - **Homebrew tap distribution**: macOS/Linux users can install via `brew install robot-accomplice/tap/ironclad`.
 - **Winget package distribution**: Windows users can install via Winget package manager.
-
-### Changed
-
-- **Workspace version bump**: All 11 crates bumped from 0.8.1 to 0.8.3. Workspace test count now at 3,316 (up from ~3,200).
-
-## [0.8.2] - 2026-02-27
 
 ### Fixed
 
