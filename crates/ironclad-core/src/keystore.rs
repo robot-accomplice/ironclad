@@ -27,21 +27,27 @@ struct KeystoreData {
     entries: HashMap<String, String>,
 }
 
-type SecureEntries = Arc<Mutex<Option<HashMap<String, Zeroizing<String>>>>>;
+/// Combined in-memory state behind a single mutex, eliminating lock ordering
+/// concerns that existed with the previous two-mutex design.
+struct KeystoreState {
+    entries: Option<HashMap<String, Zeroizing<String>>>,
+    passphrase: Option<Zeroizing<String>>,
+}
 
 #[derive(Clone)]
 pub struct Keystore {
     path: PathBuf,
-    entries: SecureEntries,
-    passphrase: Arc<Mutex<Option<Zeroizing<String>>>>,
+    state: Arc<Mutex<KeystoreState>>,
 }
 
 impl Keystore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
-            entries: Arc::new(Mutex::new(None)),
-            passphrase: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new(KeystoreState {
+                entries: None,
+                passphrase: None,
+            })),
         }
     }
 
@@ -52,8 +58,10 @@ impl Keystore {
 
     pub fn unlock(&self, passphrase: &str) -> Result<()> {
         if !self.path.exists() {
-            *lock_or_recover(&self.entries) = Some(HashMap::new());
-            *lock_or_recover(&self.passphrase) = Some(Zeroizing::new(passphrase.to_string()));
+            let mut st = lock_or_recover(&self.state);
+            st.entries = Some(HashMap::new());
+            st.passphrase = Some(Zeroizing::new(passphrase.to_string()));
+            drop(st);
             self.save()?;
             self.append_audit_event(
                 "initialize",
@@ -92,8 +100,9 @@ impl Keystore {
             .into_iter()
             .map(|(k, v)| (k, Zeroizing::new(v)))
             .collect();
-        *lock_or_recover(&self.entries) = Some(zeroized_entries);
-        *lock_or_recover(&self.passphrase) = Some(Zeroizing::new(passphrase.to_string()));
+        let mut st = lock_or_recover(&self.state);
+        st.entries = Some(zeroized_entries);
+        st.passphrase = Some(Zeroizing::new(passphrase.to_string()));
         Ok(())
     }
 
@@ -108,19 +117,21 @@ impl Keystore {
     }
 
     pub fn is_unlocked(&self) -> bool {
-        lock_or_recover(&self.entries).is_some()
+        lock_or_recover(&self.state).entries.is_some()
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
-        lock_or_recover(&self.entries)
+        lock_or_recover(&self.state)
+            .entries
             .as_ref()
             .and_then(|m| m.get(key).map(|v| (**v).clone()))
     }
 
     pub fn set(&self, key: &str, value: &str) -> Result<()> {
         {
-            let mut guard = lock_or_recover(&self.entries);
-            let entries = guard
+            let mut st = lock_or_recover(&self.state);
+            let entries = st
+                .entries
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
             entries.insert(key.to_string(), Zeroizing::new(value.to_string()));
@@ -142,8 +153,9 @@ impl Keystore {
 
     pub fn remove(&self, key: &str) -> Result<bool> {
         let existed = {
-            let mut guard = lock_or_recover(&self.entries);
-            let entries = guard
+            let mut st = lock_or_recover(&self.state);
+            let entries = st
+                .entries
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
             entries.remove(key).is_some()
@@ -167,7 +179,8 @@ impl Keystore {
     }
 
     pub fn list_keys(&self) -> Vec<String> {
-        lock_or_recover(&self.entries)
+        lock_or_recover(&self.state)
+            .entries
             .as_ref()
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default()
@@ -176,8 +189,9 @@ impl Keystore {
     pub fn import(&self, new_entries: HashMap<String, String>) -> Result<usize> {
         let count = new_entries.len();
         {
-            let mut guard = lock_or_recover(&self.entries);
-            let entries = guard
+            let mut st = lock_or_recover(&self.state);
+            let entries = st
+                .entries
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
             entries.extend(new_entries.into_iter().map(|(k, v)| (k, Zeroizing::new(v))));
@@ -200,8 +214,9 @@ impl Keystore {
     }
 
     pub fn lock(&self) {
-        *lock_or_recover(&self.entries) = None;
-        *lock_or_recover(&self.passphrase) = None;
+        let mut st = lock_or_recover(&self.state);
+        st.entries = None;
+        st.passphrase = None;
     }
 
     /// Re-encrypt with a new passphrase. Must already be unlocked.
@@ -209,7 +224,7 @@ impl Keystore {
         if !self.is_unlocked() {
             return Err(IroncladError::Keystore("keystore is locked".into()));
         }
-        *lock_or_recover(&self.passphrase) = Some(Zeroizing::new(new_passphrase.to_string()));
+        lock_or_recover(&self.state).passphrase = Some(Zeroizing::new(new_passphrase.to_string()));
         let save_res = self.save();
         let audit_res = self.append_audit_event(
             "rekey",
@@ -269,13 +284,14 @@ impl Keystore {
     }
 
     fn save(&self) -> Result<()> {
-        let guard = lock_or_recover(&self.entries);
-        let entries = guard
+        let st = lock_or_recover(&self.state);
+        let entries = st
+            .entries
             .as_ref()
             .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
 
-        let pp_guard = lock_or_recover(&self.passphrase);
-        let passphrase = pp_guard
+        let passphrase = st
+            .passphrase
             .as_ref()
             .ok_or_else(|| IroncladError::Keystore("no passphrase available".into()))?;
 
@@ -305,6 +321,9 @@ impl Keystore {
         out.extend_from_slice(&salt);
         out.extend_from_slice(&nonce_bytes);
         out.extend_from_slice(&ciphertext);
+
+        // Drop lock before filesystem I/O to avoid holding it during blocking ops.
+        drop(st);
 
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -682,5 +701,33 @@ mod tests {
     fn audit_log_path_derives_from_keystore_path() {
         let ks = Keystore::new("/tmp/test.enc");
         assert_eq!(ks.audit_log_path(), PathBuf::from("/tmp/test.audit.log"));
+    }
+
+    #[test]
+    fn concurrent_set_and_rekey_no_deadlock() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        ks.unlock("pass").unwrap();
+
+        std::thread::scope(|s| {
+            let ks1 = ks.clone();
+            let ks2 = ks.clone();
+
+            let h1 = s.spawn(move || {
+                for i in 0..50 {
+                    ks1.set(&format!("key-{i}"), &format!("val-{i}")).unwrap();
+                }
+            });
+            let h2 = s.spawn(move || {
+                for _ in 0..50 {
+                    ks2.rekey("pass").unwrap();
+                }
+            });
+
+            // Both threads must complete (no deadlock); 5-second implicit timeout
+            // via std::thread::scope waiting for spawned threads.
+            h1.join().unwrap();
+            h2.join().unwrap();
+        });
     }
 }
