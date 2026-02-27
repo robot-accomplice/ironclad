@@ -21,7 +21,7 @@ fetch_to_file() {
     else
       ghola -o "$out" "$url" >/dev/null 2>&1 || true
     fi
-    if [[ ! -s "$out" ]] || rg -q "Ghola Snoop Mode|Snoop End" "$out"; then
+    if [[ ! -s "$out" ]] || grep -qE "Ghola Snoop Mode|Snoop End" "$out"; then
       if [[ -n "$API_KEY" ]]; then
         curl -fsS -H "Authorization: Bearer ${API_KEY}" "$url" -o "$out"
       else
@@ -39,7 +39,7 @@ fetch_to_file() {
 
 echo "1) dashboard shell renders"
 fetch_to_file "${BASE_URL}/" /tmp/ironclad-uat-web-dashboard.html
-rg -q "Ironclad|dashboard|Context|Sessions" /tmp/ironclad-uat-web-dashboard.html
+grep -qiE "Ironclad|dashboard|Context|Sessions" /tmp/ironclad-uat-web-dashboard.html
 
 echo "2) health endpoint"
 fetch_to_file "${BASE_URL}/api/health" /tmp/ironclad-uat-web-health.json
