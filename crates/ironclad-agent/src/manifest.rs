@@ -484,16 +484,8 @@ name = "Ephemeral Agent"
     #[test]
     fn list_all_manifests() {
         let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join("a.toml"),
-            "id = \"a\"\nname = \"Agent A\"",
-        )
-        .unwrap();
-        fs::write(
-            dir.path().join("b.toml"),
-            "id = \"b\"\nname = \"Agent B\"",
-        )
-        .unwrap();
+        fs::write(dir.path().join("a.toml"), "id = \"a\"\nname = \"Agent A\"").unwrap();
+        fs::write(dir.path().join("b.toml"), "id = \"b\"\nname = \"Agent B\"").unwrap();
 
         let mut loader = ManifestLoader::new(dir.path().to_path_buf());
         loader.load_all().unwrap();
@@ -555,16 +547,8 @@ name = "Ephemeral Agent"
     #[test]
     fn non_toml_files_ignored() {
         let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join("readme.md"),
-            "# Not a manifest",
-        )
-        .unwrap();
-        fs::write(
-            dir.path().join("config.json"),
-            "{}",
-        )
-        .unwrap();
+        fs::write(dir.path().join("readme.md"), "# Not a manifest").unwrap();
+        fs::write(dir.path().join("config.json"), "{}").unwrap();
         fs::write(
             dir.path().join("agent.toml"),
             "id = \"real\"\nname = \"Real Agent\"",

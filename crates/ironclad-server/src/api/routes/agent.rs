@@ -5338,12 +5338,18 @@ fallbacks = ["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514", "google/gemi
     #[test]
     fn utility_margin_negative_for_single_task_low_complexity() {
         let margin = utility_margin_for_delegation(0.1, 1, 0.1);
-        assert!(margin < 0.0, "single trivial task should not justify delegation");
+        assert!(
+            margin < 0.0,
+            "single trivial task should not justify delegation"
+        );
     }
 
     #[test]
     fn utility_margin_high_for_complex_multi_task() {
         let margin = utility_margin_for_delegation(1.0, 5, 1.0);
-        assert!(margin > 0.0, "complex multi-task with perfect fit should justify delegation");
+        assert!(
+            margin > 0.0,
+            "complex multi-task with perfect fit should justify delegation"
+        );
     }
 }

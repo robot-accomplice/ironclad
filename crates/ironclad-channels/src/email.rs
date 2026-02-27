@@ -420,10 +420,7 @@ mod tests {
         let result = adapter.send(msg).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("SMTP send failed"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("SMTP send failed"), "unexpected error: {err}");
     }
 
     #[tokio::test]
@@ -438,10 +435,7 @@ mod tests {
         // Should fail at SMTP level, not at message building
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("SMTP send failed"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("SMTP send failed"), "unexpected error: {err}");
     }
 
     #[tokio::test]

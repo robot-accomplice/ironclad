@@ -155,7 +155,9 @@ mod tests {
         let evt = sample_event("mse-1", "turn-1");
         record_model_selection_event(&db, &evt).unwrap();
 
-        let found = get_model_selection_by_turn_id(&db, "turn-1").unwrap().unwrap();
+        let found = get_model_selection_by_turn_id(&db, "turn-1")
+            .unwrap()
+            .unwrap();
         assert_eq!(found.id, "mse-1");
         assert_eq!(found.selected_model, "claude-4");
         assert_eq!(found.strategy, "complexity");
@@ -176,7 +178,9 @@ mod tests {
         evt.override_model = Some("gpt-4".to_string());
         record_model_selection_event(&db, &evt).unwrap();
 
-        let found = get_model_selection_by_turn_id(&db, "turn-2").unwrap().unwrap();
+        let found = get_model_selection_by_turn_id(&db, "turn-2")
+            .unwrap()
+            .unwrap();
         assert_eq!(found.override_model.as_deref(), Some("gpt-4"));
     }
 
@@ -187,7 +191,9 @@ mod tests {
         evt.complexity = None;
         record_model_selection_event(&db, &evt).unwrap();
 
-        let found = get_model_selection_by_turn_id(&db, "turn-3").unwrap().unwrap();
+        let found = get_model_selection_by_turn_id(&db, "turn-3")
+            .unwrap()
+            .unwrap();
         assert!(found.complexity.is_none());
     }
 
@@ -245,7 +251,9 @@ mod tests {
         let evt = sample_event("mse-fields", "turn-fields");
         record_model_selection_event(&db, &evt).unwrap();
 
-        let found = get_model_selection_by_turn_id(&db, "turn-fields").unwrap().unwrap();
+        let found = get_model_selection_by_turn_id(&db, "turn-fields")
+            .unwrap()
+            .unwrap();
         assert_eq!(found.session_id, "sess-1");
         assert_eq!(found.agent_id, "agent-1");
         assert_eq!(found.channel, "cli");

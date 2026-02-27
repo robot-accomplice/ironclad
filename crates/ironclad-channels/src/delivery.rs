@@ -507,13 +507,31 @@ mod tests {
 
     #[test]
     fn from_store_status_mappings() {
-        assert_eq!(DeliveryItem::from_store_status("pending"), DeliveryStatus::Pending);
-        assert_eq!(DeliveryItem::from_store_status("in_flight"), DeliveryStatus::InFlight);
-        assert_eq!(DeliveryItem::from_store_status("delivered"), DeliveryStatus::Delivered);
-        assert_eq!(DeliveryItem::from_store_status("failed"), DeliveryStatus::Failed);
-        assert_eq!(DeliveryItem::from_store_status("dead_letter"), DeliveryStatus::DeadLetter);
+        assert_eq!(
+            DeliveryItem::from_store_status("pending"),
+            DeliveryStatus::Pending
+        );
+        assert_eq!(
+            DeliveryItem::from_store_status("in_flight"),
+            DeliveryStatus::InFlight
+        );
+        assert_eq!(
+            DeliveryItem::from_store_status("delivered"),
+            DeliveryStatus::Delivered
+        );
+        assert_eq!(
+            DeliveryItem::from_store_status("failed"),
+            DeliveryStatus::Failed
+        );
+        assert_eq!(
+            DeliveryItem::from_store_status("dead_letter"),
+            DeliveryStatus::DeadLetter
+        );
         // Unknown defaults to Pending
-        assert_eq!(DeliveryItem::from_store_status("unknown"), DeliveryStatus::Pending);
+        assert_eq!(
+            DeliveryItem::from_store_status("unknown"),
+            DeliveryStatus::Pending
+        );
         assert_eq!(DeliveryItem::from_store_status(""), DeliveryStatus::Pending);
     }
 

@@ -232,22 +232,62 @@ mod tests {
 
     #[test]
     fn path_key_always_returns_true() {
-        assert!(looks_like_filesystem_path("anything", Some("path"), false, false));
-        assert!(looks_like_filesystem_path("anything", Some("file"), false, false));
-        assert!(looks_like_filesystem_path("anything", Some("directory"), false, false));
-        assert!(looks_like_filesystem_path("anything", Some("dir"), false, false));
-        assert!(looks_like_filesystem_path("anything", Some("filename"), false, false));
-        assert!(looks_like_filesystem_path("anything", Some("filepath"), false, false));
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("path"),
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("file"),
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("directory"),
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("dir"),
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("filename"),
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("filepath"),
+            false,
+            false
+        ));
     }
 
     #[test]
     fn url_is_not_filesystem_path() {
-        assert!(!looks_like_filesystem_path("https://example.com", None, false, false));
+        assert!(!looks_like_filesystem_path(
+            "https://example.com",
+            None,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn absolute_paths_detected() {
-        assert!(looks_like_filesystem_path("/etc/passwd", None, false, false));
+        assert!(looks_like_filesystem_path(
+            "/etc/passwd",
+            None,
+            false,
+            false
+        ));
         assert!(looks_like_filesystem_path("./relative", None, false, false));
         assert!(looks_like_filesystem_path("../parent", None, false, false));
         assert!(looks_like_filesystem_path("~/home", None, false, false));
@@ -258,33 +298,63 @@ mod tests {
         assert!(looks_like_filesystem_path(".\\windows", None, false, false));
         assert!(looks_like_filesystem_path("..\\parent", None, false, false));
         assert!(looks_like_filesystem_path("~\\user", None, false, false));
-        assert!(looks_like_filesystem_path("\\\\server\\share", None, false, false));
+        assert!(looks_like_filesystem_path(
+            "\\\\server\\share",
+            None,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn windows_drive_path_detected() {
-        assert!(looks_like_filesystem_path("C:\\Users\\test", None, false, false));
+        assert!(looks_like_filesystem_path(
+            "C:\\Users\\test",
+            None,
+            false,
+            false
+        ));
         assert!(looks_like_filesystem_path("D:/path", None, false, false));
     }
 
     #[test]
     fn model_context_suppresses_slash_heuristic() {
-        assert!(!looks_like_filesystem_path("openai/gpt-4", None, false, true));
+        assert!(!looks_like_filesystem_path(
+            "openai/gpt-4",
+            None,
+            false,
+            true
+        ));
     }
 
     #[test]
     fn slash_separated_without_model_context_is_path() {
-        assert!(looks_like_filesystem_path("some/path/here", None, false, false));
+        assert!(looks_like_filesystem_path(
+            "some/path/here",
+            None,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn model_key_suppresses_slash_heuristic() {
-        assert!(!looks_like_filesystem_path("openai/gpt-4", Some("model"), false, false));
+        assert!(!looks_like_filesystem_path(
+            "openai/gpt-4",
+            Some("model"),
+            false,
+            false
+        ));
     }
 
     #[test]
     fn plain_string_is_not_path() {
-        assert!(!looks_like_filesystem_path("hello world", None, false, false));
+        assert!(!looks_like_filesystem_path(
+            "hello world",
+            None,
+            false,
+            false
+        ));
     }
 
     // ── is_path_key / is_model_key / is_network_key / is_environment_key ──

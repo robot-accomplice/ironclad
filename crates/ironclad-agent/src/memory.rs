@@ -326,7 +326,9 @@ mod tests {
             "financial turn should store episodic memory"
         );
         assert!(
-            episodic.iter().any(|e| e.content.contains("Financial interaction")),
+            episodic
+                .iter()
+                .any(|e| e.content.contains("Financial interaction")),
             "should prefix with 'Financial interaction'"
         );
     }
@@ -337,13 +339,7 @@ mod tests {
         let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
         // assistant_msg > 100 chars + Reasoning turn type -> stores semantic
         let long_response = "A ".repeat(60); // 120 chars
-        ingest_turn(
-            &db,
-            &session_id,
-            "explain monads",
-            &long_response,
-            &[],
-        );
+        ingest_turn(&db, &session_id, "explain monads", &long_response, &[]);
         let semantic = ironclad_db::memory::retrieve_semantic(&db, "learned").unwrap();
         assert!(
             !semantic.is_empty(),
@@ -375,13 +371,7 @@ mod tests {
         let db = ironclad_db::Database::new(":memory:").unwrap();
         let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
         // assistant_msg <= 100 chars => no semantic storage
-        ingest_turn(
-            &db,
-            &session_id,
-            "explain monads",
-            "short answer",
-            &[],
-        );
+        ingest_turn(&db, &session_id, "explain monads", "short answer", &[]);
         let semantic = ironclad_db::memory::retrieve_semantic(&db, "learned").unwrap();
         assert!(
             semantic.is_empty(),
@@ -395,13 +385,7 @@ mod tests {
         let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
         // assistant_msg > 200 chars -> summary truncated to first 200
         let long_response = "X".repeat(300);
-        ingest_turn(
-            &db,
-            &session_id,
-            "explain something",
-            &long_response,
-            &[],
-        );
+        ingest_turn(&db, &session_id, "explain something", &long_response, &[]);
         let working = ironclad_db::memory::retrieve_working(&db, &session_id).unwrap();
         assert!(!working.is_empty());
         // The stored summary should be at most 200 chars

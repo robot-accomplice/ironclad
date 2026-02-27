@@ -278,10 +278,7 @@ mod tests {
     #[test]
     fn survival_tier_boundary_dead_needs_one_hour() {
         // Exactly at the 0.999 boundary
-        assert_eq!(
-            SurvivalTier::from_balance(-0.01, 0.999),
-            SurvivalTier::Dead
-        );
+        assert_eq!(SurvivalTier::from_balance(-0.01, 0.999), SurvivalTier::Dead);
         // Just under the boundary
         assert_eq!(
             SurvivalTier::from_balance(-0.01, 0.998),

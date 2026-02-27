@@ -656,7 +656,10 @@ mod tests {
         assert_eq!(skill.script_path.as_deref(), Some("/scripts/updated.sh"));
         assert_eq!(skill.source_path, "/new/path.toml");
         assert_eq!(skill.risk_level, "Dangerous");
-        assert!(skill.last_loaded_at.is_some(), "last_loaded_at should be set");
+        assert!(
+            skill.last_loaded_at.is_some(),
+            "last_loaded_at should be set"
+        );
     }
 
     #[test]
@@ -677,7 +680,15 @@ mod tests {
         .unwrap();
 
         update_skill_full(
-            &db, &id, "hash2", None, None, None, None, "/path.toml", "Safe",
+            &db,
+            &id,
+            "hash2",
+            None,
+            None,
+            None,
+            None,
+            "/path.toml",
+            "Safe",
         )
         .unwrap();
 
@@ -806,7 +817,16 @@ mod tests {
     fn register_skill_defaults_to_caution_risk() {
         let db = test_db();
         let id = register_skill(
-            &db, "default-risk", "structured", None, "/s.toml", "h", None, None, None, None,
+            &db,
+            "default-risk",
+            "structured",
+            None,
+            "/s.toml",
+            "h",
+            None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         let skill = get_skill(&db, &id).unwrap().unwrap();

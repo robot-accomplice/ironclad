@@ -796,10 +796,7 @@ mod tests {
         let result = adapter.register_webhook("http://127.0.0.1:1/hook").await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("setWebhook failed"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("setWebhook failed"), "unexpected error: {err}");
     }
 
     #[tokio::test]
@@ -840,10 +837,7 @@ mod tests {
         let result = adapter.recv().await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("getUpdates failed"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("getUpdates failed"), "unexpected error: {err}");
     }
 
     #[tokio::test]
@@ -864,10 +858,7 @@ mod tests {
     async fn recv_returns_buffered_message_first() {
         let adapter = TelegramAdapter::new("tok".into());
         {
-            let mut buf = adapter
-                .message_buffer
-                .lock()
-                .unwrap();
+            let mut buf = adapter.message_buffer.lock().unwrap();
             buf.push_back(InboundMessage {
                 id: "buf1".into(),
                 platform: "telegram".into(),

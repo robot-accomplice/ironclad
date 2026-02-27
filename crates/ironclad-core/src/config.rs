@@ -2167,7 +2167,10 @@ ignored_folders = [".obsidian", ".git"]
         assert_eq!(default_digest_max_tokens(), 512);
         assert_eq!(default_decay_half_life_days(), 7);
         assert_eq!(default_service_name(), "_ironclad._tcp");
-        assert_eq!(default_obsidian_ignored_folders(), vec![".obsidian", ".trash", ".git"]);
+        assert_eq!(
+            default_obsidian_ignored_folders(),
+            vec![".obsidian", ".trash", ".git"]
+        );
         assert_eq!(default_obsidian_template_folder(), "templates");
         assert_eq!(default_obsidian_default_folder(), "ironclad");
         assert!((default_obsidian_tag_boost() - 0.2).abs() < f64::EPSILON);
@@ -2688,9 +2691,7 @@ per_payment_cap = 0.0
     #[test]
     fn startup_announcements_text_returns_normalized() {
         let cfg = ChannelsConfig {
-            startup_announcements: Some(StartupAnnouncementsConfig::Text(
-                "Telegram".into(),
-            )),
+            startup_announcements: Some(StartupAnnouncementsConfig::Text("Telegram".into())),
             ..ChannelsConfig::default()
         };
         assert_eq!(cfg.startup_announcement_channels(), vec!["telegram"]);

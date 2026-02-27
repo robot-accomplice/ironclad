@@ -558,15 +558,7 @@ mod tests {
     fn update_job_schedule() {
         let db = test_db();
         let id = create_job(&db, "j", "a1", "every", None, "{}").unwrap();
-        let changed = update_job(
-            &db,
-            &id,
-            None,
-            Some("cron"),
-            Some("0 9 * * *"),
-            None,
-        )
-        .unwrap();
+        let changed = update_job(&db, &id, None, Some("cron"), Some("0 9 * * *"), None).unwrap();
         assert!(changed);
         let job = get_job(&db, &id).unwrap().unwrap();
         assert_eq!(job.schedule_kind, "cron");
@@ -600,15 +592,7 @@ mod tests {
     #[test]
     fn update_job_nonexistent_returns_false() {
         let db = test_db();
-        let changed = update_job(
-            &db,
-            "no-such-id",
-            Some("new-name"),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let changed = update_job(&db, "no-such-id", Some("new-name"), None, None, None).unwrap();
         assert!(!changed);
     }
 

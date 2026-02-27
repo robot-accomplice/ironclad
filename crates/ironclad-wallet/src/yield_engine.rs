@@ -745,10 +745,12 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("invalid private key"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid private key")
+        );
     }
 
     #[tokio::test]
@@ -763,10 +765,12 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("invalid private key"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid private key")
+        );
     }
 
     fn rpc_config_with_invalid_pool() -> YieldConfig {
@@ -873,10 +877,7 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("invalid RPC URL"));
+        assert!(result.unwrap_err().to_string().contains("invalid RPC URL"));
     }
 
     #[tokio::test]
@@ -893,10 +894,7 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("invalid RPC URL"));
+        assert!(result.unwrap_err().to_string().contains("invalid RPC URL"));
     }
 
     // --- real_deposit with invalid agent_address ---
@@ -936,10 +934,7 @@ mod tests {
             .get_a_token_balance("0x0000000000000000000000000000000000000001")
             .await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("invalid RPC URL"));
+        assert!(result.unwrap_err().to_string().contains("invalid RPC URL"));
     }
 
     #[tokio::test]

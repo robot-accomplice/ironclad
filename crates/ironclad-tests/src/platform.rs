@@ -212,7 +212,10 @@ fn macos_plist_path_is_under_home_library() {
 fn macos_launchd_plist_content_is_valid() {
     let plist = daemon::launchd_plist("/usr/local/bin/ironclad", "/etc/ironclad.toml", 18789);
     // Must be valid XML plist
-    assert!(plist.contains("<?xml"), "plist should start with XML declaration");
+    assert!(
+        plist.contains("<?xml"),
+        "plist should start with XML declaration"
+    );
     assert!(
         plist.contains("<plist version=\"1.0\">"),
         "plist should contain plist version tag"
@@ -239,7 +242,10 @@ fn macos_launchd_plist_content_is_valid() {
 #[test]
 fn linux_systemd_unit_has_required_sections() {
     let unit = daemon::systemd_unit("/usr/local/bin/ironclad", "/etc/ironclad.toml", 18789);
-    assert!(unit.contains("[Unit]"), "systemd unit must have [Unit] section");
+    assert!(
+        unit.contains("[Unit]"),
+        "systemd unit must have [Unit] section"
+    );
     assert!(
         unit.contains("[Service]"),
         "systemd unit must have [Service] section"
@@ -291,7 +297,10 @@ fn daemon_install_creates_correct_file_in_tempdir() {
             let plist =
                 daemon::launchd_plist(bin.to_str().unwrap(), cfg_file.to_str().unwrap(), 18789);
             assert!(!plist.is_empty(), "launchd plist should not be empty");
-            assert!(plist.contains("serve"), "plist should include 'serve' command");
+            assert!(
+                plist.contains("serve"),
+                "plist should include 'serve' command"
+            );
         }
         "linux" => {
             let unit =
@@ -305,11 +314,8 @@ fn daemon_install_creates_correct_file_in_tempdir() {
         "windows" => {
             // On Windows, daemon uses a marker file; we verify the template-level
             // content is valid by checking the port appears in templates.
-            let plist = daemon::launchd_plist(
-                bin.to_str().unwrap(),
-                cfg_file.to_str().unwrap(),
-                18789,
-            );
+            let plist =
+                daemon::launchd_plist(bin.to_str().unwrap(), cfg_file.to_str().unwrap(), 18789);
             assert!(
                 plist.contains("18789"),
                 "port should appear in generated content"
@@ -466,7 +472,9 @@ primary = "ollama/qwen3:8b"
 fn default_interpreters_include_bash() {
     let cfg = IroncladConfig::from_str(minimal_toml()).unwrap();
     assert!(
-        cfg.skills.allowed_interpreters.contains(&"bash".to_string()),
+        cfg.skills
+            .allowed_interpreters
+            .contains(&"bash".to_string()),
         "default interpreters should include bash on all platforms"
     );
 }
@@ -522,10 +530,7 @@ primary = "ollama/qwen3:8b"
 "#,
     )
     .unwrap();
-    assert_eq!(
-        cfg.server.port, 18789,
-        "default port should be 18789"
-    );
+    assert_eq!(cfg.server.port, 18789, "default port should be 18789");
 }
 
 // ===========================================================================
@@ -586,9 +591,15 @@ fn daemon_systemd_unit_paths_use_forward_slashes() {
 fn os_constant_matches_cfg_attribute() {
     let os = std::env::consts::OS;
     if cfg!(target_os = "macos") {
-        assert_eq!(os, "macos", "cfg!(target_os = \"macos\") should match consts::OS");
+        assert_eq!(
+            os, "macos",
+            "cfg!(target_os = \"macos\") should match consts::OS"
+        );
     } else if cfg!(target_os = "linux") {
-        assert_eq!(os, "linux", "cfg!(target_os = \"linux\") should match consts::OS");
+        assert_eq!(
+            os, "linux",
+            "cfg!(target_os = \"linux\") should match consts::OS"
+        );
     } else if cfg!(target_os = "windows") {
         assert_eq!(
             os, "windows",

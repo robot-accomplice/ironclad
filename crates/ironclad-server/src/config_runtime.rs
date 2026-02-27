@@ -318,22 +318,19 @@ primary = "ollama/qwen3:8b"
         std::fs::write(&backup_path, original).expect("seed backup");
         std::fs::write(&path, overwritten).expect("overwrite");
 
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            overwritten
-        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), overwritten);
 
         restore_from_backup(&path, &backup_path).expect("restore");
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            original
-        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]
     fn merge_patch_deep_merge_objects() {
         let mut base = serde_json::json!({"a": {"inner": 1, "keep": true}});
-        merge_patch(&mut base, &serde_json::json!({"a": {"inner": 99, "new": "val"}}));
+        merge_patch(
+            &mut base,
+            &serde_json::json!({"a": {"inner": 99, "new": "val"}}),
+        );
         assert_eq!(base["a"]["inner"], 99);
         assert_eq!(base["a"]["keep"], true);
         assert_eq!(base["a"]["new"], "val");
@@ -399,9 +396,11 @@ primary = "ollama/qwen3:8b"
         assert!(validation_err.to_string().contains("validation failed"));
 
         let missing_parent = ConfigRuntimeError::MissingParent(PathBuf::from("/some/path"));
-        assert!(missing_parent
-            .to_string()
-            .contains("config parent directory is missing"));
+        assert!(
+            missing_parent
+                .to_string()
+                .contains("config parent directory is missing")
+        );
     }
 
     #[test]

@@ -1198,10 +1198,7 @@ mod tests {
 
         let result = Wallet::load_or_generate(&config).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("does not match"));
+        assert!(result.unwrap_err().to_string().contains("does not match"));
     }
 
     // --- encrypted data format validation ---
@@ -1342,10 +1339,12 @@ mod tests {
         let wallet = wallet_with_rpc(&url).await;
         let result = wallet.get_native_balance().await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("failed to parse balance hex"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("failed to parse balance hex")
+        );
         handle.abort();
     }
 
@@ -1354,7 +1353,12 @@ mod tests {
         let wallet = wallet_with_rpc("http://127.0.0.1:1").await;
         let result = wallet.get_native_balance().await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("RPC request failed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("RPC request failed")
+        );
     }
 
     #[tokio::test]
@@ -1450,7 +1454,12 @@ mod tests {
             .get_erc20_balance("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", 6)
             .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("RPC request failed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("RPC request failed")
+        );
     }
 
     #[tokio::test]

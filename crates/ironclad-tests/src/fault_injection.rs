@@ -25,10 +25,7 @@ mod llm_fault {
 
         match &err {
             IroncladError::Network(msg) => {
-                assert!(
-                    msg.contains("request failed"),
-                    "unexpected message: {msg}"
-                );
+                assert!(msg.contains("request failed"), "unexpected message: {msg}");
             }
             other => panic!("expected Network variant, got: {other:?}"),
         }
@@ -39,9 +36,7 @@ mod llm_fault {
     async fn invalid_url_returns_error() {
         let client = LlmClient::new().expect("client construction");
         let body = serde_json::json!({"model": "test", "messages": []});
-        let result = client
-            .forward_request("not-a-url", "fake-key", body)
-            .await;
+        let result = client.forward_request("not-a-url", "fake-key", body).await;
         assert!(result.is_err(), "invalid URL must return Err");
     }
 
@@ -154,8 +149,13 @@ mod db_fault {
         let db = Database::new(":memory:").expect("in-memory DB");
         let huge_content = "x".repeat(10_000_000); // 10 MB of 'x'
         // Should either succeed or return an error, but never panic
-        let result =
-            ironclad_db::memory::store_working(&db, "test-session", "observation", &huge_content, 5);
+        let result = ironclad_db::memory::store_working(
+            &db,
+            "test-session",
+            "observation",
+            &huge_content,
+            5,
+        );
         // We don't care if it succeeds or fails -- just that it doesn't panic
         let _ = result;
     }
@@ -201,14 +201,13 @@ mod db_fault {
 // ── 3. Config parsing: malformed input returns Err, not panic ───────
 
 mod config_fault {
-    use ironclad_core::config::IroncladConfig;
     use ironclad_core::IroncladError;
+    use ironclad_core::config::IroncladConfig;
 
     /// Completely invalid TOML syntax returns a Config error.
     #[test]
     fn invalid_toml_syntax_returns_config_error() {
-        let err = IroncladConfig::from_str("[[[[invalid toml")
-            .expect_err("invalid TOML must fail");
+        let err = IroncladConfig::from_str("[[[[invalid toml").expect_err("invalid TOML must fail");
         assert!(
             matches!(err, IroncladError::Config(_)),
             "expected Config variant, got: {err:?}"
@@ -281,8 +280,7 @@ mod config_fault {
     /// Loading from a nonexistent file path returns Err.
     #[test]
     fn nonexistent_file_returns_error() {
-        let result =
-            IroncladConfig::from_file(std::path::Path::new("/nonexistent/ironclad.toml"));
+        let result = IroncladConfig::from_file(std::path::Path::new("/nonexistent/ironclad.toml"));
         assert!(result.is_err(), "nonexistent file must fail");
     }
 
@@ -304,10 +302,7 @@ mod config_fault {
         let result = std::panic::catch_unwind(|| {
             let _ = IroncladConfig::from_str("{{{{not_toml}}}}");
         });
-        assert!(
-            result.is_ok(),
-            "parsing malformed TOML must not panic"
-        );
+        assert!(result.is_ok(), "parsing malformed TOML must not panic");
     }
 }
 
@@ -390,10 +385,7 @@ mod wasm_fault {
             .expect_err("execute without load must fail");
         match &err {
             IroncladError::Config(msg) => {
-                assert!(
-                    msg.contains("not loaded"),
-                    "unexpected message: {msg}"
-                );
+                assert!(msg.contains("not loaded"), "unexpected message: {msg}");
             }
             other => panic!("expected Config variant, got: {other:?}"),
         }
@@ -480,30 +472,22 @@ mod scheduler_fault {
     /// Empty cron expression returns false, not panic.
     #[test]
     fn empty_cron_returns_false() {
-        let result =
-            DurableScheduler::evaluate_cron("", None, "2025-01-01T12:00:00+00:00");
+        let result = DurableScheduler::evaluate_cron("", None, "2025-01-01T12:00:00+00:00");
         assert!(!result, "empty cron must return false");
     }
 
     /// Too many fields returns false.
     #[test]
     fn too_many_fields_returns_false() {
-        let result = DurableScheduler::evaluate_cron(
-            "0 12 * * * * * *",
-            None,
-            "2025-01-01T12:00:00+00:00",
-        );
+        let result =
+            DurableScheduler::evaluate_cron("0 12 * * * * * *", None, "2025-01-01T12:00:00+00:00");
         assert!(!result, "too many fields must return false");
     }
 
     /// Too few fields returns false.
     #[test]
     fn too_few_fields_returns_false() {
-        let result = DurableScheduler::evaluate_cron(
-            "0 12",
-            None,
-            "2025-01-01T12:00:00+00:00",
-        );
+        let result = DurableScheduler::evaluate_cron("0 12", None, "2025-01-01T12:00:00+00:00");
         assert!(!result, "too few fields must return false");
     }
 
@@ -524,28 +508,22 @@ mod scheduler_fault {
     /// Invalid schedule expression for `evaluate_at` returns false.
     #[test]
     fn invalid_at_target_returns_false() {
-        let result =
-            DurableScheduler::evaluate_at("not-a-date", "2025-01-01T12:00:00+00:00");
+        let result = DurableScheduler::evaluate_at("not-a-date", "2025-01-01T12:00:00+00:00");
         assert!(!result, "invalid target must return false");
     }
 
     /// Invalid `now` for `evaluate_at` returns false.
     #[test]
     fn invalid_at_now_returns_false() {
-        let result =
-            DurableScheduler::evaluate_at("2025-01-01T12:00:00+00:00", "not-a-date");
+        let result = DurableScheduler::evaluate_at("2025-01-01T12:00:00+00:00", "not-a-date");
         assert!(!result, "invalid now must return false");
     }
 
     /// calculate_next_run with unknown schedule kind returns None.
     #[test]
     fn unknown_schedule_kind_returns_none() {
-        let result = DurableScheduler::calculate_next_run(
-            "weekly",
-            None,
-            None,
-            "2025-01-01T00:00:00+00:00",
-        );
+        let result =
+            DurableScheduler::calculate_next_run("weekly", None, None, "2025-01-01T00:00:00+00:00");
         assert!(result.is_none(), "unknown kind must return None");
     }
 
@@ -583,10 +561,7 @@ mod scheduler_fault {
                 "2025-01-01T12:00:00+00:00",
             )
         });
-        assert!(
-            result.is_ok(),
-            "invalid timezone prefix must not panic"
-        );
+        assert!(result.is_ok(), "invalid timezone prefix must not panic");
     }
 
     /// Negative interval_ms does not panic (may return true or false).
@@ -770,11 +745,7 @@ mod panic_safety {
     #[test]
     fn scheduler_unicode_no_panic() {
         let result = std::panic::catch_unwind(|| {
-            DurableScheduler::evaluate_cron(
-                "\u{FEFF}0 12 * * *",
-                None,
-                "2025-01-01T12:00:00+00:00",
-            )
+            DurableScheduler::evaluate_cron("\u{FEFF}0 12 * * *", None, "2025-01-01T12:00:00+00:00")
         });
         assert!(result.is_ok(), "BOM in cron must not panic");
     }
@@ -786,10 +757,7 @@ mod panic_safety {
             let huge = "0 ".repeat(10_000);
             DurableScheduler::evaluate_cron(&huge, None, "2025-01-01T12:00:00+00:00")
         });
-        assert!(
-            result.is_ok(),
-            "huge cron expression must not panic"
-        );
+        assert!(result.is_ok(), "huge cron expression must not panic");
     }
 
     /// LlmClient::new() never panics.
@@ -816,9 +784,6 @@ mod panic_safety {
         let result = std::panic::catch_unwind(|| {
             let _ = ironclad_agent::wasm::WasmPluginRegistry::new();
         });
-        assert!(
-            result.is_ok(),
-            "WasmPluginRegistry::new() must not panic"
-        );
+        assert!(result.is_ok(), "WasmPluginRegistry::new() must not panic");
     }
 }

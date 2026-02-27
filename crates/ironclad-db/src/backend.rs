@@ -387,7 +387,8 @@ mod tests {
     #[test]
     fn row_get_real_returns_none_for_wrong_type() {
         let mut row = Row::new();
-        row.columns.insert("name".into(), ColumnValue::Text("not a number".into()));
+        row.columns
+            .insert("name".into(), ColumnValue::Text("not a number".into()));
         assert!(row.get_real("name").is_none());
     }
 
@@ -400,10 +401,19 @@ mod tests {
 
     #[test]
     fn storage_error_kind_display_all_variants() {
-        assert_eq!(format!("{}", StorageErrorKind::ConnectionFailed), "connection_failed");
+        assert_eq!(
+            format!("{}", StorageErrorKind::ConnectionFailed),
+            "connection_failed"
+        );
         assert_eq!(format!("{}", StorageErrorKind::QueryFailed), "query_failed");
-        assert_eq!(format!("{}", StorageErrorKind::TransactionFailed), "transaction_failed");
-        assert_eq!(format!("{}", StorageErrorKind::ConstraintViolation), "constraint_violation");
+        assert_eq!(
+            format!("{}", StorageErrorKind::TransactionFailed),
+            "transaction_failed"
+        );
+        assert_eq!(
+            format!("{}", StorageErrorKind::ConstraintViolation),
+            "constraint_violation"
+        );
         assert_eq!(format!("{}", StorageErrorKind::NotFound), "not_found");
         assert_eq!(format!("{}", StorageErrorKind::Internal), "internal");
     }
@@ -439,7 +449,10 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let back: BackendConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.backend, "postgres");
-        assert_eq!(back.postgres_url.as_deref(), Some("postgres://localhost/test"));
+        assert_eq!(
+            back.postgres_url.as_deref(),
+            Some("postgres://localhost/test")
+        );
     }
 
     #[test]

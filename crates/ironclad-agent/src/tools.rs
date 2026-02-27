@@ -1306,7 +1306,11 @@ mod tests {
     async fn search_files_case_sensitive() {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
-        std::fs::write(root.join("test.txt"), "Hello World\nhello world\nHELLO WORLD").unwrap();
+        std::fs::write(
+            root.join("test.txt"),
+            "Hello World\nhello world\nHELLO WORLD",
+        )
+        .unwrap();
 
         let tool = SearchFilesTool;
         let ctx = ToolContext {
@@ -1352,7 +1356,10 @@ mod tests {
     async fn search_files_respects_limit() {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
-        let content = (0..50).map(|i| format!("needle line {i}")).collect::<Vec<_>>().join("\n");
+        let content = (0..50)
+            .map(|i| format!("needle line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         std::fs::write(root.join("many.txt"), content).unwrap();
 
         let tool = SearchFilesTool;
@@ -1586,12 +1593,7 @@ mod tests {
         walk_workspace_files(root, &mut files, &mut count).unwrap();
         let names: Vec<String> = files
             .iter()
-            .map(|p| {
-                p.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string()
-            })
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
             .collect();
         assert!(names.contains(&"real.txt".to_string()));
         assert!(!names.contains(&"symlink_dir".to_string()));

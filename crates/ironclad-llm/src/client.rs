@@ -290,7 +290,10 @@ mod tests {
         // Ensure non-ASCII bytes are encoded (use byte-string via from_utf8_lossy)
         let input = String::from_utf8_lossy(&[0x00, 0x7F]);
         let encoded = pct_encode_query_value(&input);
-        assert!(encoded.contains("%00"), "null byte should be encoded: {encoded}");
+        assert!(
+            encoded.contains("%00"),
+            "null byte should be encoded: {encoded}"
+        );
     }
 
     // ── query auth mode tests ──────────────────────────────────
@@ -425,7 +428,13 @@ mod tests {
         let body = serde_json::json!({ "model": "test" });
         // Key with special characters that need encoding
         let err = client
-            .forward_with_provider(url, "key with spaces&=", body, "query:apikey", &HashMap::new())
+            .forward_with_provider(
+                url,
+                "key with spaces&=",
+                body,
+                "query:apikey",
+                &HashMap::new(),
+            )
             .await
             .unwrap_err();
         match &err {

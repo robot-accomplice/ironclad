@@ -360,7 +360,10 @@ mod tests {
     #[test]
     fn default_chain_accepts_reply() {
         let chain = default_addressability_chain("bot");
-        let msg = make_msg("thanks", Some(json!({"reply_to_bot": true, "is_group": true})));
+        let msg = make_msg(
+            "thanks",
+            Some(json!({"reply_to_bot": true, "is_group": true})),
+        );
         assert!(chain.accepts(&msg));
     }
 

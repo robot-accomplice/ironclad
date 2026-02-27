@@ -438,10 +438,22 @@ mod tests {
     // ── BUG-093: legacy_kind_to_action exhaustive coverage ─────────────
     #[test]
     fn legacy_kind_to_action_all_known_kinds() {
-        assert_eq!(legacy_kind_to_action("agentTurn"), Some("agent_turn_legacy"));
-        assert_eq!(legacy_kind_to_action("metricSnapshot"), Some("metric_snapshot"));
-        assert_eq!(legacy_kind_to_action("expireSessions"), Some("expire_sessions"));
-        assert_eq!(legacy_kind_to_action("recordTransaction"), Some("record_transaction"));
+        assert_eq!(
+            legacy_kind_to_action("agentTurn"),
+            Some("agent_turn_legacy")
+        );
+        assert_eq!(
+            legacy_kind_to_action("metricSnapshot"),
+            Some("metric_snapshot")
+        );
+        assert_eq!(
+            legacy_kind_to_action("expireSessions"),
+            Some("expire_sessions")
+        );
+        assert_eq!(
+            legacy_kind_to_action("recordTransaction"),
+            Some("record_transaction")
+        );
         assert_eq!(legacy_kind_to_action("log"), Some("log"));
         assert_eq!(legacy_kind_to_action("noop"), Some("noop"));
     }
@@ -630,11 +642,7 @@ mod tests {
     fn execute_cron_job_action_takes_precedence_over_kind() {
         let db = test_db();
         // Both action and kind are present; action should win
-        let job = job_with_payload(
-            &db,
-            "precedence",
-            r#"{"action":"noop","kind":"agentTurn"}"#,
-        );
+        let job = job_with_payload(&db, "precedence", r#"{"action":"noop","kind":"agentTurn"}"#);
         let (status, error) = execute_cron_job(&db, &job);
         assert_eq!(status, "success");
         assert!(error.is_none());
@@ -645,15 +653,9 @@ mod tests {
     // tokio time control and aborting after one iteration completes.
 
     fn create_due_job(db: &Database, name: &str, payload: &str) -> String {
-        let job_id = ironclad_db::cron::create_job(
-            db,
-            name,
-            "test-agent",
-            "every",
-            Some("1s"),
-            payload,
-        )
-        .expect("create job");
+        let job_id =
+            ironclad_db::cron::create_job(db, name, "test-agent", "every", Some("1s"), payload)
+                .expect("create job");
         // Set schedule_every_ms to 1 so the job is immediately due
         db.conn()
             .execute(
@@ -737,7 +739,9 @@ mod tests {
 
         let snap_count: i64 = db
             .conn()
-            .query_row("SELECT COUNT(*) FROM metric_snapshots", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM metric_snapshots", [], |row| {
+                row.get(0)
+            })
             .expect("count snapshots");
         assert!(snap_count >= 1, "expected at least one metric snapshot");
     }
@@ -814,13 +818,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn run_cron_worker_skips_disabled_job() {
         let db = test_db();
-        let job_id = create_due_job(&db, "worker-disabled", r#"{"action":"log","message":"skip"}"#);
+        let job_id = create_due_job(
+            &db,
+            "worker-disabled",
+            r#"{"action":"log","message":"skip"}"#,
+        );
         // Disable the job
         db.conn()
-            .execute(
-                "UPDATE cron_jobs SET enabled = 0 WHERE id = ?1",
-                [&job_id],
-            )
+            .execute("UPDATE cron_jobs SET enabled = 0 WHERE id = ?1", [&job_id])
             .expect("disable job");
 
         let db_clone = db.clone();
@@ -933,7 +938,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("count success runs");
-        assert!(success_count >= 1, "expected success run for legacy agent turn");
+        assert!(
+            success_count >= 1,
+            "expected success run for legacy agent turn"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1138,7 +1146,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("count runs");
-        assert!(count >= 1, "every-kind with expr fallback should have been executed");
+        assert!(
+            count >= 1,
+            "every-kind with expr fallback should have been executed"
+        );
     }
 
     #[tokio::test(start_paused = true)]

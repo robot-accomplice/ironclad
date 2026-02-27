@@ -2957,7 +2957,10 @@ mod tests {
 
     #[test]
     fn key_source_status_pairs() {
-        assert_eq!(KeySource::NotRequired.status_pair(), ("not_required", "local"));
+        assert_eq!(
+            KeySource::NotRequired.status_pair(),
+            ("not_required", "local")
+        );
         assert_eq!(KeySource::OAuth.status_pair(), ("configured", "oauth"));
         assert_eq!(
             KeySource::Keystore("test".into()).status_pair(),

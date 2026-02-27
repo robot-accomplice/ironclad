@@ -654,7 +654,11 @@ mod tests {
 
     #[test]
     fn evaluate_cron_invalid_now_returns_false() {
-        assert!(!DurableScheduler::evaluate_cron("0 12 * * *", None, "garbage"));
+        assert!(!DurableScheduler::evaluate_cron(
+            "0 12 * * *",
+            None,
+            "garbage"
+        ));
     }
 
     #[test]
@@ -677,17 +681,25 @@ mod tests {
 
     #[test]
     fn calculate_next_run_invalid_now() {
-        assert!(DurableScheduler::calculate_next_run("interval", None, Some(60_000), "bad").is_none());
+        assert!(
+            DurableScheduler::calculate_next_run("interval", None, Some(60_000), "bad").is_none()
+        );
     }
 
     #[test]
     fn calculate_next_run_at_missing_expr() {
-        assert!(DurableScheduler::calculate_next_run("at", None, None, "2025-01-01T00:00:00+00:00").is_none());
+        assert!(
+            DurableScheduler::calculate_next_run("at", None, None, "2025-01-01T00:00:00+00:00")
+                .is_none()
+        );
     }
 
     #[test]
     fn calculate_next_run_cron_missing_expr() {
-        assert!(DurableScheduler::calculate_next_run("cron", None, None, "2025-01-01T00:00:00+00:00").is_none());
+        assert!(
+            DurableScheduler::calculate_next_run("cron", None, None, "2025-01-01T00:00:00+00:00")
+                .is_none()
+        );
     }
 
     #[test]

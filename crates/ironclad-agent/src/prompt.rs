@@ -338,9 +338,7 @@ mod tests {
         let content = "trusted content";
         let tag = compute_hmac(content, secret);
         // First line missing boundary marker
-        let tagged = format!(
-            "not a boundary\n{content}\n{BOUNDARY_PREFIX}{tag}{BOUNDARY_SUFFIX}"
-        );
+        let tagged = format!("not a boundary\n{content}\n{BOUNDARY_PREFIX}{tag}{BOUNDARY_SUFFIX}");
         assert!(!verify_hmac_boundary(&tagged, secret));
     }
 
@@ -350,9 +348,7 @@ mod tests {
         let content = "trusted content";
         let tag = compute_hmac(content, secret);
         // Last line missing boundary marker
-        let tagged = format!(
-            "{BOUNDARY_PREFIX}{tag}{BOUNDARY_SUFFIX}\n{content}\nnot a boundary"
-        );
+        let tagged = format!("{BOUNDARY_PREFIX}{tag}{BOUNDARY_SUFFIX}\n{content}\nnot a boundary");
         assert!(!verify_hmac_boundary(&tagged, secret));
     }
 
@@ -371,12 +367,7 @@ mod tests {
 
     #[test]
     fn build_system_prompt_skills_only() {
-        let prompt = build_system_prompt(
-            "SkillBot",
-            None,
-            None,
-            &["Skill A instructions".into()],
-        );
+        let prompt = build_system_prompt("SkillBot", None, None, &["Skill A instructions".into()]);
         assert!(prompt.contains("# Agent: SkillBot"));
         assert!(prompt.contains("## Active Skills"));
         assert!(prompt.contains("### Skill 1"));

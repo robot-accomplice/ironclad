@@ -570,7 +570,10 @@ mod tests {
 
         // resolve_token should attempt refresh, which will fail (network)
         let err = mgr.resolve_token("test-expired").await;
-        assert!(err.is_err(), "refresh should fail against real Anthropic endpoint");
+        assert!(
+            err.is_err(),
+            "refresh should fail against real Anthropic endpoint"
+        );
         mgr.remove_tokens("test-expired").await;
     }
 
@@ -778,7 +781,10 @@ mod tests {
             client_id: None,
         };
         let json = serde_json::to_string(&token).unwrap();
-        assert!(!json.contains("client_id"), "client_id should be skipped: {json}");
+        assert!(
+            !json.contains("client_id"),
+            "client_id should be skipped: {json}"
+        );
     }
 
     #[test]
@@ -791,7 +797,10 @@ mod tests {
             client_id: Some("my-client".into()),
         };
         let json = serde_json::to_string(&token).unwrap();
-        assert!(json.contains("client_id"), "client_id should be present: {json}");
+        assert!(
+            json.contains("client_id"),
+            "client_id should be present: {json}"
+        );
         assert!(json.contains("my-client"));
     }
 

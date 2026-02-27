@@ -480,7 +480,11 @@ mod tests {
     fn should_adjust_interval_already_at_original_no_change() {
         let daemon = HeartbeatDaemon::new(60_000);
         // Normal/High with interval == original -> None
-        assert!(daemon.should_adjust_interval(&SurvivalTier::Normal).is_none());
+        assert!(
+            daemon
+                .should_adjust_interval(&SurvivalTier::Normal)
+                .is_none()
+        );
         assert!(daemon.should_adjust_interval(&SurvivalTier::High).is_none());
     }
 

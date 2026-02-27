@@ -775,7 +775,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(idx_count >= 10, "expected at least 10 custom indexes, got {idx_count}");
+        assert!(
+            idx_count >= 10,
+            "expected at least 10 custom indexes, got {idx_count}"
+        );
     }
 
     #[test]
@@ -789,7 +792,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(trigger_count >= 2, "expected at least 2 triggers (episodic_ai, episodic_ad), got {trigger_count}");
+        assert!(
+            trigger_count >= 2,
+            "expected at least 2 triggers (episodic_ai, episodic_ad), got {trigger_count}"
+        );
     }
 
     #[test]
@@ -809,7 +815,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(fts_count, 1, "FTS insert trigger should fire on episodic insert");
+        assert_eq!(
+            fts_count, 1,
+            "FTS insert trigger should fire on episodic insert"
+        );
     }
 
     #[test]
@@ -831,7 +840,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(fts_count, 0, "FTS delete trigger should fire on episodic delete");
+        assert_eq!(
+            fts_count, 0,
+            "FTS delete trigger should fire on episodic delete"
+        );
     }
 
     #[test]
@@ -877,10 +889,17 @@ mod tests {
         initialize_db(&db).unwrap();
         let conn = db.conn();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM schema_version WHERE version = 10", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM schema_version WHERE version = 10",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         // Should still be exactly 1 row for version 10
-        assert_eq!(count, 1, "reinitialize should not duplicate the seed version row");
+        assert_eq!(
+            count, 1,
+            "reinitialize should not duplicate the seed version row"
+        );
     }
 
     // ── ensure_optional_columns: test the ALTER TABLE branches ──────────
@@ -893,7 +912,8 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(SCHEMA_SQL).unwrap();
-        conn.execute("INSERT INTO schema_version (version) VALUES (10)", []).unwrap();
+        conn.execute("INSERT INTO schema_version (version) VALUES (10)", [])
+            .unwrap();
 
         // We can't drop a column in SQLite easily, so instead we create a
         // separate DB from scratch without the column and test the has_column logic.
@@ -919,7 +939,11 @@ mod tests {
 
         let conn = db.conn();
         let max_version: i64 = conn
-            .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |row| row.get(0))
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert!(max_version >= 10);
     }
@@ -948,8 +972,11 @@ mod tests {
         conn.execute(
             "INSERT INTO sessions (id, agent_id, scope_key) VALUES ('s1', 'a1', 'agent')",
             [],
-        ).unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0)).unwrap();
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 1);
 
         // working_memory table
@@ -963,11 +990,13 @@ mod tests {
             "INSERT INTO episodic_memory (id, classification, content) VALUES ('e1', 'event', 'something happened')",
             [],
         ).unwrap();
-        let fts_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM memory_fts WHERE source_table = 'episodic'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let fts_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_fts WHERE source_table = 'episodic'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(fts_count, 1);
     }
 }

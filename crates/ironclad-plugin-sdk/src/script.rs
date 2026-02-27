@@ -529,10 +529,7 @@ mod tests {
         assert_eq!(plugin.timeout, Duration::from_secs(5));
     }
 
-    fn test_manifest_with_dangerous(
-        name: &str,
-        tools: Vec<(&str, &str, bool)>,
-    ) -> PluginManifest {
+    fn test_manifest_with_dangerous(name: &str, tools: Vec<(&str, &str, bool)>) -> PluginManifest {
         PluginManifest {
             name: name.into(),
             version: "1.0.0".into(),
@@ -694,8 +691,7 @@ mod tests {
     #[test]
     fn is_tool_dangerous_returns_true() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest =
-            test_manifest_with_dangerous("p", vec![("rm_all", "dangerous op", true)]);
+        let manifest = test_manifest_with_dangerous("p", vec![("rm_all", "dangerous op", true)]);
         let plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf());
         assert!(plugin.is_tool_dangerous("rm_all"));
     }
@@ -703,8 +699,7 @@ mod tests {
     #[test]
     fn is_tool_dangerous_returns_false_for_safe() {
         let dir = tempfile::tempdir().unwrap();
-        let manifest =
-            test_manifest_with_dangerous("p", vec![("list", "safe op", false)]);
+        let manifest = test_manifest_with_dangerous("p", vec![("list", "safe op", false)]);
         let plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf());
         assert!(!plugin.is_tool_dangerous("list"));
     }
@@ -781,7 +776,9 @@ mod tests {
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
         assert!(
-            msg.contains("spawn") || msg.contains("permission") || msg.contains("denied")
+            msg.contains("spawn")
+                || msg.contains("permission")
+                || msg.contains("denied")
                 || msg.contains("failed"),
             "unexpected error: {msg}"
         );

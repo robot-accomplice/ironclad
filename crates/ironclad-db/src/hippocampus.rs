@@ -598,11 +598,8 @@ mod tests {
 
         // Table should have at least id and created_at
         let conn = db.conn();
-        conn.execute(
-            "INSERT INTO \"agent_empty\" (id) VALUES ('row1')",
-            [],
-        )
-        .unwrap();
+        conn.execute("INSERT INTO \"agent_empty\" (id) VALUES ('row1')", [])
+            .unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM \"agent_empty\"", [], |row| row.get(0))
             .unwrap();
@@ -662,10 +659,22 @@ mod tests {
         create_agent_table(&db, "agent1", "notes", "Agent notes storage", &cols).unwrap();
 
         let summary = schema_summary(&db).unwrap();
-        assert!(summary.contains("(owned by: agent1)"), "summary should show agent owner");
-        assert!(summary.contains("note"), "summary should include column names");
-        assert!(summary.contains("nullable"), "nullable columns should be marked");
-        assert!(summary.contains("The note content"), "column descriptions should appear");
+        assert!(
+            summary.contains("(owned by: agent1)"),
+            "summary should show agent owner"
+        );
+        assert!(
+            summary.contains("note"),
+            "summary should include column names"
+        );
+        assert!(
+            summary.contains("nullable"),
+            "nullable columns should be marked"
+        );
+        assert!(
+            summary.contains("The note content"),
+            "column descriptions should appear"
+        );
     }
 
     #[test]
@@ -697,6 +706,10 @@ mod tests {
         seed_system_tables(&db).unwrap();
         seed_system_tables(&db).unwrap();
         let tables = list_tables(&db).unwrap();
-        assert_eq!(tables.len(), 4, "seeding twice should not create duplicates");
+        assert_eq!(
+            tables.len(),
+            4,
+            "seeding twice should not create duplicates"
+        );
     }
 }

@@ -509,9 +509,7 @@ mod tests {
     #[tokio::test]
     async fn json_rpc_network_error() {
         let adapter = fast_fail_adapter();
-        let result = adapter
-            .json_rpc("send", json!({"message": "test"}))
-            .await;
+        let result = adapter.json_rpc("send", json!({"message": "test"})).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(

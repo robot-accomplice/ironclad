@@ -393,7 +393,12 @@ mod tests {
         let allowed = vec!["bash".to_string()];
         let result = check_interpreter(&script, &allowed);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("cannot infer interpreter"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("cannot infer interpreter")
+        );
     }
 
     #[test]
@@ -442,7 +447,12 @@ mod tests {
 
         let result = runner.resolve_script_path(Path::new("/etc/passwd"));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("absolute script paths"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("absolute script paths")
+        );
     }
 
     #[test]
@@ -484,7 +494,10 @@ mod tests {
         let mut cfg = test_config();
         cfg.skills_dir = dir.path().to_path_buf();
         let runner = ScriptRunner::new(cfg);
-        let result = runner.execute(Path::new("args.sh"), &["hello", "world"]).await.unwrap();
+        let result = runner
+            .execute(Path::new("args.sh"), &["hello", "world"])
+            .await
+            .unwrap();
 
         assert_eq!(result.exit_code, 0);
         assert!(result.stdout.contains("hello world"));
@@ -518,6 +531,9 @@ mod tests {
         let runner = ScriptRunner::new(cfg);
         let result = runner.execute(Path::new("verbose.sh"), &[]).await.unwrap();
 
-        assert!(result.stdout.len() <= 1024, "stdout should be truncated to max_output_bytes");
+        assert!(
+            result.stdout.len() <= 1024,
+            "stdout should be truncated to max_output_bytes"
+        );
     }
 }

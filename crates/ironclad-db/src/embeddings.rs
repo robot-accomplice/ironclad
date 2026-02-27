@@ -463,12 +463,16 @@ mod tests {
     fn hybrid_search_fts_matches() {
         let db = test_db();
         // Store data in FTS-indexed tables (working_memory populates memory_fts)
-        crate::memory::store_working(&db, "sess", "note", "quantum computing breakthrough", 5).unwrap();
+        crate::memory::store_working(&db, "sess", "note", "quantum computing breakthrough", 5)
+            .unwrap();
         store_embedding(&db, "e1", "test", "t1", "classical computing", &[0.0, 1.0]).unwrap();
 
         // Search with FTS query that should match the working memory entry
         let results = hybrid_search(&db, "quantum", Some(&[1.0, 0.0]), 10, 0.5).unwrap();
-        assert!(!results.is_empty(), "hybrid search should find FTS match for 'quantum'");
+        assert!(
+            !results.is_empty(),
+            "hybrid search should find FTS match for 'quantum'"
+        );
     }
 
     #[test]
@@ -479,14 +483,26 @@ mod tests {
         // Search with only FTS (no embedding provided), weight doesn't matter much
         let results = hybrid_search(&db, "xyzzy", None, 10, 0.5).unwrap();
         // FTS results get weighted by (1 - hybrid_weight), so they should appear
-        assert!(!results.is_empty(), "hybrid search without embedding should find FTS results");
+        assert!(
+            !results.is_empty(),
+            "hybrid search without embedding should find FTS results"
+        );
     }
 
     #[test]
     fn hybrid_search_combined_scores() {
         let db = test_db();
-        crate::memory::store_working(&db, "sess", "note", "machine learning algorithms", 5).unwrap();
-        store_embedding(&db, "e1", "test", "t1", "machine learning", &[1.0, 0.0, 0.0]).unwrap();
+        crate::memory::store_working(&db, "sess", "note", "machine learning algorithms", 5)
+            .unwrap();
+        store_embedding(
+            &db,
+            "e1",
+            "test",
+            "t1",
+            "machine learning",
+            &[1.0, 0.0, 0.0],
+        )
+        .unwrap();
 
         let results = hybrid_search(&db, "machine", Some(&[1.0, 0.0, 0.0]), 10, 0.5).unwrap();
         // Should have results from both FTS and vector search

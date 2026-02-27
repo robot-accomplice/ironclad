@@ -397,7 +397,10 @@ mod tests {
         let predictor = ToolPredictor::new(0.3);
         let recent = vec!["file_read".to_string()];
         let predictions = predictor.predict(&recent, &[]);
-        assert!(predictions.is_empty(), "no available tools means no predictions");
+        assert!(
+            predictions.is_empty(),
+            "no available tools means no predictions"
+        );
     }
 
     #[test]
@@ -405,7 +408,10 @@ mod tests {
         let predictor = ToolPredictor::new(0.3);
         let available = vec!["file_read".to_string()];
         let predictions = predictor.predict(&[], &available);
-        assert!(predictions.is_empty(), "no recent tools means no predictions");
+        assert!(
+            predictions.is_empty(),
+            "no recent tools means no predictions"
+        );
     }
 
     #[test]
@@ -413,7 +419,11 @@ mod tests {
         let cache = SpeculationCache::new(1);
         assert!(cache.start_speculation(), "first slot should succeed");
         assert!(!cache.start_speculation(), "second slot should fail");
-        assert_eq!(cache.active_count(), 1, "count should remain 1 after failed attempt");
+        assert_eq!(
+            cache.active_count(),
+            1,
+            "count should remain 1 after failed attempt"
+        );
         cache.end_speculation();
         assert_eq!(cache.active_count(), 0);
         assert!(cache.start_speculation(), "slot should be available again");
@@ -443,7 +453,10 @@ mod tests {
         ];
         let available = vec!["file_read".to_string(), "memory_search".to_string()];
         let predictions = predictor.predict(&recent, &available);
-        let file_read_count = predictions.iter().filter(|p| p.tool_name == "file_read").count();
+        let file_read_count = predictions
+            .iter()
+            .filter(|p| p.tool_name == "file_read")
+            .count();
         assert_eq!(
             file_read_count, 1,
             "file_read should appear exactly once (no duplicate from repeat heuristic)"
@@ -488,7 +501,10 @@ mod tests {
         let params = serde_json::json!({"key": "value"});
         let key1 = SpeculationKey::new("tool_a", &params);
         let key2 = SpeculationKey::new("tool_b", &params);
-        assert_ne!(key1, key2, "different tool names should produce different keys");
+        assert_ne!(
+            key1, key2,
+            "different tool names should produce different keys"
+        );
     }
 
     #[test]

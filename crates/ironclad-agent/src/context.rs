@@ -560,19 +560,20 @@ mod tests {
 
     #[test]
     fn extract_trimmable_fewer_than_preserve() {
-        let msgs = vec![
-            UnifiedMessage {
-                role: "user".into(),
-                content: "only one".into(),
-                parts: None,
-            },
-        ];
+        let msgs = vec![UnifiedMessage {
+            role: "user".into(),
+            content: "only one".into(),
+            parts: None,
+        }];
         let cfg = PruningConfig {
             preserve_recent: 5,
             ..Default::default()
         };
         let trimmed = extract_trimmable(&msgs, &cfg);
-        assert!(trimmed.is_empty(), "nothing to trim if fewer than preserve_recent");
+        assert!(
+            trimmed.is_empty(),
+            "nothing to trim if fewer than preserve_recent"
+        );
     }
 
     #[test]

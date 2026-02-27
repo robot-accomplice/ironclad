@@ -592,11 +592,7 @@ mod tests {
 
     #[test]
     fn normalize_skills_removes_empty_and_whitespace() {
-        let skills = vec![
-            "".to_string(),
-            "  ".to_string(),
-            "analysis".to_string(),
-        ];
+        let skills = vec!["".to_string(), "  ".to_string(), "analysis".to_string()];
         let out = normalize_skills(&skills);
         assert_eq!(out, vec!["analysis"]);
     }
@@ -636,24 +632,20 @@ mod tests {
 
     #[test]
     fn validate_contract_accepts_valid_subagent() {
-        assert!(validate_subagent_contract(
-            "subagent",
-            "auto",
-            &["geo".to_string(), "risk".to_string()],
-            None
-        )
-        .is_ok());
+        assert!(
+            validate_subagent_contract(
+                "subagent",
+                "auto",
+                &["geo".to_string(), "risk".to_string()],
+                None
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn validate_contract_accepts_valid_model_proxy() {
-        assert!(validate_subagent_contract(
-            "model-proxy",
-            "openai/gpt-4o",
-            &[],
-            None
-        )
-        .is_ok());
+        assert!(validate_subagent_contract("model-proxy", "openai/gpt-4o", &[], None).is_ok());
     }
 
     #[test]
@@ -672,13 +664,9 @@ mod tests {
 
     #[test]
     fn validate_contract_rejects_model_proxy_with_skills() {
-        let err = validate_subagent_contract(
-            "model-proxy",
-            "openai/gpt-4o",
-            &["geo".to_string()],
-            None,
-        )
-        .unwrap_err();
+        let err =
+            validate_subagent_contract("model-proxy", "openai/gpt-4o", &["geo".to_string()], None)
+                .unwrap_err();
         assert!(err.1.contains("cannot own skills"));
     }
 
@@ -690,15 +678,13 @@ mod tests {
 
     #[test]
     fn validate_contract_rejects_model_proxy_with_auto() {
-        let err =
-            validate_subagent_contract("model-proxy", "auto", &[], None).unwrap_err();
+        let err = validate_subagent_contract("model-proxy", "auto", &[], None).unwrap_err();
         assert!(err.1.contains("concrete provider/model"));
     }
 
     #[test]
     fn validate_contract_rejects_model_proxy_with_commander() {
-        let err =
-            validate_subagent_contract("model-proxy", "commander", &[], None).unwrap_err();
+        let err = validate_subagent_contract("model-proxy", "commander", &[], None).unwrap_err();
         assert!(err.1.contains("concrete provider/model"));
     }
 
@@ -773,7 +759,10 @@ mod tests {
             "enabled": false
         });
         let req: UpdateSubAgentRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(req.model.as_deref(), Some("anthropic/claude-sonnet-4-20250514"));
+        assert_eq!(
+            req.model.as_deref(),
+            Some("anthropic/claude-sonnet-4-20250514")
+        );
         assert_eq!(req.enabled, Some(false));
         assert!(req.role.is_none());
     }

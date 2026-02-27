@@ -619,7 +619,12 @@ mod tests {
         // Verify action_name covers every variant
         let variants: Vec<(BrowserAction, &str)> = vec![
             (BrowserAction::Navigate { url: "x".into() }, "navigate"),
-            (BrowserAction::Click { selector: "x".into() }, "click"),
+            (
+                BrowserAction::Click {
+                    selector: "x".into(),
+                },
+                "click",
+            ),
             (
                 BrowserAction::Type {
                     selector: "x".into(),
@@ -675,10 +680,10 @@ mod tests {
     // CDP responses, then connect a CdpSession to it and run
     // ActionExecutor methods.
 
-    use tokio::net::TcpListener;
     use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message;
     use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
 
     /// Spin up a mock CDP server that responds to commands with the given handler.
     async fn mock_cdp_session<F>(handler: F) -> CdpSession
@@ -722,7 +727,11 @@ mod tests {
             url: "https://example.com".into(),
         };
         let result = ActionExecutor::execute(&session, &action).await;
-        assert!(result.success, "navigate should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "navigate should succeed: {:?}",
+            result.error
+        );
         assert_eq!(result.action, "navigate");
         let data = result.data.unwrap();
         assert_eq!(data["url"], "https://example.com");
@@ -931,7 +940,11 @@ mod tests {
             expression: "21 * 2".into(),
         };
         let result = ActionExecutor::execute(&session, &action).await;
-        assert!(result.success, "evaluate should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "evaluate should succeed: {:?}",
+            result.error
+        );
         let data = result.data.unwrap();
         assert_eq!(data["value"], 42);
     }
@@ -974,13 +987,7 @@ mod tests {
         };
         let result = ActionExecutor::execute(&session, &action).await;
         assert!(!result.success);
-        assert!(
-            result
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("ReferenceError")
-        );
+        assert!(result.error.as_deref().unwrap().contains("ReferenceError"));
     }
 
     #[tokio::test]
@@ -1082,11 +1089,7 @@ mod tests {
         .await;
 
         let result = ActionExecutor::execute(&session, &BrowserAction::GoBack).await;
-        assert!(
-            result.success,
-            "go_back should succeed: {:?}",
-            result.error
-        );
+        assert!(result.success, "go_back should succeed: {:?}", result.error);
         assert_eq!(result.data.unwrap()["navigated"], "back");
     }
 
@@ -1116,11 +1119,7 @@ mod tests {
         .await;
 
         let result = ActionExecutor::execute(&session, &BrowserAction::Reload).await;
-        assert!(
-            result.success,
-            "reload should succeed: {:?}",
-            result.error
-        );
+        assert!(result.success, "reload should succeed: {:?}", result.error);
         assert_eq!(result.data.unwrap()["reloaded"], true);
     }
 
@@ -1285,8 +1284,8 @@ mod tests {
     #[tokio::test]
     async fn execute_click_mouse_event_error() {
         // First eval succeeds with coords, but mouse dispatch fails
-        use std::sync::atomic::{AtomicU32, Ordering as AtomOrd};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering as AtomOrd};
 
         let call_count = Arc::new(AtomicU32::new(0));
         let call_count_clone = call_count.clone();

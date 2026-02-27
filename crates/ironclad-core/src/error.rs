@@ -309,9 +309,7 @@ mod tests {
             #[serde(serialize_with = "force_toml_ser_error")]
             field: String,
         }
-        let result = toml::to_string(&Bad {
-            field: "x".into(),
-        });
+        let result = toml::to_string(&Bad { field: "x".into() });
         let err: IroncladError = result.unwrap_err().into();
         assert!(matches!(err, IroncladError::Config(_)));
         assert!(err.to_string().contains("TOML serialization error"));

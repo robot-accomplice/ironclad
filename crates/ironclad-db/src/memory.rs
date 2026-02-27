@@ -804,7 +804,14 @@ mod tests {
     fn retrieve_semantic_all_respects_limit() {
         let db = test_db();
         for i in 0..5 {
-            store_semantic(&db, "cat", &format!("key{i}"), &format!("val{i}"), 0.5 + i as f64 * 0.1).unwrap();
+            store_semantic(
+                &db,
+                "cat",
+                &format!("key{i}"),
+                &format!("val{i}"),
+                0.5 + i as f64 * 0.1,
+            )
+            .unwrap();
         }
         let entries = retrieve_semantic_all(&db, 2).unwrap();
         assert_eq!(entries.len(), 2);
@@ -831,7 +838,10 @@ mod tests {
         ).unwrap();
 
         let hits = fts_search(&db, "quantum physics", 10).unwrap();
-        assert!(!hits.is_empty(), "LIKE fallback should find relationship interaction_summary");
+        assert!(
+            !hits.is_empty(),
+            "LIKE fallback should find relationship interaction_summary"
+        );
     }
 
     #[test]
@@ -839,7 +849,14 @@ mod tests {
         let db = test_db();
         // Create enough FTS entries so the limit is reached during the FTS phase
         for i in 0..5 {
-            store_working(&db, "sess", "note", &format!("searchable keyword item {i}"), 5).unwrap();
+            store_working(
+                &db,
+                "sess",
+                "note",
+                &format!("searchable keyword item {i}"),
+                5,
+            )
+            .unwrap();
         }
         let hits = fts_search(&db, "keyword", 2).unwrap();
         assert_eq!(hits.len(), 2, "should stop at limit during FTS phase");
@@ -850,16 +867,32 @@ mod tests {
         let db = test_db();
         // Store items in procedural memory (LIKE fallback) with a common pattern
         for i in 0..5 {
-            store_procedural(&db, &format!("proc_{i}"), &format!("step: run the xyzzy command {i}")).unwrap();
+            store_procedural(
+                &db,
+                &format!("proc_{i}"),
+                &format!("step: run the xyzzy command {i}"),
+            )
+            .unwrap();
         }
         let hits = fts_search(&db, "xyzzy command", 2).unwrap();
-        assert_eq!(hits.len(), 2, "should stop at limit during LIKE fallback phase");
+        assert_eq!(
+            hits.len(),
+            2,
+            "should stop at limit during LIKE fallback phase"
+        );
     }
 
     #[test]
     fn fts_search_special_chars_in_query() {
         let db = test_db();
-        store_working(&db, "sess", "note", "test with percent % and underscore _", 5).unwrap();
+        store_working(
+            &db,
+            "sess",
+            "note",
+            "test with percent % and underscore _",
+            5,
+        )
+        .unwrap();
         // This tests the sanitize_fts_query and the LIKE escape logic
         let hits = fts_search(&db, "percent", 10).unwrap();
         assert!(!hits.is_empty());

@@ -574,9 +574,7 @@ mod tests {
     async fn send_to_transient_error_records_last_error() {
         let router = ChannelRouter::new();
         router
-            .register(Arc::new(TransientFailAdapter {
-                name: "ch".into(),
-            }))
+            .register(Arc::new(TransientFailAdapter { name: "ch".into() }))
             .await;
 
         let msg = OutboundMessage {
@@ -743,9 +741,7 @@ mod tests {
     async fn drain_retry_queue_successful_delivery() {
         let router = ChannelRouter::new();
         // Register a mock adapter that succeeds
-        router
-            .register(Arc::new(MockAdapter::new("test_ch")))
-            .await;
+        router.register(Arc::new(MockAdapter::new("test_ch"))).await;
 
         // Enqueue a delivery item
         router
@@ -887,12 +883,8 @@ mod tests {
     #[tokio::test]
     async fn channel_names() {
         let router = ChannelRouter::new();
-        router
-            .register(Arc::new(MockAdapter::new("alpha")))
-            .await;
-        router
-            .register(Arc::new(MockAdapter::new("beta")))
-            .await;
+        router.register(Arc::new(MockAdapter::new("alpha"))).await;
+        router.register(Arc::new(MockAdapter::new("beta"))).await;
         let mut names = router.channel_names().await;
         names.sort();
         assert_eq!(names, vec!["alpha", "beta"]);

@@ -430,9 +430,7 @@ mod tests {
         let session = CdpSession::connect(&url).await.unwrap();
         session.set_timeout(Duration::from_millis(2000));
 
-        let result = session
-            .send_command("Page.enable", json!({}))
-            .await;
+        let result = session.send_command("Page.enable", json!({})).await;
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();
         assert!(
@@ -482,7 +480,10 @@ mod tests {
         .await;
 
         let session = CdpSession::connect(&url).await.unwrap();
-        let result = session.send_command("Page.enable", json!({})).await.unwrap();
+        let result = session
+            .send_command("Page.enable", json!({}))
+            .await
+            .unwrap();
         // Should default to empty object
         assert_eq!(result, json!({}));
     }

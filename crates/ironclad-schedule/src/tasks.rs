@@ -413,8 +413,7 @@ mod tests {
                 assert!(
                     result.success,
                     "Task {:?} failed at tier {:?}",
-                    task,
-                    ctx.survival_tier
+                    task, ctx.survival_tier
                 );
             }
         }

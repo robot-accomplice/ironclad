@@ -739,7 +739,11 @@ mod tests {
     fn is_resumable_close_all_codes() {
         let resumable = [4000, 4001, 4002, 4003, 4005, 4007, 4008, 4009];
         for code in resumable {
-            assert!(DiscordAdapter::is_resumable_close(code), "code {} should be resumable", code);
+            assert!(
+                DiscordAdapter::is_resumable_close(code),
+                "code {} should be resumable",
+                code
+            );
         }
         // Non-resumable
         assert!(!DiscordAdapter::is_resumable_close(4004));
@@ -752,7 +756,11 @@ mod tests {
     fn is_fatal_close_all_codes() {
         let fatal = [4004, 4010, 4011, 4012, 4013, 4014];
         for code in fatal {
-            assert!(DiscordAdapter::is_fatal_close(code), "code {} should be fatal", code);
+            assert!(
+                DiscordAdapter::is_fatal_close(code),
+                "code {} should be fatal",
+                code
+            );
         }
         // Non-fatal
         assert!(!DiscordAdapter::is_fatal_close(4000));

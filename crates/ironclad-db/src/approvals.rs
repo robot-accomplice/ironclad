@@ -189,14 +189,8 @@ mod tests {
     fn record_approval_decision_on_nonexistent_is_noop() {
         let db = test_db();
         // Should not error even if no row with that id exists
-        record_approval_decision(
-            &db,
-            "nonexistent",
-            "denied",
-            "admin",
-            "2025-01-01T00:00:00",
-        )
-        .unwrap();
+        record_approval_decision(&db, "nonexistent", "denied", "admin", "2025-01-01T00:00:00")
+            .unwrap();
     }
 
     #[test]

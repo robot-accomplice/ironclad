@@ -1434,10 +1434,22 @@ mod tests {
 
     #[test]
     fn session_status_from_str_lossy() {
-        assert_eq!(SessionStatus::from_str_lossy("archived"), SessionStatus::Archived);
-        assert_eq!(SessionStatus::from_str_lossy("expired"), SessionStatus::Expired);
-        assert_eq!(SessionStatus::from_str_lossy("active"), SessionStatus::Active);
-        assert_eq!(SessionStatus::from_str_lossy("unknown"), SessionStatus::Active);
+        assert_eq!(
+            SessionStatus::from_str_lossy("archived"),
+            SessionStatus::Archived
+        );
+        assert_eq!(
+            SessionStatus::from_str_lossy("expired"),
+            SessionStatus::Expired
+        );
+        assert_eq!(
+            SessionStatus::from_str_lossy("active"),
+            SessionStatus::Active
+        );
+        assert_eq!(
+            SessionStatus::from_str_lossy("unknown"),
+            SessionStatus::Active
+        );
         assert_eq!(SessionStatus::from_str_lossy(""), SessionStatus::Active);
     }
 
@@ -1453,7 +1465,10 @@ mod tests {
 
     #[test]
     fn message_role_from_str_lossy() {
-        assert_eq!(MessageRole::from_str_lossy("assistant"), MessageRole::Assistant);
+        assert_eq!(
+            MessageRole::from_str_lossy("assistant"),
+            MessageRole::Assistant
+        );
         assert_eq!(MessageRole::from_str_lossy("system"), MessageRole::System);
         assert_eq!(MessageRole::from_str_lossy("tool"), MessageRole::Tool);
         assert_eq!(MessageRole::from_str_lossy("user"), MessageRole::User);
@@ -1467,7 +1482,16 @@ mod tests {
     fn create_turn_with_id_roundtrip() {
         let db = test_db();
         let sid = find_or_create(&db, "agent-twid", None).unwrap();
-        create_turn_with_id(&db, "custom-turn-1", &sid, Some("gpt-4"), Some(100), Some(200), Some(0.05)).unwrap();
+        create_turn_with_id(
+            &db,
+            "custom-turn-1",
+            &sid,
+            Some("gpt-4"),
+            Some(100),
+            Some(200),
+            Some(0.05),
+        )
+        .unwrap();
 
         let turns = list_turns_for_session(&db, &sid).unwrap();
         assert_eq!(turns.len(), 1);
@@ -1505,10 +1529,12 @@ mod tests {
         let db = test_db();
         let sid = find_or_create(&db, "agent-old", None).unwrap();
         // Artificially age the session by setting updated_at to a past date
-        db.conn().execute(
-            "UPDATE sessions SET updated_at = datetime('now', '-2 days') WHERE id = ?1",
-            [&sid],
-        ).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE sessions SET updated_at = datetime('now', '-2 days') WHERE id = ?1",
+                [&sid],
+            )
+            .unwrap();
 
         let count = expire_stale_sessions(&db, 60).unwrap(); // 60 seconds max age
         assert_eq!(count, 1);
@@ -1521,10 +1547,12 @@ mod tests {
     fn list_stale_active_session_ids_returns_stale() {
         let db = test_db();
         let sid = find_or_create(&db, "agent-stale", None).unwrap();
-        db.conn().execute(
-            "UPDATE sessions SET updated_at = datetime('now', '-3 days') WHERE id = ?1",
-            [&sid],
-        ).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE sessions SET updated_at = datetime('now', '-3 days') WHERE id = ?1",
+                [&sid],
+            )
+            .unwrap();
 
         let stale_ids = list_stale_active_session_ids(&db, 60).unwrap();
         assert_eq!(stale_ids.len(), 1);
@@ -1574,7 +1602,9 @@ mod tests {
         let sid = find_or_create(&db, "agent-gtbi", None).unwrap();
         let tid = create_turn(&db, &sid, Some("gpt-4"), Some(50), Some(100), Some(0.02)).unwrap();
 
-        let turn = get_turn_by_id(&db, &tid).unwrap().expect("turn should exist");
+        let turn = get_turn_by_id(&db, &tid)
+            .unwrap()
+            .expect("turn should exist");
         assert_eq!(turn.id, tid);
         assert_eq!(turn.session_id, sid);
         assert_eq!(turn.model.as_deref(), Some("gpt-4"));
@@ -1593,9 +1623,20 @@ mod tests {
     fn get_turn_by_id_with_custom_id() {
         let db = test_db();
         let sid = find_or_create(&db, "agent-gtbi2", None).unwrap();
-        create_turn_with_id(&db, "my-turn-id", &sid, Some("claude"), Some(10), Some(20), Some(0.01)).unwrap();
+        create_turn_with_id(
+            &db,
+            "my-turn-id",
+            &sid,
+            Some("claude"),
+            Some(10),
+            Some(20),
+            Some(0.01),
+        )
+        .unwrap();
 
-        let turn = get_turn_by_id(&db, "my-turn-id").unwrap().expect("turn should exist");
+        let turn = get_turn_by_id(&db, "my-turn-id")
+            .unwrap()
+            .expect("turn should exist");
         assert_eq!(turn.id, "my-turn-id");
         assert_eq!(turn.model.as_deref(), Some("claude"));
     }

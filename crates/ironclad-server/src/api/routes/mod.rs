@@ -4413,7 +4413,12 @@ params = { path = "README.md" }
         assert_eq!(resp.status(), StatusCode::CONFLICT);
 
         let body = json_body(resp).await;
-        assert!(body["error"].as_str().unwrap().contains("already in progress"));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("already in progress")
+        );
     }
 
     #[tokio::test]
@@ -4456,10 +4461,12 @@ params = { path = "README.md" }
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
         let body = json_body(resp).await;
-        assert!(body["error"]
-            .as_str()
-            .unwrap()
-            .contains("no TOML personality files"));
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("no TOML personality files")
+        );
     }
 
     #[tokio::test]

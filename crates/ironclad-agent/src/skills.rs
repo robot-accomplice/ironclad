@@ -329,10 +329,7 @@ Always greet the user with enthusiasm and warmth.
         assert_eq!(skill.source_path(), Path::new("/tmp/test.toml"));
         assert_eq!(skill.description(), Some("Reviews code"));
         assert!(skill.structured_manifest().is_some());
-        assert_eq!(
-            skill.structured_manifest().unwrap().name,
-            "code_review"
-        );
+        assert_eq!(skill.structured_manifest().unwrap().name, "code_review");
         let triggers = skill.triggers();
         assert!(triggers.keywords.contains(&"review".to_string()));
     }
@@ -350,11 +347,8 @@ Always greet the user with enthusiasm and warmth.
             priority: 5,
             body: "Greet warmly.".into(),
         };
-        let skill = LoadedSkill::Instruction(
-            instr,
-            "def456".into(),
-            PathBuf::from("/tmp/greet.md"),
-        );
+        let skill =
+            LoadedSkill::Instruction(instr, "def456".into(), PathBuf::from("/tmp/greet.md"));
 
         assert_eq!(skill.name(), "greeting");
         assert_eq!(skill.hash(), "def456");

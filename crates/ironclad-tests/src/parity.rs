@@ -63,9 +63,7 @@ fn test_state() -> AppState {
         yield_engine,
     };
     let plugins = Arc::new(PluginRegistry::new(vec![], vec![]));
-    let browser = Arc::new(Browser::new(
-        ironclad_core::config::BrowserConfig::default(),
-    ));
+    let browser = Arc::new(Browser::new(ironclad_core::config::BrowserConfig::default()));
     let registry = Arc::new(SubagentRegistry::new(4, vec![]));
     let event_bus = EventBus::new(16);
     let channel_router = Arc::new(ironclad_channels::router::ChannelRouter::new());
@@ -113,10 +111,7 @@ fn test_state() -> AppState {
         mcp_server: Arc::new(RwLock::new(ironclad_agent::mcp::McpServerRegistry::new())),
         oauth: Arc::new(OAuthManager::new().unwrap()),
         keystore: Arc::new(ironclad_core::keystore::Keystore::new(
-            std::env::temp_dir().join(format!(
-                "ironclad-parity-ks-{}.enc",
-                uuid::Uuid::new_v4()
-            )),
+            std::env::temp_dir().join(format!("ironclad-parity-ks-{}.enc", uuid::Uuid::new_v4())),
         )),
         obsidian: None,
         started_at: std::time::Instant::now(),
@@ -151,10 +146,8 @@ async fn session_list_parity_db_vs_api() {
     let state = test_state();
 
     // Write two sessions directly through the DB layer.
-    let sid1 =
-        ironclad_db::sessions::find_or_create(&state.db, "agent-alpha", None).unwrap();
-    let sid2 =
-        ironclad_db::sessions::find_or_create(&state.db, "agent-beta", None).unwrap();
+    let sid1 = ironclad_db::sessions::find_or_create(&state.db, "agent-alpha", None).unwrap();
+    let sid2 = ironclad_db::sessions::find_or_create(&state.db, "agent-beta", None).unwrap();
 
     // Read via the API (the same endpoint the CLI calls).
     let app = build_router(state.clone());
@@ -170,10 +163,7 @@ async fn session_list_parity_db_vs_api() {
 
     // Both sessions must appear.
     assert_eq!(sessions.len(), 2);
-    let api_ids: Vec<&str> = sessions
-        .iter()
-        .map(|s| s["id"].as_str().unwrap())
-        .collect();
+    let api_ids: Vec<&str> = sessions.iter().map(|s| s["id"].as_str().unwrap()).collect();
     assert!(api_ids.contains(&sid1.as_str()));
     assert!(api_ids.contains(&sid2.as_str()));
 
@@ -181,10 +171,7 @@ async fn session_list_parity_db_vs_api() {
     for s in sessions {
         assert!(s["id"].is_string(), "CLI parses 'id'");
         assert!(s["agent_id"].is_string(), "CLI parses 'agent_id'");
-        assert!(
-            s["updated_at"].is_string(),
-            "CLI parses 'updated_at'"
-        );
+        assert!(s["updated_at"].is_string(), "CLI parses 'updated_at'");
         // nickname may be null but the key must exist.
         assert!(s.get("nickname").is_some(), "CLI parses 'nickname'");
     }
@@ -214,8 +201,7 @@ async fn session_create_parity_api_then_db_lookup() {
     let api_session_id = body["session_id"].as_str().unwrap().to_string();
 
     // The DB must know about this session.
-    let db_session =
-        ironclad_db::sessions::get_session(&state.db, &api_session_id).unwrap();
+    let db_session = ironclad_db::sessions::get_session(&state.db, &api_session_id).unwrap();
     assert!(db_session.is_some(), "API-created session visible in DB");
     let db_session = db_session.unwrap();
     assert_eq!(db_session.agent_id, "parity-agent");
@@ -243,20 +229,14 @@ async fn session_create_parity_api_then_db_lookup() {
 async fn messages_parity_db_write_api_read() {
     let state = test_state();
 
-    let sid =
-        ironclad_db::sessions::find_or_create(&state.db, "msg-parity", None).unwrap();
+    let sid = ironclad_db::sessions::find_or_create(&state.db, "msg-parity", None).unwrap();
 
     // Write messages via the DB layer.
     let mid1 =
-        ironclad_db::sessions::append_message(&state.db, &sid, "user", "Hello from DB")
+        ironclad_db::sessions::append_message(&state.db, &sid, "user", "Hello from DB").unwrap();
+    let mid2 =
+        ironclad_db::sessions::append_message(&state.db, &sid, "assistant", "Hello back from DB")
             .unwrap();
-    let mid2 = ironclad_db::sessions::append_message(
-        &state.db,
-        &sid,
-        "assistant",
-        "Hello back from DB",
-    )
-    .unwrap();
 
     // Read via the API (the path the CLI uses).
     let app = build_router(state.clone());
@@ -284,17 +264,14 @@ async fn messages_parity_db_write_api_read() {
         .method("POST")
         .uri(format!("/api/sessions/{sid}/messages"))
         .header("content-type", "application/json")
-        .body(Body::from(
-            r#"{"role":"user","content":"Hello from API"}"#,
-        ))
+        .body(Body::from(r#"{"role":"user","content":"Hello from API"}"#))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let post_body = json_body(resp).await;
     let api_mid = post_body["message_id"].as_str().unwrap().to_string();
 
-    let db_msgs =
-        ironclad_db::sessions::list_messages(&state.db, &sid, Some(200)).unwrap();
+    let db_msgs = ironclad_db::sessions::list_messages(&state.db, &sid, Some(200)).unwrap();
     assert_eq!(db_msgs.len(), 3);
     let api_msg = db_msgs.iter().find(|m| m.id == api_mid).unwrap();
     assert_eq!(api_msg.role, "user");
@@ -325,9 +302,7 @@ async fn config_display_parity() {
     let body = json_body(resp).await;
 
     // The CLI iterates these section names -- they must exist.
-    let cli_sections = [
-        "agent", "server", "database", "models", "memory", "cache",
-    ];
+    let cli_sections = ["agent", "server", "database", "models", "memory", "cache"];
     for section in &cli_sections {
         assert!(
             body.get(section).is_some(),
@@ -581,12 +556,8 @@ async fn session_count_parity() {
 
     // Create 3 sessions via DB.
     for i in 0..3 {
-        ironclad_db::sessions::find_or_create(
-            &state.db,
-            &format!("count-agent-{i}"),
-            None,
-        )
-        .unwrap();
+        ironclad_db::sessions::find_or_create(&state.db, &format!("count-agent-{i}"), None)
+            .unwrap();
     }
 
     // API count must reflect all 3.
@@ -681,8 +652,7 @@ async fn error_response_404_for_missing_session() {
 #[tokio::test]
 async fn error_response_400_for_invalid_message_role() {
     let state = test_state();
-    let sid =
-        ironclad_db::sessions::find_or_create(&state.db, "err-test", None).unwrap();
+    let sid = ironclad_db::sessions::find_or_create(&state.db, "err-test", None).unwrap();
 
     let app = build_router(state.clone());
     let req = Request::builder()
@@ -717,9 +687,7 @@ async fn skills_list_shape_for_cli() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = json_body(resp).await;
-    let skills = body["skills"]
-        .as_array()
-        .expect("skills must be an array");
+    let skills = body["skills"].as_array().expect("skills must be an array");
 
     // CLI status reads `.len()` -- we just need the array to exist.
     // Each skill must have at least the `name` and `enabled` fields.

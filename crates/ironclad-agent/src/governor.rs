@@ -166,7 +166,11 @@ mod tests {
         // No extra system message should be appended
         let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
         assert_eq!(msgs.len(), 2);
-        assert!(!msgs.iter().any(|m| m.content.contains("[Conversation Summary Draft]")));
+        assert!(
+            !msgs
+                .iter()
+                .any(|m| m.content.contains("[Conversation Summary Draft]"))
+        );
     }
 
     #[test]
@@ -178,13 +182,8 @@ mod tests {
         // Add 6 messages (>= 4 threshold)
         for i in 0..6 {
             let role = if i % 2 == 0 { "user" } else { "assistant" };
-            ironclad_db::sessions::append_message(
-                &db,
-                &sid,
-                role,
-                &format!("message number {i}"),
-            )
-            .unwrap();
+            ironclad_db::sessions::append_message(&db, &sid, role, &format!("message number {i}"))
+                .unwrap();
         }
 
         gov.compact_before_archive(&db, &sid).unwrap();
@@ -213,19 +212,17 @@ mod tests {
         // Add 8 messages
         for i in 0..8 {
             let role = if i % 2 == 0 { "user" } else { "assistant" };
-            ironclad_db::sessions::append_message(
-                &db,
-                &sid,
-                role,
-                &format!("content-{i}"),
-            )
-            .unwrap();
+            ironclad_db::sessions::append_message(&db, &sid, role, &format!("content-{i}"))
+                .unwrap();
         }
 
         gov.compact_before_archive(&db, &sid).unwrap();
 
         let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
-        let summary_msg = msgs.iter().find(|m| m.content.contains("[Conversation Summary Draft]")).unwrap();
+        let summary_msg = msgs
+            .iter()
+            .find(|m| m.content.contains("[Conversation Summary Draft]"))
+            .unwrap();
 
         // The summary should include content from trimmed messages (0..4) but
         // not from the kept recent 4 (4..8)
@@ -248,13 +245,7 @@ mod tests {
         // Add exactly 4 messages — trimmed slice would be empty
         for i in 0..4 {
             let role = if i % 2 == 0 { "user" } else { "assistant" };
-            ironclad_db::sessions::append_message(
-                &db,
-                &sid,
-                role,
-                &format!("msg-{i}"),
-            )
-            .unwrap();
+            ironclad_db::sessions::append_message(&db, &sid, role, &format!("msg-{i}")).unwrap();
         }
 
         gov.compact_before_archive(&db, &sid).unwrap();
@@ -276,13 +267,8 @@ mod tests {
         // Add enough messages to trigger compaction
         for i in 0..6 {
             let role = if i % 2 == 0 { "user" } else { "assistant" };
-            ironclad_db::sessions::append_message(
-                &db,
-                &sid,
-                role,
-                &format!("stale-msg-{i}"),
-            )
-            .unwrap();
+            ironclad_db::sessions::append_message(&db, &sid, role, &format!("stale-msg-{i}"))
+                .unwrap();
         }
 
         // Allow the session to become stale
@@ -292,13 +278,16 @@ mod tests {
         assert_eq!(expired, 1);
 
         // Check the session is now expired
-        let session = ironclad_db::sessions::get_session(&db, &sid).unwrap().unwrap();
+        let session = ironclad_db::sessions::get_session(&db, &sid)
+            .unwrap()
+            .unwrap();
         assert_eq!(session.status, "expired");
 
         // Compaction should have run — check for summary message
         let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
         assert!(
-            msgs.iter().any(|m| m.content.contains("[Conversation Summary Draft]")),
+            msgs.iter()
+                .any(|m| m.content.contains("[Conversation Summary Draft]")),
             "compaction should have appended a summary"
         );
     }
@@ -307,7 +296,9 @@ mod tests {
     fn rotate_with_no_sessions_returns_zero() {
         let gov = SessionGovernor::new(SessionConfig::default());
         let db = test_db();
-        let rotated = gov.rotate_agent_scope_sessions(&db, "nonexistent-agent").unwrap();
+        let rotated = gov
+            .rotate_agent_scope_sessions(&db, "nonexistent-agent")
+            .unwrap();
         assert_eq!(rotated, 0);
     }
 }

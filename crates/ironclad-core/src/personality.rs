@@ -1287,8 +1287,7 @@ description = "Major release."
         assert!(output.directives_toml.is_some());
         assert!(output.validate().is_ok());
 
-        let op: OperatorConfig =
-            toml::from_str(output.operator_toml.as_ref().unwrap()).unwrap();
+        let op: OperatorConfig = toml::from_str(output.operator_toml.as_ref().unwrap()).unwrap();
         assert_eq!(op.identity.name, "Alice");
 
         let dir: DirectivesConfig =

@@ -1123,9 +1123,7 @@ mod tests {
             quality_target: None,
         };
         let body = translate_request(&req, ApiFormat::OpenAiResponses).unwrap();
-        assert!(
-            body.get("max_output_tokens").is_none() || body["max_output_tokens"].is_null()
-        );
+        assert!(body.get("max_output_tokens").is_none() || body["max_output_tokens"].is_null());
     }
 
     // ── Google format ──────────────────────

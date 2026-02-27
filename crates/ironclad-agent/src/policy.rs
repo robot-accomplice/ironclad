@@ -916,8 +916,7 @@ mod tests {
             authority: InputAuthority::External,
             survival_tier: SurvivalTier::Normal,
         };
-        let decision =
-            engine.evaluate_all(&make_request("nuke", RiskLevel::Dangerous), &ctx);
+        let decision = engine.evaluate_all(&make_request("nuke", RiskLevel::Dangerous), &ctx);
         assert!(!decision.is_allowed());
         if let PolicyDecision::Deny { rule, .. } = &decision {
             assert_eq!(rule, "authority", "authority rule should fire first");

@@ -364,7 +364,10 @@ mod tests {
         let mut config = VoiceConfig::default();
         config.api_key = Some("secret".into());
         let json = serde_json::to_string(&config).unwrap();
-        assert!(!json.contains("secret"), "api_key should be skipped in serialization");
+        assert!(
+            !json.contains("secret"),
+            "api_key should be skipped in serialization"
+        );
     }
 
     #[test]
@@ -576,7 +579,12 @@ mod tests {
 
     #[tokio::test]
     async fn transcribe_network_error_with_each_format() {
-        for format in [AudioFormat::Opus, AudioFormat::Mp3, AudioFormat::Ogg, AudioFormat::Pcm] {
+        for format in [
+            AudioFormat::Opus,
+            AudioFormat::Mp3,
+            AudioFormat::Ogg,
+            AudioFormat::Pcm,
+        ] {
             let mut pipeline = fast_fail_pipeline();
             let result = pipeline.transcribe(&[1, 2, 3], format).await;
             assert!(result.is_err());

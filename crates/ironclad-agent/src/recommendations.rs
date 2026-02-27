@@ -1172,13 +1172,31 @@ mod tests {
 
     #[test]
     fn category_label_covers_all_variants() {
-        assert_eq!(RecommendationCategory::QueryCrafting.label(), "Query Crafting");
-        assert_eq!(RecommendationCategory::ModelSelection.label(), "Model Selection");
-        assert_eq!(RecommendationCategory::SessionManagement.label(), "Session Management");
-        assert_eq!(RecommendationCategory::MemoryLeverage.label(), "Memory Leverage");
-        assert_eq!(RecommendationCategory::CostOptimization.label(), "Cost Optimization");
+        assert_eq!(
+            RecommendationCategory::QueryCrafting.label(),
+            "Query Crafting"
+        );
+        assert_eq!(
+            RecommendationCategory::ModelSelection.label(),
+            "Model Selection"
+        );
+        assert_eq!(
+            RecommendationCategory::SessionManagement.label(),
+            "Session Management"
+        );
+        assert_eq!(
+            RecommendationCategory::MemoryLeverage.label(),
+            "Memory Leverage"
+        );
+        assert_eq!(
+            RecommendationCategory::CostOptimization.label(),
+            "Cost Optimization"
+        );
         assert_eq!(RecommendationCategory::ToolUsage.label(), "Tool Usage");
-        assert_eq!(RecommendationCategory::Configuration.label(), "Configuration");
+        assert_eq!(
+            RecommendationCategory::Configuration.label(),
+            "Configuration"
+        );
     }
 
     #[test]
@@ -1302,7 +1320,10 @@ mod tests {
             },
         );
         let rec = rule.evaluate(&profile);
-        assert!(rec.is_some(), "expensive model with low density should trigger");
+        assert!(
+            rec.is_some(),
+            "expensive model with low density should trigger"
+        );
         let rec = rec.unwrap();
         assert_eq!(rec.priority, Priority::High);
         assert!(rec.title.contains("over-powered"));
@@ -1478,7 +1499,10 @@ mod tests {
         profile.memory_retrieval_rate = 0.95;
         profile.avg_tokens_per_turn = 3000.0;
         let rec = rule.evaluate(&profile);
-        assert!(rec.is_some(), "high memory retrieval + high tokens should trigger");
+        assert!(
+            rec.is_some(),
+            "high memory retrieval + high tokens should trigger"
+        );
         let rec = rec.unwrap();
         assert_eq!(rec.priority, Priority::Medium);
         assert!(rec.explanation.contains("95%"));

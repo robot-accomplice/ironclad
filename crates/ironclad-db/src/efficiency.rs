@@ -925,18 +925,35 @@ mod tests {
         drop(conn);
 
         // Add inference costs
-        record_inference_cost(&db, "claude-4", "anthropic", 1000, 500, 0.015, Some("T1"), false).unwrap();
-        record_inference_cost(&db, "claude-4", "anthropic", 2000, 800, 0.025, Some("T1"), true).unwrap();
+        record_inference_cost(
+            &db,
+            "claude-4",
+            "anthropic",
+            1000,
+            500,
+            0.015,
+            Some("T1"),
+            false,
+        )
+        .unwrap();
+        record_inference_cost(
+            &db,
+            "claude-4",
+            "anthropic",
+            2000,
+            800,
+            0.025,
+            Some("T1"),
+            true,
+        )
+        .unwrap();
         record_inference_cost(&db, "gpt-4", "openai", 500, 200, 0.01, None, false).unwrap();
 
         // Add a tool call
         {
             let conn = db.conn();
-            conn.execute(
-                "INSERT INTO turns (id, session_id) VALUES ('t1', 's1')",
-                [],
-            )
-            .unwrap();
+            conn.execute("INSERT INTO turns (id, session_id) VALUES ('t1', 's1')", [])
+                .unwrap();
             conn.execute(
                 "INSERT INTO tool_calls (id, turn_id, tool_name, input, status) VALUES ('tc1', 't1', 'bash', '{}', 'success')",
                 [],
@@ -973,11 +990,8 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO turns (id, session_id) VALUES ('t1', 's1')",
-            [],
-        )
-        .unwrap();
+        conn.execute("INSERT INTO turns (id, session_id) VALUES ('t1', 's1')", [])
+            .unwrap();
         conn.execute(
             "INSERT INTO turn_feedback (id, turn_id, session_id, grade, source) VALUES ('tf1', 't1', 's1', 4, 'dashboard')",
             [],

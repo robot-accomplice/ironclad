@@ -719,11 +719,9 @@ mod tests {
             if chunk.end_char < text.len() {
                 // Many chunks should end at paragraph breaks
                 let last_few = &chunk.text[chunk.text.len().saturating_sub(5)..];
-                let has_good_break = last_few.contains('\n') || last_few.contains(". ") || last_few.ends_with(' ');
-                assert!(
-                    has_good_break,
-                    "chunk should end at a reasonable boundary"
-                );
+                let has_good_break =
+                    last_few.contains('\n') || last_few.contains(". ") || last_few.ends_with(' ');
+                assert!(has_good_break, "chunk should end at a reasonable boundary");
             }
         }
     }
@@ -754,7 +752,13 @@ mod tests {
         }
 
         // Query that doesn't contain "alice" but high interaction count should still include it
-        let result = retriever.retrieve(&db, &session_id, "some random query", None, ComplexityLevel::L2);
+        let result = retriever.retrieve(
+            &db,
+            &session_id,
+            "some random query",
+            None,
+            ComplexityLevel::L2,
+        );
         assert!(
             result.contains("Known Entities") && result.contains("Alice Smith"),
             "high interaction count entity should appear in results"

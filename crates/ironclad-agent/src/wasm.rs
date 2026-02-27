@@ -999,7 +999,10 @@ mod tests {
     #[test]
     fn wasmer_value_to_json_i64() {
         let v = wasmer::Value::I64(9_999_999_999);
-        assert_eq!(wasmer_value_to_json(&v), serde_json::json!(9_999_999_999i64));
+        assert_eq!(
+            wasmer_value_to_json(&v),
+            serde_json::json!(9_999_999_999i64)
+        );
     }
 
     #[test]
