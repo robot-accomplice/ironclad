@@ -126,7 +126,7 @@ pub fn ingest_turn(
 
     // Working memory: update active goals/context
     let summary = if assistant_msg.len() > 200 {
-        &assistant_msg[..200]
+        &assistant_msg[..assistant_msg.floor_char_boundary(200)]
     } else {
         assistant_msg
     };
@@ -422,6 +422,45 @@ mod tests {
         );
         // This exercises the procedural success recording path
         // The test passes if no panic occurs
+    }
+
+    #[test]
+    fn truncation_emoji_at_boundary() {
+        // 🦀 is 4 bytes; 198 ASCII + 🦀 = 202 bytes, slice at 200 would split the emoji
+        let msg = format!("{}{}", "A".repeat(198), "🦀");
+        assert!(msg.len() == 202);
+        let summary = if msg.len() > 200 {
+            &msg[..msg.floor_char_boundary(200)]
+        } else {
+            &msg
+        };
+        assert!(summary.len() <= 200);
+        assert!(summary.is_char_boundary(summary.len()));
+    }
+
+    #[test]
+    fn truncation_cjk_near_boundary() {
+        // CJK characters are 3 bytes each; 199 ASCII + 中 = 202 bytes
+        let msg = format!("{}{}", "B".repeat(199), "中");
+        assert!(msg.len() == 202);
+        let summary = if msg.len() > 200 {
+            &msg[..msg.floor_char_boundary(200)]
+        } else {
+            &msg
+        };
+        assert!(summary.len() <= 200);
+        assert!(summary.is_char_boundary(summary.len()));
+    }
+
+    #[test]
+    fn truncation_ascii_over_200() {
+        let msg = "C".repeat(300);
+        let summary = if msg.len() > 200 {
+            &msg[..msg.floor_char_boundary(200)]
+        } else {
+            &msg
+        };
+        assert_eq!(summary.len(), 200);
     }
 
     #[test]
