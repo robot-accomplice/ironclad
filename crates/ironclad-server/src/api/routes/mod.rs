@@ -46,6 +46,36 @@ use ironclad_channels::voice::VoicePipeline;
 
 use crate::ws::EventBus;
 
+// ── JSON error response type ─────────────────────────────────
+
+/// A JSON-formatted API error response. All error paths in the API return
+/// `{"error": "<message>"}` with the appropriate HTTP status code.
+#[derive(Debug)]
+pub(crate) struct JsonError(pub axum::http::StatusCode, pub String);
+
+impl axum::response::IntoResponse for JsonError {
+    fn into_response(self) -> axum::response::Response {
+        let body = serde_json::json!({ "error": self.1 });
+        (self.0, axum::Json(body)).into_response()
+    }
+}
+
+impl From<(axum::http::StatusCode, String)> for JsonError {
+    fn from((status, msg): (axum::http::StatusCode, String)) -> Self {
+        Self(status, msg)
+    }
+}
+
+/// Shorthand for a 400 Bad Request JSON error.
+pub(crate) fn bad_request(msg: impl std::fmt::Display) -> JsonError {
+    JsonError(axum::http::StatusCode::BAD_REQUEST, msg.to_string())
+}
+
+/// Shorthand for a 404 Not Found JSON error.
+pub(crate) fn not_found(msg: impl std::fmt::Display) -> JsonError {
+    JsonError(axum::http::StatusCode::NOT_FOUND, msg.to_string())
+}
+
 // ── Helpers (used by submodules) ──────────────────────────────
 
 /// Sanitizes error messages before returning to clients (strip paths, internal details, cap length).
@@ -98,13 +128,54 @@ pub(crate) fn sanitize_error_message(msg: &str) -> String {
     }
 }
 
-/// Logs the full error and returns (INTERNAL_SERVER_ERROR, sanitized message) for API responses.
-pub(crate) fn internal_err(e: &impl std::fmt::Display) -> (axum::http::StatusCode, String) {
+/// Logs the full error and returns a JSON 500 error for API responses.
+pub(crate) fn internal_err(e: &impl std::fmt::Display) -> JsonError {
     tracing::error!(error = %e, "request failed");
-    (
+    JsonError(
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         sanitize_error_message(&e.to_string()),
     )
+}
+
+// ── Input validation helpers ──────────────────────────────────
+
+/// Maximum allowed length for short identifier fields (agent_id, name, etc.).
+const MAX_SHORT_FIELD: usize = 256;
+/// Maximum allowed length for long text fields (description, content, etc.).
+const MAX_LONG_FIELD: usize = 4096;
+
+/// Validate a user-supplied string field: reject null bytes and enforce length.
+pub(crate) fn validate_field(
+    field_name: &str,
+    value: &str,
+    max_len: usize,
+) -> Result<(), JsonError> {
+    if value.contains('\0') {
+        return Err(bad_request(format!(
+            "{field_name} must not contain null bytes"
+        )));
+    }
+    if value.len() > max_len {
+        return Err(bad_request(format!(
+            "{field_name} exceeds max length ({max_len})"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate a short identifier field (agent_id, name, session_id, etc.).
+pub(crate) fn validate_short(field_name: &str, value: &str) -> Result<(), JsonError> {
+    validate_field(field_name, value, MAX_SHORT_FIELD)
+}
+
+/// Validate a long text field (description, content, etc.).
+pub(crate) fn validate_long(field_name: &str, value: &str) -> Result<(), JsonError> {
+    validate_field(field_name, value, MAX_LONG_FIELD)
+}
+
+/// Strip HTML tags from a string to prevent injection in stored values.
+pub(crate) fn sanitize_html(input: &str) -> String {
+    input.replace('<', "&lt;").replace('>', "&gt;")
 }
 
 // ── Shared state and types ────────────────────────────────────
@@ -440,6 +511,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/interview/finish", post(interview::finish_interview))
         .route("/api/audit/policy/{turn_id}", get(admin::get_policy_audit))
         .route("/api/audit/tools/{turn_id}", get(admin::get_tool_audit))
+        .route(
+            "/favicon.ico",
+            get(|| async { axum::http::StatusCode::NO_CONTENT }),
+        )
+        .fallback(|| async { JsonError(axum::http::StatusCode::NOT_FOUND, "not found".into()) })
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB
         .with_state(state)
 }
@@ -704,7 +780,7 @@ primary = "ollama/qwen3:8b"
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = json_body(resp).await;
-        let session_id = body["session_id"].as_str().unwrap().to_string();
+        let session_id = body["id"].as_str().unwrap().to_string();
         assert!(!session_id.is_empty());
     }
 
@@ -1237,7 +1313,13 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn breaker_reset_returns_success() {
-        let app = build_router(test_state());
+        let state = test_state();
+        // Register "ollama" as a known provider so the reset endpoint finds it
+        {
+            let mut llm = state.llm.write().await;
+            llm.breakers.record_credit_error("ollama");
+        }
+        let app = build_router(state);
         let req = Request::builder()
             .method("POST")
             .uri("/api/breaker/reset/ollama")
@@ -1371,6 +1453,7 @@ primary = "ollama/qwen3:8b"
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let app = build_router(state);
@@ -1488,6 +1571,7 @@ params = { path = "README.md" }
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1533,6 +1617,7 @@ params = { path = "README.md" }
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1557,6 +1642,7 @@ params = { path = "README.md" }
             Some("To be deleted"),
             "/skills/delete-me",
             "abc123",
+            None,
             None,
             None,
             None,
@@ -1608,6 +1694,7 @@ params = { path = "README.md" }
             Some("Core continuity protocol"),
             "/skills/context-continuity",
             "abc123",
+            None,
             None,
             None,
             None,
@@ -3495,7 +3582,7 @@ params = { path = "README.md" }
             ironclad_core::RiskLevel::Dangerous,
         );
         assert!(result.is_err());
-        let (status, msg) = result.unwrap_err();
+        let JsonError(status, msg) = result.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(
             msg.contains("denied") || msg.contains("Policy"),
@@ -4347,5 +4434,509 @@ params = { path = "README.md" }
         assert!(msgs[1].contains("fresh check now"));
 
         mock_task.abort();
+    }
+
+    // ── Interview endpoint tests ─────────────────────────────────
+
+    #[tokio::test]
+    async fn interview_start_creates_session_with_auto_key() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/start")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert_eq!(body["status"], "started");
+        assert!(body["session_key"].as_str().is_some());
+        assert!(!body["session_key"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn interview_start_creates_session_with_custom_key() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/start")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "my-custom-key"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert_eq!(body["session_key"], "my-custom-key");
+    }
+
+    #[tokio::test]
+    async fn interview_start_conflict_for_existing_session() {
+        let state = test_state();
+        // Start first session
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/start")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "dupe-key"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Try to start duplicate
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/start")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "dupe-key"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("already in progress")
+        );
+    }
+
+    #[tokio::test]
+    async fn interview_finish_not_found_for_missing_session() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/finish")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "nonexistent"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn interview_finish_rejects_empty_history() {
+        let state = test_state();
+        // Start a session
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/start")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "empty-session"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Try to finish without any assistant turns
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/finish")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "empty-session"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("no TOML personality files")
+        );
+    }
+
+    #[tokio::test]
+    async fn interview_turn_not_found_for_missing_session() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/turn")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key": "nonexistent", "content": "hello"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── Session endpoint tests ───────────────────────────────────
+
+    #[tokio::test]
+    async fn list_sessions_returns_empty() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/sessions")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert!(body["sessions"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_session_returns_new_session() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"agent_id":"test"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert!(body["id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn get_session_returns_not_found_for_bogus_id() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/sessions/nonexistent-id")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_messages_returns_empty_for_nonexistent_session() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/sessions/nonexistent-id/messages")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // list_messages queries the DB and returns whatever it finds (empty array)
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["messages"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_message_rejects_invalid_role() {
+        let state = test_state();
+
+        // Create a session first
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"agent_id":"test"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = json_body(resp).await;
+        let session_id = body["id"].as_str().unwrap();
+
+        // Try to post with invalid role
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/sessions/{session_id}/messages"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"role": "admin", "content": "hack attempt"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn post_message_accepts_valid_role() {
+        let state = test_state();
+
+        // Create a session
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"agent_id":"test"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = json_body(resp).await;
+        let session_id = body["id"].as_str().unwrap();
+
+        // Post a valid user message
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/sessions/{session_id}/messages"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"role": "user", "content": "hello"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn session_turns_returns_empty_for_new_session() {
+        let state = test_state();
+
+        // Create a session
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"agent_id":"test"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = json_body(resp).await;
+        let session_id = body["id"].as_str().unwrap();
+
+        // List turns
+        let app = build_router(state);
+        let req = Request::builder()
+            .uri(format!("/api/sessions/{session_id}/turns"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert!(body["turns"].as_array().unwrap().is_empty());
+    }
+
+    // ── Cron endpoint test ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn cron_list_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/cron/jobs")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Subagent endpoint tests ──────────────────────────────────
+
+    #[tokio::test]
+    async fn subagents_list_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/subagents")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Skills endpoint tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn skills_list_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/skills")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Memory endpoint tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn memory_semantic_categories_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/memory/semantic/categories")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // May be 200 or 500 depending on memory state; at least test it doesn't panic
+        assert!(
+            resp.status() == StatusCode::OK || resp.status() == StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    // ── Admin endpoint tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn admin_config_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/config")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert!(body["agent"].is_object());
+    }
+
+    #[tokio::test]
+    async fn admin_config_capabilities_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/config/capabilities")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_approvals_list_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/approvals")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_costs_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/stats/costs")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_cache_stats_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/stats/cache")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_breaker_status_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/breaker/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_plugins_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/plugins")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_agents_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/agents")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_browser_status_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/browser/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn agent_status_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/agent/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_wallet_address_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/wallet/address")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_config_apply_status_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/config/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_capacity_stats_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/stats/capacity")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

@@ -397,6 +397,47 @@ mod tests {
             let sim = cosine_similarity(&v, &v);
             prop_assert!((sim - 1.0).abs() < 0.001);
         }
+
+        #[test]
+        fn proptest_cosine_similarity_is_commutative(
+            a in proptest::collection::vec(-1.0f32..1.0, 8..32),
+            b in proptest::collection::vec(-1.0f32..1.0, 8..32),
+        ) {
+            let len = a.len().min(b.len());
+            let a = &a[..len];
+            let b = &b[..len];
+            let sim_ab = cosine_similarity(a, b);
+            let sim_ba = cosine_similarity(b, a);
+            prop_assert!((sim_ab - sim_ba).abs() < 0.001,
+                "cosine_similarity not commutative: sim(a,b)={} vs sim(b,a)={}", sim_ab, sim_ba);
+        }
+
+        #[test]
+        fn proptest_cosine_similarity_bounded_for_nonneg(
+            a in proptest::collection::vec(0.0f32..1.0, 8..32),
+            b in proptest::collection::vec(0.0f32..1.0, 8..32),
+        ) {
+            let len = a.len().min(b.len());
+            let a = &a[..len];
+            let b = &b[..len];
+            let sim = cosine_similarity(a, b);
+            prop_assert!((-0.001..=1.001).contains(&sim),
+                "cosine similarity {} out of bounds [0, 1] for non-negative vectors", sim);
+        }
+
+        #[test]
+        fn proptest_ngram_embedding_has_fixed_dimension(text in "\\PC{1,200}") {
+            let emb = compute_ngram_embedding(&text);
+            prop_assert_eq!(emb.len(), NGRAM_DIM,
+                "embedding dimension should be {} but was {}", NGRAM_DIM, emb.len());
+        }
+
+        #[test]
+        fn proptest_ngram_embedding_is_deterministic(text in "[a-zA-Z0-9 ]{1,100}") {
+            let emb1 = compute_ngram_embedding(&text);
+            let emb2 = compute_ngram_embedding(&text);
+            prop_assert_eq!(emb1, emb2, "same text must produce identical embeddings");
+        }
     }
 
     fn make_response(content: &str) -> CachedResponse {

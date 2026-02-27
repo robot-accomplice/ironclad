@@ -7,7 +7,7 @@ else
   HTTP_BIN="curl"
 fi
 
-workspace_version="$(rg '^version\s*=\s*"[^"]+"' Cargo.toml -N | sed -E 's/.*"([^"]+)".*/\1/' | sed -n '1p')"
+workspace_version="$(grep -E '^version\s*=\s*"[^"]+"' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
 if [[ -z "${workspace_version}" ]]; then
   echo "Failed to parse version from Cargo.toml"
   exit 1
@@ -17,18 +17,18 @@ version="${RELEASE_TARGET_VERSION:-${workspace_version}}"
 echo "Release docs gate for v${version}"
 
 echo "1) changelog entry exists for target release version"
-rg -q "^## \\[${version}\\]|^## \\[Unreleased\\]" CHANGELOG.md
+grep -qE "^## \[${version}\]|^## \[Unreleased\]" CHANGELOG.md
 
 echo "2) release notes exist"
 test -f "docs/releases/v${version}.md"
-rg -q "v${version}|Release|Gate|Checklist" "docs/releases/v${version}.md"
+grep -qE "v${version}|Release|Gate|Checklist" "docs/releases/v${version}.md"
 
 echo "3) README references release rigor"
-rg -q "test-regression|ci-test|release|coverage" README.md
+grep -qE "test-regression|ci-test|release|coverage" README.md
 
 echo "4) install scripts still reference public installers"
-rg -q "install\\.ps1|roboticus\\.ai|ironclad" install.sh
-rg -q "https?://|ironclad|install" install.ps1
+grep -qE "install\.ps1|roboticus\.ai|ironclad" install.sh
+grep -qE "https?://|ironclad|install" install.ps1
 
 echo "5) provenance generator script self-test"
 scripts/generate-provenance.sh --self-test

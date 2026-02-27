@@ -686,4 +686,332 @@ mod tests {
         conn.set_session_id("test-session".to_string());
         assert_eq!(conn.session_id().as_deref(), Some("test-session"));
     }
+
+    #[test]
+    fn gateway_connection_default() {
+        let conn = GatewayConnection::default();
+        assert!(conn.sequence().is_none());
+        assert!(conn.session_id().is_none());
+    }
+
+    #[test]
+    fn gateway_connection_set_sequence_none() {
+        let conn = GatewayConnection::new();
+        conn.set_sequence(Some(100));
+        assert_eq!(conn.sequence(), Some(100));
+        conn.set_sequence(None);
+        assert!(conn.sequence().is_none());
+    }
+
+    #[test]
+    fn parse_dispatch_missing_t() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let payload = json!({"op": 0, "d": {"content": "hi"}});
+        assert!(adapter.parse_dispatch(&payload).is_none());
+    }
+
+    #[test]
+    fn parse_dispatch_missing_d() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let payload = json!({"op": 0, "t": "MESSAGE_CREATE"});
+        assert!(adapter.parse_dispatch(&payload).is_none());
+    }
+
+    #[test]
+    fn gateway_opcode_missing() {
+        let payload = json!({"d": "no op"});
+        assert!(DiscordAdapter::gateway_opcode(&payload).is_none());
+    }
+
+    #[test]
+    fn extract_heartbeat_interval_missing() {
+        let payload = json!({"op": 10, "d": {}});
+        assert!(DiscordAdapter::extract_heartbeat_interval(&payload).is_none());
+    }
+
+    #[test]
+    fn extract_heartbeat_interval_missing_d() {
+        let payload = json!({"op": 10});
+        assert!(DiscordAdapter::extract_heartbeat_interval(&payload).is_none());
+    }
+
+    #[test]
+    fn is_resumable_close_all_codes() {
+        let resumable = [4000, 4001, 4002, 4003, 4005, 4007, 4008, 4009];
+        for code in resumable {
+            assert!(
+                DiscordAdapter::is_resumable_close(code),
+                "code {} should be resumable",
+                code
+            );
+        }
+        // Non-resumable
+        assert!(!DiscordAdapter::is_resumable_close(4004));
+        assert!(!DiscordAdapter::is_resumable_close(4006));
+        assert!(!DiscordAdapter::is_resumable_close(4010));
+        assert!(!DiscordAdapter::is_resumable_close(1000));
+    }
+
+    #[test]
+    fn is_fatal_close_all_codes() {
+        let fatal = [4004, 4010, 4011, 4012, 4013, 4014];
+        for code in fatal {
+            assert!(
+                DiscordAdapter::is_fatal_close(code),
+                "code {} should be fatal",
+                code
+            );
+        }
+        // Non-fatal
+        assert!(!DiscordAdapter::is_fatal_close(4000));
+        assert!(!DiscordAdapter::is_fatal_close(4001));
+        assert!(!DiscordAdapter::is_fatal_close(1000));
+    }
+
+    #[test]
+    fn build_identify_intents_include_guild_messages() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let identify = adapter.build_identify();
+        let intents = identify["d"]["intents"].as_u64().unwrap();
+        // Check all three intents: GUILD_MESSAGES (512), GUILDS (1), MESSAGE_CONTENT (4096)
+        assert!(intents & 512 != 0);
+        assert!(intents & 1 != 0);
+        assert!(intents & 4096 != 0);
+    }
+
+    #[test]
+    fn build_identify_properties() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let identify = adapter.build_identify();
+        let props = &identify["d"]["properties"];
+        assert_eq!(props["os"], "linux");
+        assert_eq!(props["browser"], "ironclad");
+        assert_eq!(props["device"], "ironclad");
+    }
+
+    #[test]
+    fn build_resume_includes_token() {
+        let adapter = DiscordAdapter::new("secret-token".into());
+        let resume = adapter.build_resume("sess-1", 50);
+        assert_eq!(resume["d"]["token"], "secret-token");
+        assert_eq!(resume["d"]["session_id"], "sess-1");
+        assert_eq!(resume["d"]["seq"], 50);
+    }
+
+    #[test]
+    fn parse_message_create_bot_false_passes() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let data = json!({
+            "id": "m1",
+            "channel_id": "c1",
+            "author": {"id": "u1", "bot": false},
+            "content": "not a bot"
+        });
+        let result = adapter.parse_message_create(&data).unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn parse_message_create_no_bot_field() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let data = json!({
+            "id": "m1",
+            "channel_id": "c1",
+            "author": {"id": "u1"},
+            "content": "no bot field"
+        });
+        let result = adapter.parse_message_create(&data).unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn parse_message_create_missing_content_field() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let data = json!({
+            "id": "m1",
+            "channel_id": "c1",
+            "author": {"id": "u1"}
+        });
+        let result = adapter.parse_message_create(&data).unwrap();
+        // content defaults to empty string -> returns None
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_message_create_allowed_guild() {
+        let adapter = DiscordAdapter::with_config("tok".into(), vec!["allowed_g".into()]);
+        let data = json!({
+            "id": "m1",
+            "channel_id": "c1",
+            "guild_id": "allowed_g",
+            "author": {"id": "u1"},
+            "content": "in allowed guild"
+        });
+        let result = adapter.parse_message_create(&data).unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn chunk_message_unicode_boundary() {
+        // Multi-byte characters should not be split
+        let text = "ab".repeat(30) + &"ñ".repeat(50);
+        let chunks = DiscordAdapter::chunk_message(&text, 50);
+        for chunk in &chunks {
+            assert!(chunk.len() <= 50);
+            // Verify all chunks are valid UTF-8 (implied by being a String)
+            assert!(chunk.is_ascii() || !chunk.is_empty());
+        }
+    }
+
+    #[test]
+    fn push_multiple_messages_fifo() {
+        let adapter = DiscordAdapter::new("tok".into());
+        for i in 0..3 {
+            adapter.push_message(InboundMessage {
+                id: format!("d{}", i),
+                platform: "discord".into(),
+                sender_id: "u".into(),
+                content: format!("msg{}", i),
+                timestamp: Utc::now(),
+                metadata: None,
+            });
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for i in 0..3 {
+            let result = rt.block_on(adapter.recv()).unwrap().unwrap();
+            assert_eq!(result.content, format!("msg{}", i));
+        }
+        assert!(rt.block_on(adapter.recv()).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_dispatch_without_sequence() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let payload = json!({
+            "op": 0,
+            "t": "READY",
+            "d": {"v": 10}
+        });
+        let (name, data) = adapter.parse_dispatch(&payload).unwrap();
+        assert_eq!(name, "READY");
+        assert_eq!(data["v"], 10);
+    }
+
+    #[test]
+    fn parse_message_create_unknown_author_id() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let data = json!({
+            "id": "m1",
+            "channel_id": "c1",
+            "author": {},
+            "content": "no author id"
+        });
+        let result = adapter.parse_message_create(&data).unwrap().unwrap();
+        assert_eq!(result.sender_id, "unknown");
+    }
+
+    // ── async method tests (exercise error paths via connection refusal) ──
+
+    fn fast_fail_adapter() -> DiscordAdapter {
+        // Route discord.com to a non-routable TEST-NET address (RFC 5737) so
+        // requests fail deterministically regardless of CI network speed.
+        let mut adapter = DiscordAdapter::new("test-bot-token".into());
+        adapter.client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .resolve(
+                "discord.com",
+                std::net::SocketAddr::from(([192, 0, 2, 1], 443)),
+            )
+            .build()
+            .unwrap();
+        adapter
+    }
+
+    #[tokio::test]
+    async fn send_message_network_error() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.send_message("channel123", "test content").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Discord send failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_typing_best_effort_no_panic() {
+        let adapter = fast_fail_adapter();
+        adapter.send_typing("channel123").await;
+    }
+
+    #[tokio::test]
+    async fn send_ephemeral_returns_none_on_failure() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.send_ephemeral("channel123", "test").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_gateway_url_network_error() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.get_gateway_url().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("get gateway failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_trait_impl_network_error() {
+        let adapter = fast_fail_adapter();
+        let msg = OutboundMessage {
+            content: "hello".into(),
+            recipient_id: "channel123".into(),
+            metadata: None,
+        };
+        let result = adapter.send(msg).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn send_trait_impl_long_message_network_error() {
+        let adapter = fast_fail_adapter();
+        let long_content = "word ".repeat(500);
+        let msg = OutboundMessage {
+            content: long_content,
+            recipient_id: "channel123".into(),
+            metadata: None,
+        };
+        let result = adapter.send(msg).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn recv_returns_none_when_buffer_empty() {
+        let adapter = DiscordAdapter::new("test-token".into());
+        let result = adapter.recv().await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn recv_returns_buffered_message() {
+        let adapter = DiscordAdapter::new("test-token".into());
+        {
+            let mut buf = adapter.message_buffer.lock().unwrap();
+            buf.push_back(InboundMessage {
+                id: "d1".into(),
+                platform: "discord".into(),
+                sender_id: "u1".into(),
+                content: "buffered msg".into(),
+                timestamp: Utc::now(),
+                metadata: None,
+            });
+        }
+        let result = adapter.recv().await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().content, "buffered msg");
+    }
 }

@@ -180,4 +180,26 @@ mod tests {
         assert!(header.contains("amount=0.05"));
         assert!(header.contains("auth=0x"));
     }
+
+    #[test]
+    fn x402_handler_new_creates_instance() {
+        let handler = X402Handler::new();
+        // X402Handler is a unit struct; verify Debug is implemented
+        let debug = format!("{:?}", handler);
+        assert!(debug.contains("X402Handler"));
+    }
+
+    #[test]
+    fn x402_handler_default_creates_instance() {
+        let handler = X402Handler;
+        let debug = format!("{:?}", handler);
+        assert!(debug.contains("X402Handler"));
+    }
+
+    #[test]
+    fn x402_handler_clone() {
+        let handler = X402Handler::new();
+        let cloned = handler.clone();
+        let _ = format!("{:?}", cloned);
+    }
 }

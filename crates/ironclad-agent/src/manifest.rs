@@ -425,4 +425,138 @@ name = "Stable Agent"
         assert!(spec.style.is_empty());
         assert!(spec.directives.is_empty());
     }
+
+    #[test]
+    fn check_for_changes_file_deleted() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("ephemeral.toml");
+        fs::write(
+            &path,
+            r#"
+id = "ephemeral"
+name = "Ephemeral Agent"
+"#,
+        )
+        .unwrap();
+
+        let mut loader = ManifestLoader::new(dir.path().to_path_buf());
+        loader.load_all().unwrap();
+        assert_eq!(loader.count(), 1);
+
+        // Delete the file on disk
+        fs::remove_file(&path).unwrap();
+
+        let changed = loader.check_for_changes();
+        // After change detection, the deleted manifest should be pruned
+        assert_eq!(loader.count(), 0, "deleted manifest should be pruned");
+        // changed may be empty (no new/modified files), but count should reflect removal
+        let _ = changed; // suppress unused warning
+    }
+
+    #[test]
+    fn reject_slash_in_id() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("slash.toml"),
+            "id = \"has/slash\"\nname = \"Bad Slash\"",
+        )
+        .unwrap();
+
+        let mut loader = ManifestLoader::new(dir.path().to_path_buf());
+        let count = loader.load_all().unwrap();
+        assert_eq!(count, 0, "ID with slash should be rejected by validation");
+    }
+
+    #[test]
+    fn reject_empty_name() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("noname.toml"),
+            "id = \"valid-id\"\nname = \"\"",
+        )
+        .unwrap();
+
+        let mut loader = ManifestLoader::new(dir.path().to_path_buf());
+        let count = loader.load_all().unwrap();
+        assert_eq!(count, 0, "empty name should be rejected");
+    }
+
+    #[test]
+    fn list_all_manifests() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.toml"), "id = \"a\"\nname = \"Agent A\"").unwrap();
+        fs::write(dir.path().join("b.toml"), "id = \"b\"\nname = \"Agent B\"").unwrap();
+
+        let mut loader = ManifestLoader::new(dir.path().to_path_buf());
+        loader.load_all().unwrap();
+        assert_eq!(loader.list().len(), 2);
+    }
+
+    #[test]
+    fn directory_accessor() {
+        let dir = TempDir::new().unwrap();
+        let loader = ManifestLoader::new(dir.path().to_path_buf());
+        assert_eq!(loader.directory(), dir.path());
+    }
+
+    #[test]
+    fn get_nonexistent_manifest() {
+        let dir = TempDir::new().unwrap();
+        let mut loader = ManifestLoader::new(dir.path().to_path_buf());
+        loader.load_all().unwrap();
+        assert!(loader.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn check_for_changes_nonexistent_directory() {
+        let mut loader = ManifestLoader::new(PathBuf::from("/nonexistent/manifests"));
+        let changed = loader.check_for_changes();
+        assert!(changed.is_empty());
+    }
+
+    #[test]
+    fn check_for_changes_new_file_added() {
+        let dir = TempDir::new().unwrap();
+
+        let mut loader = ManifestLoader::new(dir.path().to_path_buf());
+        loader.load_all().unwrap();
+        assert_eq!(loader.count(), 0);
+
+        // Add a new manifest file after initial load
+        fs::write(
+            dir.path().join("new_agent.toml"),
+            "id = \"new\"\nname = \"New Agent\"",
+        )
+        .unwrap();
+
+        let changed = loader.check_for_changes();
+        assert!(changed.contains(&"new".to_string()));
+        assert_eq!(loader.count(), 1);
+    }
+
+    #[test]
+    fn manifest_serde_roundtrip() {
+        let manifest: AgentManifest = toml::from_str(sample_manifest()).unwrap();
+        let serialized = toml::to_string(&manifest).unwrap();
+        let back: AgentManifest = toml::from_str(&serialized).unwrap();
+        assert_eq!(back.id, manifest.id);
+        assert_eq!(back.name, manifest.name);
+        assert_eq!(back.capabilities, manifest.capabilities);
+    }
+
+    #[test]
+    fn non_toml_files_ignored() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("readme.md"), "# Not a manifest").unwrap();
+        fs::write(dir.path().join("config.json"), "{}").unwrap();
+        fs::write(
+            dir.path().join("agent.toml"),
+            "id = \"real\"\nname = \"Real Agent\"",
+        )
+        .unwrap();
+
+        let mut loader = ManifestLoader::new(dir.path().to_path_buf());
+        let count = loader.load_all().unwrap();
+        assert_eq!(count, 1, "only .toml files should be loaded");
+    }
 }

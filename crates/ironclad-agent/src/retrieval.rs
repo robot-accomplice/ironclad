@@ -647,4 +647,121 @@ mod tests {
         assert_eq!(chunks.first().unwrap().start_char, 0);
         assert_eq!(chunks.last().unwrap().end_char, text.len());
     }
+
+    #[test]
+    fn floor_char_boundary_ascii() {
+        let text = "hello world";
+        assert_eq!(floor_char_boundary(text, 5), 5);
+        assert_eq!(floor_char_boundary(text, 0), 0);
+        assert_eq!(floor_char_boundary(text, 100), text.len());
+    }
+
+    #[test]
+    fn floor_char_boundary_multibyte() {
+        // "café" = c(1) a(1) f(1) é(2) = 5 bytes total
+        let text = "caf\u{00E9}";
+        assert_eq!(text.len(), 5);
+        // Position 4 is inside the 2-byte é, should snap back to 3
+        assert_eq!(floor_char_boundary(text, 4), 3);
+        // Position 3 is a valid boundary (start of é)
+        assert_eq!(floor_char_boundary(text, 3), 3);
+        // Position 5 >= len, returns len
+        assert_eq!(floor_char_boundary(text, 5), 5);
+    }
+
+    #[test]
+    fn floor_char_boundary_emoji() {
+        let text = "a\u{1F600}b"; // a(1) + emoji(4) + b(1) = 6 bytes
+        assert_eq!(text.len(), 6);
+        // Position 2 is inside the emoji
+        assert_eq!(floor_char_boundary(text, 2), 1);
+        // Position 5 is the start of 'b'
+        assert_eq!(floor_char_boundary(text, 5), 5);
+    }
+
+    #[test]
+    fn estimate_tokens_rounding() {
+        // div_ceil(1, 4) = 1
+        assert_eq!(estimate_tokens("a"), 1);
+        // div_ceil(5, 4) = 2
+        assert_eq!(estimate_tokens("abcde"), 2);
+        // div_ceil(8, 4) = 2
+        assert_eq!(estimate_tokens("abcdefgh"), 2);
+    }
+
+    #[test]
+    fn retriever_with_procedural_no_history() {
+        // Procedural with no success/failure counts should return None
+        let db = test_db();
+        let retriever = MemoryRetriever::new(default_config());
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
+
+        ironclad_db::memory::store_procedural(&db, "unused_tool", "a tool").unwrap();
+
+        let result = retriever.retrieve(&db, &session_id, "test", None, ComplexityLevel::L2);
+        assert!(
+            !result.contains("Tool Experience"),
+            "tools with no success/failure should not appear"
+        );
+    }
+
+    #[test]
+    fn chunk_with_paragraph_breaks() {
+        let text = "Paragraph one content.\n\nParagraph two content.\n\nParagraph three content.\n\n\
+                    Paragraph four content.\n\nParagraph five content.";
+        let config = ChunkConfig {
+            max_tokens: 15,
+            overlap_tokens: 3,
+        };
+        let chunks = chunk_text(text, &config);
+        // Should prefer breaking at paragraph boundaries
+        for chunk in &chunks {
+            if chunk.end_char < text.len() {
+                // Many chunks should end at paragraph breaks
+                let last_few = &chunk.text[chunk.text.len().saturating_sub(5)..];
+                let has_good_break =
+                    last_few.contains('\n') || last_few.contains(". ") || last_few.ends_with(' ');
+                assert!(has_good_break, "chunk should end at a reasonable boundary");
+            }
+        }
+    }
+
+    #[test]
+    fn chunk_config_default() {
+        let config = ChunkConfig::default();
+        assert_eq!(config.max_tokens, 512);
+        assert_eq!(config.overlap_tokens, 64);
+    }
+
+    #[test]
+    fn find_break_point_at_end_of_text() {
+        let text = "Hello world.";
+        assert_eq!(find_break_point(text, 0, text.len()), text.len());
+    }
+
+    #[test]
+    fn retriever_relationships_high_interaction_count() {
+        let db = test_db();
+        let retriever = MemoryRetriever::new(default_config());
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
+
+        // store_relationship uses ON CONFLICT to increment interaction_count
+        // Calling it 4 times gives interaction_count > 2
+        for _ in 0..4 {
+            ironclad_db::memory::store_relationship(&db, "alice", "Alice Smith", 0.8).unwrap();
+        }
+
+        // Query that doesn't contain "alice" but high interaction count should still include it
+        let result = retriever.retrieve(
+            &db,
+            &session_id,
+            "some random query",
+            None,
+            ComplexityLevel::L2,
+        );
+        assert!(
+            result.contains("Known Entities") && result.contains("Alice Smith"),
+            "high interaction count entity should appear in results"
+        );
+    }
 }

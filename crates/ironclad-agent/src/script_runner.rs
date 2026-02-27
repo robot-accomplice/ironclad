@@ -362,4 +362,178 @@ mod tests {
         fs::write(&js_script, "console.log('hi')").unwrap();
         assert_eq!(check_interpreter(&js_script, &allowed).unwrap(), "node");
     }
+
+    #[test]
+    fn check_interpreter_env_shebang() {
+        // #!/usr/bin/env python3 -> should parse "python3"
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("env_shebang.py");
+        fs::write(&script, "#!/usr/bin/env python3\nprint('hi')").unwrap();
+        let allowed = vec!["python3".to_string()];
+        let interp = check_interpreter(&script, &allowed).unwrap();
+        assert_eq!(interp, "python3");
+    }
+
+    #[test]
+    fn check_interpreter_env_shebang_not_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("env_ruby.rb");
+        fs::write(&script, "#!/usr/bin/env ruby\nputs 'hi'").unwrap();
+        let allowed = vec!["python3".to_string(), "bash".to_string()];
+        let result = check_interpreter(&script, &allowed);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not in whitelist"));
+    }
+
+    #[test]
+    fn check_interpreter_unknown_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("test.xyz");
+        fs::write(&script, "some content").unwrap();
+        let allowed = vec!["bash".to_string()];
+        let result = check_interpreter(&script, &allowed);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("cannot infer interpreter")
+        );
+    }
+
+    #[test]
+    fn check_interpreter_bash_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("test.bash");
+        fs::write(&script, "echo hi").unwrap();
+        let allowed = vec!["bash".to_string()];
+        let interp = check_interpreter(&script, &allowed).unwrap();
+        assert_eq!(interp, "bash");
+    }
+
+    #[test]
+    fn world_writable_script_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("writable.sh");
+        fs::write(&script, "#!/bin/bash\necho hi").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o777)).unwrap();
+
+        let mut cfg = test_config();
+        cfg.skills_dir = dir.path().to_path_buf();
+        let runner = ScriptRunner::new(cfg);
+        let result = runner.resolve_script_path(Path::new("writable.sh"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("world-writable"));
+    }
+
+    #[test]
+    fn resolve_rejects_directory_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config();
+        cfg.skills_dir = dir.path().to_path_buf();
+        let runner = ScriptRunner::new(cfg);
+
+        // Attempting to escape skills_dir with ../
+        let result = runner.resolve_script_path(Path::new("../../etc/passwd"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_rejects_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_config();
+        cfg.skills_dir = dir.path().to_path_buf();
+        let runner = ScriptRunner::new(cfg);
+
+        let result = runner.resolve_script_path(Path::new("/etc/passwd"));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("absolute script paths")
+        );
+    }
+
+    #[test]
+    fn truncate_str_within_limit() {
+        let s = "hello world";
+        assert_eq!(truncate_str(s, 100), "hello world");
+    }
+
+    #[test]
+    fn truncate_str_at_limit() {
+        let s = "hello";
+        assert_eq!(truncate_str(s, 5), "hello");
+    }
+
+    #[test]
+    fn truncate_str_beyond_limit() {
+        let s = "hello world";
+        let truncated = truncate_str(s, 5);
+        assert_eq!(truncated, "hello");
+    }
+
+    #[test]
+    fn truncate_str_multibyte_boundary() {
+        // "é" is 2 bytes in UTF-8; truncating at odd boundary should back up
+        let s = "café";
+        let truncated = truncate_str(s, 4);
+        // "caf" is 3 bytes, "é" is 2 bytes (bytes 3-4)
+        // truncating at 4 lands in the middle of é, should back up to 3
+        assert_eq!(truncated, "caf");
+    }
+
+    #[tokio::test]
+    async fn script_with_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("args.sh");
+        fs::write(&script, "#!/bin/bash\necho \"$1 $2\"").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config();
+        cfg.skills_dir = dir.path().to_path_buf();
+        let runner = ScriptRunner::new(cfg);
+        let result = runner
+            .execute(Path::new("args.sh"), &["hello", "world"])
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stdout.contains("hello world"));
+    }
+
+    #[tokio::test]
+    async fn script_nonzero_exit_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fail.sh");
+        fs::write(&script, "#!/bin/bash\nexit 42").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config();
+        cfg.skills_dir = dir.path().to_path_buf();
+        let runner = ScriptRunner::new(cfg);
+        let result = runner.execute(Path::new("fail.sh"), &[]).await.unwrap();
+
+        assert_eq!(result.exit_code, 42);
+    }
+
+    #[tokio::test]
+    async fn script_output_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("verbose.sh");
+        // Generate output > max_output_bytes (set to 1024 in test_config)
+        fs::write(&script, "#!/bin/bash\nfor i in $(seq 1 500); do echo \"line $i with some padding text to fill up space\"; done").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config();
+        cfg.skills_dir = dir.path().to_path_buf();
+        let runner = ScriptRunner::new(cfg);
+        let result = runner.execute(Path::new("verbose.sh"), &[]).await.unwrap();
+
+        assert!(
+            result.stdout.len() <= 1024,
+            "stdout should be truncated to max_output_bytes"
+        );
+    }
 }

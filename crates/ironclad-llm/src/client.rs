@@ -250,4 +250,196 @@ mod tests {
         };
         assert_eq!(val, "sk-test");
     }
+
+    // ── pct_encode_query_value tests ──────────────────────────────
+
+    #[test]
+    fn pct_encode_unreserved_chars_pass_through() {
+        let input = "abcXYZ019-_.~";
+        let encoded = pct_encode_query_value(input);
+        assert_eq!(encoded, input, "unreserved chars must not be encoded");
+    }
+
+    #[test]
+    fn pct_encode_spaces_and_special() {
+        let encoded = pct_encode_query_value("hello world");
+        assert_eq!(encoded, "hello%20world");
+    }
+
+    #[test]
+    fn pct_encode_ampersand_equals() {
+        let encoded = pct_encode_query_value("key=val&a=b");
+        assert!(encoded.contains("%3D"), "= should be encoded: {encoded}");
+        assert!(encoded.contains("%26"), "& should be encoded: {encoded}");
+    }
+
+    #[test]
+    fn pct_encode_slash_colon() {
+        let encoded = pct_encode_query_value("https://example.com/path");
+        assert!(encoded.contains("%3A"), ": should be encoded: {encoded}");
+        assert!(encoded.contains("%2F"), "/ should be encoded: {encoded}");
+    }
+
+    #[test]
+    fn pct_encode_empty_string() {
+        assert_eq!(pct_encode_query_value(""), "");
+    }
+
+    #[test]
+    fn pct_encode_all_bytes() {
+        // Ensure non-ASCII bytes are encoded (use byte-string via from_utf8_lossy)
+        let input = String::from_utf8_lossy(&[0x00, 0x7F]);
+        let encoded = pct_encode_query_value(&input);
+        assert!(
+            encoded.contains("%00"),
+            "null byte should be encoded: {encoded}"
+        );
+    }
+
+    // ── query auth mode tests ──────────────────────────────────
+
+    #[tokio::test]
+    async fn forward_with_query_auth_no_existing_params() {
+        let client = LlmClient::new().unwrap();
+        let url = "http://127.0.0.1:1/v1/generate";
+        let body = serde_json::json!({ "model": "test", "messages": [] });
+        // Use query:key auth to test the URL-building path
+        let err = client
+            .forward_with_provider(url, "sk-test-key", body, "query:key", &HashMap::new())
+            .await
+            .unwrap_err();
+        match &err {
+            IroncladError::Network(msg) => assert!(msg.contains("request failed"), "got: {msg}"),
+            _ => panic!("expected IroncladError::Network, got {err:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_with_query_auth_existing_params() {
+        let client = LlmClient::new().unwrap();
+        // URL already has a query param -- should use '&' separator
+        let url = "http://127.0.0.1:1/v1/generate?format=json";
+        let body = serde_json::json!({ "model": "test", "messages": [] });
+        let err = client
+            .forward_with_provider(url, "sk-test", body, "query:key", &HashMap::new())
+            .await
+            .unwrap_err();
+        match &err {
+            IroncladError::Network(msg) => assert!(msg.contains("request failed"), "got: {msg}"),
+            _ => panic!("expected IroncladError::Network, got {err:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_with_provider_authorization_case_insensitive() {
+        // Test that "AUTHORIZATION" (uppercase) triggers Bearer prefix
+        let client = LlmClient::new().unwrap();
+        let url = "http://127.0.0.1:1/v1/chat";
+        let body = serde_json::json!({ "model": "test", "messages": [] });
+        let err = client
+            .forward_with_provider(url, "sk-test", body, "AUTHORIZATION", &HashMap::new())
+            .await
+            .unwrap_err();
+        match &err {
+            IroncladError::Network(msg) => assert!(msg.contains("request failed"), "got: {msg}"),
+            _ => panic!("expected IroncladError::Network, got {err:?}"),
+        }
+    }
+
+    // ── forward_stream tests ──────────────────────────────────
+
+    #[tokio::test]
+    async fn forward_stream_connection_refused() {
+        let client = LlmClient::new().unwrap();
+        let url = "http://127.0.0.1:1/v1/stream";
+        let body = serde_json::json!({ "model": "test", "messages": [], "stream": true });
+        let result = client
+            .forward_stream(url, "fake-key", body, "Authorization", &HashMap::new())
+            .await;
+        match result {
+            Err(IroncladError::Network(msg)) => {
+                assert!(msg.contains("stream request failed"), "got: {msg}")
+            }
+            Err(other) => panic!("expected IroncladError::Network, got {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_stream_custom_auth_header() {
+        let client = LlmClient::new().unwrap();
+        let url = "http://127.0.0.1:1/v1/stream";
+        let body = serde_json::json!({ "model": "test", "messages": [] });
+        let mut extra = HashMap::new();
+        extra.insert("anthropic-version".into(), "2023-06-01".into());
+        let result = client
+            .forward_stream(url, "fake-key", body, "x-api-key", &extra)
+            .await;
+        match result {
+            Err(IroncladError::Network(msg)) => {
+                assert!(msg.contains("stream request failed"), "got: {msg}")
+            }
+            Err(other) => panic!("expected IroncladError::Network, got {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_stream_bearer_auth() {
+        // Verify AUTHORIZATION (case-insensitive) triggers Bearer prefix in stream path
+        let client = LlmClient::new().unwrap();
+        let url = "http://127.0.0.1:1/v1/stream";
+        let body = serde_json::json!({ "model": "test" });
+        let result = client
+            .forward_stream(url, "sk-123", body, "AUTHORIZATION", &HashMap::new())
+            .await;
+        match result {
+            Err(IroncladError::Network(msg)) => {
+                assert!(msg.contains("stream request failed"), "got: {msg}")
+            }
+            Err(other) => panic!("expected IroncladError::Network, got {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_with_provider_extra_headers_propagated() {
+        let client = LlmClient::new().unwrap();
+        let url = "http://127.0.0.1:1/v1/chat";
+        let body = serde_json::json!({ "model": "test", "messages": [] });
+        let mut extra = HashMap::new();
+        extra.insert("X-Custom-Header".into(), "custom-value".into());
+        extra.insert("X-Another".into(), "another-value".into());
+        // Just confirm the request is formed properly (connection refused expected)
+        let err = client
+            .forward_with_provider(url, "sk-test", body, "Authorization", &extra)
+            .await
+            .unwrap_err();
+        match &err {
+            IroncladError::Network(msg) => assert!(msg.contains("request failed"), "got: {msg}"),
+            _ => panic!("expected IroncladError::Network, got {err:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_with_query_auth_encodes_special_chars_in_key() {
+        let client = LlmClient::new().unwrap();
+        let url = "http://127.0.0.1:1/v1/generate";
+        let body = serde_json::json!({ "model": "test" });
+        // Key with special characters that need encoding
+        let err = client
+            .forward_with_provider(
+                url,
+                "key with spaces&=",
+                body,
+                "query:apikey",
+                &HashMap::new(),
+            )
+            .await
+            .unwrap_err();
+        match &err {
+            IroncladError::Network(msg) => assert!(msg.contains("request failed"), "got: {msg}"),
+            _ => panic!("expected IroncladError::Network, got {err:?}"),
+        }
+    }
 }

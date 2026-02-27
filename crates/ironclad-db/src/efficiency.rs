@@ -98,6 +98,11 @@ pub struct EfficiencyReport {
     pub totals: EfficiencyTotals,
 }
 
+/// Round a float to 6 decimal places to avoid floating-point display noise.
+fn round6(v: f64) -> f64 {
+    (v * 1_000_000.0).round() / 1_000_000.0
+}
+
 fn cutoff_expr(period: &str) -> &'static str {
     match period {
         "1h" => "datetime('now', '-1 hour')",
@@ -429,10 +434,10 @@ pub fn compute_efficiency(
             cache_hit_rate,
             context_pressure_rate: 0.0,
             cost: CostMetrics {
-                total: r.total_cost,
-                per_output_token,
-                effective_per_turn: r.avg_cost_per_turn,
-                cache_savings,
+                total: round6(r.total_cost),
+                per_output_token: round6(per_output_token),
+                effective_per_turn: round6(r.avg_cost_per_turn),
+                cache_savings: round6(cache_savings),
                 cumulative_trend,
                 attribution,
                 wasted_budget_cost: 0.0,
@@ -472,8 +477,8 @@ pub fn compute_efficiency(
         .unwrap_or_else(|| "none".into());
 
     let totals = EfficiencyTotals {
-        total_cost: grand_total_cost,
-        total_cache_savings,
+        total_cost: round6(grand_total_cost),
+        total_cache_savings: round6(total_cache_savings),
         total_turns: grand_total_turns,
         most_expensive_model: most_expensive.map(|(m, _)| m),
         most_efficient_model: most_efficient.map(|(m, _)| m),
@@ -785,5 +790,361 @@ mod tests {
         let report = compute_efficiency(&db, "all", None).unwrap();
         let m = &report.models["m1"];
         assert!(m.avg_output_density.is_finite());
+    }
+
+    #[test]
+    fn cutoff_expr_1h() {
+        assert_eq!(cutoff_expr("1h"), "datetime('now', '-1 hour')");
+    }
+
+    #[test]
+    fn cutoff_expr_24h() {
+        assert_eq!(cutoff_expr("24h"), "datetime('now', '-1 day')");
+    }
+
+    #[test]
+    fn cutoff_expr_30d() {
+        assert_eq!(cutoff_expr("30d"), "datetime('now', '-30 days')");
+    }
+
+    #[test]
+    fn trend_label_edge_cases() {
+        // Clearly within stable band (3% change)
+        assert_eq!(trend_label(1.0, 1.03), "stable");
+        // Clearly above threshold (10% increase)
+        assert_eq!(trend_label(1.0, 1.10), "increasing");
+        // Clearly within stable band (3% decrease)
+        assert_eq!(trend_label(1.0, 0.97), "stable");
+        // Clearly below threshold (10% decrease)
+        assert_eq!(trend_label(1.0, 0.90), "decreasing");
+        // First half near zero uses 0.001 as base
+        assert_eq!(trend_label(0.001, 0.5), "increasing");
+        // Both near zero
+        assert_eq!(trend_label(0.0001, 0.0001), "stable");
+    }
+
+    #[test]
+    fn zero_tokens_out_no_division_by_zero() {
+        let db = test_db();
+        record_inference_cost(&db, "m1", "p1", 1000, 0, 0.01, None, false).unwrap();
+
+        let report = compute_efficiency(&db, "all", None).unwrap();
+        let m = &report.models["m1"];
+        assert_eq!(m.cost.per_output_token, 0.0);
+        assert!(m.cost.total.is_finite());
+    }
+
+    #[test]
+    fn no_cached_zero_rate() {
+        let db = test_db();
+        record_inference_cost(&db, "m1", "p1", 100, 50, 0.01, None, false).unwrap();
+        record_inference_cost(&db, "m1", "p1", 100, 50, 0.01, None, false).unwrap();
+
+        let report = compute_efficiency(&db, "all", None).unwrap();
+        assert_eq!(report.models["m1"].cache_hit_rate, 0.0);
+    }
+
+    #[test]
+    fn multiple_models_identifies_most_efficient() {
+        let db = test_db();
+        // m1: 1000 in, 500 out -> density ~0.5
+        record_inference_cost(&db, "m1", "p1", 1000, 500, 0.01, None, false).unwrap();
+        // m2: 100 in, 200 out -> density ~2.0  (more efficient)
+        record_inference_cost(&db, "m2", "p2", 100, 200, 0.005, None, false).unwrap();
+
+        let report = compute_efficiency(&db, "all", None).unwrap();
+        assert_eq!(
+            report.totals.most_efficient_model.as_deref(),
+            Some("m2"),
+            "m2 has higher output density"
+        );
+    }
+
+    #[test]
+    fn trend_metrics_with_time_series() {
+        let db = test_db();
+        // Insert enough records over multiple days to generate time-series buckets
+        let conn = db.conn();
+        for i in 0..6 {
+            let day = format!("2025-01-{:02}T12:00:00", i + 1);
+            conn.execute(
+                "INSERT INTO inference_costs (id, model, provider, tokens_in, tokens_out, cost, cached, created_at) \
+                 VALUES (?1, 'claude-4', 'anthropic', ?2, ?3, ?4, 0, ?5)",
+                rusqlite::params![
+                    format!("ic-{i}"),
+                    1000 + i * 100,
+                    500 + i * 50,
+                    0.01 + i as f64 * 0.005,
+                    day,
+                ],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let report = compute_efficiency(&db, "all", None).unwrap();
+        let m = &report.models["claude-4"];
+        // With 6 data points over 6 different days, we should have time series data
+        assert!(report.time_series.len() >= 2);
+        // Trend should be computed (not just "stable")
+        assert!(!m.trend.output_density.is_empty());
+        assert!(!m.trend.cost_per_turn.is_empty());
+        assert!(!m.trend.cache_hit_rate.is_empty());
+    }
+
+    #[test]
+    fn build_user_profile_empty_db() {
+        let db = test_db();
+        let profile = build_user_profile(&db, "7d").unwrap();
+        assert_eq!(profile.total_sessions, 0);
+        assert_eq!(profile.total_turns, 0);
+        assert_eq!(profile.total_cost, 0.0);
+        assert!(profile.models_used.is_empty());
+        assert!(profile.model_stats.is_empty());
+        assert_eq!(profile.avg_session_length, 0.0);
+        assert_eq!(profile.avg_tokens_per_turn, 0.0);
+        assert_eq!(profile.tool_success_rate, 1.0); // No tools => default 1.0
+    }
+
+    #[test]
+    fn build_user_profile_with_data() {
+        let db = test_db();
+        let conn = db.conn();
+        // Create a session
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES ('s1', 'agent-1', 'agent', 'active')",
+            [],
+        )
+        .unwrap();
+        // Create messages for the session
+        conn.execute(
+            "INSERT INTO session_messages (id, session_id, role, content) VALUES ('m1', 's1', 'user', 'hello')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_messages (id, session_id, role, content) VALUES ('m2', 's1', 'assistant', 'hi')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        // Add inference costs
+        record_inference_cost(
+            &db,
+            "claude-4",
+            "anthropic",
+            1000,
+            500,
+            0.015,
+            Some("T1"),
+            false,
+        )
+        .unwrap();
+        record_inference_cost(
+            &db,
+            "claude-4",
+            "anthropic",
+            2000,
+            800,
+            0.025,
+            Some("T1"),
+            true,
+        )
+        .unwrap();
+        record_inference_cost(&db, "gpt-4", "openai", 500, 200, 0.01, None, false).unwrap();
+
+        // Add a tool call
+        {
+            let conn = db.conn();
+            conn.execute("INSERT INTO turns (id, session_id) VALUES ('t1', 's1')", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO tool_calls (id, turn_id, tool_name, input, status) VALUES ('tc1', 't1', 'bash', '{}', 'success')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tool_calls (id, turn_id, tool_name, input, status) VALUES ('tc2', 't1', 'bash', '{}', 'error')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let profile = build_user_profile(&db, "all").unwrap();
+        assert_eq!(profile.total_sessions, 1);
+        assert_eq!(profile.total_turns, 3);
+        assert!((profile.total_cost - 0.05).abs() < 1e-9);
+        assert!(profile.models_used.contains(&"claude-4".to_string()));
+        assert!(profile.models_used.contains(&"gpt-4".to_string()));
+        assert_eq!(profile.model_stats.len(), 2);
+        assert_eq!(profile.model_stats["claude-4"].turns, 2);
+        assert_eq!(profile.model_stats["gpt-4"].turns, 1);
+        assert_eq!(profile.avg_session_length, 2.0); // 2 messages
+        assert!(profile.avg_tokens_per_turn > 0.0);
+        assert_eq!(profile.tool_success_rate, 0.5); // 1 success out of 2
+        assert!(profile.cache_hit_rate > 0.0);
+    }
+
+    #[test]
+    fn build_user_profile_grade_coverage() {
+        let db = test_db();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES ('s1', 'agent-1', 'agent', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO turns (id, session_id) VALUES ('t1', 's1')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turn_feedback (id, turn_id, session_id, grade, source) VALUES ('tf1', 't1', 's1', 4, 'dashboard')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        record_inference_cost(&db, "m1", "p1", 100, 50, 0.01, None, false).unwrap();
+        record_inference_cost(&db, "m1", "p1", 100, 50, 0.01, None, false).unwrap();
+
+        let profile = build_user_profile(&db, "all").unwrap();
+        assert!(profile.avg_quality.is_some());
+        assert!((profile.avg_quality.unwrap() - 4.0).abs() < 1e-9);
+        assert!(profile.grade_coverage > 0.0);
+        assert!(profile.grade_coverage <= 1.0);
+    }
+
+    #[test]
+    fn compute_quality_for_model_with_feedback() {
+        let db = test_db();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES ('s1', 'a1', 'agent', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turns (id, session_id, model, cost) VALUES ('t1', 's1', 'claude-4', 0.01)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turns (id, session_id, model, cost) VALUES ('t2', 's1', 'claude-4', 0.02)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turns (id, session_id, model, cost) VALUES ('t3', 's1', 'claude-4', 0.015)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turns (id, session_id, model, cost) VALUES ('t4', 's1', 'claude-4', 0.025)",
+            [],
+        )
+        .unwrap();
+        // Add feedback for all 4 turns
+        conn.execute(
+            "INSERT INTO turn_feedback (id, turn_id, session_id, grade) VALUES ('f1', 't1', 's1', 3)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turn_feedback (id, turn_id, session_id, grade) VALUES ('f2', 't2', 's1', 4)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turn_feedback (id, turn_id, session_id, grade) VALUES ('f3', 't3', 's1', 5)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turn_feedback (id, turn_id, session_id, grade) VALUES ('f4', 't4', 's1', 5)",
+            [],
+        )
+        .unwrap();
+
+        let quality = compute_quality_for_model(&conn, "claude-4", "datetime('1970-01-01')", 4);
+        drop(conn);
+
+        assert!(quality.is_some());
+        let q = quality.unwrap();
+        assert_eq!(q.grade_count, 4);
+        assert!((q.avg_grade - 4.25).abs() < 1e-9);
+        assert_eq!(q.grade_coverage, 1.0);
+        assert!(q.cost_per_quality_point > 0.0);
+        // With 4 feedback entries and improvement from first half (3,4) to second half (5,5),
+        // trend should be "increasing"
+        assert_eq!(q.trend, "increasing");
+    }
+
+    #[test]
+    fn compute_quality_for_model_no_feedback() {
+        let db = test_db();
+        let conn = db.conn();
+        let quality = compute_quality_for_model(&conn, "claude-4", "datetime('1970-01-01')", 10);
+        drop(conn);
+        assert!(quality.is_none());
+    }
+
+    #[test]
+    fn compute_quality_few_entries_stable_trend() {
+        let db = test_db();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES ('s1', 'a1', 'agent', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turns (id, session_id, model, cost) VALUES ('t1', 's1', 'claude-4', 0.01)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turn_feedback (id, turn_id, session_id, grade) VALUES ('f1', 't1', 's1', 4)",
+            [],
+        )
+        .unwrap();
+
+        let quality = compute_quality_for_model(&conn, "claude-4", "datetime('1970-01-01')", 1);
+        drop(conn);
+
+        assert!(quality.is_some());
+        let q = quality.unwrap();
+        // With fewer than 4 entries, trend should be "stable"
+        assert_eq!(q.trend, "stable");
+    }
+
+    #[test]
+    fn report_cost_attribution_all_history() {
+        let db = test_db();
+        record_inference_cost(&db, "m1", "p1", 1000, 500, 0.03, None, false).unwrap();
+
+        let report = compute_efficiency(&db, "all", None).unwrap();
+        let m = &report.models["m1"];
+        // Without context_snapshots, all input tokens are attributed to "history"
+        assert_eq!(m.cost.attribution.history.pct, 100.0);
+        assert!(m.cost.attribution.history.tokens > 0);
+        assert_eq!(m.cost.attribution.system_prompt.tokens, 0);
+        assert_eq!(m.cost.attribution.memories.tokens, 0);
+    }
+
+    #[test]
+    fn report_biggest_cost_driver_with_no_models() {
+        let db = test_db();
+        let report = compute_efficiency(&db, "all", None).unwrap();
+        assert_eq!(report.totals.biggest_cost_driver, "none");
+        assert!(report.totals.most_expensive_model.is_none());
+        assert!(report.totals.most_efficient_model.is_none());
+    }
+
+    #[test]
+    fn build_user_profile_memory_retrieval_default() {
+        let db = test_db();
+        let profile = build_user_profile(&db, "all").unwrap();
+        // Without context_snapshots, memory_retrieval_rate defaults to 0.5
+        assert!((profile.memory_retrieval_rate - 0.5).abs() < 1e-9);
     }
 }

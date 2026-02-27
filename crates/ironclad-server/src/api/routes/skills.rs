@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::Path as FsPath;
 
-use super::{AppState, internal_err};
+use super::{AppState, JsonError, bad_request, internal_err, not_found};
 
 struct BuiltinSkillDef {
     name: &'static str,
@@ -219,9 +219,7 @@ fn skill_item_matches_query(name: &str, query: Option<&str>) -> bool {
     true
 }
 
-async fn reload_skills_internal(
-    state: &AppState,
-) -> Result<Value, (axum::http::StatusCode, String)> {
+async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
     fn risk_level_str(r: ironclad_core::RiskLevel) -> &'static str {
         match r {
             ironclad_core::RiskLevel::Safe => "Safe",
@@ -396,7 +394,6 @@ pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
                         "name": s.name,
                         "kind": s.kind,
                         "description": s.description,
-                        "source_path": s.source_path,
                         "risk_level": s.risk_level,
                         "enabled": s.enabled || built_in,
                         "built_in": built_in,
@@ -419,7 +416,6 @@ pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
                     "name": built_in.name,
                     "kind": "builtin",
                     "description": built_in.description,
-                    "source_path": Value::Null,
                     "risk_level": "Caution",
                     "enabled": true,
                     "built_in": true,
@@ -442,12 +438,10 @@ pub async fn get_skill(State(state): State<AppState>, Path(id): Path<String>) ->
                 "name": s.name,
                 "kind": s.kind,
                 "description": s.description,
-                "source_path": s.source_path,
                 "content_hash": s.content_hash,
                 "triggers_json": s.triggers_json,
                 "tool_chain_json": s.tool_chain_json,
                 "policy_overrides_json": s.policy_overrides_json,
-                "script_path": s.script_path,
                 "risk_level": s.risk_level,
                 "enabled": s.enabled || built_in,
                 "built_in": built_in,
@@ -455,17 +449,12 @@ pub async fn get_skill(State(state): State<AppState>, Path(id): Path<String>) ->
                 "created_at": s.created_at,
             })))
         }
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("skill {id} not found"),
-        )),
+        Ok(None) => Err(not_found(format!("skill {id} not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
 
-pub async fn reload_skills(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+pub async fn reload_skills(State(state): State<AppState>) -> Result<impl IntoResponse, JsonError> {
     let payload = reload_skills_internal(&state).await?;
     Ok(axum::Json(payload))
 }
@@ -509,12 +498,9 @@ pub async fn catalog_list(
 pub async fn catalog_install(
     State(state): State<AppState>,
     Json(req): Json<CatalogInstallRequest>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     if req.skills.is_empty() {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "skills list is required".to_string(),
-        ));
+        return Err(bad_request("skills list is required"));
     }
     let (manifest, base_url) = fetch_catalog_manifest(&state).await.map_err(|e| {
         (
@@ -545,10 +531,7 @@ pub async fn catalog_install(
         })
         .collect();
     if selected.is_empty() {
-        return Err((
-            axum::http::StatusCode::NOT_FOUND,
-            "no matching catalog skills found".to_string(),
-        ));
+        return Err(not_found("no matching catalog skills found"));
     }
 
     let mut rollback_existing: Vec<(std::path::PathBuf, Vec<u8>)> = Vec::new();
@@ -574,10 +557,7 @@ pub async fn catalog_install(
             for path in rollback_new.drain(..) {
                 let _ = std::fs::remove_file(path);
             }
-            return Err((
-                axum::http::StatusCode::BAD_REQUEST,
-                format!("checksum mismatch for {filename}"),
-            ));
+            return Err(bad_request(format!("checksum mismatch for {filename}")));
         }
 
         // Path traversal guard: reject filenames containing path separators or
@@ -595,10 +575,9 @@ pub async fn catalog_install(
             for path in rollback_new.drain(..) {
                 let _ = std::fs::remove_file(path);
             }
-            return Err((
-                axum::http::StatusCode::BAD_REQUEST,
-                format!("invalid filename rejected: {filename}"),
-            ));
+            return Err(bad_request(format!(
+                "invalid filename rejected: {filename}"
+            )));
         }
 
         let target = skills_dir.join(filename);
@@ -611,10 +590,9 @@ pub async fn catalog_install(
         let canonical_skills_dir = std::fs::canonicalize(&skills_dir)
             .map_err(|e| internal_err(&format!("failed to resolve skills_dir: {e}")))?;
         if !canonical_parent.starts_with(&canonical_skills_dir) {
-            return Err((
-                axum::http::StatusCode::BAD_REQUEST,
-                format!("filename escapes skills directory: {filename}"),
-            ));
+            return Err(bad_request(format!(
+                "filename escapes skills directory: {filename}"
+            )));
         }
 
         if target.exists() {
@@ -662,7 +640,7 @@ pub async fn catalog_install(
 pub async fn catalog_activate(
     State(state): State<AppState>,
     Json(req): Json<CatalogActivateRequest>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     let payload = reload_skills_internal(&state).await?;
     Ok(axum::Json(serde_json::json!({
         "ok": true,
@@ -671,9 +649,7 @@ pub async fn catalog_activate(
     })))
 }
 
-pub async fn audit_skills(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+pub async fn audit_skills(State(state): State<AppState>) -> Result<impl IntoResponse, JsonError> {
     let config = state.config.read().await;
     let skills_dir = std::fs::canonicalize(&config.skills.skills_dir).map_err(|e| {
         (
@@ -755,7 +731,6 @@ pub async fn audit_skills(
             "name": s.name,
             "enabled": s.enabled,
             "risk_level": s.risk_level,
-            "source_path": s.source_path,
             "drift_status": drift_status,
             "drift_reason": drift_reason,
         }));
@@ -843,12 +818,12 @@ pub async fn audit_skills(
 pub async fn toggle_skill(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     let existing = ironclad_db::skills::get_skill(&state.db, &id).map_err(|e| internal_err(&e))?;
     if let Some(s) = existing.as_ref()
         && is_builtin_skill(s)
     {
-        return Err((
+        return Err(JsonError(
             axum::http::StatusCode::FORBIDDEN,
             format!("skill {} is built-in and cannot be disabled", s.name),
         ));
@@ -858,10 +833,7 @@ pub async fn toggle_skill(
             "id": id,
             "enabled": new_enabled,
         }))),
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("skill {id} not found"),
-        )),
+        Ok(None) => Err(not_found(format!("skill {id} not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -869,11 +841,11 @@ pub async fn toggle_skill(
 pub async fn delete_skill(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     match ironclad_db::skills::get_skill(&state.db, &id) {
         Ok(Some(skill)) => {
             if is_builtin_skill(&skill) {
-                return Err((
+                return Err(JsonError(
                     axum::http::StatusCode::FORBIDDEN,
                     format!("skill {} is built-in and cannot be deleted", skill.name),
                 ));
@@ -885,10 +857,7 @@ pub async fn delete_skill(
                 "deleted": true,
             })))
         }
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("skill {id} not found"),
-        )),
+        Ok(None) => Err(not_found(format!("skill {id} not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }

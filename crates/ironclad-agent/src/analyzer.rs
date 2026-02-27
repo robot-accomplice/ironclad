@@ -1428,4 +1428,662 @@ mod tests {
         let session = make_graded_session(10, |_, _| {}, vec![]);
         assert!(LowCoverageWarning.evaluate_session(&session).is_none());
     }
+
+    // ── Coverage for name() and category() on all turn rules ─────
+
+    #[test]
+    fn budget_pressure_name_and_category() {
+        assert_eq!(BudgetPressure.name(), "budget_pressure");
+        assert_eq!(BudgetPressure.category(), RuleCategory::Budget);
+    }
+
+    #[test]
+    fn system_prompt_heavy_name_and_category() {
+        assert_eq!(SystemPromptHeavy.name(), "system_prompt_heavy");
+        assert_eq!(SystemPromptHeavy.category(), RuleCategory::Prompt);
+    }
+
+    #[test]
+    fn memory_starvation_name_and_category() {
+        assert_eq!(MemoryStarvation.name(), "memory_starvation");
+        assert_eq!(MemoryStarvation.category(), RuleCategory::Memory);
+    }
+
+    #[test]
+    fn shallow_history_name_and_category() {
+        assert_eq!(ShallowHistory.name(), "shallow_history");
+        assert_eq!(ShallowHistory.category(), RuleCategory::Quality);
+    }
+
+    #[test]
+    fn high_tool_density_name_and_category() {
+        assert_eq!(HighToolDensity.name(), "high_tool_density");
+        assert_eq!(HighToolDensity.category(), RuleCategory::Tools);
+    }
+
+    #[test]
+    fn tool_failures_name_and_category() {
+        assert_eq!(ToolFailures.name(), "tool_failures");
+        assert_eq!(ToolFailures.category(), RuleCategory::Tools);
+    }
+
+    #[test]
+    fn expensive_turn_name_and_category() {
+        assert_eq!(ExpensiveTurn.name(), "expensive_turn");
+        assert_eq!(ExpensiveTurn.category(), RuleCategory::Cost);
+    }
+
+    #[test]
+    fn empty_reasoning_name_and_category() {
+        assert_eq!(EmptyReasoning.name(), "empty_reasoning");
+        assert_eq!(EmptyReasoning.category(), RuleCategory::Quality);
+    }
+
+    #[test]
+    fn system_prompt_tax_name_and_category() {
+        assert_eq!(SystemPromptTax.name(), "system_prompt_tax");
+        assert_eq!(SystemPromptTax.category(), RuleCategory::Cost);
+    }
+
+    #[test]
+    fn history_cost_dominant_name_and_category() {
+        assert_eq!(HistoryCostDominant.name(), "history_cost_dominant");
+        assert_eq!(HistoryCostDominant.category(), RuleCategory::Cost);
+    }
+
+    #[test]
+    fn large_output_ratio_name_and_category() {
+        assert_eq!(LargeOutputRatio.name(), "large_output_ratio");
+        assert_eq!(LargeOutputRatio.category(), RuleCategory::Cost);
+    }
+
+    #[test]
+    fn cached_turn_savings_name_and_category() {
+        assert_eq!(CachedTurnSavings.name(), "cached_turn_savings");
+        assert_eq!(CachedTurnSavings.category(), RuleCategory::Cost);
+    }
+
+    // ── Coverage for name() and category() on session rules ──────
+
+    #[test]
+    fn context_drift_name_and_category() {
+        assert_eq!(ContextDrift.name(), "context_drift");
+        assert_eq!(ContextDrift.category(), RuleCategory::Budget);
+    }
+
+    #[test]
+    fn frequent_escalation_name_and_category() {
+        assert_eq!(FrequentEscalation.name(), "frequent_escalation");
+        assert_eq!(FrequentEscalation.category(), RuleCategory::Quality);
+    }
+
+    #[test]
+    fn cost_acceleration_name_and_category() {
+        assert_eq!(CostAcceleration.name(), "cost_acceleration");
+        assert_eq!(CostAcceleration.category(), RuleCategory::Cost);
+    }
+
+    #[test]
+    fn underutilized_memory_name_and_category() {
+        assert_eq!(UnderutilizedMemory.name(), "underutilized_memory");
+        assert_eq!(UnderutilizedMemory.category(), RuleCategory::Memory);
+    }
+
+    #[test]
+    fn tool_success_rate_name_and_category() {
+        assert_eq!(ToolSuccessRate.name(), "tool_success_rate");
+        assert_eq!(ToolSuccessRate.category(), RuleCategory::Tools);
+    }
+
+    #[test]
+    fn model_churn_name_and_category() {
+        assert_eq!(ModelChurn.name(), "model_churn");
+        assert_eq!(ModelChurn.category(), RuleCategory::Quality);
+    }
+
+    #[test]
+    fn quality_declining_name_and_category() {
+        assert_eq!(QualityDeclining.name(), "quality_declining");
+        assert_eq!(QualityDeclining.category(), RuleCategory::Quality);
+    }
+
+    #[test]
+    fn cost_quality_mismatch_name_and_category() {
+        assert_eq!(CostQualityMismatch.name(), "cost_quality_mismatch");
+        assert_eq!(CostQualityMismatch.category(), RuleCategory::Cost);
+    }
+
+    #[test]
+    fn memory_helps_name_and_category() {
+        assert_eq!(MemoryHelps.name(), "memory_helps");
+        assert_eq!(MemoryHelps.category(), RuleCategory::Memory);
+    }
+
+    #[test]
+    fn low_coverage_warning_name_and_category() {
+        assert_eq!(LowCoverageWarning.name(), "low_coverage_warning");
+        assert_eq!(LowCoverageWarning.category(), RuleCategory::Quality);
+    }
+
+    // ── Coverage for SystemPromptTax evaluate_turn ────────────────
+
+    #[test]
+    fn system_prompt_tax_fires_when_expensive() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 10_000;
+            t.system_prompt_tokens = 5_000;
+            t.cost = 0.10;
+        });
+        let tip = SystemPromptTax.evaluate_turn(&turn, None);
+        assert!(tip.is_some());
+        let tip = tip.unwrap();
+        assert_eq!(tip.rule_name, "system_prompt_tax");
+        assert!(tip.message.contains("System prompt"));
+    }
+
+    #[test]
+    fn system_prompt_tax_warning_for_very_expensive() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 10_000;
+            t.system_prompt_tokens = 5_000;
+            t.cost = 0.20;
+        });
+        let tip = SystemPromptTax.evaluate_turn(&turn, None);
+        assert!(tip.is_some());
+        assert_eq!(tip.unwrap().severity, Severity::Warning);
+    }
+
+    #[test]
+    fn system_prompt_tax_silent_for_zero_input() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 0;
+        });
+        assert!(SystemPromptTax.evaluate_turn(&turn, None).is_none());
+    }
+
+    #[test]
+    fn system_prompt_tax_silent_for_low_cost() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 10_000;
+            t.system_prompt_tokens = 100;
+            t.cost = 0.005;
+        });
+        assert!(SystemPromptTax.evaluate_turn(&turn, None).is_none());
+    }
+
+    // ── Coverage for HistoryCostDominant evaluate_turn ────────────
+
+    #[test]
+    fn history_cost_dominant_fires_above_60_pct() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 10_000;
+            t.history_tokens = 7_000;
+        });
+        let tip = HistoryCostDominant.evaluate_turn(&turn, None);
+        assert!(tip.is_some());
+        assert_eq!(tip.as_ref().unwrap().rule_name, "history_cost_dominant");
+    }
+
+    #[test]
+    fn history_cost_dominant_warning_above_80_pct() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 10_000;
+            t.history_tokens = 8_500;
+        });
+        let tip = HistoryCostDominant.evaluate_turn(&turn, None);
+        assert!(tip.is_some());
+        assert_eq!(tip.unwrap().severity, Severity::Warning);
+    }
+
+    #[test]
+    fn history_cost_dominant_silent_for_zero_input() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 0;
+        });
+        assert!(HistoryCostDominant.evaluate_turn(&turn, None).is_none());
+    }
+
+    #[test]
+    fn history_cost_dominant_silent_for_normal() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 10_000;
+            t.history_tokens = 3_000;
+        });
+        assert!(HistoryCostDominant.evaluate_turn(&turn, None).is_none());
+    }
+
+    // ── Coverage for LargeOutputRatio evaluate_turn ───────────────
+
+    #[test]
+    fn large_output_ratio_fires_for_verbose() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 1_000;
+            t.tokens_out = 3_000;
+        });
+        let tip = LargeOutputRatio.evaluate_turn(&turn, None);
+        assert!(tip.is_some());
+        assert_eq!(tip.unwrap().rule_name, "large_output_ratio");
+    }
+
+    #[test]
+    fn large_output_ratio_silent_for_small_output() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 5_000;
+            t.tokens_out = 1_000;
+        });
+        assert!(LargeOutputRatio.evaluate_turn(&turn, None).is_none());
+    }
+
+    #[test]
+    fn large_output_ratio_silent_for_zero_in() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 0;
+            t.tokens_out = 5_000;
+        });
+        assert!(LargeOutputRatio.evaluate_turn(&turn, None).is_none());
+    }
+
+    #[test]
+    fn large_output_ratio_silent_for_zero_out() {
+        let turn = make_turn(|t| {
+            t.tokens_in = 5_000;
+            t.tokens_out = 0;
+        });
+        assert!(LargeOutputRatio.evaluate_turn(&turn, None).is_none());
+    }
+
+    // ── Coverage for FrequentEscalation evaluate_session ──────────
+
+    #[test]
+    fn frequent_escalation_fires_above_40_pct() {
+        let session = make_session_turns(10, |i, t| {
+            t.complexity_level = if i < 5 { "L2".into() } else { "L3".into() };
+        });
+        let tip = FrequentEscalation.evaluate_session(&session);
+        assert!(tip.is_some());
+        assert_eq!(tip.unwrap().severity, Severity::Warning);
+    }
+
+    #[test]
+    fn frequent_escalation_silent_below_40_pct() {
+        let session = make_session_turns(10, |i, t| {
+            t.complexity_level = if i < 2 { "L2".into() } else { "L0".into() };
+        });
+        assert!(FrequentEscalation.evaluate_session(&session).is_none());
+    }
+
+    #[test]
+    fn frequent_escalation_silent_for_empty_session() {
+        let session = SessionData {
+            turns: vec![],
+            session_id: "s".into(),
+            grades: vec![],
+        };
+        assert!(FrequentEscalation.evaluate_session(&session).is_none());
+    }
+
+    // ── Coverage for ModelChurn edge cases ────────────────────────
+
+    #[test]
+    fn model_churn_silent_for_3_or_fewer_models() {
+        let models = ["gpt-4", "claude-3", "gemini"];
+        let session = make_session_turns(3, |i, t| {
+            t.model = models[i].into();
+        });
+        assert!(ModelChurn.evaluate_session(&session).is_none());
+    }
+
+    #[test]
+    fn model_churn_ignores_empty_model_names() {
+        let session = make_session_turns(5, |_, t| {
+            t.model = String::new();
+        });
+        assert!(ModelChurn.evaluate_session(&session).is_none());
+    }
+
+    // ── Coverage for ExpensiveTurn edge cases ─────────────────────
+
+    #[test]
+    fn expensive_turn_critical_above_5x() {
+        let turn = make_turn(|t| {
+            t.cost = 0.60;
+        });
+        let tip = ExpensiveTurn.evaluate_turn(&turn, Some(0.10));
+        assert!(tip.is_some());
+        assert_eq!(tip.unwrap().severity, Severity::Critical);
+    }
+
+    #[test]
+    fn expensive_turn_silent_for_zero_avg() {
+        let turn = make_turn(|t| {
+            t.cost = 0.10;
+        });
+        assert!(ExpensiveTurn.evaluate_turn(&turn, Some(0.0)).is_none());
+    }
+
+    #[test]
+    fn expensive_turn_silent_below_2x() {
+        let turn = make_turn(|t| {
+            t.cost = 0.05;
+        });
+        assert!(ExpensiveTurn.evaluate_turn(&turn, Some(0.04)).is_none());
+    }
+
+    // ── Coverage for BudgetPressure zero budget ──────────────────
+
+    #[test]
+    fn budget_pressure_silent_for_zero_budget() {
+        let turn = make_turn(|t| {
+            t.token_budget = 0;
+        });
+        assert!(BudgetPressure.evaluate_turn(&turn, None).is_none());
+    }
+
+    // ── Coverage for SystemPromptHeavy edge cases ────────────────
+
+    #[test]
+    fn system_prompt_heavy_critical_above_60_pct() {
+        let turn = make_turn(|t| {
+            t.token_budget = 100;
+            t.system_prompt_tokens = 65;
+        });
+        let tip = SystemPromptHeavy.evaluate_turn(&turn, None);
+        assert!(tip.is_some());
+        assert_eq!(tip.unwrap().severity, Severity::Critical);
+    }
+
+    #[test]
+    fn system_prompt_heavy_silent_for_zero_budget() {
+        let turn = make_turn(|t| {
+            t.token_budget = 0;
+        });
+        assert!(SystemPromptHeavy.evaluate_turn(&turn, None).is_none());
+    }
+
+    // ── Coverage for MemoryStarvation edge cases ─────────────────
+
+    #[test]
+    fn memory_starvation_silent_for_zero_budget() {
+        let turn = make_turn(|t| {
+            t.token_budget = 0;
+        });
+        assert!(MemoryStarvation.evaluate_turn(&turn, None).is_none());
+    }
+
+    #[test]
+    fn memory_starvation_silent_for_high_memory() {
+        let turn = make_turn(|t| {
+            t.token_budget = 1000;
+            t.memory_tokens = 200;
+        });
+        assert!(MemoryStarvation.evaluate_turn(&turn, None).is_none());
+    }
+
+    // ── Coverage for ShallowHistory edge cases ───────────────────
+
+    #[test]
+    fn shallow_history_silent_for_depth_3_or_more() {
+        let turn = make_turn(|t| {
+            t.history_depth = 3;
+        });
+        assert!(ShallowHistory.evaluate_turn(&turn, None).is_none());
+    }
+
+    // ── Coverage for HighToolDensity edge cases ──────────────────
+
+    #[test]
+    fn high_tool_density_warning_above_8() {
+        let turn = make_turn(|t| {
+            t.tool_call_count = 10;
+        });
+        let tip = HighToolDensity.evaluate_turn(&turn, None);
+        assert!(tip.is_some());
+        assert_eq!(tip.unwrap().severity, Severity::Warning);
+    }
+
+    #[test]
+    fn high_tool_density_silent_for_3_or_fewer() {
+        let turn = make_turn(|t| {
+            t.tool_call_count = 3;
+        });
+        assert!(HighToolDensity.evaluate_turn(&turn, None).is_none());
+    }
+
+    // ── Coverage for ToolFailures edge cases ─────────────────────
+
+    #[test]
+    fn tool_failures_warning_below_50_pct() {
+        let turn = make_turn(|t| {
+            t.tool_call_count = 4;
+            t.tool_failure_count = 1;
+        });
+        let tip = ToolFailures.evaluate_turn(&turn, None);
+        assert!(tip.is_some());
+        assert_eq!(tip.unwrap().severity, Severity::Warning);
+    }
+
+    #[test]
+    fn tool_failures_silent_for_no_failures() {
+        let turn = make_turn(|t| {
+            t.tool_call_count = 5;
+            t.tool_failure_count = 0;
+        });
+        assert!(ToolFailures.evaluate_turn(&turn, None).is_none());
+    }
+
+    #[test]
+    fn tool_failures_handles_zero_total_calls() {
+        let turn = make_turn(|t| {
+            t.tool_call_count = 0;
+            t.tool_failure_count = 1;
+        });
+        let tip = ToolFailures.evaluate_turn(&turn, None);
+        assert!(tip.is_some());
+        assert_eq!(tip.unwrap().severity, Severity::Critical);
+    }
+
+    // ── Coverage for EmptyReasoning edge cases ───────────────────
+
+    #[test]
+    fn empty_reasoning_silent_when_no_reasoning() {
+        let turn = make_turn(|t| {
+            t.has_reasoning = false;
+            t.thinking_length = 0;
+        });
+        assert!(EmptyReasoning.evaluate_turn(&turn, None).is_none());
+    }
+
+    #[test]
+    fn empty_reasoning_silent_when_thinking_present() {
+        let turn = make_turn(|t| {
+            t.has_reasoning = true;
+            t.thinking_length = 500;
+        });
+        assert!(EmptyReasoning.evaluate_turn(&turn, None).is_none());
+    }
+
+    // ── Coverage for CachedTurnSavings edge cases ────────────────
+
+    #[test]
+    fn cached_turn_savings_silent_when_not_cached() {
+        let turn = make_turn(|t| {
+            t.cached = false;
+        });
+        assert!(CachedTurnSavings.evaluate_turn(&turn, None).is_none());
+    }
+
+    // ── Coverage for ContextDrift edge cases ─────────────────────
+
+    #[test]
+    fn context_drift_silent_for_short_sessions() {
+        let session = make_session_turns(3, |_, _| {});
+        assert!(ContextDrift.evaluate_session(&session).is_none());
+    }
+
+    #[test]
+    fn context_drift_silent_with_zero_budgets() {
+        let session = make_session_turns(6, |_, t| {
+            t.token_budget = 0;
+        });
+        assert!(ContextDrift.evaluate_session(&session).is_none());
+    }
+
+    // ── Coverage for CostAcceleration edge cases ─────────────────
+
+    #[test]
+    fn cost_acceleration_silent_for_short_sessions() {
+        let session = make_session_turns(3, |_, _| {});
+        assert!(CostAcceleration.evaluate_session(&session).is_none());
+    }
+
+    #[test]
+    fn cost_acceleration_silent_when_stable() {
+        let session = make_session_turns(6, |_, t| {
+            t.cost = 0.05;
+        });
+        assert!(CostAcceleration.evaluate_session(&session).is_none());
+    }
+
+    // ── Coverage for ToolSuccessRate edge cases ──────────────────
+
+    #[test]
+    fn tool_success_rate_critical_below_50_pct() {
+        let session = make_session_turns(3, |_, t| {
+            t.tool_call_count = 5;
+            t.tool_failure_count = 4;
+        });
+        let tip = ToolSuccessRate.evaluate_session(&session);
+        assert!(tip.is_some());
+        assert_eq!(tip.unwrap().severity, Severity::Critical);
+    }
+
+    #[test]
+    fn tool_success_rate_silent_for_few_calls() {
+        let session = make_session_turns(2, |_, t| {
+            t.tool_call_count = 1;
+            t.tool_failure_count = 1;
+        });
+        assert!(ToolSuccessRate.evaluate_session(&session).is_none());
+    }
+
+    // ── Coverage for UnderutilizedMemory edge cases ──────────────
+
+    #[test]
+    fn underutilized_memory_silent_for_empty_session() {
+        let session = SessionData {
+            turns: vec![],
+            session_id: "s".into(),
+            grades: vec![],
+        };
+        assert!(UnderutilizedMemory.evaluate_session(&session).is_none());
+    }
+
+    #[test]
+    fn underutilized_memory_silent_when_some_memory() {
+        let session = make_session_turns(4, |i, t| {
+            t.memory_tokens = if i == 0 { 100 } else { 0 };
+        });
+        assert!(UnderutilizedMemory.evaluate_session(&session).is_none());
+    }
+
+    // ── Coverage for QualityDeclining edge cases ─────────────────
+
+    #[test]
+    fn quality_declining_silent_for_few_grades() {
+        let grades = vec![("turn-0".into(), 5), ("turn-1".into(), 1)];
+        let session = make_graded_session(4, |_, _| {}, grades);
+        assert!(QualityDeclining.evaluate_session(&session).is_none());
+    }
+
+    // ── Coverage for CostQualityMismatch edge cases ──────────────
+
+    #[test]
+    fn cost_quality_mismatch_silent_for_empty_grades() {
+        let session = make_graded_session(4, |_, _| {}, vec![]);
+        assert!(CostQualityMismatch.evaluate_session(&session).is_none());
+    }
+
+    #[test]
+    fn cost_quality_mismatch_silent_for_single_turn() {
+        let grades = vec![("turn-0".into(), 5)];
+        let session = make_graded_session(1, |_, _| {}, grades);
+        assert!(CostQualityMismatch.evaluate_session(&session).is_none());
+    }
+
+    #[test]
+    fn cost_quality_mismatch_silent_for_single_model() {
+        let grades = vec![("turn-0".into(), 5), ("turn-1".into(), 4)];
+        let session = make_graded_session(2, |_, _| {}, grades);
+        assert!(CostQualityMismatch.evaluate_session(&session).is_none());
+    }
+
+    // ── Coverage for MemoryHelps edge cases ───────────────────────
+
+    #[test]
+    fn memory_helps_silent_for_empty_grades() {
+        let session = make_graded_session(4, |_, _| {}, vec![]);
+        assert!(MemoryHelps.evaluate_session(&session).is_none());
+    }
+
+    #[test]
+    fn memory_helps_silent_when_insufficient_samples() {
+        let grades = vec![("turn-0".into(), 5)];
+        let session = make_graded_session(
+            2,
+            |i, t| {
+                t.memory_tokens = if i == 0 { 100 } else { 0 };
+            },
+            grades,
+        );
+        assert!(MemoryHelps.evaluate_session(&session).is_none());
+    }
+
+    // ── Coverage for LlmAnalyzer prompts ─────────────────────────
+
+    #[test]
+    fn llm_analyzer_build_prompt_zero_budget() {
+        let turn = make_turn(|t| {
+            t.token_budget = 0;
+        });
+        let prompt = LlmAnalyzer::build_analysis_prompt(&turn, &[]);
+        assert!(prompt.contains("Budget utilization: 0%"));
+    }
+
+    #[test]
+    fn llm_analyzer_build_prompt_with_no_tips() {
+        let turn = make_turn(|_| {});
+        let prompt = LlmAnalyzer::build_analysis_prompt(&turn, &[]);
+        assert!(prompt.contains("(none)"));
+    }
+
+    #[test]
+    fn llm_analyzer_session_prompt_with_tips() {
+        let session = make_session_turns(3, |_, _| {});
+        let tips = vec![Tip {
+            severity: Severity::Warning,
+            category: RuleCategory::Cost,
+            rule_name: "test_rule".into(),
+            message: "test msg".into(),
+            suggestion: "test sugg".into(),
+        }];
+        let prompt = LlmAnalyzer::build_session_prompt(&session, &tips);
+        assert!(prompt.contains("test_rule"));
+        assert!(prompt.contains("test msg"));
+    }
+
+    #[test]
+    fn llm_analyzer_session_prompt_no_tips() {
+        let session = make_session_turns(3, |_, _| {});
+        let prompt = LlmAnalyzer::build_session_prompt(&session, &[]);
+        assert!(prompt.contains("(none)"));
+    }
+
+    // ── Coverage for LowCoverageWarning fires ────────────────────
+
+    #[test]
+    fn low_coverage_warning_silent_when_good_coverage() {
+        let grades: Vec<(String, i32)> = (0..50).map(|i| (format!("turn-{i}"), 4)).collect();
+        let session = make_graded_session(60, |_, _| {}, grades);
+        assert!(LowCoverageWarning.evaluate_session(&session).is_none());
+    }
 }

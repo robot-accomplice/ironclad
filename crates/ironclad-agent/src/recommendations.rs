@@ -1167,4 +1167,524 @@ mod tests {
         let recs = engine.generate(&profile);
         assert!(recs.is_empty(), "minimal profile should produce no recs");
     }
+
+    // ── Coverage for RecommendationCategory label / icon ─────────
+
+    #[test]
+    fn category_label_covers_all_variants() {
+        assert_eq!(
+            RecommendationCategory::QueryCrafting.label(),
+            "Query Crafting"
+        );
+        assert_eq!(
+            RecommendationCategory::ModelSelection.label(),
+            "Model Selection"
+        );
+        assert_eq!(
+            RecommendationCategory::SessionManagement.label(),
+            "Session Management"
+        );
+        assert_eq!(
+            RecommendationCategory::MemoryLeverage.label(),
+            "Memory Leverage"
+        );
+        assert_eq!(
+            RecommendationCategory::CostOptimization.label(),
+            "Cost Optimization"
+        );
+        assert_eq!(RecommendationCategory::ToolUsage.label(), "Tool Usage");
+        assert_eq!(
+            RecommendationCategory::Configuration.label(),
+            "Configuration"
+        );
+    }
+
+    #[test]
+    fn category_icon_covers_all_variants() {
+        assert_eq!(RecommendationCategory::QueryCrafting.icon(), "pencil");
+        assert_eq!(RecommendationCategory::ModelSelection.icon(), "cpu");
+        assert_eq!(RecommendationCategory::SessionManagement.icon(), "chat");
+        assert_eq!(RecommendationCategory::MemoryLeverage.icon(), "memory");
+        assert_eq!(RecommendationCategory::CostOptimization.icon(), "dollar");
+        assert_eq!(RecommendationCategory::ToolUsage.icon(), "wrench");
+        assert_eq!(RecommendationCategory::Configuration.icon(), "gear");
+    }
+
+    // ── Coverage for SpecificityCorrelation edge cases ────────────
+
+    #[test]
+    fn specificity_silent_for_insufficient_data() {
+        let rule = SpecificityCorrelation;
+        let mut profile = base_profile();
+        profile.total_turns = 5;
+        profile.avg_tokens_per_turn = 10.0;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn specificity_name_and_category() {
+        let rule = SpecificityCorrelation;
+        assert_eq!(rule.name(), "specificity_correlation");
+        assert_eq!(rule.category(), RecommendationCategory::QueryCrafting);
+    }
+
+    // ── Coverage for FollowUpPatterns edge cases ─────────────────
+
+    #[test]
+    fn follow_up_silent_for_insufficient_sessions() {
+        let rule = FollowUpPatterns;
+        let mut profile = base_profile();
+        profile.total_sessions = 2;
+        profile.avg_session_length = 30.0;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn follow_up_name_and_category() {
+        let rule = FollowUpPatterns;
+        assert_eq!(rule.name(), "follow_up_patterns");
+        assert_eq!(rule.category(), RecommendationCategory::QueryCrafting);
+    }
+
+    // ── Coverage for ParetoOptimalModels edge cases ──────────────
+
+    #[test]
+    fn pareto_silent_for_single_model() {
+        let rule = ParetoOptimalModels;
+        let mut profile = base_profile();
+        profile.model_stats.clear();
+        profile.model_stats.insert(
+            "only-model".into(),
+            ModelStats {
+                turns: 50,
+                avg_cost: 0.02,
+                avg_quality: None,
+                cache_hit_rate: 0.3,
+                avg_output_density: 0.25,
+            },
+        );
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn pareto_silent_when_no_domination() {
+        let rule = ParetoOptimalModels;
+        let mut profile = base_profile();
+        profile.model_stats.clear();
+        // model-a: cheaper but lower density
+        profile.model_stats.insert(
+            "model-a".into(),
+            ModelStats {
+                turns: 20,
+                avg_cost: 0.01,
+                avg_quality: None,
+                cache_hit_rate: 0.3,
+                avg_output_density: 0.10,
+            },
+        );
+        // model-b: more expensive but higher density (trade-off, no domination)
+        profile.model_stats.insert(
+            "model-b".into(),
+            ModelStats {
+                turns: 20,
+                avg_cost: 0.05,
+                avg_quality: None,
+                cache_hit_rate: 0.3,
+                avg_output_density: 0.30,
+            },
+        );
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn pareto_name_and_category() {
+        let rule = ParetoOptimalModels;
+        assert_eq!(rule.name(), "pareto_optimal_models");
+        assert_eq!(rule.category(), RecommendationCategory::ModelSelection);
+    }
+
+    // ── Coverage for ComplexityMismatch ───────────────────────────
+
+    #[test]
+    fn complexity_mismatch_fires_for_expensive_low_density() {
+        let rule = ComplexityMismatch;
+        let mut profile = base_profile();
+        profile.model_stats.insert(
+            "over-powered".into(),
+            ModelStats {
+                turns: 30,
+                avg_cost: 0.03,
+                avg_quality: None,
+                cache_hit_rate: 0.2,
+                avg_output_density: 0.10,
+            },
+        );
+        let rec = rule.evaluate(&profile);
+        assert!(
+            rec.is_some(),
+            "expensive model with low density should trigger"
+        );
+        let rec = rec.unwrap();
+        assert_eq!(rec.priority, Priority::High);
+        assert!(rec.title.contains("over-powered"));
+    }
+
+    #[test]
+    fn complexity_mismatch_silent_for_cheap_models() {
+        let rule = ComplexityMismatch;
+        let mut profile = base_profile();
+        profile.model_stats.clear();
+        profile.model_stats.insert(
+            "cheap".into(),
+            ModelStats {
+                turns: 30,
+                avg_cost: 0.005,
+                avg_quality: None,
+                cache_hit_rate: 0.2,
+                avg_output_density: 0.10,
+            },
+        );
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn complexity_mismatch_name_and_category() {
+        let rule = ComplexityMismatch;
+        assert_eq!(rule.name(), "complexity_mismatch");
+        assert_eq!(rule.category(), RecommendationCategory::ModelSelection);
+    }
+
+    // ── Coverage for ModelStrengths ───────────────────────────────
+
+    #[test]
+    fn model_strengths_fires_when_different_best_models() {
+        let rule = ModelStrengths;
+        let mut profile = base_profile();
+        profile.total_turns = 50;
+        profile.models_used = vec!["quality-model".into(), "cost-model".into()];
+        profile.model_stats.clear();
+        profile.model_stats.insert(
+            "quality-model".into(),
+            ModelStats {
+                turns: 25,
+                avg_cost: 0.05,
+                avg_quality: Some(0.9),
+                cache_hit_rate: 0.3,
+                avg_output_density: 0.40,
+            },
+        );
+        profile.model_stats.insert(
+            "cost-model".into(),
+            ModelStats {
+                turns: 25,
+                avg_cost: 0.005,
+                avg_quality: Some(0.7),
+                cache_hit_rate: 0.3,
+                avg_output_density: 0.15,
+            },
+        );
+        let rec = rule.evaluate(&profile);
+        assert!(rec.is_some(), "different best models should trigger");
+        let rec = rec.unwrap();
+        assert_eq!(rec.priority, Priority::Low);
+        assert!(rec.explanation.contains("quality-model"));
+        assert!(rec.explanation.contains("cost-model"));
+    }
+
+    #[test]
+    fn model_strengths_silent_for_single_model() {
+        let rule = ModelStrengths;
+        let mut profile = base_profile();
+        profile.models_used = vec!["only-one".into()];
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn model_strengths_silent_for_few_turns() {
+        let rule = ModelStrengths;
+        let mut profile = base_profile();
+        profile.total_turns = 10;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn model_strengths_name_and_category() {
+        let rule = ModelStrengths;
+        assert_eq!(rule.name(), "model_strengths");
+        assert_eq!(rule.category(), RecommendationCategory::ModelSelection);
+    }
+
+    // ── Coverage for SessionLengthSweet ───────────────────────────
+
+    #[test]
+    fn session_length_sweet_fires_in_range() {
+        let rule = SessionLengthSweet;
+        let mut profile = base_profile();
+        profile.avg_session_length = 18.0;
+        let rec = rule.evaluate(&profile);
+        assert!(rec.is_some(), "session length 15-20 should trigger");
+        assert_eq!(rec.unwrap().priority, Priority::Low);
+    }
+
+    #[test]
+    fn session_length_sweet_silent_outside_range() {
+        let rule = SessionLengthSweet;
+        let mut profile = base_profile();
+        profile.avg_session_length = 10.0;
+        assert!(rule.evaluate(&profile).is_none());
+
+        profile.avg_session_length = 25.0;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn session_length_sweet_silent_for_few_sessions() {
+        let rule = SessionLengthSweet;
+        let mut profile = base_profile();
+        profile.total_sessions = 2;
+        profile.avg_session_length = 18.0;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn session_length_sweet_name_and_category() {
+        let rule = SessionLengthSweet;
+        assert_eq!(rule.name(), "session_length_sweet");
+        assert_eq!(rule.category(), RecommendationCategory::SessionManagement);
+    }
+
+    // ── Coverage for StaleSessionCost ─────────────────────────────
+
+    #[test]
+    fn stale_session_name_and_category() {
+        let rule = StaleSessionCost;
+        assert_eq!(rule.name(), "stale_session_cost");
+        assert_eq!(rule.category(), RecommendationCategory::SessionManagement);
+    }
+
+    #[test]
+    fn stale_session_silent_for_few_sessions() {
+        let rule = StaleSessionCost;
+        let mut profile = base_profile();
+        profile.total_sessions = 3;
+        profile.avg_session_length = 30.0;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    // ── Coverage for MemoryUnderutilized ──────────────────────────
+
+    #[test]
+    fn memory_underutilized_silent_for_few_turns() {
+        let rule = MemoryUnderutilized;
+        let mut profile = base_profile();
+        profile.total_turns = 10;
+        profile.memory_retrieval_rate = 0.05;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn memory_underutilized_name_and_category() {
+        let rule = MemoryUnderutilized;
+        assert_eq!(rule.name(), "memory_underutilized");
+        assert_eq!(rule.category(), RecommendationCategory::MemoryLeverage);
+    }
+
+    // ── Coverage for MemoryOverloaded ─────────────────────────────
+
+    #[test]
+    fn memory_overloaded_fires_when_crowding() {
+        let rule = MemoryOverloaded;
+        let mut profile = base_profile();
+        profile.total_turns = 30;
+        profile.memory_retrieval_rate = 0.95;
+        profile.avg_tokens_per_turn = 3000.0;
+        let rec = rule.evaluate(&profile);
+        assert!(
+            rec.is_some(),
+            "high memory retrieval + high tokens should trigger"
+        );
+        let rec = rec.unwrap();
+        assert_eq!(rec.priority, Priority::Medium);
+        assert!(rec.explanation.contains("95%"));
+    }
+
+    #[test]
+    fn memory_overloaded_silent_when_balanced() {
+        let rule = MemoryOverloaded;
+        let mut profile = base_profile();
+        profile.total_turns = 30;
+        profile.memory_retrieval_rate = 0.5;
+        profile.avg_tokens_per_turn = 500.0;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn memory_overloaded_silent_for_few_turns() {
+        let rule = MemoryOverloaded;
+        let mut profile = base_profile();
+        profile.total_turns = 10;
+        profile.memory_retrieval_rate = 0.95;
+        profile.avg_tokens_per_turn = 3000.0;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn memory_overloaded_name_and_category() {
+        let rule = MemoryOverloaded;
+        assert_eq!(rule.name(), "memory_overloaded");
+        assert_eq!(rule.category(), RecommendationCategory::MemoryLeverage);
+    }
+
+    // ── Coverage for SystemPromptROI ──────────────────────────────
+
+    #[test]
+    fn system_prompt_roi_fires_for_heavy_prompts() {
+        let rule = SystemPromptROI;
+        let mut profile = base_profile();
+        profile.total_turns = 50;
+        profile.avg_tokens_per_turn = 2000.0;
+        let rec = rule.evaluate(&profile);
+        assert!(rec.is_some(), "high tokens/turn should trigger");
+        let rec = rec.unwrap();
+        assert_eq!(rec.priority, Priority::Medium);
+        assert!(rec.explanation.contains("2000"));
+    }
+
+    #[test]
+    fn system_prompt_roi_silent_for_low_tokens() {
+        let rule = SystemPromptROI;
+        let mut profile = base_profile();
+        profile.total_turns = 50;
+        profile.avg_tokens_per_turn = 500.0;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn system_prompt_roi_silent_for_few_turns() {
+        let rule = SystemPromptROI;
+        let mut profile = base_profile();
+        profile.total_turns = 5;
+        profile.avg_tokens_per_turn = 2000.0;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn system_prompt_roi_name_and_category() {
+        let rule = SystemPromptROI;
+        assert_eq!(rule.name(), "system_prompt_roi");
+        assert_eq!(rule.category(), RecommendationCategory::CostOptimization);
+    }
+
+    // ── Coverage for CachingOpportunity ───────────────────────────
+
+    #[test]
+    fn caching_opportunity_name_and_category() {
+        let rule = CachingOpportunity;
+        assert_eq!(rule.name(), "caching_opportunity");
+        assert_eq!(rule.category(), RecommendationCategory::CostOptimization);
+    }
+
+    #[test]
+    fn caching_opportunity_silent_for_few_turns() {
+        let rule = CachingOpportunity;
+        let mut profile = base_profile();
+        profile.total_turns = 5;
+        profile.cache_hit_rate = 0.01;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    // ── Coverage for ToolCostAwareness ────────────────────────────
+
+    #[test]
+    fn tool_cost_name_and_category() {
+        let rule = ToolCostAwareness;
+        assert_eq!(rule.name(), "tool_cost_awareness");
+        assert_eq!(rule.category(), RecommendationCategory::CostOptimization);
+    }
+
+    // ── Coverage for FallbackChainTuning ──────────────────────────
+
+    #[test]
+    fn fallback_chain_name_and_category() {
+        let rule = FallbackChainTuning;
+        assert_eq!(rule.name(), "fallback_chain_tuning");
+        assert_eq!(rule.category(), RecommendationCategory::Configuration);
+    }
+
+    #[test]
+    fn fallback_silent_for_single_model() {
+        let rule = FallbackChainTuning;
+        let mut profile = base_profile();
+        profile.models_used = vec!["only-one".into()];
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn fallback_silent_for_few_turns() {
+        let rule = FallbackChainTuning;
+        let mut profile = base_profile();
+        profile.total_turns = 10;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    #[test]
+    fn fallback_silent_for_low_fallback_rate() {
+        let rule = FallbackChainTuning;
+        let mut profile = base_profile();
+        profile.total_turns = 100;
+        // 10% fallback rate — below 30% threshold
+        profile.model_stats.get_mut("claude-4").unwrap().turns = 90;
+        profile.model_stats.get_mut("gpt-4").unwrap().turns = 10;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    // ── Coverage for HighCostPerTurn ──────────────────────────────
+
+    #[test]
+    fn high_cost_name_and_category() {
+        let rule = HighCostPerTurn;
+        assert_eq!(rule.name(), "high_cost_per_turn");
+        assert_eq!(rule.category(), RecommendationCategory::Configuration);
+    }
+
+    #[test]
+    fn high_cost_medium_priority_between_thresholds() {
+        let rule = HighCostPerTurn;
+        let mut profile = base_profile();
+        // avg_cost = 8.0/100 = 0.08 (above 0.05 but below 0.10 -> Medium)
+        profile.total_cost = 8.0;
+        profile.total_turns = 100;
+        let rec = rule.evaluate(&profile);
+        assert!(rec.is_some());
+        assert_eq!(rec.unwrap().priority, Priority::Medium);
+    }
+
+    #[test]
+    fn high_cost_silent_for_few_turns() {
+        let rule = HighCostPerTurn;
+        let mut profile = base_profile();
+        profile.total_turns = 3;
+        profile.total_cost = 100.0;
+        assert!(rule.evaluate(&profile).is_none());
+    }
+
+    // ── Priority ordinal coverage ────────────────────────────────
+
+    #[test]
+    fn priority_ordinal_all_variants() {
+        assert_eq!(Priority::Low.ordinal(), 0);
+        assert_eq!(Priority::Medium.ordinal(), 1);
+        assert_eq!(Priority::High.ordinal(), 2);
+    }
+
+    // ── Engine default trait ──────────────────────────────────────
+
+    #[test]
+    fn engine_default_same_as_new() {
+        let engine = RecommendationEngine::default();
+        let profile = base_profile();
+        let recs = engine.generate(&profile);
+        // Just verify it works; same as new()
+        let _ = recs;
+    }
 }

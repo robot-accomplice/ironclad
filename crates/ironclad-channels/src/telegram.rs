@@ -627,4 +627,249 @@ mod tests {
             TelegramAdapter::with_config("tok".into(), 30, vec![], Some("secret123".into()));
         assert_eq!(adapter.webhook_secret.unwrap(), "secret123");
     }
+
+    #[test]
+    fn platform_name_is_telegram() {
+        let adapter = TelegramAdapter::new("tok".into());
+        assert_eq!(adapter.platform_name(), "telegram");
+    }
+
+    #[test]
+    fn chunk_message_single_word_over_limit() {
+        let text = "hello world";
+        let chunks = TelegramAdapter::chunk_message(text, 100);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "hello world");
+    }
+
+    #[test]
+    fn chunk_message_multiple_splits() {
+        let text = "aaa bbb ccc ddd eee fff ggg hhh iii jjj";
+        let chunks = TelegramAdapter::chunk_message(text, 12);
+        for chunk in &chunks {
+            assert!(chunk.len() <= 12, "chunk '{}' exceeds limit", chunk);
+        }
+        assert!(chunks.len() >= 3);
+    }
+
+    #[test]
+    fn parse_inbound_preserves_metadata() {
+        let update = json!({
+            "update_id": 100,
+            "message": {
+                "message_id": 5,
+                "from": { "id": 42, "first_name": "Alice" },
+                "chat": { "id": 42, "type": "private" },
+                "text": "test metadata"
+            }
+        });
+        let msg = TelegramAdapter::parse_inbound(&update).unwrap();
+        let meta = msg.metadata.unwrap();
+        assert_eq!(meta["update_id"], 100);
+        assert_eq!(meta["message"]["from"]["first_name"], "Alice");
+    }
+
+    #[test]
+    fn format_outbound_with_special_characters() {
+        let msg = OutboundMessage {
+            content: "Hello <b>world</b> & \"friends\"".into(),
+            recipient_id: "12345".into(),
+            metadata: None,
+        };
+        let payload = TelegramAdapter::format_outbound(&msg);
+        assert_eq!(payload["text"], "Hello <b>world</b> & \"friends\"");
+    }
+
+    #[test]
+    fn process_webhook_update_without_update_id() {
+        let adapter = TelegramAdapter::new("tok".into());
+        let update = json!({
+            "message": {
+                "message_id": 1,
+                "from": { "id": 42 },
+                "chat": { "id": 42, "type": "private" },
+                "text": "no update_id"
+            }
+        });
+        let result = adapter.process_webhook_update(&update).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().content, "no update_id");
+    }
+
+    #[test]
+    fn process_webhook_update_allowed_chat_passes() {
+        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![42], None);
+        let update = json!({
+            "update_id": 500,
+            "message": {
+                "message_id": 1,
+                "from": { "id": 42 },
+                "chat": { "id": 42, "type": "private" },
+                "text": "allowed"
+            }
+        });
+        let result = adapter.process_webhook_update(&update).unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn message_buffer_is_empty_initially() {
+        let adapter = TelegramAdapter::new("tok".into());
+        let buf = adapter.message_buffer.lock().unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn with_config_inherits_client() {
+        let adapter = TelegramAdapter::with_config("tok".into(), 45, vec![1, 2, 3], None);
+        assert_eq!(adapter.poll_timeout, 45);
+        assert_eq!(adapter.allowed_chat_ids, vec![1, 2, 3]);
+        // token inherited from Self::new
+        assert_eq!(adapter.token, "tok");
+    }
+
+    #[test]
+    fn chunk_message_unicode() {
+        // Unicode characters that are multi-byte
+        let text = "Hello \u{1F600} world \u{1F601} test \u{1F602} end";
+        let chunks = TelegramAdapter::chunk_message(text, 15);
+        for chunk in &chunks {
+            assert!(chunk.len() <= 15);
+        }
+    }
+
+    #[test]
+    fn api_url_various_methods() {
+        let adapter = TelegramAdapter::new("TOKEN123".into());
+        assert_eq!(
+            adapter.api_url("setWebhook"),
+            "https://api.telegram.org/botTOKEN123/setWebhook"
+        );
+        assert_eq!(
+            adapter.api_url("deleteWebhook"),
+            "https://api.telegram.org/botTOKEN123/deleteWebhook"
+        );
+        assert_eq!(
+            adapter.api_url("sendChatAction"),
+            "https://api.telegram.org/botTOKEN123/sendChatAction"
+        );
+    }
+
+    #[test]
+    fn last_update_id_starts_at_zero() {
+        let adapter = TelegramAdapter::new("tok".into());
+        let id = *adapter.last_update_id.lock().unwrap();
+        assert_eq!(id, 0);
+    }
+
+    #[test]
+    fn parse_inbound_message_with_only_from_id() {
+        // Minimal valid update: just from.id, no text, no message_id
+        let update = json!({
+            "message": {
+                "from": { "id": 999 }
+            }
+        });
+        let msg = TelegramAdapter::parse_inbound(&update).unwrap();
+        assert_eq!(msg.sender_id, "999");
+        assert_eq!(msg.content, "");
+        // message_id is missing, should generate UUID
+        assert!(!msg.id.is_empty());
+    }
+
+    // ── async method tests (exercise error paths via connection refusal) ──
+
+    fn fast_fail_adapter() -> TelegramAdapter {
+        let mut adapter = TelegramAdapter::new("test-token".into());
+        adapter.client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .unwrap();
+        // Point at a port that will refuse connections
+        adapter.token = "fake".into();
+        adapter
+    }
+
+    #[tokio::test]
+    async fn register_webhook_network_error() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.register_webhook("http://127.0.0.1:1/hook").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("setWebhook failed"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn delete_webhook_network_error() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.delete_webhook().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("deleteWebhook failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_typing_best_effort_no_panic() {
+        let adapter = fast_fail_adapter();
+        // send_typing is best-effort, should not panic even on connection failure
+        adapter.send_typing("12345").await;
+    }
+
+    #[tokio::test]
+    async fn send_ephemeral_returns_none_on_failure() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.send_ephemeral("12345", "test").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_message_best_effort_no_panic() {
+        let adapter = fast_fail_adapter();
+        adapter.delete_message("12345", 42).await;
+    }
+
+    #[tokio::test]
+    async fn recv_polls_and_handles_network_error() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.recv().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("getUpdates failed"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn send_fails_with_network_error() {
+        let adapter = fast_fail_adapter();
+        let msg = OutboundMessage {
+            content: "test".into(),
+            recipient_id: "12345".into(),
+            metadata: None,
+        };
+        let result = adapter.send(msg).await;
+        // send_typing is best-effort so it doesn't fail,
+        // but sendMessage will fail
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn recv_returns_buffered_message_first() {
+        let adapter = TelegramAdapter::new("tok".into());
+        {
+            let mut buf = adapter.message_buffer.lock().unwrap();
+            buf.push_back(InboundMessage {
+                id: "buf1".into(),
+                platform: "telegram".into(),
+                sender_id: "u1".into(),
+                content: "buffered".into(),
+                timestamp: Utc::now(),
+                metadata: None,
+            });
+        }
+        let result = adapter.recv().await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().content, "buffered");
+    }
 }

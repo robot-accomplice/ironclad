@@ -180,6 +180,7 @@ pub fn replay_dead_letter(db: &Database, id: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
 
     #[test]
     fn upsert_and_list_recoverable() {
@@ -247,5 +248,165 @@ mod tests {
         let recovered = list_recoverable(&db, 10).expect("recoverable");
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].status, "pending");
+    }
+
+    #[test]
+    fn mark_in_flight_updates_status() {
+        let db = Database::new(":memory:").expect("db");
+        let item = DeliveryQueueRecord {
+            id: "d4".into(),
+            channel: "telegram".into(),
+            recipient_id: "u1".into(),
+            content: "hi".into(),
+            status: "pending".into(),
+            attempts: 0,
+            max_attempts: 5,
+            next_retry_at: Utc::now(),
+            last_error: None,
+            idempotency_key: "idem-4".into(),
+            created_at: Utc::now(),
+        };
+        upsert_delivery_item(&db, &item).unwrap();
+        mark_in_flight(&db, "d4").unwrap();
+
+        // in_flight items are still recoverable
+        let rows = list_recoverable(&db, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "in_flight");
+    }
+
+    #[test]
+    fn mark_in_flight_nonexistent_is_noop() {
+        let db = Database::new(":memory:").expect("db");
+        mark_in_flight(&db, "nonexistent").unwrap();
+    }
+
+    #[test]
+    fn parse_db_ts_rfc3339() {
+        let ts = parse_db_ts("2025-06-01T12:00:00+00:00").unwrap();
+        assert_eq!(ts.year(), 2025);
+        assert_eq!(ts.month(), 6);
+    }
+
+    #[test]
+    fn parse_db_ts_sqlite_format() {
+        // SQLite default datetime('now') format: "YYYY-MM-DD HH:MM:SS"
+        let ts = parse_db_ts("2025-06-01 12:00:00").unwrap();
+        assert_eq!(ts.year(), 2025);
+        assert_eq!(ts.month(), 6);
+    }
+
+    #[test]
+    fn parse_db_ts_invalid_returns_none() {
+        assert!(parse_db_ts("not-a-date").is_none());
+        assert!(parse_db_ts("").is_none());
+    }
+
+    #[test]
+    fn list_dead_letters_empty() {
+        let db = Database::new(":memory:").expect("db");
+        let dead = list_dead_letters(&db, 10).unwrap();
+        assert!(dead.is_empty());
+    }
+
+    #[test]
+    fn list_recoverable_empty() {
+        let db = Database::new(":memory:").expect("db");
+        let rows = list_recoverable(&db, 10).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn replay_dead_letter_nonexistent_returns_false() {
+        let db = Database::new(":memory:").expect("db");
+        assert!(!replay_dead_letter(&db, "missing").unwrap());
+    }
+
+    #[test]
+    fn replay_non_dead_letter_returns_false() {
+        let db = Database::new(":memory:").expect("db");
+        let item = DeliveryQueueRecord {
+            id: "d5".into(),
+            channel: "email".into(),
+            recipient_id: "u1".into(),
+            content: "hello".into(),
+            status: "pending".into(),
+            attempts: 0,
+            max_attempts: 3,
+            next_retry_at: Utc::now(),
+            last_error: None,
+            idempotency_key: "idem-5".into(),
+            created_at: Utc::now(),
+        };
+        upsert_delivery_item(&db, &item).unwrap();
+        // Should not replay a pending item
+        assert!(!replay_dead_letter(&db, "d5").unwrap());
+    }
+
+    #[test]
+    fn upsert_updates_existing() {
+        let db = Database::new(":memory:").expect("db");
+        let mut item = DeliveryQueueRecord {
+            id: "d6".into(),
+            channel: "telegram".into(),
+            recipient_id: "u1".into(),
+            content: "first".into(),
+            status: "pending".into(),
+            attempts: 0,
+            max_attempts: 5,
+            next_retry_at: Utc::now(),
+            last_error: None,
+            idempotency_key: "idem-6".into(),
+            created_at: Utc::now(),
+        };
+        upsert_delivery_item(&db, &item).unwrap();
+
+        item.content = "updated".into();
+        item.attempts = 1;
+        item.last_error = Some("timeout".into());
+        upsert_delivery_item(&db, &item).unwrap();
+
+        let rows = list_recoverable(&db, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].content, "updated");
+        assert_eq!(rows[0].attempts, 1);
+        assert_eq!(rows[0].last_error.as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn list_dead_letters_only_dead() {
+        let db = Database::new(":memory:").expect("db");
+        let pending = DeliveryQueueRecord {
+            id: "d7".into(),
+            channel: "email".into(),
+            recipient_id: "u1".into(),
+            content: "hi".into(),
+            status: "pending".into(),
+            attempts: 0,
+            max_attempts: 3,
+            next_retry_at: Utc::now(),
+            last_error: None,
+            idempotency_key: "idem-7".into(),
+            created_at: Utc::now(),
+        };
+        let dead = DeliveryQueueRecord {
+            id: "d8".into(),
+            channel: "email".into(),
+            recipient_id: "u2".into(),
+            content: "failed msg".into(),
+            status: "dead_letter".into(),
+            attempts: 5,
+            max_attempts: 5,
+            next_retry_at: Utc::now(),
+            last_error: Some("permanent failure".into()),
+            idempotency_key: "idem-8".into(),
+            created_at: Utc::now(),
+        };
+        upsert_delivery_item(&db, &pending).unwrap();
+        upsert_delivery_item(&db, &dead).unwrap();
+
+        let dead_items = list_dead_letters(&db, 10).unwrap();
+        assert_eq!(dead_items.len(), 1);
+        assert_eq!(dead_items[0].id, "d8");
     }
 }

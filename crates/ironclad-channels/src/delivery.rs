@@ -486,4 +486,335 @@ mod tests {
         assert_eq!(item.content, "persist");
         recovered.mark_success(&item.id).await;
     }
+
+    #[test]
+    fn to_store_status_mappings() {
+        let mut item = DeliveryItem::new("ch".into(), test_msg("hi"));
+        assert_eq!(item.to_store_status(), "pending");
+
+        item.status = DeliveryStatus::InFlight;
+        assert_eq!(item.to_store_status(), "in_flight");
+
+        item.status = DeliveryStatus::Delivered;
+        assert_eq!(item.to_store_status(), "delivered");
+
+        item.status = DeliveryStatus::Failed;
+        assert_eq!(item.to_store_status(), "failed");
+
+        item.status = DeliveryStatus::DeadLetter;
+        assert_eq!(item.to_store_status(), "dead_letter");
+    }
+
+    #[test]
+    fn from_store_status_mappings() {
+        assert_eq!(
+            DeliveryItem::from_store_status("pending"),
+            DeliveryStatus::Pending
+        );
+        assert_eq!(
+            DeliveryItem::from_store_status("in_flight"),
+            DeliveryStatus::InFlight
+        );
+        assert_eq!(
+            DeliveryItem::from_store_status("delivered"),
+            DeliveryStatus::Delivered
+        );
+        assert_eq!(
+            DeliveryItem::from_store_status("failed"),
+            DeliveryStatus::Failed
+        );
+        assert_eq!(
+            DeliveryItem::from_store_status("dead_letter"),
+            DeliveryStatus::DeadLetter
+        );
+        // Unknown defaults to Pending
+        assert_eq!(
+            DeliveryItem::from_store_status("unknown"),
+            DeliveryStatus::Pending
+        );
+        assert_eq!(DeliveryItem::from_store_status(""), DeliveryStatus::Pending);
+    }
+
+    #[test]
+    fn to_record_and_from_record_roundtrip() {
+        let item = DeliveryItem::new("telegram".into(), test_msg("roundtrip"));
+        let record = item.to_record();
+        assert_eq!(record.channel, "telegram");
+        assert_eq!(record.content, "roundtrip");
+        assert_eq!(record.status, "pending");
+        assert_eq!(record.attempts, 0);
+        assert_eq!(record.max_attempts, 5);
+
+        let recovered = DeliveryItem::from_record(record);
+        assert_eq!(recovered.channel, "telegram");
+        assert_eq!(recovered.content, "roundtrip");
+        assert_eq!(recovered.status, DeliveryStatus::Pending);
+        assert_eq!(recovered.idempotency_key, item.idempotency_key);
+    }
+
+    #[test]
+    fn from_record_empty_idempotency_key_falls_back_to_id() {
+        let record = dq_store::DeliveryQueueRecord {
+            id: "rec-1".into(),
+            channel: "ch".into(),
+            recipient_id: "r1".into(),
+            content: "msg".into(),
+            status: "pending".into(),
+            attempts: 0,
+            max_attempts: 5,
+            next_retry_at: Utc::now(),
+            last_error: None,
+            idempotency_key: "".into(),
+            created_at: Utc::now(),
+        };
+        let item = DeliveryItem::from_record(record);
+        assert_eq!(item.idempotency_key, "rec-1");
+    }
+
+    #[test]
+    fn mark_failed_transient_requeues() {
+        let mut item = DeliveryItem::new("ch".into(), test_msg("hi"));
+        item.mark_failed("timeout".into());
+        assert_eq!(item.status, DeliveryStatus::Pending);
+        assert_eq!(item.attempts, 1);
+        assert!(item.last_error.as_ref().unwrap().contains("timeout"));
+    }
+
+    #[test]
+    fn mark_failed_max_attempts_dead_letters() {
+        let mut item = DeliveryItem::new("ch".into(), test_msg("hi"));
+        item.max_attempts = 2;
+        item.mark_failed("err1".into());
+        assert_eq!(item.status, DeliveryStatus::Pending);
+        item.mark_failed("err2".into());
+        assert_eq!(item.status, DeliveryStatus::DeadLetter);
+    }
+
+    #[test]
+    fn is_ready_checks_status_and_time() {
+        let mut item = DeliveryItem::new("ch".into(), test_msg("hi"));
+        // Pending + next_retry_at in past = ready
+        item.next_retry_at = Utc::now() - Duration::seconds(1);
+        assert!(item.is_ready());
+
+        // InFlight should not be ready
+        item.status = DeliveryStatus::InFlight;
+        assert!(!item.is_ready());
+
+        // Pending but next_retry_at in future = not ready
+        item.status = DeliveryStatus::Pending;
+        item.next_retry_at = Utc::now() + Duration::hours(1);
+        assert!(!item.is_ready());
+    }
+
+    #[test]
+    fn delivery_status_serde_roundtrip() {
+        let statuses = vec![
+            DeliveryStatus::Pending,
+            DeliveryStatus::InFlight,
+            DeliveryStatus::Delivered,
+            DeliveryStatus::Failed,
+            DeliveryStatus::DeadLetter,
+        ];
+        for status in statuses {
+            let json = serde_json::to_string(&status).unwrap();
+            let decoded: DeliveryStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, status);
+        }
+    }
+
+    #[test]
+    fn delivery_item_clone_and_debug() {
+        let item = DeliveryItem::new("ch".into(), test_msg("hi"));
+        let cloned = item.clone();
+        assert_eq!(cloned.id, item.id);
+        assert_eq!(cloned.content, item.content);
+        // Debug should not panic
+        let _ = format!("{:?}", item);
+    }
+
+    #[tokio::test]
+    async fn pending_count_filters_correctly() {
+        let q = DeliveryQueue::new();
+        q.enqueue("ch".into(), test_msg("msg1")).await;
+        q.enqueue("ch".into(), test_msg("msg2")).await;
+        assert_eq!(q.pending_count().await, 2);
+
+        // Take one out (now InFlight)
+        q.next_ready().await;
+        assert_eq!(q.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn dead_letters_accessor() {
+        let q = DeliveryQueue::new();
+        q.enqueue("ch".into(), test_msg("msg")).await;
+        let item = q.next_ready().await.unwrap();
+        // Force dead letter with permanent error
+        q.requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+        let dead = q.dead_letters().await;
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].content, "msg");
+    }
+
+    #[tokio::test]
+    async fn replay_dead_letter_in_memory_success() {
+        let q = DeliveryQueue::new();
+        q.enqueue("ch".into(), test_msg("replay_me")).await;
+        let item = q.next_ready().await.unwrap();
+        let item_id = item.id.clone();
+        q.requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+        assert_eq!(q.dead_letter_count().await, 1);
+        assert_eq!(q.queue_size().await, 0);
+
+        // Replay it
+        let replayed = q.replay_dead_letter_in_memory(&item_id).await;
+        assert!(replayed);
+        assert_eq!(q.dead_letter_count().await, 0);
+        assert_eq!(q.queue_size().await, 1);
+    }
+
+    #[tokio::test]
+    async fn replay_dead_letter_in_memory_nonexistent() {
+        let q = DeliveryQueue::new();
+        assert!(!q.replay_dead_letter_in_memory("nonexistent").await);
+    }
+
+    #[test]
+    fn dead_letters_from_store_no_store() {
+        let q = DeliveryQueue::new();
+        assert!(q.dead_letters_from_store(100).is_empty());
+    }
+
+    #[test]
+    fn replay_dead_letter_in_store_no_store() {
+        let q = DeliveryQueue::new();
+        assert!(!q.replay_dead_letter_in_store("id1"));
+    }
+
+    #[test]
+    fn delivery_queue_default() {
+        let q = DeliveryQueue::default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert_eq!(rt.block_on(q.queue_size()), 0);
+    }
+
+    #[tokio::test]
+    async fn mark_success_without_store() {
+        let q = DeliveryQueue::new();
+        q.enqueue("ch".into(), test_msg("msg")).await;
+        let item = q.next_ready().await.unwrap();
+        // Should not panic even without store
+        q.mark_success(&item.id).await;
+    }
+
+    #[test]
+    fn backoff_delay_high_attempt() {
+        // Attempts beyond 5 should all be 15 minutes
+        assert_eq!(DeliveryItem::backoff_delay(6), Duration::minutes(15));
+        assert_eq!(DeliveryItem::backoff_delay(10), Duration::minutes(15));
+        assert_eq!(DeliveryItem::backoff_delay(100), Duration::minutes(15));
+    }
+
+    #[test]
+    fn persist_item_without_store_is_noop() {
+        let q = DeliveryQueue::new();
+        let item = DeliveryItem::new("ch".into(), test_msg("hi"));
+        // Should not panic
+        q.persist_item(&item);
+    }
+
+    #[test]
+    fn recover_from_store_without_store_is_noop() {
+        let q = DeliveryQueue::new();
+        // Should not panic
+        q.recover_from_store();
+    }
+
+    #[tokio::test]
+    async fn store_backed_dead_letters_from_store() {
+        let db = Database::new(":memory:").expect("db");
+        let q = DeliveryQueue::with_store(db);
+        q.enqueue("ch".into(), test_msg("dead_store")).await;
+        let item = q.next_ready().await.unwrap();
+        q.requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+
+        let dead = q.dead_letters_from_store(10);
+        assert!(!dead.is_empty());
+        assert_eq!(dead[0].content, "dead_store");
+    }
+
+    #[tokio::test]
+    async fn store_backed_replay_dead_letter() {
+        let db = Database::new(":memory:").expect("db");
+        let q = DeliveryQueue::with_store(db);
+        q.enqueue("ch".into(), test_msg("replay_store")).await;
+        let item = q.next_ready().await.unwrap();
+        let item_id = item.id.clone();
+        q.requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+
+        let replayed = q.replay_dead_letter_in_store(&item_id);
+        assert!(replayed);
+    }
+
+    #[tokio::test]
+    async fn store_backed_next_ready_marks_in_flight() {
+        let db = Database::new(":memory:").expect("db");
+        let q = DeliveryQueue::with_store(db);
+        q.enqueue("ch".into(), test_msg("flight")).await;
+        let item = q.next_ready().await.unwrap();
+        assert_eq!(item.status, DeliveryStatus::InFlight);
+    }
+
+    #[tokio::test]
+    async fn store_backed_mark_success() {
+        let db = Database::new(":memory:").expect("db");
+        let q = DeliveryQueue::with_store(db);
+        q.enqueue("ch".into(), test_msg("success")).await;
+        let item = q.next_ready().await.unwrap();
+        // Should not panic with store
+        q.mark_success(&item.id).await;
+    }
+
+    // ── property-based tests (v0.8.0 stabilization) ────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn proptest_backoff_delay_is_monotonic(a in 0u32..10, b in 0u32..10) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            prop_assert!(
+                DeliveryItem::backoff_delay(hi) >= DeliveryItem::backoff_delay(lo),
+                "backoff_delay({}) < backoff_delay({})", hi, lo
+            );
+        }
+
+        #[test]
+        fn proptest_backoff_delay_zero_is_zero(_seed in 0u32..100) {
+            let delay = DeliveryItem::backoff_delay(0);
+            prop_assert_eq!(delay, Duration::seconds(0),
+                "backoff_delay(0) should always be zero");
+        }
+
+        #[test]
+        fn proptest_is_permanent_error_false_for_empty(_seed in 0u32..100) {
+            prop_assert!(!DeliveryItem::is_permanent_error(""),
+                "empty string should not be a permanent error");
+        }
+
+        #[test]
+        fn proptest_is_permanent_error_false_for_transient(
+            error in "(timeout|network error|rate limited|connection reset|500 Internal Server Error|502 Bad Gateway|503 Service Unavailable)"
+        ) {
+            prop_assert!(
+                !DeliveryItem::is_permanent_error(&error),
+                "transient error {:?} should not be permanent", error
+            );
+        }
+    }
 }

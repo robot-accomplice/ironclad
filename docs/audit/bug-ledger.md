@@ -1,15 +1,65 @@
 # Bug Ledger — v0.8.0 Stabilization
 
-<!-- last_updated: 2026-02-26, version: 0.8.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0, coverage_baseline: 81.2% -->
 
 ## Summary
 
 | Severity | Open | In Progress | Fixed | Verified |
 |----------|------|-------------|-------|----------|
 | Critical | 0    | 0           | 0     | 0        |
-| High     | 2    | 0           | 0     | 0        |
-| Medium   | 1    | 0           | 32    | 0        |
-| Low      | 0    | 0           | 28    | 0        |
+| High     | 8    | 0           | 0     | 0        |
+| Medium   | 19   | 0           | 32    | 0        |
+| Low      | 7    | 0           | 28    | 0        |
+
+## Discovery Phase Completion
+
+**Date:** 2026-02-26
+**Status:** COMPLETE — All 8 discovery layers executed.
+
+### Layer Summary
+
+| Layer | Technique | Findings | New Tests |
+|-------|-----------|----------|-----------|
+| L1 | Static analysis (clippy, deny, semver) | 5 bugs (BUG-064..068) | 0 |
+| L2 | Coverage gap analysis | 17 bugs (BUG-069..085) | 0 |
+| L3 | Expanded fuzz testing | 0 crashes (18 targets, 6 crates) | 18 fuzz targets |
+| L4 | Mutation testing | 9 bugs (BUG-086..094) | 0 |
+| L5 | Property-based testing | 0 new bugs | 17 proptests |
+| L6 | Fault injection | 0 new bugs | 58 tests |
+| L7 | CLI/Web parity | 0 new bugs | 15 tests |
+| L8 | Cross-platform delta | 0 new bugs | 28 tests + CI matrix |
+
+### Mutation Testing Survival Rates
+
+| Crate | Caught | Missed | Unviable | Survival | Target |
+|-------|--------|--------|----------|----------|--------|
+| ironclad-core (partial) | 119 | 155 | 6 | ~57%* | <15% |
+| ironclad-plugin-sdk | 83 | 20 | 15 | 19.4% | <15% |
+| ironclad-schedule | 77 | 40 | 17 | 34% | <15% |
+
+*ironclad-core survival heavily skewed by ~130 `default_*()` config serde defaults with no direct assertions.
+
+### Fuzz Stability Verification
+
+| Target | Runs | Duration | Crashes |
+|--------|------|----------|---------|
+| fuzz_config_parse | 644,329 | 31s | 0 |
+| fuzz_telegram_parse_inbound | 414,346 | 31s | 0 |
+| fuzz_evaluate_cron | 205,085 | 31s | 0 |
+| fuzz_manifest_parse | 602,574 | 31s | 0 |
+| fuzz_derive_nickname | 1,891,684 | 31s | 0 |
+| fuzz_parse_sse_chunk | 587,749 | 31s | 0 |
+
+### Exit Criteria Assessment
+
+- [x] All 8 discovery layers executed
+- [x] Bug ledger entries for every layer with findings
+- [x] All existing tests passing (904 tests, 0 failures)
+- [x] Fuzz targets stable (0 crashes in 4.3M+ combined runs)
+- [ ] Mutation survival <15% per crate — **NOT MET** (will be addressed in Phase 3 coverage ramp)
+- [x] Total open bugs catalogued: 34 (8 High, 19 Medium, 7 Low)
+
+**Next Phase:** Coverage ramp to 95% (Tasks 38-49), then fix queue (Tasks 50-57).
 
 ## Entries
 
@@ -77,4 +127,35 @@
 | BUG-060 | audit-wiring | ironclad-agent | T3 | Low | silent degrade | `agent::memory::ingest_turn()` returns `()` instead of `Result<()>`; five independent `db.store_*()` calls are each wrapped in `if let Err(e) = ... { warn!(...) }`, meaning any combination of memory-ingestion failures is silently degraded with no caller visibility; consider returning a `Result` or at minimum a count of failed operations | `crates/ironclad-agent/src/memory.rs` ~line 95-154 | Fixed |
 | BUG-061 | user-report | ironclad-channels | T4 | High | parity violation | Telegram channel exhibits canned/repetitive agent responses that do not appear on other channels; agent delegation reports appear incorrect (tasks not correctly delegated to subagents) — Telegram-specific; all channels should follow the same path through proxy to models with only routing varying | `crates/ironclad-channels/src/telegram.rs`, `crates/ironclad-agent/src/lib.rs` | Open |
 | BUG-062 | user-report | ironclad-channels | T4 | High | parity violation | Agent task delegation confidence is low through Telegram — subagent dispatch reports may be fabricated or stale; need to trace full request→agent→subagent→response path comparing Telegram vs WebSocket/HTTP to identify where divergence occurs | `crates/ironclad-agent/src/lib.rs`, `crates/ironclad-channels/src/telegram.rs` | Open |
-| BUG-063 | user-report | ironclad-server | T5 | Medium | platform delta | Windows installation historically problematic (executable replacement, daemon/service behavior); needs end-to-end validation on Windows platform — currently under active testing | `crates/ironclad-server/src/daemon.rs`, build scripts | Open |
+| BUG-063 | user-report | ironclad-server | T5 | High | platform delta | Windows daemon start fails with `sc.exe failed (exit 1053): [SC] StartService FAILED 1053` after clean install. Root cause: pre-v0.8.0 registered a real Windows Service via `sc.exe create IroncladAgent`; v0.8.0 refactored to user-space detached process with marker file, but `cleanup_legacy_windows_service()` silently ignores `sc.exe stop/delete` failures. If the legacy service entry persists (e.g., SCM handle still open), the old service entry interferes. Fix: make `cleanup_legacy_windows_service()` retry or warn on failure; add explicit check that legacy service is fully removed before proceeding | `crates/ironclad-server/src/daemon.rs` lines 195-201, 219-229 | Open |
+| BUG-064 | static-analysis | ironclad-llm | T2 | High | anti-pattern | SECURITY TODO: OAuth tokens stored as plaintext JSON in `~/.ironclad/oauth_tokens.json`; comment explicitly states encryption via Keystore is required before GA; tokens for LLM provider OAuth flows are at risk of disclosure if filesystem is compromised | `crates/ironclad-llm/src/oauth.rs` line 31 | Open |
+| BUG-065 | static-analysis | ironclad-plugin-sdk | T4 | Medium | anti-pattern | Plugin `permissions` field is declared in `PluginManifest` and parsed from TOML but explicitly NOT enforced at runtime; a plugin declaring `permissions = ["filesystem"]` currently has no sandbox restriction applied; TODO comment acknowledges gap | `crates/ironclad-plugin-sdk/src/manifest.rs` line 19 | Open |
+| BUG-066 | static-analysis | ironclad-agent | T3 | Medium | supply-chain | Yanked crates `crypto-common` 0.2.0 and `digest` 0.11.0 in dependency tree via `wasmer-types` -> `sha2` 0.11.0-rc.5; yanked crates may contain known bugs or security issues; `cargo update -p digest -p crypto-common` should pull non-yanked versions | `Cargo.lock` lines 124, 144 | Open |
+| BUG-067 | static-analysis | ironclad-core | T0 | Low | clippy | Keystore mutex guards (`MutexGuard`) held longer than necessary in 5 methods (`set`, `remove`, `import`, `save`); `significant_drop_tightening` lint; guard scope extends past last use, increasing lock contention window in security-critical keystore code | `crates/ironclad-core/src/keystore.rs` lines 122, 145, 179, 272, 277 | Open |
+| BUG-068 | static-analysis | ironclad-core | T0 | Low | clippy | `Peekable` iterator created but `peek()` never called in `typewrite_chars()` at 2 locations; suggests incomplete refactor — the `.peekable()` call allocates tracking state that is never used; either the peek-based logic was removed or was never implemented | `crates/ironclad-core/src/style.rs` lines 249, 284 | Open |
+| BUG-069 | coverage-gap | ironclad-db | T1 | High | coverage-gap | `approvals.rs` module has 0% line coverage (0 of 43 lines executed); `record_approval_request()` and `record_approval_decision()` are security-critical functions that gate tool execution approval workflows — zero test coverage means SQL injection, constraint violation, and error-path behaviors are entirely unvalidated | `crates/ironclad-db/src/approvals.rs` lines 1-46 | Open |
+| BUG-070 | coverage-gap | ironclad-llm | T2 | High | coverage-gap | OAuth token refresh flow (`refresh_token()`, lines 89-170) and token persistence (`persist()`, lines 210-242) have 0% coverage; these functions handle credential rotation, file permissions (chmod 0o600), atomic rename, and error recovery for OAuth secrets — untested failure paths could leak tokens or silently lose refresh capability | `crates/ironclad-llm/src/oauth.rs` lines 89-242 | Open |
+| BUG-071 | coverage-gap | ironclad-llm | T2 | Medium | coverage-gap | `LlmClient::forward_stream()` (lines 122-173) has 0% line coverage; the streaming HTTP path handles provider auth, error status mapping, and byte-stream response wrapping — untested paths may fail silently under provider HTTP errors or malformed responses | `crates/ironclad-llm/src/client.rs` lines 122-173 | Open |
+| BUG-072 | coverage-gap | ironclad-browser | T4 | Medium | coverage-gap | `ActionExecutor` has 32% region coverage (484 of 710 regions missed); 10 of 12 browser action methods (`click`, `type_text`, `screenshot`, `pdf`, `evaluate`, `get_cookies`, `clear_cookies`, `read_page`, `go_back`, `go_forward`, `reload`) are entirely uncovered — includes URL scheme security check validation in `navigate()` | `crates/ironclad-browser/src/actions.rs` lines 59-475 | Open |
+| BUG-073 | coverage-gap | ironclad-browser | T4 | Medium | coverage-gap | `CdpSession::send_command()` and WebSocket frame matching logic at 41% line coverage; CDP command dispatch, timeout enforcement, and frame parsing for Chrome automation are untested — timeout-based lock release (the primary concurrency safety mechanism) has no coverage | `crates/ironclad-browser/src/session.rs` lines 60-164 | Open |
+| BUG-074 | coverage-gap | ironclad-wallet | T3 | High | coverage-gap | `real_deposit()` (lines 230-282) and `real_withdraw()` (lines 284-325) have 0% line coverage; these functions handle private key deserialization, ERC-20 approve+supply, and Aave pool withdraw — on-chain DeFi operations with raw private key bytes that are completely untested | `crates/ironclad-wallet/src/yield_engine.rs` lines 230-344 | Open |
+| BUG-075 | coverage-gap | ironclad-wallet | T3 | Medium | coverage-gap | `WalletService::known_tokens()` multi-chain token address match arms (chains 1, 42161, fallback) have 0% coverage (lines 510-567); incorrect contract addresses would silently route funds to wrong tokens — only Base chain (8453) arm is tested | `crates/ironclad-wallet/src/wallet.rs` lines 510-568 | Open |
+| BUG-076 | coverage-gap | ironclad-schedule | T4 | Medium | coverage-gap | `heartbeat::run()` async loop body (lines 102-245) has 0% coverage; the function orchestrates wallet balance fetching, yield tracking, session governor dispatch, cron recording, and interval adjustment — only the pure helper functions (`build_tick_context`, `should_adjust_interval`, `default_tasks`) are tested | `crates/ironclad-schedule/src/heartbeat.rs` lines 102-245 | Open |
+| BUG-077 | coverage-gap | ironclad-server | T5 | Medium | coverage-gap | `daemon.rs` has 42% line coverage; `install_daemon()`, `start_daemon()`, `stop_daemon()`, `daemon_status()` and Windows process management functions are largely uncovered — daemon lifecycle management including `launchctl`/`systemctl`/Windows process spawning untested (platform-specific code difficult to unit test but integration tests needed) | `crates/ironclad-server/src/daemon.rs` lines 85-400 | Open |
+| BUG-078 | coverage-gap | ironclad-server | T5 | Low | coverage-gap | `cli/admin/setup.rs` has 22% line coverage (477 of 609 lines missed); the interactive setup wizard that writes initial config, creates keystore, and seeds starter skills is almost entirely untested — while partially interactive, the config-generation and file-writing logic could be tested in isolation | `crates/ironclad-server/src/cli/admin/setup.rs` lines 1-609 | Open |
+| BUG-079 | coverage-gap | ironclad-agent | T3 | Medium | coverage-gap | `wasm.rs` `WasmPlugin::execute()` memory read/write paths (lines 144-226) have 0% coverage; the WASM sandbox execution logic including memory bounds checking (`end > mem_size` guard at line 198), input serialization into WASM memory, and output deserialization from WASM memory are untested — memory safety boundary validation is critical for sandboxed plugin execution | `crates/ironclad-agent/src/wasm.rs` lines 117-226 | Open |
+| BUG-080 | coverage-gap | ironclad-db | T1 | Medium | coverage-gap | `schema.rs` has 67% line coverage with 29 of 61 functions missed; DDL schema initialization and migration application paths including `ensure_schema()`, table creation error handling, and index creation are partially uncovered — schema corruption or migration failures could cause data loss | `crates/ironclad-db/src/schema.rs` lines 1-502 | Open |
+| BUG-081 | coverage-gap | ironclad-db | T1 | Medium | coverage-gap | `efficiency.rs` has 76% line coverage with 50% function miss rate (24 of 48 functions uncovered); efficiency metric computation, grading, and recommendation generation paths are partially untested — incorrect efficiency calculations could trigger wrong cost-optimization decisions | `crates/ironclad-db/src/efficiency.rs` lines 1-822 | Open |
+| BUG-082 | coverage-gap | ironclad-server | T5 | Medium | coverage-gap | `main.rs` bootstrap sequence has 50% line coverage (719 of 1424 lines missed); the 12-step server startup including keystore unlock, migration execution, heartbeat daemon launch, and TLS/binding is partially uncovered — startup failure modes could leave the server in an inconsistent state | `crates/ironclad-server/src/main.rs` lines 1-2397 | Open |
+| BUG-083 | coverage-gap | ironclad-server | T5 | Medium | coverage-gap | `migrate/transform.rs` has 61% line coverage (776 of 1995 lines missed) with 77 of 163 functions uncovered; data migration transforms for schema upgrades are partially untested — migration transform errors during upgrades could corrupt user data | `crates/ironclad-server/src/migrate/transform.rs` lines 1-3353 | Open |
+| BUG-084 | coverage-gap | ironclad-agent | T3 | Low | coverage-gap | `governor.rs` `compact_before_archive()` (lines 63-88) has 0% coverage; session compaction logic that trims conversation history before archival is untested — incorrect trimming could lose important context or produce malformed summaries | `crates/ironclad-agent/src/governor.rs` lines 63-88 | Open |
+| BUG-085 | coverage-gap | ironclad-db | T1 | Medium | coverage-gap | `cron.rs` has 77% line coverage with 31 of 58 functions (46%) uncovered; cron job scheduling, lease acquisition, and run recording have significant gaps — lease contention and error handling paths for scheduled task execution untested | `crates/ironclad-db/src/cron.rs` lines 1-892 | Open |
+| BUG-086 | mutation-test | ironclad-core | T0 | Medium | weak-test | ~30 `default_*()` config functions survive mutation (76 mutants across `default_port`, `default_db_path`, `default_confidence_floor`, `default_log_level`, `default_workspace`, `default_rate_limit_*`, `default_cb_*`, `default_*_pct`, `default_yield_*`, `default_min_deposit`, etc.); serde defaults have no direct assertion tests — any accidental change to a default value would go undetected | `crates/ironclad-core/src/config.rs` lines 57-980 | Open |
+| BUG-087 | mutation-test | ironclad-core | T0 | Medium | weak-test | 3 validation boundary mutations in `IroncladConfig::validate()` survive: `> vs >=` (line 380), `< vs ==` and `< vs <=` (line 392), `!= vs ==` (line 398); edge-case boundary tests missing for rate-limit-sum and per-actor-limit validation conditions | `crates/ironclad-core/src/config.rs` lines 380-398 | Open |
+| BUG-088 | mutation-test | ironclad-plugin-sdk | T4 | High | weak-test | `ScriptPlugin::is_tool_dangerous()` (line 169) and `ScriptPlugin::validate_script_path()` (line 122) survive mutation — security-critical methods that determine whether a tool is dangerous and whether a script path is valid have no tests asserting their return values; `is_tool_dangerous` returning wrong value could allow unsafe tool execution | `crates/ironclad-plugin-sdk/src/script.rs` lines 122, 169 | Open |
+| BUG-089 | mutation-test | ironclad-plugin-sdk | T4 | Medium | weak-test | 9 manifest validation boundary mutations survive in `validate_plugin_name` (3x `\|\|` vs `&&`), `validate_plugin_version` (`>` vs `>=`, `==` vs `!=`), `validate_tool_name` (3x `\|\|` vs `&&`); validation functions accept inputs they should reject (or vice versa) without any test catching the difference | `crates/ironclad-plugin-sdk/src/manifest.rs` lines 61-114 | Open |
+| BUG-090 | mutation-test | ironclad-plugin-sdk | T4 | Low | weak-test | `ScriptPlugin::find_script()` (line 74), `has_recognized_shebang()` (line 99), `PluginRegistry::shutdown_all()` (line 150), and `ScriptPlugin::shutdown()` (line 302) survive mutation; script discovery, shebang validation, and plugin lifecycle cleanup untested | `crates/ironclad-plugin-sdk/src/script.rs` lines 74-302 | Open |
+| BUG-091 | mutation-test | ironclad-schedule | T4 | Medium | weak-test | `heartbeat::run()` has 22 surviving mutants across comparison, arithmetic, and boolean operators (lines 124-231); the async heartbeat loop body is entirely untested (overlaps BUG-076); mutations to interval adjustment, tick context evaluation, and balance/yield tracking all survive | `crates/ironclad-schedule/src/heartbeat.rs` lines 109-231 | Open |
+| BUG-092 | mutation-test | ironclad-schedule | T4 | Medium | weak-test | `run_cron_worker()` has 6 surviving mutants: replacement with `()`, match arm deletions for `"cron"` and `"every"` kinds, and negation deletions (lines 35-91); the async cron worker loop is untested — schedule type dispatch could silently skip jobs | `crates/ironclad-schedule/src/lib.rs` lines 35-91 | Open |
+| BUG-093 | mutation-test | ironclad-schedule | T4 | Low | weak-test | `legacy_kind_to_action()` and `normalize_schedule_kind()` have 5 surviving match-arm deletions (lines 232-243); legacy schedule kind mapping untested — incorrect normalization could cause jobs to use wrong schedule types | `crates/ironclad-schedule/src/lib.rs` lines 232-243 | Open |
+| BUG-094 | mutation-test | ironclad-schedule | T4 | Low | weak-test | `parse_offset()` has 4 surviving arithmetic/comparison mutations and `parse_timezone()` has 1 `\|\|` vs `&&` survivor; timezone offset parsing could produce wrong offsets without test detection | `crates/ironclad-schedule/src/scheduler.rs` lines 143-173 | Open |

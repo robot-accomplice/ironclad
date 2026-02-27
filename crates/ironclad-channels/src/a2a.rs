@@ -383,4 +383,247 @@ mod tests {
         let err = A2aProtocol::decrypt_message(&key, &ciphertext).unwrap_err();
         assert!(err.to_string().contains("decrypt"));
     }
+
+    #[test]
+    fn decrypt_ciphertext_too_short() {
+        let key = [0u8; 32];
+        let err = A2aProtocol::decrypt_message(&key, &[0u8; 5]).unwrap_err();
+        assert!(err.to_string().contains("too short"));
+    }
+
+    #[test]
+    fn session_is_established() {
+        let session = A2aSession {
+            peer_did: "did:test:1".into(),
+            session_key: Some([42u8; 32]),
+            established_at: Utc::now(),
+            last_activity: Utc::now(),
+        };
+        assert!(session.is_established());
+    }
+
+    #[test]
+    fn session_not_established_without_key() {
+        let session = A2aSession {
+            peer_did: "did:test:2".into(),
+            session_key: None,
+            established_at: Utc::now(),
+            last_activity: Utc::now(),
+        };
+        assert!(!session.is_established());
+    }
+
+    #[test]
+    fn insert_and_get_session() {
+        let mut proto = A2aProtocol::new(A2aConfig::default());
+        let session = A2aSession {
+            peer_did: "did:test:abc".into(),
+            session_key: None,
+            established_at: Utc::now(),
+            last_activity: Utc::now(),
+        };
+        proto.insert_session("s1".into(), session);
+        assert_eq!(proto.session_count(), 1);
+        assert!(proto.get_session("s1").is_some());
+        assert_eq!(proto.get_session("s1").unwrap().peer_did, "did:test:abc");
+    }
+
+    #[test]
+    fn get_session_mut_updates() {
+        let mut proto = A2aProtocol::new(A2aConfig::default());
+        let session = A2aSession {
+            peer_did: "did:test:mut".into(),
+            session_key: None,
+            established_at: Utc::now(),
+            last_activity: Utc::now(),
+        };
+        proto.insert_session("s1".into(), session);
+        let s = proto.get_session_mut("s1").unwrap();
+        s.session_key = Some([99u8; 32]);
+        assert!(proto.get_session("s1").unwrap().is_established());
+    }
+
+    #[test]
+    fn remove_session() {
+        let mut proto = A2aProtocol::new(A2aConfig::default());
+        let session = A2aSession {
+            peer_did: "did:test:rm".into(),
+            session_key: None,
+            established_at: Utc::now(),
+            last_activity: Utc::now(),
+        };
+        proto.insert_session("rm1".into(), session);
+        assert_eq!(proto.session_count(), 1);
+        let removed = proto.remove_session("rm1");
+        assert!(removed.is_some());
+        assert_eq!(proto.session_count(), 0);
+    }
+
+    #[test]
+    fn remove_session_nonexistent() {
+        let mut proto = A2aProtocol::new(A2aConfig::default());
+        assert!(proto.remove_session("nope").is_none());
+    }
+
+    #[test]
+    fn get_session_nonexistent() {
+        let proto = A2aProtocol::new(A2aConfig::default());
+        assert!(proto.get_session("nope").is_none());
+    }
+
+    #[test]
+    fn insert_session_evicts_oldest_when_full() {
+        let mut proto = A2aProtocol::new(A2aConfig {
+            session_timeout_seconds: 99999,
+            ..Default::default()
+        });
+        // Fill to MAX_A2A_SESSIONS
+        for i in 0..MAX_A2A_SESSIONS {
+            let session = A2aSession {
+                peer_did: format!("did:test:{}", i),
+                session_key: None,
+                established_at: Utc::now(),
+                last_activity: Utc::now() + chrono::Duration::seconds(i as i64),
+            };
+            proto.insert_session(format!("s{}", i), session);
+        }
+        assert_eq!(proto.session_count(), MAX_A2A_SESSIONS);
+
+        // Insert one more -- should evict oldest
+        let new_session = A2aSession {
+            peer_did: "did:test:new".into(),
+            session_key: None,
+            established_at: Utc::now(),
+            last_activity: Utc::now() + chrono::Duration::seconds(99999),
+        };
+        proto.insert_session("new_one".into(), new_session);
+        assert!(proto.session_count() <= MAX_A2A_SESSIONS);
+        assert!(proto.get_session("new_one").is_some());
+    }
+
+    #[test]
+    fn validate_message_size_at_boundary() {
+        let proto = A2aProtocol::new(A2aConfig {
+            max_message_size: 10,
+            ..Default::default()
+        });
+        assert!(proto.validate_message_size(&[0u8; 10]).is_ok());
+        assert!(proto.validate_message_size(&[0u8; 11]).is_err());
+        assert!(proto.validate_message_size(&[0u8; 0]).is_ok());
+    }
+
+    #[test]
+    fn verify_hello_missing_type() {
+        let hello = json!({"did": "did:test:1", "nonce": "aa"});
+        let err = A2aProtocol::verify_hello(&hello).unwrap_err();
+        assert!(err.to_string().contains("type"));
+    }
+
+    #[test]
+    fn verify_hello_wrong_type() {
+        let hello = json!({"type": "wrong_type", "did": "did:test:1", "nonce": "aa"});
+        let err = A2aProtocol::verify_hello(&hello).unwrap_err();
+        assert!(err.to_string().contains("unexpected message type"));
+    }
+
+    #[test]
+    fn verify_hello_empty_did() {
+        let hello = json!({"type": "a2a_hello", "did": "", "nonce": "aa"});
+        let err = A2aProtocol::verify_hello(&hello).unwrap_err();
+        assert!(err.to_string().contains("empty DID"));
+    }
+
+    #[test]
+    fn verify_hello_missing_nonce() {
+        let hello = json!({"type": "a2a_hello", "did": "did:test:1"});
+        let err = A2aProtocol::verify_hello(&hello).unwrap_err();
+        assert!(err.to_string().contains("nonce"));
+    }
+
+    #[test]
+    fn verify_hello_missing_did() {
+        let hello = json!({"type": "a2a_hello", "nonce": "aa"});
+        let err = A2aProtocol::verify_hello(&hello).unwrap_err();
+        assert!(err.to_string().contains("did"));
+    }
+
+    #[test]
+    fn generate_hello_nonce_hex_encoding() {
+        let nonce = &[0xde, 0xad, 0xbe, 0xef];
+        let hello = A2aProtocol::generate_hello("did:test:hex", nonce);
+        let nonce_str = hello["nonce"].as_str().unwrap();
+        assert_eq!(nonce_str, "deadbeef");
+    }
+
+    #[test]
+    fn generate_hello_has_timestamp() {
+        let hello = A2aProtocol::generate_hello("did:test:ts", &[1, 2, 3]);
+        assert!(hello.get("timestamp").is_some());
+        assert!(hello["timestamp"].is_number());
+    }
+
+    #[test]
+    fn encrypt_decrypt_empty_plaintext() {
+        let key = [1u8; 32];
+        let ciphertext = A2aProtocol::encrypt_message(&key, b"").unwrap();
+        let decrypted = A2aProtocol::decrypt_message(&key, &ciphertext).unwrap();
+        assert!(decrypted.is_empty());
+    }
+
+    #[test]
+    fn encrypt_decrypt_large_plaintext() {
+        let key = [2u8; 32];
+        let plaintext = vec![0xABu8; 10_000];
+        let ciphertext = A2aProtocol::encrypt_message(&key, &plaintext).unwrap();
+        let decrypted = A2aProtocol::decrypt_message(&key, &ciphertext).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn wrong_key_fails_decryption() {
+        let key1 = [1u8; 32];
+        let key2 = [2u8; 32];
+        let ciphertext = A2aProtocol::encrypt_message(&key1, b"secret").unwrap();
+        assert!(A2aProtocol::decrypt_message(&key2, &ciphertext).is_err());
+    }
+
+    #[test]
+    fn timestamp_validation_at_boundary() {
+        let now = Utc::now().timestamp();
+        assert!(A2aProtocol::validate_timestamp(now - 30, 30).is_ok());
+        assert!(A2aProtocol::validate_timestamp(now + 30, 30).is_ok());
+        assert!(A2aProtocol::validate_timestamp(now - 31, 30).is_err());
+        assert!(A2aProtocol::validate_timestamp(now + 31, 30).is_err());
+    }
+
+    #[test]
+    fn rate_limit_stale_entry_eviction() {
+        let mut proto = A2aProtocol::new(A2aConfig {
+            rate_limit_per_peer: 100,
+            ..Default::default()
+        });
+        // Populate many rate window entries to trigger eviction path
+        for i in 0..MAX_RATE_WINDOW_ENTRIES + 10 {
+            let _ = proto.check_rate_limit(&format!("peer-{}", i));
+        }
+        // Should still work (entries were evicted or managed)
+        assert!(proto.check_rate_limit("fresh-peer").is_ok());
+    }
+
+    #[test]
+    fn session_count_empty() {
+        let proto = A2aProtocol::new(A2aConfig::default());
+        assert_eq!(proto.session_count(), 0);
+    }
+
+    #[test]
+    fn validate_message_size_error_message() {
+        let proto = A2aProtocol::new(A2aConfig {
+            max_message_size: 5,
+            ..Default::default()
+        });
+        let err = proto.validate_message_size(&[0u8; 10]).unwrap_err();
+        assert!(err.to_string().contains("10"));
+        assert!(err.to_string().contains("5"));
+    }
 }

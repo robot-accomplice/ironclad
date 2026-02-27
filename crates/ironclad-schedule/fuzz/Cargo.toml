@@ -1,0 +1,29 @@
+[package]
+name = "ironclad-schedule-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ironclad-schedule = { path = ".." }
+
+[[bin]]
+name = "fuzz_evaluate_cron"
+path = "fuzz_targets/fuzz_evaluate_cron.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_evaluate_at"
+path = "fuzz_targets/fuzz_evaluate_at.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_calculate_next_run"
+path = "fuzz_targets/fuzz_calculate_next_run.rs"
+doc = false
+
+[workspace]

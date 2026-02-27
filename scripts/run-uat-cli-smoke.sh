@@ -18,7 +18,7 @@ run_cli() {
 
 echo "1) status"
 run_cli status >/tmp/ironclad-uat-cli-status.txt 2>&1
-rg -qi "status|online|uptime|running" /tmp/ironclad-uat-cli-status.txt
+grep -qiE "status|online|uptime|running" /tmp/ironclad-uat-cli-status.txt
 
 echo "2) sessions list"
 run_cli sessions list >/tmp/ironclad-uat-cli-sessions.txt 2>&1
@@ -27,8 +27,8 @@ test -s /tmp/ironclad-uat-cli-sessions.txt
 echo "3) config show + cache metrics"
 run_cli config show >/tmp/ironclad-uat-cli-config-show.txt 2>&1
 run_cli metrics cache >/tmp/ironclad-uat-cli-cache-metrics.txt 2>&1
-rg -qi "agent|server|models|config" /tmp/ironclad-uat-cli-config-show.txt
-rg -qi "cache|hit|miss" /tmp/ironclad-uat-cli-cache-metrics.txt
+grep -qiE "agent|server|models|config" /tmp/ironclad-uat-cli-config-show.txt
+grep -qiE "cache|hit|miss" /tmp/ironclad-uat-cli-cache-metrics.txt
 
 echo "4) subagent list"
 run_cli agents list >/tmp/ironclad-uat-cli-subagents.txt 2>&1

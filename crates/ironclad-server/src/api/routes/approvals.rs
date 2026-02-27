@@ -51,7 +51,7 @@ pub async fn create_approval(
             }
             match serde_json::to_value(req) {
                 Ok(v) => (StatusCode::CREATED, Json(v)).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
+                Err(e) => super::internal_err(&e).into_response(),
             }
         }
         Err(e) => super::internal_err(&e).into_response(),
@@ -65,9 +65,9 @@ pub async fn get_approval(
     match state.approvals.get_request(&id) {
         Some(req) => match serde_json::to_value(req) {
             Ok(v) => Json(v).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
+            Err(e) => super::internal_err(&e).into_response(),
         },
-        None => StatusCode::NOT_FOUND.into_response(),
+        None => super::not_found("approval not found").into_response(),
     }
 }
 
@@ -91,10 +91,10 @@ pub async fn approve_approval(
             }
             match serde_json::to_value(req) {
                 Ok(v) => Json(v).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
+                Err(e) => super::internal_err(&e).into_response(),
             }
         }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => super::not_found("approval not found").into_response(),
     }
 }
 
@@ -118,10 +118,10 @@ pub async fn deny_approval(
             }
             match serde_json::to_value(req) {
                 Ok(v) => Json(v).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {e}")).into_response(),
+                Err(e) => super::internal_err(&e).into_response(),
             }
         }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => super::not_found("approval not found").into_response(),
     }
 }
 

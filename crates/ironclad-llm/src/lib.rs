@@ -549,4 +549,177 @@ embedding_dimensions = 768
         let result = LlmService::resolve_embedding_config(&memory, &providers).unwrap();
         assert_eq!(result.dimensions, 768);
     }
+
+    // ── SseChunkStream additional edge cases ──────────────────────
+
+    #[test]
+    fn sse_chunk_stream_empty_input() {
+        let chunks = collect_sse_chunks(vec![]);
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn sse_chunk_stream_empty_bytes() {
+        let chunks = collect_sse_chunks(vec![b"".to_vec()]);
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn sse_chunk_stream_only_whitespace_lines() {
+        let data = vec![b"\n\n\n".to_vec()];
+        let chunks = collect_sse_chunks(data);
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn sse_chunk_stream_non_data_lines_skipped() {
+        let data = vec![
+            b"event: message\nid: 123\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n"
+                .to_vec(),
+        ];
+        let chunks = collect_sse_chunks(data);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].delta, "ok");
+    }
+
+    #[test]
+    fn sse_chunk_stream_split_across_boundaries() {
+        // Split a single SSE line across two byte chunks
+        let data = vec![
+            b"data: {\"choices\":[{\"del".to_vec(),
+            b"ta\":{\"content\":\"split\"}}]}\n".to_vec(),
+        ];
+        let chunks = collect_sse_chunks(data);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].delta, "split");
+    }
+
+    #[test]
+    fn sse_chunk_stream_split_utf8_boundary() {
+        // Multi-byte UTF-8 char split across chunk boundary
+        // "Hello\xC3" in chunk 1, "\xA9world" in chunk 2 (copyright sign = 0xC3 0xA9)
+        let data = vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\xC3".to_vec(),
+            b"\xA9world\"}}]}\n".to_vec(),
+        ];
+        let chunks = collect_sse_chunks(data);
+        assert_eq!(chunks.len(), 1);
+        // The content should contain the copyright symbol
+        assert!(chunks[0].delta.contains("Hello"));
+        assert!(chunks[0].delta.contains("world"));
+    }
+
+    #[test]
+    fn sse_chunk_stream_multiple_lines_in_one_chunk() {
+        let data = vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"B\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"C\"}}]}\n".to_vec(),
+        ];
+        let chunks = collect_sse_chunks(data);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].delta, "A");
+        assert_eq!(chunks[1].delta, "B");
+        assert_eq!(chunks[2].delta, "C");
+    }
+
+    /// Helper: drive an SseChunkStream and collect all items (including errors).
+    fn collect_sse_results(data: Vec<Vec<u8>>) -> Vec<Result<format::StreamChunk>> {
+        let byte_stream = stream::iter(
+            data.into_iter()
+                .map(|b| Ok::<_, reqwest::Error>(Bytes::from(b))),
+        );
+        let mut sse = SseChunkStream::new(Box::pin(byte_stream), ApiFormat::OpenAiCompletions);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut items = vec![];
+            while let Some(item) = futures::StreamExt::next(&mut sse).await {
+                items.push(item);
+            }
+            items
+        })
+    }
+
+    #[test]
+    fn sse_chunk_stream_buffer_overflow_error() {
+        // Create a chunk large enough to exceed the 10 MB limit
+        let huge = vec![b'x'; 11 * 1024 * 1024];
+        let results = collect_sse_results(vec![huge]);
+        let last = results.last().unwrap();
+        assert!(last.is_err());
+        let err_msg = format!("{}", last.as_ref().unwrap_err());
+        assert!(
+            err_msg.contains("10 MB"),
+            "error should mention buffer limit: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn sse_chunk_stream_anthropic_format() {
+        // Test with Anthropic format
+        let data = vec![
+            b"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n".to_vec(),
+        ];
+        let byte_stream = stream::iter(
+            data.into_iter()
+                .map(|b| Ok::<_, reqwest::Error>(Bytes::from(b))),
+        );
+        let mut sse = SseChunkStream::new(Box::pin(byte_stream), ApiFormat::AnthropicMessages);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let chunks: Vec<_> = rt.block_on(async {
+            let mut chunks = vec![];
+            while let Some(item) = futures::StreamExt::next(&mut sse).await {
+                chunks.push(item.unwrap());
+            }
+            chunks
+        });
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].delta, "Hi");
+    }
+
+    #[test]
+    fn sse_chunk_stream_google_format() {
+        let data = vec![
+            b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Gemini\"}],\"role\":\"model\"}}]}\n".to_vec(),
+        ];
+        let byte_stream = stream::iter(
+            data.into_iter()
+                .map(|b| Ok::<_, reqwest::Error>(Bytes::from(b))),
+        );
+        let mut sse = SseChunkStream::new(Box::pin(byte_stream), ApiFormat::GoogleGenerativeAi);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let chunks: Vec<_> = rt.block_on(async {
+            let mut chunks = vec![];
+            while let Some(item) = futures::StreamExt::next(&mut sse).await {
+                chunks.push(item.unwrap());
+            }
+            chunks
+        });
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].delta, "Gemini");
+    }
+
+    #[test]
+    fn sse_chunk_stream_trailing_data_no_newline() {
+        // Data that doesn't end with a newline should still be parsed on stream end
+        let data = vec![b"data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}".to_vec()];
+        let chunks = collect_sse_chunks(data);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].delta, "tail");
+    }
+
+    #[test]
+    fn sse_chunk_stream_pending_queue_drains_correctly() {
+        // Multiple trailing lines with no final newline
+        let data = vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"X\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"Y\"}}]}".to_vec(),
+        ];
+        let chunks = collect_sse_chunks(data);
+        let text: String = chunks.iter().map(|c| c.delta.as_str()).collect();
+        assert_eq!(text, "XY");
+    }
 }

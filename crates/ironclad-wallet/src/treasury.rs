@@ -377,4 +377,256 @@ mod tests {
         assert!(policy.check_daily_limit(0.0, 0.01).is_err());
         assert!(policy.check_inference_budget(0.0, 0.01).is_err());
     }
+
+    // --- getter methods coverage ---
+
+    #[test]
+    fn getter_hourly_transfer_limit() {
+        let policy = default_policy();
+        assert!((policy.hourly_transfer_limit() - 500.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn getter_daily_transfer_limit() {
+        let policy = default_policy();
+        assert!((policy.daily_transfer_limit() - 2000.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn getter_minimum_reserve() {
+        let policy = default_policy();
+        assert!((policy.minimum_reserve() - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn getter_daily_inference_budget() {
+        let policy = default_policy();
+        assert!((policy.daily_inference_budget() - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn getter_per_payment_cap() {
+        let policy = default_policy();
+        assert!((policy.per_payment_cap() - 100.0).abs() < f64::EPSILON);
+    }
+
+    // --- check_hourly_limit error message content ---
+
+    #[test]
+    fn check_hourly_limit_error_contains_rule_name() {
+        let policy = default_policy();
+        let err = policy.check_hourly_limit(400.0, 100.01).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("hourly_transfer_limit"));
+    }
+
+    #[test]
+    fn check_hourly_limit_negative_amount_rejected() {
+        let policy = default_policy();
+        let err = policy.check_hourly_limit(0.0, -1.0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("non_positive_amount") || msg.contains("positive"));
+    }
+
+    #[test]
+    fn check_hourly_limit_zero_amount_rejected() {
+        let policy = default_policy();
+        let err = policy.check_hourly_limit(0.0, 0.0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("non_positive_amount") || msg.contains("positive"));
+    }
+
+    #[test]
+    fn check_hourly_limit_exact_boundary_passes() {
+        let policy = default_policy();
+        // 0 + 500.0 = 500.0, which equals the limit exactly
+        assert!(policy.check_hourly_limit(0.0, 500.0).is_ok());
+    }
+
+    // --- check_daily_limit error message content ---
+
+    #[test]
+    fn check_daily_limit_error_contains_rule_name() {
+        let policy = default_policy();
+        let err = policy.check_daily_limit(1900.0, 100.01).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("daily_transfer_limit"));
+    }
+
+    #[test]
+    fn check_daily_limit_negative_amount_rejected() {
+        let policy = default_policy();
+        let err = policy.check_daily_limit(0.0, -5.0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("non_positive_amount") || msg.contains("positive"));
+    }
+
+    #[test]
+    fn check_daily_limit_zero_amount_rejected() {
+        let policy = default_policy();
+        let err = policy.check_daily_limit(0.0, 0.0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("non_positive_amount") || msg.contains("positive"));
+    }
+
+    #[test]
+    fn check_daily_limit_exact_boundary_passes() {
+        let policy = default_policy();
+        assert!(policy.check_daily_limit(0.0, 2000.0).is_ok());
+    }
+
+    // --- check_minimum_reserve error message content ---
+
+    #[test]
+    fn check_minimum_reserve_error_contains_rule_name() {
+        let policy = default_policy();
+        let err = policy.check_minimum_reserve(10.0, 5.01).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("minimum_reserve"));
+    }
+
+    #[test]
+    fn check_minimum_reserve_exact_boundary_passes() {
+        let policy = default_policy();
+        // balance 10, amount 5 → remaining 5 == reserve 5
+        assert!(policy.check_minimum_reserve(10.0, 5.0).is_ok());
+    }
+
+    #[test]
+    fn check_minimum_reserve_zero_amount() {
+        let policy = default_policy();
+        // balance 10, amount 0 → remaining 10 > reserve 5
+        assert!(policy.check_minimum_reserve(10.0, 0.0).is_ok());
+    }
+
+    // --- check_inference_budget error message content ---
+
+    #[test]
+    fn check_inference_budget_error_contains_rule_name() {
+        let policy = default_policy();
+        let err = policy.check_inference_budget(40.0, 10.01).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("daily_inference_budget"));
+    }
+
+    #[test]
+    fn check_inference_budget_exact_boundary_passes() {
+        let policy = default_policy();
+        // 0 + 50.0 = 50.0, which equals the budget exactly
+        assert!(policy.check_inference_budget(0.0, 50.0).is_ok());
+    }
+
+    #[test]
+    fn check_inference_budget_zero_cost() {
+        let policy = default_policy();
+        assert!(policy.check_inference_budget(40.0, 0.0).is_ok());
+    }
+
+    // --- check_all success paths ---
+
+    #[test]
+    fn check_all_exact_per_payment_cap() {
+        let policy = default_policy();
+        assert!(policy.check_all(100.0, 1000.0, 0.0, 0.0).is_ok());
+    }
+
+    #[test]
+    fn check_all_minimal_balance() {
+        let policy = default_policy();
+        // amount=5.0, balance=10.0 → remaining 5.0 == reserve
+        assert!(policy.check_all(5.0, 10.0, 0.0, 0.0).is_ok());
+    }
+
+    // --- Default impl ---
+
+    #[test]
+    fn treasury_policy_default_impl() {
+        let policy = TreasuryPolicy::default();
+        // Default config should have reasonable values
+        assert!(policy.per_payment_cap() > 0.0);
+        assert!(policy.hourly_transfer_limit() > 0.0);
+        assert!(policy.daily_transfer_limit() > 0.0);
+        assert!(policy.minimum_reserve() >= 0.0);
+        assert!(policy.daily_inference_budget() > 0.0);
+    }
+
+    // --- Treasury clone ---
+
+    #[test]
+    fn treasury_policy_clone_preserves_fields() {
+        let policy = default_policy();
+        let cloned = policy.clone();
+        assert!((policy.per_payment_cap() - cloned.per_payment_cap()).abs() < f64::EPSILON);
+        assert!(
+            (policy.hourly_transfer_limit() - cloned.hourly_transfer_limit()).abs() < f64::EPSILON
+        );
+        assert!(
+            (policy.daily_transfer_limit() - cloned.daily_transfer_limit()).abs() < f64::EPSILON
+        );
+        assert!((policy.minimum_reserve() - cloned.minimum_reserve()).abs() < f64::EPSILON);
+        assert!(
+            (policy.daily_inference_budget() - cloned.daily_inference_budget()).abs()
+                < f64::EPSILON
+        );
+    }
+
+    // --- Debug ---
+
+    #[test]
+    fn treasury_policy_debug_format() {
+        let policy = default_policy();
+        let debug = format!("{:?}", policy);
+        assert!(debug.contains("TreasuryPolicy"));
+        assert!(debug.contains("per_payment_cap"));
+        assert!(debug.contains("hourly_transfer_limit"));
+        assert!(debug.contains("daily_transfer_limit"));
+        assert!(debug.contains("minimum_reserve"));
+        assert!(debug.contains("daily_inference_budget"));
+    }
+
+    // --- check_all fails at different stages ---
+
+    #[test]
+    fn check_all_fails_at_per_payment_stage_error_message() {
+        let policy = default_policy();
+        let err = policy.check_all(150.0, 1000.0, 0.0, 0.0).unwrap_err();
+        assert!(err.to_string().contains("per_payment_cap"));
+    }
+
+    #[test]
+    fn check_all_fails_at_hourly_stage_error_message() {
+        let policy = default_policy();
+        let err = policy.check_all(50.0, 1000.0, 460.0, 0.0).unwrap_err();
+        assert!(err.to_string().contains("hourly_transfer_limit"));
+    }
+
+    #[test]
+    fn check_all_fails_at_daily_stage_error_message() {
+        let policy = default_policy();
+        let err = policy.check_all(50.0, 1000.0, 0.0, 1960.0).unwrap_err();
+        assert!(err.to_string().contains("daily_transfer_limit"));
+    }
+
+    #[test]
+    fn check_all_fails_at_reserve_stage_error_message() {
+        let policy = default_policy();
+        let err = policy.check_all(50.0, 54.0, 0.0, 0.0).unwrap_err();
+        assert!(err.to_string().contains("minimum_reserve"));
+    }
+
+    // --- Large values ---
+
+    #[test]
+    fn check_per_payment_large_cap() {
+        let policy = TreasuryPolicy::new(&TreasuryConfig {
+            per_payment_cap: 1_000_000.0,
+            hourly_transfer_limit: 10_000_000.0,
+            daily_transfer_limit: 100_000_000.0,
+            minimum_reserve: 0.0,
+            daily_inference_budget: 1_000_000.0,
+        });
+        assert!(policy.check_per_payment(999_999.99).is_ok());
+        assert!(policy.check_per_payment(1_000_000.0).is_ok());
+        assert!(policy.check_per_payment(1_000_000.01).is_err());
+    }
 }

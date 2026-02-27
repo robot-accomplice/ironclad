@@ -528,4 +528,259 @@ mod tests {
             .with_timeout(Duration::from_secs(5));
         assert_eq!(plugin.timeout, Duration::from_secs(5));
     }
+
+    fn test_manifest_with_dangerous(name: &str, tools: Vec<(&str, &str, bool)>) -> PluginManifest {
+        PluginManifest {
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: "test plugin".into(),
+            author: "test".into(),
+            permissions: vec![],
+            tools: tools
+                .into_iter()
+                .map(|(n, d, dangerous)| ManifestToolDef {
+                    name: n.into(),
+                    description: d.into(),
+                    dangerous,
+                })
+                .collect(),
+        }
+    }
+
+    // ── has_recognized_shebang ──────────────────────────────────────
+
+    #[test]
+    fn shebang_recognized_env_python3() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool");
+        fs::write(&path, "#!/usr/bin/env python3\nprint('hi')").unwrap();
+        assert!(ScriptPlugin::has_recognized_shebang(&path));
+    }
+
+    #[test]
+    fn shebang_recognized_direct_sh() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool");
+        fs::write(&path, "#!/bin/sh\necho hi").unwrap();
+        assert!(ScriptPlugin::has_recognized_shebang(&path));
+    }
+
+    #[test]
+    fn shebang_recognized_bash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool");
+        fs::write(&path, "#!/usr/bin/bash\necho hi").unwrap();
+        assert!(ScriptPlugin::has_recognized_shebang(&path));
+    }
+
+    #[test]
+    fn shebang_unrecognized_interpreter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool");
+        fs::write(&path, "#!/usr/bin/perl\nprint 'hi'").unwrap();
+        assert!(!ScriptPlugin::has_recognized_shebang(&path));
+    }
+
+    #[test]
+    fn shebang_missing_no_shebang_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool");
+        fs::write(&path, "just some text\nno shebang").unwrap();
+        assert!(!ScriptPlugin::has_recognized_shebang(&path));
+    }
+
+    #[test]
+    fn shebang_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool");
+        fs::write(&path, "").unwrap();
+        assert!(!ScriptPlugin::has_recognized_shebang(&path));
+    }
+
+    #[test]
+    fn shebang_nonexistent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent");
+        assert!(!ScriptPlugin::has_recognized_shebang(&path));
+    }
+
+    // ── validate_script_path ────────────────────────────────────────
+
+    #[test]
+    fn validate_script_path_inside_dir_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("tool.sh");
+        fs::write(&script, "#!/bin/sh").unwrap();
+        assert!(ScriptPlugin::validate_script_path(&script, dir.path()).is_ok());
+    }
+
+    #[test]
+    fn validate_script_path_outside_dir_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let script = other.path().join("evil.sh");
+        fs::write(&script, "#!/bin/sh").unwrap();
+        let result = ScriptPlugin::validate_script_path(&script, dir.path());
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("escapes plugin directory"));
+    }
+
+    #[test]
+    fn validate_script_path_nonexistent_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("nonexistent.sh");
+        let result = ScriptPlugin::validate_script_path(&script, dir.path());
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("cannot resolve script path"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_script_path_symlink_escape_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("payload.sh");
+        fs::write(&target, "#!/bin/sh\necho pwned").unwrap();
+        let link = dir.path().join("sneaky.sh");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let result = ScriptPlugin::validate_script_path(&link, dir.path());
+        assert!(result.is_err());
+    }
+
+    // ── find_script rejection paths ─────────────────────────────────
+
+    #[test]
+    fn extensionless_file_without_shebang_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create extensionless file with no shebang
+        fs::write(dir.path().join("tool"), "just text, no shebang").unwrap();
+        let manifest = test_manifest("test", vec![("tool", "extensionless")]);
+        let plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf());
+        assert!(!plugin.has_script("tool"));
+    }
+
+    #[test]
+    fn extensionless_file_with_recognized_shebang_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("tool"), "#!/bin/sh\necho hi").unwrap();
+        let manifest = test_manifest("test", vec![("tool", "extensionless with shebang")]);
+        let plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf());
+        assert!(plugin.has_script("tool"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_script_rejects_symlink_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("evil.sh");
+        fs::write(&target, "#!/bin/sh\necho pwned").unwrap();
+        let link = dir.path().join("tool.sh");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let manifest = test_manifest("test", vec![("tool", "symlinked")]);
+        let plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf());
+        // Symlink escaping the plugin directory should be rejected
+        assert!(!plugin.has_script("tool"));
+    }
+
+    // ── is_tool_dangerous / manifest getters ────────────────────────
+
+    #[test]
+    fn is_tool_dangerous_returns_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest_with_dangerous("p", vec![("rm_all", "dangerous op", true)]);
+        let plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf());
+        assert!(plugin.is_tool_dangerous("rm_all"));
+    }
+
+    #[test]
+    fn is_tool_dangerous_returns_false_for_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest_with_dangerous("p", vec![("list", "safe op", false)]);
+        let plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf());
+        assert!(!plugin.is_tool_dangerous("list"));
+    }
+
+    #[test]
+    fn manifest_getter() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest("my-plugin", vec![("t", "test")]);
+        let plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf());
+        assert_eq!(plugin.manifest().name, "my-plugin");
+        assert_eq!(plugin.manifest().tools.len(), 1);
+    }
+
+    // ── tools() with dangerous flag ─────────────────────────────────
+
+    #[test]
+    fn tools_includes_dangerous_risk_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest_with_dangerous(
+            "p",
+            vec![("safe", "safe tool", false), ("danger", "risky tool", true)],
+        );
+        let plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf());
+        let tools = plugin.tools();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].risk_level, ironclad_core::RiskLevel::Caution);
+        assert_eq!(tools[1].risk_level, ironclad_core::RiskLevel::Dangerous);
+    }
+
+    // ── shutdown ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn shutdown_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = test_manifest("test", vec![("t", "tool")]);
+        let mut plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf());
+        assert!(plugin.shutdown().await.is_ok());
+    }
+
+    // ── execute_tool timeout ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn execute_tool_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("slow.sh"), "#!/bin/sh\nsleep 60").unwrap();
+
+        let manifest = test_manifest("test", vec![("slow", "sleeps forever")]);
+        let plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf())
+            .with_timeout(Duration::from_millis(100));
+        let result = plugin.execute_tool("slow", &json!({})).await;
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("timed out"));
+    }
+
+    // ── execute_tool spawn failure ──────────────────────────────────
+
+    #[tokio::test]
+    async fn execute_tool_spawn_failure_nonexecutable() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a script file but point to a nonexistent interpreter
+        let script = dir.path().join("bad.sh");
+        fs::write(&script, "#!/nonexistent/interpreter\necho hi").unwrap();
+
+        let manifest = test_manifest("test", vec![("bad", "bad interpreter")]);
+        let mut plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf());
+        // The script won't be found by discover_scripts because .sh extension
+        // will use our built-in interpreter mapping. Instead, directly insert
+        // a script pointing to a nonexistent binary for the extensionless case.
+        let fake_path = dir.path().join("nonexistent_binary");
+        fs::write(&fake_path, "").unwrap();
+        plugin.scripts.insert("bad".into(), fake_path);
+        let result = plugin.execute_tool("bad", &json!({})).await;
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("spawn")
+                || msg.contains("permission")
+                || msg.contains("denied")
+                || msg.contains("failed"),
+            "unexpected error: {msg}"
+        );
+    }
 }

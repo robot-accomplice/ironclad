@@ -209,21 +209,10 @@ pub async fn run(
                     }
                 }
             }
-            // Note: heartbeat_* IDs are virtual job IDs not linked to `cron_jobs` table
-            // rows. Heartbeat tasks are not cron jobs; these run records exist solely for
-            // observability and historical auditing in the `cron_runs` table.
-            if let Err(e) = ironclad_db::cron::record_run(
-                &db,
-                &format!("heartbeat_{:?}", task).to_lowercase(),
-                if result.success { "success" } else { "error" },
-                None,
-                if result.success {
-                    None
-                } else {
-                    Some(&result.message)
-                },
-            ) {
-                tracing::warn!(error = %e, "failed to record heartbeat run");
+            // Heartbeat task results are logged, not recorded in cron_runs
+            // (they are not cron jobs and virtual IDs would flood the table).
+            if !result.success {
+                tracing::debug!(task = ?task, msg = %result.message, "heartbeat task unsuccessful");
             }
         }
 
@@ -386,5 +375,193 @@ mod tests {
             Some("2025-01-01T12:00:05+00:00"),
             now
         ));
+    }
+
+    // ── BUG-076/093: should_rotate_sessions edge cases ─────────────────
+
+    #[test]
+    fn should_rotate_sessions_none_schedule_returns_false() {
+        let now = DateTime::parse_from_rfc3339("2025-01-01T12:00:10+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(!should_rotate_sessions(None, None, now));
+    }
+
+    #[test]
+    fn should_rotate_sessions_none_schedule_with_last_rotation() {
+        let now = DateTime::parse_from_rfc3339("2025-01-01T12:00:10+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(!should_rotate_sessions(
+            None,
+            Some("2025-01-01T00:00:00+00:00"),
+            now
+        ));
+    }
+
+    #[test]
+    fn should_rotate_sessions_invalid_cron_returns_false() {
+        let now = DateTime::parse_from_rfc3339("2025-01-01T12:00:10+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(!should_rotate_sessions(Some("this is invalid"), None, now));
+    }
+
+    #[test]
+    fn should_rotate_sessions_no_last_rotation_at_matches() {
+        let now = DateTime::parse_from_rfc3339("2025-01-01T06:00:10+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(should_rotate_sessions(Some("0 6 * * *"), None, now));
+    }
+
+    #[test]
+    fn should_rotate_sessions_different_slot_after_last_rotation() {
+        let now = DateTime::parse_from_rfc3339("2025-01-02T06:00:10+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        // Last rotation was yesterday's 6am slot
+        assert!(should_rotate_sessions(
+            Some("0 6 * * *"),
+            Some("2025-01-01T06:00:05+00:00"),
+            now
+        ));
+    }
+
+    // ── HeartbeatDaemon additional coverage ─────────────────────────────
+
+    #[test]
+    fn heartbeat_daemon_new_sets_both_intervals() {
+        let daemon = HeartbeatDaemon::new(60_000);
+        assert_eq!(daemon.interval_ms, 60_000);
+        assert_eq!(daemon.original_interval_ms, 60_000);
+        assert!(!daemon.running);
+    }
+
+    #[test]
+    fn should_adjust_interval_dead_tier_caps_at_1_hour() {
+        let daemon = HeartbeatDaemon::new(200_000); // 200s
+        let new = daemon.should_adjust_interval(&SurvivalTier::Dead);
+        // 200_000 * 10 = 2_000_000 capped at 3_600_000
+        assert!(new.is_some());
+        assert!(new.unwrap() <= 3_600_000);
+    }
+
+    #[test]
+    fn should_adjust_interval_critical_caps_at_5_minutes() {
+        let daemon = HeartbeatDaemon::new(200_000); // 200s
+        let new = daemon.should_adjust_interval(&SurvivalTier::Critical);
+        // 200_000 * 2 = 400_000 capped at 300_000
+        assert!(new.is_some());
+        assert!(new.unwrap() <= 300_000);
+    }
+
+    #[test]
+    fn should_adjust_interval_low_compute_caps_at_5_minutes() {
+        let daemon = HeartbeatDaemon::new(200_000); // 200s
+        let new = daemon.should_adjust_interval(&SurvivalTier::LowCompute);
+        // 200_000 * 2 = 400_000 capped at 300_000
+        assert!(new.is_some());
+        assert!(new.unwrap() <= 300_000);
+    }
+
+    #[test]
+    fn should_adjust_interval_already_at_original_no_change() {
+        let daemon = HeartbeatDaemon::new(60_000);
+        // Normal/High with interval == original -> None
+        assert!(
+            daemon
+                .should_adjust_interval(&SurvivalTier::Normal)
+                .is_none()
+        );
+        assert!(daemon.should_adjust_interval(&SurvivalTier::High).is_none());
+    }
+
+    #[test]
+    fn should_adjust_interval_degraded_then_recover() {
+        let mut daemon = HeartbeatDaemon::new(30_000);
+        // Simulate degradation
+        daemon.interval_ms = 300_000;
+        // Now tier recovers to Normal -> restore original
+        let restored = daemon.should_adjust_interval(&SurvivalTier::Normal);
+        assert_eq!(restored, Some(30_000));
+        // Recover to High
+        let restored = daemon.should_adjust_interval(&SurvivalTier::High);
+        assert_eq!(restored, Some(30_000));
+    }
+
+    // ── build_tick_context additional tiers ─────────────────────────────
+
+    #[test]
+    fn build_tick_context_dead_tier() {
+        // Dead requires < 0.0 balance AND hours_below_zero >= 0.999
+        // from_balance(usd=-0.5, hours=1.0) = Dead
+        // BUT build_tick_context uses combined = credit + usdc with hours=0.0
+        // So Dead requires usd < 0 AND hours >= 0.999, but hours is always 0 in build_tick_context
+        // Therefore Dead tier isn't reachable via build_tick_context. Let's verify Critical:
+        let ctx = build_tick_context(0.001, 0.001);
+        // combined = 0.002, which is < 0.10 -> Critical
+        assert_eq!(ctx.survival_tier, SurvivalTier::Critical);
+    }
+
+    #[test]
+    fn build_tick_context_normal_tier() {
+        let ctx = build_tick_context(1.0, 0.0);
+        // combined = 1.0, which is >= 0.50 and < 5.0 -> Normal
+        assert_eq!(ctx.survival_tier, SurvivalTier::Normal);
+    }
+
+    #[test]
+    fn build_tick_context_zero_balances() {
+        let ctx = build_tick_context(0.0, 0.0);
+        // combined = 0.0, which is < 0.10 -> Critical
+        assert_eq!(ctx.survival_tier, SurvivalTier::Critical);
+        assert!((ctx.credit_balance - 0.0).abs() < f64::EPSILON);
+        assert!((ctx.usdc_balance - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn build_tick_context_boundary_low_compute() {
+        // LowCompute boundary: >= 0.10 and < 0.50
+        let ctx = build_tick_context(0.10, 0.0);
+        assert_eq!(ctx.survival_tier, SurvivalTier::LowCompute);
+
+        let ctx = build_tick_context(0.49, 0.0);
+        assert_eq!(ctx.survival_tier, SurvivalTier::LowCompute);
+    }
+
+    #[test]
+    fn build_tick_context_boundary_normal() {
+        // Normal boundary: >= 0.50 and < 5.00
+        let ctx = build_tick_context(0.50, 0.0);
+        assert_eq!(ctx.survival_tier, SurvivalTier::Normal);
+
+        let ctx = build_tick_context(4.99, 0.0);
+        assert_eq!(ctx.survival_tier, SurvivalTier::Normal);
+    }
+
+    #[test]
+    fn build_tick_context_boundary_high() {
+        // High boundary: >= 5.00
+        let ctx = build_tick_context(5.00, 0.0);
+        assert_eq!(ctx.survival_tier, SurvivalTier::High);
+    }
+
+    #[test]
+    fn build_tick_context_timestamp_is_recent() {
+        let before = Utc::now();
+        let ctx = build_tick_context(1.0, 1.0);
+        let after = Utc::now();
+        assert!(ctx.timestamp >= before);
+        assert!(ctx.timestamp <= after);
+    }
+
+    // ── default_tasks coverage ─────────────────────────────────────────
+
+    #[test]
+    fn default_tasks_last_is_session_governor() {
+        use crate::tasks::HeartbeatTask;
+        let tasks = default_tasks();
+        assert_eq!(*tasks.last().unwrap(), HeartbeatTask::SessionGovernor);
     }
 }

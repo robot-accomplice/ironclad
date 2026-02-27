@@ -1,0 +1,29 @@
+[package]
+name = "ironclad-db-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ironclad-db = { path = ".." }
+
+[[bin]]
+name = "fuzz_derive_nickname"
+path = "fuzz_targets/fuzz_derive_nickname.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_session_status_parse"
+path = "fuzz_targets/fuzz_session_status_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_message_role_parse"
+path = "fuzz_targets/fuzz_message_role_parse.rs"
+doc = false
+
+[workspace]

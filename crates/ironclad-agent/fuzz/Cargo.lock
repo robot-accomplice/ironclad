@@ -1514,7 +1514,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-agent"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1539,6 +1539,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "wasmer",
+ "zeroize",
 ]
 
 [[package]]
@@ -1551,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-core"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1569,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-db"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "instant-distance",
@@ -1583,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-llm"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "base64",
  "bytes",

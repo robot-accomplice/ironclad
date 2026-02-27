@@ -328,4 +328,297 @@ mod tests {
         assert_eq!(config.stt_model, back.stt_model);
         assert_eq!(back.api_base_url, "https://api.openai.com/v1");
     }
+
+    #[test]
+    fn voice_config_partial_json_applies_defaults() {
+        let json = r#"{"stt_model": "custom-model"}"#;
+        let config: VoiceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.stt_model, "custom-model");
+        // All other fields should get their defaults
+        assert_eq!(config.tts_model, "");
+        assert_eq!(config.tts_voice, "");
+        assert!(!config.local_stt);
+        assert!(!config.local_tts);
+        assert_eq!(config.sample_rate, 16_000);
+        assert!(config.api_key.is_none());
+        assert_eq!(config.api_base_url, "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn voice_config_empty_json_uses_all_defaults() {
+        let config: VoiceConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.sample_rate, 16_000);
+        assert_eq!(config.api_base_url, "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn voice_config_with_api_key() {
+        let json = r#"{"api_key": "sk-test123"}"#;
+        let config: VoiceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.api_key.as_deref(), Some("sk-test123"));
+    }
+
+    #[test]
+    fn voice_config_api_key_not_serialized() {
+        // api_key has skip_serializing, so it should not appear in output
+        let config = VoiceConfig {
+            api_key: Some("secret".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            !json.contains("secret"),
+            "api_key should be skipped in serialization"
+        );
+    }
+
+    #[test]
+    fn voice_config_with_local_flags() {
+        let json = r#"{"local_stt": true, "local_tts": true}"#;
+        let config: VoiceConfig = serde_json::from_str(json).unwrap();
+        assert!(config.local_stt);
+        assert!(config.local_tts);
+    }
+
+    #[test]
+    fn voice_config_custom_sample_rate() {
+        let json = r#"{"sample_rate": 44100}"#;
+        let config: VoiceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.sample_rate, 44100);
+    }
+
+    #[test]
+    fn voice_config_debug_impl() {
+        let config = VoiceConfig::default();
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("VoiceConfig"));
+        assert!(debug.contains("whisper-large-v3"));
+    }
+
+    #[test]
+    fn voice_config_clone() {
+        let config = VoiceConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.stt_model, cloned.stt_model);
+        assert_eq!(config.sample_rate, cloned.sample_rate);
+    }
+
+    #[test]
+    fn transcription_struct_fields() {
+        let t = Transcription {
+            text: "hello world".into(),
+            language: "en".into(),
+            confidence: 0.95,
+            duration_ms: 1500,
+        };
+        assert_eq!(t.text, "hello world");
+        assert_eq!(t.language, "en");
+        assert!((t.confidence - 0.95).abs() < f64::EPSILON);
+        assert_eq!(t.duration_ms, 1500);
+    }
+
+    #[test]
+    fn transcription_serde_roundtrip() {
+        let t = Transcription {
+            text: "test".into(),
+            language: "fr".into(),
+            confidence: 0.88,
+            duration_ms: 3000,
+        };
+        let json = serde_json::to_string(&t).unwrap();
+        let back: Transcription = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.text, "test");
+        assert_eq!(back.language, "fr");
+        assert_eq!(back.duration_ms, 3000);
+    }
+
+    #[test]
+    fn transcription_clone() {
+        let t = Transcription {
+            text: "hi".into(),
+            language: "en".into(),
+            confidence: 1.0,
+            duration_ms: 100,
+        };
+        let cloned = t.clone();
+        assert_eq!(t.text, cloned.text);
+        assert_eq!(t.duration_ms, cloned.duration_ms);
+    }
+
+    #[test]
+    fn synthesis_result_fields() {
+        let r = SynthesisResult {
+            audio_data: vec![1, 2, 3, 4],
+            format: AudioFormat::Mp3,
+            sample_rate: 22050,
+            duration_ms: 500,
+        };
+        assert_eq!(r.audio_data, vec![1, 2, 3, 4]);
+        assert_eq!(r.format, AudioFormat::Mp3);
+        assert_eq!(r.sample_rate, 22050);
+        assert_eq!(r.duration_ms, 500);
+    }
+
+    #[test]
+    fn synthesis_result_clone() {
+        let r = SynthesisResult {
+            audio_data: vec![0u8; 100],
+            format: AudioFormat::Wav,
+            sample_rate: 16000,
+            duration_ms: 1000,
+        };
+        let cloned = r.clone();
+        assert_eq!(r.audio_data.len(), cloned.audio_data.len());
+        assert_eq!(r.format, cloned.format);
+    }
+
+    #[test]
+    fn audio_format_equality() {
+        assert_eq!(AudioFormat::Wav, AudioFormat::Wav);
+        assert_ne!(AudioFormat::Wav, AudioFormat::Mp3);
+        assert_ne!(AudioFormat::Opus, AudioFormat::Ogg);
+    }
+
+    #[test]
+    fn audio_format_copy() {
+        let f = AudioFormat::Pcm;
+        let f2 = f;
+        assert_eq!(f, f2);
+    }
+
+    #[test]
+    fn whisper_response_deserialization() {
+        let json = r#"{"text": "hello world"}"#;
+        let resp: WhisperResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.text, "hello world");
+        assert!(resp.language.is_none());
+        assert!(resp.duration.is_none());
+    }
+
+    #[test]
+    fn whisper_response_full_fields() {
+        let json = r#"{"text": "hi", "language": "en", "duration": 2.5}"#;
+        let resp: WhisperResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.text, "hi");
+        assert_eq!(resp.language.as_deref(), Some("en"));
+        assert!((resp.duration.unwrap() - 2.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn pipeline_config_accessor() {
+        let config = VoiceConfig {
+            stt_model: "custom-stt".into(),
+            ..VoiceConfig::default()
+        };
+        let pipeline = VoicePipeline::new(config);
+        assert_eq!(pipeline.config().stt_model, "custom-stt");
+        assert_eq!(pipeline.config().tts_model, "tts-1");
+    }
+
+    #[test]
+    fn pipeline_new_initializes_counters_to_zero() {
+        let pipeline = VoicePipeline::new(VoiceConfig::default());
+        assert_eq!(pipeline.transcription_count(), 0);
+        assert_eq!(pipeline.synthesis_count(), 0);
+    }
+
+    #[test]
+    fn pipeline_api_key_missing_error() {
+        let pipeline = VoicePipeline::new(VoiceConfig::default());
+        let result = pipeline.api_key();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("API key"));
+    }
+
+    #[test]
+    fn pipeline_api_key_present() {
+        let config = VoiceConfig {
+            api_key: Some("sk-test".into()),
+            ..VoiceConfig::default()
+        };
+        let pipeline = VoicePipeline::new(config);
+        assert_eq!(pipeline.api_key().unwrap(), "sk-test");
+    }
+
+    #[test]
+    fn default_sample_rate_value() {
+        assert_eq!(default_sample_rate(), 16_000);
+    }
+
+    #[test]
+    fn default_api_base_url_value() {
+        assert_eq!(default_api_base_url(), "https://api.openai.com/v1");
+    }
+
+    fn fast_fail_pipeline() -> VoicePipeline {
+        let config = VoiceConfig {
+            api_key: Some("sk-test".into()),
+            api_base_url: "http://127.0.0.1:1".into(),
+            ..VoiceConfig::default()
+        };
+        let mut pipeline = VoicePipeline::new(config);
+        pipeline.http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .unwrap();
+        pipeline
+    }
+
+    #[tokio::test]
+    async fn transcribe_network_error() {
+        let mut pipeline = fast_fail_pipeline();
+        let audio = vec![0u8; 1000];
+        let result = pipeline.transcribe(&audio, AudioFormat::Wav).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("whisper request failed"),
+            "unexpected error: {err}"
+        );
+        // Verify counter was still incremented
+        assert_eq!(pipeline.transcription_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn transcribe_network_error_with_each_format() {
+        for format in [
+            AudioFormat::Opus,
+            AudioFormat::Mp3,
+            AudioFormat::Ogg,
+            AudioFormat::Pcm,
+        ] {
+            let mut pipeline = fast_fail_pipeline();
+            let result = pipeline.transcribe(&[1, 2, 3], format).await;
+            assert!(result.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn synthesize_network_error() {
+        let mut pipeline = fast_fail_pipeline();
+        let result = pipeline.synthesize("Hello world").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("TTS request failed"),
+            "unexpected error: {err}"
+        );
+        // Verify counter was still incremented
+        assert_eq!(pipeline.synthesis_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn synthesize_empty_text_network_error() {
+        let mut pipeline = fast_fail_pipeline();
+        let result = pipeline.synthesize("").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn synthesize_long_text_network_error() {
+        let mut pipeline = fast_fail_pipeline();
+        let long_text = "word ".repeat(100);
+        let result = pipeline.synthesize(&long_text).await;
+        assert!(result.is_err());
+    }
 }

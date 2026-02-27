@@ -246,7 +246,7 @@ impl Theme {
             return;
         }
         let delay = std::time::Duration::from_millis(delay_ms);
-        let mut chars = text.chars().peekable();
+        let mut chars = text.chars();
         while let Some(ch) = chars.next() {
             if ch == '\x1b' {
                 let mut seq = String::from(ch);
@@ -281,7 +281,7 @@ impl Theme {
             return;
         }
         let delay = std::time::Duration::from_millis(delay_ms);
-        let mut chars = text.chars().peekable();
+        let mut chars = text.chars();
         while let Some(ch) = chars.next() {
             if ch == '\x1b' {
                 let mut seq = String::from(ch);

@@ -1,4 +1,5 @@
 use crate::Database;
+use chrono::Utc;
 use ironclad_core::{IroncladError, Result};
 use rusqlite::OptionalExtension;
 
@@ -23,13 +24,14 @@ pub fn store_working(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     tx.execute(
-        "INSERT INTO working_memory (id, session_id, entry_type, content, importance) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![id, session_id, entry_type, content, importance],
+        "INSERT INTO working_memory (id, session_id, entry_type, content, importance, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, session_id, entry_type, content, importance, now],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     // Remove any existing FTS row before inserting to avoid duplicates.
@@ -119,10 +121,11 @@ pub fn store_episodic(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO episodic_memory (id, classification, content, importance) \
-         VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![id, classification, content, importance],
+        "INSERT INTO episodic_memory (id, classification, content, importance, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, classification, content, importance, now],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -178,15 +181,16 @@ pub fn store_semantic(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     tx.execute(
-        "INSERT INTO semantic_memory (id, category, key, value, confidence) \
-         VALUES (?1, ?2, ?3, ?4, ?5) \
+        "INSERT INTO semantic_memory (id, category, key, value, confidence, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
          ON CONFLICT(category, key) DO UPDATE SET value = excluded.value, \
-         confidence = excluded.confidence, updated_at = datetime('now')",
-        rusqlite::params![id, category, key, value, confidence],
+         confidence = excluded.confidence, updated_at = ?6",
+        rusqlite::params![id, category, key, value, confidence, now],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -304,10 +308,11 @@ pub struct ProceduralEntry {
 pub fn store_procedural(db: &Database, name: &str, steps: &str) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO procedural_memory (id, name, steps) VALUES (?1, ?2, ?3) \
-         ON CONFLICT(name) DO UPDATE SET steps = excluded.steps, updated_at = datetime('now')",
-        rusqlite::params![id, name, steps],
+        "INSERT INTO procedural_memory (id, name, steps, created_at) VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(name) DO UPDATE SET steps = excluded.steps, updated_at = ?4",
+        rusqlite::params![id, name, steps, now],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
@@ -377,13 +382,14 @@ pub fn store_relationship(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO relationship_memory (id, entity_id, entity_name, trust_score) \
-         VALUES (?1, ?2, ?3, ?4) \
+        "INSERT INTO relationship_memory (id, entity_id, entity_name, trust_score, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5) \
          ON CONFLICT(entity_id) DO UPDATE SET entity_name = excluded.entity_name, \
          trust_score = excluded.trust_score, interaction_count = interaction_count + 1, \
-         last_interaction = datetime('now')",
-        rusqlite::params![id, entity_id, entity_name, trust_score],
+         last_interaction = ?5",
+        rusqlite::params![id, entity_id, entity_name, trust_score, now],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
@@ -415,6 +421,15 @@ pub fn retrieve_relationship(db: &Database, entity_id: &str) -> Result<Option<Re
 
 // ── Full-text search across memory tiers ────────────────────────
 
+// ── Search results ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemorySearchResult {
+    pub content: String,
+    pub category: String,
+    pub source: String,
+}
+
 /// Sanitize user input for FTS5: keep only alphanumeric and whitespace, wrap in double quotes
 /// (phrase query), and escape any remaining double quotes so FTS5 operators (AND, OR, NOT, etc.)
 /// cannot be injected.
@@ -427,23 +442,37 @@ pub(crate) fn sanitize_fts_query(query: &str) -> String {
 }
 
 /// Search memory: FTS5 MATCH on memory_fts (working, episodic, semantic), LIKE fallback for others.
-/// Returns matching content strings up to `limit`.
-pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<String>> {
+/// Returns matching structured entries (content + category + source) up to `limit`, deduplicated.
+pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<MemorySearchResult>> {
     let conn = db.conn();
-    let mut results = Vec::new();
+    let mut results: Vec<MemorySearchResult> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
 
     // FTS5 MATCH on memory_fts (populated from working_memory, episodic_memory, semantic_memory)
     let fts_query = sanitize_fts_query(query);
-    match conn.prepare("SELECT content FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2") {
+    match conn.prepare(
+        "SELECT content, category, source_table FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2",
+    ) {
         Ok(mut stmt) => {
             match stmt.query_map(rusqlite::params![fts_query, limit], |row| {
-                row.get::<_, String>(0)
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             }) {
                 Ok(rows) => {
                     for row in rows.flatten() {
-                        results.push(row);
-                        if results.len() as i64 >= limit {
-                            return Ok(results);
+                        let key = format!("{}|{}", row.2, row.0);
+                        if seen.insert(key) {
+                            results.push(MemorySearchResult {
+                                content: row.0,
+                                category: row.1,
+                                source: row.2,
+                            });
+                            if results.len() as i64 >= limit {
+                                return Ok(results);
+                            }
                         }
                     }
                 }
@@ -476,9 +505,16 @@ pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<String>>
                 }) {
                     Ok(rows) => {
                         for row in rows.flatten() {
-                            results.push(row);
-                            if results.len() as i64 >= limit {
-                                return Ok(results);
+                            let key = format!("{table}|{row}");
+                            if seen.insert(key) {
+                                results.push(MemorySearchResult {
+                                    content: row,
+                                    category: table.replace("_memory", ""),
+                                    source: table.to_string(),
+                                });
+                                if results.len() as i64 >= limit {
+                                    return Ok(results);
+                                }
                             }
                         }
                     }
@@ -572,7 +608,7 @@ mod tests {
 
         let hits = fts_search(&db, "quantum", 10).unwrap();
         assert_eq!(hits.len(), 1);
-        assert!(hits[0].contains("quantum"));
+        assert!(hits[0].content.contains("quantum"));
     }
 
     #[test]
@@ -724,5 +760,201 @@ mod tests {
         store_procedural(&db, "backup", "step one: tar the archive and compress").unwrap();
         let hits = fts_search(&db, "tar the archive", 10).unwrap();
         assert!(!hits.is_empty());
+    }
+
+    // ── retrieve_working_all tests ────────────────────────────
+
+    #[test]
+    fn retrieve_working_all_returns_across_sessions() {
+        let db = test_db();
+        store_working(&db, "sess-a", "note", "alpha entry", 5).unwrap();
+        store_working(&db, "sess-b", "note", "beta entry", 8).unwrap();
+        store_working(&db, "sess-c", "note", "gamma entry", 3).unwrap();
+
+        let entries = retrieve_working_all(&db, 100).unwrap();
+        assert_eq!(entries.len(), 3);
+        // Ordered by importance DESC
+        assert_eq!(entries[0].importance, 8);
+        assert_eq!(entries[1].importance, 5);
+        assert_eq!(entries[2].importance, 3);
+    }
+
+    #[test]
+    fn retrieve_working_all_respects_limit() {
+        let db = test_db();
+        for i in 0..5 {
+            store_working(&db, "sess", "note", &format!("entry {i}"), i).unwrap();
+        }
+        let entries = retrieve_working_all(&db, 2).unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn retrieve_working_all_empty_db() {
+        let db = test_db();
+        let entries = retrieve_working_all(&db, 10).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    // ── list_semantic_categories tests ────────────────────────
+
+    #[test]
+    fn list_semantic_categories_returns_grouped() {
+        let db = test_db();
+        store_semantic(&db, "facts", "sky_color", "blue", 0.9).unwrap();
+        store_semantic(&db, "facts", "grass_color", "green", 0.8).unwrap();
+        store_semantic(&db, "prefs", "theme", "dark", 0.7).unwrap();
+
+        let categories = list_semantic_categories(&db).unwrap();
+        assert_eq!(categories.len(), 2);
+        // Ordered by count DESC
+        assert_eq!(categories[0].0, "facts");
+        assert_eq!(categories[0].1, 2);
+        assert_eq!(categories[1].0, "prefs");
+        assert_eq!(categories[1].1, 1);
+    }
+
+    #[test]
+    fn list_semantic_categories_empty() {
+        let db = test_db();
+        let categories = list_semantic_categories(&db).unwrap();
+        assert!(categories.is_empty());
+    }
+
+    // ── retrieve_semantic_all tests ──────────────────────────
+
+    #[test]
+    fn retrieve_semantic_all_returns_across_categories() {
+        let db = test_db();
+        store_semantic(&db, "facts", "sky", "blue", 0.9).unwrap();
+        store_semantic(&db, "prefs", "theme", "dark", 0.7).unwrap();
+        store_semantic(&db, "facts", "grass", "green", 0.8).unwrap();
+
+        let entries = retrieve_semantic_all(&db, 100).unwrap();
+        assert_eq!(entries.len(), 3);
+        // Ordered by confidence DESC
+        assert!((entries[0].confidence - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn retrieve_semantic_all_respects_limit() {
+        let db = test_db();
+        for i in 0..5 {
+            store_semantic(
+                &db,
+                "cat",
+                &format!("key{i}"),
+                &format!("val{i}"),
+                0.5 + i as f64 * 0.1,
+            )
+            .unwrap();
+        }
+        let entries = retrieve_semantic_all(&db, 2).unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn retrieve_semantic_all_empty() {
+        let db = test_db();
+        let entries = retrieve_semantic_all(&db, 10).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    // ── fts_search LIKE fallback additional paths ────────────
+
+    #[test]
+    fn fts_search_like_fallback_relationship() {
+        let db = test_db();
+        // Store a relationship with an interaction_summary that can be found via LIKE fallback
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO relationship_memory (id, entity_id, entity_name, trust_score, interaction_summary) \
+                 VALUES ('r1', 'user-99', 'TestUser', 0.8, 'discussed the quantum physics experiment')",
+                [],
+            ).unwrap();
+        }
+
+        let hits = fts_search(&db, "quantum physics", 10).unwrap();
+        assert!(
+            !hits.is_empty(),
+            "LIKE fallback should find relationship interaction_summary"
+        );
+    }
+
+    #[test]
+    fn fts_search_limit_reached_in_fts_phase() {
+        let db = test_db();
+        // Create enough FTS entries so the limit is reached during the FTS phase
+        for i in 0..5 {
+            store_working(
+                &db,
+                "sess",
+                "note",
+                &format!("searchable keyword item {i}"),
+                5,
+            )
+            .unwrap();
+        }
+        let hits = fts_search(&db, "keyword", 2).unwrap();
+        assert_eq!(hits.len(), 2, "should stop at limit during FTS phase");
+    }
+
+    #[test]
+    fn fts_search_limit_reached_in_like_phase() {
+        let db = test_db();
+        // Store items in procedural memory (LIKE fallback) with a common pattern
+        for i in 0..5 {
+            store_procedural(
+                &db,
+                &format!("proc_{i}"),
+                &format!("step: run the xyzzy command {i}"),
+            )
+            .unwrap();
+        }
+        let hits = fts_search(&db, "xyzzy command", 2).unwrap();
+        assert_eq!(
+            hits.len(),
+            2,
+            "should stop at limit during LIKE fallback phase"
+        );
+    }
+
+    #[test]
+    fn fts_search_special_chars_in_query() {
+        let db = test_db();
+        store_working(
+            &db,
+            "sess",
+            "note",
+            "test with percent % and underscore _",
+            5,
+        )
+        .unwrap();
+        // This tests the sanitize_fts_query and the LIKE escape logic
+        let hits = fts_search(&db, "percent", 10).unwrap();
+        assert!(!hits.is_empty());
+    }
+
+    #[test]
+    fn sanitize_fts_query_strips_operators() {
+        // FTS5 operators like AND, OR, NOT should be neutralized by the sanitizer
+        let result = sanitize_fts_query("hello AND world");
+        // Should wrap in quotes, stripping non-alnum/space
+        assert!(result.starts_with('"'));
+        assert!(result.ends_with('"'));
+    }
+
+    #[test]
+    fn sanitize_fts_query_empty() {
+        let result = sanitize_fts_query("");
+        assert_eq!(result, "\"\"");
+    }
+
+    #[test]
+    fn sanitize_fts_query_special_chars_stripped() {
+        let result = sanitize_fts_query("hello* OR world");
+        // * and OR should be kept as alphanumeric/space
+        assert!(!result.contains('*'));
     }
 }
