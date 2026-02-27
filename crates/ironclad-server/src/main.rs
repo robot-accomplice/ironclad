@@ -949,9 +949,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let abs_config = std::path::Path::new(&config)
                     .canonicalize()
                     .or_else(|_| {
-                        let home_cfg = ironclad_core::home_dir()
-                            .join(".ironclad")
-                            .join(&config);
+                        let home_cfg = ironclad_core::home_dir().join(".ironclad").join(&config);
                         home_cfg.canonicalize()
                     })
                     .map_err(|_| {
@@ -1386,7 +1384,9 @@ async fn cmd_serve(
     const STEPS: u32 = 12;
 
     let resolved_path = config_path.or_else(|| {
-        let home_config = ironclad_core::home_dir().join(".ironclad").join("ironclad.toml");
+        let home_config = ironclad_core::home_dir()
+            .join(".ironclad")
+            .join("ironclad.toml");
         home_config
             .exists()
             .then(|| home_config.to_string_lossy().into_owned())

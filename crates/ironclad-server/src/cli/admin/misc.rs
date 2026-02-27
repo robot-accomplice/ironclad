@@ -1687,9 +1687,7 @@ pub async fn cmd_metrics(
 fn try_read_log_file(lines: usize, _level: &str) {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    let log_dir = ironclad_core::home_dir()
-        .join(".ironclad")
-        .join("logs");
+    let log_dir = ironclad_core::home_dir().join(".ironclad").join("logs");
 
     if !log_dir.exists() {
         println!("  No log directory found at {}", log_dir.display());
@@ -1925,9 +1923,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     }
 
     // 5. Check database file permissions
-    let db_path = ironclad_core::home_dir()
-        .join(".ironclad")
-        .join("state.db");
+    let db_path = ironclad_core::home_dir().join(".ironclad").join("state.db");
     if db_path.exists() {
         #[cfg(unix)]
         {

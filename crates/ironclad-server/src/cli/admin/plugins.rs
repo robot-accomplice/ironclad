@@ -134,9 +134,7 @@ pub fn cmd_plugin_install(source: &str) -> Result<(), Box<dyn std::error::Error>
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    let plugins_dir = ironclad_core::home_dir()
-        .join(".ironclad")
-        .join("plugins");
+    let plugins_dir = ironclad_core::home_dir().join(".ironclad").join("plugins");
     let dest = plugins_dir.join(plugin_name);
 
     if dest.exists() {

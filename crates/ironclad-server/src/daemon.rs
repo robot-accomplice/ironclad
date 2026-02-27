@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use ironclad_core::{home_dir, IroncladError, Result};
+use ironclad_core::{IroncladError, Result, home_dir};
 
 const WINDOWS_DAEMON_NAME: &str = "IroncladAgent";
 
@@ -528,8 +528,7 @@ fn verify_launchd_running() -> Result<()> {
                 .trim_end_matches(';')
                 .trim();
             if code != "0" {
-                let stderr_path = home_dir()
-                    .join(".ironclad/logs/ironclad.stderr.log");
+                let stderr_path = home_dir().join(".ironclad/logs/ironclad.stderr.log");
                 let hint = if stderr_path.exists() {
                     format!(" (see {})", stderr_path.display())
                 } else {

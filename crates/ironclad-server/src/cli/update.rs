@@ -100,9 +100,7 @@ impl UpdateState {
 }
 
 fn state_path() -> PathBuf {
-    home_dir()
-        .join(".ironclad")
-        .join("update_state.json")
+    home_dir().join(".ironclad").join("update_state.json")
 }
 
 fn ironclad_home() -> PathBuf {
