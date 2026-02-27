@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-02-27
+
+### Security
+
+- **Auth bypass when no API key**: Requests to non-exempt API routes now fail closed when no API key is configured — only loopback connections are allowed. Previously, missing API key config silently allowed all traffic.
+- **A2A replay protection**: Added nonce registry with TTL-based expiry to the A2A protocol, preventing message replay attacks within the nonce window.
+- **Plugin permission enforcement**: New `strict_permissions` and `allowed_permissions` config fields for plugin policy. In strict mode, undeclared permissions are blocked; in permissive mode (default), they produce a warning.
+- **Ethereum signature recovery ID**: EIP-191 signatures now include the recovery byte (v = 27 or 28), producing correct 65-byte signatures instead of 64-byte truncated ones.
+
+### Fixed
+
+- **UTF-8 panic in memory truncation**: Replaced unsafe byte-level string slicing with `floor_char_boundary()` to prevent panics on multi-byte characters (emoji, CJK) near the 200-char truncation point.
+- **Script plugin zombie processes**: Script timeout now explicitly kills the child process and reaps it, preventing zombie accumulation.
+- **Script plugin unbounded output**: stdout/stderr from plugin scripts are now capped at 10 MB via `AsyncReadExt::take()`.
+- **Keystore lock ordering**: Consolidated two separate mutexes into a single `KeystoreState` mutex, eliminating potential deadlock scenarios.
+
+### Added
+
+- **`ironclad defrag` command**: New workspace coherence scanner with 6 passes — refs (dead reference elimination), drift (config drift detection), artifacts (orphaned file cleanup), stale (ghost state entry removal), identity (brand consistency), and scripts (script health validation). Supports `--fix` for auto-repair, `--yes` for non-interactive mode, and `--json` for machine-readable output.
+
 ## [0.8.2] - 2026-02-27
 
 ### Added
