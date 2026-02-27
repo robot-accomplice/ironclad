@@ -209,21 +209,10 @@ pub async fn run(
                     }
                 }
             }
-            // Note: heartbeat_* IDs are virtual job IDs not linked to `cron_jobs` table
-            // rows. Heartbeat tasks are not cron jobs; these run records exist solely for
-            // observability and historical auditing in the `cron_runs` table.
-            if let Err(e) = ironclad_db::cron::record_run(
-                &db,
-                &format!("heartbeat_{:?}", task).to_lowercase(),
-                if result.success { "success" } else { "error" },
-                None,
-                if result.success {
-                    None
-                } else {
-                    Some(&result.message)
-                },
-            ) {
-                tracing::warn!(error = %e, "failed to record heartbeat run");
+            // Heartbeat task results are logged, not recorded in cron_runs
+            // (they are not cron jobs and virtual IDs would flood the table).
+            if !result.success {
+                tracing::debug!(task = ?task, msg = %result.message, "heartbeat task unsuccessful");
             }
         }
 

@@ -1996,7 +1996,21 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     tw(&format!("  {b}Validating{r} {config_path}\n"));
 
-    let config = IroncladConfig::from_file(Path::new(config_path))?;
+    let config = match IroncladConfig::from_file(Path::new(config_path)) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("{e}");
+            if msg.contains("No such file") || msg.contains("not found") || msg.contains("NotFound")
+            {
+                eprintln!("  {warn} Config file not found: {config_path}");
+                eprintln!(
+                    "    Specify a path with {b}--config <path>{r} or create one with {b}ironclad init{r}"
+                );
+                eprintln!();
+            }
+            return Err(Box::new(e));
+        }
+    };
     tw(&format!("  {ok} TOML syntax valid"));
 
     config.validate()?;

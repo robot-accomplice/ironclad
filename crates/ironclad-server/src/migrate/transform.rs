@@ -1097,6 +1097,7 @@ pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path, no_safety_check: boo
                         None,
                         None,
                         None,
+                        None,
                     ) {
                         Ok(id) => {
                             registered += 1;

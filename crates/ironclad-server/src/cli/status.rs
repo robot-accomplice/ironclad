@@ -54,7 +54,7 @@ pub async fn cmd_status(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let hit_rate = if hits + misses > 0 {
         format!("{:.1}%", hits as f64 / (hits + misses) as f64 * 100.0)
     } else {
-        "n/a".into()
+        "0%".into()
     };
     let balance = wallet["balance"].as_str().unwrap_or("0.00");
     let currency = wallet["currency"].as_str().unwrap_or("USDC");

@@ -98,6 +98,11 @@ pub struct EfficiencyReport {
     pub totals: EfficiencyTotals,
 }
 
+/// Round a float to 6 decimal places to avoid floating-point display noise.
+fn round6(v: f64) -> f64 {
+    (v * 1_000_000.0).round() / 1_000_000.0
+}
+
 fn cutoff_expr(period: &str) -> &'static str {
     match period {
         "1h" => "datetime('now', '-1 hour')",
@@ -429,10 +434,10 @@ pub fn compute_efficiency(
             cache_hit_rate,
             context_pressure_rate: 0.0,
             cost: CostMetrics {
-                total: r.total_cost,
-                per_output_token,
-                effective_per_turn: r.avg_cost_per_turn,
-                cache_savings,
+                total: round6(r.total_cost),
+                per_output_token: round6(per_output_token),
+                effective_per_turn: round6(r.avg_cost_per_turn),
+                cache_savings: round6(cache_savings),
                 cumulative_trend,
                 attribution,
                 wasted_budget_cost: 0.0,
@@ -472,8 +477,8 @@ pub fn compute_efficiency(
         .unwrap_or_else(|| "none".into());
 
     let totals = EfficiencyTotals {
-        total_cost: grand_total_cost,
-        total_cache_savings,
+        total_cost: round6(grand_total_cost),
+        total_cache_savings: round6(total_cache_savings),
         total_turns: grand_total_turns,
         most_expensive_model: most_expensive.map(|(m, _)| m),
         most_efficient_model: most_efficient.map(|(m, _)| m),

@@ -287,6 +287,17 @@ pub fn release_lease(db: &Database, job_id: &str, lease_holder: &str) -> Result<
     Ok(())
 }
 
+/// Update the `next_run_at` field for a cron job.
+pub fn update_next_run_at(db: &Database, job_id: &str, next_run_at: Option<&str>) -> Result<()> {
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE cron_jobs SET next_run_at = ?1 WHERE id = ?2",
+        rusqlite::params![next_run_at, job_id],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(())
+}
+
 pub fn record_run(
     db: &Database,
     job_id: &str,

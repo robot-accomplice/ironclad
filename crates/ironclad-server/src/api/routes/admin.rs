@@ -15,7 +15,9 @@ use ironclad_core::{
     InputAuthority, IroncladConfig, PolicyDecision, SurvivalTier, input_capability_scan,
 };
 
-use super::{AppState, JsonError, bad_request, internal_err, not_found};
+use super::{
+    AppState, JsonError, bad_request, internal_err, not_found, sanitize_html, validate_short,
+};
 
 // ── Key resolution helper ────────────────────────────────────
 
@@ -1008,15 +1010,20 @@ pub async fn breaker_status(State(state): State<AppState>) -> impl IntoResponse 
 pub async fn breaker_reset(
     State(state): State<AppState>,
     Path(provider): Path<String>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, JsonError> {
     let mut llm = state.llm.write().await;
+    // BUG-04: reject unknown providers instead of silently creating a breaker
+    let known = llm.breakers.list_providers();
+    if !known.iter().any(|(name, _)| name == &provider) {
+        return Err(not_found(format!("unknown provider '{provider}'")));
+    }
     llm.breakers.reset(&provider);
 
-    axum::Json(json!({
+    Ok(axum::Json(json!({
         "provider": provider,
         "state": "closed",
         "reset": true,
-    }))
+    })))
 }
 
 pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse {
@@ -2183,7 +2190,14 @@ pub async fn list_discovered_agents(State(state): State<AppState>) -> impl IntoR
 pub async fn register_discovered_agent(
     State(state): State<AppState>,
     Json(body): Json<RegisterDiscoveredAgentRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, JsonError> {
+    validate_short("agent_id", &body.agent_id)?;
+    validate_short("name", &body.name)?;
+    validate_short("url", &body.url)?;
+    let body = RegisterDiscoveredAgentRequest {
+        name: sanitize_html(&body.name),
+        ..body
+    };
     let mut discovery = state.discovery.write().await;
     discovery.register(ironclad_agent::discovery::DiscoveredAgent {
         agent_id: body.agent_id.clone(),
@@ -2195,7 +2209,7 @@ pub async fn register_discovered_agent(
         last_seen: chrono::Utc::now(),
         discovery_method: ironclad_agent::discovery::DiscoveryMethod::Manual,
     });
-    Json(json!({ "ok": true, "agent_id": body.agent_id }))
+    Ok(Json(json!({ "ok": true, "agent_id": body.agent_id })))
 }
 
 pub async fn verify_discovered_agent(

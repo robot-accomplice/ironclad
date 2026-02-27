@@ -3,9 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- System font stack — no external Google Fonts dependency -->
   <title>Ironclad Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='11' y='1' width='10' height='10.5' fill='%231e2030' stroke='%2322c55e' stroke-width='1.5'/%3E%3Ccircle cx='14' cy='5' r='2' fill='%2322c55e'/%3E%3Ccircle cx='14' cy='5' r='.8' fill='%231e2030'/%3E%3Ccircle cx='18' cy='5' r='2' fill='%2322c55e'/%3E%3Ccircle cx='18' cy='5' r='.8' fill='%231e2030'/%3E%3Crect x='13' y='8.5' width='6' height='1.5' fill='%2322c55e'/%3E%3Crect x='14.5' y='11.5' width='3' height='2.5' fill='%2322c55e' opacity='.6'/%3E%3Crect x='8' y='14' width='16' height='8.5' fill='%231e2030' stroke='%2322c55e' stroke-width='1.5'/%3E%3Crect x='12' y='15' width='8' height='6.5' fill='%2322c55e' opacity='.1'/%3E%3Crect x='.5' y='16' width='3' height='4' fill='%2322c55e' opacity='.85'/%3E%3Crect x='3.5' y='16.5' width='4.5' height='3' fill='%2322c55e' opacity='.45'/%3E%3Crect x='24' y='16.5' width='4.5' height='3' fill='%2322c55e' opacity='.45'/%3E%3Crect x='28.5' y='16' width='3' height='4' fill='%2322c55e' opacity='.85'/%3E%3Crect x='12.5' y='22.5' width='2.5' height='4' fill='%2322c55e' opacity='.6'/%3E%3Crect x='17' y='22.5' width='2.5' height='4' fill='%2322c55e' opacity='.6'/%3E%3Crect x='10.5' y='26.5' width='5' height='2' fill='%2322c55e'/%3E%3Crect x='16.5' y='26.5' width='5' height='2' fill='%2322c55e'/%3E%3C/svg%3E">
   <style>
@@ -22,8 +20,8 @@
       --error: #ef4444;
       --radius: 6px;
       --shadow: 0 4px 6px -1px rgba(0,0,0,0.3), 0 2px 4px -2px rgba(0,0,0,0.2);
-      --font: "Share Tech Mono", "JetBrains Mono", ui-monospace, monospace;
-      --font-mono: "JetBrains Mono", "Share Tech Mono", ui-monospace, monospace;
+      --font: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+      --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
       --crt-scanline: rgba(0,0,0,0.08);
       --crt-vignette: rgba(0,0,0,0.35);
       --text-glow: rgba(228,228,231,0.12);
@@ -1048,7 +1046,7 @@
         ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
       }
       if (opts.yAxis) {
-        ctx.fillStyle = '#71717a'; ctx.font = '9px "JetBrains Mono", monospace'; ctx.textAlign = 'right';
+        ctx.fillStyle = '#71717a'; ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'right';
         var steps = 4;
         for (var s = 0; s <= steps; s++) {
           var val = (maxTotal / steps) * s, y = toY(val);
@@ -1057,7 +1055,7 @@
         }
       }
       if (showLabels) {
-        ctx.fillStyle = '#71717a'; ctx.font = '9px "JetBrains Mono", monospace'; ctx.textAlign = 'center';
+        ctx.fillStyle = '#71717a'; ctx.font = '9px ui-monospace, monospace'; ctx.textAlign = 'center';
         var labelStep = Math.max(1, Math.floor(len / 6));
         for (var i = 0; i < len; i += labelStep) { var label = opts.xLabels ? opts.xLabels[i] : (i + 'h'); ctx.fillText(label, toX(i), H - 4); }
       }
@@ -1071,6 +1069,14 @@
     var dir = pct > 1 ? 'up' : pct < -1 ? 'down' : 'flat';
     var arrow = dir === 'up' ? '\u2191' : dir === 'down' ? '\u2193' : '\u2192';
     return '<span class="cc-delta ' + dir + '">' + arrow + ' ' + Math.abs(pct).toFixed(1) + '%</span>';
+  }
+  function formatUptime(sec) {
+    if (sec == null) return '\u2014';
+    sec = Math.floor(sec);
+    var d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+    if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
+    if (h > 0) return h + 'h ' + m + 'm';
+    return m + 'm';
   }
   function seriesLast(s) { return s[s.length - 1]; }
   function seriesPrev(s) { return s[s.length - 2] || s[0]; }
@@ -1374,7 +1380,7 @@
         var dotEl = document.getElementById('agent-dot');
         if (dotEl) dotEl.className = 'status-dot' + (state === 'running' ? '' : state === 'sleeping' ? ' warning' : ' error');
         var stateEl = document.getElementById('agent-state'); if (stateEl) stateEl.textContent = state;
-        var ve = document.getElementById('version'); if (ve) ve.textContent = health.version || '\u2014';
+        var ve = document.getElementById('version'); if (ve) ve.textContent = health.version || 'unknown';
 
         var sessionCount = (sessions.sessions || []).length;
         var skillList = skills.skills || [];
@@ -1454,7 +1460,7 @@
         var healthClass = healthStatus === 'ok' || healthStatus === 'healthy' ? 'success' : (healthStatus === 'warning' ? 'warning' : 'error');
         var breakerState = String(breaker.note || 'closed').toLowerCase();
         var breakerClass = breakerState.indexOf('open') >= 0 ? 'error' : (breakerState.indexOf('half') >= 0 ? 'warning' : 'success');
-        var cardSystem = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">System Health</div><div class="cc-value"><span class="badge ' + healthClass + '">' + esc(health.status || 'unknown') + '</span></div><div class="cc-sub">uptime ' + (health.uptime_seconds != null ? health.uptime_seconds + 's' : '\u2014') + '</div></div><div class="cc-right"><span class="cc-delta up">' + (seriesLast(TS.cronSuccess) * 100).toFixed(0) + '% cron</span></div></div>' + renderSparkCanvas(TS.cronSuccess, { color: '#22c55e' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Breaker</div><div class="cc-stat-value"><span class="badge ' + breakerClass + '" style="font-size:0.6875rem">' + esc(breaker.note || 'closed') + '</span></div></div><div class="cc-stat"><div class="cc-stat-label">Cron errors</div><div class="cc-stat-value">' + cronErrors + '</div></div></div></div>';
+        var cardSystem = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">System Health</div><div class="cc-value"><span class="badge ' + healthClass + '">' + esc(health.status || 'unknown') + '</span></div><div class="cc-sub">uptime ' + formatUptime(health.uptime_seconds) + '</div></div><div class="cc-right"><span class="cc-delta up">' + (seriesLast(TS.cronSuccess) * 100).toFixed(0) + '% cron</span></div></div>' + renderSparkCanvas(TS.cronSuccess, { color: '#22c55e' }) + '<div class="cc-footer"><div class="cc-stat"><div class="cc-stat-label">Breaker</div><div class="cc-stat-value"><span class="badge ' + breakerClass + '" style="font-size:0.6875rem">' + esc(breaker.note || 'closed') + '</span></div></div><div class="cc-stat"><div class="cc-stat-label">Cron errors</div><div class="cc-stat-value">' + cronErrors + '</div></div></div></div>';
         var cardFleet = '';
 
         if (agents.length > 0) {
@@ -1572,16 +1578,26 @@
           });
         }
 
-        var rows = sessions.map(function(s) {
+        var PAGE_SIZE = 25;
+        var page = self._sessionsPage || 0;
+        var totalPages = Math.ceil(sessions.length / PAGE_SIZE) || 1;
+        if (page >= totalPages) page = totalPages - 1;
+        var paged = sessions.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+        var rows = paged.map(function(s) {
           var label = s.nickname || truncate(s.id, 16);
-          return '<tr data-id="' + esc(s.id || '') + '" style="cursor:pointer" title="' + esc(s.id || '') + '"><td><span class="session-nick" data-copy-id="' + esc(s.id || '') + '">' + esc(label) + '</span></td><td>' + esc(s.agent_id || '') + '</td><td>' + esc(s.created_at || '') + '</td><td>' + esc(s.updated_at || '') + '</td><td><button class="btn secondary" style="font-size:0.65rem;padding:0.2rem 0.5rem">Open</button></td></tr>';
+          var st = s.status || 'active';
+          var stCls = st === 'active' ? 'success' : (st === 'closed' ? '' : 'warning');
+          return '<tr data-id="' + esc(s.id || '') + '" style="cursor:pointer" title="' + esc(s.id || '') + '"><td><span class="session-nick" data-copy-id="' + esc(s.id || '') + '">' + esc(label) + '</span></td><td>' + esc(s.agent_id || '') + '</td><td><span class="badge ' + stCls + '" style="font-size:0.5625rem">' + esc(st) + '</span></td><td>' + esc(s.created_at || '') + '</td><td>' + esc(s.updated_at || '') + '</td><td style="display:flex;gap:0.25rem"><button class="btn secondary" style="font-size:0.65rem;padding:0.2rem 0.5rem">Open</button><button class="btn secondary danger session-delete-btn" data-delete-session="' + esc(s.id || '') + '" style="font-size:0.65rem;padding:0.2rem 0.5rem" title="Delete">\u2715</button></td></tr>';
         }).join('');
         var emptyHint = sessions.length === 0 ? '<div class="card" style="margin-top:1rem;color:var(--muted)">No sessions yet. Click <strong>New session</strong> to start one.</div>' : '';
-        return '<div style="display:flex;gap:0.75rem;align-items:center"><button class="btn" id="btn-new-session">' + uiBtnLabel('plus', 'New session') + '</button><span style="font-size:0.8125rem;color:var(--muted)">' + sessions.length + ' session' + (sessions.length !== 1 ? 's' : '') + '</span></div><div class="table-wrap" style="margin-top:1rem;max-height:calc(100vh - 56px - 8rem);overflow-y:auto"><table><thead><tr><th>Topic</th><th>Agent</th><th>Created</th><th>Updated</th><th>Action</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + emptyHint;
+        var pager = totalPages > 1 ? '<div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.75rem;justify-content:center"><button class="btn secondary" id="sess-prev" style="font-size:0.75rem;padding:0.2rem 0.6rem"' + (page === 0 ? ' disabled' : '') + '>\u2190 Prev</button><span style="font-size:0.75rem;color:var(--muted)">Page ' + (page + 1) + ' of ' + totalPages + '</span><button class="btn secondary" id="sess-next" style="font-size:0.75rem;padding:0.2rem 0.6rem"' + (page >= totalPages - 1 ? ' disabled' : '') + '>Next \u2192</button></div>' : '';
+        return '<div style="display:flex;gap:0.75rem;align-items:center"><button class="btn" id="btn-new-session">' + uiBtnLabel('plus', 'New session') + '</button><span style="font-size:0.8125rem;color:var(--muted)">' + sessions.length + ' session' + (sessions.length !== 1 ? 's' : '') + '</span></div><div class="table-wrap" style="margin-top:1rem;max-height:calc(100vh - 56px - 8rem);overflow-y:auto"><table><thead><tr><th>Topic</th><th>Agent</th><th>Status</th><th>Created</th><th>Updated</th><th>Action</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + pager + emptyHint;
       });
     },
 
     _memoryCategory: '',
+    _memoryFilter: '',
+    _memoryPage: 0,
     renderMemory: function() {
       var tab = this._memoryTab;
       var sessionId = this._memorySessionId || '';
@@ -1606,8 +1622,17 @@
       }
       var self = this;
       return promises.then(function(data) {
-        var entries = data.entries || data.results || [];
+        var allEntries = data.entries || data.results || [];
         var mode = data._mode || tab;
+        var MEM_PAGE_SIZE = 25;
+        var filterQ = (self._memoryFilter || '').toLowerCase();
+        var entries = filterQ ? allEntries.filter(function(e) { var txt = (e.content || e.value || e.key || '').toLowerCase(); return txt.indexOf(filterQ) >= 0; }) : allEntries;
+        var memPage = self._memoryPage || 0;
+        var memTotalPages = Math.ceil(entries.length / MEM_PAGE_SIZE) || 1;
+        if (memPage >= memTotalPages) memPage = 0;
+        var memPaged = entries.slice(memPage * MEM_PAGE_SIZE, (memPage + 1) * MEM_PAGE_SIZE);
+        function memFilterBar() { return '<div style="margin-bottom:0.75rem"><input type="text" id="mem-filter-input" placeholder="Filter entries\u2026" value="' + esc(self._memoryFilter || '') + '" style="padding:0.4rem 0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);width:100%;max-width:300px;font-family:var(--font);font-size:0.8125rem"></div>'; }
+        function memPager() { if (memTotalPages <= 1) return ''; return '<div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.75rem;justify-content:center"><button class="btn secondary" id="mem-prev" style="font-size:0.75rem;padding:0.2rem 0.6rem"' + (memPage === 0 ? ' disabled' : '') + '>\u2190 Prev</button><span style="font-size:0.75rem;color:var(--muted)">Page ' + (memPage + 1) + ' of ' + memTotalPages + ' (' + entries.length + ' entries)</span><button class="btn secondary" id="mem-next" style="font-size:0.75rem;padding:0.2rem 0.6rem"' + (memPage >= memTotalPages - 1 ? ' disabled' : '') + '>Next \u2192</button></div>'; }
 
         var tabButtons = '<div class="tabs">'
           + '<button class="' + (tab === 'working' ? 'active' : '') + '" data-tab="working">Working</button>'
@@ -1629,7 +1654,7 @@
         }
 
         if (mode === 'semantic') {
-          var list = entries.map(function(e) {
+          var list = memPaged.map(function(e) {
             return '<div class="card" style="margin-bottom:0.5rem">'
               + '<div style="display:flex;justify-content:space-between;align-items:baseline">'
               + '<strong style="color:var(--text);font-size:0.875rem">' + esc(e.key || '') + '</strong>'
@@ -1639,7 +1664,7 @@
               + '<div style="margin-top:6px"><span class="badge">conf: ' + esc(String(e.confidence != null ? e.confidence : '—')) + '</span></div>'
               + '</div>';
           }).join('') || '<p style="color:var(--muted)">No entries' + (cat ? ' in "' + esc(cat) + '"' : '') + '. Try a different category filter.</p>';
-          return tabButtons + filterHtml + '<div id="memory-list">' + list + '</div>';
+          return tabButtons + filterHtml + memFilterBar() + '<div id="memory-list">' + list + '</div>' + memPager();
         }
 
         if (mode === 'working') {
@@ -1654,7 +1679,7 @@
             });
             filterHtml += '</div>';
           }
-          var list = entries.map(function(e) {
+          var list = memPaged.map(function(e) {
             return '<div class="card" style="margin-bottom:0.5rem">'
               + '<div class="card-mono">' + esc(e.content || '') + '</div>'
               + '<div style="margin-top:6px">'
@@ -1663,7 +1688,7 @@
               + '<span style="font-size:0.7rem;color:var(--muted)">' + esc((e.session_id || '').substring(0, 8)) + '</span>'
               + '</div></div>';
           }).join('') || '<p style="color:var(--muted)">No working memory entries. Open a session and send a message to populate this view.</p>';
-          return tabButtons + filterHtml + '<div id="memory-list">' + list + '</div>';
+          return tabButtons + filterHtml + memFilterBar() + '<div id="memory-list">' + list + '</div>' + memPager();
         }
 
         if (mode === 'search') {
@@ -1671,13 +1696,13 @@
           return tabButtons + searchHtml + '<div id="memory-search-results"><p style="color:var(--muted)">Enter a query and click Search (example: <code>token budget</code>).</p></div>';
         }
 
-        var list = entries.map(function(e) {
+        var list = memPaged.map(function(e) {
           var type = e.entry_type || e.classification || e.category || '\u2014';
           var imp = e.importance != null ? e.importance : (e.confidence != null ? e.confidence : '\u2014');
           var content = e.content || e.value || JSON.stringify(e);
           return '<div class="card" style="margin-bottom:0.5rem"><div class="card-mono">' + esc(content) + '</div><div style="margin-top:6px"><span class="badge muted">' + esc(type) + '</span> <span class="badge">imp: ' + esc(String(imp)) + '</span></div></div>';
         }).join('') || '<p style="color:var(--muted)">No entries found for this memory view yet.</p>';
-        return tabButtons + '<div id="memory-list">' + list + '</div>';
+        return tabButtons + memFilterBar() + '<div id="memory-list">' + list + '</div>' + memPager();
       });
     },
 
@@ -2007,8 +2032,8 @@
 
         var dowHeaders = dows.map(function(d) { return '<div class="cal-dow">' + d + '</div>'; }).join('');
         var legend = jobs.map(function(j, idx) {
-          var stBadge = (j.last_status || '').toLowerCase() === 'success' ? '<span class="badge success" style="font-size:0.5625rem">ok</span>' : '<span class="badge error" style="font-size:0.5625rem">err</span>';
-          return '<div class="cal-legend-item"><div class="cal-legend-dot" style="background:' + j.color + '"></div><div class="cal-legend-info"><div class="cal-legend-name">' + esc(j.name) + '</div><div class="cal-legend-sched">' + esc((j.schedule_kind || '') + ' ' + (j.schedule_expr || '')) + '</div></div><div class="cal-legend-actions">' + stBadge + '<button class="cal-legend-btn" data-cal-edit="' + idx + '" title="Edit">\u270e</button><button class="cal-legend-btn danger" data-cal-delete="' + idx + '" title="Delete">\u2715</button></div></div>';
+          var ls = (j.last_status || '').toLowerCase(); var stBadge = ls === 'success' ? '<span class="badge success" style="font-size:0.5625rem">ok</span>' : (ls === 'error' ? '<span class="badge error" style="font-size:0.5625rem">err</span>' : '<span class="badge" style="font-size:0.5625rem;background:rgba(113,113,122,0.2);color:#a1a1aa">idle</span>');
+          return '<div class="cal-legend-item"><div class="cal-legend-dot" style="background:' + j.color + '"></div><div class="cal-legend-info"><div class="cal-legend-name">' + esc(j.name) + '</div><div class="cal-legend-sched">' + esc(j.schedule_expr && j.schedule_expr.toLowerCase().indexOf((j.schedule_kind || '').toLowerCase()) === 0 ? j.schedule_expr : ((j.schedule_kind || '') + ' ' + (j.schedule_expr || '')).trim()) + '</div></div><div class="cal-legend-actions">' + stBadge + '<button class="cal-legend-btn" data-cal-edit="' + idx + '" title="Edit">\u270e</button><button class="cal-legend-btn danger" data-cal-delete="' + idx + '" title="Delete">\u2715</button></div></div>';
         }).join('');
 
         var detail = '';
@@ -2100,7 +2125,7 @@
         statGrid += '</div>';
 
         var txRows = txs.map(function(t) { return '<tr><td class="card-mono">' + esc(t.tx_type || '') + '</td><td>' + esc((t.amount || '') + ' ' + (t.currency || '')) + '</td><td>' + esc(t.counterparty || '') + '</td><td>' + esc(t.created_at || '') + '</td></tr>'; }).join('');
-        var costRows = costs.slice(0, 20).map(function(c) { var pColor = PROVIDER_COLORS[(c.provider || '').toLowerCase()] || '#71717a'; return '<tr><td class="card-mono">' + esc(truncate(c.id, 10)) + '</td><td>' + esc(c.model || '') + '</td><td><span style="color:' + pColor + '">' + esc(c.provider || '') + '</span></td><td>' + (c.tokens_in || 0) + '</td><td>' + (c.tokens_out || 0) + '</td><td>$' + (c.cost || 0) + '</td><td>' + esc(c.created_at || '') + '</td></tr>'; }).join('');
+        var costRows = costs.slice(0, 20).map(function(c) { var pColor = PROVIDER_COLORS[(c.provider || '').toLowerCase()] || '#71717a'; return '<tr><td class="card-mono">' + esc(truncate(c.id, 10)) + '</td><td>' + esc(c.model || '') + '</td><td><span style="color:' + pColor + '">' + esc(c.provider || '') + '</span></td><td>' + (c.tokens_in || 0) + '</td><td>' + (c.tokens_out || 0) + '</td><td>$' + Number(c.cost || 0).toFixed(6) + '</td><td>' + esc(c.created_at || '') + '</td></tr>'; }).join('');
         var capNames = Object.keys(capacity).sort();
         var capRows = capNames.map(function(name) {
           var p = capacity[name] || {};
@@ -2756,8 +2781,8 @@
           var displayName = agent.display_name || agent.name;
           var model = agent.model || '—';
           var modelShort = model.length > 28 ? model.substring(model.lastIndexOf('/') + 1) : model;
-          var skillCount = (agent.skills || []).length;
-          var sessionCount = agent.session_count != null ? agent.session_count : '—';
+          var skillCount = agent.skills == null ? '\u2014' : agent.skills.length;
+          var sessionCount = agent.session_count != null ? agent.session_count : '\u2014';
 
           var roleLabel = isCmd ? 'COMMANDER' : 'SUBAGENT';
           var roleBg = isCmd ? 'rgba(234,179,8,0.15)' : 'rgba(99,102,241,0.15)';
@@ -3830,6 +3855,17 @@
     }
     if (e.target.closest('#btn-back-sessions')) {
       App._activeSession = null; App.navigate('sessions'); return;
+    }
+    if (e.target.closest('#sess-prev')) { App._sessionsPage = Math.max(0, (App._sessionsPage || 0) - 1); App.navigate('sessions'); return; }
+    if (e.target.closest('#sess-next')) { App._sessionsPage = (App._sessionsPage || 0) + 1; App.navigate('sessions'); return; }
+    if (e.target.closest('#mem-prev')) { App._memoryPage = Math.max(0, (App._memoryPage || 0) - 1); App.navigate('memory'); return; }
+    if (e.target.closest('#mem-next')) { App._memoryPage = (App._memoryPage || 0) + 1; App.navigate('memory'); return; }
+    if (e.target.closest('.session-delete-btn')) {
+      var delId = e.target.closest('.session-delete-btn').getAttribute('data-delete-session');
+      if (delId && confirm('Delete session ' + delId.substring(0, 8) + '…?')) {
+        api('/api/sessions/' + encodeURIComponent(delId), { method: 'DELETE' }).then(function() { toast('Session deleted'); App.navigate('sessions'); }).catch(function(err) { toast(err.message || 'Failed'); });
+      }
+      return;
     }
     if (e.target.closest('#btn-new-session')) {
       App._resolveActiveAgentId().then(function(agentId) {
@@ -5070,6 +5106,9 @@
     });
     var empty = document.getElementById('catalog-filter-empty');
     if (empty) empty.style.display = visible === 0 ? '' : 'none';
+  });
+  if (content) content.addEventListener('input', function(e) {
+    if (e.target.id === 'mem-filter-input') { App._memoryFilter = e.target.value; App._memoryPage = 0; App.navigate('memory'); return; }
   });
 
   if (content) content.addEventListener('input', function(e) {

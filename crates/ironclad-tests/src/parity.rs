@@ -198,7 +198,7 @@ async fn session_create_parity_api_then_db_lookup() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let api_session_id = body["session_id"].as_str().unwrap().to_string();
+    let api_session_id = body["id"].as_str().unwrap().to_string();
 
     // The DB must know about this session.
     let db_session = ironclad_db::sessions::get_session(&state.db, &api_session_id).unwrap();

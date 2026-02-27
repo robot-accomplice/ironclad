@@ -1,4 +1,5 @@
 use crate::Database;
+use chrono::Utc;
 use ironclad_core::{IroncladError, Result};
 use rusqlite::OptionalExtension;
 
@@ -23,13 +24,14 @@ pub fn store_working(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     tx.execute(
-        "INSERT INTO working_memory (id, session_id, entry_type, content, importance) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![id, session_id, entry_type, content, importance],
+        "INSERT INTO working_memory (id, session_id, entry_type, content, importance, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, session_id, entry_type, content, importance, now],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     // Remove any existing FTS row before inserting to avoid duplicates.
@@ -119,10 +121,11 @@ pub fn store_episodic(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO episodic_memory (id, classification, content, importance) \
-         VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![id, classification, content, importance],
+        "INSERT INTO episodic_memory (id, classification, content, importance, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, classification, content, importance, now],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -178,15 +181,16 @@ pub fn store_semantic(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     tx.execute(
-        "INSERT INTO semantic_memory (id, category, key, value, confidence) \
-         VALUES (?1, ?2, ?3, ?4, ?5) \
+        "INSERT INTO semantic_memory (id, category, key, value, confidence, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
          ON CONFLICT(category, key) DO UPDATE SET value = excluded.value, \
-         confidence = excluded.confidence, updated_at = datetime('now')",
-        rusqlite::params![id, category, key, value, confidence],
+         confidence = excluded.confidence, updated_at = ?6",
+        rusqlite::params![id, category, key, value, confidence, now],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -304,10 +308,11 @@ pub struct ProceduralEntry {
 pub fn store_procedural(db: &Database, name: &str, steps: &str) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO procedural_memory (id, name, steps) VALUES (?1, ?2, ?3) \
-         ON CONFLICT(name) DO UPDATE SET steps = excluded.steps, updated_at = datetime('now')",
-        rusqlite::params![id, name, steps],
+        "INSERT INTO procedural_memory (id, name, steps, created_at) VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(name) DO UPDATE SET steps = excluded.steps, updated_at = ?4",
+        rusqlite::params![id, name, steps, now],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
@@ -377,13 +382,14 @@ pub fn store_relationship(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO relationship_memory (id, entity_id, entity_name, trust_score) \
-         VALUES (?1, ?2, ?3, ?4) \
+        "INSERT INTO relationship_memory (id, entity_id, entity_name, trust_score, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5) \
          ON CONFLICT(entity_id) DO UPDATE SET entity_name = excluded.entity_name, \
          trust_score = excluded.trust_score, interaction_count = interaction_count + 1, \
-         last_interaction = datetime('now')",
-        rusqlite::params![id, entity_id, entity_name, trust_score],
+         last_interaction = ?5",
+        rusqlite::params![id, entity_id, entity_name, trust_score, now],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
@@ -415,6 +421,15 @@ pub fn retrieve_relationship(db: &Database, entity_id: &str) -> Result<Option<Re
 
 // ── Full-text search across memory tiers ────────────────────────
 
+// ── Search results ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemorySearchResult {
+    pub content: String,
+    pub category: String,
+    pub source: String,
+}
+
 /// Sanitize user input for FTS5: keep only alphanumeric and whitespace, wrap in double quotes
 /// (phrase query), and escape any remaining double quotes so FTS5 operators (AND, OR, NOT, etc.)
 /// cannot be injected.
@@ -427,23 +442,37 @@ pub(crate) fn sanitize_fts_query(query: &str) -> String {
 }
 
 /// Search memory: FTS5 MATCH on memory_fts (working, episodic, semantic), LIKE fallback for others.
-/// Returns matching content strings up to `limit`.
-pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<String>> {
+/// Returns matching structured entries (content + category + source) up to `limit`, deduplicated.
+pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<MemorySearchResult>> {
     let conn = db.conn();
-    let mut results = Vec::new();
+    let mut results: Vec<MemorySearchResult> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
 
     // FTS5 MATCH on memory_fts (populated from working_memory, episodic_memory, semantic_memory)
     let fts_query = sanitize_fts_query(query);
-    match conn.prepare("SELECT content FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2") {
+    match conn.prepare(
+        "SELECT content, category, source_table FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2",
+    ) {
         Ok(mut stmt) => {
             match stmt.query_map(rusqlite::params![fts_query, limit], |row| {
-                row.get::<_, String>(0)
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             }) {
                 Ok(rows) => {
                     for row in rows.flatten() {
-                        results.push(row);
-                        if results.len() as i64 >= limit {
-                            return Ok(results);
+                        let key = format!("{}|{}", row.2, row.0);
+                        if seen.insert(key) {
+                            results.push(MemorySearchResult {
+                                content: row.0,
+                                category: row.1,
+                                source: row.2,
+                            });
+                            if results.len() as i64 >= limit {
+                                return Ok(results);
+                            }
                         }
                     }
                 }
@@ -476,9 +505,16 @@ pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<String>>
                 }) {
                     Ok(rows) => {
                         for row in rows.flatten() {
-                            results.push(row);
-                            if results.len() as i64 >= limit {
-                                return Ok(results);
+                            let key = format!("{table}|{row}");
+                            if seen.insert(key) {
+                                results.push(MemorySearchResult {
+                                    content: row,
+                                    category: table.replace("_memory", ""),
+                                    source: table.to_string(),
+                                });
+                                if results.len() as i64 >= limit {
+                                    return Ok(results);
+                                }
                             }
                         }
                     }
@@ -572,7 +608,7 @@ mod tests {
 
         let hits = fts_search(&db, "quantum", 10).unwrap();
         assert_eq!(hits.len(), 1);
-        assert!(hits[0].contains("quantum"));
+        assert!(hits[0].content.contains("quantum"));
     }
 
     #[test]
