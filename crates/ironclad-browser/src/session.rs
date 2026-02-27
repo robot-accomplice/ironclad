@@ -263,10 +263,10 @@ mod tests {
                 let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
                 let (mut sink, mut source) = ws.split();
                 while let Some(Ok(msg)) = source.next().await {
-                    if let Message::Text(ref t) = msg {
-                        if let Some(reply) = handler(t.clone()) {
-                            let _ = sink.send(Message::Text(reply)).await;
-                        }
+                    if let Message::Text(ref t) = msg
+                        && let Some(reply) = handler(t.clone())
+                    {
+                        let _ = sink.send(Message::Text(reply)).await;
                     }
                 }
             }
@@ -374,27 +374,25 @@ mod tests {
                 let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
                 let (mut sink, mut source) = ws.split();
                 while let Some(Ok(msg)) = source.next().await {
-                    if let Message::Text(ref t) = msg {
-                        if let Ok(req) = serde_json::from_str::<Value>(t) {
-                            if let Some(id) = req.get("id").and_then(|v| v.as_u64()) {
-                                // Send a CDP event first
-                                let event = serde_json::to_string(
-                                    &json!({"method": "Page.loadEventFired", "params": {}}),
-                                )
-                                .unwrap();
-                                let _ = sink.send(Message::Text(event)).await;
+                    if let Message::Text(ref t) = msg
+                        && let Ok(req) = serde_json::from_str::<Value>(t)
+                        && let Some(id) = req.get("id").and_then(|v| v.as_u64())
+                    {
+                        // Send a CDP event first
+                        let event = serde_json::to_string(
+                            &json!({"method": "Page.loadEventFired", "params": {}}),
+                        )
+                        .unwrap();
+                        let _ = sink.send(Message::Text(event)).await;
 
-                                // Small delay to ensure event is processed first
-                                tokio::time::sleep(Duration::from_millis(10)).await;
+                        // Small delay to ensure event is processed first
+                        tokio::time::sleep(Duration::from_millis(10)).await;
 
-                                // Then send the matching response
-                                let resp = serde_json::to_string(
-                                    &json!({"id": id, "result": {"value": 42}}),
-                                )
+                        // Then send the matching response
+                        let resp =
+                            serde_json::to_string(&json!({"id": id, "result": {"value": 42}}))
                                 .unwrap();
-                                let _ = sink.send(Message::Text(resp)).await;
-                            }
-                        }
+                        let _ = sink.send(Message::Text(resp)).await;
                     }
                 }
             }
@@ -521,26 +519,24 @@ mod tests {
                 let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
                 let (mut sink, mut source) = ws.split();
                 while let Some(Ok(msg)) = source.next().await {
-                    if let Message::Text(ref t) = msg {
-                        if let Ok(req) = serde_json::from_str::<Value>(t) {
-                            if let Some(id) = req.get("id").and_then(|v| v.as_u64()) {
-                                // Send response with wrong id first
-                                let wrong = serde_json::to_string(
-                                    &json!({"id": id + 999, "result": {"wrong": true}}),
-                                )
-                                .unwrap();
-                                let _ = sink.send(Message::Text(wrong)).await;
+                    if let Message::Text(ref t) = msg
+                        && let Ok(req) = serde_json::from_str::<Value>(t)
+                        && let Some(id) = req.get("id").and_then(|v| v.as_u64())
+                    {
+                        // Send response with wrong id first
+                        let wrong = serde_json::to_string(
+                            &json!({"id": id + 999, "result": {"wrong": true}}),
+                        )
+                        .unwrap();
+                        let _ = sink.send(Message::Text(wrong)).await;
 
-                                tokio::time::sleep(Duration::from_millis(10)).await;
+                        tokio::time::sleep(Duration::from_millis(10)).await;
 
-                                // Then correct response
-                                let correct = serde_json::to_string(
-                                    &json!({"id": id, "result": {"correct": true}}),
-                                )
+                        // Then correct response
+                        let correct =
+                            serde_json::to_string(&json!({"id": id, "result": {"correct": true}}))
                                 .unwrap();
-                                let _ = sink.send(Message::Text(correct)).await;
-                            }
-                        }
+                        let _ = sink.send(Message::Text(correct)).await;
                     }
                 }
             }

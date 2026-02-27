@@ -208,8 +208,8 @@ mod tests {
 
         // If no system Chrome exists, this returns an error.
         // If system Chrome exists, it returns Ok. Either way the test validates the code path.
-        if result.is_err() {
-            let err_str = result.unwrap_err().to_string();
+        if let Err(e) = result {
+            let err_str = e.to_string();
             assert!(
                 err_str.contains("Chrome") || err_str.contains("not found"),
                 "unexpected error: {err_str}"
@@ -268,13 +268,16 @@ mod tests {
 
     #[test]
     fn drop_kills_process() {
-        let child = std::process::Command::new("/bin/sleep")
+        let mut child = std::process::Command::new("/bin/sleep")
             .arg("60")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let pid = child.id();
+        // Kill immediately — we only need the pid for the test, not a running process.
+        let _ = child.kill();
+        let _ = child.wait();
 
         // Wrap in tokio Child for the manager
         // Actually, manager uses tokio::process::Child. Let's use a runtime for this.

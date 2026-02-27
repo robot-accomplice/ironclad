@@ -699,13 +699,13 @@ mod tests {
                 let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
                 let (mut sink, mut source) = ws.split();
                 while let Some(Ok(msg)) = source.next().await {
-                    if let Message::Text(ref t) = msg {
-                        if let Ok(req) = serde_json::from_str::<Value>(t) {
-                            let resp = handler(req);
-                            let _ = sink
-                                .send(Message::Text(serde_json::to_string(&resp).unwrap()))
-                                .await;
-                        }
+                    if let Message::Text(ref t) = msg
+                        && let Ok(req) = serde_json::from_str::<Value>(t)
+                    {
+                        let resp = handler(req);
+                        let _ = sink
+                            .send(Message::Text(serde_json::to_string(&resp).unwrap()))
+                            .await;
                     }
                 }
             }
@@ -1299,25 +1299,25 @@ mod tests {
                 let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
                 let (mut sink, mut source) = ws.split();
                 while let Some(Ok(msg)) = source.next().await {
-                    if let Message::Text(ref t) = msg {
-                        if let Ok(req) = serde_json::from_str::<Value>(t) {
-                            let id = req["id"].as_u64().unwrap();
-                            let method = req["method"].as_str().unwrap_or("");
-                            let _n = call_count_clone.fetch_add(1, AtomOrd::SeqCst);
+                    if let Message::Text(ref t) = msg
+                        && let Ok(req) = serde_json::from_str::<Value>(t)
+                    {
+                        let id = req["id"].as_u64().unwrap();
+                        let method = req["method"].as_str().unwrap_or("");
+                        let _n = call_count_clone.fetch_add(1, AtomOrd::SeqCst);
 
-                            let resp = match method {
-                                "Runtime.evaluate" => {
-                                    json!({"id": id, "result": {"result": {"value": r#"{"x":50,"y":50}"#}}})
-                                }
-                                "Input.dispatchMouseEvent" => {
-                                    json!({"id": id, "error": {"code": -32000, "message": "Input error"}})
-                                }
-                                _ => json!({"id": id, "result": {}}),
-                            };
-                            let _ = sink
-                                .send(Message::Text(serde_json::to_string(&resp).unwrap()))
-                                .await;
-                        }
+                        let resp = match method {
+                            "Runtime.evaluate" => {
+                                json!({"id": id, "result": {"result": {"value": r#"{"x":50,"y":50}"#}}})
+                            }
+                            "Input.dispatchMouseEvent" => {
+                                json!({"id": id, "error": {"code": -32000, "message": "Input error"}})
+                            }
+                            _ => json!({"id": id, "result": {}}),
+                        };
+                        let _ = sink
+                            .send(Message::Text(serde_json::to_string(&resp).unwrap()))
+                            .await;
                     }
                 }
             }
@@ -1345,23 +1345,23 @@ mod tests {
                 let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
                 let (mut sink, mut source) = ws.split();
                 while let Some(Ok(msg)) = source.next().await {
-                    if let Message::Text(ref t) = msg {
-                        if let Ok(req) = serde_json::from_str::<Value>(t) {
-                            let id = req["id"].as_u64().unwrap();
-                            let method = req["method"].as_str().unwrap_or("");
-                            let resp = match method {
-                                "Runtime.evaluate" => {
-                                    json!({"id": id, "result": {"result": {"value": "ok"}}})
-                                }
-                                "Input.insertText" => {
-                                    json!({"id": id, "error": {"code": -32000, "message": "Insert failed"}})
-                                }
-                                _ => json!({"id": id, "result": {}}),
-                            };
-                            let _ = sink
-                                .send(Message::Text(serde_json::to_string(&resp).unwrap()))
-                                .await;
-                        }
+                    if let Message::Text(ref t) = msg
+                        && let Ok(req) = serde_json::from_str::<Value>(t)
+                    {
+                        let id = req["id"].as_u64().unwrap();
+                        let method = req["method"].as_str().unwrap_or("");
+                        let resp = match method {
+                            "Runtime.evaluate" => {
+                                json!({"id": id, "result": {"result": {"value": "ok"}}})
+                            }
+                            "Input.insertText" => {
+                                json!({"id": id, "error": {"code": -32000, "message": "Insert failed"}})
+                            }
+                            _ => json!({"id": id, "result": {}}),
+                        };
+                        let _ = sink
+                            .send(Message::Text(serde_json::to_string(&resp).unwrap()))
+                            .await;
                     }
                 }
             }

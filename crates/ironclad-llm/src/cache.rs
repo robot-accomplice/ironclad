@@ -421,7 +421,7 @@ mod tests {
             let a = &a[..len];
             let b = &b[..len];
             let sim = cosine_similarity(a, b);
-            prop_assert!(sim >= -0.001 && sim <= 1.001,
+            prop_assert!((-0.001..=1.001).contains(&sim),
                 "cosine similarity {} out of bounds [0, 1] for non-negative vectors", sim);
         }
 

@@ -361,8 +361,10 @@ mod tests {
     #[test]
     fn voice_config_api_key_not_serialized() {
         // api_key has skip_serializing, so it should not appear in output
-        let mut config = VoiceConfig::default();
-        config.api_key = Some("secret".into());
+        let config = VoiceConfig {
+            api_key: Some("secret".into()),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&config).unwrap();
         assert!(
             !json.contains("secret"),
