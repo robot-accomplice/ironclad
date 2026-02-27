@@ -383,6 +383,7 @@ pub(crate) fn which_binary(name: &str) -> Option<String> {
 }
 
 mod admin;
+pub mod defrag;
 mod memory;
 mod schedule;
 mod sessions;
@@ -391,6 +392,7 @@ mod update;
 mod wallet;
 
 pub use admin::*;
+pub use defrag::*;
 pub use memory::*;
 pub use schedule::*;
 pub use sessions::*;

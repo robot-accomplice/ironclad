@@ -119,6 +119,16 @@ enum Commands {
         #[arg(long = "allow-job", value_delimiter = ',')]
         allow_job: Vec<String>,
     },
+    /// Scan workspace for stale references, config drift, and orphaned artifacts
+    #[command(next_help_heading = "Operations")]
+    Defrag {
+        /// Auto-fix fixable findings
+        #[arg(long)]
+        fix: bool,
+        /// Skip confirmation prompts (use with --fix)
+        #[arg(long)]
+        yes: bool,
+    },
     /// View and tail logs
     #[command(next_help_heading = "Operations")]
     Logs {
@@ -765,6 +775,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             json,
             allow_job,
         }) => cli::cmd_mechanic(url, repair, json, &allow_job).await,
+        Some(Commands::Defrag { fix, yes }) => {
+            let workspace = std::path::Path::new(".");
+            cli::cmd_defrag(workspace, fix, yes, parsed.json).map_err(|e| e.into())
+        }
         Some(Commands::Logs {
             lines,
             follow,
