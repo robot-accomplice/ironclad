@@ -137,12 +137,47 @@ pub fn backup_config_file(path: &Path) -> Result<Option<PathBuf>, ConfigRuntimeE
     Ok(Some(backup_path))
 }
 
+/// Recursively normalize Windows backslash paths to forward slashes in JSON
+/// string values that look like filesystem paths.
+fn normalize_backslash_paths(value: &mut Value) {
+    match value {
+        Value::String(s) => {
+            // Heuristic: looks like a Windows absolute path (e.g., C:\Users\...)
+            // or contains backslash-separated segments that resemble paths.
+            if s.contains('\\')
+                && (s.starts_with("C:\\") || s.starts_with("D:\\") || s.contains(":\\"))
+            {
+                *s = s.replace('\\', "/");
+            }
+        }
+        Value::Object(map) => {
+            for v in map.values_mut() {
+                normalize_backslash_paths(v);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                normalize_backslash_paths(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn write_config_atomic(path: &Path, cfg: &IroncladConfig) -> Result<(), ConfigRuntimeError> {
     let parent = path
         .parent()
         .ok_or_else(|| ConfigRuntimeError::MissingParent(path.to_path_buf()))?;
     std::fs::create_dir_all(parent)?;
-    let content = toml::to_string_pretty(cfg)?;
+    // BUG-031: Normalize Windows backslash paths to forward slashes before
+    // TOML serialization.  TOML basic strings treat `\U` as a unicode
+    // escape, which breaks `C:\Users\...` paths.  Round-trip through JSON
+    // to normalize path-like string values.
+    let mut json_val = serde_json::to_value(cfg).map_err(ConfigRuntimeError::JsonSerialize)?;
+    normalize_backslash_paths(&mut json_val);
+    let normalized: IroncladConfig =
+        serde_json::from_value(json_val).map_err(ConfigRuntimeError::JsonSerialize)?;
+    let content = toml::to_string_pretty(&normalized)?;
     let tmp_name = format!(
         ".{}.tmp.{}",
         path.file_name()

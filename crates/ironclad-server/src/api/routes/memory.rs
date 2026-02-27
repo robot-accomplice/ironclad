@@ -48,7 +48,7 @@ pub async fn get_working_memory_all(
     State(state): State<AppState>,
     Query(params): Query<LimitQuery>,
 ) -> impl IntoResponse {
-    let limit = params.limit.unwrap_or(100).min(MAX_MEMORY_LIMIT);
+    let limit = params.limit.unwrap_or(100).clamp(1, MAX_MEMORY_LIMIT);
     match ironclad_db::memory::retrieve_working_all(&state.db, limit) {
         Ok(entries) => {
             let items: Vec<Value> = entries
@@ -74,7 +74,7 @@ pub async fn get_episodic_memory(
     State(state): State<AppState>,
     Query(params): Query<LimitQuery>,
 ) -> impl IntoResponse {
-    let limit = params.limit.unwrap_or(50).min(MAX_MEMORY_LIMIT);
+    let limit = params.limit.unwrap_or(50).clamp(1, MAX_MEMORY_LIMIT);
     match ironclad_db::memory::retrieve_episodic(&state.db, limit) {
         Ok(entries) => {
             let items: Vec<Value> = entries
@@ -138,7 +138,7 @@ pub async fn get_semantic_memory_all(
     State(state): State<AppState>,
     Query(params): Query<LimitQuery>,
 ) -> impl IntoResponse {
-    let limit = params.limit.unwrap_or(100).min(MAX_MEMORY_LIMIT);
+    let limit = params.limit.unwrap_or(100).clamp(1, MAX_MEMORY_LIMIT);
     match ironclad_db::memory::retrieve_semantic_all(&state.db, limit) {
         Ok(entries) => {
             let items: Vec<Value> = entries

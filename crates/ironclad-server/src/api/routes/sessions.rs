@@ -14,7 +14,8 @@ pub struct FeedbackRequest {
 use ironclad_agent::analyzer::{ContextAnalyzer, SessionData, TurnData};
 
 use super::{
-    AppState, JsonError, bad_request, internal_err, not_found, validate_long, validate_short,
+    AppState, JsonError, PaginationQuery, bad_request, internal_err, not_found, sanitize_html,
+    validate_long, validate_short,
 };
 
 #[derive(Deserialize)]
@@ -28,18 +29,22 @@ pub struct PostMessageRequest {
     pub content: String,
 }
 
-pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    Query(pagination): Query<PaginationQuery>,
+) -> impl IntoResponse {
+    let (limit, offset) = pagination.resolve();
     let conn = state.db.conn();
     let mut stmt = conn
         .prepare(
             "SELECT s.id, s.agent_id, s.scope_key, s.status, s.model, s.nickname, s.created_at, s.updated_at, s.metadata, \
                     (SELECT COUNT(1) FROM turns t WHERE t.session_id = s.id) AS turn_count \
-             FROM sessions s ORDER BY s.created_at DESC LIMIT 200",
+             FROM sessions s ORDER BY s.created_at DESC LIMIT ?1 OFFSET ?2",
         )
         .map_err(|e| internal_err(&e))?;
 
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params![limit, offset], |row| {
             Ok(serde_json::json!({
                 "id": row.get::<_, String>(0)?,
                 "agent_id": row.get::<_, String>(1)?,
@@ -65,8 +70,9 @@ pub async fn create_session(
     axum::Json(body): axum::Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     validate_short("agent_id", &body.agent_id)?;
+    let agent_id = sanitize_html(&body.agent_id);
     // Keep "New session" semantics while preserving active-session consistency.
-    let id = match ironclad_db::sessions::rotate_agent_session(&state.db, &body.agent_id) {
+    let id = match ironclad_db::sessions::rotate_agent_session(&state.db, &agent_id) {
         Ok(id) => id,
         Err(e) => return Err(internal_err(&e)),
     };
@@ -113,8 +119,10 @@ pub async fn get_session(
 pub async fn list_messages(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(pagination): Query<PaginationQuery>,
 ) -> impl IntoResponse {
-    match ironclad_db::sessions::list_messages(&state.db, &id, Some(200)) {
+    let (limit, _offset) = pagination.resolve();
+    match ironclad_db::sessions::list_messages(&state.db, &id, Some(limit)) {
         Ok(msgs) => {
             let items: Vec<Value> = msgs
                 .into_iter()

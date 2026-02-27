@@ -769,10 +769,15 @@ pub(crate) async fn execute_tool_call(
         workspace_root,
     };
 
+    // BUG-027: Use actual agent_id from config instead of hardcoded "ironclad".
+    let ws_agent_id = {
+        let config = state.config.read().await;
+        config.agent.id.clone()
+    };
     state.event_bus.publish(
         serde_json::json!({
             "type": "agent_working",
-            "agent_id": "ironclad",
+            "agent_id": ws_agent_id,
             "workstation": "exec",
             "activity": format!("tool:{tool_name}"),
             "turn_id": turn_id,
@@ -783,7 +788,7 @@ pub(crate) async fn execute_tool_call(
         state.event_bus.publish(
             serde_json::json!({
                 "type": "skill_activated",
-                "agent_id": "ironclad",
+                "agent_id": ws_agent_id,
                 "skill": skill_name,
                 "tool_name": tool_name,
                 "turn_id": turn_id,
@@ -854,7 +859,7 @@ pub(crate) async fn execute_tool_call(
     state.event_bus.publish(
         serde_json::json!({
             "type": "agent_idle",
-            "agent_id": "ironclad",
+            "agent_id": ws_agent_id,
             "workstation": "exec",
             "turn_id": turn_id,
         })
@@ -1076,6 +1081,7 @@ pub async fn agent_status(State(state): State<AppState>) -> impl IntoResponse {
 
     axum::Json(json!({
         "state": "running",
+        "name": config.agent.name,
         "agent_name": config.agent.name,
         "agent_id": config.agent.id,
         "primary_model": diag.primary_model,
@@ -2174,6 +2180,11 @@ pub async fn agent_message_stream(
     let session_id_clone = session_id.clone();
     let turn_id_clone = turn_id.clone();
     let model_clone = selected_model.clone();
+    // BUG-027: Capture actual agent_id for WebSocket events instead of hardcoding.
+    let agent_id_clone = {
+        let config = state.config.read().await;
+        config.agent.id.clone()
+    };
     let event_bus = state.event_bus.clone();
     let db = state.db.clone();
     let cache_hash = ironclad_llm::SemanticCache::compute_hash("", "", &user_content);
@@ -2203,7 +2214,7 @@ pub async fn agent_message_stream(
         event_bus.publish(
             json!({
                 "type": "agent_working",
-                "agent_id": "ironclad",
+                "agent_id": agent_id_clone,
                 "workstation": "llm",
                 "activity": "inference",
                 "session_id": session_id_clone,
@@ -2354,7 +2365,7 @@ pub async fn agent_message_stream(
         event_bus.publish(
             json!({
                 "type": "agent_idle",
-                "agent_id": "ironclad",
+                "agent_id": agent_id_clone,
                 "workstation": "llm",
                 "session_id": session_id_clone,
             })

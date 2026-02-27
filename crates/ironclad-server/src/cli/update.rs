@@ -675,7 +675,13 @@ async fn apply_binary_update(yes: bool, method: &str) -> Result<bool, Box<dyn st
                     println!(
                         "    {DETAIL} Retry `ironclad update binary --method download` or run build update from a separate shell."
                     );
-                } else if yes || confirm_action("Fall back to cargo build update?", true) {
+                } else if confirm_action(
+                    "Download failed. Fall back to cargo build update? (slower, compiles from source)",
+                    true,
+                ) {
+                    // BUG-020: Always prompt for build fallback regardless of --yes flag.
+                    // The user chose download method explicitly; silently switching to a
+                    // cargo build is a different operation (slower, requires Rust toolchain).
                     updated = apply_binary_cargo_update(&latest);
                 } else {
                     println!("    Skipped fallback build.");

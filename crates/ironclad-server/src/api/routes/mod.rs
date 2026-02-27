@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::{
-    Router,
+    Router, middleware,
     routing::{get, post, put},
 };
 use tokio::sync::RwLock;
@@ -144,12 +144,15 @@ const MAX_SHORT_FIELD: usize = 256;
 /// Maximum allowed length for long text fields (description, content, etc.).
 const MAX_LONG_FIELD: usize = 4096;
 
-/// Validate a user-supplied string field: reject null bytes and enforce length.
+/// Validate a user-supplied string field: reject empty/whitespace-only, null bytes, and enforce length.
 pub(crate) fn validate_field(
     field_name: &str,
     value: &str,
     max_len: usize,
 ) -> Result<(), JsonError> {
+    if value.trim().is_empty() {
+        return Err(bad_request(format!("{field_name} must not be empty")));
+    }
     if value.contains('\0') {
         return Err(bad_request(format!(
             "{field_name} must not contain null bytes"
@@ -176,6 +179,32 @@ pub(crate) fn validate_long(field_name: &str, value: &str) -> Result<(), JsonErr
 /// Strip HTML tags from a string to prevent injection in stored values.
 pub(crate) fn sanitize_html(input: &str) -> String {
     input.replace('<', "&lt;").replace('>', "&gt;")
+}
+
+// ── Pagination helpers ──────────────────────────────────────────
+
+/// Default maximum items per page for list endpoints.
+const DEFAULT_PAGE_SIZE: i64 = 200;
+/// Absolute maximum items per page (prevents memory abuse via huge limits).
+const MAX_PAGE_SIZE: i64 = 500;
+
+/// Shared pagination query parameters for list endpoints.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct PaginationQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+impl PaginationQuery {
+    /// Returns (limit, offset) clamped to safe ranges.
+    pub fn resolve(&self) -> (i64, i64) {
+        let limit = self
+            .limit
+            .unwrap_or(DEFAULT_PAGE_SIZE)
+            .clamp(1, MAX_PAGE_SIZE);
+        let offset = self.offset.unwrap_or(0).max(0);
+        (limit, offset)
+    }
 }
 
 // ── Shared state and types ────────────────────────────────────
@@ -317,6 +346,87 @@ impl AppState {
         );
         *self.personality.write().await = new_state;
     }
+}
+
+// ── JSON error normalization middleware ────────────────────────
+//
+// BUG-006/014/016/017: axum returns plain-text bodies for its built-in
+// rejections (JSON parse errors, wrong Content-Type, 405 Method Not
+// Allowed). This middleware intercepts any non-JSON error response and
+// wraps it in the standard `{"error":"..."}` format.
+
+async fn json_error_layer(
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    let response = next.run(req).await;
+    let status = response.status();
+
+    if !(status.is_client_error() || status.is_server_error()) {
+        return response;
+    }
+
+    let is_json = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.contains("application/json"));
+    if is_json {
+        return response;
+    }
+
+    let code = response.status();
+    let (_parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, 8192).await.unwrap_or_default();
+    let original_text = String::from_utf8_lossy(&bytes);
+
+    let error_msg = if original_text.trim().is_empty() {
+        match code {
+            axum::http::StatusCode::METHOD_NOT_ALLOWED => "method not allowed".to_string(),
+            axum::http::StatusCode::NOT_FOUND => "not found".to_string(),
+            axum::http::StatusCode::UNSUPPORTED_MEDIA_TYPE => {
+                "unsupported content type: expected application/json".to_string()
+            }
+            other => other.to_string(),
+        }
+    } else {
+        sanitize_error_message(original_text.trim())
+    };
+
+    let json_body = serde_json::json!({ "error": error_msg });
+    let body_bytes = serde_json::to_vec(&json_body)
+        .unwrap_or_else(|_| br#"{"error":"internal error"}"#.to_vec());
+    let mut resp = axum::response::Response::new(axum::body::Body::from(body_bytes));
+    *resp.status_mut() = code;
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        "application/json".parse().unwrap(),
+    );
+    resp
+}
+
+// ── Security headers ─────────────────────────────────────────────
+// BUG-018: Content-Security-Policy
+// BUG-019: X-Frame-Options
+
+async fn security_headers_layer(
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::HeaderName::from_static("content-security-policy"),
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert(axum::http::header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
+    headers.insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        "nosniff".parse().unwrap(),
+    );
+    response
 }
 
 // ── Router ──────────────────────────────────────────────────────
@@ -517,6 +627,8 @@ pub fn build_router(state: AppState) -> Router {
         )
         .fallback(|| async { JsonError(axum::http::StatusCode::NOT_FOUND, "not found".into()) })
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB
+        .layer(middleware::from_fn(json_error_layer))
+        .layer(middleware::from_fn(security_headers_layer))
         .with_state(state)
 }
 
@@ -3440,7 +3552,7 @@ params = { path = "README.md" }
                     .method("PUT")
                     .uri("/api/config")
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"agent":{"name":"TestBot"}}"#))
+                    .body(Body::from(r#"{"agent":{"name":"RenamedBot"}}"#))
                     .unwrap(),
             )
             .await
@@ -4938,5 +5050,1793 @@ params = { path = "README.md" }
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Memory endpoint coverage ────────────────────────────────
+
+    #[tokio::test]
+    async fn memory_working_by_session_returns_seeded_entries() {
+        let state = test_state();
+        ironclad_db::memory::store_working(
+            &state.db,
+            "sess-1",
+            "observation",
+            "the sky is blue",
+            3,
+        )
+        .unwrap();
+        ironclad_db::memory::store_working(&state.db, "sess-1", "decision", "use umbrella", 5)
+            .unwrap();
+        ironclad_db::memory::store_working(&state.db, "sess-2", "observation", "unrelated", 1)
+            .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memory/working/sess-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|e| e["session_id"] == "sess-1"));
+    }
+
+    #[tokio::test]
+    async fn memory_working_all_respects_limit() {
+        let state = test_state();
+        for i in 0..5 {
+            ironclad_db::memory::store_working(
+                &state.db,
+                &format!("s-{i}"),
+                "observation",
+                &format!("entry {i}"),
+                1,
+            )
+            .unwrap();
+        }
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memory/working?limit=3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["entries"].as_array().unwrap().len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn memory_episodic_returns_seeded_entries() {
+        let state = test_state();
+        ironclad_db::memory::store_episodic(&state.db, "success", "deployed v0.8", 4).unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memory/episodic")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["classification"], "success");
+    }
+
+    #[tokio::test]
+    async fn memory_semantic_by_category_returns_matching_entries() {
+        let state = test_state();
+        ironclad_db::memory::store_semantic(&state.db, "preferences", "theme", "dark", 0.9)
+            .unwrap();
+        ironclad_db::memory::store_semantic(&state.db, "facts", "os", "linux", 1.0).unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memory/semantic/preferences")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["category"], "preferences");
+        assert_eq!(entries[0]["key"], "theme");
+    }
+
+    #[tokio::test]
+    async fn memory_semantic_all_returns_entries_with_limit() {
+        let state = test_state();
+        for i in 0..5 {
+            ironclad_db::memory::store_semantic(
+                &state.db,
+                &format!("cat-{i}"),
+                &format!("key-{i}"),
+                "val",
+                0.5,
+            )
+            .unwrap();
+        }
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memory/semantic?limit=3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["entries"].as_array().unwrap().len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn memory_working_empty_session_returns_empty_array() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memory/working/nonexistent-session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["entries"].as_array().unwrap().len(), 0);
+    }
+
+    // ── Cron endpoint coverage ──────────────────────────────────
+
+    #[tokio::test]
+    async fn cron_get_job_returns_details() {
+        let state = test_state();
+        let job_id = ironclad_db::cron::create_job(
+            &state.db,
+            "nightly-backup",
+            "integration-test",
+            "cron",
+            Some("0 2 * * *"),
+            "{}",
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/cron/jobs/{job_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["id"], job_id);
+        assert_eq!(body["name"], "nightly-backup");
+        assert_eq!(body["schedule_kind"], "cron");
+    }
+
+    #[tokio::test]
+    async fn cron_get_job_not_found_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cron/jobs/nonexistent-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn cron_update_job_succeeds() {
+        let state = test_state();
+        let job_id = ironclad_db::cron::create_job(
+            &state.db,
+            "hourly-sync",
+            "integration-test",
+            "interval",
+            Some("1h"),
+            "{}",
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/cron/jobs/{job_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"renamed-sync","enabled":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["updated"], true);
+    }
+
+    #[tokio::test]
+    async fn cron_update_job_not_found_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/cron/jobs/nonexistent-id")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"renamed"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn cron_delete_job_succeeds() {
+        let state = test_state();
+        let job_id = ironclad_db::cron::create_job(
+            &state.db,
+            "to-delete",
+            "integration-test",
+            "cron",
+            Some("*/5 * * * *"),
+            "{}",
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/cron/jobs/{job_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["deleted"], true);
+    }
+
+    #[tokio::test]
+    async fn cron_delete_job_not_found_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/cron/jobs/nonexistent-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn cron_runs_returns_seeded_entries() {
+        let state = test_state();
+        let job_id = ironclad_db::cron::create_job(
+            &state.db,
+            "run-test",
+            "integration-test",
+            "cron",
+            Some("0 * * * *"),
+            "{}",
+        )
+        .unwrap();
+        ironclad_db::cron::record_run(&state.db, &job_id, "success", Some(150), None).unwrap();
+        ironclad_db::cron::record_run(&state.db, &job_id, "error", Some(20), Some("timeout"))
+            .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cron/runs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let runs = body["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 2);
+        assert!(runs.iter().any(|r| r["status"] == "success"));
+        assert!(runs.iter().any(|r| r["status"] == "error"));
+    }
+
+    #[tokio::test]
+    async fn cron_runs_empty_returns_ok() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cron/runs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["runs"].as_array().unwrap().len(), 0);
+    }
+
+    // ── Approval endpoint coverage ──────────────────────────────
+
+    #[tokio::test]
+    async fn approval_approve_nonexistent_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/approvals/nonexistent-id/approve")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"decided_by":"test-user"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn approval_deny_nonexistent_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/approvals/nonexistent-id/deny")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"decided_by":"test-user"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── Breaker reset error path ────────────────────────────────
+
+    #[tokio::test]
+    async fn breaker_reset_unknown_provider_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/breaker/reset/nonexistent-provider")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── Policy audit endpoint coverage ───────────────────────────
+
+    #[tokio::test]
+    async fn policy_audit_empty_for_unknown_turn() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/audit/policy/nonexistent-turn")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["turn_id"], "nonexistent-turn");
+        assert_eq!(body["decisions"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn policy_audit_returns_seeded_decisions() {
+        let state = test_state();
+        ironclad_db::policy::record_policy_decision(
+            &state.db,
+            Some("turn-42"),
+            "shell_exec",
+            "deny",
+            Some("no_shell_rule"),
+            Some("blocked by policy"),
+        )
+        .unwrap();
+        ironclad_db::policy::record_policy_decision(
+            &state.db,
+            Some("turn-42"),
+            "read_file",
+            "allow",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/audit/policy/turn-42")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let decisions = body["decisions"].as_array().unwrap();
+        assert_eq!(decisions.len(), 2);
+        assert!(
+            decisions
+                .iter()
+                .any(|d| d["tool_name"] == "shell_exec" && d["decision"] == "deny")
+        );
+        assert!(
+            decisions
+                .iter()
+                .any(|d| d["tool_name"] == "read_file" && d["decision"] == "allow")
+        );
+    }
+
+    // ── Tool audit endpoint coverage ─────────────────────────────
+
+    #[tokio::test]
+    async fn tool_audit_empty_for_unknown_turn() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/audit/tools/nonexistent-turn")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["turn_id"], "nonexistent-turn");
+        assert_eq!(body["tool_calls"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn tool_audit_returns_seeded_calls() {
+        let state = test_state();
+        // FK chain: tool_calls → turns → sessions
+        let session_id = ironclad_db::sessions::create_new(&state.db, "test-agent", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-99",
+            &session_id,
+            Some("gpt-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+        ironclad_db::tools::record_tool_call(
+            &state.db,
+            "turn-99",
+            "web_search",
+            r#"{"query":"test"}"#,
+            Some(r#"{"results":[]}"#),
+            "success",
+            Some(250),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/audit/tools/turn-99")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let calls = body["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["tool_name"], "web_search");
+        assert_eq!(calls[0]["status"], "success");
+        assert_eq!(calls[0]["duration_ms"], 250);
+    }
+
+    // ── Timeseries endpoint coverage ─────────────────────────────
+
+    #[tokio::test]
+    async fn timeseries_empty_db_returns_proper_structure() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/timeseries?hours=6")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["hours"], 6);
+        assert_eq!(body["labels"].as_array().unwrap().len(), 6);
+        let series = &body["series"];
+        assert_eq!(series["cost_per_hour"].as_array().unwrap().len(), 6);
+        assert_eq!(series["tokens_per_hour"].as_array().unwrap().len(), 6);
+        assert_eq!(series["sessions_per_hour"].as_array().unwrap().len(), 6);
+        assert_eq!(series["latency_p50_ms"].as_array().unwrap().len(), 6);
+        assert_eq!(series["cron_success_rate"].as_array().unwrap().len(), 6);
+    }
+
+    #[tokio::test]
+    async fn timeseries_default_hours_is_24() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/timeseries")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["hours"], 24);
+        assert_eq!(body["labels"].as_array().unwrap().len(), 24);
+    }
+
+    // ── Efficiency endpoint coverage ─────────────────────────────
+
+    #[tokio::test]
+    async fn efficiency_returns_valid_report() {
+        let state = test_state();
+        // Seed some inference cost data so the report has something to aggregate
+        ironclad_db::metrics::record_inference_cost(
+            &state.db, "gpt-4", "openai", 1000, 500, 0.05, None, false,
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/efficiency?period=7d")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Recommendations endpoint coverage ────────────────────────
+
+    #[tokio::test]
+    async fn recommendations_returns_valid_shape() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/recommendations?period=7d")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["period"], "7d");
+        assert!(body["recommendations"].is_array());
+        assert!(body["count"].is_number());
+    }
+
+    // ── Devices endpoint coverage ────────────────────────────────
+
+    #[tokio::test]
+    async fn devices_list_returns_identity_and_empty_devices() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/runtime/devices")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["identity"]["device_id"].is_string());
+        assert!(body["identity"]["public_key_hex"].is_string());
+        assert!(body["identity"]["fingerprint"].is_string());
+        assert!(body["devices"].is_array());
+    }
+
+    #[tokio::test]
+    async fn unpair_unknown_device_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/runtime/devices/nonexistent-device")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── MCP runtime endpoint coverage ────────────────────────────
+
+    #[tokio::test]
+    async fn mcp_runtime_returns_valid_structure() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/runtime/mcp")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["connections"].is_array());
+        assert!(body["exposed_tools"].is_array());
+        assert!(body["exposed_resources"].is_array());
+        assert!(body["connected_count"].is_number());
+    }
+
+    // ── Transactions endpoint coverage ───────────────────────────
+
+    #[tokio::test]
+    async fn transactions_empty_returns_ok() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/transactions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["transactions"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn transactions_returns_seeded_data() {
+        let state = test_state();
+        ironclad_db::metrics::record_transaction(
+            &state.db,
+            "inference",
+            0.05,
+            "USD",
+            Some("openai"),
+            None,
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/transactions?hours=24")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let txs = body["transactions"].as_array().unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0]["tx_type"], "inference");
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  v0.8.2 Regression Tests
+    // ══════════════════════════════════════════════════════════════
+
+    // ── BUG-004: validate_field rejects empty and whitespace-only strings ──
+
+    #[test]
+    fn validate_short_rejects_empty_string() {
+        let result = validate_short("agent_id", "");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("must not be empty"));
+    }
+
+    #[test]
+    fn validate_short_rejects_whitespace_only() {
+        let result = validate_short("name", "   ");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_long_rejects_empty_string() {
+        let result = validate_long("description", "");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_short_rejects_null_bytes() {
+        let result = validate_short("agent_id", "hello\0world");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.1.contains("null bytes"));
+    }
+
+    #[test]
+    fn validate_short_accepts_valid_input() {
+        assert!(validate_short("agent_id", "my-agent").is_ok());
+        assert!(validate_short("name", "a").is_ok());
+    }
+
+    #[test]
+    fn validate_short_rejects_over_max_length() {
+        let long = "a".repeat(MAX_SHORT_FIELD + 1);
+        let result = validate_short("agent_id", &long);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_short_at_exact_max_length() {
+        let exact = "a".repeat(MAX_SHORT_FIELD);
+        assert!(validate_short("agent_id", &exact).is_ok());
+    }
+
+    // ── BUG-009: sanitize_html strips HTML tags ──
+
+    #[test]
+    fn sanitize_html_escapes_script_tags() {
+        let input = "<script>alert(1)</script>";
+        let output = sanitize_html(input);
+        assert!(!output.contains('<'));
+        assert!(!output.contains('>'));
+        assert!(output.contains("&lt;"));
+        assert!(output.contains("&gt;"));
+    }
+
+    #[test]
+    fn sanitize_html_preserves_safe_content() {
+        assert_eq!(sanitize_html("hello world"), "hello world");
+        assert_eq!(sanitize_html("a&b"), "a&b");
+    }
+
+    // ── BUG-007/008: PaginationQuery clamps limits ──
+
+    #[test]
+    fn pagination_resolve_defaults() {
+        let pq = PaginationQuery {
+            limit: None,
+            offset: None,
+        };
+        let (limit, offset) = pq.resolve();
+        assert_eq!(limit, DEFAULT_PAGE_SIZE);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn pagination_resolve_clamps_negative_limit() {
+        let pq = PaginationQuery {
+            limit: Some(-1),
+            offset: None,
+        };
+        let (limit, _) = pq.resolve();
+        assert_eq!(limit, 1);
+    }
+
+    #[test]
+    fn pagination_resolve_clamps_zero_limit() {
+        let pq = PaginationQuery {
+            limit: Some(0),
+            offset: None,
+        };
+        let (limit, _) = pq.resolve();
+        assert_eq!(limit, 1);
+    }
+
+    #[test]
+    fn pagination_resolve_clamps_huge_limit() {
+        let pq = PaginationQuery {
+            limit: Some(999_999),
+            offset: None,
+        };
+        let (limit, _) = pq.resolve();
+        assert_eq!(limit, MAX_PAGE_SIZE);
+    }
+
+    #[test]
+    fn pagination_resolve_clamps_negative_offset() {
+        let pq = PaginationQuery {
+            limit: None,
+            offset: Some(-5),
+        };
+        let (_, offset) = pq.resolve();
+        assert_eq!(offset, 0);
+    }
+
+    // ── BUG-006: Malformed JSON returns JSON error ──
+
+    #[tokio::test]
+    async fn malformed_json_returns_json_error_body() {
+        let app = full_app(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{not valid json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"].is_string(),
+            "error response must be JSON with 'error' field"
+        );
+    }
+
+    #[tokio::test]
+    async fn wrong_content_type_returns_json_error() {
+        let app = full_app(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("{\"agent_id\":\"test\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Should be 415 wrapped in JSON
+        assert!(resp.status().is_client_error());
+        let body = json_body(resp).await;
+        assert!(body["error"].is_string());
+    }
+
+    // ── BUG-017: 405 returns JSON body ──
+
+    #[tokio::test]
+    async fn method_not_allowed_returns_json_body() {
+        let app = full_app(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let body = json_body(resp).await;
+        assert!(body["error"].is_string());
+    }
+
+    // ── BUG-018/019: Security headers present ──
+
+    #[tokio::test]
+    async fn security_headers_present_on_response() {
+        let app = full_app(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let headers = resp.headers();
+        assert!(
+            headers.contains_key("content-security-policy"),
+            "CSP header must be present"
+        );
+        assert!(
+            headers.contains_key("x-frame-options"),
+            "X-Frame-Options must be present"
+        );
+        assert_eq!(
+            headers.get("x-frame-options").unwrap().to_str().unwrap(),
+            "DENY"
+        );
+        assert!(
+            headers.contains_key("x-content-type-options"),
+            "X-Content-Type-Options must be present"
+        );
+        assert_eq!(
+            headers
+                .get("x-content-type-options")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "nosniff"
+        );
+    }
+
+    // ── BUG-003: Session list supports pagination ──
+
+    #[tokio::test]
+    async fn session_list_respects_limit_parameter() {
+        let state = test_state();
+        // Create 5 sessions by rotating different agent IDs
+        for i in 0..5 {
+            ironclad_db::sessions::rotate_agent_session(&state.db, &format!("agent-{i}")).unwrap();
+        }
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sessions?limit=2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let sessions = body["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    // ── BUG-004 integration: Empty agent_id rejected by POST /api/sessions ──
+
+    #[tokio::test]
+    async fn empty_agent_id_rejected_on_session_create() {
+        let app = full_app(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"agent_id":""}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("must not be empty")
+        );
+    }
+
+    // ── BUG-026: Model change persisted to disk ──
+
+    #[tokio::test]
+    async fn change_model_persists_to_disk() {
+        let state = test_state();
+        let config_path = state.config_path.as_ref().clone();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/roster/TestBot/model")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"anthropic/claude-sonnet-4-20250514"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["updated"], true);
+        assert_eq!(body["persisted"], true);
+        // Verify on disk
+        let contents = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            contents.contains("claude-sonnet"),
+            "config file should contain the new model"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  Phase 3: Session / Turn / Interview / Feedback Route Tests
+    // ══════════════════════════════════════════════════════════════
+
+    // ── GET /api/sessions/{id} ────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_session_returns_full_object() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "test-agent", None).unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{sid}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["id"], sid);
+        assert_eq!(body["agent_id"], "test-agent");
+        assert!(body["created_at"].is_string());
+    }
+
+    #[tokio::test]
+    async fn get_session_nonexistent_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sessions/nonexistent-session-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── POST /api/sessions (create via rotate) ────────────────────
+
+    #[tokio::test]
+    async fn create_session_returns_full_session_object() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"agent_id":"agent-alpha"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["id"].is_string());
+        assert_eq!(body["agent_id"], "agent-alpha");
+        assert!(body["created_at"].is_string());
+    }
+
+    // ── GET /api/sessions/{id}/turns ──────────────────────────────
+
+    #[tokio::test]
+    async fn list_session_turns_empty() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-a", None).unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{sid}/turns"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["turns"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_session_turns_returns_seeded_turn() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-b", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-lst-1",
+            &sid,
+            Some("gpt-4"),
+            Some(200),
+            Some(100),
+            Some(0.02),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{sid}/turns"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let turns = body["turns"].as_array().unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0]["id"], "turn-lst-1");
+        assert_eq!(turns[0]["model"], "gpt-4");
+    }
+
+    // ── GET /api/turns/{id} ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_turn_returns_turn_data() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-c", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-get-1",
+            &sid,
+            Some("claude-3"),
+            Some(500),
+            Some(250),
+            Some(0.05),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/turn-get-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["id"], "turn-get-1");
+        assert_eq!(body["session_id"], sid);
+        assert_eq!(body["model"], "claude-3");
+        assert_eq!(body["tokens_in"], 500);
+        assert_eq!(body["tokens_out"], 250);
+    }
+
+    #[tokio::test]
+    async fn get_turn_nonexistent_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/nonexistent-turn-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── GET /api/turns/{id}/context ───────────────────────────────
+
+    #[tokio::test]
+    async fn get_turn_context_returns_context_data() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-d", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-ctx-1",
+            &sid,
+            Some("gpt-4"),
+            Some(300),
+            Some(150),
+            Some(0.03),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/turn-ctx-1/context")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["turn_id"], "turn-ctx-1");
+        assert_eq!(body["model"], "gpt-4");
+        assert_eq!(body["tokens_in"], 300);
+        assert_eq!(body["tokens_out"], 150);
+        assert_eq!(body["tool_call_count"], 0);
+        assert_eq!(body["tool_failure_count"], 0);
+    }
+
+    #[tokio::test]
+    async fn get_turn_context_nonexistent_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/nonexistent/context")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── GET /api/turns/{id}/tools ─────────────────────────────────
+
+    #[tokio::test]
+    async fn get_turn_tools_empty() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-e", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-tools-1",
+            &sid,
+            Some("gpt-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+
+        let app = build_router(test_state()); // fresh state, no tool calls
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/turn-tools-1/tools")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["tool_calls"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn get_turn_tools_with_seeded_tool_call() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-f", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-tools-2",
+            &sid,
+            Some("gpt-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+        ironclad_db::tools::record_tool_call(
+            &state.db,
+            "turn-tools-2",
+            "file_read",
+            r#"{"path":"test.rs"}"#,
+            Some(r#"{"content":"hello"}"#),
+            "success",
+            Some(100),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/turn-tools-2/tools")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let calls = body["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["tool_name"], "file_read");
+        assert_eq!(calls[0]["status"], "success");
+    }
+
+    // ── GET /api/turns/{id}/tips ──────────────────────────────────
+
+    #[tokio::test]
+    async fn get_turn_tips_returns_array() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-g", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-tips-1",
+            &sid,
+            Some("gpt-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/turn-tips-1/tips")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["turn_id"], "turn-tips-1");
+        assert!(body["tips"].is_array());
+        assert!(body["tip_count"].is_number());
+    }
+
+    #[tokio::test]
+    async fn get_turn_tips_nonexistent_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/nonexistent/tips")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── POST /api/turns/{id}/feedback ─────────────────────────────
+
+    #[tokio::test]
+    async fn post_turn_feedback_succeeds() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-fb", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-fb-1",
+            &sid,
+            Some("gpt-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/turns/turn-fb-1/feedback")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"grade":4,"comment":"good response"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["turn_id"], "turn-fb-1");
+        assert_eq!(body["grade"], 4);
+    }
+
+    #[tokio::test]
+    async fn post_turn_feedback_invalid_grade_returns_400() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-fbv", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-fbv-1",
+            &sid,
+            Some("gpt-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/turns/turn-fbv-1/feedback")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"grade":6}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn post_turn_feedback_nonexistent_turn_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/turns/nonexistent/feedback")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"grade":3}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── GET /api/turns/{id}/feedback ──────────────────────────────
+
+    #[tokio::test]
+    async fn get_turn_feedback_returns_seeded_feedback() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-gfb", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-gfb-1",
+            &sid,
+            Some("gpt-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+        ironclad_db::sessions::record_feedback(
+            &state.db,
+            "turn-gfb-1",
+            &sid,
+            5,
+            "dashboard",
+            Some("excellent"),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/turn-gfb-1/feedback")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["grade"], 5);
+        assert_eq!(body["comment"], "excellent");
+    }
+
+    #[tokio::test]
+    async fn get_turn_feedback_no_feedback_returns_404() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-nfb", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-nfb-1",
+            &sid,
+            Some("gpt-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/turns/turn-nfb-1/feedback")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── GET /api/sessions/{id}/feedback ───────────────────────────
+
+    #[tokio::test]
+    async fn get_session_feedback_returns_list() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-sfb", None).unwrap();
+        ironclad_db::sessions::create_turn_with_id(
+            &state.db,
+            "turn-sfb-1",
+            &sid,
+            Some("gpt-4"),
+            Some(100),
+            Some(50),
+            Some(0.01),
+        )
+        .unwrap();
+        ironclad_db::sessions::record_feedback(&state.db, "turn-sfb-1", &sid, 3, "dashboard", None)
+            .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{sid}/feedback"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let fbs = body["feedback"].as_array().unwrap();
+        assert_eq!(fbs.len(), 1);
+        assert_eq!(fbs[0]["grade"], 3);
+    }
+
+    // ── GET /api/sessions/{id}/insights ───────────────────────────
+
+    #[tokio::test]
+    async fn get_session_insights_returns_valid_shape() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-ins", None).unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{sid}/insights"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["session_id"], sid);
+        assert!(body["insights"].is_array());
+        assert!(body["insight_count"].is_number());
+        assert_eq!(body["turn_count"], 0);
+    }
+
+    // ── POST /api/sessions/{id}/messages ──────────────────────────
+
+    #[tokio::test]
+    async fn post_message_invalid_role_returns_400() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-pm", None).unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/sessions/{sid}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"role":"invalid_role","content":"hello"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn post_message_nonexistent_session_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/nonexistent/messages")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"role":"user","content":"hello"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── POST /api/interview/start (duplicate returns 409) ─────────
+
+    #[tokio::test]
+    async fn interview_start_duplicate_key_returns_conflict() {
+        let state = test_state();
+        let app = build_router(state.clone());
+        // Start first interview
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/interview/start")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"session_key":"dup-key"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Start duplicate interview
+        let app2 = build_router(state);
+        let resp2 = app2
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/interview/start")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"session_key":"dup-key"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp2.status(), StatusCode::CONFLICT);
+    }
+
+    // ── POST /api/interview/finish (not found) ────────────────────
+
+    #[tokio::test]
+    async fn interview_finish_unknown_key_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/interview/finish")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"session_key":"nonexistent"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── POST /api/interview/turn (unknown session) ────────────────
+
+    #[tokio::test]
+    async fn interview_turn_unknown_key_returns_404() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/interview/turn")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"session_key":"nonexistent","content":"hello"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── POST /api/sessions/backfill-nicknames ─────────────────────
+
+    #[tokio::test]
+    async fn backfill_nicknames_returns_ok() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/backfill-nicknames")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["backfilled"].is_number());
+    }
+
+    // ── GET /api/sessions/{id}/messages (empty, then with msg) ────
+
+    #[tokio::test]
+    async fn list_messages_empty_session() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-lm", None).unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{sid}/messages"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["messages"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_messages_returns_seeded_message() {
+        let state = test_state();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-lm2", None).unwrap();
+        ironclad_db::sessions::append_message(&state.db, &sid, "user", "hello world").unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/sessions/{sid}/messages"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"], "hello world");
     }
 }
