@@ -1038,6 +1038,8 @@ pub struct A2aConfig {
     pub session_timeout_seconds: u64,
     #[serde(default = "default_true")]
     pub require_on_chain_identity: bool,
+    #[serde(default = "default_a2a_nonce_ttl")]
+    pub nonce_ttl_seconds: u64,
 }
 
 impl Default for A2aConfig {
@@ -1048,6 +1050,7 @@ impl Default for A2aConfig {
             rate_limit_per_peer: default_a2a_rate_limit(),
             session_timeout_seconds: default_a2a_session_timeout(),
             require_on_chain_identity: true,
+            nonce_ttl_seconds: default_a2a_nonce_ttl(),
         }
     }
 }
@@ -1060,6 +1063,9 @@ fn default_a2a_rate_limit() -> u32 {
 }
 fn default_a2a_session_timeout() -> u64 {
     3600
+}
+fn default_a2a_nonce_ttl() -> u64 {
+    7200
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
