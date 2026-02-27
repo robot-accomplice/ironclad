@@ -1421,10 +1421,8 @@ async fn admin_model_and_provider_key_endpoints_cover_branches() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
     assert_eq!(body["updated"], true);
-    assert_eq!(
-        body["scope"],
-        "commander (runtime only, not persisted to disk)"
-    );
+    // BUG-026: model changes are now persisted to disk; response has "persisted" instead of "scope".
+    assert!(body["persisted"].is_boolean());
 
     let app = build_router(state.clone());
     let resp = app

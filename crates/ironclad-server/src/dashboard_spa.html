@@ -1806,15 +1806,18 @@
           var actions = '';
           var builtIn = !!s.built_in || String(s.kind || '').toLowerCase() === 'builtin';
           var kindLabel = builtIn ? 'builtin' : (s.kind || '');
-          var builtInBadge = builtIn ? '<span class="badge muted" style="font-size:0.6rem;padding:0.08rem 0.35rem;margin-left:0.35rem">built-in</span>' : '';
-          var builtInNameTag = builtIn ? ' <span class="badge muted" style="font-size:0.62rem;padding:0.08rem 0.35rem;vertical-align:middle">Built-In</span>' : '';
-          var toggleDisabled = builtIn ? ' disabled' : '';
-          var toggleTitle = builtIn ? ' title="Built-in skills are always enabled"' : '';
-          var toggleClass = builtIn ? 'toggle is-disabled' : 'toggle';
+          var builtInBadge = '';
+          var builtInNameTag = '';
+          var toggleDisabled = '';
+          var toggleTitle = '';
+          var toggleClass = 'toggle';
           if (s.id && !builtIn) {
             actions = '<div style="display:flex;justify-content:flex-end;margin-top:0.75rem"><button class="btn secondary" data-skill-delete="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '" style="border-color:var(--error);color:var(--error);font-size:0.75rem;padding:0.25rem 0.6rem">' + uiBtnLabel('trash', 'Delete') + '</button></div>';
           }
-          return '<div class="card skill-card" data-id="' + esc(s.id || '') + '"><div class="skill-header"><div class="skill-info"><div class="card-title" style="color:' + kindColor + '">' + esc(kindLabel) + builtInBadge + '</div><div class="card-value">' + esc(s.name || '') + builtInNameTag + '</div></div><label class="' + toggleClass + '"><input type="checkbox" data-skill-toggle="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '"' + (s.enabled ? ' checked' : '') + toggleDisabled + toggleTitle + '><span class="toggle-track"></span></label></div><p style="font-size:0.8125rem;color:var(--muted);margin-top:0.5rem">' + esc(s.description || '') + '</p>' + actions + '</div>';
+          var toggleHtml = builtIn
+            ? '<span class="badge" style="background:var(--success);color:#fff;font-size:0.7rem;padding:0.15rem 0.5rem;border-radius:0.25rem">ALWAYS ON</span>'
+            : '<label class="' + toggleClass + '"><input type="checkbox" data-skill-toggle="' + esc(s.id || '') + '" data-skill-name="' + esc(s.name || '') + '"' + (s.enabled ? ' checked' : '') + toggleDisabled + toggleTitle + '><span class="toggle-track"></span></label>';
+          return '<div class="card skill-card" data-id="' + esc(s.id || '') + '"><div class="skill-header"><div class="skill-info"><div class="card-title" style="color:' + kindColor + '">' + esc(kindLabel) + '</div><div class="card-value">' + esc(s.name || '') + '</div></div>' + toggleHtml + '</div><p style="font-size:0.8125rem;color:var(--muted);margin-top:0.5rem">' + esc(s.description || '') + '</p>' + actions + '</div>';
         }).join('');
         return tabs + '<div style="display:flex;align-items:center;gap:1rem"><button class="btn" id="btn-reload-skills">' + uiBtnLabel('refresh', 'Reload skills') + '</button><span style="font-size:0.8125rem;color:var(--muted)">' + enabledCount + ' / ' + skills.length + ' enabled</span></div><div class="skills-grid" style="margin-top:1rem">' + cards + '</div>';
       });
@@ -5951,58 +5954,64 @@
     }
   };
 
-  try {
-    var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var wsUrl = proto + '//' + window.location.host + '/ws';
-    if (API_KEY) wsUrl += '?token=' + encodeURIComponent(API_KEY);
-    App.ws = new WebSocket(wsUrl);
-    App.ws.onopen = function() { var d = document.getElementById('ws-dot'); if (d) d.classList.remove('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'Connected'; };
-    App.ws.onclose = App.ws.onerror = function() { var d = document.getElementById('ws-dot'); if (d) d.classList.add('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'Disconnected'; };
-    App.ws.onmessage = function(ev) {
-      try {
-        var event = JSON.parse(ev.data);
-        if (workspace && workspace.handleEvent) workspace.handleEvent(event);
-        if (event && event.type === 'stream_start') {
-          App._liveStreamTurn = {
-            turn_id: event.turn_id || '',
-            session_id: event.session_id || '',
-            model: event.model || ''
-          };
-          if (App.page === 'context') {
-            App.navigate('context');
-          }
-        } else if (event && event.type === 'stream_end') {
-          if (!event.turn_id || (App._liveStreamTurn && App._liveStreamTurn.turn_id === event.turn_id)) {
-            App._liveStreamTurn = null;
+  // BUG-002: WebSocket connection with exponential backoff reconnection.
+  App._wsReconnectDelay = 1000;
+  App._wsReconnectTimer = null;
+  App._connectWs = function() {
+    try {
+      if (App.ws && (App.ws.readyState === WebSocket.CONNECTING || App.ws.readyState === WebSocket.OPEN)) return;
+      var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      var wsUrl = proto + '//' + window.location.host + '/ws';
+      if (API_KEY) wsUrl += '?token=' + encodeURIComponent(API_KEY);
+      App.ws = new WebSocket(wsUrl);
+      App.ws.onopen = function() {
+        App._wsReconnectDelay = 1000;
+        var d = document.getElementById('ws-dot'); if (d) d.classList.remove('off');
+        var l = document.getElementById('ws-label'); if (l) l.textContent = 'Connected';
+      };
+      App.ws.onclose = function() {
+        var d = document.getElementById('ws-dot'); if (d) d.classList.add('off');
+        var l = document.getElementById('ws-label'); if (l) l.textContent = 'Reconnecting...';
+        clearTimeout(App._wsReconnectTimer);
+        App._wsReconnectTimer = setTimeout(function() { App._connectWs(); }, App._wsReconnectDelay);
+        App._wsReconnectDelay = Math.min(App._wsReconnectDelay * 2, 30000);
+      };
+      App.ws.onerror = function() {
+        var d = document.getElementById('ws-dot'); if (d) d.classList.add('off');
+      };
+      App.ws.onmessage = function(ev) {
+        try {
+          var event = JSON.parse(ev.data);
+          if (workspace && workspace.handleEvent) workspace.handleEvent(event);
+          if (event && event.type === 'stream_start') {
+            App._liveStreamTurn = {
+              turn_id: event.turn_id || '',
+              session_id: event.session_id || '',
+              model: event.model || ''
+            };
             if (App.page === 'context') {
               App.navigate('context');
             }
+          } else if (event && event.type === 'stream_end') {
+            if (!event.turn_id || (App._liveStreamTurn && App._liveStreamTurn.turn_id === event.turn_id)) {
+              App._liveStreamTurn = null;
+              if (App.page === 'context') {
+                App.navigate('context');
+              }
+            }
           }
-        }
-        if (event && event.type === 'model_selection') {
-          if (App.page === 'metrics') {
-            App.navigate('metrics');
-          } else if (App.page === 'context' && App._ctxActiveTurn && event.turn_id === App._ctxActiveTurn.id) {
-            App.navigate('context');
+          if (event && event.type === 'model_selection') {
+            if (App.page === 'metrics') {
+              App.navigate('metrics');
+            } else if (App.page === 'context' && App._ctxActiveTurn && event.turn_id === App._ctxActiveTurn.id) {
+              App.navigate('context');
+            }
           }
-        }
-      } catch(e) {}
-    };
-  } catch (err) { var d = document.getElementById('ws-dot'); if (d) d.classList.add('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'No WebSocket'; }
-
-  startModelsBackgroundRefresh(App);
-  App._loadAvailableModels({ nonBlocking: true, validationLevel: 'zero' }).catch(function() {});
-  onHash();
-})();
-  </script>
-</body>
-</html>
-API_KEY) wsUrl += '?token=' + encodeURIComponent(API_KEY);
-    App.ws = new WebSocket(wsUrl);
-    App.ws.onopen = function() { var d = document.getElementById('ws-dot'); if (d) d.classList.remove('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'Connected'; };
-    App.ws.onclose = App.ws.onerror = function() { var d = document.getElementById('ws-dot'); if (d) d.classList.add('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'Disconnected'; };
-    App.ws.onmessage = function(ev) { try { var event = JSON.parse(ev.data); if (workspace && workspace.handleEvent) workspace.handleEvent(event); } catch(e) {} };
-  } catch (err) { var d = document.getElementById('ws-dot'); if (d) d.classList.add('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'No WebSocket'; }
+        } catch(e) {}
+      };
+    } catch (err) { var d = document.getElementById('ws-dot'); if (d) d.classList.add('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'No WebSocket'; }
+  };
+  App._connectWs();
 
   startModelsBackgroundRefresh(App);
   App._loadAvailableModels({ nonBlocking: true, validationLevel: 'zero' }).catch(function() {});

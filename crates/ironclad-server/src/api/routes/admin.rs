@@ -172,9 +172,12 @@ fn sanitize_decided_by(raw: &str) -> Result<String, JsonError> {
 pub async fn approve_request(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    axum::Json(body): axum::Json<ApprovalDecisionRequest>,
+    body: Option<axum::Json<ApprovalDecisionRequest>>,
 ) -> std::result::Result<impl IntoResponse, JsonError> {
-    let decided_by = sanitize_decided_by(&body.decided_by)?;
+    let decided_by = match body {
+        Some(axum::Json(b)) => sanitize_decided_by(&b.decided_by)?,
+        None => default_decided_by(),
+    };
     match state.approvals.approve(&id, &decided_by) {
         Ok(req) => Ok(Json(json!(req))),
         Err(e) => Err(not_found(e.to_string())),
@@ -184,9 +187,12 @@ pub async fn approve_request(
 pub async fn deny_request(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    axum::Json(body): axum::Json<ApprovalDecisionRequest>,
+    body: Option<axum::Json<ApprovalDecisionRequest>>,
 ) -> std::result::Result<impl IntoResponse, JsonError> {
-    let decided_by = sanitize_decided_by(&body.decided_by)?;
+    let decided_by = match body {
+        Some(axum::Json(b)) => sanitize_decided_by(&b.decided_by)?,
+        None => default_decided_by(),
+    };
     match state.approvals.deny(&id, &decided_by) {
         Ok(req) => Ok(Json(json!(req))),
         Err(e) => Err(not_found(e.to_string())),
@@ -652,6 +658,15 @@ pub async fn get_available_models(
     }))
 }
 
+/// Known top-level config section names (must match `IroncladConfig` fields).
+const KNOWN_CONFIG_SECTIONS: &[&str] = &[
+    "agent", "server", "database", "models", "providers", "circuit_breaker",
+    "memory", "cache", "treasury", "yield", "wallet", "a2a", "skills",
+    "channels", "context", "approvals", "plugins", "browser", "daemon",
+    "update", "tier_adapt", "personality", "session", "digest", "multimodal",
+    "knowledge", "workspace_config", "mcp", "devices", "discovery", "obsidian",
+];
+
 pub async fn update_config(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<UpdateConfigRequest>,
@@ -661,6 +676,16 @@ pub async fn update_config(
         status.last_attempt_at = Some(chrono::Utc::now().to_rfc3339());
         status.last_error = None;
     }
+
+    // BUG-023: Detect unknown top-level keys in the patch.
+    let ignored_keys: Vec<String> = if let Some(obj) = body.patch.as_object() {
+        obj.keys()
+            .filter(|k| !KNOWN_CONFIG_SECTIONS.contains(&k.as_str()))
+            .cloned()
+            .collect()
+    } else {
+        vec![]
+    };
 
     let runtime_cfg = state.config.read().await.clone();
     let mut current = match config_runtime::config_value_from_file_or_runtime(
@@ -675,7 +700,21 @@ pub async fn update_config(
         }
     };
 
+    // BUG-025: Snapshot pre-merge config for change detection.
+    let pre_merge = current.clone();
+
     merge_json(&mut current, &body.patch);
+
+    // BUG-025: If config is unchanged after merge, skip persistence.
+    if current == pre_merge {
+        return Ok::<_, JsonError>(axum::Json(json!({
+            "updated": false,
+            "persisted": false,
+            "message": "no effective changes detected",
+            "ignored_keys": ignored_keys,
+        })));
+    }
+
     let updated: IroncladConfig = match serde_json::from_value(current) {
         Ok(v) => v,
         Err(e) => {
@@ -712,20 +751,25 @@ pub async fn update_config(
         "message": "configuration updated and reloaded from disk-backed state",
         "backup_path": report.backup_path,
         "deferred_apply": report.deferred_apply,
+        "ignored_keys": ignored_keys,
     })))
 }
 
-pub async fn get_costs(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn get_costs(
+    State(state): State<AppState>,
+    Query(pagination): Query<super::PaginationQuery>,
+) -> impl IntoResponse {
+    let (limit, offset) = pagination.resolve();
     let conn = state.db.conn();
     let mut stmt = conn
         .prepare(
             "SELECT id, model, provider, tokens_in, tokens_out, cost, tier, cached, created_at \
-             FROM inference_costs ORDER BY created_at DESC LIMIT 100",
+             FROM inference_costs ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )
         .map_err(|e| internal_err(&e))?;
 
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params![limit, offset], |row| {
             Ok(json!({
                 "id": row.get::<_, String>(0)?,
                 "model": row.get::<_, String>(1)?,
@@ -1762,8 +1806,26 @@ pub async fn change_agent_model(
                 models.routing.clone(),
             );
         }
+
+        // BUG-026: Persist model change to disk so it survives server restarts.
+        let mut persisted = false;
+        {
+            let config = state.config.read().await;
+            let config_path = state.config_path.as_ref().clone();
+            match crate::config_runtime::write_config_atomic(
+                std::path::Path::new(&config_path),
+                &config,
+            ) {
+                Ok(()) => persisted = true,
+                Err(e) => {
+                    tracing::warn!("model change applied in-memory but failed to persist: {e}");
+                }
+            }
+        }
+
         Ok(axum::Json(json!({
             "updated": true,
+            "persisted": persisted,
             "agent": agent_name,
             "old_model": old_model,
             "new_model": model,
@@ -1771,7 +1833,6 @@ pub async fn change_agent_model(
             "model_order": std::iter::once(models.primary.clone())
                 .chain(models.fallbacks.clone())
                 .collect::<Vec<_>>(),
-            "scope": "commander (runtime only, not persisted to disk)",
         })))
     } else {
         if body.fallbacks.is_some() {

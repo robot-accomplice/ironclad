@@ -5,13 +5,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{AppState, JsonError, internal_err, not_found, validate_short};
+use super::{AppState, JsonError, bad_request, internal_err, not_found, validate_short};
 
 #[derive(Deserialize)]
 pub struct CreateCronJobRequest {
     pub name: String,
     pub agent_id: Option<String>,
     pub schedule_kind: String,
+    #[serde(alias = "schedule")]
     pub schedule_expr: Option<String>,
     pub payload_json: Option<String>,
 }
@@ -79,9 +80,40 @@ pub async fn create_cron_job(
     if let Some(ref a) = body.agent_id {
         validate_short("agent_id", a)?;
     }
+    // BUG-013: Validate payload_json is valid JSON before storing.
     let payload = body.payload_json.as_deref().unwrap_or("{}");
-    let schedule_kind = normalize_schedule_kind(&body.schedule_kind).to_string();
+    if serde_json::from_str::<serde_json::Value>(payload).is_err() {
+        return Err(bad_request("payload_json must be valid JSON"));
+    }
+    // BUG-012: Validate schedule_kind is a known value.
+    let schedule_kind = normalize_schedule_kind(&body.schedule_kind);
+    if !matches!(schedule_kind, "cron" | "every" | "once") {
+        return Err(bad_request(format!(
+            "invalid schedule_kind '{}': must be one of cron, every, once, interval",
+            body.schedule_kind
+        )));
+    }
+    let schedule_kind = schedule_kind.to_string();
     let schedule_expr = normalize_schedule_expr(&schedule_kind, body.schedule_expr.as_deref());
+    // BUG-011: Validate cron expressions have the right number of fields.
+    if schedule_kind == "cron" {
+        match schedule_expr.as_deref() {
+            None | Some("") => {
+                return Err(bad_request(
+                    "schedule_expr is required for cron schedule_kind",
+                ));
+            }
+            Some(expr) => {
+                let fields: Vec<&str> = expr.split_whitespace().collect();
+                if fields.len() < 5 || fields.len() > 6 {
+                    return Err(bad_request(format!(
+                        "invalid cron expression: expected 5 or 6 fields, got {}",
+                        fields.len()
+                    )));
+                }
+            }
+        }
+    }
     let default_agent_id = {
         let cfg = state.config.read().await;
         cfg.agent.id.clone()
@@ -221,8 +253,10 @@ pub async fn delete_cron_job(
 }
 
 fn normalize_schedule_kind(kind: &str) -> &str {
-    match kind {
-        "interval" => "every",
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "interval" | "every" => "every",
+        "cron" => "cron",
+        "once" => "once",
         _ => kind,
     }
 }
