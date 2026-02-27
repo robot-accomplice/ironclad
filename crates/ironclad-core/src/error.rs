@@ -273,7 +273,7 @@ mod tests {
             }
             .is_credit_error()
         );
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "billing");
+        let io_err = std::io::Error::other("billing");
         assert!(!IroncladError::Io(io_err).is_credit_error());
     }
 

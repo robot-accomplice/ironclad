@@ -2764,7 +2764,7 @@ per_payment_cap = 0.0
     #[test]
     fn home_dir_returns_valid_path() {
         let h = home_dir();
-        assert!(h.is_absolute() || h == PathBuf::from("/tmp"));
+        assert!(h.is_absolute() || h == std::path::Path::new("/tmp"));
     }
 
     #[test]
