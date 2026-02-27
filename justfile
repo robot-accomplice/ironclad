@@ -84,7 +84,7 @@ test-uat-web:
 
 # Release docs + artifact/provenance consistency gate
 test-release-doc-gate:
-    RELEASE_TARGET_VERSION="${RELEASE_TARGET_VERSION:-0.8.0}" bash scripts/run-release-doc-gate.sh
+    RELEASE_TARGET_VERSION="${RELEASE_TARGET_VERSION:-0.8.1}" bash scripts/run-release-doc-gate.sh
 
 # Canonical v0.8.0 go-live gate (life-or-death mode)
 test-v080-go-live:

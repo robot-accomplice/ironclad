@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-02-27
+
+### Fixed
+
+- **40 smoke/UAT bug fixes**: Resolved 40 bugs (5 critical, 6 high, 15 medium, 14 low/UX) discovered during comprehensive smoke testing of all 85 REST routes, 32 CLI commands, and 13 dashboard pages.
+- **Input validation hardening**: Added field-length limits, HTML sanitization, and null-byte rejection across all API write endpoints.
+- **JSON error responses**: All API error paths now return structured `{"error": "..."}` JSON instead of plain text.
+- **Memory search deduplication**: FTS memory search no longer returns duplicate entries; results are now structured with category/timestamp metadata.
+- **Cron scheduler accuracy**: `next_run_at` is now persisted after computation; heartbeat no longer floods logs with virtual job IDs; jobs use actual agent IDs.
+- **Cost display precision**: Floating-point noise eliminated from cost/efficiency metrics (rounded to 6 decimal places with division-by-zero guard).
+- **Skills metadata**: `risk_level` is now parameterized (not hardcoded "Caution"); skills track `last_loaded_at` timestamp.
+- **CLI resilience**: `ironclad check` no longer crashes with raw Rust IO errors; shows friendly messages with config path suggestions.
+- **Dashboard UX**: Fixed 14 display bugs including schedule text duplication, raw-seconds uptime, missing pagination, broken status indicators, and external font dependency removal.
+- **Filesystem path exposure**: Skills API no longer leaks `source_path`/`script_path` in responses.
+- **Session creation response**: `POST /api/sessions` now returns the full session object instead of just the ID.
+- **404 fallback handler**: Unknown API routes now return JSON `{"error": "not found"}` instead of empty 404.
+
+### Changed
+
+- **CI scripts use POSIX grep**: Replaced all `rg` (ripgrep) invocations with standard `grep -E`/`grep -qE` in CI scripts for broader runner compatibility.
+- **Windows compilation**: Added conditional `allow(unused_mut)` for platform-gated mutation in security audit command.
+
 ## [0.8.0] - 2026-02-26
 
 ### Security
