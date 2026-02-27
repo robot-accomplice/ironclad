@@ -6,15 +6,84 @@
 
 ---
 
+## 0. Runtime Config Reload Dataflow
+
+`ironclad.toml` is now a runtime-reloadable source of truth. Update flows persist to disk first (with backup) and then apply to in-memory runtime state.
+
+```mermaid
+flowchart TD
+    subgraph requestLayer [RequestLayer]
+        op[OperatorCLIorAPI]
+        patch[ConfigPatchOrFileEdit]
+    end
+
+    subgraph validationLayer [ValidationLayer]
+        parse[ParseTomlOrJsonPatch]
+        validate[SchemaAndSemanticValidate]
+    end
+
+    subgraph persistenceLayer [PersistenceLayer]
+        backup[CreateTimestampedBackup]
+        atomicWrite[AtomicWriteIroncladToml]
+    end
+
+    subgraph runtimeLayer [RuntimeApplyLayer]
+        apply[ApplyToRuntimeState]
+        sync[SyncRouterAndA2A]
+        deferred[EmitDeferredApplyHints]
+    end
+
+    op --> patch
+    patch --> parse
+    parse --> validate
+    validate --> backup
+    backup --> atomicWrite
+    atomicWrite --> apply
+    apply --> sync
+    sync --> deferred
+```
+
 ## 1. Primary Request Dataflow
-<!-- last_updated: 2026-02-24, version: 0.6.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 End-to-end path from inbound user message to delivered response, entirely within one OS process.
 
 0.6.0 targeted additions reflected in the runtime:
+
 - Capacity-aware model selection now records per-provider throughput and feeds headroom + preemptive breaker pressure.
 - Session lookup/create is scope-aware (`agent`, `peer`, `group`) in web and channel paths.
 - Session and context UI rendering supports sanitized markdown in dashboard views.
+- Local model onboarding now supports Apertus with SGLang-first host recommendation and resource-aware model filtering.
+- Outbound channel retries are persisted in `delivery_queue` and recovered on restart before retry drain loops resume.
+- Session rotation now evaluates `session.reset_schedule` cron expressions directly (including timezone-prefixed schedules) instead of top-of-hour polling.
+
+```mermaid
+flowchart TD
+    subgraph installSetup [InstallAndSetup]
+        optIn[UserOptsInForApertus]
+        probe[ProbeSystemResources]
+        detect[DetectLocalHosts]
+        bootstrap[BootstrapLocalHost]
+        choose[ChooseEligibleModel]
+    end
+
+    subgraph hostAdapters [HostAdapters]
+        sglang[SGLangRecommended]
+        vllm[vLLMFallback]
+        dockerRunner[DockerModelRunnerFallback]
+        ollama[OllamaFallback]
+    end
+
+    optIn --> probe
+    probe --> detect
+    detect --> bootstrap
+    detect --> choose
+    bootstrap --> choose
+    choose --> sglang
+    choose --> vllm
+    choose --> dockerRunner
+    choose --> ollama
+```
 
 ```mermaid
 flowchart TD
@@ -59,14 +128,14 @@ flowchart TD
 
     subgraph LlmPipeline["④ LLM Inference Pipeline"]
         MODEL_SELECT["ironclad-llm/router.rs<br/>select_for_complexity"]
-        MODEL_SELECT --> FORMAT_XLATE["ironclad-llm/format.rs<br/>ApiFormat translation"]
-        FORMAT_XLATE --> CIRCUIT{"Circuit Breaker<br/>blocked?"}
+        MODEL_SELECT --> CIRCUIT{"Circuit Breaker<br/>blocked?"}
         CIRCUIT -->|"blocked → advance fallback"| MODEL_SELECT
         CIRCUIT -->|open| DEDUP{"In-flight<br/>duplicate?"}
         DEDUP -->|duplicate| DEDUP_REJECT["429 reject"]
-        DEDUP -->|unique| TIER_ADAPT["ironclad-llm/tier.rs<br/>T1: condense · T2: reorder<br/>T3/T4: passthrough + cache_control"]
+        DEDUP -->|unique| FORMAT_XLATE["ironclad-llm/format.rs<br/>ApiFormat translation"]
+        FORMAT_XLATE --> TIER_ADAPT["ironclad-llm/tier.rs<br/>T1: condense · T2: reorder<br/>T3/T4: passthrough + cache_control"]
         TIER_ADAPT --> FORWARD["ironclad-llm/client.rs<br/>HTTP/2 forward (reqwest pool)"]
-        FORWARD --> UPSTREAM["LLM Provider<br/>(Anthropic / Google / Moonshot /<br/>OpenAI / Ollama)"]
+        FORWARD --> UPSTREAM["LLM Provider<br/>(Anthropic / OpenAI / Ollama / Google Gemini /<br/>OpenRouter / DeepSeek / Groq / Moonshot /<br/>SGLang / vLLM / Docker Model Runner / llama-cpp)"]
     end
 
     UPSTREAM --> RESP
@@ -97,7 +166,7 @@ flowchart TD
 ---
 
 ## 2. Semantic Cache Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Runtime cache in `ironclad-llm/cache.rs` (in-memory HashMap) with **SQLite persistence** via `ironclad-db/cache.rs`. On startup the server loads persisted entries from the `semantic_cache` table; a background task flushes in-memory entries to SQLite every 5 minutes and evicts expired rows.
 
@@ -136,7 +205,7 @@ flowchart TD
 ---
 
 ## 3. Heuristic Model Router Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Implemented in `ironclad-llm/router.rs`. Heuristic classifier by default; `ml_router.rs` provides an alternative ONNX-based `MlBackend` when `models.routing.mode = "ml"`.
 
@@ -180,7 +249,7 @@ flowchart TD
 ---
 
 ## 4. Memory Lifecycle Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 5-tier memory system unified in a single SQLite DB. Ingestion in `ironclad-agent/memory.rs`, storage in `ironclad-db/memory.rs`. The hippocampus schema map (`ironclad-db/schema_map.rs`) provides runtime introspection of memory table structures for dynamic query construction and context-aware retrieval.
 
@@ -245,7 +314,7 @@ flowchart TD
 ---
 
 ## 5. Zero-Trust Agent-to-Agent Communication Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 New subsystem. Identity via `ironclad-wallet/wallet.rs`, protocol in `ironclad-channels/a2a.rs`, trust data in `relationship_memory` table.
 
@@ -299,7 +368,7 @@ flowchart TD
 ---
 
 ## 6. Multi-Layer Prompt Injection Defense Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 4-layer defense system spanning `ironclad-agent/injection.rs`, `ironclad-agent/prompt.rs`, and `ironclad-agent/policy.rs`.
 
@@ -369,7 +438,7 @@ flowchart TD
 ---
 
 ## 7. Financial + Yield Engine Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 x402 credit purchases and Aave/Compound yield generation. Core logic in `ironclad-wallet/`.
 
@@ -434,7 +503,7 @@ flowchart TD
 ---
 
 ## 8. Cron + Heartbeat Unified Scheduling Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Unified scheduling system in `ironclad-schedule/`.
 
@@ -465,12 +534,8 @@ flowchart TD
 
     subgraph Execution["③ Job Execution (tasks.rs)"]
         PAYLOAD_KIND{"payload_json.kind?"}
-        PAYLOAD_KIND -->|agentTurn| AGENT_WAKE["Inject message into agent loop"]
+        PAYLOAD_KIND -->|agentTurn| AGENT_NOOP["DEPRECATED: agent_turn_legacy<br/>(noop with warning log)"]
         PAYLOAD_KIND -->|systemEvent| SYS_EVENT["Process system event"]
-        AGENT_WAKE --> SESSION_SELECT{"session_target?"}
-        SESSION_SELECT -->|main| MAIN["Use main session"]
-        SESSION_SELECT -->|isolated| ISO["Create isolated session"]
-        MAIN & ISO --> RUN_REACT["Run ReAct loop turn"]
     end
 
     subgraph PostExecution["④ Post-Execution"]
@@ -486,8 +551,8 @@ flowchart TD
         end
     end
 
-    RUN_REACT & SYS_EVENT --> UPDATE_JOB
-    RUN_REACT --> DELIVERY_MODE
+    AGENT_NOOP & SYS_EVENT --> UPDATE_JOB
+    SYS_EVENT --> DELIVERY_MODE
 
     subgraph WakeSignal["⑤ In-Process Wake Signal"]
         SHOULD_WAKE{"Task signals shouldWake?"}
@@ -497,13 +562,13 @@ flowchart TD
         SLEEP_SELECT --> AGENT_WAKES["Agent loop resumes"]
     end
 
-    RUN_REACT --> SHOULD_WAKE
+    SYS_EVENT --> SHOULD_WAKE
 ```
 
 ---
 
 ## 9. Skill Execution Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Dual-format extensibility system in `ironclad-agent/skills.rs` and `ironclad-agent/script_runner.rs`, with persistence in `ironclad-db/skills.rs`.
 
@@ -567,7 +632,7 @@ flowchart TD
 ---
 
 ## 10. Approval Workflow Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Tool gating with human-in-the-loop approval for dangerous operations. `ApprovalManager` pauses the agent loop until an admin resolves the request via the dashboard WebSocket or REST API.
 
@@ -607,7 +672,7 @@ flowchart TD
 ---
 
 ## 11. Browser Tool Execution Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 CDP-based browser automation via `BrowserTool`. The `BrowserManager` maintains a pool of Chrome sessions with idle eviction.
 
@@ -652,20 +717,20 @@ flowchart TD
 ---
 
 ## 12. Context Assembly & Snapshot Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
-Complexity-driven context assembly with progressive trimming. `ContextBuilder` allocates token budgets per tier and persists snapshots for observatory analysis.
+Complexity-driven context assembly with progressive trimming. `build_context()` allocates token budgets per tier using `MemoryBudgetManager` and persists snapshots via direct `context_snapshots` table inserts.
 
 ```mermaid
 flowchart TD
     subgraph Classify["① Complexity Classification"]
         INPUT["Incoming turn<br/>(message + tool context)"]
-        INPUT --> CLASSIFIER["ComplexityClassifier<br/>extract_features():<br/>msg length, tool count,<br/>conversation depth, topic shifts"]
+        INPUT --> CLASSIFIER["classify_complexity()<br/>extract_features():<br/>msg length, tool count,<br/>conversation depth, topic shifts"]
         CLASSIFIER --> SCORE["Complexity score 0.0–1.0"]
     end
 
     subgraph Budget["② Token Budget Allocation"]
-        SCORE --> BUDGET_MGR["BudgetManager<br/>allocate(complexity, model_limit)"]
+        SCORE --> BUDGET_MGR["MemoryBudgetManager<br/>allocate(complexity, model_limit)"]
         BUDGET_MGR --> TIERS["Per-tier allocation:<br/>system: 15% · memories: 30%<br/>history: 40% · tools: 15%<br/>(adjusted by complexity)"]
     end
 
@@ -679,7 +744,7 @@ flowchart TD
     end
 
     subgraph Assemble["④ Context Assembly"]
-        T_WORKING & T_EPISODIC & T_SEMANTIC & T_PROCEDURAL & T_RELATIONSHIP --> BUILDER["ContextBuilder<br/>assemble(system, memories,<br/>history, tool_defs)"]
+        T_WORKING & T_EPISODIC & T_SEMANTIC & T_PROCEDURAL & T_RELATIONSHIP --> BUILDER["build_context()<br/>assemble(system, memories,<br/>history, tool_defs)"]
         BUILDER --> TRIM{"Within<br/>model limit?"}
         TRIM -->|no| PROGRESSIVE["Progressive trim:<br/>reduce history → reduce memories<br/>→ condense system prompt"]
         PROGRESSIVE --> BUILDER
@@ -687,7 +752,7 @@ flowchart TD
     end
 
     subgraph Snapshot["⑤ Snapshot Persistence"]
-        ASSEMBLED --> SNAP["SnapshotDB<br/>INSERT context_snapshots<br/>(turn_id, tier_sizes,<br/>total_tokens, complexity,<br/>trimmed_flag)"]
+        ASSEMBLED --> SNAP["Direct INSERT context_snapshots<br/>(turn_id, tier_sizes,<br/>total_tokens, complexity,<br/>trimmed_flag)"]
         SNAP --> METRICS["Context efficiency metrics<br/>(utilization %, waste,<br/>trim frequency)"]
     end
 ```
@@ -695,9 +760,11 @@ flowchart TD
 ---
 
 ## 13. Response Transform Pipeline Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
-Post-LLM response processing chain: reasoning extraction, format normalization, and content guarding before the response reaches the agent loop.
+> **Note (v0.8.0)**: The 4-stage pipeline described below (`ReasoningExtractor`, `FormatNormalizer`, `ContentGuard`, PII scan) exists only in the dead-code file `ironclad-llm/src/transform.rs`, which is NOT declared as `pub mod` in `lib.rs` and is unreachable from other crates. Actual response processing in v0.8.0 is performed inline in `agent.rs`. This diagram is retained for reference but does **not** describe current runtime behavior.
+
+Post-LLM response processing chain (unimplemented -- see note above): reasoning extraction, format normalization, and content guarding before the response reaches the agent loop.
 
 ```mermaid
 flowchart TD
@@ -737,15 +804,16 @@ flowchart TD
 ---
 
 ## 14. Streaming LLM Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
-Token-by-token streaming from LLM provider through SSE to the dashboard. The `StreamAccumulator` buffers deltas while the `EventBus` publishes chunks to WebSocket subscribers in real time.
+Token-by-token streaming from LLM provider through SSE to the dashboard. The `StreamAccumulator` buffers deltas while the `EventBus` publishes chunks to WebSocket subscribers in real time. Note: v0.8.0 streaming performs in-flight deduplication (`dedup.rs`) before provider dispatch (same as non-stream inference).
 
 ```mermaid
 flowchart TD
     subgraph Init["① Stream Initialization"]
         REQ["Request<br/>(stream: true)"]
-        REQ --> CLIENT["LlmClient<br/>forward_stream(provider, payload)"]
+        REQ --> DEDUP_STREAM["In-flight dedup<br/>(dedup.rs: check_and_track)"]
+        DEDUP_STREAM --> CLIENT["LlmClient<br/>forward_stream(provider, payload)"]
         CLIENT --> HTTP2["HTTP/2 POST<br/>(Accept: text/event-stream)"]
         HTTP2 --> PROVIDER["LLM Provider<br/>begin SSE response"]
     end
@@ -783,7 +851,7 @@ flowchart TD
 ---
 
 ## 15. Addressability Filter Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Determines whether an inbound message is addressed to the agent. The `FilterChain` applies OR logic across mention, reply, and conversation filters — if any filter matches, the message is dispatched.
 
@@ -812,7 +880,7 @@ flowchart TD
 ---
 
 ## 16. Context Observatory Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Background observability pipeline that records turn-level metrics, analyzes context efficiency, assigns grades, and emits tuning recommendations.
 
@@ -838,17 +906,17 @@ flowchart TD
     end
 
     subgraph Efficiency["④ Efficiency Metrics"]
-        TOKEN_RATIO & CACHE_RATE & TRIM_FREQ & TOOL_EFF --> ENGINE["EfficiencyEngine<br/>compute composite score"]
+        TOKEN_RATIO & CACHE_RATE & TRIM_FREQ & TOOL_EFF --> ENGINE["compute_efficiency()<br/>(ironclad-db/efficiency.rs)<br/>compute composite score"]
         ENGINE --> TREND["Trend analysis:<br/>sliding window (last 50 turns)"]
     end
 
     subgraph Grade["⑤ Grading"]
-        TREND --> GRADING["GradingSystem<br/>assign grade A–F"]
-        GRADING --> STORE_GRADE["INSERT observatory_grades<br/>(session_id, grade,<br/>breakdown, timestamp)"]
+        TREND --> GRADING["Heuristic grading<br/>assign grade A–F"]
+        GRADING --> STORE_GRADE["Store efficiency results<br/>(metric_snapshots table)"]
     end
 
     subgraph Recommend["⑥ Recommendations"]
-        STORE_GRADE --> REC_ENGINE["RecommendationEngine"]
+        STORE_GRADE --> REC_ENGINE["Recommendation logic"]
         REC_ENGINE --> REC_BUDGET["Budget: adjust tier allocations"]
         REC_ENGINE --> REC_CACHE["Cache: tune similarity threshold"]
         REC_ENGINE --> REC_MODEL["Model: suggest routing changes"]
@@ -859,7 +927,7 @@ flowchart TD
 ---
 
 ## 17. Plugin SDK Execution Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Plugin discovery, manifest parsing, tool registration, and sandboxed execution. Plugins extend the agent's tool surface at runtime.
 
@@ -914,7 +982,7 @@ flowchart TD
 ---
 
 ## 18. OAuth & Credential Resolution Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Multi-strategy credential resolution: environment variables, encrypted keystore, and OAuth token refresh with automatic rotation.
 
@@ -963,7 +1031,7 @@ flowchart TD
 ---
 
 ## 19. Channel Adapter Lifecycle Dataflow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Full lifecycle of a channel adapter: initialization, message reception (webhook or polling), addressability filtering, agent dispatch, response formatting, and health monitoring with auto-reconnect.
 

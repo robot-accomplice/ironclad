@@ -1097,6 +1097,7 @@ pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path, no_safety_check: boo
                         None,
                         None,
                         None,
+                        None,
                     ) {
                         Ok(id) => {
                             registered += 1;
@@ -2549,5 +2550,215 @@ mod tests {
         assert_eq!(qt("hello"), "\"hello\"");
         assert_eq!(qt("he\"llo"), "\"he\\\"llo\"");
         assert_eq!(qt("a\\b"), "\"a\\\\b\"");
+    }
+
+    #[test]
+    fn qt_empty_string() {
+        assert_eq!(qt(""), "\"\"");
+    }
+
+    #[test]
+    fn qt_ml_wraps_in_triple_quotes() {
+        let result = qt_ml("hello\nworld");
+        assert!(result.starts_with("\"\"\""));
+        assert!(result.ends_with("\"\"\""));
+        assert!(result.contains("hello\nworld"));
+    }
+
+    // ── titlecase ─────────────────────────────────────────────
+
+    #[test]
+    fn titlecase_converts_underscored_keys() {
+        assert_eq!(titlecase("prompt_text"), "Prompt Text");
+        assert_eq!(titlecase("identity"), "Identity");
+        assert_eq!(titlecase("core_values"), "Core Values");
+    }
+
+    #[test]
+    fn titlecase_empty_string() {
+        assert_eq!(titlecase(""), "");
+    }
+
+    #[test]
+    fn titlecase_single_word() {
+        assert_eq!(titlecase("traits"), "Traits");
+    }
+
+    #[test]
+    fn titlecase_multiple_underscores() {
+        assert_eq!(titlecase("my_great_key_name"), "My Great Key Name");
+    }
+
+    // ── parse_skill_description ────────────────────────────────
+
+    #[test]
+    fn parse_skill_description_extracts_from_frontmatter() {
+        let content = "---\nname: my-skill\ndescription: A cool skill\n---\n# Body\nContent here.";
+        assert_eq!(
+            parse_skill_description(content),
+            Some("A cool skill".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_skill_description_handles_quoted_desc() {
+        let content = "---\ndescription: \"Quoted description\"\n---\nBody";
+        assert_eq!(
+            parse_skill_description(content),
+            Some("Quoted description".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_skill_description_returns_none_without_frontmatter() {
+        assert_eq!(parse_skill_description("Just text"), None);
+        assert_eq!(parse_skill_description(""), None);
+    }
+
+    #[test]
+    fn parse_skill_description_returns_none_for_empty_desc() {
+        let content = "---\nname: test\ndescription: \n---\nBody";
+        assert_eq!(parse_skill_description(content), None);
+    }
+
+    #[test]
+    fn parse_skill_description_no_closing_frontmatter() {
+        let content = "---\nname: test\ndescription: missing close";
+        assert_eq!(parse_skill_description(content), None);
+    }
+
+    // ── is_model_wrapper ──────────────────────────────────────
+
+    #[test]
+    fn is_model_wrapper_detects_provider_prefixed_names() {
+        assert!(is_model_wrapper("anthropic-claude"));
+        assert!(is_model_wrapper("google-gemini"));
+        assert!(is_model_wrapper("moonshot-v1"));
+        assert!(is_model_wrapper("ollama-qwen"));
+        assert!(is_model_wrapper("openai-gpt4"));
+        assert!(is_model_wrapper("OpenAI-GPT4"));
+    }
+
+    #[test]
+    fn is_model_wrapper_rejects_non_provider_names() {
+        assert!(!is_model_wrapper("geo-specialist"));
+        assert!(!is_model_wrapper("risk-analyst"));
+        assert!(!is_model_wrapper("duncan"));
+        assert!(!is_model_wrapper(""));
+    }
+
+    // ── agent_display_name ────────────────────────────────────
+
+    #[test]
+    fn agent_display_name_capitalizes_and_joins() {
+        assert_eq!(agent_display_name("geo-specialist"), "Geo Specialist");
+        assert_eq!(agent_display_name("risk"), "Risk");
+        assert_eq!(agent_display_name("multi-word-name"), "Multi Word Name");
+    }
+
+    #[test]
+    fn agent_display_name_empty_segments() {
+        // Leading/trailing hyphens produce empty segments
+        assert_eq!(agent_display_name("-test-"), " Test ");
+    }
+
+    // ── err helper ──────────────────────────────────────────────
+
+    #[test]
+    fn err_helper_sets_fields_correctly() {
+        let result = err(MigrationArea::Config, "something failed".to_string());
+        assert!(!result.success);
+        assert_eq!(result.items_processed, 0);
+        assert!(result.warnings.is_empty());
+        assert_eq!(result.error, Some("something failed".to_string()));
+    }
+
+    // ── markdown_to_personality_toml edge cases ──────────────────
+
+    #[test]
+    fn markdown_to_personality_toml_empty_input() {
+        let toml = markdown_to_personality_toml("", "soul");
+        assert!(toml.contains("[soul]"));
+        assert!(toml.contains("prompt_text"));
+    }
+
+    #[test]
+    fn markdown_to_personality_toml_with_multiple_sections() {
+        let md = "# Soul\n\n## Identity\nI am Duncan.\n\n## Traits\nLoyal and fierce.\n\n## Values\nHonor above all.\n";
+        let toml = markdown_to_personality_toml(md, "soul");
+        assert!(toml.contains("[soul]"));
+        assert!(toml.contains("identity"));
+        assert!(toml.contains("traits"));
+        assert!(toml.contains("values"));
+    }
+
+    // ── personality_toml_to_markdown edge cases ──────────────────
+
+    #[test]
+    fn personality_toml_to_markdown_invalid_toml_wraps_raw() {
+        let invalid = "this is not valid toml {{{{";
+        let md = personality_toml_to_markdown(invalid, "Test");
+        assert!(md.contains("# Test"));
+        assert!(md.contains(invalid));
+    }
+
+    #[test]
+    fn personality_toml_to_markdown_structured_fields_without_prompt_text() {
+        let toml_str = "[soul]\nidentity = \"I am Duncan.\"\ntraits = \"Loyal, fierce.\"\n";
+        let md = personality_toml_to_markdown(toml_str, "SOUL");
+        assert!(md.contains("# SOUL"));
+        assert!(md.contains("## Identity"));
+        assert!(md.contains("I am Duncan."));
+        assert!(md.contains("## Traits"));
+    }
+
+    // ── detect_agent_model ──────────────────────────────────────
+
+    #[test]
+    fn detect_agent_model_returns_empty_for_nonexistent_dir() {
+        assert_eq!(detect_agent_model(Path::new("/nonexistent/agent")), "");
+    }
+
+    #[test]
+    fn detect_agent_model_reads_primary_field() {
+        let dir = TempDir::new().unwrap();
+        let agent_dir = dir.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let models = serde_json::json!({"primary": "openai/gpt-4o"});
+        fs::write(
+            agent_dir.join("models.json"),
+            serde_json::to_string(&models).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(detect_agent_model(dir.path()), "openai/gpt-4o");
+    }
+
+    #[test]
+    fn detect_agent_model_reads_from_providers() {
+        let dir = TempDir::new().unwrap();
+        let agent_dir = dir.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let models = serde_json::json!({
+            "providers": {
+                "openai": {
+                    "models": [{"id": "gpt-4"}]
+                }
+            }
+        });
+        fs::write(
+            agent_dir.join("models.json"),
+            serde_json::to_string(&models).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(detect_agent_model(dir.path()), "openai/gpt-4");
+    }
+
+    #[test]
+    fn detect_agent_model_returns_empty_for_empty_json() {
+        let dir = TempDir::new().unwrap();
+        let agent_dir = dir.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        fs::write(agent_dir.join("models.json"), "{}").unwrap();
+        assert_eq!(detect_agent_model(dir.path()), "");
     }
 }

@@ -276,11 +276,23 @@ pub fn acquire_lease(db: &Database, job_id: &str, instance_id: &str) -> Result<b
     Ok(changed > 0)
 }
 
-pub fn release_lease(db: &Database, job_id: &str) -> Result<()> {
+pub fn release_lease(db: &Database, job_id: &str, lease_holder: &str) -> Result<()> {
     let conn = db.conn();
     conn.execute(
-        "UPDATE cron_jobs SET lease_holder = NULL, lease_expires_at = NULL WHERE id = ?1",
-        [job_id],
+        "UPDATE cron_jobs SET lease_holder = NULL, lease_expires_at = NULL \
+         WHERE id = ?1 AND lease_holder = ?2",
+        rusqlite::params![job_id, lease_holder],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(())
+}
+
+/// Update the `next_run_at` field for a cron job.
+pub fn update_next_run_at(db: &Database, job_id: &str, next_run_at: Option<&str>) -> Result<()> {
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE cron_jobs SET next_run_at = ?1 WHERE id = ?2",
+        rusqlite::params![next_run_at, job_id],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(())
@@ -407,7 +419,7 @@ mod tests {
         // Second acquire by a different instance should fail (lease not expired)
         assert!(!acquire_lease(&db, &job_id, "instance-2").unwrap());
 
-        release_lease(&db, &job_id).unwrap();
+        release_lease(&db, &job_id, "instance-1").unwrap();
         assert!(acquire_lease(&db, &job_id, "instance-2").unwrap());
     }
 
@@ -531,7 +543,7 @@ mod tests {
     #[test]
     fn release_lease_nonexistent_job() {
         let db = test_db();
-        release_lease(&db, "no-such-job").unwrap();
+        release_lease(&db, "no-such-job", "inst-1").unwrap();
     }
 
     #[test]
@@ -541,5 +553,165 @@ mod tests {
         let r1 = record_run(&db, &job_id, "success", Some(10), None).unwrap();
         let r2 = record_run(&db, &job_id, "success", Some(20), None).unwrap();
         assert_ne!(r1, r2);
+    }
+
+    #[test]
+    fn update_job_name_only() {
+        let db = test_db();
+        let id = create_job(&db, "old-name", "a1", "every", None, "{}").unwrap();
+        let changed = update_job(&db, &id, Some("new-name"), None, None, None).unwrap();
+        assert!(changed);
+        let job = get_job(&db, &id).unwrap().unwrap();
+        assert_eq!(job.name, "new-name");
+    }
+
+    #[test]
+    fn update_job_schedule() {
+        let db = test_db();
+        let id = create_job(&db, "j", "a1", "every", None, "{}").unwrap();
+        let changed = update_job(&db, &id, None, Some("cron"), Some("0 9 * * *"), None).unwrap();
+        assert!(changed);
+        let job = get_job(&db, &id).unwrap().unwrap();
+        assert_eq!(job.schedule_kind, "cron");
+        assert_eq!(job.schedule_expr.as_deref(), Some("0 9 * * *"));
+    }
+
+    #[test]
+    fn update_job_enabled_flag() {
+        let db = test_db();
+        let id = create_job(&db, "j", "a1", "every", None, "{}").unwrap();
+
+        let changed = update_job(&db, &id, None, None, None, Some(false)).unwrap();
+        assert!(changed);
+        let job = get_job(&db, &id).unwrap().unwrap();
+        assert!(!job.enabled);
+
+        let changed = update_job(&db, &id, None, None, None, Some(true)).unwrap();
+        assert!(changed);
+        let job = get_job(&db, &id).unwrap().unwrap();
+        assert!(job.enabled);
+    }
+
+    #[test]
+    fn update_job_empty_returns_false() {
+        let db = test_db();
+        let id = create_job(&db, "j", "a1", "every", None, "{}").unwrap();
+        let changed = update_job(&db, &id, None, None, None, None).unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn update_job_nonexistent_returns_false() {
+        let db = test_db();
+        let changed = update_job(&db, "no-such-id", Some("new-name"), None, None, None).unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn update_job_all_fields() {
+        let db = test_db();
+        let id = create_job(&db, "j", "a1", "every", None, "{}").unwrap();
+        let changed = update_job(
+            &db,
+            &id,
+            Some("updated"),
+            Some("cron"),
+            Some("*/5 * * * *"),
+            Some(false),
+        )
+        .unwrap();
+        assert!(changed);
+        let job = get_job(&db, &id).unwrap().unwrap();
+        assert_eq!(job.name, "updated");
+        assert_eq!(job.schedule_kind, "cron");
+        assert_eq!(job.schedule_expr.as_deref(), Some("*/5 * * * *"));
+        assert!(!job.enabled);
+    }
+
+    #[test]
+    fn list_runs_empty() {
+        let db = test_db();
+        let runs = list_runs(&db, None, None, None, 100).unwrap();
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn list_runs_all() {
+        let db = test_db();
+        let jid = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
+        record_run(&db, &jid, "success", Some(100), None).unwrap();
+        record_run(&db, &jid, "error", Some(50), Some("boom")).unwrap();
+        record_run(&db, &jid, "success", Some(200), None).unwrap();
+
+        let runs = list_runs(&db, None, None, None, 100).unwrap();
+        assert_eq!(runs.len(), 3);
+    }
+
+    #[test]
+    fn list_runs_by_job_id() {
+        let db = test_db();
+        let j1 = create_job(&db, "job1", "a1", "every", None, "{}").unwrap();
+        let j2 = create_job(&db, "job2", "a1", "every", None, "{}").unwrap();
+        record_run(&db, &j1, "success", Some(10), None).unwrap();
+        record_run(&db, &j1, "success", Some(20), None).unwrap();
+        record_run(&db, &j2, "success", Some(30), None).unwrap();
+
+        let runs = list_runs(&db, None, None, Some(&j1), 100).unwrap();
+        assert_eq!(runs.len(), 2);
+        for run in &runs {
+            assert_eq!(run.job_id, j1);
+        }
+    }
+
+    #[test]
+    fn list_runs_respects_limit() {
+        let db = test_db();
+        let jid = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
+        for _ in 0..10 {
+            record_run(&db, &jid, "success", Some(10), None).unwrap();
+        }
+        let runs = list_runs(&db, None, None, None, 3).unwrap();
+        assert_eq!(runs.len(), 3);
+    }
+
+    #[test]
+    fn list_runs_fields_populated() {
+        let db = test_db();
+        let jid = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
+        let run_id = record_run(&db, &jid, "error", Some(42), Some("timeout")).unwrap();
+        let runs = list_runs(&db, None, None, None, 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, run_id);
+        assert_eq!(runs[0].job_id, jid);
+        assert_eq!(runs[0].status, "error");
+        assert_eq!(runs[0].duration_ms, Some(42));
+        assert_eq!(runs[0].error.as_deref(), Some("timeout"));
+        assert!(!runs[0].created_at.is_empty());
+    }
+
+    #[test]
+    fn delete_job_cascades_cron_runs() {
+        let db = test_db();
+        let jid = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
+        record_run(&db, &jid, "success", Some(10), None).unwrap();
+        record_run(&db, &jid, "error", Some(5), Some("oops")).unwrap();
+
+        assert!(delete_job(&db, &jid).unwrap());
+
+        // Verify runs were cascade-deleted
+        let runs = list_runs(&db, None, None, Some(&jid), 100).unwrap();
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn release_lease_wrong_holder_is_noop() {
+        let db = test_db();
+        let jid = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
+        acquire_lease(&db, &jid, "inst-1").unwrap();
+
+        // Releasing with wrong holder should not clear the lease
+        release_lease(&db, &jid, "inst-2").unwrap();
+        let job = get_job(&db, &jid).unwrap().unwrap();
+        assert_eq!(job.lease_holder.as_deref(), Some("inst-1"));
     }
 }

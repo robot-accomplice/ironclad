@@ -266,7 +266,7 @@ pub fn list_messages(db: &Database, session_id: &str, limit: Option<i64>) -> Res
     let mut stmt = conn
         .prepare(
             "SELECT id, session_id, parent_id, role, content, usage_json, created_at \
-             FROM session_messages WHERE session_id = ?1 ORDER BY created_at ASC LIMIT ?2",
+             FROM session_messages WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC LIMIT ?2",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -616,7 +616,7 @@ pub fn list_turns_for_session(db: &Database, session_id: &str) -> Result<Vec<Tur
     let mut stmt = conn
         .prepare(
             "SELECT id, session_id, thinking, tool_calls_json, tokens_in, tokens_out, cost, model, created_at \
-             FROM turns WHERE session_id = ?1 ORDER BY created_at ASC",
+             FROM turns WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -1358,6 +1358,52 @@ mod tests {
     }
 
     #[test]
+    fn list_messages_stable_when_created_at_ties() {
+        let db = test_db();
+        let sid = create_new(&db, "agent-stable", Some(&SessionScope::Agent)).unwrap();
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO session_messages (id, session_id, role, content, created_at) VALUES (?1, ?2, 'assistant', 'm1', '2026-01-01 00:00:00')",
+                rusqlite::params!["msg-z", sid.clone()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO session_messages (id, session_id, role, content, created_at) VALUES (?1, ?2, 'assistant', 'm2', '2026-01-01 00:00:00')",
+                rusqlite::params!["msg-a", sid.clone()],
+            )
+            .unwrap();
+        }
+        let msgs = list_messages(&db, &sid, None).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].id, "msg-z");
+        assert_eq!(msgs[1].id, "msg-a");
+    }
+
+    #[test]
+    fn list_turns_stable_when_created_at_ties() {
+        let db = test_db();
+        let sid = create_new(&db, "agent-stable-turns", Some(&SessionScope::Agent)).unwrap();
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO turns (id, session_id, thinking, created_at) VALUES (?1, ?2, 't1', '2026-01-01 00:00:00')",
+                rusqlite::params!["turn-z", sid.clone()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO turns (id, session_id, thinking, created_at) VALUES (?1, ?2, 't2', '2026-01-01 00:00:00')",
+                rusqlite::params!["turn-a", sid.clone()],
+            )
+            .unwrap();
+        }
+        let turns = list_turns_for_session(&db, &sid).unwrap();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].id, "turn-z");
+        assert_eq!(turns[1].id, "turn-a");
+    }
+
+    #[test]
     fn record_feedback_upserts_on_duplicate_turn() {
         let db = test_db();
         let sid = find_or_create(&db, "agent-fb-upsert", None).unwrap();
@@ -1375,5 +1421,289 @@ mod tests {
 
         let all = list_session_feedback(&db, &sid).unwrap();
         assert_eq!(all.len(), 1, "upsert should not create duplicate rows");
+    }
+
+    // ── SessionStatus Display and from_str_lossy tests ─────────────
+
+    #[test]
+    fn session_status_display() {
+        assert_eq!(SessionStatus::Active.to_string(), "active");
+        assert_eq!(SessionStatus::Archived.to_string(), "archived");
+        assert_eq!(SessionStatus::Expired.to_string(), "expired");
+    }
+
+    #[test]
+    fn session_status_from_str_lossy() {
+        assert_eq!(
+            SessionStatus::from_str_lossy("archived"),
+            SessionStatus::Archived
+        );
+        assert_eq!(
+            SessionStatus::from_str_lossy("expired"),
+            SessionStatus::Expired
+        );
+        assert_eq!(
+            SessionStatus::from_str_lossy("active"),
+            SessionStatus::Active
+        );
+        assert_eq!(
+            SessionStatus::from_str_lossy("unknown"),
+            SessionStatus::Active
+        );
+        assert_eq!(SessionStatus::from_str_lossy(""), SessionStatus::Active);
+    }
+
+    // ── MessageRole Display and from_str_lossy tests ─────────────
+
+    #[test]
+    fn message_role_display() {
+        assert_eq!(MessageRole::User.to_string(), "user");
+        assert_eq!(MessageRole::Assistant.to_string(), "assistant");
+        assert_eq!(MessageRole::System.to_string(), "system");
+        assert_eq!(MessageRole::Tool.to_string(), "tool");
+    }
+
+    #[test]
+    fn message_role_from_str_lossy() {
+        assert_eq!(
+            MessageRole::from_str_lossy("assistant"),
+            MessageRole::Assistant
+        );
+        assert_eq!(MessageRole::from_str_lossy("system"), MessageRole::System);
+        assert_eq!(MessageRole::from_str_lossy("tool"), MessageRole::Tool);
+        assert_eq!(MessageRole::from_str_lossy("user"), MessageRole::User);
+        assert_eq!(MessageRole::from_str_lossy("unknown"), MessageRole::User);
+        assert_eq!(MessageRole::from_str_lossy(""), MessageRole::User);
+    }
+
+    // ── create_turn_with_id tests ────────────────────────────────
+
+    #[test]
+    fn create_turn_with_id_roundtrip() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-twid", None).unwrap();
+        create_turn_with_id(
+            &db,
+            "custom-turn-1",
+            &sid,
+            Some("gpt-4"),
+            Some(100),
+            Some(200),
+            Some(0.05),
+        )
+        .unwrap();
+
+        let turns = list_turns_for_session(&db, &sid).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].id, "custom-turn-1");
+        assert_eq!(turns[0].model.as_deref(), Some("gpt-4"));
+        assert_eq!(turns[0].tokens_in, Some(100));
+        assert_eq!(turns[0].tokens_out, Some(200));
+    }
+
+    #[test]
+    fn create_turn_with_id_none_fields() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-twid2", None).unwrap();
+        create_turn_with_id(&db, "custom-turn-2", &sid, None, None, None, None).unwrap();
+
+        let turns = list_turns_for_session(&db, &sid).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].id, "custom-turn-2");
+        assert!(turns[0].model.is_none());
+    }
+
+    // ── expire_stale_sessions and list_stale_active_session_ids tests ──
+
+    #[test]
+    fn expire_stale_sessions_with_fresh_sessions() {
+        let db = test_db();
+        let _sid = find_or_create(&db, "agent-fresh", None).unwrap();
+        // With a very large max_age (1 year), nothing should expire
+        let count = expire_stale_sessions(&db, 365 * 86400).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn expire_stale_sessions_expires_old() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-old", None).unwrap();
+        // Artificially age the session by setting updated_at to a past date
+        db.conn()
+            .execute(
+                "UPDATE sessions SET updated_at = datetime('now', '-2 days') WHERE id = ?1",
+                [&sid],
+            )
+            .unwrap();
+
+        let count = expire_stale_sessions(&db, 60).unwrap(); // 60 seconds max age
+        assert_eq!(count, 1);
+
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.status, "expired");
+    }
+
+    #[test]
+    fn list_stale_active_session_ids_returns_stale() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-stale", None).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE sessions SET updated_at = datetime('now', '-3 days') WHERE id = ?1",
+                [&sid],
+            )
+            .unwrap();
+
+        let stale_ids = list_stale_active_session_ids(&db, 60).unwrap();
+        assert_eq!(stale_ids.len(), 1);
+        assert_eq!(stale_ids[0], sid);
+    }
+
+    #[test]
+    fn list_stale_active_session_ids_excludes_fresh() {
+        let db = test_db();
+        let _sid = find_or_create(&db, "agent-fresh2", None).unwrap();
+        let stale_ids = list_stale_active_session_ids(&db, 365 * 86400).unwrap();
+        assert!(stale_ids.is_empty());
+    }
+
+    // ── set_session_status tests ─────────────────────────────────
+
+    #[test]
+    fn set_session_status_active_to_archived() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-setstatus", None).unwrap();
+        set_session_status(&db, &sid, SessionStatus::Archived).unwrap();
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.status, "archived");
+    }
+
+    #[test]
+    fn set_session_status_active_to_expired() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-setstatus2", None).unwrap();
+        set_session_status(&db, &sid, SessionStatus::Expired).unwrap();
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.status, "expired");
+    }
+
+    #[test]
+    fn set_session_status_missing_session_errors() {
+        let db = test_db();
+        let result = set_session_status(&db, "nonexistent", SessionStatus::Archived);
+        assert!(result.is_err());
+    }
+
+    // ── get_turn_by_id tests ─────────────────────────────────────
+
+    #[test]
+    fn get_turn_by_id_existing() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-gtbi", None).unwrap();
+        let tid = create_turn(&db, &sid, Some("gpt-4"), Some(50), Some(100), Some(0.02)).unwrap();
+
+        let turn = get_turn_by_id(&db, &tid)
+            .unwrap()
+            .expect("turn should exist");
+        assert_eq!(turn.id, tid);
+        assert_eq!(turn.session_id, sid);
+        assert_eq!(turn.model.as_deref(), Some("gpt-4"));
+        assert_eq!(turn.tokens_in, Some(50));
+        assert_eq!(turn.tokens_out, Some(100));
+    }
+
+    #[test]
+    fn get_turn_by_id_nonexistent() {
+        let db = test_db();
+        let turn = get_turn_by_id(&db, "no-such-turn").unwrap();
+        assert!(turn.is_none());
+    }
+
+    #[test]
+    fn get_turn_by_id_with_custom_id() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-gtbi2", None).unwrap();
+        create_turn_with_id(
+            &db,
+            "my-turn-id",
+            &sid,
+            Some("claude"),
+            Some(10),
+            Some(20),
+            Some(0.01),
+        )
+        .unwrap();
+
+        let turn = get_turn_by_id(&db, "my-turn-id")
+            .unwrap()
+            .expect("turn should exist");
+        assert_eq!(turn.id, "my-turn-id");
+        assert_eq!(turn.model.as_deref(), Some("claude"));
+    }
+
+    // ── list_turns_for_session tests ─────────────────────────────
+
+    #[test]
+    fn list_turns_for_session_empty() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-turns-empty", None).unwrap();
+        let turns = list_turns_for_session(&db, &sid).unwrap();
+        assert!(turns.is_empty());
+    }
+
+    // ── property-based tests (v0.8.0 stabilization) ────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn proptest_derive_nickname_never_empty(input in "\\PC{1,200}") {
+            let result = derive_nickname(&input);
+            prop_assert!(!result.is_empty(), "nickname should never be empty for input: {:?}", input);
+        }
+
+        #[test]
+        fn proptest_derive_nickname_bounded_length(input in "\\PC{1,500}") {
+            let result = derive_nickname(&input);
+            // Max is 50 chars + 3 for "..." = 53, but multibyte chars can push it slightly.
+            // The function uses char_boundary(50) + possible "..." so 60 is a safe upper bound.
+            prop_assert!(result.len() <= 60, "nickname too long: {} chars for input: {:?}", result.len(), input);
+        }
+
+        #[test]
+        fn proptest_derive_nickname_first_char_uppercase(input in "[a-z][a-zA-Z ]{0,100}") {
+            let result = derive_nickname(&input);
+            if result != "Untitled" {
+                let first_char = result.chars().next().unwrap();
+                if first_char.is_alphabetic() {
+                    prop_assert!(first_char.is_uppercase(),
+                        "first char '{}' should be uppercase in result: {:?}", first_char, result);
+                }
+            }
+        }
+
+        #[test]
+        fn proptest_derive_nickname_strips_greeting_prefix(
+            greeting in prop::sample::select(vec!["hey ", "hi ", "hello ", "yo "]),
+            rest in "[a-zA-Z]{3,30}"
+        ) {
+            let input = format!("{}{}", greeting, rest);
+            let result = derive_nickname(&input);
+            // After stripping the greeting, the result should match the capitalized `rest`,
+            // not the full original input (greeting+rest). We verify the greeting was stripped
+            // by checking the result doesn't equal the full input's nickname derivation
+            // when the greeting is NOT stripped.
+            let expected_start = {
+                let mut chars = rest.chars();
+                match chars.next() {
+                    Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+                    None => String::new(),
+                }
+            };
+            prop_assert!(
+                result.starts_with(&expected_start[..expected_start.len().min(result.len())]),
+                "result {:?} should start with capitalized rest {:?}", result, expected_start
+            );
+        }
     }
 }

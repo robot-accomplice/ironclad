@@ -23,21 +23,17 @@ flowchart TD
 
   subgraph Exec["Execution"]
     X1["infer_with_fallback()\n(candidate loop)"]
-    X2["single provider call\n(stream/interview paths)"]
   end
 
   E1 --> S1
+  E2 --> S1
   E3 --> S1
+  E4 --> S1
   S1 --> S2
   S2 --> S3
   S3 --> S4
   S4 --> S5
   S5 --> X1
-
-  E2 --> S1
-  E2 --> X2
-
-  E4 --> X2
 ```
 
 ## Intended Sequence Diagrams
@@ -128,10 +124,8 @@ sequenceDiagram
 
 ### Mismatches / Risks
 
-1. **Route-family inconsistency**
-   - `agent_message()` and channel processing use full fallback loop.
-   - `agent_message_stream()` and `interview_turn()` use single-provider calls.
-   - This creates behavior drift between API surfaces.
+1. **~~Route-family inconsistency~~ (RESOLVED in v0.8.0)**
+   - All inference paths (`agent_message()`, `agent_message_stream()`, `interview_turn()`, channel processing) now use `infer_with_fallback()` bounded candidate loop.
 
 2. **Config-vs-router drift risk**
    - Runtime config mutations can update config structures while active `ModelRouter` internals (`primary`, `fallbacks`, `override`) remain independently stateful.
@@ -162,13 +156,13 @@ sequenceDiagram
 
 - `E1 -> S1 -> S2 -> S3 -> S4 -> S5 -> X1`  
   - `server_api::fallback_chain_is_bounded_to_configured_candidates`
-- `E2 -> S1 -> X2`  
+- `E2 -> S1 -> S2 -> S3 -> S4 -> S5 -> X1`
   - `server_api::stream_path_uses_bounded_fallback_surface`
 - `E3 -> webhook -> process_channel_message`  
   - `server_api::telegram_webhook_public_entrypoint_accepts_and_returns_ok`
 - `E3 -> webhook slash payload -> command handling branch`  
   - `server_api::telegram_webhook_public_entrypoint_accepts_slash_command_payload`
-- `E4 -> X2`  
+- `E4 -> S1 -> S2 -> S3 -> S4 -> S5 -> X1`
   - `server_api::interview_path_uses_shared_fallback_surface`
 
 Router behavior integration set:

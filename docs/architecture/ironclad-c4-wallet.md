@@ -15,8 +15,11 @@ flowchart TB
         YIELD["yield_engine.rs<br/>DeFi Yield Engine"]
     end
 
+    subgraph MoneyDetail ["money.rs — Peer Module"]
+        MONEY["Money(i64 cents)<br/>from_dollars(), dollars(), cents()<br/>Add/Sub impls"]
+    end
+
     subgraph WalletDetail ["wallet.rs"]
-        MONEY["money.rs: Money(i64 cents)<br/>from_dollars(), dollars(), cents()<br/>Add/Sub impls"]
         LOAD["load_or_generate():<br/>Load wallet from wallet.path<br/>or generate; set file perms 0o600"]
         SIGN_MSG["sign_message():<br/>EIP-191 personal sign"]
         SIGN_TX["sign_transaction():<br/>EIP-1559 transaction signing"]

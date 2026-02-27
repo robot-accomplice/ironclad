@@ -14,6 +14,7 @@ use ironclad_server::AppState;
 use ironclad_server::EventBus;
 use ironclad_server::PersonalityState;
 use ironclad_server::build_router;
+use ironclad_server::config_runtime::ConfigApplyStatus;
 use ironclad_wallet::{TreasuryPolicy, WalletService, YieldEngine};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
@@ -54,6 +55,10 @@ primary = "ollama/qwen3:8b"
     let channel_router = Arc::new(ironclad_channels::router::ChannelRouter::new());
     let retriever = Arc::new(ironclad_agent::retrieval::MemoryRetriever::new(
         config.memory.clone(),
+    ));
+    let config_path = std::env::temp_dir().join(format!(
+        "ironclad-integration-config-{}.toml",
+        uuid::Uuid::new_v4()
     ));
     AppState {
         db,
@@ -96,6 +101,9 @@ primary = "ollama/qwen3:8b"
         )),
         obsidian: None,
         started_at: std::time::Instant::now(),
+        config_path: Arc::new(config_path.clone()),
+        config_apply_status: Arc::new(RwLock::new(ConfigApplyStatus::new(&config_path))),
+        pending_specialist_proposals: Arc::new(RwLock::new(std::collections::HashMap::new())),
         policy_engine: {
             let mut engine = ironclad_agent::policy::PolicyEngine::new();
             engine.add_rule(Box::new(ironclad_agent::policy::AuthorityRule));
@@ -142,7 +150,7 @@ async fn session_create_and_list() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let session_id = body["session_id"].as_str().unwrap().to_string();
+    let session_id = body["id"].as_str().unwrap().to_string();
     assert!(!session_id.is_empty());
 
     // Creating again for same agent should rotate the active agent-scope
@@ -158,7 +166,7 @@ async fn session_create_and_list() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let session_id_2 = body["session_id"].as_str().unwrap().to_string();
+    let session_id_2 = body["id"].as_str().unwrap().to_string();
     assert!(!session_id_2.is_empty());
     assert_ne!(session_id_2, session_id);
 
@@ -603,6 +611,60 @@ async fn agent_message_requires_peer_identity_in_peer_scope_mode() {
         error.contains("peer_id or sender_id is required"),
         "unexpected error payload: {body:?}"
     );
+}
+
+#[tokio::test]
+async fn agent_message_slash_commands_execute_without_llm_inference() {
+    let state = test_state();
+    let app = build_router(state.clone());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/agent/message")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"content":"/help"}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(!content.trim().is_empty());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/agent/message")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"content":"/models"}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(!content.trim().is_empty());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/agent/message")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"content":"/breaker"}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(!content.trim().is_empty());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/agent/message")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"content":"/retry"}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(!content.trim().is_empty());
 }
 
 #[tokio::test]
@@ -1188,7 +1250,7 @@ async fn admin_endpoints_cover_config_wallet_breaker_and_stats() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    assert!(body["immutable_sections"].is_array());
+    assert_eq!(body["immutable_sections"], serde_json::json!([]));
     assert!(body["mutable_sections"].is_array());
 
     let app = build_router(state.clone());
@@ -1203,7 +1265,7 @@ async fn admin_endpoints_cover_config_wallet_breaker_and_stats() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::OK);
 
     let app = build_router(state.clone());
     let resp = app
@@ -1289,6 +1351,13 @@ async fn admin_endpoints_cover_config_wallet_breaker_and_stats() {
     let body = json_body(resp).await;
     assert!(body["providers"].is_object());
     assert!(body["config"].is_object());
+
+    // BUG-04: resetting an unknown provider now returns 404 instead of silently
+    // creating a breaker entry. Register "ollama" first via a credit error, then reset.
+    {
+        let mut llm = state.llm.write().await;
+        llm.breakers.record_credit_error("ollama");
+    }
 
     let app = build_router(state.clone());
     let resp = app

@@ -11,6 +11,7 @@ use ironclad_core::{IroncladError, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentRunState {
     Idle,
+    Starting,
     Running,
     Stopped,
     Error,
@@ -90,20 +91,37 @@ impl SubagentRegistry {
     }
 
     pub async fn start_agent(&self, agent_id: &str) -> Result<()> {
+        {
+            let mut agents = self.agents.lock().await;
+            let agent = agents
+                .get_mut(agent_id)
+                .ok_or_else(|| IroncladError::Config(format!("agent '{agent_id}' not found")))?;
+
+            if matches!(
+                agent.state,
+                AgentRunState::Running | AgentRunState::Starting
+            ) {
+                return Ok(());
+            }
+
+            agent.state = AgentRunState::Starting;
+            agent.last_error = None;
+            debug!(id = agent_id, "agent booting");
+        }
+
+        // Yield once so booting state is observable to status pollers.
+        tokio::task::yield_now().await;
+
         let mut agents = self.agents.lock().await;
         let agent = agents
             .get_mut(agent_id)
             .ok_or_else(|| IroncladError::Config(format!("agent '{agent_id}' not found")))?;
-
-        if agent.state == AgentRunState::Running {
-            return Ok(());
+        if agent.state == AgentRunState::Starting {
+            agent.state = AgentRunState::Running;
+            agent.started_at = Some(Utc::now());
+            agent.last_error = None;
+            debug!(id = agent_id, "agent started");
         }
-
-        agent.state = AgentRunState::Running;
-        agent.started_at = Some(Utc::now());
-        agent.last_error = None;
-
-        debug!(id = agent_id, "agent started");
         Ok(())
     }
 
@@ -116,6 +134,15 @@ impl SubagentRegistry {
         agent.state = AgentRunState::Stopped;
         debug!(id = agent_id, "agent stopped");
         Ok(())
+    }
+
+    pub async fn unregister(&self, agent_id: &str) -> bool {
+        let mut agents = self.agents.lock().await;
+        let removed = agents.remove(agent_id).is_some();
+        if removed {
+            debug!(id = agent_id, "agent unregistered");
+        }
+        removed
     }
 
     pub async fn mark_error(&self, agent_id: &str, error: String) {
@@ -254,6 +281,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unregister_removes_agent() {
+        let reg = SubagentRegistry::new(4, vec![]);
+        reg.register(test_config("a")).await.unwrap();
+        assert_eq!(reg.agent_count().await, 1);
+        assert!(reg.unregister("a").await);
+        assert_eq!(reg.agent_count().await, 0);
+        assert!(!reg.unregister("a").await);
+    }
+
+    #[tokio::test]
     async fn concurrency_slots() {
         let reg = SubagentRegistry::new(2, vec![]);
         assert_eq!(reg.available_slots(), 2);
@@ -274,6 +311,7 @@ mod tests {
     fn agent_run_state_serde() {
         for state in [
             AgentRunState::Idle,
+            AgentRunState::Starting,
             AgentRunState::Running,
             AgentRunState::Stopped,
             AgentRunState::Error,

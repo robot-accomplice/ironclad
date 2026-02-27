@@ -24,15 +24,15 @@ const USDC_SCALE: f64 = 1_000_000.0;
 
 #[derive(Debug, Clone)]
 pub struct YieldEngine {
-    pub enabled: bool,
-    pub protocol: String,
-    pub chain: String,
-    pub min_deposit: f64,
-    pub withdrawal_threshold: f64,
-    pub chain_rpc_url: Option<String>,
-    pub pool_address: String,
-    pub usdc_address: String,
-    pub a_token_address: String,
+    enabled: bool,
+    protocol: String,
+    chain: String,
+    min_deposit: f64,
+    withdrawal_threshold: f64,
+    chain_rpc_url: Option<String>,
+    pool_address: String,
+    usdc_address: String,
+    a_token_address: String,
 }
 
 impl YieldEngine {
@@ -51,6 +51,42 @@ impl YieldEngine {
                 .clone()
                 .unwrap_or_else(|| "0x4d8e6968b67a2a216b2e5928b793663415377c2e".into()),
         }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn protocol(&self) -> &str {
+        &self.protocol
+    }
+
+    pub fn chain(&self) -> &str {
+        &self.chain
+    }
+
+    pub fn min_deposit(&self) -> f64 {
+        self.min_deposit
+    }
+
+    pub fn withdrawal_threshold(&self) -> f64 {
+        self.withdrawal_threshold
+    }
+
+    pub fn chain_rpc_url(&self) -> Option<&str> {
+        self.chain_rpc_url.as_deref()
+    }
+
+    pub fn pool_address(&self) -> &str {
+        &self.pool_address
+    }
+
+    pub fn usdc_address(&self) -> &str {
+        &self.usdc_address
+    }
+
+    pub fn a_token_address(&self) -> &str {
+        &self.a_token_address
     }
 
     /// Excess = balance - minimum_reserve - operational_buffer (10% of minimum_reserve).
@@ -77,6 +113,11 @@ impl YieldEngine {
         agent_address: Option<&str>,
         private_key: Option<&[u8]>,
     ) -> Result<String> {
+        if amount <= 0.0 {
+            return Err(IroncladError::Wallet(format!(
+                "deposit amount must be positive, got {amount}"
+            )));
+        }
         if !self.enabled {
             return Err(IroncladError::Wallet("yield engine is disabled".into()));
         }
@@ -104,6 +145,11 @@ impl YieldEngine {
         agent_address: Option<&str>,
         private_key: Option<&[u8]>,
     ) -> Result<String> {
+        if amount <= 0.0 {
+            return Err(IroncladError::Wallet(format!(
+                "withdrawal amount must be positive, got {amount}"
+            )));
+        }
         if !self.enabled {
             return Err(IroncladError::Wallet("yield engine is disabled".into()));
         }
@@ -400,19 +446,32 @@ mod tests {
         assert!(engine.withdraw(50.0, None, None).await.is_err());
     }
 
-    // 9C: Edge cases — zero amount deposit/withdraw (mock still returns hash)
     #[tokio::test]
-    async fn zero_amount_deposit_mock_returns_hash() {
+    async fn zero_amount_deposit_rejected() {
         let engine = YieldEngine::new(&enabled_config());
-        let tx = engine.deposit(0.0, None, None).await.unwrap();
-        assert!(tx.starts_with("0x"));
+        let err = engine.deposit(0.0, None, None).await.unwrap_err();
+        assert!(err.to_string().contains("positive"));
     }
 
     #[tokio::test]
-    async fn zero_amount_withdraw_mock_returns_hash() {
+    async fn zero_amount_withdraw_rejected() {
         let engine = YieldEngine::new(&enabled_config());
-        let tx = engine.withdraw(0.0, None, None).await.unwrap();
-        assert!(tx.starts_with("0x"));
+        let err = engine.withdraw(0.0, None, None).await.unwrap_err();
+        assert!(err.to_string().contains("positive"));
+    }
+
+    #[tokio::test]
+    async fn negative_amount_deposit_rejected() {
+        let engine = YieldEngine::new(&enabled_config());
+        let err = engine.deposit(-10.0, None, None).await.unwrap_err();
+        assert!(err.to_string().contains("positive"));
+    }
+
+    #[tokio::test]
+    async fn negative_amount_withdraw_rejected() {
+        let engine = YieldEngine::new(&enabled_config());
+        let err = engine.withdraw(-5.0, None, None).await.unwrap_err();
+        assert!(err.to_string().contains("positive"));
     }
 
     #[test]
@@ -423,7 +482,7 @@ mod tests {
             .unwrap();
         assert_eq!(referral_code, 0);
         assert_eq!(amount, amount_to_raw(100.5));
-        assert_eq!(asset, parse_address(&engine.usdc_address).unwrap());
+        assert_eq!(asset, parse_address(engine.usdc_address()).unwrap());
         assert_eq!(
             on_behalf_of,
             parse_address("0x0000000000000000000000000000000000000001").unwrap()
@@ -437,7 +496,7 @@ mod tests {
             .build_withdraw_call_params(50.25, "0x0000000000000000000000000000000000000002")
             .unwrap();
         assert_eq!(amount, amount_to_raw(50.25));
-        assert_eq!(asset, parse_address(&engine.usdc_address).unwrap());
+        assert_eq!(asset, parse_address(engine.usdc_address()).unwrap());
         assert_eq!(
             to,
             parse_address("0x0000000000000000000000000000000000000002").unwrap()
@@ -567,7 +626,7 @@ mod tests {
         let mut cfg = enabled_config();
         cfg.atoken_address = None;
         let engine = YieldEngine::new(&cfg);
-        assert!(!engine.a_token_address.is_empty());
+        assert!(!engine.a_token_address().is_empty());
     }
 
     #[test]
@@ -614,15 +673,15 @@ mod tests {
     fn new_engine_copies_all_config_fields() {
         let cfg = enabled_config();
         let engine = YieldEngine::new(&cfg);
-        assert!(engine.enabled);
-        assert_eq!(engine.protocol, "aave");
-        assert_eq!(engine.chain, "base");
-        assert!((engine.min_deposit - 50.0).abs() < f64::EPSILON);
-        assert!((engine.withdrawal_threshold - 30.0).abs() < f64::EPSILON);
-        assert!(engine.chain_rpc_url.is_none());
-        assert!(!engine.pool_address.is_empty());
-        assert!(!engine.usdc_address.is_empty());
-        assert!(!engine.a_token_address.is_empty());
+        assert!(engine.enabled());
+        assert_eq!(engine.protocol(), "aave");
+        assert_eq!(engine.chain(), "base");
+        assert!((engine.min_deposit() - 50.0).abs() < f64::EPSILON);
+        assert!((engine.withdrawal_threshold() - 30.0).abs() < f64::EPSILON);
+        assert!(engine.chain_rpc_url().is_none());
+        assert!(!engine.pool_address().is_empty());
+        assert!(!engine.usdc_address().is_empty());
+        assert!(!engine.a_token_address().is_empty());
     }
 
     #[test]
@@ -669,5 +728,277 @@ mod tests {
         let excess = engine.calculate_excess(150.5, 100.0);
         let expected = 150.5 - 100.0 - 10.0;
         assert!((excess - expected).abs() < 1e-10);
+    }
+
+    // --- real_deposit / real_withdraw error paths ---
+
+    #[tokio::test]
+    async fn real_deposit_invalid_private_key_length() {
+        let engine = YieldEngine::new(&rpc_config());
+        // 16-byte key is too short (must be 32)
+        let short_key = [0u8; 16];
+        let result = engine
+            .deposit(
+                10.0,
+                Some("0x0000000000000000000000000000000000000001"),
+                Some(&short_key),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid private key")
+        );
+    }
+
+    #[tokio::test]
+    async fn real_withdraw_invalid_private_key_length() {
+        let engine = YieldEngine::new(&rpc_config());
+        let short_key = [0u8; 16];
+        let result = engine
+            .withdraw(
+                10.0,
+                Some("0x0000000000000000000000000000000000000001"),
+                Some(&short_key),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid private key")
+        );
+    }
+
+    fn rpc_config_with_invalid_pool() -> YieldConfig {
+        YieldConfig {
+            chain_rpc_url: Some("http://localhost:8545".into()),
+            pool_address: "not-valid".into(),
+            ..enabled_config()
+        }
+    }
+
+    #[tokio::test]
+    async fn real_deposit_invalid_pool_address() {
+        let engine = YieldEngine::new(&rpc_config_with_invalid_pool());
+        let key = [1u8; 32];
+        let result = engine
+            .deposit(
+                10.0,
+                Some("0x0000000000000000000000000000000000000001"),
+                Some(&key),
+            )
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("invalid address") || err_msg.contains("invalid private key"),
+            "unexpected error: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn real_withdraw_invalid_pool_address() {
+        let engine = YieldEngine::new(&rpc_config_with_invalid_pool());
+        let key = [1u8; 32];
+        let result = engine
+            .withdraw(
+                10.0,
+                Some("0x0000000000000000000000000000000000000001"),
+                Some(&key),
+            )
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("invalid address") || err_msg.contains("invalid private key"),
+            "unexpected error: {err_msg}"
+        );
+    }
+
+    fn rpc_config_with_invalid_usdc() -> YieldConfig {
+        YieldConfig {
+            chain_rpc_url: Some("http://localhost:8545".into()),
+            usdc_address: "0xZZZZ".into(),
+            ..enabled_config()
+        }
+    }
+
+    #[tokio::test]
+    async fn real_deposit_invalid_usdc_address() {
+        let engine = YieldEngine::new(&rpc_config_with_invalid_usdc());
+        let key = [1u8; 32];
+        let result = engine
+            .deposit(
+                10.0,
+                Some("0x0000000000000000000000000000000000000001"),
+                Some(&key),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn real_withdraw_invalid_usdc_address() {
+        let engine = YieldEngine::new(&rpc_config_with_invalid_usdc());
+        let key = [1u8; 32];
+        let result = engine
+            .withdraw(
+                10.0,
+                Some("0x0000000000000000000000000000000000000001"),
+                Some(&key),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    fn rpc_config_with_bad_rpc_url() -> YieldConfig {
+        YieldConfig {
+            chain_rpc_url: Some("not a url at all".into()),
+            ..enabled_config()
+        }
+    }
+
+    #[tokio::test]
+    async fn real_deposit_invalid_rpc_url() {
+        let engine = YieldEngine::new(&rpc_config_with_bad_rpc_url());
+        // Use a valid secp256k1 private key
+        let signing_key =
+            k256::ecdsa::SigningKey::random(&mut k256::elliptic_curve::rand_core::OsRng);
+        let key_bytes = signing_key.to_bytes();
+        let result = engine
+            .deposit(
+                10.0,
+                Some("0x0000000000000000000000000000000000000001"),
+                Some(&key_bytes),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid RPC URL"));
+    }
+
+    #[tokio::test]
+    async fn real_withdraw_invalid_rpc_url() {
+        let engine = YieldEngine::new(&rpc_config_with_bad_rpc_url());
+        let signing_key =
+            k256::ecdsa::SigningKey::random(&mut k256::elliptic_curve::rand_core::OsRng);
+        let key_bytes = signing_key.to_bytes();
+        let result = engine
+            .withdraw(
+                10.0,
+                Some("0x0000000000000000000000000000000000000001"),
+                Some(&key_bytes),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid RPC URL"));
+    }
+
+    // --- real_deposit with invalid agent_address ---
+
+    #[tokio::test]
+    async fn real_deposit_invalid_agent_address() {
+        let engine = YieldEngine::new(&rpc_config());
+        let signing_key =
+            k256::ecdsa::SigningKey::random(&mut k256::elliptic_curve::rand_core::OsRng);
+        let key_bytes = signing_key.to_bytes();
+        let result = engine
+            .deposit(10.0, Some("not-an-address"), Some(&key_bytes))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn real_withdraw_invalid_agent_address() {
+        let engine = YieldEngine::new(&rpc_config());
+        let signing_key =
+            k256::ecdsa::SigningKey::random(&mut k256::elliptic_curve::rand_core::OsRng);
+        let key_bytes = signing_key.to_bytes();
+        let result = engine
+            .withdraw(10.0, Some("not-an-address"), Some(&key_bytes))
+            .await;
+        assert!(result.is_err());
+    }
+
+    // --- get_a_token_balance with RPC set but invalid address ---
+
+    #[tokio::test]
+    async fn get_a_token_balance_invalid_rpc_url() {
+        let mut cfg = rpc_config();
+        cfg.chain_rpc_url = Some("not a url".into());
+        let engine = YieldEngine::new(&cfg);
+        let result = engine
+            .get_a_token_balance("0x0000000000000000000000000000000000000001")
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid RPC URL"));
+    }
+
+    #[tokio::test]
+    async fn get_a_token_balance_invalid_atoken_address() {
+        let mut cfg = rpc_config();
+        cfg.atoken_address = Some("invalid".into());
+        let engine = YieldEngine::new(&cfg);
+        let result = engine
+            .get_a_token_balance("0x0000000000000000000000000000000000000001")
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_a_token_balance_invalid_account_address() {
+        let engine = YieldEngine::new(&rpc_config());
+        let result = engine.get_a_token_balance("not-an-address").await;
+        assert!(result.is_err());
+    }
+
+    // --- parse_address with no 0x prefix but valid hex ---
+
+    #[test]
+    fn parse_address_valid_without_prefix() {
+        let addr = parse_address("0000000000000000000000000000000000000001");
+        assert!(addr.is_ok());
+    }
+
+    // --- amount_to_raw edge cases ---
+
+    #[test]
+    fn amount_to_raw_tiny_fraction() {
+        // 0.000001 USDC = 1 raw unit
+        assert_eq!(amount_to_raw(0.000001), U256::from(1u64));
+    }
+
+    #[test]
+    fn amount_to_raw_exact_one() {
+        assert_eq!(amount_to_raw(1.0), U256::from(1_000_000u64));
+    }
+
+    // --- YieldEngine Debug ---
+
+    #[test]
+    fn yield_engine_debug_includes_fields() {
+        let engine = YieldEngine::new(&enabled_config());
+        let debug_str = format!("{:?}", engine);
+        assert!(debug_str.contains("enabled"));
+        assert!(debug_str.contains("aave"));
+        assert!(debug_str.contains("base"));
+    }
+
+    // --- YieldEngine Clone ---
+
+    #[test]
+    fn yield_engine_clone_preserves_fields() {
+        let engine = YieldEngine::new(&enabled_config());
+        let cloned = engine.clone();
+        assert_eq!(engine.enabled(), cloned.enabled());
+        assert_eq!(engine.protocol(), cloned.protocol());
+        assert_eq!(engine.chain(), cloned.chain());
+        assert!((engine.min_deposit() - cloned.min_deposit()).abs() < f64::EPSILON);
+        assert!(
+            (engine.withdrawal_threshold() - cloned.withdrawal_threshold()).abs() < f64::EPSILON
+        );
     }
 }

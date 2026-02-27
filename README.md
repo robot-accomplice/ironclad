@@ -35,6 +35,12 @@ ironclad init
 ironclad serve
 ```
 
+### Quick Upgrade
+
+```bash
+ironclad update binary --method download --yes
+```
+
 ## Architecture
 
 The workspace is organized as eleven crates with a strict dependency hierarchy:
@@ -125,6 +131,21 @@ cargo build --release
 # Run tests
 cargo test
 ```
+
+## v0.8.0 Go-Live Regression Gate
+
+Before cutting or shipping `v0.8.0`, run the canonical zero-regression gate:
+
+```bash
+just test-v080-go-live
+```
+
+This gate includes:
+
+- workspace/unit/integration/regression batteries,
+- bounded soak/fuzz checks,
+- live CLI + dashboard/web UAT smoke checks, and
+- release docs/artifact/provenance consistency checks.
 
 ## Configuration
 

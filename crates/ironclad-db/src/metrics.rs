@@ -55,6 +55,9 @@ pub fn record_transaction(
 }
 
 pub fn query_transactions(db: &Database, hours: i64) -> Result<Vec<TransactionRecord>> {
+    // Ensure hours is positive to prevent a negative value from producing
+    // a malformed datetime modifier (e.g., "--5 hours" becomes a SQL comment).
+    let hours = hours.unsigned_abs().max(1);
     let conn = db.conn();
     let mut stmt = conn
         .prepare(

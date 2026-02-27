@@ -355,4 +355,69 @@ mod tests {
         let back: DeviceIdentity = serde_json::from_str(&json).unwrap();
         assert_eq!(id.device_id, back.device_id);
     }
+
+    // ── Coverage: Debug impl for DeviceIdentity ─────────────────
+
+    #[test]
+    fn identity_debug_format() {
+        let id = test_identity();
+        let dbg = format!("{:?}", id);
+        assert!(dbg.contains("DeviceIdentity"));
+        assert!(dbg.contains("device_id"));
+        assert!(dbg.contains("public_key_hex"));
+        assert!(dbg.contains("created_at"));
+        assert!(dbg.contains("device_name"));
+        // signing_key should show [REDACTED], not the actual key
+        assert!(dbg.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn identity_debug_without_signing_key() {
+        let mut id = test_identity();
+        id.signing_key = None;
+        let dbg = format!("{:?}", id);
+        assert!(dbg.contains("DeviceIdentity"));
+        assert!(dbg.contains("None"));
+    }
+
+    // ── Coverage: sign method ────────────────────────────────────
+
+    #[test]
+    fn identity_sign_succeeds() {
+        let id = test_identity();
+        let sig = id.sign(b"hello world").unwrap();
+        assert!(!sig.is_empty());
+    }
+
+    #[test]
+    fn identity_sign_without_key_fails() {
+        let mut id = test_identity();
+        id.signing_key = None;
+        let result = id.sign(b"test data");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no signing key"));
+    }
+
+    // ── Coverage: DeviceManager::identity accessor ───────────────
+
+    #[test]
+    fn manager_identity_accessor() {
+        let mgr = test_manager();
+        let id = mgr.identity();
+        assert!(id.device_id.starts_with("dev_"));
+    }
+
+    // ── Coverage: DeviceManager::all_devices ─────────────────────
+
+    #[test]
+    fn all_devices_includes_all_states() {
+        let mut mgr = test_manager();
+        mgr.initiate_pairing("d1", "k1", "dev1").unwrap();
+        mgr.initiate_pairing("d2", "k2", "dev2").unwrap();
+        mgr.verify_pairing("d1").unwrap();
+        mgr.reject_pairing("d2").unwrap();
+
+        let all = mgr.all_devices();
+        assert_eq!(all.len(), 2);
+    }
 }

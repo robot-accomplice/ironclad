@@ -1,4 +1,4 @@
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 # C4 Level 3: Component Diagram -- ironclad-channels
 
 *Channel adapters for user-facing chat platforms and the zero-trust agent-to-agent (A2A) communication protocol.*
@@ -57,8 +57,8 @@ flowchart TB
 
     subgraph SharedTrait ["Shared Channel Trait"]
         CHANNEL_TRAIT["trait ChannelAdapter:<br/>async fn recv() -> InboundMessage<br/>async fn send(OutboundMessage)<br/>fn platform_name() -> &str"]
-        INBOUND["InboundMessage:<br/>source, text, media,<br/>platform_metadata"]
-        OUTBOUND["OutboundMessage:<br/>text, attachments,<br/>reply_to, format_hints"]
+        INBOUND["InboundMessage:<br/>id, platform, sender_id,<br/>content, timestamp, metadata"]
+        OUTBOUND["OutboundMessage:<br/>content, recipient_id,<br/>metadata"]
     end
 
     subgraph DiscordDetail ["discord.rs — Full Gateway Integration"]
@@ -135,6 +135,6 @@ sequenceDiagram
 
 **External crates**: `reqwest`, WebSocket (platform), `x25519-dalek` (ECDH), `aes-gcm`, `hkdf`, `sha2` (A2A handshake and encryption)
 
-**Internal crates**: `ironclad-core` (types, config)
+**Internal crates**: `ironclad-core` (types, config), `ironclad-db` (delivery_queue in delivery.rs, router.rs)
 
 **Depended on by**: `ironclad-server`

@@ -7,7 +7,7 @@ This guide covers deploying Ironclad in production environments.
 - **Rust toolchain** — 1.85+ (edition 2024)
 - **SQLite** — 3.35+ (bundled via `rusqlite`, no system install required)
 - **At least one LLM provider:**
-  - Local: [Ollama](https://ollama.ai) (no API key needed)
+  - Local (Apertus-capable): SGLang (recommended), vLLM, Docker Model Runner, or [Ollama](https://ollama.ai)
   - Cloud: OpenAI, Anthropic, Google, OpenRouter, or Moonshot API key
 
 ## Quick Start
@@ -40,6 +40,7 @@ ironclad setup
 ```
 
 The wizard walks through provider selection, API key storage, model testing, and workspace configuration.
+For local execution, it defaults to a SGLang-first Apertus path only when no local model framework/model cache is detected, and filters model options by detected system resources.
 
 ### Start the server
 
@@ -48,6 +49,22 @@ ironclad serve -c ironclad.toml
 ```
 
 The dashboard is available at `http://127.0.0.1:18789`.
+
+### Delivery retry durability
+
+Ironclad persists retryable outbound channel deliveries in SQLite (`delivery_queue`) and recovers pending/in-flight items on process restart. This prevents transient retry backlog loss during daemon restarts and crash recovery.
+
+Operator controls for failed deliveries:
+
+- `GET /api/channels/dead-letter?limit=<n>` to inspect dead-letter rows.
+- `POST /api/channels/dead-letter/{id}/replay` to move a dead-letter item back to pending.
+- `ironclad channels dead-letter` and `ironclad channels replay <id>` provide equivalent CLI workflows.
+
+Skills catalog operations:
+
+- `GET /api/skills/catalog` lists catalog entries (built-in + registry-backed).
+- `POST /api/skills/catalog/install` installs named skills with checksum verification and rollback on partial failure.
+- `POST /api/skills/catalog/activate` reloads runtime skills after installation.
 
 ---
 
@@ -290,6 +307,17 @@ agent.example.com {
 ```
 
 Caddy automatically provisions TLS certificates via Let's Encrypt.
+
+When running behind a reverse proxy, configure trusted proxy CIDRs so Ironclad only honors forwarded client IP headers from known hops:
+
+```toml
+[server]
+trusted_proxy_cidrs = ["10.0.0.0/8", "192.168.0.0/16"]
+per_ip_rate_limit_requests = 300
+per_actor_rate_limit_requests = 200
+```
+
+Without trusted proxy CIDRs, Ironclad falls back to direct socket/IP behavior and ignores forwarded client IP headers.
 
 ---
 
@@ -563,3 +591,14 @@ ironclad daemon start
 - External reverse proxy with TLS
 - Automated backups
 - Monitoring and alerting
+
+---
+
+## Release Provenance Gate Outputs
+
+For release tags, GitHub Actions now enforces a mandatory `release-gates` stage before build/publish.
+
+- Smoke checks run critical API integration tests (`server_api::health_endpoint`, `server_api::session_create_and_list`).
+- Provenance checks run `scripts/generate-provenance.sh --self-test`.
+- Release assets include both `SHA256SUMS.txt` and `PROVENANCE.json`.
+- Each packaged binary receives a build provenance attestation in the release workflow.

@@ -4,6 +4,25 @@ Ironclad is configured via a TOML file, typically at `~/.ironclad/ironclad.toml`
 
 A minimal config requires only the `[agent]`, `[server]`, `[database]`, and `[models]` sections. All other sections have sensible defaults and can be omitted.
 
+## Runtime Reload Workflow
+
+`ironclad.toml` is runtime-reloadable. Ironclad now treats the file as the source of truth for config mutation flows:
+
+1. Validate candidate config (parse + schema + semantic checks).
+2. Create a timestamped backup of the current file.
+3. Persist the new config atomically.
+4. Apply the config to runtime state immediately.
+
+Operationally, this enables the workflow:
+
+- backup -> edit -> lint -> apply/reload
+
+Notes:
+
+- `/api/config` persists updates to `ironclad.toml` and applies them immediately.
+- `/api/config/status` exposes last apply result, backup path, and deferred-apply hints.
+- Some fields may still be marked deferred for full effect (for example listener bind/port), even though they are persisted immediately.
+
 ```toml
 [agent]
 name = "Roboticus"
@@ -31,6 +50,12 @@ Core agent identity.
 | `id` | `String` | **required** | Unique agent identifier (must be non-empty) |
 | `workspace` | `PathBuf` | `~/.ironclad/workspace` | Path to the agent's workspace directory |
 | `log_level` | `String` | `"info"` | Log verbosity: `trace`, `debug`, `info`, `warn`, `error` |
+| `delegation_enabled` | `bool` | `true` | Enable decomposition-gate evaluation and delegation policies |
+| `delegation_min_complexity` | `f64` | `0.35` | Minimum complexity score before decomposition is considered |
+| `delegation_min_utility_margin` | `f64` | `0.15` | Minimum delegation utility margin required to prefer subtask delegation over centralized execution |
+| `specialist_creation_requires_approval` | `bool` | `true` | Require explicit user approval before creating a new specialist when no existing specialist fits |
+
+When specialist creation approval is required, operators can request an explicit configuration preview before approving creation (review-first flow).
 
 ---
 
@@ -47,6 +72,9 @@ HTTP server settings.
 | `log_max_days` | `u32` | `7` | Number of days to retain log files |
 | `rate_limit_requests` | `u32` | `100` | Maximum requests per rate-limit window |
 | `rate_limit_window_secs` | `u64` | `60` | Rate-limit window duration in seconds |
+| `per_ip_rate_limit_requests` | `u32` | `300` | Per-client-IP request budget per window |
+| `per_actor_rate_limit_requests` | `u32` | `200` | Per-authenticated-actor request budget per window |
+| `trusted_proxy_cidrs` | `String[]` | `[]` | CIDR ranges trusted to supply forwarded client IP headers |
 
 ---
 
@@ -403,6 +431,7 @@ Auto-update settings.
 |-------|------|---------|-------------|
 | `check_on_start` | `bool` | `true` | Check for updates on server startup |
 | `channel` | `String` | `"stable"` | Update channel: `stable`, `beta`, `dev` |
+| `registry_url` | `String` | `"https://roboticus.ai/registry/manifest.json"` | Skills/providers registry manifest URL for catalog and content updates |
 
 ---
 
@@ -438,12 +467,12 @@ Session management.
 |-------|------|---------|-------------|
 | `ttl_seconds` | `u64` | `86400` | Session time-to-live (24 hours) |
 | `scope_mode` | `String` | `"agent"` | Session scoping: `agent` (one per agent), `peer` (one per peer), `group` (shared) |
-| `reset_schedule` | `String?` | `None` | Cron expression for periodic session reset (e.g., `"0 0 * * *"`) |
+| `reset_schedule` | `String?` | `None` | Cron expression for periodic session reset (e.g., `"0 0 * * *"` or `"CRON_TZ=UTC+02:00 0 9 * * *"`) |
 
 Notes:
 - `scope_mode` is applied by web and channel message handlers when auto-creating sessions.
 - `ttl_seconds` is enforced by the heartbeat `SessionGovernor` task.
-- When `reset_schedule` is set, the governor performs hourly boundary checks and rotates agent-scope sessions.
+- When `reset_schedule` is set, the governor evaluates the cron expression directly each heartbeat tick and rotates agent-scope sessions once per matching slot.
 
 ---
 

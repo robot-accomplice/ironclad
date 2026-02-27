@@ -282,7 +282,7 @@ sequenceDiagram
 
 ---
 
-## 4. 13-Step Bootstrap Sequence
+## 4. 12-Step Bootstrap Sequence
 
 Server `main()` initializing all crates in dependency order with error handling at each step.
 
@@ -304,13 +304,13 @@ sequenceDiagram
 
     Note over Main,Core: Step 2: Load config
     Main->>Core: load ironclad.toml
-    Core->>Core: parse all 14 sub-structs, validate budget pct sum=100
+    Core->>Core: parse all ~30 sub-structs, validate budget pct sum=100
     Core-->>Main: IroncladConfig
 
     Note over Main,DB: Step 3: Initialize database
     Main->>DB: Database::new(config.database.path)
     DB->>DB: open SQLite, enable WAL mode
-    DB->>DB: run_migrations() (28 tables incl. indexes + FTS5)
+    DB->>DB: run_migrations() (34 tables incl. indexes + FTS5)
     DB-->>Main: Database (Arc<Mutex<Connection>>)
 
     Note over Main,Wallet: Step 4: Load wallet
@@ -336,7 +336,7 @@ sequenceDiagram
 
     Note over Main,Agent: Step 7: Initialize agent
     Main->>Agent: AgentLoop::new(config.agent, db, llm_service)
-    Agent->>Agent: register built-in tools (10 categories)
+    Agent->>Agent: register built-in tools (~8 tools + optional Obsidian)
     Agent->>Agent: init policy engine (6 built-in rules)
     Agent->>Agent: init injection defense (L1-L4)
     Agent-->>Main: AgentLoop
@@ -346,9 +346,9 @@ sequenceDiagram
     Note over Main: (no SkillLoader::load_all at startup)
 
     Note over Main,Schedule: Step 9: Start scheduler
-    Main->>Schedule: DurableScheduler::start(config, db, agent)
+    Main->>Schedule: HeartbeatDaemon::new(60_000)
     Schedule->>Schedule: start heartbeat tick loop (tokio::time::interval)
-    Schedule->>Schedule: register 6 default tasks
+    Schedule->>Schedule: register 8 default tasks
     Schedule-->>Main: scheduler handle (JoinHandle)
 
     Note over Main,Channels: Step 10: Start channels
@@ -363,7 +363,7 @@ sequenceDiagram
 
     Note over Main,HTTP: Step 11: Bind HTTP server
     Main->>HTTP: axum::serve(router, config.server.bind:port)
-    HTTP->>HTTP: mount 42 REST API routes + dashboard SPA + WebSocket upgrade
+    HTTP->>HTTP: mount ~95 REST API routes + dashboard SPA + WebSocket upgrade
     HTTP-->>Main: server handle
 
     Note over Main: Step 12: Await shutdown
@@ -568,10 +568,8 @@ sequenceDiagram
                     Task->>MemDB: DELETE lowest importance episodic_memory exceeding threshold
                     Task->>MemDB: rebuild memory_fts after bulk deletes
                     MemDB-->>Task: pruned counts
-                else job is agentTurn
-                    Task->>Agent: inject message (payload.message, model, session_target)
-                    Agent->>Agent: run ReAct loop turn
-                    Agent-->>Task: turn result
+                else job is agentTurn (DEPRECATED)
+                    Task->>Task: agent_turn_legacy: noop with warning log
                 else job is other built-in task
                     Task->>Task: run task-specific logic
                 end
@@ -590,7 +588,7 @@ sequenceDiagram
 ---
 
 ## 8. Approval Workflow: Gated Tool Execution
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Temporal pause/resume flow when a tool call requires human approval. The agent loop blocks on a `oneshot` channel until an admin approves, denies, or the request times out.
 
@@ -645,7 +643,7 @@ sequenceDiagram
 ---
 
 ## 9. Streaming Response: Token-by-Token Flow
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 SSE streaming from LLM provider through the server to a connected client. Each chunk is parsed, accumulated, and forwarded as an SSE event.
 
@@ -656,7 +654,7 @@ sequenceDiagram
     participant LLM as ironclad-llm/client.rs
     participant Provider as LLM Provider
 
-    Client->>Server: POST /api/chat (stream: true)
+    Client->>Server: POST /api/agent/message/stream
     Server->>LLM: forward_stream(payload)
     LLM->>Provider: HTTP/2 POST (Accept: text/event-stream)
     Provider-->>LLM: HTTP 200 (Transfer-Encoding: chunked)
@@ -684,7 +682,7 @@ sequenceDiagram
 ---
 
 ## 10. Context Observatory: Turn Recording & Analysis
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Background observability pipeline that records turn metrics and context snapshots, then periodically computes efficiency grades and tuning recommendations.
 
@@ -692,48 +690,38 @@ Background observability pipeline that records turn metrics and context snapshot
 sequenceDiagram
     participant Provider as LLM Provider
     participant Loop as ironclad-agent/loop.rs
-    participant Transform as TransformPipeline
-    participant Recorder as TurnRecorder
     participant DB as ironclad-db
-    participant Analyzer as Observatory Analyzer
+    participant Efficiency as ironclad-db/efficiency.rs
     participant Bus as EventBus
 
     Provider-->>Loop: LLM response
-    Loop->>Transform: process response (extract reasoning, normalize)
-    Transform-->>Loop: cleaned response + metrics
+    Loop->>Loop: process response inline (extract reasoning, normalize)
 
     Note over Loop: Foreground: deliver response to user
 
-    Loop->>Recorder: record_turn(turn_id, metrics)
-    Note over Recorder: Background task (tokio::spawn)
+    Loop->>Loop: record turn metrics (background tokio::spawn)
+    Note over Loop: capture: tokens_in, tokens_out, duration_ms, tool_calls, cache_hit
 
-    Recorder->>Recorder: capture: tokens_in, tokens_out, duration_ms, tool_calls, cache_hit
-    Recorder->>DB: INSERT turn_observations (metrics)
-    Recorder->>Recorder: capture context snapshot: tier_sizes, utilization, trim_count
-    Recorder->>DB: INSERT context_snapshots (snapshot_data)
+    Loop->>DB: INSERT turns (metrics columns)
+    Loop->>DB: INSERT context_snapshots (snapshot_data)
 
-    Note over Analyzer: Periodic analysis (every N turns or time interval)
+    Note over Efficiency: Periodic analysis (heartbeat MetricSnapshot task)
 
-    Analyzer->>DB: SELECT recent turn_observations + context_snapshots
-    DB-->>Analyzer: observation window (last 50 turns)
-    Analyzer->>Analyzer: compute token efficiency (output/input ratio)
-    Analyzer->>Analyzer: compute cache hit rate
-    Analyzer->>Analyzer: compute trim frequency
-    Analyzer->>Analyzer: compute tool success rate
-    Analyzer->>Analyzer: trend analysis (sliding window)
+    Efficiency->>DB: SELECT recent turns + context_snapshots
+    DB-->>Efficiency: observation window (last 50 turns)
+    Efficiency->>Efficiency: compute_efficiency(): token ratio, cache hit rate, trim frequency, tool success rate
+    Efficiency->>Efficiency: heuristic grading (A–F)
+    Efficiency->>DB: INSERT metric_snapshots (efficiency grades)
 
-    Analyzer->>Analyzer: assign grade (A–F)
-    Analyzer->>DB: INSERT observatory_grades (grade, breakdown)
-
-    Analyzer->>Analyzer: generate recommendations
-    Analyzer->>Bus: publish(ObservatoryUpdate { grade, recommendations })
+    Efficiency->>Efficiency: generate recommendations
+    Efficiency->>Bus: publish(ObservatoryUpdate { grade, recommendations })
     Bus->>Bus: Dashboard subscribers receive update
 ```
 
 ---
 
 ## 11. Outcome Grading: Multi-Channel Feedback
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Three feedback channels (dashboard, Telegram reactions, REST API) converge into a single `record_feedback()` path. The `MetricEngine` aggregates feedback by model, tool, and time window.
 
@@ -743,28 +731,28 @@ sequenceDiagram
     participant Telegram as Telegram Channel
     participant API as REST API Client
     participant Server as ironclad-server
-    participant FeedbackDB as ironclad-db (feedback)
-    participant Metrics as MetricEngine
+    participant FeedbackDB as ironclad-db (turn_feedback)
+    participant Metrics as ironclad-db/efficiency.rs
 
     Note over Dashboard,Metrics: Three feedback channels converge on record_feedback()
 
     par Dashboard feedback
         Dashboard->>Server: POST /api/feedback { turn_id, rating: 5, comment }
         Server->>Server: validate turn_id exists
-        Server->>FeedbackDB: INSERT outcome_feedback (source=dashboard, turn_id, rating, comment)
+        Server->>FeedbackDB: INSERT turn_feedback (source=dashboard, turn_id, rating, comment)
     and Telegram feedback
         Telegram->>Server: reaction emoji on agent message
         Server->>Server: map emoji to rating (thumbs_up=5, thumbs_down=1)
-        Server->>FeedbackDB: INSERT outcome_feedback (source=telegram, turn_id, rating)
+        Server->>FeedbackDB: INSERT turn_feedback (source=telegram, turn_id, rating)
     and API feedback
         API->>Server: POST /api/feedback { turn_id, rating: 3, tags: ["slow"] }
         Server->>Server: validate API key + turn ownership
-        Server->>FeedbackDB: INSERT outcome_feedback (source=api, turn_id, rating, tags)
+        Server->>FeedbackDB: INSERT turn_feedback (source=api, turn_id, rating, tags)
     end
 
     Note over FeedbackDB: All feedback now in single table
 
-    Metrics->>FeedbackDB: SELECT outcome_feedback for session/model/tool
+    Metrics->>FeedbackDB: SELECT turn_feedback for session/model/tool
     FeedbackDB-->>Metrics: feedback records
     Metrics->>Metrics: aggregate by model (avg rating per model)
     Metrics->>Metrics: aggregate by tool (avg rating when tool used)
@@ -776,10 +764,10 @@ sequenceDiagram
 
 ---
 
-## 12. Network Binding: TLS Handshake & Interface Resolution
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+## 12. Network Binding: TCP Listener & Interface Resolution
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
-Server startup network binding: interface resolution, TCP listener creation, optional TLS configuration with rustls, and the TLS 1.3 handshake sequence for incoming clients.
+Server startup network binding: interface resolution and TCP listener creation. **Note**: TLS termination (rustls, TlsAcceptor, ALPN, certificate loading) shown below is **not yet implemented** in v0.8.0; the server currently uses plain `axum::serve(listener, app)` with `TcpListener::bind`. TLS is expected to be handled by a reverse proxy (nginx, Caddy) in production. The TLS sequence below is retained as a design target.
 
 ```mermaid
 sequenceDiagram
@@ -829,7 +817,7 @@ sequenceDiagram
 ---
 
 ## 13. Browser Tool: CDP Session Lifecycle
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Full lifecycle of a Chrome DevTools Protocol session: browser launch, CDP WebSocket connect, target creation, action execution, and idle-based teardown.
 
@@ -896,14 +884,14 @@ sequenceDiagram
 | 1. End-to-End Request | Diagram 1 (Primary Request), Diagram 4 (Memory), Diagram 6 (Injection) | ironclad-c4-agent, ironclad-c4-llm, ironclad-c4-channels, ironclad-c4-db | sessions, session_messages, turns, tool_calls, policy_decisions, inference_costs, semantic_cache, embeddings |
 | 2. Cache-Augmented Inference | Diagram 2 (Semantic Cache), Diagram 3 (Heuristic Router) | ironclad-c4-llm, ironclad-c4-db | semantic_cache, inference_costs |
 | 3. x402 Payment-Gated Inference | Diagram 7 (Financial + Yield) | ironclad-c4-wallet, ironclad-c4-llm | transactions, inference_costs, policy_decisions |
-| 4. 13-Step Bootstrap | All diagrams (covers full system init) | ironclad-c4-server (bootstrap sequence) | identity, skills, cron_jobs, semantic_cache |
+| 4. 12-Step Bootstrap | All diagrams (covers full system init) | ironclad-c4-server (bootstrap sequence) | identity, skills, cron_jobs, semantic_cache |
 | 5. Injection Attack Blocked | Diagram 6 (Multi-Layer Injection Defense) | ironclad-c4-agent | policy_decisions, metric_snapshots |
 | 6. Skill-Triggered Script | Diagram 9 (Skill Execution) | ironclad-c4-agent, ironclad-c4-db | skills, policy_decisions |
 | 7. Cron Lease + Execution | Diagram 8 (Cron + Heartbeat Scheduling) | ironclad-c4-schedule, ironclad-c4-db | cron_jobs, cron_runs, working_memory, episodic_memory, memory_fts |
 | 8. Approval Workflow | Diagram 10 (Approval Workflow) | ironclad-c4-agent, ironclad-c4-server | approval_requests, policy_decisions |
 | 9. Streaming Response | Diagram 14 (Streaming LLM) | ironclad-c4-llm, ironclad-c4-server | inference_costs, semantic_cache |
-| 10. Context Observatory | Diagram 16 (Context Observatory), Diagram 12 (Context Assembly) | ironclad-c4-agent, ironclad-c4-db | turn_observations, context_snapshots, observatory_grades |
-| 11. Outcome Grading | Diagram 16 (Context Observatory) | ironclad-c4-server, ironclad-c4-db | outcome_feedback, metric_snapshots |
+| 10. Context Observatory | Diagram 16 (Context Observatory), Diagram 12 (Context Assembly) | ironclad-c4-agent, ironclad-c4-db | turns, context_snapshots, metric_snapshots |
+| 11. Outcome Grading | Diagram 16 (Context Observatory) | ironclad-c4-server, ironclad-c4-db | turn_feedback, metric_snapshots |
 | 12. Network Binding | (infrastructure; no dataflow diagram) | ironclad-c4-server | (no tables; network layer) |
 | 13. Browser Tool CDP | Diagram 11 (Browser Tool Execution) | ironclad-c4-agent | (no tables; session state in-memory) |
 

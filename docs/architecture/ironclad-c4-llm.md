@@ -1,4 +1,4 @@
-<!-- last_updated: 2026-02-23, version: 0.5.0 -->
+<!-- last_updated: 2026-02-26, version: 0.8.0 -->
 # C4 Level 3: Component Diagram -- ironclad-llm
 
 *LLM client layer: HTTP client (reqwest), provider translation (UnifiedRequest/UnifiedResponse), **heuristic** complexity classification and model routing, semantic cache (in-memory HashMap with SQLite persistence), circuit breaker, deduplication, and multi-provider embedding client. No ONNX or ML models.*
@@ -27,7 +27,8 @@ flowchart TB
         ACCURACY["accuracy.rs<br/>QualityTracker +<br/>Quality-Target Selection"]
         COMPRESSION["compression.rs<br/>PromptCompressor<br/>(token estimation)"]
         OAUTH["oauth.rs<br/>OAuthManager<br/>(token refresh)"]
-        TRANSFORM["transform.rs<br/>Request/Response<br/>Transform Pipeline"]
+        TRANSFORM["transform.rs<br/>(dead code — not in pub mod list)<br/>Request/Response Transform Pipeline"]
+        LLM_SERVICE["LlmService<br/>Top-Level Facade:<br/>cache + breakers + dedup +<br/>router + client + providers +<br/>capacity + embedding"]
     end
 
     subgraph CacheDetail ["cache.rs — HashMap + SQLite Persistence"]

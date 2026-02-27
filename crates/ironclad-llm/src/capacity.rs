@@ -67,7 +67,7 @@ impl CapacityTracker {
 
     /// Register a provider with its capacity limits.
     pub fn register(&self, name: &str, tpm_limit: Option<u64>, rpm_limit: Option<u64>) {
-        let mut providers = self.providers.lock().expect("mutex poisoned");
+        let mut providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
         providers.insert(
             name.to_string(),
             ProviderCapacity::new(tpm_limit, rpm_limit),
@@ -76,7 +76,7 @@ impl CapacityTracker {
 
     /// Record a completed request with token usage.
     pub fn record(&self, provider: &str, tokens: u64) {
-        let mut providers = self.providers.lock().expect("mutex poisoned");
+        let mut providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(cap) = providers.get_mut(provider) {
             let now = Instant::now();
             cap.token_events.push((now, tokens));
@@ -88,7 +88,7 @@ impl CapacityTracker {
 
     /// Returns a headroom score from 0.0 (saturated) to 1.0 (idle) for a provider.
     pub fn headroom(&self, provider: &str) -> f64 {
-        let providers = self.providers.lock().expect("mutex poisoned");
+        let providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
         let cap = match providers.get(provider) {
             Some(c) => c,
             None => return 1.0,
@@ -133,7 +133,7 @@ impl CapacityTracker {
     }
 
     pub fn stats(&self, provider: &str) -> Option<ProviderCapacityStats> {
-        let mut providers = self.providers.lock().expect("mutex poisoned");
+        let mut providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
         let cap = providers.get_mut(provider)?;
         let cutoff = Instant::now() - self.window;
         cap.prune(cutoff);
@@ -164,7 +164,7 @@ impl CapacityTracker {
 
     pub fn list_stats(&self) -> Vec<(String, ProviderCapacityStats)> {
         let names: Vec<String> = {
-            let providers = self.providers.lock().expect("mutex poisoned");
+            let providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
             providers.keys().cloned().collect()
         };
         names
@@ -260,5 +260,218 @@ mod tests {
         }
         let h = tracker.headroom("openai");
         assert!(h < 0.2, "should be constrained by RPM: {h}");
+    }
+
+    // ── stats() tests ──────────────────────────────────
+
+    #[test]
+    fn stats_returns_none_for_unknown_provider() {
+        let tracker = CapacityTracker::new(60);
+        assert!(tracker.stats("nonexistent").is_none());
+    }
+
+    #[test]
+    fn stats_returns_correct_values_idle() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("openai", Some(10_000), Some(100));
+        let stats = tracker.stats("openai").unwrap();
+        assert_eq!(stats.tpm_limit, Some(10_000));
+        assert_eq!(stats.rpm_limit, Some(100));
+        assert_eq!(stats.tokens_used, 0);
+        assert_eq!(stats.requests_used, 0);
+        assert!((stats.token_utilization - 0.0).abs() < f64::EPSILON);
+        assert!((stats.request_utilization - 0.0).abs() < f64::EPSILON);
+        assert!((stats.headroom - 1.0).abs() < f64::EPSILON);
+        assert!(!stats.near_capacity);
+    }
+
+    #[test]
+    fn stats_reflects_usage() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("openai", Some(1000), Some(100));
+        tracker.record("openai", 500);
+        tracker.record("openai", 200);
+        let stats = tracker.stats("openai").unwrap();
+        assert_eq!(stats.tokens_used, 700);
+        assert_eq!(stats.requests_used, 2);
+        assert!((stats.token_utilization - 0.7).abs() < 0.01);
+        assert!((stats.request_utilization - 0.02).abs() < 0.01);
+        // headroom is min(1-0.7, 1-0.02) = 0.3
+        assert!((stats.headroom - 0.3).abs() < 0.01);
+        assert!(!stats.near_capacity);
+    }
+
+    #[test]
+    fn stats_near_capacity_when_saturated() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("openai", Some(100), Some(10));
+        for _ in 0..10 {
+            tracker.record("openai", 10);
+        }
+        let stats = tracker.stats("openai").unwrap();
+        assert!(stats.near_capacity);
+        assert!(stats.headroom < 0.1);
+    }
+
+    #[test]
+    fn stats_no_limits_zero_utilization() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("local", None, None);
+        tracker.record("local", 999_999);
+        let stats = tracker.stats("local").unwrap();
+        assert_eq!(stats.tpm_limit, None);
+        assert_eq!(stats.rpm_limit, None);
+        assert!((stats.token_utilization - 0.0).abs() < f64::EPSILON);
+        assert!((stats.request_utilization - 0.0).abs() < f64::EPSILON);
+        assert!((stats.headroom - 1.0).abs() < f64::EPSILON);
+        assert!(!stats.near_capacity);
+    }
+
+    #[test]
+    fn stats_only_rpm_limit() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("provider", None, Some(20));
+        for _ in 0..10 {
+            tracker.record("provider", 500);
+        }
+        let stats = tracker.stats("provider").unwrap();
+        assert_eq!(stats.requests_used, 10);
+        assert!((stats.request_utilization - 0.5).abs() < 0.01);
+        // token_utilization should be 0 since no tpm_limit
+        assert!((stats.token_utilization - 0.0).abs() < f64::EPSILON);
+        assert!((stats.headroom - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn stats_only_tpm_limit() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("provider", Some(1000), None);
+        tracker.record("provider", 300);
+        let stats = tracker.stats("provider").unwrap();
+        assert_eq!(stats.tokens_used, 300);
+        assert!((stats.token_utilization - 0.3).abs() < 0.01);
+        assert!((stats.request_utilization - 0.0).abs() < f64::EPSILON);
+        assert!((stats.headroom - 0.7).abs() < 0.01);
+    }
+
+    // ── list_stats() tests ──────────────────────────────────
+
+    #[test]
+    fn list_stats_empty_tracker() {
+        let tracker = CapacityTracker::new(60);
+        let all = tracker.list_stats();
+        assert!(all.is_empty());
+    }
+
+    #[test]
+    fn list_stats_multiple_providers() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("openai", Some(10_000), Some(100));
+        tracker.register("anthropic", Some(5_000), Some(50));
+        tracker.record("openai", 500);
+        let all = tracker.list_stats();
+        assert_eq!(all.len(), 2);
+        let names: Vec<&str> = all.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"openai"));
+        assert!(names.contains(&"anthropic"));
+    }
+
+    // ── is_sustained_hot() tests ──────────────────────────────────
+
+    #[test]
+    fn is_sustained_hot_false_when_idle() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("openai", Some(10_000), Some(100));
+        assert!(!tracker.is_sustained_hot("openai"));
+    }
+
+    #[test]
+    fn is_sustained_hot_false_for_unknown() {
+        let tracker = CapacityTracker::new(60);
+        assert!(!tracker.is_sustained_hot("unknown"));
+    }
+
+    #[test]
+    fn is_sustained_hot_false_with_high_util_low_samples() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("openai", Some(100), Some(100));
+        // High utilization (95 of 100 tokens) but only 1 request
+        tracker.record("openai", 95);
+        // Only 1 request, not enough samples (need >=3 or >=1024 tokens)
+        assert!(
+            !tracker.is_sustained_hot("openai"),
+            "should not be sustained_hot with too few samples"
+        );
+    }
+
+    #[test]
+    fn is_sustained_hot_true_with_high_util_enough_requests() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("openai", Some(100), Some(10));
+        // 3 requests, each pushing token usage high
+        for _ in 0..3 {
+            tracker.record("openai", 31);
+        }
+        assert!(
+            tracker.is_sustained_hot("openai"),
+            "should be sustained_hot with 93% token util and 3+ requests"
+        );
+    }
+
+    #[test]
+    fn is_sustained_hot_true_via_rpm_pressure() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("openai", None, Some(10));
+        // 9 requests => 90% RPM utilization
+        for _ in 0..9 {
+            tracker.record("openai", 500);
+        }
+        assert!(
+            tracker.is_sustained_hot("openai"),
+            "should be sustained_hot via RPM with enough samples"
+        );
+    }
+
+    #[test]
+    fn is_sustained_hot_true_via_high_token_count() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("openai", Some(1100), Some(1000));
+        // 2 requests but 1024+ tokens => enough_samples
+        tracker.record("openai", 600);
+        tracker.record("openai", 500);
+        // ~1100/1100 = 100% token util
+        assert!(
+            tracker.is_sustained_hot("openai"),
+            "should be sustained_hot with 1024+ tokens and high pressure"
+        );
+    }
+
+    // ── record() edge cases ──────────────────────────────────
+
+    #[test]
+    fn record_unknown_provider_is_noop() {
+        let tracker = CapacityTracker::new(60);
+        // Should not panic
+        tracker.record("nonexistent", 100);
+        assert_eq!(tracker.headroom("nonexistent"), 1.0);
+    }
+
+    // ── ProviderCapacityStats field tests ──────────────────────────
+
+    #[test]
+    fn stats_utilization_clamped_to_one() {
+        let tracker = CapacityTracker::new(60);
+        tracker.register("openai", Some(100), Some(5));
+        // Exceed both limits
+        for _ in 0..10 {
+            tracker.record("openai", 50);
+        }
+        let stats = tracker.stats("openai").unwrap();
+        // token_utilization is clamped to 1.0
+        assert!((stats.token_utilization - 1.0).abs() < f64::EPSILON);
+        // request_utilization is clamped to 1.0
+        assert!((stats.request_utilization - 1.0).abs() < f64::EPSILON);
+        assert!((stats.headroom - 0.0).abs() < f64::EPSILON);
+        assert!(stats.near_capacity);
     }
 }

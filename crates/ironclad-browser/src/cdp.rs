@@ -17,6 +17,15 @@ pub struct CdpTarget {
     pub ws_url: Option<String>,
 }
 
+/// Low-level HTTP client for the Chrome DevTools Protocol JSON endpoints.
+///
+/// # Security
+///
+/// The CDP port (`http://127.0.0.1:<port>`) is accessible to **all** local
+/// processes. Any program running on the same host can list targets, attach
+/// debuggers, and execute arbitrary JavaScript in browser contexts. In
+/// production deployments, callers should consider firewall rules or network
+/// namespaces to restrict access to the CDP port.
 pub struct CdpClient {
     http_base: String,
     client: reqwest::Client,
@@ -30,7 +39,7 @@ impl CdpClient {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
-                .unwrap_or_default(),
+                .expect("HTTP client initialization - check TLS certificates"),
             command_id: AtomicU64::new(1),
         }
     }
@@ -257,5 +266,144 @@ mod tests {
         assert_eq!(get["method"], "Network.getCookies");
         let clear = client.clear_cookies_command();
         assert_eq!(clear["method"], "Network.clearBrowserCookies");
+    }
+
+    #[test]
+    fn get_document_command() {
+        let client = CdpClient::new(9222);
+        let cmd = client.get_document_command();
+        assert_eq!(cmd["method"], "DOM.getDocument");
+        assert!(cmd.get("id").is_some());
+        assert!(cmd.get("params").is_some());
+    }
+
+    #[test]
+    fn cdp_target_serde_roundtrip() {
+        let target = CdpTarget {
+            id: "ABC123".into(),
+            title: "Test Page".into(),
+            url: "https://example.com".into(),
+            target_type: "page".into(),
+            ws_url: Some("ws://127.0.0.1:9222/devtools/page/ABC123".into()),
+        };
+        let json = serde_json::to_string(&target).unwrap();
+        let back: CdpTarget = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "ABC123");
+        assert_eq!(back.title, "Test Page");
+        assert_eq!(back.url, "https://example.com");
+        assert_eq!(back.target_type, "page");
+        assert!(back.ws_url.is_some());
+    }
+
+    #[test]
+    fn cdp_target_serde_without_ws_url() {
+        let json_str = r#"{
+            "id": "DEF456",
+            "title": "Background",
+            "url": "chrome://newtab",
+            "type": "background_page"
+        }"#;
+        let target: CdpTarget = serde_json::from_str(json_str).unwrap();
+        assert_eq!(target.id, "DEF456");
+        assert_eq!(target.target_type, "background_page");
+        assert!(target.ws_url.is_none());
+    }
+
+    #[test]
+    fn custom_port_http_base() {
+        let client = CdpClient::new(9333);
+        assert_eq!(client.http_base, "http://127.0.0.1:9333");
+    }
+
+    #[test]
+    fn command_ids_are_sequential() {
+        let client = CdpClient::new(9222);
+        let cmd1 = client.build_command("A", json!({}));
+        let cmd2 = client.build_command("B", json!({}));
+        let cmd3 = client.build_command("C", json!({}));
+        let id1 = cmd1["id"].as_u64().unwrap();
+        let id2 = cmd2["id"].as_u64().unwrap();
+        let id3 = cmd3["id"].as_u64().unwrap();
+        assert_eq!(id2, id1 + 1);
+        assert_eq!(id3, id2 + 1);
+    }
+
+    #[test]
+    fn all_command_builders_have_correct_structure() {
+        let client = CdpClient::new(9222);
+
+        // Each builder should produce: id, method, params
+        let cmds = vec![
+            client.navigate_command("https://example.com"),
+            client.evaluate_command("1+1"),
+            client.screenshot_command(),
+            client.get_document_command(),
+            client.click_command(10.0, 20.0),
+            client.type_text_command("hello"),
+            client.pdf_command(),
+            client.get_cookies_command(),
+            client.clear_cookies_command(),
+        ];
+
+        for cmd in &cmds {
+            assert!(cmd.get("id").is_some(), "missing id in command: {cmd}");
+            assert!(
+                cmd.get("method").is_some(),
+                "missing method in command: {cmd}"
+            );
+            assert!(
+                cmd.get("params").is_some(),
+                "missing params in command: {cmd}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn list_targets_connection_refused() {
+        // Use a port that is (almost certainly) not listening
+        let client = CdpClient::new(19999);
+        let result = client.list_targets().await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("CDP list targets failed") || err_str.contains("Network"),
+            "unexpected error: {err_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_tab_connection_refused() {
+        let client = CdpClient::new(19999);
+        let result = client.new_tab("https://example.com").await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("CDP new tab failed") || err_str.contains("Network"),
+            "unexpected error: {err_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_tab_connection_refused() {
+        let client = CdpClient::new(19999);
+        let result = client.close_tab("some-target-id").await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("CDP close tab failed") || err_str.contains("Network"),
+            "unexpected error: {err_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn version_connection_refused() {
+        let client = CdpClient::new(19999);
+        let result = client.version().await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("CDP version failed") || err_str.contains("Network"),
+            "unexpected error: {err_str}"
+        );
     }
 }

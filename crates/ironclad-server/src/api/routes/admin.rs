@@ -9,12 +9,15 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::config_runtime;
 use ironclad_agent::policy::{PolicyContext, ToolCallRequest};
 use ironclad_core::{
     InputAuthority, IroncladConfig, PolicyDecision, SurvivalTier, input_capability_scan,
 };
 
-use super::{AppState, internal_err};
+use super::{
+    AppState, JsonError, bad_request, internal_err, not_found, sanitize_html, validate_short,
+};
 
 // ── Key resolution helper ────────────────────────────────────
 
@@ -144,6 +147,8 @@ pub async fn list_approvals(State(state): State<AppState>) -> impl IntoResponse 
     }))
 }
 
+const MAX_DECIDED_BY_LEN: usize = 256;
+
 #[derive(Deserialize)]
 pub struct ApprovalDecisionRequest {
     #[serde(default = "default_decided_by")]
@@ -153,14 +158,26 @@ fn default_decided_by() -> String {
     "api".into()
 }
 
+/// Sanitize the `decided_by` field: enforce max length and strip control characters.
+fn sanitize_decided_by(raw: &str) -> Result<String, JsonError> {
+    if raw.len() > MAX_DECIDED_BY_LEN {
+        return Err(bad_request(format!(
+            "decided_by exceeds max length of {MAX_DECIDED_BY_LEN} characters"
+        )));
+    }
+    let sanitized: String = raw.chars().filter(|c| !c.is_control()).collect();
+    Ok(sanitized)
+}
+
 pub async fn approve_request(
     State(state): State<AppState>,
     Path(id): Path<String>,
     axum::Json(body): axum::Json<ApprovalDecisionRequest>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
-    match state.approvals.approve(&id, &body.decided_by) {
+) -> std::result::Result<impl IntoResponse, JsonError> {
+    let decided_by = sanitize_decided_by(&body.decided_by)?;
+    match state.approvals.approve(&id, &decided_by) {
         Ok(req) => Ok(Json(json!(req))),
-        Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
+        Err(e) => Err(not_found(e.to_string())),
     }
 }
 
@@ -168,10 +185,11 @@ pub async fn deny_request(
     State(state): State<AppState>,
     Path(id): Path<String>,
     axum::Json(body): axum::Json<ApprovalDecisionRequest>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
-    match state.approvals.deny(&id, &body.decided_by) {
+) -> std::result::Result<impl IntoResponse, JsonError> {
+    let decided_by = sanitize_decided_by(&body.decided_by)?;
+    match state.approvals.deny(&id, &decided_by) {
         Ok(req) => Ok(Json(json!(req))),
-        Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
+        Err(e) => Err(not_found(e.to_string())),
     }
 }
 
@@ -180,13 +198,13 @@ pub async fn deny_request(
 pub async fn get_policy_audit(
     State(state): State<AppState>,
     Path(turn_id): Path<String>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let decisions =
         ironclad_db::policy::get_decisions_for_turn(&state.db, &turn_id).map_err(|e| {
             tracing::error!(error = %e, "failed to fetch policy audit");
-            (
+            JsonError(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal server error".to_string(),
+                "internal server error".into(),
             )
         })?;
     Ok(Json(json!({
@@ -205,7 +223,7 @@ pub async fn get_policy_audit(
 pub async fn get_tool_audit(
     State(state): State<AppState>,
     Path(turn_id): Path<String>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let calls = ironclad_db::tools::get_tool_calls_for_turn(&state.db, &turn_id).map_err(|e| {
         tracing::error!(error = %e, "failed to fetch tool audit");
         (
@@ -247,12 +265,26 @@ pub struct A2aHelloRequest {
     pub hello: Value,
 }
 
+const MERGE_JSON_MAX_DEPTH: usize = 10;
+
 fn merge_json(base: &mut Value, patch: &Value) {
+    merge_json_inner(base, patch, 0);
+}
+
+fn merge_json_inner(base: &mut Value, patch: &Value, depth: usize) {
+    if depth > MERGE_JSON_MAX_DEPTH {
+        tracing::warn!(
+            depth,
+            "merge_json exceeded max recursion depth, replacing subtree"
+        );
+        *base = patch.clone();
+        return;
+    }
     match (base, patch) {
         (Value::Object(base_map), Value::Object(patch_map)) => {
             for (k, v) in patch_map {
                 let entry = base_map.entry(k.clone()).or_insert(Value::Null);
-                merge_json(entry, v);
+                merge_json_inner(entry, v, depth + 1);
             }
         }
         (base, patch) => {
@@ -287,11 +319,18 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
                 p.insert("_key_source".into(), json!(key_source));
                 p.insert("_provider_name".into(), json!(name.clone()));
 
+                // Blocklist approach: strip all known secret-bearing fields.
+                // WARNING: when adding new provider config fields that contain
+                // secrets, you MUST add them here or they will be exposed via
+                // the GET /api/config endpoint.
                 p.remove("api_key");
                 p.remove("api_key_env");
                 p.remove("api_key_ref");
                 p.remove("secret");
                 p.remove("token");
+                p.remove("password");
+                p.remove("auth_token");
+                p.remove("client_secret");
             }
         }
     }
@@ -300,20 +339,28 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     {
         w.remove("private_key");
         w.remove("mnemonic");
+        w.remove("secret");
+        w.remove("password");
     }
     axum::Json(cfg)
 }
 
 pub async fn get_config_capabilities() -> impl IntoResponse {
     axum::Json(json!({
-        "immutable_sections": ["server", "treasury", "a2a", "wallet"],
-        "mutable_sections": ["agent", "models", "memory", "channels", "providers", "circuit_breaker", "obsidian", "approvals", "plugins", "browser", "interview"],
+        "immutable_sections": [],
+        "mutable_sections": ["agent", "server", "database", "models", "memory", "cache", "treasury", "yield", "wallet", "a2a", "skills", "channels", "circuit_breaker", "providers", "context", "approvals", "plugins", "browser", "daemon", "update", "tier_adapt", "personality", "session", "digest", "multimodal", "knowledge", "workspace_config", "mcp", "devices", "discovery", "obsidian"],
         "notes": {
-            "server": "requires file edit + restart",
-            "treasury": "requires file edit + restart",
-            "a2a": "requires file edit + restart",
-            "wallet": "requires file edit + restart"
+            "runtime_reload": "all sections are accepted and persisted to ironclad.toml with validation",
+            "deferred_apply_examples": ["server.bind", "server.port", "wallet", "treasury.policy_engine", "browser.runtime"],
+            "deferred_apply_behavior": "changes marked deferred are persisted immediately but may require restart for full runtime effect"
         }
+    }))
+}
+
+pub async fn get_config_apply_status(State(state): State<AppState>) -> impl IntoResponse {
+    let status = state.config_apply_status.read().await.clone();
+    axum::Json(json!({
+        "status": status
     }))
 }
 
@@ -321,6 +368,66 @@ pub async fn get_config_capabilities() -> impl IntoResponse {
 pub struct AvailableModelsQuery {
     pub provider: Option<String>,
     pub validation_level: Option<String>,
+}
+
+fn model_discovery_mode(
+    provider_name: &str,
+    provider_url: &str,
+    is_local_flag: bool,
+) -> (bool, String) {
+    let name_l = provider_name.to_ascii_lowercase();
+    let url_l = provider_url.to_ascii_lowercase();
+    // Only Ollama-style providers should be probed with /api/tags.
+    let ollama_like = name_l.contains("ollama") || url_l.contains("11434");
+    let keyless_local = is_local_flag || ollama_like;
+    let models_url = if ollama_like {
+        format!("{provider_url}/api/tags")
+    } else {
+        format!("{provider_url}/v1/models")
+    };
+    (keyless_local, models_url)
+}
+
+fn apply_provider_auth(
+    req: reqwest::RequestBuilder,
+    auth_header_name: &str,
+    key: &str,
+) -> reqwest::RequestBuilder {
+    if let Some(param_name) = auth_header_name.strip_prefix("query:") {
+        req.query(&[(param_name, key)])
+    } else if auth_header_name.eq_ignore_ascii_case("authorization") {
+        req.header(auth_header_name, format!("Bearer {key}"))
+    } else {
+        req.header(auth_header_name, key)
+    }
+}
+
+fn is_loopback_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.contains("127.0.0.1") || lower.contains("localhost")
+}
+
+fn legacy_loopback_support_state() -> &'static str {
+    "removed_v0_8"
+}
+
+fn classify_provider_connectivity_status(
+    provider_name: &str,
+    provider_url: &str,
+    models_url: &str,
+    _error: &str,
+    localish: bool,
+) -> (&'static str, Option<String>) {
+    let remote_discovery_target = models_url.contains("/v1/models");
+    if !localish && is_loopback_url(provider_url) && remote_discovery_target {
+        return (
+            "legacy_proxy_unsupported",
+            Some(format!(
+                "legacy loopback provider URL is unsupported in v0.8.0+: update providers.{provider_name}.url to a direct provider base URL"
+            )),
+        );
+    }
+    ("unreachable", None)
 }
 
 pub async fn get_available_models(
@@ -380,18 +487,8 @@ pub async fn get_available_models(
             continue;
         }
 
-        let lower_url = url.to_lowercase();
-        let localish = provider_cfg.is_local.unwrap_or(false)
-            || lower_url.contains("localhost")
-            || lower_url.contains("127.0.0.1")
-            || lower_url.contains("11434")
-            || name.to_lowercase().contains("ollama");
-
-        let models_url = if localish {
-            format!("{url}/api/tags")
-        } else {
-            format!("{url}/v1/models")
-        };
+        let (localish, models_url) =
+            model_discovery_mode(&name, &url, provider_cfg.is_local.unwrap_or(false));
 
         let auth_mode = provider_cfg.auth_mode.as_deref().unwrap_or("api_key");
         let api_key_env = provider_cfg.api_key_env.as_deref().unwrap_or("");
@@ -416,11 +513,7 @@ pub async fn get_available_models(
                 .as_deref()
                 .unwrap_or("Authorization")
                 .trim();
-            if auth_header_name.eq_ignore_ascii_case("authorization") {
-                req = req.header(auth_header_name, format!("Bearer {k}"));
-            } else {
-                req = req.header(auth_header_name, k);
-            }
+            req = apply_provider_auth(req, auth_header_name, &k);
         }
         if let Some(extra) = &provider_cfg.extra_headers {
             for (k, v) in extra {
@@ -434,6 +527,33 @@ pub async fn get_available_models(
                     Ok(v) => v,
                     Err(_) => json!({}),
                 };
+                let has_ollama_shape = body.get("models").and_then(|v| v.as_array()).is_some();
+                let has_openai_shape = body.get("data").and_then(|v| v.as_array()).is_some();
+                if !has_ollama_shape && !has_openai_shape {
+                    let status = if !localish && is_loopback_url(&url) {
+                        "legacy_proxy_unsupported"
+                    } else {
+                        "error"
+                    };
+                    let hint = if status == "legacy_proxy_unsupported" {
+                        Some(format!(
+                            "legacy loopback provider URL is unsupported in v0.8.0+: update providers.{name}.url to a direct provider base URL"
+                        ))
+                    } else {
+                        None
+                    };
+                    provider_reports.insert(
+                        name.clone(),
+                        json!({
+                            "status": status,
+                            "error": "invalid models discovery response",
+                            "hint": hint,
+                            "models": [],
+                            "count": 0,
+                        }),
+                    );
+                    continue;
+                }
                 let mut models: Vec<String> =
                     if let Some(arr) = body.get("models").and_then(|v| v.as_array()) {
                         arr.iter()
@@ -485,11 +605,15 @@ pub async fn get_available_models(
                 );
             }
             Err(e) => {
+                let err = e.to_string();
+                let (status, hint) =
+                    classify_provider_connectivity_status(&name, &url, &models_url, &err, localish);
                 provider_reports.insert(
                     name.clone(),
                     json!({
-                        "status": "unreachable",
-                        "error": e.to_string(),
+                        "status": status,
+                        "error": err,
+                        "hint": hint,
                         "models": [],
                         "count": 0,
                     }),
@@ -519,6 +643,11 @@ pub async fn get_available_models(
         "models": models,
         "count": models.len(),
         "validation_level": validation_level,
+        "proxy": {
+            "mode": "in_process",
+            "loopback_listener_required": false,
+            "legacy_loopback_support": legacy_loopback_support_state()
+        },
         "providers": provider_reports,
     }))
 }
@@ -527,46 +656,62 @@ pub async fn update_config(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<UpdateConfigRequest>,
 ) -> impl IntoResponse {
-    const IMMUTABLE_KEYS: &[&str] = &["server", "treasury", "a2a", "wallet"];
-    if let Some(obj) = body.patch.as_object() {
-        for key in IMMUTABLE_KEYS {
-            if obj.contains_key(*key) {
-                return Err((
-                    StatusCode::FORBIDDEN,
-                    format!("cannot modify '{key}' at runtime; edit ironclad.toml and restart"),
-                ));
-            }
-        }
+    {
+        let mut status = state.config_apply_status.write().await;
+        status.last_attempt_at = Some(chrono::Utc::now().to_rfc3339());
+        status.last_error = None;
     }
 
-    let mut config = state.config.write().await;
-    let mut current = serde_json::to_value(&*config).map_err(|e| internal_err(&e))?;
+    let runtime_cfg = state.config.read().await.clone();
+    let mut current = match config_runtime::config_value_from_file_or_runtime(
+        state.config_path.as_ref(),
+        &runtime_cfg,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = e.to_string();
+            state.config_apply_status.write().await.last_error = Some(msg.clone());
+            return Err(JsonError(StatusCode::INTERNAL_SERVER_ERROR, msg));
+        }
+    };
 
     merge_json(&mut current, &body.patch);
-
-    let updated: IroncladConfig = serde_json::from_value(current)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid config: {e}")))?;
-
-    updated
-        .validate()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("validation failed: {e}")))?;
-
-    *config = updated.clone();
-    drop(config);
-
-    // Keep active router in sync with runtime config mutations.
-    {
-        let mut llm = state.llm.write().await;
-        llm.router.sync_runtime(
-            updated.models.primary.clone(),
-            updated.models.fallbacks.clone(),
-            updated.models.routing.clone(),
-        );
+    let updated: IroncladConfig = match serde_json::from_value(current) {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = format!("invalid config: {e}");
+            state.config_apply_status.write().await.last_error = Some(msg.clone());
+            return Err(bad_request(msg));
+        }
+    };
+    if let Err(e) = updated.validate() {
+        let msg = format!("validation failed: {e}");
+        state.config_apply_status.write().await.last_error = Some(msg.clone());
+        return Err(bad_request(msg));
     }
 
-    Ok::<_, (StatusCode, String)>(axum::Json(json!({
+    let report = match config_runtime::apply_runtime_config(&state, updated).await {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = e.to_string();
+            state.config_apply_status.write().await.last_error = Some(msg.clone());
+            return Err(JsonError(StatusCode::INTERNAL_SERVER_ERROR, msg));
+        }
+    };
+
+    {
+        let mut status = state.config_apply_status.write().await;
+        status.last_success_at = Some(chrono::Utc::now().to_rfc3339());
+        status.last_backup_path = report.backup_path.clone();
+        status.deferred_apply = report.deferred_apply.clone();
+    }
+
+    Ok::<_, JsonError>(axum::Json(json!({
         "updated": true,
-        "message": "configuration updated (runtime only, not persisted to disk)",
+        "persisted": true,
+        "message": "configuration updated and reloaded from disk-backed state",
+        "backup_path": report.backup_path,
+        "deferred_apply": report.deferred_apply,
     })))
 }
 
@@ -596,7 +741,7 @@ pub async fn get_costs(State(state): State<AppState>) -> impl IntoResponse {
         .map_err(|e| internal_err(&e))?;
 
     let costs: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
-    Ok::<_, (StatusCode, String)>(axum::Json(json!({ "costs": costs })))
+    Ok::<_, JsonError>(axum::Json(json!({ "costs": costs })))
 }
 
 #[derive(Deserialize)]
@@ -740,7 +885,7 @@ pub async fn get_overview_timeseries(
         };
     }
 
-    Ok::<_, (StatusCode, String)>(axum::Json(json!({
+    Ok::<_, JsonError>(axum::Json(json!({
         "hours": hours,
         "labels": labels,
         "series": {
@@ -865,15 +1010,20 @@ pub async fn breaker_status(State(state): State<AppState>) -> impl IntoResponse 
 pub async fn breaker_reset(
     State(state): State<AppState>,
     Path(provider): Path<String>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, JsonError> {
     let mut llm = state.llm.write().await;
+    // BUG-04: reject unknown providers instead of silently creating a breaker
+    let known = llm.breakers.list_providers();
+    if !known.iter().any(|(name, _)| name == &provider) {
+        return Err(not_found(format!("unknown provider '{provider}'")));
+    }
     llm.breakers.reset(&provider);
 
-    axum::Json(json!({
+    Ok(axum::Json(json!({
         "provider": provider,
         "state": "closed",
         "reset": true,
-    }))
+    })))
 }
 
 pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse {
@@ -968,7 +1118,7 @@ pub async fn get_plugins(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn toggle_plugin(
     State(state): State<AppState>,
     axum::extract::Path(name): axum::extract::Path<String>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let plugins = state.plugins.list_plugins().await;
     let current = plugins.iter().find(|p| p.name == name);
 
@@ -996,7 +1146,7 @@ pub async fn toggle_plugin(
                 Err(e) => Err(internal_err(&e)),
             }
         }
-        None => Err((StatusCode::NOT_FOUND, format!("plugin '{name}' not found"))),
+        None => Err(not_found(format!("plugin '{name}' not found"))),
     }
 }
 
@@ -1004,7 +1154,7 @@ pub async fn execute_plugin_tool(
     State(state): State<AppState>,
     axum::extract::Path((name, tool)): axum::extract::Path<(String, String)>,
     Json(body): Json<Value>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let found = state.plugins.find_tool(&tool).await;
     match found {
         Some((plugin_name, tool_def)) if plugin_name == name => {
@@ -1020,7 +1170,7 @@ pub async fn execute_plugin_tool(
                 .filter(|need| !declared_permissions.iter().any(|p| p == need))
                 .collect();
             if !missing.is_empty() {
-                return Err((
+                return Err(JsonError(
                     StatusCode::FORBIDDEN,
                     format!(
                         "plugin '{}' tool '{}' missing required permissions: {}",
@@ -1045,7 +1195,7 @@ pub async fn execute_plugin_tool(
                     PolicyDecision::Deny { reason, .. } => reason.clone(),
                     _ => "policy denied".into(),
                 };
-                return Err((StatusCode::FORBIDDEN, reason));
+                return Err(JsonError(StatusCode::FORBIDDEN, reason));
             }
             match state.plugins.execute_tool(&tool, &body).await {
                 Ok(result) => Ok(Json(json!({
@@ -1056,14 +1206,12 @@ pub async fn execute_plugin_tool(
                 Err(e) => Err(internal_err(&e)),
             }
         }
-        Some((other_plugin, _)) => Err((
-            StatusCode::BAD_REQUEST,
-            format!("tool '{tool}' belongs to plugin '{other_plugin}', not '{name}'"),
-        )),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            format!("tool '{tool}' not found in plugin '{name}'"),
-        )),
+        Some((other_plugin, _)) => Err(bad_request(format!(
+            "tool '{tool}' belongs to plugin '{other_plugin}', not '{name}'"
+        ))),
+        None => Err(not_found(format!(
+            "tool '{tool}' not found in plugin '{name}'"
+        ))),
     }
 }
 
@@ -1080,7 +1228,7 @@ pub async fn browser_status(State(state): State<AppState>) -> impl IntoResponse 
 
 pub async fn browser_start(
     State(state): State<AppState>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     if state.browser.is_running().await {
         return Ok(Json(json!({"status": "already_running"})));
     }
@@ -1095,7 +1243,7 @@ pub async fn browser_start(
 
 pub async fn browser_stop(
     State(state): State<AppState>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     match state.browser.stop().await {
         Ok(()) => Ok(Json(json!({"status": "stopped"}))),
         Err(e) => Err(internal_err(&e)),
@@ -1124,12 +1272,8 @@ pub async fn get_agents(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn start_agent(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    state
-        .registry
-        .start_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+) -> Result<impl IntoResponse, JsonError> {
+    state.registry.start_agent(&id).await.map_err(not_found)?;
     let event = json!({"type": "agent_started", "agent_id": id});
     state.event_bus.publish(event.to_string());
     Ok(Json(json!({"id": id, "action": "started"})))
@@ -1138,12 +1282,8 @@ pub async fn start_agent(
 pub async fn stop_agent(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    state
-        .registry
-        .stop_agent(&id)
-        .await
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+) -> Result<impl IntoResponse, JsonError> {
+    state.registry.stop_agent(&id).await.map_err(not_found)?;
     let event = json!({"type": "agent_stopped", "agent_id": id});
     state.event_bus.publish(event.to_string());
     Ok(Json(json!({"id": id, "action": "stopped"})))
@@ -1451,6 +1591,8 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         .unwrap_or_default();
 
     let sub_agents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let session_counts =
+        ironclad_db::agents::list_session_counts_by_agent(&state.db).unwrap_or_default();
     let taskable_sub_agents: Vec<&ironclad_db::agents::SubAgentRow> = sub_agents
         .iter()
         .filter(|sa| !sa.role.eq_ignore_ascii_case(ROLE_MODEL_PROXY))
@@ -1527,7 +1669,7 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
             "enabled": sa.enabled,
             "color": color,
             "state": state_str,
-            "session_count": sa.session_count,
+            "session_count": session_counts.get(&sa.name).copied().unwrap_or(sa.session_count),
             "description": sa.description,
             "skills": sa.skills_json.as_ref().and_then(|s| serde_json::from_str::<Vec<String>>(s).ok()).unwrap_or_default(),
             "supervisor": config.agent.id,
@@ -1571,10 +1713,10 @@ pub async fn change_agent_model(
     State(state): State<AppState>,
     Path(agent_name): Path<String>,
     axum::Json(body): axum::Json<ChangeModelRequest>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     let model = body.model.trim().to_string();
     if model.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "model cannot be empty".into()));
+        return Err(bad_request("model cannot be empty"));
     }
     let normalize_fallbacks = |primary: &str, candidates: Vec<String>| -> Vec<String> {
         let mut cleaned = Vec::new();
@@ -1633,9 +1775,8 @@ pub async fn change_agent_model(
         })))
     } else {
         if body.fallbacks.is_some() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "fallback ordering is only supported for the commander agent".into(),
+            return Err(bad_request(
+                "fallback ordering is only supported for the commander agent",
             ));
         }
         let agents =
@@ -1680,13 +1821,13 @@ pub async fn agent_card(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn a2a_hello(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<A2aHelloRequest>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let peer_did = ironclad_channels::a2a::A2aProtocol::verify_hello(&body.hello)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+) -> Result<impl IntoResponse, JsonError> {
+    let peer_did =
+        ironclad_channels::a2a::A2aProtocol::verify_hello(&body.hello).map_err(bad_request)?;
 
     let mut a2a = state.a2a.write().await;
     a2a.check_rate_limit(&peer_did)
-        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, e.to_string()))?;
+        .map_err(|e| JsonError(StatusCode::TOO_MANY_REQUESTS, e.to_string()))?;
     drop(a2a);
 
     let config = state.config.read().await;
@@ -1716,18 +1857,15 @@ pub async fn set_provider_key(
     State(state): State<AppState>,
     Path(name): Path<String>,
     axum::Json(body): axum::Json<SetProviderKeyRequest>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let key = body.api_key.trim();
     if key.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "api_key cannot be empty".into()));
+        return Err(bad_request("api_key cannot be empty"));
     }
 
     let config = state.config.read().await;
     if !config.providers.contains_key(&name) {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("provider '{name}' not found in config"),
-        ));
+        return Err(not_found(format!("provider '{name}' not found in config")));
     }
     drop(config);
 
@@ -1752,13 +1890,10 @@ pub async fn set_provider_key(
 pub async fn delete_provider_key(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, JsonError> {
     let config = state.config.read().await;
     if !config.providers.contains_key(&name) {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("provider '{name}' not found in config"),
-        ));
+        return Err(not_found(format!("provider '{name}' not found in config")));
     }
     drop(config);
 
@@ -1879,7 +2014,7 @@ pub async fn generate_deep_analysis(
 async fn run_llm_recommendation_analysis(
     state: &AppState,
     prompt: &str,
-) -> Result<serde_json::Value, (StatusCode, String)> {
+) -> Result<serde_json::Value, JsonError> {
     let model = {
         let llm = state.llm.read().await;
         llm.router.select_model().to_string()
@@ -1906,7 +2041,7 @@ async fn run_llm_recommendation_analysis(
     let provider = match llm.providers.get_by_model(&model) {
         Some(p) => p.clone(),
         None => {
-            return Err((
+            return Err(JsonError(
                 StatusCode::SERVICE_UNAVAILABLE,
                 format!("no provider configured for model {model}"),
             ));
@@ -1926,7 +2061,7 @@ async fn run_llm_recommendation_analysis(
     .await
     .unwrap_or_default();
     if !provider.is_local && key.is_empty() {
-        return Err((
+        return Err(JsonError(
             StatusCode::SERVICE_UNAVAILABLE,
             format!("missing API key for provider {}", provider.name),
         ));
@@ -2055,7 +2190,14 @@ pub async fn list_discovered_agents(State(state): State<AppState>) -> impl IntoR
 pub async fn register_discovered_agent(
     State(state): State<AppState>,
     Json(body): Json<RegisterDiscoveredAgentRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, JsonError> {
+    validate_short("agent_id", &body.agent_id)?;
+    validate_short("name", &body.name)?;
+    validate_short("url", &body.url)?;
+    let body = RegisterDiscoveredAgentRequest {
+        name: sanitize_html(&body.name),
+        ..body
+    };
     let mut discovery = state.discovery.write().await;
     discovery.register(ironclad_agent::discovery::DiscoveredAgent {
         agent_id: body.agent_id.clone(),
@@ -2067,7 +2209,7 @@ pub async fn register_discovered_agent(
         last_seen: chrono::Utc::now(),
         discovery_method: ironclad_agent::discovery::DiscoveryMethod::Manual,
     });
-    Json(json!({ "ok": true, "agent_id": body.agent_id }))
+    Ok(Json(json!({ "ok": true, "agent_id": body.agent_id })))
 }
 
 pub async fn verify_discovered_agent(
@@ -2412,5 +2554,418 @@ mod tests {
     fn plugin_permissions_do_not_infer_network_from_tool_name_alone() {
         let required = plugin_tool_required_permissions("api_call", &json!({}));
         assert!(!required.contains(&"network"));
+    }
+
+    #[test]
+    fn model_discovery_uses_ollama_tags_only_for_ollama_like_providers() {
+        let (localish_ollama, url_ollama) =
+            model_discovery_mode("ollama-gpu", "http://192.168.50.253:11434", true);
+        assert!(localish_ollama);
+        assert_eq!(url_ollama, "http://192.168.50.253:11434/api/tags");
+
+        let (localish_proxy, url_proxy) =
+            model_discovery_mode("anthropic", "http://127.0.0.1:8788/anthropic", false);
+        assert!(!localish_proxy);
+        assert_eq!(url_proxy, "http://127.0.0.1:8788/anthropic/v1/models");
+    }
+
+    #[test]
+    fn apply_provider_auth_supports_query_key_mode() {
+        let client = reqwest::Client::new();
+        let req = client.get("http://example.test/v1/models");
+        let built = apply_provider_auth(req, "query:key", "secret")
+            .build()
+            .expect("request builds");
+        assert_eq!(
+            built.url().as_str(),
+            "http://example.test/v1/models?key=secret"
+        );
+    }
+
+    #[test]
+    fn classify_provider_connectivity_status_marks_local_proxy_refusal() {
+        let (status, hint) = classify_provider_connectivity_status(
+            "anthropic",
+            "http://127.0.0.1:8788/anthropic",
+            "http://127.0.0.1:8788/anthropic/v1/models",
+            "error sending request for url: connect: connection refused",
+            false,
+        );
+        assert_eq!(status, "legacy_proxy_unsupported");
+        assert!(hint.unwrap_or_default().contains("providers.anthropic.url"));
+    }
+
+    #[test]
+    fn loopback_nonlocal_proxy_can_be_marked_misconfigured() {
+        assert!(is_loopback_url("http://127.0.0.1:8788/anthropic"));
+        assert!(!is_loopback_url("https://api.anthropic.com"));
+    }
+
+    #[test]
+    fn legacy_loopback_support_state_is_removed() {
+        assert_eq!(legacy_loopback_support_state(), "removed_v0_8");
+    }
+
+    #[test]
+    fn parse_db_timestamp_supports_rfc3339_and_sqlite_formats() {
+        let rfc = parse_db_timestamp_utc("2026-02-26T10:11:12Z").unwrap();
+        assert_eq!(rfc.to_rfc3339(), "2026-02-26T10:11:12+00:00");
+
+        let sqlite = parse_db_timestamp_utc("2026-02-26 10:11:12").unwrap();
+        assert_eq!(sqlite.to_rfc3339(), "2026-02-26T10:11:12+00:00");
+
+        assert!(parse_db_timestamp_utc("not-a-time").is_none());
+    }
+
+    #[test]
+    fn is_recent_activity_respects_window() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-02-26T10:12:00+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(is_recent_activity("2026-02-26T10:11:10Z", now));
+        assert!(!is_recent_activity("2026-02-26T10:00:00Z", now));
+    }
+
+    #[test]
+    fn has_tool_token_matches_exact_split_tokens_only() {
+        assert!(has_tool_token("plugin-rg-runner", "rg"));
+        assert!(!has_tool_token("merge", "rg"));
+        assert!(!has_tool_token("larger", "rg"));
+    }
+
+    #[test]
+    fn format_balance_rounds_and_appends_symbol() {
+        assert_eq!(format_balance(1.2345, "USDC"), "1.23");
+        assert_eq!(format_balance(0.0, "ETH"), "0.000000");
+        assert_eq!(format_balance(0.123456789, "WBTC"), "0.12345679");
+        assert_eq!(format_balance(0.123456, "OTHER"), "0.1235");
+    }
+
+    #[test]
+    fn workspace_files_snapshot_filters_hidden_and_sorts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("z.txt"), "z").unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join(".hidden"), "h").unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+
+        let snap = workspace_files_snapshot(dir.path());
+        let entries = snap["top_level_entries"].as_array().unwrap();
+        let names: Vec<String> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["a.txt", "sub", "z.txt"]);
+        assert_eq!(snap["entry_count"].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn derive_workspace_activity_prefers_recent_tool_call_then_turn_then_idle() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES (?1, ?2, 'agent', 'active')",
+            rusqlite::params!["s1", "agent-1"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turns (id, session_id, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["t1", "s1", "2026-02-26T10:11:50Z"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_calls (id, turn_id, tool_name, input, status, created_at) VALUES (?1, ?2, ?3, '{}', 'ok', ?4)",
+            rusqlite::params!["tc1", "t1", "read_file", "2026-02-26T10:11:59Z"],
+        )
+        .unwrap();
+        drop(conn);
+
+        let now = chrono::DateTime::parse_from_rfc3339("2026-02-26T10:12:00+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let active = derive_workspace_activity(&db, "agent-1", true, now);
+        assert_eq!(active.0, Some("files"));
+        assert_eq!(active.1, "tool_execution");
+        assert_eq!(active.2.as_deref(), Some("read_file"));
+
+        let conn = db.conn();
+        conn.execute("DELETE FROM tool_calls", []).unwrap();
+        drop(conn);
+        let turn_only = derive_workspace_activity(&db, "agent-1", true, now);
+        assert_eq!(turn_only.0, Some("llm"));
+        assert_eq!(turn_only.1, "inference");
+
+        let idle_now = chrono::DateTime::parse_from_rfc3339("2026-02-26T10:30:00+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let idle = derive_workspace_activity(&db, "agent-1", true, idle_now);
+        assert_eq!(idle.0, Some("standby"));
+        assert_eq!(idle.1, "idle");
+    }
+
+    // ── sanitize_decided_by tests ────────────────────────────────
+
+    #[test]
+    fn sanitize_decided_by_accepts_normal_input() {
+        let result = sanitize_decided_by("admin-user").unwrap();
+        assert_eq!(result, "admin-user");
+    }
+
+    #[test]
+    fn sanitize_decided_by_strips_control_characters() {
+        let result = sanitize_decided_by("user\x00\x01\x02name").unwrap();
+        assert_eq!(result, "username");
+    }
+
+    #[test]
+    fn sanitize_decided_by_rejects_too_long_input() {
+        let long_input = "a".repeat(MAX_DECIDED_BY_LEN + 1);
+        let result = sanitize_decided_by(&long_input);
+        assert!(result.is_err());
+        let JsonError(status, msg) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(msg.contains("max length"));
+    }
+
+    #[test]
+    fn sanitize_decided_by_accepts_max_length() {
+        let exact = "a".repeat(MAX_DECIDED_BY_LEN);
+        let result = sanitize_decided_by(&exact);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn sanitize_decided_by_empty_is_ok() {
+        let result = sanitize_decided_by("").unwrap();
+        assert_eq!(result, "");
+    }
+
+    // ── merge_json depth limit tests ─────────────────────────────
+
+    #[test]
+    fn merge_json_depth_limit_replaces_at_max_depth() {
+        // Build a deeply nested structure beyond MERGE_JSON_MAX_DEPTH
+        let mut patch = json!("leaf");
+        for _ in 0..12 {
+            patch = json!({"nested": patch});
+        }
+        let mut base = json!({"nested": {"nested": {"nested": "old"}}});
+        merge_json(&mut base, &patch);
+        // Should not panic and should merge/replace
+        assert!(base.is_object());
+    }
+
+    // ── format_balance additional tests ──────────────────────────
+
+    #[test]
+    fn format_balance_dai_two_decimals() {
+        assert_eq!(format_balance(100.999, "DAI"), "101.00");
+    }
+
+    #[test]
+    fn format_balance_usdt_two_decimals() {
+        assert_eq!(format_balance(0.5, "USDT"), "0.50");
+    }
+
+    #[test]
+    fn format_balance_matic_six_decimals() {
+        assert_eq!(format_balance(1.0, "MATIC"), "1.000000");
+    }
+
+    #[test]
+    fn format_balance_weth_six_decimals() {
+        assert_eq!(format_balance(0.1, "WETH"), "0.100000");
+    }
+
+    #[test]
+    fn format_balance_cbbtc_eight_decimals() {
+        assert_eq!(format_balance(0.5, "cbBTC"), "0.50000000");
+    }
+
+    // ── is_loopback_url additional tests ─────────────────────────
+
+    #[test]
+    fn is_loopback_url_localhost_case_insensitive() {
+        assert!(is_loopback_url("http://LOCALHOST:8080"));
+    }
+
+    #[test]
+    fn is_loopback_url_rejects_remote() {
+        assert!(!is_loopback_url("https://api.openai.com/v1"));
+    }
+
+    // ── model_discovery_mode additional tests ────────────────────
+
+    #[test]
+    fn model_discovery_mode_local_flag_makes_keyless() {
+        let (keyless, url) = model_discovery_mode("custom-local", "http://192.168.1.5:8080", true);
+        assert!(keyless);
+        assert_eq!(url, "http://192.168.1.5:8080/v1/models");
+    }
+
+    #[test]
+    fn model_discovery_mode_remote_not_keyless() {
+        let (keyless, url) = model_discovery_mode("openai", "https://api.openai.com", false);
+        assert!(!keyless);
+        assert_eq!(url, "https://api.openai.com/v1/models");
+    }
+
+    #[test]
+    fn model_discovery_mode_port_11434_is_ollama_like() {
+        let (keyless, url) =
+            model_discovery_mode("my-provider", "http://192.168.50.253:11434", false);
+        assert!(keyless);
+        assert_eq!(url, "http://192.168.50.253:11434/api/tags");
+    }
+
+    // ── workstation_for_tool additional categories ────────────────
+
+    #[test]
+    fn workstation_for_tool_web_tools() {
+        assert_eq!(workstation_for_tool("web_fetch"), ("web", "tool_execution"));
+        assert_eq!(
+            workstation_for_tool("http_request"),
+            ("web", "tool_execution")
+        );
+    }
+
+    #[test]
+    fn workstation_for_tool_memory() {
+        assert_eq!(workstation_for_tool("memory_store"), ("memory", "working"));
+    }
+
+    #[test]
+    fn workstation_for_tool_blockchain() {
+        assert_eq!(
+            workstation_for_tool("wallet_balance"),
+            ("blockchain", "tool_execution")
+        );
+        assert_eq!(
+            workstation_for_tool("contract_call"),
+            ("blockchain", "tool_execution")
+        );
+    }
+
+    #[test]
+    fn workstation_for_tool_file_operations() {
+        assert_eq!(
+            workstation_for_tool("read_file"),
+            ("files", "tool_execution")
+        );
+        assert_eq!(
+            workstation_for_tool("write_output"),
+            ("files", "tool_execution")
+        );
+        assert_eq!(
+            workstation_for_tool("glob_search"),
+            ("files", "tool_execution")
+        );
+        assert_eq!(
+            workstation_for_tool("edit_code"),
+            ("files", "tool_execution")
+        );
+        assert_eq!(
+            workstation_for_tool("patch_file"),
+            ("files", "tool_execution")
+        );
+    }
+
+    #[test]
+    fn workstation_for_tool_unknown_falls_to_exec() {
+        assert_eq!(
+            workstation_for_tool("completely_unknown"),
+            ("exec", "tool_execution")
+        );
+    }
+
+    // ── has_tool_token additional tests ───────────────────────────
+
+    #[test]
+    fn has_tool_token_matches_at_boundaries() {
+        assert!(has_tool_token("rg", "rg"));
+        assert!(has_tool_token("my-rg-tool", "rg"));
+        assert!(has_tool_token("rg-runner", "rg"));
+    }
+
+    #[test]
+    fn has_tool_token_no_partial_match() {
+        assert!(!has_tool_token("debugging", "bug"));
+    }
+
+    // ── workspace_files_snapshot edge case ────────────────────────
+
+    #[test]
+    fn workspace_files_snapshot_handles_empty_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap = workspace_files_snapshot(dir.path());
+        let entries = snap["top_level_entries"].as_array().unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(snap["entry_count"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn workspace_files_snapshot_handles_nonexistent_directory() {
+        let snap = workspace_files_snapshot(std::path::Path::new("/nonexistent/path"));
+        let entries = snap["top_level_entries"].as_array().unwrap();
+        assert!(entries.is_empty());
+    }
+
+    // ── derive_workspace_activity standby ────────────────────────
+
+    #[test]
+    fn derive_workspace_activity_returns_standby_when_not_running() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+        let now = chrono::Utc::now();
+        let (workstation, phase, _tool) = derive_workspace_activity(&db, "agent-1", false, now);
+        assert_eq!(workstation, Some("standby"));
+        assert_eq!(phase, "idle");
+    }
+
+    // ── default_decided_by test ──────────────────────────────────
+
+    #[test]
+    fn default_decided_by_returns_api() {
+        assert_eq!(default_decided_by(), "api");
+    }
+
+    // ── legacy_loopback_support_state test ────────────────────────
+
+    #[test]
+    fn legacy_loopback_removed() {
+        assert_eq!(legacy_loopback_support_state(), "removed_v0_8");
+    }
+
+    // ── parse_db_timestamp_utc edge cases ────────────────────────
+
+    #[test]
+    fn parse_db_timestamp_utc_handles_offset_timestamps() {
+        use chrono::Timelike;
+        let dt = parse_db_timestamp_utc("2026-01-15T08:30:00+05:30").unwrap();
+        assert_eq!(dt.hour(), 3); // 08:30 +05:30 = 03:00 UTC
+    }
+
+    #[test]
+    fn parse_db_timestamp_utc_empty_string() {
+        assert!(parse_db_timestamp_utc("").is_none());
+    }
+
+    // ── KeySource status_pair tests ──────────────────────────────
+
+    #[test]
+    fn key_source_status_pairs() {
+        assert_eq!(
+            KeySource::NotRequired.status_pair(),
+            ("not_required", "local")
+        );
+        assert_eq!(KeySource::OAuth.status_pair(), ("configured", "oauth"));
+        assert_eq!(
+            KeySource::Keystore("test".into()).status_pair(),
+            ("configured", "keystore")
+        );
+        assert_eq!(
+            KeySource::EnvVar("TEST_KEY".into()).status_pair(),
+            ("configured", "env")
+        );
+        assert_eq!(KeySource::Missing.status_pair(), ("missing", "none"));
     }
 }

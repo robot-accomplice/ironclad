@@ -1,3 +1,4 @@
+use std::net::ToSocketAddrs;
 use std::path::Path;
 use std::time::Instant;
 
@@ -6,7 +7,7 @@ use tracing::info;
 
 use ironclad_core::config::IroncladConfig;
 use ironclad_core::style::Theme;
-use ironclad_server::{bootstrap, cli};
+use ironclad_server::cli;
 
 #[derive(Parser)]
 #[command(
@@ -111,6 +112,12 @@ enum Commands {
         /// Attempt to auto-repair issues
         #[arg(long, short = 'r', alias = "rep")]
         repair: bool,
+        /// Emit machine-readable JSON findings
+        #[arg(long)]
+        json: bool,
+        /// Allowlisted paused cron job names to re-enable in --repair mode
+        #[arg(long = "allow-job", value_delimiter = ',')]
+        allow_job: Vec<String>,
     },
     /// View and tail logs
     #[command(next_help_heading = "Operations")]
@@ -303,6 +310,18 @@ enum MemoryCmd {
 enum ScheduleCmd {
     /// List scheduled tasks
     List,
+    /// Re-enable paused cron jobs after unknown-action containment
+    Recover {
+        /// Re-enable all paused jobs
+        #[arg(long)]
+        all: bool,
+        /// Re-enable only specific job names (repeatable)
+        #[arg(long = "name")]
+        names: Vec<String>,
+        /// Preview what would be changed without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -341,6 +360,14 @@ enum CircuitCmd {
 enum ChannelsCmd {
     /// List channel adapters and their status
     List,
+    /// List dead-letter channel deliveries
+    DeadLetter {
+        /// Maximum number of dead-letter rows to show
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Replay a dead-letter delivery by id
+    Replay { id: String },
 }
 
 #[derive(Subcommand)]
@@ -402,12 +429,30 @@ enum ConfigCmd {
         /// Config file to modify
         #[arg(short, long, default_value = "ironclad.toml")]
         file: String,
+        /// Skip immediate runtime apply via API
+        #[arg(long, default_value_t = false)]
+        no_apply: bool,
     },
     /// Remove a config key
     Unset {
         /// TOML path to remove
         path: String,
         /// Config file to modify
+        #[arg(short, long, default_value = "ironclad.toml")]
+        file: String,
+        /// Skip immediate runtime apply via API
+        #[arg(long, default_value_t = false)]
+        no_apply: bool,
+    },
+    /// Lint/validate a config file without applying it
+    Lint {
+        /// Config file to validate
+        #[arg(short, long, default_value = "ironclad.toml")]
+        file: String,
+    },
+    /// Create a timestamped backup of a config file
+    Backup {
+        /// Config file to back up
         #[arg(short, long, default_value = "ironclad.toml")]
         file: String,
     },
@@ -421,6 +466,25 @@ enum SkillsCmd {
     Show { id: String },
     /// Reload skills from disk
     Reload,
+    /// List/search remote skills catalog entries
+    CatalogList {
+        /// Optional case-insensitive search query
+        #[arg(long)]
+        query: Option<String>,
+    },
+    /// Install skills from the catalog
+    CatalogInstall {
+        /// Skill names to install (accepts names or filenames)
+        skills: Vec<String>,
+        /// Activate (reload) after install
+        #[arg(long)]
+        activate: bool,
+    },
+    /// Activate installed skills (reload)
+    CatalogActivate {
+        /// Optional skill names for operator context
+        skills: Vec<String>,
+    },
     /// Import skills from an OpenClaw workspace or archive
     Import {
         /// Path to OpenClaw workspace/skills directory or .tar.gz archive
@@ -570,7 +634,7 @@ enum UpdateCmd {
         #[arg(long, env = "IRONCLAD_REGISTRY_URL")]
         registry_url: Option<String>,
     },
-    /// Update the Ironclad binary via cargo install
+    /// Update the Ironclad binary (download or build)
     Binary {
         /// Update channel: stable, beta, dev
         #[arg(long, default_value = "stable")]
@@ -578,6 +642,9 @@ enum UpdateCmd {
         /// Auto-accept if newer version is available
         #[arg(long)]
         yes: bool,
+        /// Update method: download (default) or build
+        #[arg(long, default_value = "download", value_parser = ["download", "build"])]
+        method: String,
     },
     /// Update bundled provider configurations
     Providers {
@@ -677,7 +744,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await
                 }
-                UpdateCmd::Binary { channel, yes } => cli::cmd_update_binary(&channel, yes).await,
+                UpdateCmd::Binary {
+                    channel,
+                    yes,
+                    method,
+                } => cli::cmd_update_binary(&channel, yes, &method).await,
                 UpdateCmd::Providers { yes, registry_url } => {
                     cli::cmd_update_providers(yes, registry_url.as_deref(), config_path).await
                 }
@@ -689,7 +760,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // ── Operations ──────────────────────────────────────
         Some(Commands::Status) => cli::cmd_status(url).await,
-        Some(Commands::Mechanic { repair }) => cli::cmd_mechanic(url, repair).await,
+        Some(Commands::Mechanic {
+            repair,
+            json,
+            allow_job,
+        }) => cli::cmd_mechanic(url, repair, json, &allow_job).await,
         Some(Commands::Logs {
             lines,
             follow,
@@ -724,6 +799,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SkillsCmd::List => cli::cmd_skills_list(url).await,
             SkillsCmd::Show { id } => cli::cmd_skill_detail(url, &id).await,
             SkillsCmd::Reload => cli::cmd_skills_reload(url).await,
+            SkillsCmd::CatalogList { query } => {
+                cli::cmd_skills_catalog_list(url, query.as_deref()).await
+            }
+            SkillsCmd::CatalogInstall { skills, activate } => {
+                cli::cmd_skills_catalog_install(url, &skills, activate).await
+            }
+            SkillsCmd::CatalogActivate { skills } => {
+                cli::cmd_skills_catalog_activate(url, &skills).await
+            }
             SkillsCmd::Import {
                 source,
                 no_safety_check,
@@ -739,6 +823,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Some(Commands::Schedule(sub)) => match sub {
             ScheduleCmd::List => cli::cmd_schedule_list(url).await,
+            ScheduleCmd::Recover {
+                all,
+                names,
+                dry_run,
+            } => cli::cmd_schedule_recover(url, &names, all, dry_run).await,
         },
         Some(Commands::Metrics(sub)) => match sub {
             MetricsCmd::Costs => cli::cmd_metrics(url, "costs", None).await,
@@ -767,8 +856,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Config(sub)) => match sub {
             ConfigCmd::Show => cli::cmd_config(url).await,
             ConfigCmd::Get { path } => cli::cmd_config_get(&path),
-            ConfigCmd::Set { path, value, file } => cli::cmd_config_set(&path, &value, &file),
-            ConfigCmd::Unset { path, file } => cli::cmd_config_unset(&path, &file),
+            ConfigCmd::Set {
+                path,
+                value,
+                file,
+                no_apply,
+            } => {
+                cli::cmd_config_set(&path, &value, &file)?;
+                if !no_apply {
+                    cli::cmd_config_apply(url, &file).await?;
+                }
+                Ok(())
+            }
+            ConfigCmd::Unset {
+                path,
+                file,
+                no_apply,
+            } => {
+                cli::cmd_config_unset(&path, &file)?;
+                if !no_apply {
+                    cli::cmd_config_apply(url, &file).await?;
+                }
+                Ok(())
+            }
+            ConfigCmd::Lint { file } => cli::cmd_config_lint(&file),
+            ConfigCmd::Backup { file } => cli::cmd_config_backup(&file),
         },
         Some(Commands::Models(sub)) => match sub {
             ModelsCmd::List => cli::cmd_models_list(url).await,
@@ -805,6 +917,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Some(Commands::Channels(sub)) => match sub {
             ChannelsCmd::List => cli::cmd_channels_status(url).await,
+            ChannelsCmd::DeadLetter { limit } => cli::cmd_channels_dead_letter(url, limit).await,
+            ChannelsCmd::Replay { id } => cli::cmd_channels_replay(url, &id).await,
         },
         Some(Commands::Security(sub)) => match sub {
             SecurityCmd::Audit { config } => cli::cmd_security_audit(&config),
@@ -835,10 +949,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let abs_config = std::path::Path::new(&config)
                     .canonicalize()
                     .or_else(|_| {
-                        let home = std::env::var("HOME").unwrap_or_default();
-                        let home_cfg = std::path::PathBuf::from(home)
-                            .join(".ironclad")
-                            .join(&config);
+                        let home_cfg = ironclad_core::home_dir().join(".ironclad").join(&config);
                         home_cfg.canonicalize()
                     })
                     .map_err(|_| {
@@ -972,8 +1083,7 @@ async fn cmd_auth_login(
     let client_id = client_id_override
         .map(String::from)
         .or_else(|| {
-            let home = std::env::var("HOME").ok()?;
-            let path = std::path::PathBuf::from(home)
+            let path = ironclad_core::home_dir()
                 .join(".ironclad")
                 .join("ironclad.toml");
             let cfg = IroncladConfig::from_file(&path).ok()?;
@@ -1274,8 +1384,9 @@ async fn cmd_serve(
     const STEPS: u32 = 12;
 
     let resolved_path = config_path.or_else(|| {
-        let home = std::env::var("HOME").ok()?;
-        let home_config = Path::new(&home).join(".ironclad").join("ironclad.toml");
+        let home_config = ironclad_core::home_dir()
+            .join(".ironclad")
+            .join("ironclad.toml");
         home_config
             .exists()
             .then(|| home_config.to_string_lossy().into_owned())
@@ -1301,6 +1412,48 @@ async fn cmd_serve(
         config.server.bind = b;
     }
 
+    match legacy_loopback_mode() {
+        LegacyLoopbackMode::MigrateDeprecated => {
+            let migrations =
+                migrate_legacy_proxy_urls(&mut config, resolved_path.as_deref().map(Path::new))?;
+            if !migrations.is_empty() {
+                step_warn(
+                    t,
+                    2,
+                    STEPS,
+                    &format!(
+                        "Migrated {} legacy provider URL(s) from loopback proxy to in-process routing",
+                        migrations.len()
+                    ),
+                );
+                for m in &migrations {
+                    step_detail(t, &format!("providers.{}", m.provider), &m.to_url);
+                }
+                step_warn(
+                    t,
+                    2,
+                    STEPS,
+                    "Legacy loopback provider URLs are deprecated and will be removed in v0.8.0",
+                );
+            }
+        }
+        LegacyLoopbackMode::Unsupported => {
+            if let Err(msg) =
+                validate_legacy_loopback_urls_for_mode(&config, LegacyLoopbackMode::Unsupported)
+            {
+                let (er, r) = (t.error(), t.reset());
+                let err_icon = t.icon_error();
+                eprintln!(
+                    "  {er}{err_icon}{r} Legacy loopback provider URLs are not supported in v0.8.0+"
+                );
+                for item in collect_legacy_loopback_providers(&config) {
+                    step_detail(t, "update required", &item);
+                }
+                return Err(msg.into());
+            }
+        }
+    }
+
     config.validate().map_err(|e| {
         let (er, r) = (t.error(), t.reset());
         let err_icon = t.icon_error();
@@ -1308,6 +1461,13 @@ async fn cmd_serve(
         e
     })?;
     step(t, 2, STEPS, "Configuration validated");
+
+    ensure_internal_proxies_reachable(&config).map_err(|e| {
+        let (er, r) = (t.error(), t.reset());
+        let err_icon = t.icon_error();
+        eprintln!("  {er}{err_icon}{r} Internal proxy preflight failed: {e}");
+        e
+    })?;
 
     let is_localhost = config.server.bind == "127.0.0.1"
         || config.server.bind == "localhost"
@@ -1324,7 +1484,11 @@ async fn cmd_serve(
         return Err("Refusing to start on non-localhost without API key".into());
     }
 
-    let app = bootstrap(config.clone()).await?;
+    let app = ironclad_server::bootstrap_with_config_path(
+        config.clone(),
+        resolved_path.clone().map(std::path::PathBuf::from),
+    )
+    .await?;
     step(t, 3, STEPS, "Tracing initialized");
     step_detail(t, "level", &config.agent.log_level);
 
@@ -1402,20 +1566,6 @@ async fn cmd_serve(
     step_detail(t, "bind", &bind_addr);
     step_detail(t, "dashboard", &format!("http://{bind_addr}"));
 
-    let elapsed = boot_start.elapsed();
-    let (a, b, r) = (t.accent(), t.bold(), t.reset());
-    eprintln!();
-    let action_icon = t.icon_action();
-    eprint!("  {action_icon} ");
-    t.typewrite(&format!("{b}Ready{r} in {a}{:.0?}{r}", elapsed), 25);
-    eprintln!();
-    eprintln!();
-
-    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
-        ironclad_server::enable_stderr_logging();
-    }
-    info!("Ironclad listening on http://{bind_addr}");
-
     let shutdown_signal = async {
         let ctrl_c = tokio::signal::ctrl_c();
 
@@ -1476,12 +1626,311 @@ async fn cmd_serve(
         }
         Err(e) => return Err(e.into()),
     };
+    let elapsed = boot_start.elapsed();
+    let (a, b, r) = (t.accent(), t.bold(), t.reset());
+    eprintln!();
+    let action_icon = t.icon_action();
+    eprint!("  {action_icon} ");
+    t.typewrite(&format!("{b}Ready{r} in {a}{:.0?}{r}", elapsed), 25);
+    eprintln!();
+    eprintln!();
+
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        ironclad_server::enable_stderr_logging();
+    }
+    info!("Ironclad listening on http://{bind_addr}");
+
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal)
         .await?;
 
     info!("Server shut down");
     Ok(())
+}
+
+fn provider_requires_internal_proxy(
+    name: &str,
+    cfg: &ironclad_core::config::ProviderConfig,
+) -> bool {
+    if cfg.is_local.unwrap_or(false) {
+        return false;
+    }
+    let lowered = name.to_ascii_lowercase();
+    if lowered.contains("ollama") {
+        return false;
+    }
+    let parsed = match reqwest::Url::parse(cfg.url.trim()) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    matches!(
+        parsed
+            .host_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "127.0.0.1" | "localhost" | "::1"
+    )
+}
+
+fn tcp_endpoint_reachable(host: &str, port: u16) -> bool {
+    let addr = format!("{host}:{port}");
+    let resolved = match addr.to_socket_addrs() {
+        Ok(mut addrs) => addrs.next(),
+        Err(_) => None,
+    };
+    let Some(sock) = resolved else {
+        return false;
+    };
+    std::net::TcpStream::connect_timeout(&sock, std::time::Duration::from_millis(400)).is_ok()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderUrlMigration {
+    provider: String,
+    from_url: String,
+    to_url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyLoopbackMode {
+    MigrateDeprecated,
+    Unsupported,
+}
+
+fn legacy_loopback_mode_for_version(version: &str) -> LegacyLoopbackMode {
+    let mut it = version.split('.');
+    let major = it.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    let minor = it.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    if major > 0 || minor >= 8 {
+        LegacyLoopbackMode::Unsupported
+    } else {
+        LegacyLoopbackMode::MigrateDeprecated
+    }
+}
+
+fn legacy_loopback_mode() -> LegacyLoopbackMode {
+    legacy_loopback_mode_for_version(env!("CARGO_PKG_VERSION"))
+}
+
+fn canonical_provider_base_url(provider_name: &str) -> Option<&'static str> {
+    match provider_name.to_ascii_lowercase().as_str() {
+        "anthropic" => Some("https://api.anthropic.com"),
+        "google" => Some("https://generativelanguage.googleapis.com"),
+        "openai" => Some("https://api.openai.com"),
+        "openrouter" => Some("https://openrouter.ai/api"),
+        "moonshot" => Some("https://api.moonshot.ai"),
+        _ => None,
+    }
+}
+
+fn parse_legacy_proxy_url(provider_name: &str, url: &str) -> bool {
+    let parsed = match reqwest::Url::parse(url.trim()) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1") {
+        return false;
+    }
+    if parsed.port_or_known_default().unwrap_or(80) != 8788 {
+        return false;
+    }
+    let mut segs = match parsed.path_segments() {
+        Some(v) => v,
+        None => return false,
+    };
+    let Some(first) = segs.next() else {
+        return false;
+    };
+    first.eq_ignore_ascii_case(provider_name)
+}
+
+fn rewrite_provider_urls_in_toml(
+    original: &str,
+    migrations: &[ProviderUrlMigration],
+) -> (String, bool) {
+    let mut migration_map = std::collections::HashMap::<String, String>::new();
+    for m in migrations {
+        migration_map.insert(m.provider.to_ascii_lowercase(), m.to_url.clone());
+    }
+    if migration_map.is_empty() {
+        return (original.to_string(), false);
+    }
+
+    let mut current_provider: Option<String> = None;
+    let mut changed = false;
+    let mut out = Vec::<String>::new();
+    for line in original.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let section = &trimmed[1..trimmed.len() - 1];
+            if let Some(rest) = section.strip_prefix("providers.") {
+                if !rest.contains('.') && !rest.is_empty() {
+                    current_provider = Some(rest.to_ascii_lowercase());
+                } else {
+                    current_provider = None;
+                }
+            } else {
+                current_provider = None;
+            }
+            out.push(line.to_string());
+            continue;
+        }
+
+        if let Some(provider) = current_provider.as_deref()
+            && trimmed.starts_with("url")
+            && trimmed.contains('=')
+            && let Some(new_url) = migration_map.get(provider)
+        {
+            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            out.push(format!("{indent}url = \"{new_url}\""));
+            changed = true;
+            continue;
+        }
+
+        out.push(line.to_string());
+    }
+
+    let mut rewritten = out.join("\n");
+    if original.ends_with('\n') {
+        rewritten.push('\n');
+    }
+    (rewritten, changed)
+}
+
+fn persist_provider_url_migrations(
+    config_path: &Path,
+    migrations: &[ProviderUrlMigration],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if migrations.is_empty() || !config_path.exists() {
+        return Ok(());
+    }
+
+    let original = std::fs::read_to_string(config_path)?;
+    let (rewritten, changed) = rewrite_provider_urls_in_toml(&original, migrations);
+    if !changed {
+        return Ok(());
+    }
+
+    let backup = config_path.with_extension("toml.bak");
+    if !backup.exists() {
+        std::fs::copy(config_path, &backup)?;
+    }
+
+    let tmp = config_path.with_extension("toml.tmp");
+    std::fs::write(&tmp, rewritten)?;
+    std::fs::rename(&tmp, config_path)?;
+    Ok(())
+}
+
+fn migrate_legacy_proxy_urls(
+    config: &mut IroncladConfig,
+    config_path: Option<&Path>,
+) -> Result<Vec<ProviderUrlMigration>, Box<dyn std::error::Error>> {
+    let mut migrations = Vec::new();
+    for (name, provider) in &mut config.providers {
+        if provider.is_local.unwrap_or(false) {
+            continue;
+        }
+        if !parse_legacy_proxy_url(name, &provider.url) {
+            continue;
+        }
+        let Some(canonical) = canonical_provider_base_url(name) else {
+            continue;
+        };
+        if provider.url.trim().eq_ignore_ascii_case(canonical) {
+            continue;
+        }
+        let from = provider.url.clone();
+        provider.url = canonical.to_string();
+        migrations.push(ProviderUrlMigration {
+            provider: name.clone(),
+            from_url: from,
+            to_url: canonical.to_string(),
+        });
+    }
+
+    if let Some(path) = config_path {
+        persist_provider_url_migrations(path, &migrations)?;
+    }
+
+    Ok(migrations)
+}
+
+fn collect_legacy_loopback_providers(config: &IroncladConfig) -> Vec<String> {
+    let mut providers = Vec::new();
+    for (name, provider) in &config.providers {
+        if provider.is_local.unwrap_or(false) {
+            continue;
+        }
+        if parse_legacy_proxy_url(name, &provider.url) {
+            providers.push(format!("providers.{name}.url={}", provider.url));
+        }
+    }
+    providers
+}
+
+fn validate_legacy_loopback_urls_for_mode(
+    config: &IroncladConfig,
+    mode: LegacyLoopbackMode,
+) -> Result<(), String> {
+    if mode != LegacyLoopbackMode::Unsupported {
+        return Ok(());
+    }
+    let legacy = collect_legacy_loopback_providers(config);
+    if legacy.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "unsupported legacy provider URLs detected (replace with direct provider bases): {}",
+            legacy.join(", ")
+        ))
+    }
+}
+
+fn ensure_internal_proxies_reachable(
+    config: &IroncladConfig,
+) -> Result<(), ironclad_core::IroncladError> {
+    let mut required = Vec::<(String, String, u16)>::new();
+    for (name, provider) in &config.providers {
+        if !provider_requires_internal_proxy(name, provider) {
+            continue;
+        }
+        let parsed = reqwest::Url::parse(provider.url.trim()).map_err(|e| {
+            ironclad_core::IroncladError::Config(format!(
+                "invalid provider URL for {name}: {} ({e})",
+                provider.url
+            ))
+        })?;
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| {
+                ironclad_core::IroncladError::Config(format!(
+                    "provider URL for {name} missing host: {}",
+                    provider.url
+                ))
+            })?
+            .to_string();
+        let port = parsed.port_or_known_default().unwrap_or(80);
+        required.push((name.clone(), host, port));
+    }
+
+    let mut unreachable = Vec::new();
+    for (name, host, port) in required {
+        if !tcp_endpoint_reachable(&host, port) {
+            unreachable.push(format!("{name} ({host}:{port})"));
+        }
+    }
+
+    if unreachable.is_empty() {
+        Ok(())
+    } else {
+        Err(ironclad_core::IroncladError::Config(format!(
+            "required internal provider proxy is unreachable: {}",
+            unreachable.join(", ")
+        )))
+    }
 }
 
 fn cmd_init(path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -1544,7 +1993,21 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     tw(&format!("  {b}Validating{r} {config_path}\n"));
 
-    let config = IroncladConfig::from_file(Path::new(config_path))?;
+    let config = match IroncladConfig::from_file(Path::new(config_path)) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("{e}");
+            if msg.contains("No such file") || msg.contains("not found") || msg.contains("NotFound")
+            {
+                eprintln!("  {warn} Config file not found: {config_path}");
+                eprintln!(
+                    "    Specify a path with {b}--config <path>{r} or create one with {b}ironclad init{r}"
+                );
+                eprintln!();
+            }
+            return Err(Box::new(e));
+        }
+    };
     tw(&format!("  {ok} TOML syntax valid"));
 
     config.validate()?;
@@ -1721,3 +2184,418 @@ rate_limit_per_peer = 10
 session_timeout_seconds = 3600
 require_on_chain_identity = true
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_cfg_with_providers(providers_block: &str) -> IroncladConfig {
+        let cfg = format!(
+            r#"
+[agent]
+name = "T"
+id = "t"
+[server]
+bind = "127.0.0.1"
+port = 18789
+[database]
+path = ":memory:"
+[models]
+primary = "moonshot/kimi-k2-turbo-preview"
+{providers}
+"#,
+            providers = providers_block
+        );
+        IroncladConfig::from_str(&cfg).expect("config parses")
+    }
+
+    #[test]
+    fn provider_requires_internal_proxy_true_for_non_local_loopback() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#,
+        );
+        let p = cfg.providers.get("anthropic").unwrap();
+        assert!(provider_requires_internal_proxy("anthropic", p));
+    }
+
+    #[test]
+    fn provider_requires_internal_proxy_false_for_ollama_and_local() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.ollama]
+url = "http://127.0.0.1:11434"
+tier = "T1"
+is_local = true
+"#,
+        );
+        let p = cfg.providers.get("ollama").unwrap();
+        assert!(!provider_requires_internal_proxy("ollama", p));
+    }
+
+    #[test]
+    fn tcp_endpoint_reachable_detects_open_listener() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(tcp_endpoint_reachable("127.0.0.1", port));
+    }
+
+    #[test]
+    fn tcp_endpoint_reachable_detects_closed_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(!tcp_endpoint_reachable("127.0.0.1", port));
+    }
+
+    #[test]
+    fn parse_legacy_proxy_url_requires_loopback_8788_and_provider_prefix() {
+        assert!(parse_legacy_proxy_url(
+            "anthropic",
+            "http://127.0.0.1:8788/anthropic"
+        ));
+        assert!(!parse_legacy_proxy_url(
+            "anthropic",
+            "http://127.0.0.1:8789/anthropic"
+        ));
+        assert!(!parse_legacy_proxy_url(
+            "anthropic",
+            "https://api.anthropic.com"
+        ));
+    }
+
+    #[test]
+    fn rewrite_provider_urls_in_toml_updates_only_targeted_provider_blocks() {
+        let source = r#"[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+
+[providers.google]
+url = "http://127.0.0.1:8788/google"
+tier = "T2"
+"#;
+        let migrations = vec![ProviderUrlMigration {
+            provider: "anthropic".into(),
+            from_url: "http://127.0.0.1:8788/anthropic".into(),
+            to_url: "https://api.anthropic.com".into(),
+        }];
+        let (rewritten, changed) = rewrite_provider_urls_in_toml(source, &migrations);
+        assert!(changed);
+        assert!(rewritten.contains("url = \"https://api.anthropic.com\""));
+        assert!(rewritten.contains("url = \"http://127.0.0.1:8788/google\""));
+    }
+
+    #[test]
+    fn migrate_legacy_proxy_urls_rewrites_config_and_persists_file() {
+        let cfg = r#"
+[agent]
+name = "T"
+id = "t"
+[server]
+bind = "127.0.0.1"
+port = 18789
+[database]
+path = ":memory:"
+[models]
+primary = "anthropic/x"
+[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ironclad.toml");
+        std::fs::write(&path, cfg).unwrap();
+        let mut parsed = IroncladConfig::from_str(cfg).unwrap();
+        let migrations = migrate_legacy_proxy_urls(&mut parsed, Some(&path)).unwrap();
+        assert_eq!(migrations.len(), 1);
+        assert_eq!(
+            parsed.providers.get("anthropic").unwrap().url,
+            "https://api.anthropic.com"
+        );
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("url = \"https://api.anthropic.com\""));
+    }
+
+    #[test]
+    fn legacy_loopback_mode_for_version_changes_at_0_8() {
+        assert_eq!(
+            legacy_loopback_mode_for_version("0.7.1"),
+            LegacyLoopbackMode::MigrateDeprecated
+        );
+        assert_eq!(
+            legacy_loopback_mode_for_version("0.8.0"),
+            LegacyLoopbackMode::Unsupported
+        );
+    }
+
+    #[test]
+    fn collect_legacy_loopback_providers_finds_legacy_urls() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+
+[providers.google]
+url = "https://generativelanguage.googleapis.com"
+tier = "T2"
+"#,
+        );
+        let legacy = collect_legacy_loopback_providers(&cfg);
+        assert_eq!(legacy.len(), 1);
+        assert!(legacy[0].contains("providers.anthropic.url"));
+    }
+
+    #[test]
+    fn validate_legacy_loopback_urls_for_mode_rejects_in_0_8_mode() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#,
+        );
+        let err = validate_legacy_loopback_urls_for_mode(&cfg, LegacyLoopbackMode::Unsupported)
+            .expect_err("v0.8 mode must reject legacy loopback");
+        assert!(err.contains("providers.anthropic.url"));
+    }
+
+    #[test]
+    fn canonical_provider_base_url_is_case_insensitive() {
+        assert_eq!(
+            canonical_provider_base_url("AnThRoPiC"),
+            Some("https://api.anthropic.com")
+        );
+        assert_eq!(
+            canonical_provider_base_url("GOOGLE"),
+            Some("https://generativelanguage.googleapis.com")
+        );
+        assert_eq!(canonical_provider_base_url("unknown"), None);
+    }
+
+    #[test]
+    fn parse_legacy_proxy_url_rejects_wrong_path_prefix() {
+        assert!(!parse_legacy_proxy_url(
+            "anthropic",
+            "http://127.0.0.1:8788/google"
+        ));
+    }
+
+    #[test]
+    fn rewrite_provider_urls_in_toml_noop_without_migrations() {
+        let source = r#"[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#;
+        let (rewritten, changed) = rewrite_provider_urls_in_toml(source, &[]);
+        assert!(!changed);
+        assert_eq!(rewritten, source);
+    }
+
+    #[test]
+    fn persist_provider_url_migrations_writes_backup_and_new_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("ironclad.toml");
+        std::fs::write(
+            &config_path,
+            r#"[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#,
+        )
+        .unwrap();
+        let migrations = vec![ProviderUrlMigration {
+            provider: "anthropic".into(),
+            from_url: "http://127.0.0.1:8788/anthropic".into(),
+            to_url: "https://api.anthropic.com".into(),
+        }];
+        persist_provider_url_migrations(&config_path, &migrations).unwrap();
+        let updated = std::fs::read_to_string(&config_path).unwrap();
+        assert!(updated.contains("https://api.anthropic.com"));
+        assert!(config_path.with_extension("toml.bak").exists());
+    }
+
+    #[test]
+    fn ensure_internal_proxies_reachable_skips_non_loopback_providers() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "https://api.anthropic.com"
+tier = "T3"
+"#,
+        );
+        let result = ensure_internal_proxies_reachable(&cfg);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cmd_init_then_cmd_check_succeeds_for_generated_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        cmd_init(dir.path().to_str().unwrap()).expect("init should succeed");
+        let cfg_path = dir.path().join("ironclad.toml");
+        assert!(cfg_path.exists());
+        cmd_check(cfg_path.to_str().unwrap()).expect("check should succeed");
+    }
+
+    #[test]
+    fn provider_requires_internal_proxy_false_for_invalid_url() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "not-a-url"
+tier = "T3"
+"#,
+        );
+        let p = cfg.providers.get("anthropic").unwrap();
+        assert!(!provider_requires_internal_proxy("anthropic", p));
+    }
+
+    #[test]
+    fn parse_legacy_proxy_url_rejects_non_loopback_hosts() {
+        assert!(!parse_legacy_proxy_url(
+            "anthropic",
+            "http://10.0.0.1:8788/anthropic"
+        ));
+    }
+
+    #[test]
+    fn persist_provider_url_migrations_is_noop_for_missing_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.toml");
+        let migrations = vec![ProviderUrlMigration {
+            provider: "anthropic".into(),
+            from_url: "http://127.0.0.1:8788/anthropic".into(),
+            to_url: "https://api.anthropic.com".into(),
+        }];
+        persist_provider_url_migrations(&missing, &migrations).unwrap();
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn collect_legacy_loopback_providers_ignores_local_flagged_provider() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.ollama]
+url = "http://127.0.0.1:8788/ollama"
+tier = "T1"
+is_local = true
+"#,
+        );
+        let legacy = collect_legacy_loopback_providers(&cfg);
+        assert!(legacy.is_empty());
+    }
+
+    #[test]
+    fn validate_legacy_loopback_urls_for_mode_allows_pre_0_8_mode() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+"#,
+        );
+        let result =
+            validate_legacy_loopback_urls_for_mode(&cfg, LegacyLoopbackMode::MigrateDeprecated);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ensure_internal_proxies_reachable_returns_error_for_unreachable_loopback_proxy() {
+        let cfg = minimal_cfg_with_providers(
+            r#"
+[providers.anthropic]
+url = "http://127.0.0.1:9/anthropic"
+tier = "T3"
+"#,
+        );
+        let result = ensure_internal_proxies_reachable(&cfg);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn migrate_legacy_proxy_urls_noop_for_already_canonical_urls() {
+        let cfg_text = r#"
+[agent]
+name = "T"
+id = "t"
+[server]
+bind = "127.0.0.1"
+port = 18789
+[database]
+path = ":memory:"
+[models]
+primary = "anthropic/x"
+[providers.anthropic]
+url = "https://api.anthropic.com"
+tier = "T3"
+"#;
+        let mut cfg = IroncladConfig::from_str(cfg_text).unwrap();
+        let migrations = migrate_legacy_proxy_urls(&mut cfg, None).unwrap();
+        assert!(migrations.is_empty());
+        assert_eq!(
+            cfg.providers.get("anthropic").unwrap().url,
+            "https://api.anthropic.com"
+        );
+    }
+
+    #[test]
+    fn rewrite_provider_urls_in_toml_only_changes_top_level_provider_section_url_field() {
+        let source = r#"[providers.anthropic]
+url = "http://127.0.0.1:8788/anthropic"
+tier = "T3"
+[providers.anthropic.extra]
+url = "http://127.0.0.1:8788/should-not-change"
+"#;
+        let migrations = vec![ProviderUrlMigration {
+            provider: "anthropic".into(),
+            from_url: "http://127.0.0.1:8788/anthropic".into(),
+            to_url: "https://api.anthropic.com".into(),
+        }];
+        let (rewritten, changed) = rewrite_provider_urls_in_toml(source, &migrations);
+        assert!(changed);
+        assert!(rewritten.contains("url = \"https://api.anthropic.com\""));
+        assert!(rewritten.contains("url = \"http://127.0.0.1:8788/should-not-change\""));
+    }
+
+    #[test]
+    fn legacy_loopback_mode_matches_current_package_version_rule() {
+        let mode = legacy_loopback_mode();
+        // Current package version in this workspace is 0.8+.
+        assert_eq!(mode, LegacyLoopbackMode::Unsupported);
+    }
+
+    #[test]
+    fn canonical_provider_base_url_covers_known_providers() {
+        assert_eq!(
+            canonical_provider_base_url("openrouter"),
+            Some("https://openrouter.ai/api")
+        );
+        assert_eq!(
+            canonical_provider_base_url("moonshot"),
+            Some("https://api.moonshot.ai")
+        );
+        assert_eq!(canonical_provider_base_url("unknown-provider"), None);
+    }
+
+    #[test]
+    fn cmd_init_is_idempotent_when_config_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("ironclad.toml");
+        std::fs::write(&cfg_path, "sentinel").unwrap();
+        cmd_init(dir.path().to_str().unwrap()).unwrap();
+        let after = std::fs::read_to_string(&cfg_path).unwrap();
+        assert_eq!(after, "sentinel");
+    }
+
+    #[test]
+    fn find_listeners_returns_empty_for_closed_ephemeral_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let pids = find_listeners(port).unwrap();
+        assert!(pids.is_empty());
+    }
+}

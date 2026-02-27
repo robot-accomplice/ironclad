@@ -39,6 +39,10 @@ If no config file is specified, Ironclad looks for `~/.ironclad/ironclad.toml`. 
 
 Refuses to start on a non-localhost bind address without `[server] api_key` set.
 
+On startup, Ironclad `0.7.x` auto-migrates legacy provider URLs that still point to `http://127.0.0.1:8788/<provider>` to canonical direct provider base URLs (for example Anthropic/Google), writes the updated `ironclad.toml`, and keeps a one-time backup at `ironclad.toml.bak`.
+
+Legacy loopback provider URLs are deprecated in `0.7.x` and removed in `0.8.0+`. In `0.8.0+`, startup fails fast if any `providers.*.url` still uses `127.0.0.1:8788/<provider>`, and operators must configure direct upstream provider base URLs.
+
 ### `ironclad init`
 
 Initialize a new workspace with a starter config and skills directory.
@@ -58,6 +62,13 @@ Creates `ironclad.toml` and a `skills/` directory with starter skill definitions
 ### `ironclad setup`
 
 Interactive setup wizard. Alias: `onboard`. Walks through provider selection, API key configuration, model testing, and workspace setup.
+
+For local hosts, the wizard is Apertus-aware and SGLang-first:
+
+- Recommends `sglang` as the default local provider for Apertus when no existing local model framework/model cache is detected.
+- Offers `vllm`, `docker-model-runner`, and `ollama` as fallback local hosts.
+- Detects RAM and only offers resource-appropriate Apertus variants (`8B` always preferred; `70B` only on high-memory systems).
+- Keeps all local-host setup/download steps optional and non-fatal.
 
 ```bash
 ironclad setup
@@ -115,7 +126,24 @@ ironclad update all [OPTIONS]
 
 #### `ironclad update binary`
 
-Update the Ironclad binary via `cargo install`.
+Update the Ironclad binary.
+
+By default, Ironclad now downloads the platform-specific release archive from GitHub Releases, verifies it against the published SHA256 fingerprint in `SHA256SUMS.txt`, then replaces the binary.
+
+On Windows, replacement is staged and finalized just after the current process exits.
+
+Use `--method build` if you prefer to rebuild via `cargo install`.
+
+`--method build` requires a local native build toolchain with a C compiler available on `PATH`.
+
+> On Windows, `--method build` is not supported in-process because running executables are file-locked by the OS.
+> Use a fresh PowerShell session instead:
+>
+> ```powershell
+> ironclad daemon stop
+> cargo install ironclad-server --force
+> ironclad daemon start
+> ```
 
 ```bash
 ironclad update binary [OPTIONS]
@@ -125,6 +153,7 @@ ironclad update binary [OPTIONS]
 |------|-------------|
 | `--channel <ch>` | Update channel (default: `stable`) |
 | `--yes` | Auto-accept if newer version is available |
+| `--method <download&#124;build>` | Update strategy (default: `download`) |
 
 #### `ironclad update providers`
 
@@ -167,6 +196,7 @@ ironclad status
 ### `ironclad mechanic`
 
 Run diagnostics and self-repair. Alias: `doctor`.
+The mechanic also performs signature-based incident analysis from recent runtime logs and channel telemetry (for example, detecting repeated Telegram API 404 loops and surfacing targeted repair commands), and flags delegation-integrity risk when subagents are enabled but not running.
 
 ```bash
 ironclad mechanic [OPTIONS]
@@ -175,6 +205,8 @@ ironclad mechanic [OPTIONS]
 | Flag | Description |
 |------|-------------|
 | `-r, --repair` | Attempt to auto-repair issues |
+| `--json` | Emit machine-readable findings (severity, confidence, repair plans) |
+| `--allow-job <name[,name...]>` | In `--repair` mode, re-enable allowlisted `paused_unknown_action` cron jobs |
 
 ### `ironclad logs`
 
@@ -271,6 +303,20 @@ Show skill details including description, kind, and parameters.
 #### `ironclad skills reload`
 
 Reload skills from disk.
+
+#### `ironclad skills catalog-list [--query <q>]`
+
+List (or search) catalog skill entries from built-ins + configured registry.
+
+#### `ironclad skills catalog-install <SKILL...> [--activate]`
+
+Install one or more skills from the catalog with checksum verification and rollback-on-failure semantics.
+
+#### `ironclad skills catalog-activate [SKILL...]`
+
+Activate installed skills by reloading the runtime registry.
+
+The dashboard `Skills` page also exposes this flow with catalog checkboxes and actions for `Install selected`, `Activate selected`, and `Install + Activate`.
 
 #### `ironclad skills import <SOURCE>`
 
@@ -383,19 +429,37 @@ Get a config value by TOML dotted path (e.g., `models.primary`).
 
 #### `ironclad config set <PATH> <VALUE>`
 
-Set a config value in the config file.
+Set a config value in the config file, then immediately apply it to the running runtime (if reachable).
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-f, --file <path>` | `ironclad.toml` | Config file to modify |
+| `--no-apply` | `false` | Skip immediate runtime apply via `/api/config` |
 
 #### `ironclad config unset <PATH>`
 
-Remove a config key from the config file.
+Remove a config key from the config file, then immediately apply it to the running runtime (if reachable).
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-f, --file <path>` | `ironclad.toml` | Config file to modify |
+| `--no-apply` | `false` | Skip immediate runtime apply via `/api/config` |
+
+#### `ironclad config lint`
+
+Parse and validate a config file (schema + semantic validation) without applying it.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f, --file <path>` | `ironclad.toml` | Config file to validate |
+
+#### `ironclad config backup`
+
+Create a timestamped backup of a config file.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f, --file <path>` | `ironclad.toml` | Config file to back up |
 
 ### `ironclad models`
 
@@ -408,6 +472,11 @@ List all configured models with their providers and tiers.
 #### `ironclad models scan`
 
 Scan providers for available models.
+
+Model discovery mode is provider-aware:
+
+- Ollama-like providers use `/api/tags`.
+- OpenAI-compatible providers (including SGLang, vLLM, and Docker Model Runner frontends) use `/v1/models`.
 
 | Argument | Description |
 |----------|-------------|
@@ -461,9 +530,23 @@ Stop an agent.
 
 Inspect channel adapters.
 
+Channel delivery retries are durable in v0.8.0 flows:
+
+- Retryable outbound deliveries are persisted to the local database.
+- Pending/in-flight delivery items are recovered on restart before retry draining resumes.
+- Permanent failures move to dead-letter state for operator inspection/replay workflows.
+
 #### `ironclad channels list`
 
 List channel adapters and their status.
+
+#### `ironclad channels dead-letter [--limit <n>]`
+
+List dead-letter outbound deliveries with channel, attempt counts, and last error.
+
+#### `ironclad channels replay <ID>`
+
+Replay a dead-letter item by id (moves it back to pending retry state).
 
 ### `ironclad security`
 
@@ -479,6 +562,12 @@ Run a security audit on configuration and file permissions.
 
 Checks: API key presence, file permissions, wallet encryption, skill sandbox settings, bind address security, and more.
 
+Rate-limit/operator notes:
+
+- Configure per-window quotas with `server.rate_limit_requests`, `server.per_ip_rate_limit_requests`, and `server.per_actor_rate_limit_requests`.
+- Configure trusted proxy hops with `server.trusted_proxy_cidrs` before relying on forwarded client IP headers.
+- Watch for `429 rate_limit_exceeded` responses to identify hot actors or abusive IPs.
+
 ---
 
 ## Credentials
@@ -486,6 +575,7 @@ Checks: API key presence, file permissions, wallet encryption, skill sandbox set
 ### `ironclad keystore`
 
 Manage the encrypted credential store. By default, uses a machine-derived key (based on hostname + username). A custom passphrase can be provided with `--password`.
+All successful keystore mutations are also appended to `~/.ironclad/keystore.audit.log` as JSON lines (operation, key name, timestamp, process metadata). Secret values are never logged.
 
 #### `ironclad keystore set <KEY> [VALUE]`
 
@@ -571,7 +661,7 @@ Manage the background daemon service.
 
 #### `ironclad daemon install`
 
-Install the daemon as a LaunchAgent (macOS) or systemd user service (Linux).
+Install the daemon as a LaunchAgent (macOS), systemd user service (Linux), or managed detached user process (Windows).
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -592,7 +682,7 @@ Restart the daemon.
 
 #### `ironclad daemon status`
 
-Show daemon status (installed, running, PID).
+Show daemon status (installed, running, PID when available).
 
 #### `ironclad daemon uninstall`
 

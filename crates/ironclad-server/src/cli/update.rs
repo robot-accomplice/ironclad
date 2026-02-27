@@ -1,9 +1,15 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use ironclad_core::home_dir;
 
 use super::{colors, heading, icons};
 use crate::cli::{CRT_DRAW_MS, theme};
@@ -11,6 +17,7 @@ use crate::cli::{CRT_DRAW_MS, theme};
 const DEFAULT_REGISTRY_URL: &str = "https://roboticus.ai/registry/manifest.json";
 const CRATES_IO_API: &str = "https://crates.io/api/v1/crates/ironclad-server";
 const CRATE_NAME: &str = "ironclad-server";
+const RELEASE_BASE_URL: &str = "https://github.com/robot-accomplice/ironclad/releases/download";
 
 // ── Registry manifest (remote) ───────────────────────────────
 
@@ -93,15 +100,11 @@ impl UpdateState {
 }
 
 fn state_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home)
-        .join(".ironclad")
-        .join("update_state.json")
+    home_dir().join(".ironclad").join("update_state.json")
 }
 
 fn ironclad_home() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".ironclad")
+    home_dir().join(".ironclad")
 }
 
 fn now_iso() -> String {
@@ -210,6 +213,326 @@ fn is_newer(remote: &str, local: &str) -> bool {
     parse_semver(remote) > parse_semver(local)
 }
 
+fn platform_archive_name(version: &str) -> Option<String> {
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        _ => return None,
+    };
+    let os = match std::env::consts::OS {
+        "linux" => "linux",
+        "macos" => "darwin",
+        "windows" => "windows",
+        _ => return None,
+    };
+    let ext = if os == "windows" { "zip" } else { "tar.gz" };
+    Some(format!("ironclad-{version}-{arch}-{os}.{ext}"))
+}
+
+fn parse_sha256sums_for_artifact(sha256sums: &str, artifact: &str) -> Option<String> {
+    for raw in sha256sums.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let hash = parts.next()?;
+        let file = parts.next()?;
+        if file == artifact {
+            return Some(hash.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+fn find_file_recursive(root: &Path, filename: &str) -> io::Result<Option<PathBuf>> {
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file_recursive(&path, filename)? {
+                return Ok(Some(found));
+            }
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n == filename)
+            .unwrap_or(false)
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn install_binary_bytes(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe()?;
+        let staging_dir = std::env::temp_dir().join(format!(
+            "ironclad-update-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_millis()
+        ));
+        std::fs::create_dir_all(&staging_dir)?;
+        let staged_exe = staging_dir.join("ironclad-staged.exe");
+        std::fs::write(&staged_exe, bytes)?;
+        let log_file = staging_dir.join("apply-update.log");
+        let script_path = staging_dir.join("apply-update.cmd");
+        // The script retries the copy for up to 60 seconds, logs success/failure,
+        // and cleans up the staging directory on success.
+        let script = format!(
+            "@echo off\r\n\
+             setlocal\r\n\
+             set SRC={src}\r\n\
+             set DST={dst}\r\n\
+             set LOG={log}\r\n\
+             echo [%DATE% %TIME%] Starting binary replacement >> \"%LOG%\"\r\n\
+             for /L %%i in (1,1,60) do (\r\n\
+               copy /Y \"%SRC%\" \"%DST%\" >nul 2>nul && goto :ok\r\n\
+               timeout /t 1 /nobreak >nul\r\n\
+             )\r\n\
+             echo [%DATE% %TIME%] FAILED: could not replace binary after 60 attempts >> \"%LOG%\"\r\n\
+             exit /b 1\r\n\
+             :ok\r\n\
+             echo [%DATE% %TIME%] SUCCESS: binary replaced >> \"%LOG%\"\r\n\
+             del /Q \"%SRC%\" >nul 2>nul\r\n\
+             del /Q \"%~f0\" >nul 2>nul\r\n\
+             exit /b 0\r\n",
+            src = staged_exe.display(),
+            dst = exe.display(),
+            log = log_file.display(),
+        );
+        std::fs::write(&script_path, &script)?;
+        let _child = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg(script_path.to_string_lossy().as_ref())
+            .creation_flags(0x00000008) // DETACHED_PROCESS
+            .spawn()?;
+        return Ok(());
+    }
+
+    #[cfg(not(windows))]
+    {
+        let exe = std::env::current_exe()?;
+        let tmp = exe.with_extension("new");
+        std::fs::write(&tmp, bytes)?;
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(&exe)
+                .map(|m| m.permissions().mode())
+                .unwrap_or(0o755);
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+        }
+        std::fs::rename(&tmp, &exe)?;
+        Ok(())
+    }
+}
+
+async fn apply_binary_download_update(
+    client: &reqwest::Client,
+    latest: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let archive = platform_archive_name(latest).ok_or_else(|| {
+        format!(
+            "No release archive mapping for platform {}/{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    })?;
+    let tag = format!("v{latest}");
+    let sha_url = format!("{RELEASE_BASE_URL}/{tag}/SHA256SUMS.txt");
+    let archive_url = format!("{RELEASE_BASE_URL}/{tag}/{archive}");
+
+    let sha_resp = client.get(&sha_url).send().await?;
+    if !sha_resp.status().is_success() {
+        return Err(format!("Failed to fetch SHA256SUMS.txt: HTTP {}", sha_resp.status()).into());
+    }
+    let sha_body = sha_resp.text().await?;
+    let expected = parse_sha256sums_for_artifact(&sha_body, &archive)
+        .ok_or_else(|| format!("No checksum found for artifact {archive}"))?;
+
+    let archive_resp = client.get(&archive_url).send().await?;
+    if !archive_resp.status().is_success() {
+        return Err(format!(
+            "Failed to download release archive: HTTP {}",
+            archive_resp.status()
+        )
+        .into());
+    }
+    let archive_bytes = archive_resp.bytes().await?.to_vec();
+    let actual = bytes_sha256(&archive_bytes);
+    if actual != expected {
+        return Err(
+            format!("SHA256 mismatch for {archive}: expected {expected}, got {actual}").into(),
+        );
+    }
+
+    let temp_root = std::env::temp_dir().join(format!(
+        "ironclad-update-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_millis()
+    ));
+    std::fs::create_dir_all(&temp_root)?;
+    let archive_path = if archive.ends_with(".zip") {
+        temp_root.join("ironclad.zip")
+    } else {
+        temp_root.join("ironclad.tar.gz")
+    };
+    std::fs::write(&archive_path, &archive_bytes)?;
+
+    if archive.ends_with(".zip") {
+        let status = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &format!(
+                    "Expand-Archive -Path \"{}\" -DestinationPath \"{}\" -Force",
+                    archive_path.display(),
+                    temp_root.display()
+                ),
+            ])
+            .status()?;
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&temp_root);
+            return Err(
+                format!("Failed to extract {archive} with PowerShell Expand-Archive").into(),
+            );
+        }
+    } else {
+        let status = std::process::Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive_path)
+            .arg("-C")
+            .arg(&temp_root)
+            .status()?;
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&temp_root);
+            return Err(format!("Failed to extract {archive} with tar").into());
+        }
+    }
+
+    let bin_name = if std::env::consts::OS == "windows" {
+        "ironclad.exe"
+    } else {
+        "ironclad"
+    };
+    let extracted = find_file_recursive(&temp_root, bin_name)?
+        .ok_or_else(|| format!("Could not locate extracted {bin_name} binary"))?;
+    let bytes = std::fs::read(&extracted)?;
+    install_binary_bytes(&bytes)?;
+    let _ = std::fs::remove_dir_all(&temp_root);
+    Ok(())
+}
+
+fn c_compiler_available() -> bool {
+    #[cfg(windows)]
+    {
+        if std::process::Command::new("cmd")
+            .args(["/C", "where", "cl"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        if std::process::Command::new("gcc")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        return std::process::Command::new("clang")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    }
+
+    #[cfg(not(windows))]
+    {
+        if std::process::Command::new("cc")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        if std::process::Command::new("clang")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        std::process::Command::new("gcc")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+fn apply_binary_cargo_update(latest: &str) -> bool {
+    let (DIM, _, _, _, _, _, _, RESET, _) = colors();
+    let (OK, _, WARN, DETAIL, ERR) = icons();
+    if !c_compiler_available() {
+        println!("    {WARN} Local build toolchain check failed: no C compiler found in PATH");
+        println!(
+            "    {DETAIL} `--method build` requires a C compiler (and related native build tools)."
+        );
+        println!("    {DETAIL} Recommended: use `ironclad update binary --method download --yes`.");
+        #[cfg(windows)]
+        {
+            println!(
+                "    {DETAIL} Windows: install Visual Studio Build Tools (MSVC) or clang/gcc."
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            println!("    {DETAIL} macOS: run `xcode-select --install`.");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            println!(
+                "    {DETAIL} Linux: install build tools (for example `build-essential` on Debian/Ubuntu)."
+            );
+        }
+        return false;
+    }
+    println!("    Installing v{latest} via cargo install...");
+    println!("    {DIM}This may take a few minutes.{RESET}");
+
+    let status = std::process::Command::new("cargo")
+        .args(["install", CRATE_NAME])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("    {OK} Binary updated to v{latest}");
+            true
+        }
+        Ok(s) => {
+            println!(
+                "    {ERR} cargo install exited with code {}",
+                s.code().unwrap_or(-1)
+            );
+            false
+        }
+        Err(e) => {
+            println!("    {ERR} Failed to run cargo install: {e}");
+            println!("    {DIM}Ensure cargo is in your PATH{RESET}");
+            false
+        }
+    }
+}
+
 // ── TOML diff ────────────────────────────────────────────────
 
 pub fn diff_lines(old: &str, new: &str) -> Vec<DiffLine> {
@@ -285,11 +608,12 @@ async fn check_binary_version(
     Ok(latest)
 }
 
-async fn apply_binary_update(yes: bool) -> Result<bool, Box<dyn std::error::Error>> {
+async fn apply_binary_update(yes: bool, method: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let (DIM, BOLD, _, GREEN, _, _, _, RESET, MONO) = colors();
-    let (OK, _, WARN, _, ERR) = icons();
+    let (OK, _, WARN, DETAIL, ERR) = icons();
     let current = env!("CARGO_PKG_VERSION");
     let client = http_client()?;
+    let method = method.to_ascii_lowercase();
 
     println!("\n  {BOLD}Binary Update{RESET}\n");
     println!("    Current version: {MONO}v{current}{RESET}");
@@ -312,39 +636,68 @@ async fn apply_binary_update(yes: bool) -> Result<bool, Box<dyn std::error::Erro
     println!("    {GREEN}New version available: v{latest}{RESET}");
     println!();
 
+    if std::env::consts::OS == "windows" && method == "build" {
+        println!("    {WARN} Build method is not supported in-process on Windows");
+        println!(
+            "    {DETAIL} Running executables are file-locked. Use `--method download` (recommended),"
+        );
+        println!(
+            "    {DETAIL} or run `cargo install {CRATE_NAME} --force` from a separate PowerShell session."
+        );
+        return Ok(false);
+    }
+
     if !yes && !confirm_action("Proceed with binary update?", true) {
         println!("    Skipped.");
         return Ok(false);
     }
 
-    println!("    Installing v{latest} via cargo install...");
-    println!("    {DIM}This may take a few minutes.{RESET}");
+    let mut updated = false;
+    if method == "download" {
+        println!("    Attempting platform binary download + fingerprint verification...");
+        match apply_binary_download_update(&client, &latest).await {
+            Ok(()) => {
+                println!("    {OK} Binary downloaded and verified (SHA256)");
+                if std::env::consts::OS == "windows" {
+                    println!(
+                        "    {DETAIL} Update staged. The replacement finalizes after this process exits."
+                    );
+                    println!("    {DETAIL} Re-run `ironclad version` in a few seconds to confirm.");
+                }
+                updated = true;
+            }
+            Err(e) => {
+                println!("    {WARN} Download update failed: {e}");
+                if std::env::consts::OS == "windows" {
+                    println!(
+                        "    {DETAIL} On Windows, fallback build-in-place is blocked by executable locks."
+                    );
+                    println!(
+                        "    {DETAIL} Retry `ironclad update binary --method download` or run build update from a separate shell."
+                    );
+                } else if yes || confirm_action("Fall back to cargo build update?", true) {
+                    updated = apply_binary_cargo_update(&latest);
+                } else {
+                    println!("    Skipped fallback build.");
+                }
+            }
+        }
+    } else {
+        updated = apply_binary_cargo_update(&latest);
+    }
 
-    let status = std::process::Command::new("cargo")
-        .args(["install", CRATE_NAME, "--locked"])
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {
-            println!("    {OK} Binary updated to v{latest}");
-            let mut state = UpdateState::load();
-            state.binary_version = latest;
-            state.last_check = now_iso();
-            state.save().ok();
-            Ok(true)
+    if updated {
+        println!("    {OK} Binary updated to v{latest}");
+        let mut state = UpdateState::load();
+        state.binary_version = latest;
+        state.last_check = now_iso();
+        state.save().ok();
+        Ok(true)
+    } else {
+        if method == "download" {
+            println!("    {ERR} Binary update did not complete");
         }
-        Ok(s) => {
-            println!(
-                "    {ERR} cargo install exited with code {}",
-                s.code().unwrap_or(-1)
-            );
-            Ok(false)
-        }
-        Err(e) => {
-            println!("    {ERR} Failed to run cargo install: {e}");
-            println!("    {DIM}Ensure cargo is in your PATH{RESET}");
-            Ok(false)
-        }
+        Ok(false)
     }
 }
 
@@ -775,18 +1128,34 @@ pub async fn cmd_update_check(
 pub async fn cmd_update_all(
     channel: &str,
     yes: bool,
-    _no_restart: bool,
+    no_restart: bool,
     registry_url_override: Option<&str>,
     config_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (_, BOLD, _, _, _, _, _, RESET, _) = colors();
+    let (OK, _, WARN, DETAIL, _) = icons();
     heading("Ironclad Update");
 
-    apply_binary_update(yes).await?;
+    let binary_updated = apply_binary_update(yes, "download").await?;
 
     let registry_url = resolve_registry_url(registry_url_override, config_path);
     apply_providers_update(yes, &registry_url, config_path).await?;
     apply_skills_update(yes, &registry_url, config_path).await?;
+
+    // Restart the daemon if a binary update was applied and --no-restart was not passed.
+    if binary_updated && !no_restart && crate::daemon::is_installed() {
+        println!("\n    Restarting daemon to apply update...");
+        match crate::daemon::restart_daemon() {
+            Ok(()) => println!("    {OK} Daemon restarted"),
+            Err(e) => {
+                println!("    {WARN} Could not restart daemon: {e}");
+                println!("    {DETAIL} Run `ironclad daemon restart` manually.");
+            }
+        }
+    } else if binary_updated && no_restart {
+        println!("\n    {DETAIL} Skipping daemon restart (--no-restart).");
+        println!("    {DETAIL} Run `ironclad daemon restart` to apply the update.");
+    }
 
     println!("\n  {BOLD}Update complete.{RESET}\n");
     Ok(())
@@ -795,9 +1164,10 @@ pub async fn cmd_update_all(
 pub async fn cmd_update_binary(
     _channel: &str,
     yes: bool,
+    method: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     heading("Ironclad Binary Update");
-    apply_binary_update(yes).await?;
+    apply_binary_update(yes, method).await?;
     println!();
     Ok(())
 }
@@ -831,6 +1201,104 @@ pub async fn cmd_update_skills(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Json, Router, extract::State, routing::get};
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+    use tokio::net::TcpListener;
+
+    #[derive(Clone)]
+    struct MockRegistry {
+        manifest: String,
+        providers: String,
+        skill_hello: String,
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old = std::env::var_os(key);
+            // SAFETY: test-scoped environment mutation restored on Drop.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.old {
+                // SAFETY: restoring previous process env value.
+                unsafe { std::env::set_var(self.key, v) };
+            } else {
+                // SAFETY: restoring previous process env value.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    async fn start_mock_registry(
+        providers: String,
+        skill_hello: String,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let providers_hash = bytes_sha256(providers.as_bytes());
+        let hello_hash = bytes_sha256(skill_hello.as_bytes());
+        let manifest = serde_json::json!({
+            "version": "0.8.0",
+            "packs": {
+                "providers": {
+                    "sha256": providers_hash,
+                    "path": "registry/providers.toml"
+                },
+                "skills": {
+                    "sha256": null,
+                    "path": "registry/skills/",
+                    "files": {
+                        "hello.md": hello_hash
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let state = MockRegistry {
+            manifest,
+            providers,
+            skill_hello,
+        };
+
+        async fn manifest_h(State(st): State<MockRegistry>) -> Json<serde_json::Value> {
+            Json(serde_json::from_str(&st.manifest).unwrap())
+        }
+        async fn providers_h(State(st): State<MockRegistry>) -> String {
+            st.providers
+        }
+        async fn skill_h(State(st): State<MockRegistry>) -> String {
+            st.skill_hello
+        }
+
+        let app = Router::new()
+            .route("/manifest.json", get(manifest_h))
+            .route("/registry/providers.toml", get(providers_h))
+            .route("/registry/skills/hello.md", get(skill_h))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (
+            format!("http://{}:{}/manifest.json", addr.ip(), addr.port()),
+            handle,
+        )
+    }
 
     #[test]
     fn update_state_serde_roundtrip() {
@@ -1105,6 +1573,14 @@ mod tests {
     }
 
     #[test]
+    fn platform_archive_name_supported() {
+        let name = platform_archive_name("1.2.3");
+        if let Some(n) = name {
+            assert!(n.contains("ironclad-1.2.3-"));
+        }
+    }
+
+    #[test]
     fn diff_lines_both_empty() {
         let result = diff_lines("", "");
         assert!(result.is_empty() || result.iter().all(|l| matches!(l, DiffLine::Same(_))));
@@ -1134,5 +1610,116 @@ mod tests {
         let ic = InstalledContent::default();
         assert!(ic.skills.is_none());
         assert!(ic.providers.is_none());
+    }
+
+    #[test]
+    fn parse_sha256sums_for_artifact_finds_exact_entry() {
+        let sums = "\
+abc123  ironclad-0.8.0-darwin-aarch64.tar.gz\n\
+def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
+        let hash = parse_sha256sums_for_artifact(sums, "ironclad-0.8.0-linux-x86_64.tar.gz");
+        assert_eq!(hash.as_deref(), Some("def456"));
+    }
+
+    #[test]
+    fn find_file_recursive_finds_nested_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        let target = nested.join("needle.txt");
+        std::fs::write(&target, "x").unwrap();
+        let found = find_file_recursive(dir.path(), "needle.txt").unwrap();
+        assert_eq!(found.as_deref(), Some(target.as_path()));
+    }
+
+    #[test]
+    fn local_path_helpers_fallback_when_config_missing() {
+        let p = providers_local_path("/no/such/file.toml");
+        let s = skills_local_dir("/no/such/file.toml");
+        assert!(p.ends_with("providers.toml"));
+        assert!(s.ends_with("skills"));
+    }
+
+    #[test]
+    fn parse_sha256sums_for_artifact_returns_none_when_missing() {
+        let sums = "abc123  file-a.tar.gz\n";
+        assert!(parse_sha256sums_for_artifact(sums, "file-b.tar.gz").is_none());
+    }
+
+    #[test]
+    fn find_file_recursive_returns_none_when_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let found = find_file_recursive(dir.path(), "does-not-exist.txt").unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn apply_providers_update_fetches_and_writes_local_file() {
+        let _lock = env_lock().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", temp.path().to_str().unwrap());
+        let config_path = temp.path().join("ironclad.toml");
+        let providers_path = temp.path().join("providers.toml");
+        std::fs::write(
+            &config_path,
+            format!("providers_file = \"{}\"\n", providers_path.display()),
+        )
+        .unwrap();
+
+        let providers = "[providers.openai]\nurl = \"https://api.openai.com\"\n".to_string();
+        let (registry_url, handle) =
+            start_mock_registry(providers.clone(), "# hello\nbody\n".to_string()).await;
+
+        let changed = apply_providers_update(true, &registry_url, config_path.to_str().unwrap())
+            .await
+            .unwrap();
+        assert!(changed);
+        assert_eq!(std::fs::read_to_string(&providers_path).unwrap(), providers);
+
+        let changed_second =
+            apply_providers_update(true, &registry_url, config_path.to_str().unwrap())
+                .await
+                .unwrap();
+        assert!(!changed_second);
+        handle.abort();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn apply_skills_update_installs_and_then_reports_up_to_date() {
+        let _lock = env_lock().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", temp.path().to_str().unwrap());
+        let skills_dir = temp.path().join("skills");
+        let config_path = temp.path().join("ironclad.toml");
+        std::fs::write(
+            &config_path,
+            format!("[skills]\nskills_dir = \"{}\"\n", skills_dir.display()),
+        )
+        .unwrap();
+
+        let hello = "# hello\nfrom registry\n".to_string();
+        let (registry_url, handle) = start_mock_registry(
+            "[providers.openai]\nurl=\"https://api.openai.com\"\n".to_string(),
+            hello.clone(),
+        )
+        .await;
+
+        let changed = apply_skills_update(true, &registry_url, config_path.to_str().unwrap())
+            .await
+            .unwrap();
+        assert!(changed);
+        assert_eq!(
+            std::fs::read_to_string(skills_dir.join("hello.md")).unwrap(),
+            hello
+        );
+
+        let changed_second =
+            apply_skills_update(true, &registry_url, config_path.to_str().unwrap())
+                .await
+                .unwrap();
+        assert!(!changed_second);
+        handle.abort();
     }
 }

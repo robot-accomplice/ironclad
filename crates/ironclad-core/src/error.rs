@@ -51,6 +51,12 @@ impl From<toml::de::Error> for IroncladError {
     }
 }
 
+impl From<toml::ser::Error> for IroncladError {
+    fn from(e: toml::ser::Error) -> Self {
+        Self::Config(format!("TOML serialization error: {e}"))
+    }
+}
+
 impl From<serde_json::Error> for IroncladError {
     fn from(e: serde_json::Error) -> Self {
         Self::Config(format!("JSON parse error: {e}"))
@@ -240,5 +246,72 @@ mod tests {
         let err =
             IroncladError::Network("provider returned 402 Payment Required: no credits".into());
         assert!(err.is_credit_error());
+    }
+
+    #[test]
+    fn is_credit_error_false_for_other_variants() {
+        // These variants short-circuit in the match arm returning false
+        assert!(!IroncladError::Database("credit billing".into()).is_credit_error());
+        assert!(!IroncladError::Channel("credit rate_limit".into()).is_credit_error());
+        assert!(!IroncladError::Wallet("billing issue".into()).is_credit_error());
+        assert!(!IroncladError::Injection("402 Payment Required".into()).is_credit_error());
+        assert!(!IroncladError::Schedule("billing".into()).is_credit_error());
+        assert!(!IroncladError::A2a("billing".into()).is_credit_error());
+        assert!(!IroncladError::Skill("billing".into()).is_credit_error());
+        assert!(!IroncladError::Keystore("billing".into()).is_credit_error());
+        assert!(
+            !IroncladError::Policy {
+                rule: "credit".into(),
+                reason: "billing".into()
+            }
+            .is_credit_error()
+        );
+        assert!(
+            !IroncladError::Tool {
+                tool: "credit".into(),
+                message: "billing".into()
+            }
+            .is_credit_error()
+        );
+        let io_err = std::io::Error::other("billing");
+        assert!(!IroncladError::Io(io_err).is_credit_error());
+    }
+
+    #[test]
+    fn is_credit_error_network_billing() {
+        let err = IroncladError::Network("Your billing account is inactive".into());
+        assert!(err.is_credit_error());
+    }
+
+    #[test]
+    fn is_credit_error_credit_rate_limit_combo() {
+        let err = IroncladError::Llm("credit exhausted, rate_limit triggered".into());
+        assert!(err.is_credit_error());
+    }
+
+    #[test]
+    fn is_credit_error_credit_circuit_breaker_combo() {
+        let err = IroncladError::Llm("credit tripped circuit breaker".into());
+        assert!(err.is_credit_error());
+    }
+
+    #[test]
+    fn toml_ser_error_conversion() {
+        // Force a TOML serialization error using a custom serializer that always fails
+        fn force_toml_ser_error<S: serde::Serializer>(
+            _v: &str,
+            _s: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("forced error"))
+        }
+        #[derive(serde::Serialize)]
+        struct Bad {
+            #[serde(serialize_with = "force_toml_ser_error")]
+            field: String,
+        }
+        let result = toml::to_string(&Bad { field: "x".into() });
+        let err: IroncladError = result.unwrap_err().into();
+        assert!(matches!(err, IroncladError::Config(_)));
+        assert!(err.to_string().contains("TOML serialization error"));
     }
 }

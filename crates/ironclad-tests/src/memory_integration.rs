@@ -1,4 +1,6 @@
+use ironclad_agent::context::ComplexityLevel;
 use ironclad_agent::memory::MemoryBudgetManager;
+use ironclad_agent::retrieval::MemoryRetriever;
 use ironclad_core::config::MemoryConfig;
 use ironclad_db::Database;
 
@@ -157,4 +159,59 @@ fn memory_ingestion_after_ingest_turn_tiers() {
 
     let procedural = ironclad_db::memory::retrieve_procedural(&db, "deploy").unwrap();
     assert!(procedural.is_some(), "procedural should record deploy");
+}
+
+#[test]
+fn memory_retrieval_excludes_turn_summary_echoes() {
+    let db = Database::new(":memory:").unwrap();
+    let session_id = ironclad_db::sessions::find_or_create(&db, "echo-guard-agent", None).unwrap();
+
+    ironclad_db::memory::store_working(
+        &db,
+        &session_id,
+        "turn_summary",
+        "Good to be back on familiar ground.",
+        9,
+    )
+    .unwrap();
+    ironclad_db::memory::store_working(&db, &session_id, "goal", "stabilize telegram replies", 8)
+        .unwrap();
+
+    let retriever = MemoryRetriever::new(MemoryConfig::default());
+    let memories = retriever.retrieve(&db, &session_id, "telegram", None, ComplexityLevel::L2);
+
+    assert!(memories.contains("stabilize telegram replies"));
+    assert!(
+        !memories.contains("Good to be back on familiar ground."),
+        "turn summaries should not be re-injected into prompt context"
+    );
+}
+
+#[test]
+fn scoped_sessions_remain_isolated_between_peer_and_group() {
+    let db = Database::new(":memory:").unwrap();
+    let peer_scope = ironclad_db::sessions::SessionScope::Peer {
+        peer_id: "user-1".into(),
+        channel: "telegram".into(),
+    };
+    let group_scope = ironclad_db::sessions::SessionScope::Group {
+        group_id: "chat-77".into(),
+        channel: "telegram".into(),
+    };
+
+    let peer_session =
+        ironclad_db::sessions::find_or_create(&db, "scope-agent", Some(&peer_scope)).unwrap();
+    let group_session =
+        ironclad_db::sessions::find_or_create(&db, "scope-agent", Some(&group_scope)).unwrap();
+    assert_ne!(peer_session, group_session);
+
+    ironclad_db::memory::store_working(&db, &peer_session, "note", "peer-memory", 5).unwrap();
+    ironclad_db::memory::store_working(&db, &group_session, "note", "group-memory", 5).unwrap();
+
+    let peer_entries = ironclad_db::memory::retrieve_working(&db, &peer_session).unwrap();
+    let group_entries = ironclad_db::memory::retrieve_working(&db, &group_session).unwrap();
+    assert!(peer_entries.iter().any(|e| e.content == "peer-memory"));
+    assert!(!peer_entries.iter().any(|e| e.content == "group-memory"));
+    assert!(group_entries.iter().any(|e| e.content == "group-memory"));
+    assert!(!group_entries.iter().any(|e| e.content == "peer-memory"));
 }

@@ -1,4 +1,5 @@
 use super::*;
+use serde::Serialize;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -22,11 +23,8 @@ fn prompt_yes_no(question: &str) -> bool {
     matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
-fn path_contains_dir(dir: &Path) -> bool {
-    let Some(path_var) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path_var).any(|p| {
+fn path_contains_dir_in(dir: &Path, path_var: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(path_var).any(|p| {
         #[cfg(windows)]
         {
             p.to_string_lossy().to_ascii_lowercase() == dir.to_string_lossy().to_ascii_lowercase()
@@ -38,10 +36,17 @@ fn path_contains_dir(dir: &Path) -> bool {
     })
 }
 
-fn go_bin_candidates() -> Vec<PathBuf> {
+fn path_contains_dir(dir: &Path) -> bool {
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    path_contains_dir_in(dir, &path_var)
+}
+
+fn go_bin_candidates_with(gopath: Option<&str>) -> Vec<PathBuf> {
     let mut out = Vec::new();
 
-    if let Ok(gopath) = std::env::var("GOPATH") {
+    if let Some(gopath) = gopath {
         out.push(PathBuf::from(gopath).join("bin"));
     }
 
@@ -58,16 +63,430 @@ fn go_bin_candidates() -> Vec<PathBuf> {
     out
 }
 
-fn find_gosh_in_go_bins() -> Option<PathBuf> {
+fn go_bin_candidates() -> Vec<PathBuf> {
+    go_bin_candidates_with(std::env::var("GOPATH").ok().as_deref())
+}
+
+fn find_gosh_in_go_bins_with(gopath: Option<&str>) -> Option<PathBuf> {
     #[cfg(windows)]
     let gosh_name = "gosh.exe";
     #[cfg(not(windows))]
     let gosh_name = "gosh";
 
-    go_bin_candidates()
+    go_bin_candidates_with(gopath)
         .into_iter()
         .map(|d| d.join(gosh_name))
         .find(|p| p.is_file())
+}
+
+fn find_gosh_in_go_bins() -> Option<PathBuf> {
+    find_gosh_in_go_bins_with(std::env::var("GOPATH").ok().as_deref())
+}
+
+fn recent_log_snapshot(log_dir: &Path, max_bytes: usize) -> Option<String> {
+    let entries = std::fs::read_dir(log_dir).ok()?;
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            if !(name.starts_with("ironclad.log") || name == "ironclad.stderr.log") {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect();
+    candidates.sort_by_key(|(modified, _)| *modified);
+    let (_, newest) = candidates.into_iter().last()?;
+    let data = std::fs::read(newest).ok()?;
+    let start = data.len().saturating_sub(max_bytes);
+    Some(String::from_utf8_lossy(&data[start..]).to_string())
+}
+
+fn count_occurrences(haystack: &str, needle: &str) -> usize {
+    haystack.match_indices(needle).count()
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MechanicRepairPlan {
+    description: String,
+    commands: Vec<String>,
+    safe_auto_repair: bool,
+    requires_human_approval: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MechanicFinding {
+    id: String,
+    severity: String,
+    confidence: f64,
+    summary: String,
+    details: String,
+    repair_plan: MechanicRepairPlan,
+    auto_repaired: bool,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+struct RepairActionSummary {
+    directories_created: Vec<String>,
+    config_created: bool,
+    permissions_hardened: Vec<String>,
+    schema_normalized: bool,
+    paused_jobs_reenabled: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MechanicJsonReport {
+    ok: bool,
+    repair_mode: bool,
+    findings: Vec<MechanicFinding>,
+    actions: RepairActionSummary,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finding(
+    id: &str,
+    severity: &str,
+    confidence: f64,
+    summary: impl Into<String>,
+    details: impl Into<String>,
+    plan_desc: impl Into<String>,
+    commands: Vec<String>,
+    safe_auto_repair: bool,
+    requires_human_approval: bool,
+) -> MechanicFinding {
+    MechanicFinding {
+        id: id.to_string(),
+        severity: severity.to_string(),
+        confidence,
+        summary: summary.into(),
+        details: details.into(),
+        repair_plan: MechanicRepairPlan {
+            description: plan_desc.into(),
+            commands,
+            safe_auto_repair,
+            requires_human_approval,
+        },
+        auto_repaired: false,
+    }
+}
+
+fn normalize_schema_safe(state_db_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    if !state_db_path.exists() {
+        return Ok(false);
+    }
+    let conn = rusqlite::Connection::open(state_db_path)?;
+    conn.execute_batch(
+        "BEGIN;
+         UPDATE sub_agents SET role='subagent' WHERE lower(trim(role))='specialist';
+         UPDATE sub_agents SET skills_json='[]' WHERE skills_json IS NULL;
+         COMMIT;",
+    )?;
+    Ok(true)
+}
+
+async fn cmd_mechanic_json(
+    base_url: &str,
+    repair: bool,
+    allow_jobs: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ironclad_dir = ironclad_core::home_dir().join(".ironclad");
+    let mut findings: Vec<MechanicFinding> = vec![];
+    let mut actions = RepairActionSummary::default();
+
+    let dirs = [
+        ironclad_dir.clone(),
+        ironclad_dir.join("workspace"),
+        ironclad_dir.join("skills"),
+        ironclad_dir.join("plugins"),
+        ironclad_dir.join("logs"),
+    ];
+    for dir in &dirs {
+        if !dir.exists() {
+            let mut f = finding(
+                "missing-directory",
+                "medium",
+                0.99,
+                format!("Missing directory: {}", dir.display()),
+                "Required runtime directory is absent.",
+                "Create required Ironclad directory tree.",
+                vec![format!("mkdir -p \"{}\"", dir.display())],
+                true,
+                false,
+            );
+            if repair {
+                std::fs::create_dir_all(dir)?;
+                f.auto_repaired = true;
+                actions.directories_created.push(dir.display().to_string());
+            }
+            findings.push(f);
+        }
+    }
+
+    let config_path = std::path::Path::new("ironclad.toml");
+    let alt_config = ironclad_dir.join("ironclad.toml");
+    if !config_path.exists() && !alt_config.exists() {
+        let mut f = finding(
+            "missing-config",
+            "high",
+            0.98,
+            "No Ironclad config file found",
+            "Neither local ./ironclad.toml nor ~/.ironclad/ironclad.toml exists.",
+            "Initialize or restore runtime configuration.",
+            vec!["ironclad init".to_string()],
+            true,
+            false,
+        );
+        if repair {
+            let default_config = format!(
+                concat!(
+                    "[agent]\n",
+                    "name = \"Ironclad\"\n",
+                    "id = \"ironclad-dev\"\n\n",
+                    "[server]\n",
+                    "port = 18789\n",
+                    "bind = \"127.0.0.1\"\n\n",
+                    "[database]\n",
+                    "path = \"{}/state.db\"\n\n",
+                    "[models]\n",
+                    "primary = \"ollama/qwen3:8b\"\n",
+                    "fallbacks = [\"openai/gpt-4o\"]\n",
+                ),
+                ironclad_dir.display()
+            );
+            std::fs::create_dir_all(&ironclad_dir)?;
+            std::fs::write(&alt_config, default_config)?;
+            f.auto_repaired = true;
+            actions.config_created = true;
+        }
+        findings.push(f);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for file in [
+            ironclad_dir.join("wallet.json"),
+            ironclad_dir.join("state.db"),
+        ] {
+            if file.exists() {
+                let meta = std::fs::metadata(&file)?;
+                let mode = meta.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    let mut f = finding(
+                        "loose-permissions",
+                        "high",
+                        0.97,
+                        format!("Loose permissions on {}", file.display()),
+                        format!("Current mode {:o} allows group/other access.", mode),
+                        "Harden file permissions to owner-only (0600).",
+                        vec![format!("chmod 600 \"{}\"", file.display())],
+                        true,
+                        false,
+                    );
+                    if repair {
+                        let mut perms = meta.permissions();
+                        perms.set_mode(0o600);
+                        std::fs::set_permissions(&file, perms)?;
+                        f.auto_repaired = true;
+                        actions
+                            .permissions_hardened
+                            .push(file.display().to_string());
+                    }
+                    findings.push(f);
+                }
+            }
+        }
+    }
+
+    let gateway = reqwest::get(format!("{base_url}/api/health")).await;
+    let gateway_up = matches!(gateway, Ok(ref resp) if resp.status().is_success());
+    if !gateway_up {
+        findings.push(finding(
+            "gateway-unreachable",
+            "high",
+            0.95,
+            "Gateway unreachable",
+            format!("Could not reach {base_url}/api/health successfully."),
+            "Start or restart the Ironclad daemon.",
+            vec!["ironclad daemon restart".to_string()],
+            false,
+            false,
+        ));
+    } else {
+        let diag_resp = reqwest::get(format!("{base_url}/api/agent/status")).await?;
+        let diagnostics: serde_json::Value = diag_resp.json().await.unwrap_or_default();
+        if let Some(diag) = diagnostics.get("diagnostics") {
+            let enabled = diag
+                .get("taskable_subagents_enabled")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let running = diag
+                .get("taskable_subagents_running")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if enabled > 0 && running == 0 {
+                findings.push(finding(
+                    "delegation-integrity-down",
+                    "critical",
+                    0.99,
+                    "Delegation integrity failure",
+                    format!(
+                        "{enabled} subagent(s) enabled but none running; delegated output cannot be verified."
+                    ),
+                    "Recover/start subagents before accepting subagent-attributed responses.",
+                    vec!["ironclad status".to_string(), "ironclad mechanic".to_string()],
+                    false,
+                    false,
+                ));
+            }
+        }
+
+        let channels_resp = reqwest::get(format!("{base_url}/api/channels/status")).await?;
+        let channels: Vec<serde_json::Value> = channels_resp.json().await.unwrap_or_default();
+        if let Some(tg) = channels
+            .iter()
+            .find(|c| c.get("name").and_then(|v| v.as_str()) == Some("telegram"))
+        {
+            let connected = tg
+                .get("connected")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let rx = tg
+                .get("messages_received")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let tx = tg
+                .get("messages_sent")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if connected && rx == 0 && tx == 0 {
+                findings.push(finding(
+                    "telegram-idle",
+                    "medium",
+                    0.75,
+                    "Telegram connected but zero traffic",
+                    "No messages received/sent; verify token, polling/webhook, and chat allowlist.",
+                    "Inspect channel status and logs for transport/auth errors.",
+                    vec![
+                        "ironclad channels status".to_string(),
+                        "ironclad logs -n 200".to_string(),
+                    ],
+                    false,
+                    false,
+                ));
+            }
+        }
+
+        if repair && !allow_jobs.is_empty() {
+            let jobs_resp = reqwest::get(format!("{base_url}/api/cron/jobs")).await?;
+            if jobs_resp.status().is_success() {
+                let payload: serde_json::Value = jobs_resp.json().await.unwrap_or_default();
+                let jobs = payload
+                    .get("jobs")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let allowset: std::collections::HashSet<String> =
+                    allow_jobs.iter().map(|s| s.to_string()).collect();
+                let client = reqwest::Client::new();
+                for job in jobs {
+                    let name = job.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let id = job.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let paused = job
+                        .get("last_status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        == "paused_unknown_action";
+                    if paused && allowset.contains(name) && !id.is_empty() {
+                        let resp = client
+                            .put(format!("{base_url}/api/cron/jobs/{id}"))
+                            .json(&serde_json::json!({ "enabled": true }))
+                            .send()
+                            .await?;
+                        if resp.status().is_success() {
+                            actions.paused_jobs_reenabled.push(name.to_string());
+                        }
+                    }
+                }
+                if !actions.paused_jobs_reenabled.is_empty() {
+                    findings.push(MechanicFinding {
+                        id: "paused-jobs-recovered".to_string(),
+                        severity: "info".to_string(),
+                        confidence: 1.0,
+                        summary: "Paused cron jobs recovered".to_string(),
+                        details: format!(
+                            "Re-enabled allowlisted jobs: {}",
+                            actions.paused_jobs_reenabled.join(", ")
+                        ),
+                        repair_plan: MechanicRepairPlan {
+                            description: "Allowlisted paused jobs were re-enabled.".to_string(),
+                            commands: vec![],
+                            safe_auto_repair: true,
+                            requires_human_approval: false,
+                        },
+                        auto_repaired: true,
+                    });
+                }
+            }
+        }
+    }
+
+    let log_snapshot = recent_log_snapshot(&ironclad_dir.join("logs"), 350_000);
+    if let Some(snapshot) = log_snapshot.as_deref() {
+        let tg_404_count =
+            count_occurrences(snapshot, "Telegram API error\",\"status\":\"404 Not Found");
+        let tg_poll_err_count = count_occurrences(snapshot, "Telegram poll error, backing off 5s");
+        if tg_404_count >= 3 || tg_poll_err_count >= 3 {
+            findings.push(finding(
+                "telegram-invalid-token-likely",
+                "high",
+                0.96,
+                "Repeated Telegram 404/poll-backoff failures",
+                "Log signatures strongly suggest an invalid or revoked Telegram bot token.",
+                "Set a valid token and restart daemon.",
+                vec![
+                    "ironclad keystore set telegram_bot_token \"<TOKEN>\"".to_string(),
+                    "ironclad daemon restart".to_string(),
+                ],
+                false,
+                true,
+            ));
+        }
+        let unknown_action_count = count_occurrences(snapshot, "unknown action: unknown");
+        if unknown_action_count >= 3 {
+            findings.push(finding(
+                "cron-unknown-action-storm",
+                "high",
+                0.92,
+                "Recurring cron unknown-action failures",
+                "Scheduler repeatedly hit legacy/invalid cron action payloads.",
+                "Recover paused jobs selectively after validation.",
+                vec!["ironclad schedule recover --all --dry-run".to_string()],
+                true,
+                false,
+            ));
+        }
+    }
+
+    if repair {
+        let state_db = ironclad_dir.join("state.db");
+        if normalize_schema_safe(&state_db)? {
+            actions.schema_normalized = true;
+        }
+    }
+
+    let report = MechanicJsonReport {
+        ok: findings
+            .iter()
+            .all(|f| f.severity == "info" || f.auto_repaired),
+        repair_mode: repair,
+        findings,
+        actions,
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -272,9 +691,85 @@ pub async fn cmd_channels_status(base_url: &str) -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+pub async fn cmd_channels_dead_letter(
+    base_url: &str,
+    limit: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = reqwest::get(format!("{base_url}/api/channels/dead-letter?limit={limit}")).await?;
+    let body: serde_json::Value = resp.json().await?;
+    let items = body
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if items.is_empty() {
+        println!("  No dead-letter deliveries.");
+        return Ok(());
+    }
+
+    println!(
+        "\n  {:<38} {:<12} {:<10} {:<40}",
+        "ID", "Channel", "Attempts", "Last error"
+    );
+    println!("  {}", "─".repeat(108));
+    for item in items {
+        let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+        let channel = item.get("channel").and_then(|v| v.as_str()).unwrap_or("?");
+        let attempts = item
+            .get("attempts")
+            .and_then(|v| v.as_u64())
+            .unwrap_or_default();
+        let max_attempts = item
+            .get("max_attempts")
+            .and_then(|v| v.as_u64())
+            .unwrap_or_default();
+        let last_error = item
+            .get("last_error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        println!(
+            "  {:<38} {:<12} {:<10} {:<40}",
+            truncate_id(id, 35),
+            channel,
+            format!("{attempts}/{max_attempts}"),
+            truncate_id(last_error, 37),
+        );
+    }
+    println!();
+    Ok(())
+}
+
+pub async fn cmd_channels_replay(
+    base_url: &str,
+    id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base_url}/api/channels/dead-letter/{id}/replay"))
+        .send()
+        .await?;
+    if resp.status().is_success() {
+        println!("  Replayed dead-letter item: {id}");
+    } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        println!("  Dead-letter item not found: {id}");
+    } else {
+        println!("  Replay failed for {id}: HTTP {}", resp.status());
+    }
+    Ok(())
+}
+
 // ── Mechanic ──────────────────────────────────────────────────
 
-pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_mechanic(
+    base_url: &str,
+    repair: bool,
+    json_output: bool,
+    allow_jobs: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if json_output {
+        return cmd_mechanic_json(base_url, repair, allow_jobs).await;
+    }
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     println!(
@@ -282,8 +777,7 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
         if repair { " (--repair mode)" } else { "" }
     );
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let ironclad_dir = std::path::PathBuf::from(&home).join(".ironclad");
+    let ironclad_dir = ironclad_core::home_dir().join(".ironclad");
     let mut fixed = 0u32;
 
     // Check directories
@@ -623,6 +1117,9 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
     };
 
     if gateway_up {
+        let mut channels_status: Option<Vec<serde_json::Value>> = None;
+        let mut runtime_diag: Option<serde_json::Value> = None;
+
         // Config
         match reqwest::get(format!("{base_url}/api/config")).await {
             Ok(resp) if resp.status().is_success() => {
@@ -633,6 +1130,24 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
             }
             Err(e) => {
                 println!("  {WARN} Config check failed: {e}");
+            }
+        }
+
+        // Runtime diagnostics (delegation integrity signals)
+        match reqwest::get(format!("{base_url}/api/agent/status")).await {
+            Ok(resp) if resp.status().is_success() => {
+                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                runtime_diag = body.get("diagnostics").cloned();
+                println!("  {OK} Runtime diagnostics available");
+            }
+            Ok(resp) => {
+                println!(
+                    "  {WARN} Agent status endpoint returned HTTP {}",
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                println!("  {WARN} Agent status check failed: {e}");
             }
         }
 
@@ -681,6 +1196,7 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
                     })
                     .count();
                 println!("  {OK} Channels ({active}/{} connected)", body.len());
+                channels_status = Some(body);
             }
             Ok(resp) => {
                 println!("  {WARN} Channels endpoint returned HTTP {}", resp.status());
@@ -689,8 +1205,171 @@ pub async fn cmd_mechanic(base_url: &str, repair: bool) -> Result<(), Box<dyn st
                 println!("  {WARN} Channels check failed: {e}");
             }
         }
+
+        // Smart diagnostics from recent logs + channel telemetry.
+        let log_snapshot = recent_log_snapshot(&ironclad_dir.join("logs"), 350_000);
+        if let Some(snapshot) = log_snapshot.as_deref() {
+            let tg_404_count =
+                count_occurrences(snapshot, "Telegram API error\",\"status\":\"404 Not Found");
+            let tg_poll_err_count =
+                count_occurrences(snapshot, "Telegram poll error, backing off 5s");
+            if tg_404_count >= 3 || tg_poll_err_count >= 3 {
+                println!(
+                    "  {WARN} Detected repeated Telegram transport failures (404/poll backoff loop)."
+                );
+                println!("         Likely cause: invalid/revoked Telegram bot token in keystore.");
+                println!(
+                    "         Repair: `ironclad keystore set telegram_bot_token \"<TOKEN>\"` then `ironclad daemon restart`"
+                );
+            }
+
+            let unknown_action_count = count_occurrences(snapshot, "unknown action: unknown");
+            if unknown_action_count >= 3 {
+                println!(
+                    "  {WARN} Detected recurring scheduler failures: `unknown action: unknown`."
+                );
+                println!(
+                    "         Repair: run `ironclad schedule recover --all --dry-run` and re-enable trusted jobs."
+                );
+            }
+        }
+
+        if let Some(channels) = channels_status.as_ref() {
+            let telegram = channels
+                .iter()
+                .find(|c| c.get("name").and_then(|v| v.as_str()) == Some("telegram"));
+            if let Some(tg) = telegram {
+                let connected = tg
+                    .get("connected")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let received = tg
+                    .get("messages_received")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let sent = tg
+                    .get("messages_sent")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if connected && received == 0 && sent == 0 {
+                    println!("  {WARN} Telegram appears connected but has zero traffic.");
+                    println!(
+                        "         If this is unexpected, run `ironclad channels status` and inspect logs for poll/webhook errors."
+                    );
+                }
+            }
+        }
+
+        if let Some(diag) = runtime_diag.as_ref() {
+            let total = diag
+                .get("taskable_subagents_total")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let enabled = diag
+                .get("taskable_subagents_enabled")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let running = diag
+                .get("taskable_subagents_running")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let error = diag
+                .get("taskable_subagents_error")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            if total > 0 && enabled > 0 && running == 0 {
+                println!(
+                    "  {WARN} Delegation integrity risk: {enabled} taskable subagent(s) enabled, but 0 running."
+                );
+                println!(
+                    "         Any response attributed to a subagent cannot be runtime-verified right now."
+                );
+                println!(
+                    "         Repair: start/recover subagents and re-check with `ironclad status` / `ironclad mechanic`."
+                );
+            } else if enabled > running {
+                println!(
+                    "  {WARN} Delegation degradation: enabled subagents ({enabled}) exceed running ({running})."
+                );
+                if error > 0 {
+                    println!("         {error} subagent(s) currently report error state.");
+                }
+                println!(
+                    "         Recommendation: treat subagent-attributed outputs as unverified until running count recovers."
+                );
+            }
+        }
+
+        if repair && !allow_jobs.is_empty() {
+            let allowset: std::collections::HashSet<String> =
+                allow_jobs.iter().map(|s| s.to_string()).collect();
+            let client = reqwest::Client::new();
+            match reqwest::get(format!("{base_url}/api/cron/jobs")).await {
+                Ok(resp) if resp.status().is_success() => {
+                    let payload: serde_json::Value = resp.json().await.unwrap_or_default();
+                    let jobs = payload
+                        .get("jobs")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut recovered: Vec<String> = vec![];
+                    for job in jobs {
+                        let name = job.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let id = job.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let paused = job
+                            .get("last_status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            == "paused_unknown_action";
+                        if paused
+                            && allowset.contains(name)
+                            && !id.is_empty()
+                            && let Ok(r) = client
+                                .put(format!("{base_url}/api/cron/jobs/{id}"))
+                                .json(&serde_json::json!({ "enabled": true }))
+                                .send()
+                                .await
+                            && r.status().is_success()
+                        {
+                            recovered.push(name.to_string());
+                        }
+                    }
+                    if !recovered.is_empty() {
+                        println!(
+                            "  {ACTION} Re-enabled allowlisted paused jobs: {}",
+                            recovered.join(", ")
+                        );
+                        fixed += recovered.len() as u32;
+                    }
+                }
+                Ok(resp) => {
+                    println!(
+                        "  {WARN} Could not inspect cron jobs for allowlisted recovery (HTTP {})",
+                        resp.status()
+                    );
+                }
+                Err(e) => {
+                    println!("  {WARN} Cron allowlist recovery check failed: {e}");
+                }
+            }
+        }
     } else {
         println!("    {DETAIL} Skipping server checks (config, skills, wallet, channels)");
+    }
+
+    if repair {
+        let state_db = ironclad_dir.join("state.db");
+        match normalize_schema_safe(&state_db) {
+            Ok(true) => {
+                println!("  {ACTION} Applied safe schema normalization in state.db");
+                fixed += 1;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                println!("  {WARN} Schema normalization skipped: {e}");
+            }
+        }
     }
 
     println!();
@@ -763,8 +1442,7 @@ pub fn cmd_uninstall(purge: bool) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if purge {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        let data_dir = std::path::Path::new(&home).join(".ironclad");
+        let data_dir = ironclad_core::home_dir().join(".ironclad");
         if data_dir.exists() {
             std::fs::remove_dir_all(&data_dir)?;
             println!("  {OK} Removed {}", data_dir.display());
@@ -799,8 +1477,7 @@ pub fn cmd_reset(yes: bool) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let ironclad_dir = std::path::Path::new(&home).join(".ironclad");
+    let ironclad_dir = ironclad_core::home_dir().join(".ironclad");
 
     let db_path = ironclad_dir.join("state.db");
     if db_path.exists() {
@@ -1010,10 +1687,7 @@ pub async fn cmd_metrics(
 fn try_read_log_file(lines: usize, _level: &str) {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let log_dir = std::path::PathBuf::from(&home)
-        .join(".ironclad")
-        .join("logs");
+    let log_dir = ironclad_core::home_dir().join(".ironclad").join("logs");
 
     if !log_dir.exists() {
         println!("  No log directory found at {}", log_dir.display());
@@ -1156,6 +1830,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
 
     let mut pass_count = 0u32;
     let mut warn_count = 0u32;
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut fail_count = 0u32;
 
     // 1. Check config file permissions
@@ -1217,8 +1892,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     }
 
     // 4. Check wallet file permissions
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let wallet_path = std::path::PathBuf::from(&home)
+    let wallet_path = ironclad_core::home_dir()
         .join(".ironclad")
         .join("wallet.json");
     if wallet_path.exists() {
@@ -1249,9 +1923,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     }
 
     // 5. Check database file permissions
-    let db_path = std::path::PathBuf::from(&home)
-        .join(".ironclad")
-        .join("state.db");
+    let db_path = ironclad_core::home_dir().join(".ironclad").join("state.db");
     if db_path.exists() {
         #[cfg(unix)]
         {
@@ -1291,7 +1963,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     }
 
     // 7. Check PID file
-    let pid_path = std::path::PathBuf::from(&home)
+    let pid_path = ironclad_core::home_dir()
         .join(".ironclad")
         .join("ironclad.pid");
     if pid_path.exists() {
@@ -1314,4 +1986,236 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     println!();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old = std::env::var_os(key);
+            // SAFETY: test-local environment mutation restored on Drop.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.old {
+                // SAFETY: restoring previous process env value.
+                unsafe { std::env::set_var(self.key, v) };
+            } else {
+                // SAFETY: restoring previous process env value.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn path_contains_dir_and_go_bin_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_var = std::ffi::OsString::from(dir.path().to_str().unwrap());
+        assert!(path_contains_dir_in(dir.path(), &path_var));
+        assert!(!path_contains_dir_in(
+            Path::new("/definitely/not/here"),
+            &path_var
+        ));
+
+        let gopath = tempfile::tempdir().unwrap();
+        let bin_dir = gopath.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        #[cfg(windows)]
+        let gosh = bin_dir.join("gosh.exe");
+        #[cfg(not(windows))]
+        let gosh = bin_dir.join("gosh");
+        std::fs::write(&gosh, "stub").unwrap();
+        assert_eq!(
+            find_gosh_in_go_bins_with(gopath.path().to_str()),
+            Some(gosh)
+        );
+    }
+
+    #[test]
+    fn recent_log_snapshot_and_count_occurrences_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let older = dir.path().join("ironclad.log");
+        let newer = dir.path().join("ironclad.stderr.log");
+        std::fs::write(&older, "old line").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&newer, "abc abc abc").unwrap();
+
+        let snap = recent_log_snapshot(dir.path(), 8).unwrap();
+        assert!(snap.contains("abc"));
+        assert_eq!(count_occurrences("abc abc abc", "abc"), 3);
+    }
+
+    #[test]
+    fn finding_builder_sets_repair_metadata() {
+        let f = finding(
+            "id-1",
+            "high",
+            0.9,
+            "summary",
+            "details",
+            "plan",
+            vec!["cmd".into()],
+            true,
+            false,
+        );
+        assert_eq!(f.id, "id-1");
+        assert_eq!(f.severity, "high");
+        assert!(f.repair_plan.safe_auto_repair);
+        assert!(!f.repair_plan.requires_human_approval);
+        assert_eq!(f.repair_plan.commands, vec!["cmd"]);
+    }
+
+    #[test]
+    fn normalize_schema_safe_updates_legacy_subagent_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sub_agents (role TEXT, skills_json TEXT);
+             INSERT INTO sub_agents (role, skills_json) VALUES ('specialist', NULL);",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(normalize_schema_safe(&db_path).unwrap());
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let (role, skills): (String, String) = conn
+            .query_row(
+                "SELECT role, skills_json FROM sub_agents LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(role, "subagent");
+        assert_eq!(skills, "[]");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn mechanic_json_repair_mode_creates_default_layout() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
+        let ironclad_dir = home.path().join(".ironclad");
+        let logs_dir = ironclad_dir.join("logs");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        std::fs::write(
+            logs_dir.join("ironclad.log"),
+            "Telegram API error\",\"status\":\"404 Not Found\"\n\
+             Telegram API error\",\"status\":\"404 Not Found\"\n\
+             Telegram API error\",\"status\":\"404 Not Found\"\n\
+             unknown action: unknown\nunknown action: unknown\nunknown action: unknown\n",
+        )
+        .unwrap();
+
+        let state_db = ironclad_dir.join("state.db");
+        let conn = rusqlite::Connection::open(&state_db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sub_agents (role TEXT, skills_json TEXT);
+             INSERT INTO sub_agents (role, skills_json) VALUES ('specialist', NULL);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let wallet = ironclad_dir.join("wallet.json");
+        std::fs::write(&wallet, "{}").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&wallet).unwrap().permissions();
+            perms.set_mode(0o644);
+            std::fs::set_permissions(&wallet, perms).unwrap();
+        }
+
+        cmd_mechanic_json("http://127.0.0.1:9", true, &[])
+            .await
+            .expect("mechanic should complete with unreachable gateway");
+
+        let conn = rusqlite::Connection::open(&state_db).unwrap();
+        let role: String = conn
+            .query_row("SELECT role FROM sub_agents LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(role, "subagent");
+    }
+
+    #[test]
+    fn cmd_reset_yes_removes_state_and_preserves_wallet() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
+        let ironclad_dir = home.path().join(".ironclad");
+        let logs_dir = ironclad_dir.join("logs");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        std::fs::write(ironclad_dir.join("state.db"), "db").unwrap();
+        std::fs::write(
+            ironclad_dir.join("ironclad.toml"),
+            "[agent]\nname='x'\nid='x'\n",
+        )
+        .unwrap();
+        std::fs::write(ironclad_dir.join("wallet.json"), "{}").unwrap();
+
+        cmd_reset(true).unwrap();
+
+        assert!(!ironclad_dir.join("state.db").exists());
+        assert!(!ironclad_dir.join("ironclad.toml").exists());
+        assert!(!logs_dir.exists());
+        assert!(ironclad_dir.join("wallet.json").exists());
+    }
+
+    #[test]
+    fn cmd_uninstall_purge_removes_data_dir() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
+        let ironclad_dir = home.path().join(".ironclad");
+        std::fs::create_dir_all(&ironclad_dir).unwrap();
+        std::fs::write(ironclad_dir.join("state.db"), "db").unwrap();
+
+        cmd_uninstall(true).unwrap();
+        assert!(!ironclad_dir.exists());
+    }
+
+    #[test]
+    fn cmd_security_audit_runs_against_local_config() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let cfg_path = cfg_dir.path().join("ironclad.toml");
+        std::fs::write(
+            &cfg_path,
+            r#"[agent]
+name = "Test"
+id = "test"
+[server]
+bind = "127.0.0.1"
+port = 18789
+[database]
+path = ":memory:"
+[models]
+primary = "ollama/qwen3:8b"
+"#,
+        )
+        .unwrap();
+
+        cmd_security_audit(cfg_path.to_str().unwrap()).unwrap();
+    }
 }

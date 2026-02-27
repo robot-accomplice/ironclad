@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
+use zeroize::Zeroizing;
 
-fn derive_child_address() -> (String, String) {
+fn derive_child_address() -> (String, Zeroizing<String>) {
     let signing_key = SigningKey::random(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
     let pubkey_point = verifying_key.to_encoded_point(false);
@@ -15,7 +16,7 @@ fn derive_child_address() -> (String, String) {
     let hash = Keccak256::digest(pubkey_bytes);
     let addr_bytes = &hash[hash.len() - 20..];
     let address = format!("0x{}", hex::encode(addr_bytes));
-    let secret = hex::encode(signing_key.to_bytes());
+    let secret = Zeroizing::new(hex::encode(signing_key.to_bytes()));
     (address, secret)
 }
 
@@ -50,8 +51,8 @@ pub struct SpawnedAgent {
     pub spent_usdc: f64,
     pub status: SpawnStatus,
     pub wallet_address: Option<String>,
-    #[serde(skip_serializing, default)]
-    pub wallet_secret: Option<String>,
+    #[serde(skip, default)]
+    pub wallet_secret: Option<Zeroizing<String>>,
     #[serde(default)]
     pub timeout_seconds: u64,
     pub spawned_at: DateTime<Utc>,

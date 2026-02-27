@@ -1,13 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::{IroncladError, Result, home_dir};
 
-const WINDOWS_SERVICE_NAME: &str = "IroncladAgent";
-const WINDOWS_SERVICE_DISPLAY_NAME: &str = "Ironclad Autonomous Agent Runtime";
+const WINDOWS_DAEMON_NAME: &str = "IroncladAgent";
 
 pub fn launchd_plist(binary_path: &str, config_path: &str, port: u16) -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/var/log".into());
-    let log_dir = PathBuf::from(&home).join(".ironclad").join("logs");
+    let log_dir = home_dir().join(".ironclad").join("logs");
     let stdout_log = log_dir.join("ironclad.stdout.log");
     let stderr_log = log_dir.join("ironclad.stderr.log");
 
@@ -67,85 +65,184 @@ WantedBy=default.target
     )
 }
 
-pub fn plist_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+fn plist_path_for(home: &str) -> PathBuf {
     PathBuf::from(home).join("Library/LaunchAgents/com.ironclad.agent.plist")
 }
 
-pub fn systemd_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+pub fn plist_path() -> PathBuf {
+    plist_path_for(&home_dir().to_string_lossy())
+}
+
+fn systemd_path_for(home: &str) -> PathBuf {
     PathBuf::from(home).join(".config/systemd/user/ironclad.service")
 }
 
+pub fn systemd_path() -> PathBuf {
+    systemd_path_for(&home_dir().to_string_lossy())
+}
+
 fn windows_service_marker_path() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home)
+    home_dir()
         .join(".ironclad")
         .join("windows-service-install.txt")
 }
 
-fn windows_quote_arg(arg: &str) -> String {
-    arg.replace('"', "\\\"")
+#[derive(Debug, Clone)]
+struct WindowsDaemonInstall {
+    binary: String,
+    config: String,
+    port: u16,
+    pid: Option<u32>,
 }
 
-fn windows_service_bin_path(binary_path: &str, config_path: &str, port: u16) -> String {
-    format!(
-        "\"{}\" serve -c \"{}\" -p {}",
-        windows_quote_arg(binary_path),
-        windows_quote_arg(config_path),
-        port
-    )
+fn parse_windows_daemon_marker(content: &str) -> Option<WindowsDaemonInstall> {
+    let mut binary = None;
+    let mut config = None;
+    let mut port = None;
+    let mut pid = None;
+
+    for line in content.lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            match k.trim() {
+                "binary" => binary = Some(v.trim().to_string()),
+                "config" => config = Some(v.trim().to_string()),
+                "port" => {
+                    port = v.trim().parse::<u16>().ok();
+                }
+                "pid" => {
+                    pid = v.trim().parse::<u32>().ok();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Some(WindowsDaemonInstall {
+        binary: binary?,
+        config: config?,
+        port: port?,
+        pid,
+    })
 }
 
-pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result<PathBuf> {
+fn write_windows_daemon_marker(install: &WindowsDaemonInstall) -> Result<()> {
+    let marker = windows_service_marker_path();
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut content = format!(
+        "name={WINDOWS_DAEMON_NAME}\nmode=user_process\nbinary={}\nconfig={}\nport={}\n",
+        install.binary, install.config, install.port
+    );
+    if let Some(pid) = install.pid {
+        content.push_str(&format!("pid={pid}\n"));
+    }
+    std::fs::write(&marker, content)?;
+    Ok(())
+}
+
+fn read_windows_daemon_marker() -> Result<Option<WindowsDaemonInstall>> {
+    let marker = windows_service_marker_path();
+    if !marker.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(marker)?;
+    Ok(parse_windows_daemon_marker(&content))
+}
+
+fn windows_pid_running(pid: u32) -> Result<bool> {
+    if std::env::consts::OS != "windows" {
+        return Ok(false);
+    }
+    // Use PowerShell Get-Process which is locale-independent, unlike tasklist
+    // whose text output varies by Windows display language.
+    let script = format!(
+        "try {{ $null = Get-Process -Id {pid} -ErrorAction Stop; Write-Output 'RUNNING' }} catch {{ Write-Output 'NOTFOUND' }}"
+    );
+    let out = command_output("powershell", &["-NoProfile", "-Command", &script])?;
+    if !out.status.success() {
+        // Fallback to tasklist if PowerShell is unavailable
+        let pid_filter = format!("PID eq {pid}");
+        let out = command_output("tasklist", &["/FI", &pid_filter, "/FO", "CSV", "/NH"])?;
+        if !out.status.success() {
+            return Ok(false);
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        return Ok(stdout.contains(&format!("\"{pid}\"")));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Ok(stdout.trim() == "RUNNING")
+}
+
+fn spawn_windows_daemon_process(install: &WindowsDaemonInstall) -> Result<u32> {
+    let mut cmd = std::process::Command::new(&install.binary);
+    cmd.args([
+        "serve",
+        "-c",
+        &install.config,
+        "-p",
+        &install.port.to_string(),
+    ])
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    let child = cmd
+        .spawn()
+        .map_err(|e| IroncladError::Config(format!("failed to spawn daemon process: {e}")))?;
+    Ok(child.id())
+}
+
+fn cleanup_legacy_windows_service() {
+    if std::env::consts::OS != "windows" {
+        return;
+    }
+    // sc.exe requires Administrator privileges; only attempt if running elevated.
+    let is_admin = std::process::Command::new("net")
+        .args(["session"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if is_admin {
+        let _ = run_cmd("sc.exe", &["stop", WINDOWS_DAEMON_NAME]);
+        let _ = run_cmd("sc.exe", &["delete", WINDOWS_DAEMON_NAME]);
+    }
+}
+
+fn install_daemon_to(
+    binary_path: &str,
+    config_path: &str,
+    port: u16,
+    home: &str,
+) -> Result<PathBuf> {
     let os = std::env::consts::OS;
     let (content, path) = match os {
-        "macos" => (launchd_plist(binary_path, config_path, port), plist_path()),
-        "linux" => (systemd_unit(binary_path, config_path, port), systemd_path()),
+        "macos" => (
+            launchd_plist(binary_path, config_path, port),
+            plist_path_for(home),
+        ),
+        "linux" => (
+            systemd_unit(binary_path, config_path, port),
+            systemd_path_for(home),
+        ),
         "windows" => {
-            let bin_path = windows_service_bin_path(binary_path, config_path, port);
-            if windows_service_exists()? {
-                run_cmd(
-                    "sc.exe",
-                    &[
-                        "config",
-                        WINDOWS_SERVICE_NAME,
-                        "binPath=",
-                        &bin_path,
-                        "start=",
-                        "auto",
-                        "DisplayName=",
-                        WINDOWS_SERVICE_DISPLAY_NAME,
-                    ],
-                )?;
-            } else {
-                run_cmd(
-                    "sc.exe",
-                    &[
-                        "create",
-                        WINDOWS_SERVICE_NAME,
-                        "binPath=",
-                        &bin_path,
-                        "start=",
-                        "auto",
-                        "DisplayName=",
-                        WINDOWS_SERVICE_DISPLAY_NAME,
-                    ],
-                )?;
-            }
-
+            cleanup_legacy_windows_service();
             let marker = windows_service_marker_path();
-            if let Some(parent) = marker.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(
-                &marker,
-                format!(
-                    "service={WINDOWS_SERVICE_NAME}\nbinary={binary_path}\nconfig={config_path}\nport={port}\n"
-                ),
-            )?;
+            let install = WindowsDaemonInstall {
+                binary: binary_path.to_string(),
+                config: config_path.to_string(),
+                port,
+                pid: None,
+            };
+            write_windows_daemon_marker(&install)?;
             return Ok(marker);
         }
         other => {
@@ -161,6 +258,60 @@ pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result
 
     std::fs::write(&path, &content)?;
     Ok(path)
+}
+
+pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result<PathBuf> {
+    let home = home_dir();
+    let result = install_daemon_to(binary_path, config_path, port, &home.to_string_lossy())?;
+
+    // On Windows, register a Task Scheduler entry so the daemon starts at logon,
+    // matching the RunAtLoad (macOS) and systemd enable (Linux) behavior.
+    #[cfg(windows)]
+    {
+        let task_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger><Enabled>true</Enabled></LogonTrigger>
+  </Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Hidden>false</Hidden>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>{binary}</Command>
+      <Arguments>serve -c "{config}" -p {port}</Arguments>
+    </Exec>
+  </Actions>
+</Task>"#,
+            binary = binary_path,
+            config = config_path,
+            port = port,
+        );
+        let task_file = std::env::temp_dir().join("ironclad-task.xml");
+        if std::fs::write(&task_file, &task_xml).is_ok() {
+            // schtasks /Create works without admin for the current user
+            let _ = std::process::Command::new("schtasks")
+                .args([
+                    "/Create",
+                    "/TN",
+                    "IroncladAgent",
+                    "/XML",
+                    &task_file.to_string_lossy(),
+                    "/F",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            let _ = std::fs::remove_file(&task_file);
+        }
+    }
+
+    Ok(result)
 }
 
 pub fn start_daemon() -> Result<()> {
@@ -193,7 +344,19 @@ pub fn start_daemon() -> Result<()> {
                 &["--user", "enable", "--now", "ironclad.service"],
             )
         }
-        "windows" => run_cmd("sc.exe", &["start", WINDOWS_SERVICE_NAME]),
+        "windows" => {
+            let mut install = read_windows_daemon_marker()?.ok_or_else(|| {
+                IroncladError::Config("daemon not installed on windows".to_string())
+            })?;
+            if let Some(pid) = install.pid
+                && windows_pid_running(pid)?
+            {
+                return Ok(());
+            }
+            let pid = spawn_windows_daemon_process(&install)?;
+            install.pid = Some(pid);
+            write_windows_daemon_marker(&install)
+        }
         other => Err(IroncladError::Config(format!(
             "daemon start not supported on {other}"
         ))),
@@ -205,7 +368,21 @@ pub fn stop_daemon() -> Result<()> {
     match os {
         "macos" => run_cmd("launchctl", &["unload", &plist_path().to_string_lossy()]),
         "linux" => run_cmd("systemctl", &["--user", "stop", "ironclad.service"]),
-        "windows" => run_cmd("sc.exe", &["stop", WINDOWS_SERVICE_NAME]),
+        "windows" => {
+            let mut install = match read_windows_daemon_marker()? {
+                Some(i) => i,
+                None => return Ok(()),
+            };
+            let Some(pid) = install.pid else {
+                return Ok(());
+            };
+            let pid_s = pid.to_string();
+            if windows_pid_running(pid)? {
+                run_cmd("taskkill", &["/PID", &pid_s, "/T", "/F"])?;
+            }
+            install.pid = None;
+            write_windows_daemon_marker(&install)
+        }
         other => Err(IroncladError::Config(format!(
             "daemon stop not supported on {other}"
         ))),
@@ -275,23 +452,8 @@ fn windows_service_exists() -> Result<bool> {
     if std::env::consts::OS != "windows" {
         return Ok(false);
     }
-    let out = command_output("sc.exe", &["query", WINDOWS_SERVICE_NAME])?;
-    Ok(out.status.success())
-}
-
-fn parse_windows_sc_state(output: &str) -> Option<&'static str> {
-    let up = output.to_ascii_uppercase();
-    if up.contains("STATE") && up.contains("RUNNING") {
-        Some("running")
-    } else if up.contains("STATE") && up.contains("STOPPED") {
-        Some("stopped")
-    } else if up.contains("STATE") && up.contains("START_PENDING") {
-        Some("start_pending")
-    } else if up.contains("STATE") && up.contains("STOP_PENDING") {
-        Some("stop_pending")
-    } else {
-        None
-    }
+    let marker = windows_service_marker_path();
+    Ok(marker.exists())
 }
 
 pub fn daemon_status() -> Result<String> {
@@ -328,19 +490,17 @@ pub fn daemon_status() -> Result<String> {
             if !windows_service_exists()? {
                 return Ok("Daemon not installed".into());
             }
-            let out = command_output("sc.exe", &["query", WINDOWS_SERVICE_NAME])?;
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let state = parse_windows_sc_state(&stdout).unwrap_or(if out.status.success() {
-                "unknown"
-            } else {
-                "not_found"
-            });
-            match state {
-                "running" => Ok("Daemon running (Windows service)".into()),
-                "stopped" => Ok("Daemon installed but stopped (Windows service)".into()),
-                "start_pending" => Ok("Daemon starting (Windows service)".into()),
-                "stop_pending" => Ok("Daemon stopping (Windows service)".into()),
-                _ => Ok("Daemon installed (Windows service state unknown)".into()),
+            let install = read_windows_daemon_marker()?;
+            match install {
+                Some(i) => {
+                    if let Some(pid) = i.pid
+                        && windows_pid_running(pid)?
+                    {
+                        return Ok(format!("Daemon running (Windows process pid={pid})"));
+                    }
+                    Ok("Daemon installed but stopped (Windows user process)".into())
+                }
+                None => Ok("Daemon not installed".into()),
             }
         }
         other => Ok(format!("Daemon status unsupported on {other}")),
@@ -368,8 +528,7 @@ fn verify_launchd_running() -> Result<()> {
                 .trim_end_matches(';')
                 .trim();
             if code != "0" {
-                let stderr_path = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                    .join(".ironclad/logs/ironclad.stderr.log");
+                let stderr_path = home_dir().join(".ironclad/logs/ironclad.stderr.log");
                 let hint = if stderr_path.exists() {
                     format!(" (see {})", stderr_path.display())
                 } else {
@@ -436,7 +595,13 @@ pub fn uninstall_daemon() -> Result<()> {
         return Err(e);
     }
     if std::env::consts::OS == "windows" {
-        run_cmd("sc.exe", &["delete", WINDOWS_SERVICE_NAME])?;
+        cleanup_legacy_windows_service();
+        // Remove the logon Task Scheduler entry if present
+        let _ = std::process::Command::new("schtasks")
+            .args(["/Delete", "/TN", "IroncladAgent", "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
         let marker = windows_service_marker_path();
         if marker.exists()
             && let Err(e) = std::fs::remove_file(&marker)
@@ -592,12 +757,13 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_str().unwrap();
         let bin = dir.path().join("ironclad");
         std::fs::write(&bin, "").unwrap();
         let cfg = dir.path().join("ironclad.toml");
         std::fs::write(&cfg, "").unwrap();
 
-        let result = install_daemon(bin.to_str().unwrap(), cfg.to_str().unwrap(), 18789);
+        let result = install_daemon_to(bin.to_str().unwrap(), cfg.to_str().unwrap(), 18789, home);
         assert!(result.is_ok());
         let path = result.unwrap();
         assert!(path.exists());
@@ -616,22 +782,41 @@ mod tests {
     }
 
     #[test]
-    fn parse_windows_sc_state_running() {
-        let out = r#"
-SERVICE_NAME: IroncladAgent
-        TYPE               : 10  WIN32_OWN_PROCESS
-        STATE              : 4  RUNNING
-"#;
-        assert_eq!(parse_windows_sc_state(out), Some("running"));
+    fn parse_windows_daemon_marker_basic() {
+        let input = "name=IroncladAgent\nmode=user_process\nbinary=C:\\x\\ironclad.exe\nconfig=C:\\x\\ironclad.toml\nport=18789\npid=1234\n";
+        let parsed = parse_windows_daemon_marker(input).unwrap();
+        assert_eq!(parsed.binary, "C:\\x\\ironclad.exe");
+        assert_eq!(parsed.config, "C:\\x\\ironclad.toml");
+        assert_eq!(parsed.port, 18789);
+        assert_eq!(parsed.pid, Some(1234));
     }
 
     #[test]
-    fn parse_windows_sc_state_stopped() {
-        let out = r#"
-SERVICE_NAME: IroncladAgent
-        TYPE               : 10  WIN32_OWN_PROCESS
-        STATE              : 1  STOPPED
-"#;
-        assert_eq!(parse_windows_sc_state(out), Some("stopped"));
+    fn parse_windows_daemon_marker_without_pid() {
+        let input = "name=IroncladAgent\nmode=user_process\nbinary=C:\\x\\ironclad.exe\nconfig=C:\\x\\ironclad.toml\nport=18789\n";
+        let parsed = parse_windows_daemon_marker(input).unwrap();
+        assert_eq!(parsed.binary, "C:\\x\\ironclad.exe");
+        assert_eq!(parsed.config, "C:\\x\\ironclad.toml");
+        assert_eq!(parsed.port, 18789);
+        assert_eq!(parsed.pid, None);
+    }
+
+    #[test]
+    fn parse_windows_daemon_marker_rejects_missing_required_fields() {
+        let missing_binary =
+            "name=IroncladAgent\nmode=user_process\nconfig=C:\\x\\ironclad.toml\nport=18789\n";
+        assert!(parse_windows_daemon_marker(missing_binary).is_none());
+        let missing_port = "name=IroncladAgent\nmode=user_process\nbinary=C:\\x\\ironclad.exe\nconfig=C:\\x\\ironclad.toml\n";
+        assert!(parse_windows_daemon_marker(missing_port).is_none());
+    }
+
+    #[test]
+    fn benign_stop_errors_are_classified() {
+        let err = IroncladError::Config("service has not been started".into());
+        assert!(is_benign_stop_error(&err));
+        let err = IroncladError::Config("not loaded".into());
+        assert!(is_benign_stop_error(&err));
+        let err = IroncladError::Config("permission denied".into());
+        assert!(!is_benign_stop_error(&err));
     }
 }

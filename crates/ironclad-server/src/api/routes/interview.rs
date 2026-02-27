@@ -6,7 +6,7 @@ use serde_json::json;
 
 use super::AppState;
 
-const MAX_INTERVIEW_SESSIONS: usize = 100;
+const MAX_INTERVIEW_SESSIONS: usize = 1000;
 const INTERVIEW_TTL_SECS: u64 = 3600;
 
 #[derive(Deserialize)]

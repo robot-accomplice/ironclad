@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
   checks: write
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -85,6 +86,123 @@ jobs:
       - name: "Run server API integration suite"
         run: 'cargo test -p ironclad-tests server_api:: --verbose --locked'
 
+  # ── Stage 3b: Regression Battery (informational) ──────
+  regression-battery:
+    name: "Regression Battery"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: regression-battery
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: "Run focused regression battery"
+        run: just test-regression
+
+  # ── Stage 3d: UAT smoke (CLI + Web) ─────────────────────
+  uat-smoke:
+    name: "UAT Smoke (CLI + Web)"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: uat-smoke
+      - name: "Run UAT stack"
+        run: bash scripts/run-uat-stack.sh
+
+  # ── Stage 3e: Soak/Fuzz (bounded) ────────────────────────
+  soak-fuzz:
+    name: "Soak/Fuzz"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: soak-fuzz
+      - name: "Install nightly toolchain for fuzzing"
+        run: rustup toolchain install nightly --profile minimal
+      - name: "Install cargo-fuzz"
+        run: cargo install cargo-fuzz --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: "Run bounded soak/fuzz battery"
+        env:
+          SOAK_ROUNDS: "2"
+          FUZZ_SECONDS: "20"
+        run: just test-soak-fuzz
+
+  # ── Stage 3f: Release docs gate (v0.8.0 target) ─────────
+  release-doc-gate:
+    name: "Release Docs Gate"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: "Warn if cloud benchmark snapshot is stale"
+        run: |
+          python3 - <<'PY'
+          import datetime as dt
+          import pathlib
+          import re
+
+          path = pathlib.Path("docs/evals/CLOUD_BENCHMARK_SOURCES.md")
+          if not path.exists():
+              print("::warning::Cloud benchmark sources file is missing: docs/evals/CLOUD_BENCHMARK_SOURCES.md")
+              raise SystemExit(0)
+
+          text = path.read_text(encoding="utf-8", errors="ignore")
+          match = re.search(r"Snapshot date:\s*`(\d{4}-\d{2}-\d{2})`", text)
+          if not match:
+              print("::warning::Unable to parse cloud benchmark snapshot date from docs/evals/CLOUD_BENCHMARK_SOURCES.md")
+              raise SystemExit(0)
+
+          snapshot = dt.date.fromisoformat(match.group(1))
+          age_days = (dt.date.today() - snapshot).days
+          if age_days > 45:
+              print(
+                  f"::warning::Cloud benchmark snapshot is {age_days} days old (>45). "
+                  "Run scripts/refresh-cloud-baselines.sh --write to refresh baseline values."
+              )
+          else:
+              print(f"Cloud benchmark snapshot age is {age_days} days (within 45-day window).")
+          PY
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: "Run release docs/artifact gate"
+        env:
+          RELEASE_TARGET_VERSION: "0.8.0"
+        run: just test-release-doc-gate
+
+  # ── Stage 3c: Release Gates (Smoke + Provenance) ───────
+  release-gates:
+    name: "Release Gates"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-gates
+      - name: "Smoke gate (critical API flow)"
+        run: |
+          cargo test -p ironclad-tests server_api::health_endpoint --verbose --locked
+          cargo test -p ironclad-tests server_api::session_create_and_list --verbose --locked
+      - name: "Provenance gate self-test"
+        run: scripts/generate-provenance.sh --self-test
+
   # ── Stage 3b: Coverage Gate ────────────────────────────
   coverage:
     name: "Coverage"
@@ -111,6 +229,13 @@ jobs:
           fi
           echo "COVERAGE_PCT=$pct" >> "$GITHUB_ENV"
           echo "::notice::Total coverage: ${pct}%"
+      - name: "Export LCOV report"
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - name: "Upload coverage to Codecov"
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: true
       - name: "Gate: 80% minimum"
         run: |
           echo "Coverage: ${COVERAGE_PCT}%"
@@ -136,11 +261,32 @@ jobs:
           fi
           echo "No coverage regression detected"
 
+  # ── Stage 3g: Cross-Platform Delta Tests ───────────────
+  # Runs platform-specific tests (Task 36, v0.8.0 stabilization) on macOS,
+  # Linux, and Windows to verify daemon paths, file permissions, tilde
+  # expansion, config parsing with CRLF/LF, and platform-gated defaults.
+  cross-platform:
+    name: "Platform Tests (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cross-platform-${{ matrix.os }}
+      - name: "Run platform delta tests"
+        run: cargo test -p ironclad-tests platform --verbose --locked
+
   # ── Stage 4: Build ─────────────────────────────────────
   build:
     name: "Build (${{ matrix.profile }})"
     runs-on: ubuntu-latest
-    needs: [test, integration-tests]
+    needs: [test, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate]
     strategy:
       matrix:
         profile: [debug, release]
@@ -207,7 +353,7 @@ jobs:
     name: "CI Pass"
     runs-on: ubuntu-latest
     if: always()
-    needs: [format, lint, test, integration-tests, coverage, build, audit, docs]
+    needs: [format, lint, test, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, coverage, build, audit, docs, cross-platform]
     steps:
       - name: "Verify all required jobs passed"
         env:
@@ -215,27 +361,45 @@ jobs:
           R_LINT: ${{ needs.lint.result }}
           R_TEST: ${{ needs.test.result }}
           R_INTEGRATION: ${{ needs.integration-tests.result }}
+          R_REGRESSION: ${{ needs.regression-battery.result }}
+          R_RELEASE_GATES: ${{ needs.release-gates.result }}
+          R_UAT: ${{ needs.uat-smoke.result }}
+          R_SOAK_FUZZ: ${{ needs.soak-fuzz.result }}
+          R_RELEASE_DOC_GATE: ${{ needs.release-doc-gate.result }}
           R_COVERAGE: ${{ needs.coverage.result }}
           R_BUILD: ${{ needs.build.result }}
           R_AUDIT: ${{ needs.audit.result }}
           R_DOCS: ${{ needs.docs.result }}
+          R_CROSS_PLATFORM: ${{ needs.cross-platform.result }}
         run: |
           echo "format:   $R_FORMAT"
           echo "lint:     $R_LINT"
           echo "test:     $R_TEST"
           echo "integration: $R_INTEGRATION"
+          echo "regression: $R_REGRESSION"
+          echo "release-gates: $R_RELEASE_GATES"
+          echo "uat-smoke: $R_UAT"
+          echo "soak-fuzz: $R_SOAK_FUZZ"
+          echo "release-doc-gate: $R_RELEASE_DOC_GATE"
           echo "coverage: $R_COVERAGE"
           echo "build:    $R_BUILD"
           echo "audit:    $R_AUDIT"
           echo "docs:     $R_DOCS"
+          echo "cross-platform: $R_CROSS_PLATFORM"
           if [ "$R_FORMAT"   != "success" ] || \
              [ "$R_LINT"     != "success" ] || \
              [ "$R_TEST"     != "success" ] || \
              [ "$R_INTEGRATION" != "success" ] || \
+             [ "$R_REGRESSION" != "success" ] || \
+             [ "$R_RELEASE_GATES" != "success" ] || \
+             [ "$R_UAT" != "success" ] || \
+             [ "$R_SOAK_FUZZ" != "success" ] || \
+             [ "$R_RELEASE_DOC_GATE" != "success" ] || \
              [ "$R_COVERAGE" != "success" ] || \
              [ "$R_BUILD"    != "success" ] || \
              [ "$R_AUDIT"    != "success" ] || \
-             [ "$R_DOCS"     != "success" ]; then
+             [ "$R_DOCS"     != "success" ] || \
+             [ "$R_CROSS_PLATFORM" != "success" ]; then
             echo "::error::One or more CI stages failed"
             exit 1
           fi

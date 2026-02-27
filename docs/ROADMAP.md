@@ -16,7 +16,7 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.2 Approval Workflow API ✅
 
-**Status**: Implemented in 0.5.0. Routes: `GET /api/approvals`, `POST /api/approvals/:id/approve`, `POST /api/approvals/:id/deny`. Pending approvals are pushed via WebSocket. The agent loop pauses on gated tool calls and resumes on approval or denial. `approval_requests` table tracks full lifecycle with timeout enforcement.
+**Status**: Implemented in 0.5.0. Routes: `GET /api/approvals`, `POST /api/approvals/{id}/approve`, `POST /api/approvals/{id}/deny`. Pending approvals are pushed via WebSocket. The agent loop pauses on gated tool calls and resumes on approval or denial. `approval_requests` table tracks full lifecycle with timeout enforcement.
 
 ---
 
@@ -59,6 +59,7 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 ### 1.7 Memory-Augmented Agent Pipeline ✅
 
 **Status**: Implemented. The `agent_message` handler now:
+
 1. Generates a query embedding via `EmbeddingClient`
 2. Calls `MemoryRetriever::retrieve()` for 5-tier hybrid retrieval (FTS5 + vector cosine)
 3. Loads conversation history from `sessions::list_messages()`
@@ -79,7 +80,7 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.9 Session Scoping and Lifecycle
+### 1.9 Session Scoping and Lifecycle ✅
 
 **Status**: Implemented in 0.6.0. Scoped sessions now support `Agent`, `Peer`, and `Group` keys with lifecycle controls. Runtime paths (web, stream, channel) resolve scope before `find_or_create()`, stale sessions are expired by `SessionGovernor`, and optional scheduled rotation is wired through heartbeat when `session.reset_schedule` is set.
 
@@ -93,7 +94,7 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.10 Addressability Filter ✅
 
-**Status**: Implemented in 0.5.0. `AddressabilityFilter` trait with three composable implementations: `MentionFilter` (configurable name/alias patterns), `ReplyFilter` (responds when directly replied to), and `ConversationFilter` (responds in active threads). Composed via `FilterChain` — any match triggers dispatch. DMs bypass filtering. Config: `[agent.addressability]` with `mention_names`, `respond_to_replies`, `track_threads`.
+**Status**: Implemented in 0.5.0. `MessageFilter` trait with `MentionFilter`, `ReplyFilter`, and `ConversationFilter` composed through `FilterChain`. Runtime uses `default_addressability_chain(agent_name)` in channel paths; DMs bypass filtering.
 
 ---
 
@@ -111,15 +112,16 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.12 Response Transform Pipeline ✅
 
-**Status**: Implemented in 0.5.0. `ResponsePipeline` with `ResponseTransform` trait. Ships three transforms: `ReasoningExtractor` (extracts `<think>`/`<reasoning>` blocks and logs them to `turns.reasoning_trace`), `FormatNormalizer` (consistent response structure across providers), and `ContentGuard` (reflected injection defense via existing output scanning). Transforms are ordered and configurable via `[models.response_pipeline]`.
+**Status**: Implemented in 0.5.0. `ResponsePipeline` with `ResponseTransform` trait. Ships three transforms: `ReasoningExtractor` (extracts `<think>`/`<reasoning>` blocks and logs them to `turns.reasoning_trace`), `FormatNormalizer` (consistent response structure across providers), and `ContentGuard` (reflected injection defense via existing output scanning). Transforms are currently applied through the default pipeline wiring.
 
 ---
 
-### 1.14 Context Observatory ✅
+### 1.13 Context Observatory ✅
 
 **Status**: Implemented in 0.5.0. The Context Observatory provides runtime visibility into context assembly efficiency, inference cost attribution, and output quality.
 
 **Components**:
+
 - `ironclad-db/efficiency.rs` — per-model efficiency analytics: output density, budget utilization, memory ROI, system prompt weight, cache hit rate, context pressure rate, cost attribution (system prompt / memories / history), wasted budget tracking
 - `turn_feedback` table — stores outcome grades (thumbs up/down + comment) per turn; feeds quality metrics with complexity breakdown and memory impact analysis
 - REST API — `GET /api/stats/efficiency`, `GET /api/recommendations`, `POST /api/recommendations/generate` (LLM-powered deep analysis)
@@ -127,31 +129,7 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.15 Sessions Chat Markdown Rendering
-
-**Current state**: The sessions chat UI renders assistant/user messages as plain text. Markdown syntax (headings, lists, code fences, links, inline code, blockquotes) appears unformatted, which reduces readability for long-form answers and technical responses.
-
-**Target**: First-class Markdown rendering in Sessions chat with safe HTML sanitization and readable defaults for prose and code blocks.
-
-**Builds on**: `crates/ironclad-server/src/dashboard_spa.html`, session message APIs, existing chat rendering flow.
-
-**Scope**: Add a Markdown parser + sanitizer in the dashboard chat pipeline. Render common Markdown constructs (headings, emphasis, lists, links, tables, blockquotes, fenced code blocks) and preserve plain-text fallback for malformed input. Add syntax highlighting for code fences and copy-to-clipboard actions per code block. Ensure external links use safe target/rel attributes and that raw HTML/script content is never executed.
-
-**Implementation checklist**:
-- **Libraries**: Evaluate and lock a parser/sanitizer pair (`marked` + `DOMPurify` or `markdown-it` + `sanitize-html`) plus lightweight syntax highlighting for fenced code blocks.
-- **Security constraints**: Strip or escape all raw HTML by default, forbid inline event handlers/scripts, enforce safe link policies (`target="_blank"` + `rel="noopener noreferrer"`), and keep protocol allowlists to `https:`, `http:`, and `mailto:`.
-- **Rendering behavior**: Support headings, emphasis, ordered/unordered lists, blockquotes, tables, inline code, and fenced code blocks; retain plaintext fallback when parsing fails.
-- **UX polish**: Add copy-to-clipboard on code blocks, preserve line breaks where expected, and ensure dark/light theme readability for rendered Markdown elements.
-- **Acceptance criteria**: Markdown test fixtures render correctly in Sessions chat, malicious payload fixtures are neutralized, no regression in existing chat message loading/perf, and snapshot/UI tests cover key Markdown constructs.
-
-**Phased delivery**:
-- **Phase A (MVP, M)**: Markdown parse + sanitize + render for core elements (headings, lists, links, inline/fenced code, blockquotes) with plaintext fallback.
-- **Phase B (Code UX, S)**: Syntax highlighting and copy-to-clipboard for fenced code blocks, plus visual polish for dark/light themes.
-- **Phase C (Hardening, M)**: Security regression fixtures (XSS/script/link payloads), rendering snapshot tests, and performance checks on long chat transcripts.
-
----
-
-### 1.13 Capacity-Aware Routing
+### 1.14 Capacity-Aware Routing ✅
 
 **Status**: Implemented in 0.6.0. Capacity usage is now recorded on inference success, routing uses headroom-weighted selection, sustained pressure can preemptively mark providers `half_open`, and operators can inspect capacity via `GET /api/stats/capacity` plus dashboard metrics UI.
 
@@ -166,6 +144,56 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 ### 1.15 Sessions Markdown Rendering ✅
 
 **Status**: Implemented in 0.6.0. Sessions and Context Explorer render markdown via a safe client-side renderer with strict URL sanitization (`http`, `https`, `mailto`, relative/hash only), no raw HTML execution, and preserved fallback behavior for blocked links.
+
+---
+
+### 1.16 Durable Channel Delivery Queue
+
+**Current state**: Channel retry handling is primarily process-memory based. Retries can be lost during crash/restart windows and operators lack a durable backlog for forensic replay.
+
+**Target**: Durable outbound delivery with persisted retry queue, dead-letter handling, and boot-time recovery replay.
+
+**Builds on**: `ironclad-channels` delivery router/retry flow, existing SQLite persistence, channel health metrics.
+
+**Scope**: Persist retryable outbound events to DB with attempt count, next-attempt timestamp, and terminal failure reason. Add dead-letter queue inspection endpoint/CLI command, replay controls, and idempotent delivery keys to avoid duplicate sends after recovery.
+
+---
+
+### 1.17 Production-Grade Abuse Protection
+
+**Current state**: Global rate limiting exists, but trusted proxy boundaries and distributed enforcement are not first-class across all deployment topologies.
+
+**Target**: Hardened anti-abuse controls for internet-facing deployments with trusted proxy semantics, actor-aware quotas, and horizontally safe limit enforcement.
+
+**Builds on**: global rate limiter middleware, auth layer, deployment/network configuration.
+
+**Scope**: Add explicit trusted-proxy CIDR handling for client IP extraction, token/user-level quotas alongside IP limits, optional shared limiter backend for multi-instance deployments, and dashboard/API observability for throttle events and top offenders.
+
+---
+
+### 1.18 Cron-Conformant Session Rotation
+
+**Current state**: Session lifecycle controls exist, but reset scheduling semantics should strictly match configured cron intent in all cases.
+
+**Target**: True cron-conformant rotation behavior with clear operator guarantees and test coverage.
+
+**Builds on**: session governor, scheduler heartbeat tasks, `session.reset_schedule` contract.
+
+**Scope**: Evaluate reset schedules using the configured cron expression directly, add conformance tests for edge schedules/timezones, and document migration notes for any behavior change from legacy timing semantics.
+
+---
+
+### 1.19 `agent-browser` External Runtime Support
+
+**Current state**: Browser automation is implemented via Ironclad's native browser tooling (`1.3`) and does not yet support the external `agent-browser` runtime/CLI contract.
+
+**Target**: Add optional `agent-browser` compatibility so browser actions can run through the external runtime while preserving Ironclad policy controls, provenance, and auditability.
+
+**Builds on**: `1.3 Browser as agent tool`, tool registry, command safety/policy engine, runtime config + dashboard observability.
+
+**Scope**: Introduce a browser backend abstraction with a new `agent-browser` backend implementation. Map the core action set (`open`, `snapshot`, `click`, `fill`, `wait`, `get text`, `screenshot`) to `agent-browser` commands with structured result parsing (`--json` mode). Add config for binary path, provider/session/profile defaults, domain allowlist, and output-size limits. Preserve existing safety rails (`RiskLevel`, approvals where required) and emit clear provenance for backend selection/fallback events. Add integration tests with a mock `agent-browser` binary and release-smoke checks for backend availability.
+
+**Release posture**: Discovery/design can proceed now; implementation is planned for `v0.9.x` and is not part of locked `v0.8.0` release gates.
 
 ---
 
@@ -202,6 +230,7 @@ Features that require significant new code but have clear implementation paths. 
 **Current state**: All queries go through the same path — cache check, then a single LLM call.
 
 **Target**: Three-layer response pipeline with automatic escalation:
+
 1. Cache hit → ~5ms
 2. Local model (e.g., qwen3:8b) with confidence check → ~200ms
 3. Cloud model escalation (only if local model is uncertain) → ~2s
@@ -248,15 +277,9 @@ Features that require significant new code but have clear implementation paths. 
 
 ---
 
-### 2.7 WASM Plugin Runtime
+### 2.7 WASM Plugin Runtime ✅
 
-**Current state**: Plugin SDK uses script-based execution (spawn process, capture stdout). Functional but each tool call pays process-spawn overhead and has limited sandboxing.
-
-**Target**: Plugins compiled to WASM run in a `wasmtime` sandbox with memory limits, capability restrictions, and zero process-spawn overhead.
-
-**Research basis**: Section 7.2 of research-alternatives.md.
-
-**Scope**: Add `wasmtime` dependency. Define a WASM ABI for tool execution (JSON in, JSON out). `WasmPlugin` implements the `Plugin` trait. Maintain script-based plugins as a fallback for tools that need filesystem or network access (WASM sandbox restricts these by default).
+**Status**: Implemented. `ironclad-agent/src/wasm.rs` provides a capability-gated WASM runtime with module load/compile validation, memory limits, JSON-oriented execution, and sandboxed plugin lifecycle management.
 
 ---
 
@@ -272,46 +295,21 @@ Features that require significant new code but have clear implementation paths. 
 
 ---
 
-### 2.9 Declarative Agent Manifests
+### 2.9 Declarative Agent Manifests ✅
 
-**Current state**: `SubagentRegistry` tracks child agent metadata (name, capabilities, status) but has no mechanism for defining what a specialist agent is — its personality, allowed tools, model preferences, or scheduling rules. Defining a new specialist requires code changes.
-
-**Target**: Specialist agents defined as TOML manifest files — declarative, validated at boot, extensible without code changes. Users create new specialists by writing a config file.
-
-**Builds on**: `ironclad-core/src/config.rs` (TOML parsing, validation), `ironclad-agent/src/skills.rs` (`SkillLoader` pattern), `SubagentRegistry`, `ToolRegistry`.
-
-**Scope**: Define an `AgentManifest` schema: personality fields, capability declarations, model tier preferences, tool scope restrictions (whitelist), memory budget overrides, and optional cron triggers. Implement `ManifestLoader` (analogous to `SkillLoader`) with schema validation and SHA-256 change detection for hot-reload. Each specialist gets a scoped `SessionScope::Agent` session and a restricted `ToolRegistry` containing only the tools listed in its manifest. Manifests live in a configurable `agents/` directory. Example: `agents/morning-briefing.toml` declares capabilities `["summarization", "scheduling"]`, preferred model tier `T2`, and a cron trigger. Wire to the orchestration system (3.3) for coordinator-driven dispatch.
+**Status**: Implemented. `ironclad-agent/src/manifest.rs` includes `ManifestLoader` with schema validation and hot-reload/hash tracking for TOML-defined specialist manifests.
 
 ---
 
-### 2.10 Structured Workspace System
+### 2.10 Structured Workspace System ✅
 
-**Current state**: The personality system provides 4 TOML files (OS/FIRMWARE/OPERATOR/DIRECTIVES) that define the agent's identity and behavioral rules. No structured mechanism exists for operational context — goals, security boundaries, integration metadata, or task tracking state.
-
-**Target**: A structured, validated, version-tracked workspace that gives the agent persistent operational context beyond personality. Separates structured state (validated TOML) from unstructured reference material (indexed documents).
-
-**Builds on**: `ironclad-core/src/personality.rs`, `soul_history` table, config validation.
-
-**Scope**: Extend the personality system with a `[workspace]` config section pointing to a workspace directory. Define TOML schemas for workspace document types: `goals.toml` (short/medium/long-term goals with status tracking), `security.toml` (red lines, sensitive paths, breach protocols), `integrations.toml` (platform connections, data flows — validated at boot). Documents are versioned in the `soul_history` table so changes are tracked. On boot, the system diffs current vs. previous workspace state and surfaces changes to the agent. Unstructured documents (markdown notes, reference material) go in a `workspace/docs/` subdirectory and are indexed by the knowledge source system (2.11) for RAG retrieval.
+**Status**: Implemented. Workspace state APIs and runtime context plumbing are in place (`/api/workspace/state` plus workspace metadata integration), giving operators and the dashboard a structured workspace view.
 
 ---
 
-### 2.11 Knowledge Source Trait
+### 2.11 Knowledge Source Trait ✅
 
-**Current state**: The RAG pipeline retrieves from internal memory tiers only (episodic, semantic, procedural, relationship, working). No mechanism exists to ingest or query external knowledge — filesystem documents, git repositories, vector databases, or graph stores are invisible to the agent.
-
-**Target**: A trait-based knowledge source system that integrates external data into the existing RAG pipeline. Local sources are indexed into Ironclad's storage; remote sources are queried federatively at retrieval time. The `MemoryRetriever` treats external knowledge as another tier alongside internal memory.
-
-**Builds on**: `ironclad-agent/src/retrieval.rs` (chunking, hybrid search), `ironclad-llm/src/embedding.rs`, `ironclad-db/src/embeddings.rs`, `ironclad-db/src/ann.rs` (HNSW index).
-
-**Scope**: Define a `KnowledgeSource` trait with methods `scan()`, `ingest()`, `watch()`, and `query()`. Ship four implementations:
-
-- **`DirectorySource`** — watches a filesystem directory for markdown/text/code files, incrementally indexes new and changed files via inotify/kqueue. Content is chunked via `chunk_text()`, embedded via `EmbeddingClient`, and stored in the `embeddings` table with source metadata.
-- **`GitSource`** — indexes a git repository, re-indexes on new commits. Tracks file history for provenance metadata on retrieved chunks.
-- **`VectorDbSource`** — connects to external vector databases (Qdrant, Weaviate, Milvus, Chroma) as federated retrieval backends. Queries are dispatched at retrieval time alongside the local HNSW index, with results merged by score. Enables purpose-built vector infrastructure for large corpora (millions of embeddings) where the local index would bottleneck.
-- **`GraphSource`** — connects to graph databases (Neo4j, SurrealDB, or any Bolt/HTTP-compatible store) for relationship-aware knowledge retrieval. Supports Cypher queries for traversal-based context assembly — "what entities are related to X within N hops?" Enriches RAG results with structural context: related entities, dependency chains, and causal relationships that flat vector similarity cannot capture.
-
-Local sources (Directory, Git) ingest into Ironclad's own storage. Remote sources (VectorDb, Graph) are queried federatively at retrieval time and merged into `MemoryRetriever` scoring. Config: `[knowledge.sources]` array of `{ type, path/url, pattern, poll_interval, auth }`.
+**Status**: Implemented. `ironclad-agent/src/knowledge.rs` defines `KnowledgeSource` plus concrete sources (`DirectorySource`, `GitSource`, `VectorDbSource`, `GraphSource`) with registry integration; `ironclad-agent/src/obsidian.rs` also implements `KnowledgeSource` for vault-backed retrieval.
 
 ---
 
@@ -352,6 +350,93 @@ On first boot, `initialize_db()` populates the hippocampus with all system table
 
 ---
 
+### 2.14 Skills Catalog (CLI + Dashboard)
+
+**Current state**: Skills are loaded from local directories and managed via direct file operations, API calls, and ad hoc toggles. There is no first-party catalog UX for browsing Ironclad-produced skills or batch-installing curated sets.
+
+**Target**: A first-party skills catalog for both CLI and dashboard that lets users browse published Ironclad skills, multi-select items, and perform one-shot download, install, and activation workflows.
+
+**Builds on**: `SkillLoader`/reload pipeline, existing skills API routes, plugin/skill toggle flows, dashboard SPA controls.
+
+**Scope**: Add a signed catalog manifest endpoint (or bundled index) containing skill metadata (name, description, version, tags, compatibility, checksums). Implement CLI flows such as `ironclad skills catalog list`, `search`, and multi-select install/activate (`--select` / interactive prompt). Add dashboard catalog UI with filters, multi-select, and a single "Install + Activate" action. Enforce integrity verification before install (checksum/signature), idempotent installs, explicit upgrade prompts, and rollback on partial failure. Persist install status in the skills registry and surface activation state consistently across CLI and dashboard.
+
+---
+
+### 2.15 Ops Telemetry + Release Provenance Gate
+
+**Current state**: Runtime visibility and model-level efficiency analytics are strong, but release readiness and platform-level observability remain partly workflow-driven.
+
+**Target**: Ship-grade operational telemetry and release provenance by default.
+
+**Builds on**: CI pipelines, smoke tests, existing logging/health APIs, release workflows.
+
+**Scope**: Add mandatory release smoke gates, structured deployment readiness checks, artifact provenance/signing metadata, and operator-facing telemetry exports suitable for SLO monitoring. Include runbook-level verification criteria before tag/publish.
+
+---
+
+### 2.16 Matrix Channel Adapter (E2EE Day One)
+
+**Current state**: Ironclad supports Telegram, WhatsApp, Discord, and WebSocket channels. Matrix is not yet available as a channel adapter.
+
+**Target**: Full bidirectional Matrix integration for DMs and rooms with day-one end-to-end encryption support and secure event handling.
+
+**Builds on**: `ChannelAdapter` trait, `ChannelRouter`, durable outbound delivery/retry pipeline, existing channel health and observability surfaces.
+
+**Scope**: Implement `MatrixAdapter` in `ironclad-channels` with encrypted inbound/outbound text flows, room membership handling, and reliable sync token/cursor lifecycle management. Add device/session key lifecycle support (bootstrap, secure persistence, rotation, recovery-safe resume) and map Matrix room/thread context into Ironclad session routing semantics. Extend server runtime wiring, channel status exposure, and configuration with a new `[channels.matrix]` block. Align delivery failures with retry/dead-letter controls and add Matrix-specific permanent/transient error classification. This is a roadmap backlog expansion and is not part of the locked 0.8.0 execution set.
+
+---
+
+### 2.18 Compliance-First Self-Funding Portfolio + Profit Taxation
+
+**Current state**: Ironclad has wallet/treasury controls, transaction tracking, and a service lifecycle foundation, but no first-class self-funding package optimized for legal, low-friction income generation. There is also no built-in mechanism to automatically redirect a configurable share of realized bot profit to the user's Ironclad-affiliated wallet.
+
+**Target**: A realistic, low-overhead self-funding system that helps agents maintain strong runtime capacity while remaining compliance-first. Include an adjustable taxation paradigm that applies to net realized profit per completed paid job and automatically redirects the taxed amount to the user's affiliated wallet.
+
+**Builds on**: `ServiceManager`, wallet/treasury (`ironclad-wallet`), `transactions` ledger, A2A/service endpoints, specialist routing and subagent capability matching.
+
+**Scope**: Ship a curated self-funding catalog of legal, repeatable service archetypes (monitoring/alerts, recurring summaries, narrow specialist deliverables) with transparent pricing templates. Add profit accounting primitives: `net_realized_profit = earned_revenue - attributable_costs` (inference, fulfillment payouts, network/settlement fees) at job completion. Add config and controls for `self_funding.tax.enabled`, `self_funding.tax.rate` (0.0-1.0), `self_funding.tax.destination_wallet`, and per-service opt-in/out. On each completed paid job, compute tax from net realized profit, create an auditable settlement record, and transfer/allocate funds to the configured affiliated wallet. Enforce safety rails: max transfer caps, minimum reserve floor, invalid-address rejection, and explicit no-op behavior when profit <= 0. Expose dashboard/API observability for gross revenue, attributable costs, net profit, tax paid, after-tax retained earnings, and payout history.
+
+---
+
+### 2.19 Model Metascore Routing Profiles
+
+**Current state**: Routing decisions are spread across heuristics (complexity, fallback order, capacity, and partial pricing) without a unified per-model profile that can be matched against task-level requirements.
+
+**Target**: Maintain a first-class profile for every model and compute a task-specific metascore so routing/orchestration can deterministically prefer the best-fit model for each task.
+
+**Builds on**: `ModelRouter`, provider registry/config, capacity/cost telemetry, fallback orchestration, and future ML routing backends.
+
+**Scope**:
+
+- Define a `ModelProfile` schema per model with weighted attributes:
+  - known efficacy by task type (coding, summarization, extraction, planning, etc.)
+  - cost (token and request economics)
+  - availability/reliability (uptime, breaker state, recent error rate)
+  - locality/privacy posture (local-only, region-bound, remote cloud)
+  - resource requirements (VRAM/RAM/context-window/runtime constraints)
+  - extensible fields for future criteria (`tbd`)
+- Define a `TaskRequirements` schema that captures hard constraints (privacy/locality, budget cap, latency target, minimum quality target) and soft preferences.
+- Compute `metascore(model, task)` from profile × requirements with transparent scoring/explanations and deterministic tie-breakers.
+- Integrate metascore selection into both direct routing and multi-model orchestration paths, with fallback if top candidate is unavailable.
+- Persist profile snapshots and outcomes so metascore weights can be tuned over time from observed quality/cost/latency data.
+- Expose operator controls for policy weights and audit visibility into why one model was selected over another.
+- Add dashboard explainability panels that show per-task match reasoning (criteria scores, constraint passes/fails, tie-break path).
+- Add a simulation mode so operators can run "what would be selected?" scenarios against alternative task requirements and weight profiles before enabling active routing changes.
+
+**Model efficacy assessment workstream (planning-only)**:
+
+Reference template: `docs/MODEL_RUNNER_EVAL_TEMPLATE.md` (v1).
+Scoring contract reference: `docs/evals/METASCORE_V1_SPEC.md` (spec-only).
+
+- Define a canonical task taxonomy and eval sets per class: coding, summarization, extraction, planning, tool-use, classification, translation, and safety/refusal behavior.
+- Establish scorecards per task class with explicit metrics (accuracy/pass@k, factuality/hallucination rate, schema adherence, latency-to-quality curve, and retry sensitivity).
+- Run multi-pass evaluations per model/profile variant (temperature, context length, tool-on/tool-off) and store confidence bands instead of single-point scores.
+- Maintain benchmark freshness windows (rolling monthly smoke evals + quarterly deep evals) so efficacy scores decay when stale.
+- Add operator-defined "mission critical" slices (domain prompts + failure tests) that can override global efficacy priors for routing.
+- Feed final efficacy outputs into `ModelProfile.known_efficacy_by_task_type` with provenance links to eval run IDs, dataset versions, and scoring policy revisions.
+
+---
+
 ## Tier 3 — Frontier
 
 Ambitious capabilities that push the architecture into new territory. High effort, high potential.
@@ -368,19 +453,15 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ---
 
-### 3.2 MCP (Model Context Protocol) Integration
+### 3.2 MCP (Model Context Protocol) Integration ✅
 
-**Current state**: No MCP support. Custom A2A protocol exists for agent-to-agent communication.
-
-**Target**: Expose Ironclad's tools and resources via MCP, and consume external MCP servers as tool providers. Makes Ironclad interoperable with the MCP ecosystem (IDE integrations, external data sources, third-party tools).
-
-**Scope**: Implement MCP server mode (expose tool registry, memory search, session management as MCP resources and tools). Implement MCP client mode (discover and call tools from configured MCP servers). Add to config: `[mcp]` section with server/client settings.
+**Status**: Implemented. `ironclad-agent/src/mcp.rs` provides MCP server/client primitives; server runtime exposes MCP endpoints under `/api/runtime/mcp` with client discovery/disconnect controls and tool/resource export wiring.
 
 ---
 
-### 3.3 Multi-Agent Orchestration
+### 3.3 Multi-Agent Orchestration (Partially Complete)
 
-**Current state**: Single agent with A2A protocol for peer communication. `SubagentRegistry` tracks child agent metadata but doesn't orchestrate workflows.
+**Current state**: Partially implemented in 0.7.0. Subagent role contracts (`subagent` vs `model-proxy`), roster semantics, model-assignment modes (`auto`/`commander`), and turn-linked model-selection forensics are live. Full workflow orchestration patterns are still pending.
 
 **Target**: Internal multi-agent patterns — specialist sub-agents for code review, research, financial analysis — orchestrated by a coordinator agent using graph-based workflows.
 
@@ -405,6 +486,7 @@ Ambitious capabilities that push the architecture into new territory. High effor
 **Status**: Items 1–4 implemented. Item 5 (document ingestion pipeline) remains.
 
 **Completed**:
+
 1. ✅ **Binary embedding storage** — `embedding_blob BLOB` column in `embeddings` table, with `embedding_to_blob()` / `blob_to_embedding()` conversion. JSON fallback preserved for backward compatibility. ~4x storage reduction.
 2. ✅ **HNSW ANN index** — `ironclad-db/ann.rs` wraps `instant-distance` (pure Rust). Built from DB at startup when `memory.ann_index = true`. Falls back to brute-force cosine scan when disabled or corpus is small.
 3. ✅ **Content chunking** — `chunk_text()` in `ironclad-agent/retrieval.rs`. Overlapping chunks (512 tokens, 64-token overlap) for granular embedding and retrieval.
@@ -487,7 +569,7 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ### 3.12 Flexible Network Binding ✅
 
-**Status**: Implemented in 0.5.0. `[network]` config section with `bind_address`, `bind_interface`, and optional `advertise` list. Ironclad binds to whatever interface the operator specifies — loopback (default), LAN, Tailscale, WireGuard, or `0.0.0.0`. Optional mTLS via `[network.tls]` with `cert`, `key`, `ca` for untrusted network deployments.
+**Status**: Implemented in 0.5.0. Operators can bind the server to localhost, LAN, overlay network interfaces, or `0.0.0.0` via server bind configuration (`[server].bind`) with authentication safeguards for non-loopback exposure.
 
 ---
 
@@ -503,12 +585,322 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ---
 
+## Robot Intel Feed (Planning-Only)
+
+Competitive learnings captured as **robot subroutines** for roadmap shaping. These are planning artifacts only and do not override the current bug-hammer release policy.
+
+### Subroutine A — Explainability Cockpit + Simulation Bay
+
+**Signal**: operator trust increases when routing decisions are inspectable and testable before activation.
+
+**Plan fit**: fold directly into `2.19 Model metascore routing profiles`.
+
+**Scope addendum**:
+
+- Dashboard panel showing why a model matched a task (criteria contributions + constraint pass/fail + tie-break trace).
+- Simulation bay for "what-if" scenarios (task requirements and weight profile changes) with side-by-side current vs simulated pick.
+- Audit trail for simulation runs and policy changes.
+
+### Subroutine B — Tamper-Evident Runtime Ledger
+
+**Signal**: security posture is stronger when action history is cryptographically verifiable.
+
+**Plan fit**: candidate Tier 3 security-hardening item, builds on existing audit/logging infrastructure.
+
+**Scope draft**:
+
+- Hash-linked event chain across approvals, tool calls, outbound channel sends, and admin policy mutations.
+- Verifier command/API for integrity checks and incident forensics.
+- Retention and export rules for operator compliance workflows.
+
+### Subroutine C — Capability Kernel Hardening
+
+**Signal**: agent safety improves when capabilities are declared and metered as first-class runtime constraints.
+
+**Plan fit**: extends existing policy engine and sandbox direction without feature-sprawl.
+
+**Scope draft**:
+
+- Capability declarations bound to tools/subroutines.
+- Runtime meter visibility (fuel/time/budget) in operator telemetry.
+- Deny-by-default profile for sensitive subroutine classes.
+
+### Subroutine D — Migration Docking Protocol
+
+**Signal**: adoption accelerates when migration from adjacent agent runtimes is reversible and observable.
+
+**Plan fit**: medium-priority Tier 2/3 operability track.
+
+**Scope draft**:
+
+- Dry-run import manifests with explicit transform maps.
+- Reversible migration checkpoints.
+- Compatibility scorecard for skills/sessions/config artifacts.
+
+### Subroutine I — Channel Pairing Handshake Bus
+
+**Signal**: bot-channel trust improves when unknown users are onboarded via explicit one-time pairing handshakes instead of implicit allowlist drift.
+
+**Plan fit**: extends abuse-protection and remote-access hardening with operator-friendly identity onboarding.
+
+**Scope draft**:
+
+- One-time pairing code flow for DM onboarding across supported channels.
+- Approve/revoke/list controls in CLI + API with audit events.
+- Expiry, replay protection, and rate-limiting for pairing attempts.
+
+### Subroutine J — Terminal Substrate Matrix
+
+**Signal**: autonomy is safer when command execution can be routed to isolated substrates (local/container/remote) under explicit policy.
+
+**Plan fit**: aligns with capability kernel hardening and mission runtime safety controls.
+
+**Scope draft**:
+
+- Terminal backend abstraction contract with policy-driven substrate selection.
+- Per-subroutine execution sandbox requirements (local vs isolated vs remote).
+- Persistent workspace semantics + lifecycle controls per substrate class.
+
+### Subroutine K — Interrupt-and-Redirect Contract
+
+**Signal**: long-running autonomous flows need deterministic interrupt semantics so operators can safely redirect mission state mid-flight.
+
+**Plan fit**: direct dependency for autonomous mission runtime and recursive escalation safety.
+
+**Scope draft**:
+
+- Unified interrupt protocol for CLI, API, and messaging channels.
+- Deterministic cancellation propagation through subroutine trees.
+- Interrupt checkpoints that preserve resumable mission context.
+
+### Subroutine L — Connector Reliability Profiles
+
+**Signal**: integration breadth only matters when connector reliability, degradation behavior, and retry semantics are explicit and observable.
+
+**Plan fit**: strengthens orchestration control tower and continuous mission runtime.
+
+**Scope draft**:
+
+- Reliability profile per connector (health state, retry budget, backoff class, delivery guarantees).
+- Operator SLO surfaces and alert thresholds by connector.
+- Mission planner awareness of connector risk when selecting execution paths.
+
+### Subroutine M — Procedural Memory Forge
+
+**Signal**: agents become materially more capable when successful multi-step trajectories are promoted into reusable subroutines with governance.
+
+**Plan fit**: bridges memory systems, skills catalog, and mission orchestration.
+
+**Scope draft**:
+
+- Promote validated task trajectories into candidate skills/subroutines.
+- Review gates (auto-suggest, operator-approve, publish-local) with provenance history.
+- Retrieval/ranking logic that prefers proven procedural assets for matching mission patterns.
+
+### Subroutine N — Memory Conveyor Inference Dock
+
+**Signal**: model reach expands dramatically when low-VRAM operators can run frontier-class checkpoints through layer-streamed inference docks.
+
+**Plan fit**: extends `2.19 Model metascore routing profiles` and local-runtime install/setup tracks without replacing high-throughput engines.
+
+**Scope draft**:
+
+- Add AirLLM-class host profile as a low-VRAM execution substrate with explicit "latency-heavy, locality-strong" capability flags.
+- Detect Python runtime + `airllm` availability in setup/install flows and offer optional bootstrap only when no better local host is already configured.
+- Record runtime traits for routing (cold-start overhead, token latency class, disk I/O sensitivity, supported model families, compression mode).
+- Feed traits into metascore orchestration so model selection can favor this dock for privacy/locality-constrained tasks while penalizing latency-sensitive paths.
+- Add dashboard explainability reasons and simulation toggles ("why selected AirLLM dock" + side-by-side route outcomes against SGLang/vLLM).
+- Define safety rails: max-context guards, disk-space preflight checks, and operator warnings for interactive session expectations.
+
+### Subroutine O — Agentic Loop Stability Pilot (`Qwen3.5-35B-A3B`)
+
+**Signal**: local agents become far more usable when tool-calling and loop stability are reliable at low active-parameter budgets.
+
+**Plan fit**: direct accelerator for `2.19 Model metascore routing profiles` by adding a strong local candidate for `tool_use` and multi-step orchestration tasks.
+
+**Scope draft**:
+
+- Add `qwen3.5-35b-a3b` as a priority benchmark candidate across local runners (SGLang-first, with vLLM/Ollama where compatible).
+- Expand task-efficacy slices for agent loops: tool schema adherence, retry/recovery behavior, loop completion rate, and long-horizon drift rate.
+- Capture and surface loop-stability deltas in explainability panels ("selected due to higher loop stability/tool success on this task class").
+- Add simulation scenarios that compare this profile against existing local/cloud choices under privacy-first and latency-first policy presets.
+- Define readiness gates for promotion into default local-routing recommendations (minimum tool success + loop completion thresholds).
+
+### Mission-Kernel Freeze Guard
+
+For the current major-version bug-hammer cycle:
+
+- Discovery, specs, and roadmap shaping for these subroutines are allowed.
+- Implementation remains deferred until the freeze is lifted.
+
+---
+
+## Autonomous Mission Kernel (Planning-Only)
+
+Outcome-first autonomy as a coordinated **robot mission runtime**. This is a roadmap integration target, not an active implementation track during the bug-hammer major version.
+
+### Subroutine E — Outcome Compiler + Mission Graph
+
+**Current state**: users still compose many multi-step workflows manually across skills, scheduling, and model choices.
+
+**Target**: accept an operator-defined outcome and compile it into a mission graph of tasks/subtasks with explicit dependencies, constraints, and success criteria.
+
+**Builds on**: `2.19 Model metascore routing profiles`, scheduler, skills catalog, channel delivery durability.
+
+**Scope draft**:
+
+- Parse outcome intents into typed `TaskRequirements` + hard constraints.
+- Produce a deterministic mission DAG with retry/fallback semantics.
+- Persist mission state for restart-safe execution and auditability.
+
+### Subroutine F — Recursive Specialist Escalation Kernel
+
+**Current state**: subagent orchestration exists but recursive helper delegation is not a first-class policy-governed kernel primitive.
+
+**Target**: allow a subroutine to spawn helper subroutines when blocked, with strict policy rails.
+
+**Builds on**: `3.3 Multi-agent orchestration (partial)`, policy engine, approvals, rate/budget controls.
+
+**Scope draft**:
+
+- Escalation policy contract (depth, breadth, wall-clock, and budget caps).
+- Approval gates for sensitive escalation classes.
+- Deterministic unwind behavior when escalation trees fail.
+
+### Subroutine G — Continuous Mission Runtime
+
+**Current state**: scheduling exists, but long-horizon mission supervision and intervention semantics are fragmented.
+
+**Target**: run autonomous mission loops for days/weeks with durable checkpoints, health states, and explicit intervention controls.
+
+**Builds on**: scheduler heartbeat, session rotation contracts, durable queues, telemetry/release gates.
+
+**Scope draft**:
+
+- Mission lifecycle states (`queued`, `running`, `degraded`, `blocked`, `complete`).
+- Checkpointed execution with restart-safe continuation.
+- Operator controls for pause/resume/replan/terminate.
+
+### Subroutine H — Orchestration Control Tower
+
+**Current state**: observability is distributed across endpoints and dashboards; orchestration reasoning is not yet unified in one operator cockpit.
+
+**Target**: a single control-tower surface that explains mission execution, model matches, and intervention options in real time.
+
+**Builds on**: `2.19` explainability/simulation, dashboard SPA, admin API surfaces, context observatory.
+
+**Scope draft**:
+
+- Mission graph visualization with live status overlays.
+- Per-subtask "why this model" reasoning and constraint traces.
+- Simulation bay for what-if missions and policy-weight changes.
+- Burn-rate telemetry (cost, latency, error, queue depth) with alert thresholds.
+
+### Integration Mapping (No Scope Bloat)
+
+- `2.19` remains the model-selection substrate (metascore + explainability + simulation).
+- `3.3` remains the orchestration substrate (specialist delegation patterns).
+- Scheduler/queues remain execution substrate (durability + long-horizon runs).
+- New subroutines define composition contracts between those existing layers; they do not imply immediate net-new feature execution.
+
+### Freeze Guard
+
+For the current major-version bug-hammer cycle:
+
+- Planning/specification for Subroutines E–H is allowed.
+- Feature execution remains deferred until freeze exit criteria are met.
+
+---
+
+## Next Significant Release Selection (Kickoff)
+
+Targeting a **0.8.0 candidate slate** with a bias toward reliability, operability, and user-facing distribution.
+
+### Selection Criteria
+
+- Must close a visible user workflow gap or high-impact reliability risk.
+- Must be testable with clear acceptance criteria in one release cycle.
+- Must avoid deep architectural rewrites that would starve release throughput.
+
+### Proposed 0.8.0 Candidate Set
+
+1. **2.14 Skills Catalog (CLI + Dashboard)** — marquee UX feature (browse, multi-select, install, activate).
+2. **1.16 Durable Channel Delivery Queue** — message reliability and restart safety.
+3. **1.17 Production-Grade Abuse Protection** — hardening for internet-facing deployments.
+4. **1.18 Cron-Conformant Session Rotation** — eliminate lifecycle surprise/ambiguity.
+
+### Stretch Candidate (if capacity permits)
+
+- **2.15 Ops Telemetry + Release Provenance Gate** (land at least smoke gating + provenance baseline).
+
+### Self-Funding Strategy (Visibility Track)
+
+- **Strategic item**: `2.18 Compliance-First Self-Funding Portfolio + Profit Taxation`.
+- **Positioning**: Keep out of the locked `v0.8.0` reliability core, but run discovery/design in parallel so implementation can start in `v0.9.x` without blocking current release throughput.
+- **Execution intent**: Prioritize legal, low-overhead recurring service models first (monitoring, digests, narrow specialist deliverables), then layer adjustable per-job net-profit taxation redirected to the user's affiliated wallet.
+- **Readiness gates before implementation**: finalize taxable profit accounting contract (`net_realized_profit`), destination wallet validation rules, reserve-floor + transfer-cap safety policy, and payout audit surfaces.
+
+---
+
+### v0.8.0 Execution Order (Locked)
+
+Implementation sequence for this release:
+
+1. **1.16 Durable Channel Delivery Queue**
+2. **1.18 Cron-Conformant Session Rotation**
+3. **1.17 Production-Grade Abuse Protection**
+4. **2.14 Skills Catalog (CLI + Dashboard)**
+5. **2.15 Ops Telemetry + Release Provenance Gate** *(stretch only)*
+
+### v0.8.0 Acceptance Gates (Release Blocking)
+
+- **1.16 Durable Queue**
+  - Survives process restart with replayed pending deliveries.
+  - Uses idempotent delivery keys to avoid duplicate sends after recovery.
+  - Exposes dead-letter inspection + replay controls (API/CLI).
+- **1.18 Cron-Conformant Rotation**
+  - Evaluates resets directly from configured cron expressions.
+  - Passes edge-schedule and timezone conformance tests.
+  - Includes migration notes if semantics differ from legacy timing behavior.
+- **1.17 Abuse Protection**
+  - Validates trusted-proxy CIDR handling and real client IP extraction.
+  - Enforces IP + token/user quotas with operator-visible metrics.
+  - Verifies horizontally safe limiter behavior for multi-instance topology.
+- **2.14 Skills Catalog**
+  - CLI supports list/search/install/activate workflows.
+  - Dashboard supports browse/filter/multi-select + install-and-activate.
+  - Enforces integrity checks and rollback on partial failure.
+- **2.15 Stretch**
+  - Adds mandatory smoke checks for release/tag pipeline.
+  - Emits verifiable provenance/signing metadata.
+- **Legacy loopback proxy removal**
+  - `127.0.0.1:8788/<provider>` legacy provider URLs are fully unsupported in runtime and examples for `v0.8.0`.
+  - Startup/config validation fails fast with explicit operator migration guidance to direct provider base URLs.
+
+### v0.8.0 Cut Policy
+
+- First cut: **2.15** stretch item.
+- If additional cut is required: reduce **2.14** to **CLI-first catalog** and defer dashboard catalog UI to 0.8.x.
+- Do **not** cut reliability core (`1.16`, `1.17`, `1.18`) in this release profile.
+
+### v0.8.0 Documentation Gate
+
+Before marking 0.8.0 as complete:
+
+- Update user/operator command docs in `docs/CLI.md`.
+- Update deployment and hardening guidance in `docs/DEPLOYMENT.md`.
+- Update architecture/dataflow docs in `docs/architecture/ironclad-dataflow.md`.
+- Update release status and shipped scope in this roadmap file.
+- Ensure release docs/checklists explicitly gate legacy loopback proxy removal (`docs/releases/v0.8.0.md`).
+
+---
+
 ## Summary
 
 Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 
 | # | Item | Tier | Builds On | Effort |
-|---|------|------|-----------|--------|
+| --- | ------ | ------ | ----------- | -------- |
 | 1.1 | ~~Streaming LLM responses~~ ✅ | 1 | LLM client, WebSocket, channels | ~~Medium~~ Done |
 | 1.2 | ~~Approval workflow API~~ ✅ | 1 | ApprovalManager (complete) | ~~Low~~ Done |
 | 1.3 | ~~Browser as agent tool~~ ✅ | 1 | ironclad-browser (complete) | ~~Low~~ Done |
@@ -521,25 +913,35 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 1.10 | ~~Addressability filter~~ ✅ | 1 | ChannelAdapter trait, InboundMessage | ~~Low~~ Done |
 | 1.11 | Context checkpoint | 1 | schema.rs, build_context, MemoryRetriever | Medium |
 | 1.12 | ~~Response transform pipeline~~ ✅ | 1 | format.rs, injection defense, turns | ~~Low-Medium~~ Done |
-| 1.14 | ~~Context Observatory~~ ✅ | 1 | efficiency.rs, turn_feedback, turns, inference_costs | Done |
+| 1.13 | ~~Context Observatory~~ ✅ | 1 | efficiency.rs, turn_feedback, turns, inference_costs | Done |
+| 1.14 | ~~Capacity-aware routing~~ ✅ | 1 | ModelRouter, CircuitBreakerRegistry | ~~Medium~~ Done |
 | 1.15 | ~~Sessions markdown rendering~~ ✅ | 1 | dashboard SPA rendering, session/context views | ~~Low-Medium~~ Done |
-| 1.13 | ~~Capacity-aware routing~~ ✅ | 1 | ModelRouter, CircuitBreakerRegistry | ~~Medium~~ Done |
+| 1.16 | Durable channel delivery queue | 1 | channels delivery router, DB persistence | Medium |
+| 1.17 | Production-grade abuse protection | 1 | rate limiter, auth, deployment config | Medium |
+| 1.18 | Cron-conformant session rotation | 1 | SessionGovernor, scheduler heartbeat | Medium |
+| 1.19 | `agent-browser` external runtime support | 1 | 1.3 Browser tool, policy engine, runtime config | Medium |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
 | 2.3 | Tiered inference pipeline | 2 | Fallback chain, local model config | Medium |
 | 2.4 | Speculative execution | 2 | Tool registry, tokio tasks | Medium |
 | 2.5 | Service revenue & inbound payments | 2 | Wallet, treasury, A2A | High |
 | 2.6 | Multi-provider cost arbitrage | 2 | ProviderConfig, router | Medium |
-| 2.7 | WASM plugin runtime | 2 | Plugin SDK, ToolDef | High |
+| 2.7 | ~~WASM plugin runtime~~ ✅ | 2 | Plugin SDK, ToolDef | ~~High~~ Done |
 | 2.8 | Prompt compression | 2 | Context assembly, tier.rs | Medium |
-| 2.9 | Declarative agent manifests | 2 | Config, SkillLoader, SubagentRegistry | High |
-| 2.10 | Structured workspace system | 2 | personality.rs, soul_history | Medium |
-| 2.11 | Knowledge source trait | 2 | retrieval.rs, EmbeddingClient, HNSW | High |
+| 2.9 | ~~Declarative agent manifests~~ ✅ | 2 | Config, SkillLoader, SubagentRegistry | ~~High~~ Done |
+| 2.10 | ~~Structured workspace system~~ ✅ | 2 | personality.rs, soul_history | ~~Medium~~ Done |
+| 2.11 | ~~Knowledge source trait~~ ✅ | 2 | retrieval.rs, EmbeddingClient, HNSW | ~~High~~ Done |
 | 2.12 | Episodic digest system | 2 | memory.rs, compaction, retrieval | Medium |
 | 2.13 | Hippocampus — self-describing schema map | 2 | schema.rs, Tool trait, policy engine | High |
+| 2.14 | Skills catalog (CLI + dashboard) | 2 | SkillLoader, skills API, dashboard SPA | Medium |
+| 2.15 | Ops telemetry + release provenance gate | 2 | CI workflows, smoke tests, release pipeline | Medium |
+| 2.16 | Matrix channel adapter (E2EE day one) | 2 | ChannelAdapter, ChannelRouter, durable delivery queue | High |
+| 2.17 | Apertus native local onboarding (SGLang-first) | 2 | install scripts, setup wizard, local host detection, model discovery | Medium |
+| 2.18 | Compliance-first self-funding portfolio + profit taxation | 2 | ServiceManager, wallet/treasury, transactions ledger, specialist routing | High |
+| 2.19 | Model metascore routing profiles | 2 | ModelRouter, provider registry/config, cost/capacity telemetry, orchestration | High |
 | 3.1 | Compile-time agent safety | 3 | Agent loop, policy engine | High |
-| 3.2 | MCP integration | 3 | Tool registry, config | High |
-| 3.3 | Multi-agent orchestration | 3 | SubagentRegistry, A2A, 2.9 | High |
+| 3.2 | ~~MCP integration~~ ✅ | 3 | Tool registry, config | ~~High~~ Done |
+| 3.3 | Multi-agent orchestration (partial) | 3 | SubagentRegistry, A2A, 2.9 | High |
 | 3.4 | Agent spawning + wallet provisioning | 3 | SubagentRegistry, wallet | High |
 | 3.5 | Advanced RAG infrastructure (4/5 done ✅) | 3 | 1.5, 1.7, embeddings.rs | ~~High~~ Remaining: doc ingestion |
 | 3.6 | Voice channels (TTS + STT + WebRTC) | 3 | Channel adapters, whisper-rs, local TTS | High |

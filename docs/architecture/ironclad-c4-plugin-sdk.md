@@ -10,7 +10,7 @@
 flowchart TB
     subgraph IroncladPluginSdk ["ironclad-plugin-sdk"]
         TRAIT["Plugin trait<br/>name, version, tools,<br/>init, execute_tool, shutdown"]
-        TOOL_DEF["ToolDef<br/>name, description, parameters"]
+        TOOL_DEF["ToolDef<br/>name, description, parameters,<br/>risk_level: RiskLevel (default Caution),<br/>permissions: Vec&lt;String&gt;"]
         TOOL_RESULT["ToolResult<br/>success, output, metadata"]
         MANIFEST["PluginManifest<br/>name, version, permissions,<br/>tools (ManifestToolDef)"]
         REGISTRY["PluginRegistry<br/>register, init_all,<br/>execute_tool, find_tool,<br/>list_plugins, disable/enable"]
@@ -76,7 +76,7 @@ flowchart TB
 | Type | Location | Purpose |
 |------|----------|---------|
 | `Plugin` | `lib.rs` | Async trait: name, version, tools(), init(), execute_tool(), shutdown() |
-| `ToolDef` | `lib.rs` | name, description, parameters (JSON schema) |
+| `ToolDef` | `lib.rs` | name, description, parameters (JSON schema), risk_level (RiskLevel, default Caution), permissions (Vec\<String\>) |
 | `ToolResult` | `lib.rs` | success, output, optional metadata |
 | `PluginStatus` | `lib.rs` | Loaded, Active, Disabled, Error |
 | `PluginManifest` | `manifest.rs` | TOML: name, version, description, author, permissions, tools (ManifestToolDef) |
@@ -92,4 +92,4 @@ flowchart TB
 
 **Internal crates**: `ironclad-core` (Result, IroncladError, config)
 
-**Depended on by**: `ironclad-server` (wires discovery, registry, and `/api/plugins/*`), `ironclad-agent` (tool registry can include plugin tools)
+**Depended on by**: `ironclad-server` (wires discovery, registry, and `/api/plugins/*`). Note: `ironclad-agent` does NOT directly depend on `ironclad-plugin-sdk`; plugin-to-agent integration is server-mediated.

@@ -13,7 +13,9 @@ pub struct FeedbackRequest {
 
 use ironclad_agent::analyzer::{ContextAnalyzer, SessionData, TurnData};
 
-use super::{AppState, internal_err};
+use super::{
+    AppState, JsonError, bad_request, internal_err, not_found, validate_long, validate_short,
+};
 
 #[derive(Deserialize)]
 pub struct CreateSessionRequest {
@@ -55,18 +57,34 @@ pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
 
     let sessions: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
 
-    Ok::<_, (axum::http::StatusCode, String)>(axum::Json(
-        serde_json::json!({ "sessions": sessions }),
-    ))
+    Ok::<_, JsonError>(axum::Json(serde_json::json!({ "sessions": sessions })))
 }
 
 pub async fn create_session(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
+    validate_short("agent_id", &body.agent_id)?;
     // Keep "New session" semantics while preserving active-session consistency.
-    match ironclad_db::sessions::rotate_agent_session(&state.db, &body.agent_id) {
-        Ok(id) => Ok(axum::Json(serde_json::json!({ "session_id": id }))),
+    let id = match ironclad_db::sessions::rotate_agent_session(&state.db, &body.agent_id) {
+        Ok(id) => id,
+        Err(e) => return Err(internal_err(&e)),
+    };
+
+    // Return the full session object, not just the ID (BUG-20).
+    match ironclad_db::sessions::get_session(&state.db, &id) {
+        Ok(Some(s)) => Ok(axum::Json(serde_json::json!({
+            "id": s.id,
+            "agent_id": s.agent_id,
+            "scope_key": s.scope_key,
+            "status": s.status,
+            "model": s.model,
+            "nickname": s.nickname,
+            "created_at": s.created_at,
+            "updated_at": s.updated_at,
+            "metadata": s.metadata,
+        }))),
+        Ok(None) => Err(internal_err(&format_args!("created session {id} vanished"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -87,10 +105,7 @@ pub async fn get_session(
             "updated_at": s.updated_at,
             "metadata": s.metadata,
         }))),
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("session {id} not found"),
-        )),
+        Ok(None) => Err(not_found(format!("session {id} not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -128,23 +143,19 @@ pub async fn post_message(
     Path(id): Path<String>,
     axum::Json(body): axum::Json<PostMessageRequest>,
 ) -> impl IntoResponse {
+    validate_short("role", &body.role)?;
+    validate_long("content", &body.content)?;
     if !ALLOWED_ROLES.contains(&body.role.as_str()) {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            format!(
-                "invalid role '{}': must be one of {:?}",
-                body.role, ALLOWED_ROLES
-            ),
-        ));
+        return Err(bad_request(format!(
+            "invalid role '{}': must be one of {:?}",
+            body.role, ALLOWED_ROLES
+        )));
     }
 
     match ironclad_db::sessions::get_session(&state.db, &id) {
         Ok(Some(_)) => {}
         Ok(None) => {
-            return Err((
-                axum::http::StatusCode::NOT_FOUND,
-                format!("session '{id}' not found"),
-            ));
+            return Err(not_found(format!("session '{id}' not found")));
         }
         Err(e) => return Err(internal_err(&e)),
     }
@@ -203,10 +214,7 @@ pub async fn get_turn(State(state): State<AppState>, Path(id): Path<String>) -> 
             "model": t.model,
             "created_at": t.created_at,
         }))),
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("turn {id} not found"),
-        )),
+        Ok(None) => Err(not_found(format!("turn {id} not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -235,10 +243,7 @@ pub async fn get_turn_model_selection(
                 "created_at": row.created_at,
             })))
         }
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("no model selection trace for turn {id}"),
-        )),
+        Ok(None) => Err(not_found(format!("no model selection trace for turn {id}"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -311,10 +316,7 @@ pub async fn get_turn_context(
                 "tool_failure_count": tool_calls.iter().filter(|tc| tc.status != "success").count(),
             })))
         }
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("turn {id} not found"),
-        )),
+        Ok(None) => Err(not_found(format!("turn {id} not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -388,10 +390,7 @@ pub async fn get_turn_tips(
     let turn_record = match ironclad_db::sessions::get_turn_by_id(&state.db, &id) {
         Ok(Some(t)) => t,
         Ok(None) => {
-            return Err((
-                axum::http::StatusCode::NOT_FOUND,
-                format!("turn {id} not found"),
-            ));
+            return Err(not_found(format!("turn {id} not found")));
         }
         Err(e) => return Err(internal_err(&e)),
     };
@@ -473,10 +472,7 @@ pub async fn analyze_turn(
     let turn_record = match ironclad_db::sessions::get_turn_by_id(&state.db, &id) {
         Ok(Some(t)) => t,
         Ok(None) => {
-            return Err((
-                axum::http::StatusCode::NOT_FOUND,
-                format!("turn {id} not found"),
-            ));
+            return Err(not_found(format!("turn {id} not found")));
         }
         Err(e) => return Err(internal_err(&e)),
     };
@@ -615,7 +611,7 @@ async fn run_llm_analysis(
     prompt: &str,
     max_tokens: Option<u32>,
     temperature: Option<f64>,
-) -> Result<serde_json::Value, (axum::http::StatusCode, String)> {
+) -> Result<serde_json::Value, JsonError> {
     let model = {
         let llm = state.llm.read().await;
         llm.router.select_model().to_string()
@@ -642,7 +638,7 @@ async fn run_llm_analysis(
     let provider = match llm.providers.get_by_model(&model) {
         Some(p) => p.clone(),
         None => {
-            return Err((
+            return Err(JsonError(
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
                 format!("no provider configured for model {model}"),
             ));
@@ -663,7 +659,7 @@ async fn run_llm_analysis(
     .await
     .unwrap_or_default();
     if !provider.is_local && key.is_empty() {
-        return Err((
+        return Err(JsonError(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             format!("missing API key for provider {}", provider.name),
         ));
@@ -683,7 +679,7 @@ async fn run_llm_analysis(
         )
         .await
         .map_err(|e| {
-            (
+            JsonError(
                 axum::http::StatusCode::BAD_GATEWAY,
                 format!("analysis provider call failed: {e}"),
             )
@@ -735,19 +731,13 @@ pub async fn post_turn_feedback(
     axum::Json(body): axum::Json<FeedbackRequest>,
 ) -> impl IntoResponse {
     if !(1..=5).contains(&body.grade) {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "grade must be between 1 and 5".to_string(),
-        ));
+        return Err(bad_request("grade must be between 1 and 5"));
     }
 
     let turn = match ironclad_db::sessions::get_turn_by_id(&state.db, &turn_id) {
         Ok(Some(t)) => t,
         Ok(None) => {
-            return Err((
-                axum::http::StatusCode::NOT_FOUND,
-                format!("turn {turn_id} not found"),
-            ));
+            return Err(not_found(format!("turn {turn_id} not found")));
         }
         Err(e) => return Err(internal_err(&e)),
     };
@@ -783,10 +773,7 @@ pub async fn get_turn_feedback(
             "comment": fb.comment,
             "created_at": fb.created_at,
         }))),
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("no feedback for turn {turn_id}"),
-        )),
+        Ok(None) => Err(not_found(format!("no feedback for turn {turn_id}"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -797,10 +784,7 @@ pub async fn put_turn_feedback(
     axum::Json(body): axum::Json<FeedbackRequest>,
 ) -> impl IntoResponse {
     if !(1..=5).contains(&body.grade) {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "grade must be between 1 and 5".to_string(),
-        ));
+        return Err(bad_request("grade must be between 1 and 5"));
     }
 
     match ironclad_db::sessions::update_feedback(

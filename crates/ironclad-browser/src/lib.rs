@@ -257,4 +257,117 @@ mod tests {
             assert!(result.error.is_some());
         }
     }
+
+    #[tokio::test]
+    async fn all_12_actions_return_error_without_session() {
+        let browser = Browser::new(BrowserConfig::default());
+        let cases = vec![
+            actions::BrowserAction::Navigate {
+                url: "https://example.com".into(),
+            },
+            actions::BrowserAction::Click {
+                selector: "#btn".into(),
+            },
+            actions::BrowserAction::Type {
+                selector: "input".into(),
+                text: "hello".into(),
+            },
+            actions::BrowserAction::Screenshot,
+            actions::BrowserAction::Pdf,
+            actions::BrowserAction::Evaluate {
+                expression: "1+1".into(),
+            },
+            actions::BrowserAction::GetCookies,
+            actions::BrowserAction::ClearCookies,
+            actions::BrowserAction::ReadPage,
+            actions::BrowserAction::GoBack,
+            actions::BrowserAction::GoForward,
+            actions::BrowserAction::Reload,
+        ];
+        for action in &cases {
+            let result = browser.execute_action(action).await;
+            assert!(
+                !result.success,
+                "action {:?} should fail without session",
+                action
+            );
+            assert!(result.error.is_some());
+            assert!(
+                result.error.as_deref().unwrap().contains("not started"),
+                "error should mention 'not started' for {:?}: {:?}",
+                action,
+                result.error
+            );
+        }
+    }
+
+    #[test]
+    fn page_content_serde() {
+        let content = PageContent {
+            url: "https://example.com".into(),
+            title: "Example".into(),
+            text: "Hello world".into(),
+            html_length: 1234,
+        };
+        let json = serde_json::to_string(&content).unwrap();
+        let back: PageContent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.url, "https://example.com");
+        assert_eq!(back.title, "Example");
+        assert_eq!(back.text, "Hello world");
+        assert_eq!(back.html_length, 1234);
+    }
+
+    #[test]
+    fn browser_custom_config() {
+        let config = BrowserConfig {
+            enabled: true,
+            headless: false,
+            cdp_port: 9333,
+            ..Default::default()
+        };
+        let browser = Browser::new(config);
+        assert_eq!(browser.cdp_port(), 9333);
+    }
+
+    #[tokio::test]
+    async fn stop_without_start_is_ok() {
+        let browser = Browser::new(BrowserConfig::default());
+        let result = browser.stop().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn shared_browser_type() {
+        let browser = Browser::new(BrowserConfig::default());
+        let shared: SharedBrowser = Arc::new(browser);
+        assert_eq!(shared.cdp_port(), 9222);
+        assert!(!shared.is_running().await);
+    }
+
+    #[test]
+    fn screenshot_result_fields() {
+        let result = ScreenshotResult {
+            data_base64: "iVBORw0KGgo=".into(),
+            format: "png".into(),
+            width: 800,
+            height: 600,
+        };
+        assert_eq!(result.format, "png");
+        assert_eq!(result.width, 800);
+        assert_eq!(result.height, 600);
+        assert!(!result.data_base64.is_empty());
+    }
+
+    #[test]
+    fn page_info_debug_and_clone() {
+        let info = PageInfo {
+            id: "p1".into(),
+            url: "https://example.com".into(),
+            title: "Test".into(),
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.id, "p1");
+        let debug_str = format!("{:?}", info);
+        assert!(debug_str.contains("p1"));
+    }
 }

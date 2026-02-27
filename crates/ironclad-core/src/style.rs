@@ -130,7 +130,11 @@ impl Theme {
     }
 
     pub fn icon_action(&self) -> &'static str {
-        if self.nerdmode { "[>>]" } else { "\u{26a1}" }
+        if self.nerdmode {
+            "[>>]"
+        } else {
+            "\u{26a1}\u{fe0f}"
+        }
     }
 
     pub fn icon_warn(&self) -> &'static str {
@@ -242,7 +246,7 @@ impl Theme {
             return;
         }
         let delay = std::time::Duration::from_millis(delay_ms);
-        let mut chars = text.chars().peekable();
+        let mut chars = text.chars();
         while let Some(ch) = chars.next() {
             if ch == '\x1b' {
                 let mut seq = String::from(ch);
@@ -277,7 +281,7 @@ impl Theme {
             return;
         }
         let delay = std::time::Duration::from_millis(delay_ms);
-        let mut chars = text.chars().peekable();
+        let mut chars = text.chars();
         while let Some(ch) = chars.next() {
             if ch == '\x1b' {
                 let mut seq = String::from(ch);
@@ -462,7 +466,7 @@ mod tests {
         let t = Theme::resolve(ColorMode::Always, ThemeVariant::CrtGreen);
         assert!(!t.nerdmode());
         assert_eq!(t.icon_ok(), "\u{2705}");
-        assert_eq!(t.icon_action(), "\u{26a1}");
+        assert_eq!(t.icon_action(), "\u{26a1}\u{fe0f}");
         assert_eq!(t.icon_warn(), "\u{26a0}\u{fe0f}");
         assert_eq!(t.icon_detail(), "\u{25b8}");
         assert_eq!(t.icon_error(), "\u{26d3}");

@@ -100,14 +100,14 @@ impl ApprovalManager {
 
         debug!(id = %id, tool = tool_name, "approval requested");
 
-        let mut pending = self.pending.lock().expect("mutex poisoned");
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         pending.insert(id, request.clone());
 
         Ok(request)
     }
 
     pub fn approve(&self, request_id: &str, decided_by: &str) -> Result<ApprovalRequest> {
-        let mut pending = self.pending.lock().expect("mutex poisoned");
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let request = pending
             .get_mut(request_id)
             .ok_or_else(|| IroncladError::Tool {
@@ -131,7 +131,7 @@ impl ApprovalManager {
     }
 
     pub fn deny(&self, request_id: &str, decided_by: &str) -> Result<ApprovalRequest> {
-        let mut pending = self.pending.lock().expect("mutex poisoned");
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let request = pending
             .get_mut(request_id)
             .ok_or_else(|| IroncladError::Tool {
@@ -155,12 +155,12 @@ impl ApprovalManager {
     }
 
     pub fn get_request(&self, request_id: &str) -> Option<ApprovalRequest> {
-        let pending = self.pending.lock().expect("mutex poisoned");
+        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         pending.get(request_id).cloned()
     }
 
     pub fn list_pending(&self) -> Vec<ApprovalRequest> {
-        let pending = self.pending.lock().expect("mutex poisoned");
+        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         pending
             .values()
             .filter(|r| r.status == ApprovalStatus::Pending)
@@ -169,13 +169,13 @@ impl ApprovalManager {
     }
 
     pub fn list_all(&self) -> Vec<ApprovalRequest> {
-        let pending = self.pending.lock().expect("mutex poisoned");
+        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         pending.values().cloned().collect()
     }
 
     pub fn expire_timed_out(&self) -> Vec<String> {
         let now = Utc::now();
-        let mut pending = self.pending.lock().expect("mutex poisoned");
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let mut expired = Vec::new();
 
         for (id, request) in pending.iter_mut() {
@@ -190,7 +190,7 @@ impl ApprovalManager {
     }
 
     pub fn clear_decided(&self) -> usize {
-        let mut pending = self.pending.lock().expect("mutex poisoned");
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let before = pending.len();
         pending.retain(|_, r| r.status == ApprovalStatus::Pending);
         before - pending.len()

@@ -1,12 +1,15 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Nonce};
 use argon2::Argon2;
+use chrono::Utc;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use zeroize::Zeroizing;
 
 use crate::error::{IroncladError, Result};
@@ -24,10 +27,12 @@ struct KeystoreData {
     entries: HashMap<String, String>,
 }
 
+type SecureEntries = Arc<Mutex<Option<HashMap<String, Zeroizing<String>>>>>;
+
 #[derive(Clone)]
 pub struct Keystore {
     path: PathBuf,
-    entries: Arc<Mutex<Option<HashMap<String, String>>>>,
+    entries: SecureEntries,
     passphrase: Arc<Mutex<Option<Zeroizing<String>>>>,
 }
 
@@ -50,6 +55,14 @@ impl Keystore {
             *lock_or_recover(&self.entries) = Some(HashMap::new());
             *lock_or_recover(&self.passphrase) = Some(Zeroizing::new(passphrase.to_string()));
             self.save()?;
+            self.append_audit_event(
+                "initialize",
+                None,
+                json!({
+                    "result": "ok",
+                    "details": "created new keystore file"
+                }),
+            )?;
             return Ok(());
         }
 
@@ -74,7 +87,12 @@ impl Keystore {
         let store: KeystoreData = serde_json::from_slice(&plaintext)
             .map_err(|e| IroncladError::Keystore(format!("corrupt keystore data: {e}")))?;
 
-        *lock_or_recover(&self.entries) = Some(store.entries);
+        let zeroized_entries: HashMap<String, Zeroizing<String>> = store
+            .entries
+            .into_iter()
+            .map(|(k, v)| (k, Zeroizing::new(v)))
+            .collect();
+        *lock_or_recover(&self.entries) = Some(zeroized_entries);
         *lock_or_recover(&self.passphrase) = Some(Zeroizing::new(passphrase.to_string()));
         Ok(())
     }
@@ -96,7 +114,7 @@ impl Keystore {
     pub fn get(&self, key: &str) -> Option<String> {
         lock_or_recover(&self.entries)
             .as_ref()
-            .and_then(|m| m.get(key).cloned())
+            .and_then(|m| m.get(key).map(|v| (**v).clone()))
     }
 
     pub fn set(&self, key: &str, value: &str) -> Result<()> {
@@ -105,9 +123,21 @@ impl Keystore {
             let entries = guard
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
-            entries.insert(key.to_string(), value.to_string());
+            entries.insert(key.to_string(), Zeroizing::new(value.to_string()));
         }
-        self.save()
+        let save_res = self.save();
+        let audit_res = self.append_audit_event(
+            "set",
+            Some(key),
+            json!({
+                "result": if save_res.is_ok() { "ok" } else { "error" }
+            }),
+        );
+        match (save_res, audit_res) {
+            (Err(e), _) => Err(e),
+            (Ok(()), Err(e)) => Err(e),
+            (Ok(()), Ok(())) => Ok(()),
+        }
     }
 
     pub fn remove(&self, key: &str) -> Result<bool> {
@@ -119,7 +149,19 @@ impl Keystore {
             entries.remove(key).is_some()
         };
         if existed {
-            self.save()?;
+            let save_res = self.save();
+            let audit_res = self.append_audit_event(
+                "remove",
+                Some(key),
+                json!({
+                    "result": if save_res.is_ok() { "ok" } else { "error" }
+                }),
+            );
+            match (save_res, audit_res) {
+                (Err(e), _) => return Err(e),
+                (Ok(()), Err(e)) => return Err(e),
+                (Ok(()), Ok(())) => {}
+            }
         }
         Ok(existed)
     }
@@ -138,9 +180,22 @@ impl Keystore {
             let entries = guard
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
-            entries.extend(new_entries);
+            entries.extend(new_entries.into_iter().map(|(k, v)| (k, Zeroizing::new(v))));
         }
-        self.save()?;
+        let save_res = self.save();
+        let audit_res = self.append_audit_event(
+            "import",
+            None,
+            json!({
+                "result": if save_res.is_ok() { "ok" } else { "error" },
+                "count": count
+            }),
+        );
+        match (save_res, audit_res) {
+            (Err(e), _) => return Err(e),
+            (Ok(()), Err(e)) => return Err(e),
+            (Ok(()), Ok(())) => {}
+        }
         Ok(count)
     }
 
@@ -155,7 +210,62 @@ impl Keystore {
             return Err(IroncladError::Keystore("keystore is locked".into()));
         }
         *lock_or_recover(&self.passphrase) = Some(Zeroizing::new(new_passphrase.to_string()));
-        self.save()
+        let save_res = self.save();
+        let audit_res = self.append_audit_event(
+            "rekey",
+            None,
+            json!({
+                "result": if save_res.is_ok() { "ok" } else { "error" }
+            }),
+        );
+        match (save_res, audit_res) {
+            (Err(e), _) => Err(e),
+            (Ok(()), Err(e)) => Err(e),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
+
+    fn audit_log_path(&self) -> PathBuf {
+        self.path.with_extension("audit.log")
+    }
+
+    fn append_audit_event(
+        &self,
+        operation: &str,
+        key: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<()> {
+        let audit_path = self.audit_log_path();
+        if let Some(parent) = audit_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&audit_path)?;
+        #[cfg(unix)]
+        if let Ok(meta) = file.metadata() {
+            use std::os::unix::fs::PermissionsExt;
+            if meta.permissions().mode() & 0o777 != 0o600 {
+                let _ =
+                    std::fs::set_permissions(&audit_path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+
+        let redacted_key = key.map(redact_key_name);
+        let record = json!({
+            "timestamp": Utc::now().to_rfc3339(),
+            "operation": operation,
+            "key": redacted_key,
+            "pid": std::process::id(),
+            "process": std::env::args().next().unwrap_or_else(|| "unknown".to_string()),
+            "keystore_path": self.path,
+            "metadata": metadata
+        });
+        file.write_all(record.to_string().as_bytes())?;
+        file.write_all(b"\n")?;
+        file.flush()?;
+        Ok(())
     }
 
     fn save(&self) -> Result<()> {
@@ -173,7 +283,10 @@ impl Keystore {
         let key = derive_key(passphrase, &salt)?;
 
         let store = KeystoreData {
-            entries: entries.clone(),
+            entries: entries
+                .iter()
+                .map(|(k, v)| (k.clone(), (**v).clone()))
+                .collect(),
         };
         let plaintext = serde_json::to_vec(&store)?;
 
@@ -230,6 +343,20 @@ fn fresh_salt() -> [u8; SALT_LEN] {
     salt
 }
 
+/// Redact a key name for audit logging: show the first 3 characters followed
+/// by `***` so that logs are useful for debugging without exposing full names.
+fn redact_key_name(key: &str) -> String {
+    let visible = &key[..key.len().min(3)];
+    format!("{visible}***")
+}
+
+// SECURITY WARNING: `machine_passphrase` derives its passphrase from the local
+// hostname and username -- values that are trivially discoverable by any process
+// on the same machine. This provides protection only against casual access (e.g.
+// the keystore file being copied to a different machine). It does NOT protect
+// against targeted local attackers who can read environment variables or run
+// `whoami`/`hostname`. For secrets requiring real confidentiality, callers should
+// use `Keystore::unlock()` with a user-supplied passphrase instead.
 fn machine_passphrase() -> String {
     let hostname = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("HOST"))
@@ -403,5 +530,157 @@ mod tests {
         assert!(ks2.unlock("old-pass").is_err());
         ks2.unlock("new-pass").unwrap();
         assert_eq!(ks2.get("data"), Some("preserved".into()));
+    }
+
+    #[test]
+    fn test_keystore_mutations_are_audited() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        ks.unlock("pass").unwrap();
+        ks.set("telegram_bot_token", "secret").unwrap();
+        assert!(ks.remove("telegram_bot_token").unwrap());
+        ks.rekey("new-pass").unwrap();
+
+        let audit_path = path.with_extension("audit.log");
+        let audit = std::fs::read_to_string(audit_path).unwrap();
+        assert!(audit.contains("\"operation\":\"initialize\""));
+        assert!(audit.contains("\"operation\":\"set\""));
+        assert!(audit.contains("\"operation\":\"remove\""));
+        assert!(audit.contains("\"operation\":\"rekey\""));
+        // Key names are redacted: only first 3 chars visible, followed by ***
+        assert!(audit.contains("\"key\":\"tel***\""));
+        assert!(!audit.contains("telegram_bot_token"));
+        assert!(!audit.contains("secret"));
+    }
+
+    #[test]
+    fn test_default_path() {
+        let path = Keystore::default_path();
+        assert!(path.to_str().unwrap().contains("keystore.enc"));
+        assert!(path.to_str().unwrap().contains(".ironclad"));
+    }
+
+    #[test]
+    fn test_set_on_locked_keystore_fails() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        // Don't unlock
+        let result = ks.set("key", "value");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("locked"));
+    }
+
+    #[test]
+    fn test_remove_on_locked_keystore_fails() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        let result = ks.remove("key");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("locked"));
+    }
+
+    #[test]
+    fn test_import_on_locked_keystore_fails() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        let result = ks.import(HashMap::new());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("locked"));
+    }
+
+    #[test]
+    fn test_rekey_on_locked_keystore_fails() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        let result = ks.rekey("new-pass");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("locked"));
+    }
+
+    #[test]
+    fn test_get_on_locked_keystore_returns_none() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        assert_eq!(ks.get("anything"), None);
+    }
+
+    #[test]
+    fn test_list_keys_on_locked_keystore_returns_empty() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        assert!(ks.list_keys().is_empty());
+    }
+
+    #[test]
+    fn test_corrupt_keystore_file() {
+        let path = temp_path();
+        // Write too-short data (less than SALT_LEN + NONCE_LEN + 1)
+        std::fs::write(&path, b"short").unwrap();
+        let ks = Keystore::new(&path);
+        let result = ks.unlock("pass");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("corrupt"));
+    }
+
+    #[test]
+    fn test_set_overwrites_existing_key() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        ks.unlock("pass").unwrap();
+
+        ks.set("key", "first").unwrap();
+        assert_eq!(ks.get("key"), Some("first".into()));
+
+        ks.set("key", "second").unwrap();
+        assert_eq!(ks.get("key"), Some("second".into()));
+    }
+
+    #[test]
+    fn test_import_audit_entry() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        ks.unlock("pass").unwrap();
+
+        let mut batch = HashMap::new();
+        batch.insert("imported_key".into(), "imported_value".into());
+        ks.import(batch).unwrap();
+
+        let audit_path = path.with_extension("audit.log");
+        let audit = std::fs::read_to_string(audit_path).unwrap();
+        assert!(audit.contains("\"operation\":\"import\""));
+    }
+
+    #[test]
+    fn redact_key_name_short_keys() {
+        assert_eq!(redact_key_name("ab"), "ab***");
+        assert_eq!(redact_key_name("a"), "a***");
+        assert_eq!(redact_key_name(""), "***");
+    }
+
+    #[test]
+    fn redact_key_name_long_keys() {
+        assert_eq!(redact_key_name("telegram_bot_token"), "tel***");
+        assert_eq!(redact_key_name("abc"), "abc***");
+    }
+
+    #[test]
+    fn machine_passphrase_is_deterministic() {
+        let p1 = machine_passphrase();
+        let p2 = machine_passphrase();
+        assert_eq!(p1, p2);
+        assert!(p1.starts_with("ironclad-machine-key:"));
+    }
+
+    #[test]
+    fn lock_or_recover_works_on_clean_mutex() {
+        let m = Mutex::new(42);
+        let guard = lock_or_recover(&m);
+        assert_eq!(*guard, 42);
+    }
+
+    #[test]
+    fn audit_log_path_derives_from_keystore_path() {
+        let ks = Keystore::new("/tmp/test.enc");
+        assert_eq!(ks.audit_log_path(), PathBuf::from("/tmp/test.audit.log"));
     }
 }

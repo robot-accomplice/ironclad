@@ -274,4 +274,110 @@ mod tests {
         let msg = make_msg("hi", Some(json!({"is_group": false})));
         assert!(!is_group_message(&msg));
     }
+
+    #[test]
+    fn is_group_message_no_metadata() {
+        let msg = make_msg("hi", None);
+        assert!(!is_group_message(&msg));
+    }
+
+    #[test]
+    fn is_group_message_no_is_group_key() {
+        let msg = make_msg("hi", Some(json!({"other": "value"})));
+        assert!(!is_group_message(&msg));
+    }
+
+    #[test]
+    fn filter_chain_filters_accessor() {
+        let mut chain = FilterChain::new();
+        chain.add(Box::new(MentionFilter::new("bot".into())));
+        chain.add(Box::new(ReplyFilter));
+        let names = chain.filters();
+        assert_eq!(names, vec!["MentionFilter", "ReplyFilter"]);
+    }
+
+    #[test]
+    fn filter_chain_default_is_empty() {
+        let chain = FilterChain::default();
+        assert!(chain.filters().is_empty());
+    }
+
+    #[test]
+    fn mention_filter_name() {
+        let f = MentionFilter::new("bot".into());
+        assert_eq!(f.name(), "MentionFilter");
+    }
+
+    #[test]
+    fn reply_filter_name() {
+        let f = ReplyFilter;
+        assert_eq!(f.name(), "ReplyFilter");
+    }
+
+    #[test]
+    fn conversation_filter_name() {
+        let f = ConversationFilter;
+        assert_eq!(f.name(), "ConversationFilter");
+    }
+
+    #[test]
+    fn reply_filter_no_metadata() {
+        let f = ReplyFilter;
+        let msg = make_msg("hello", None);
+        assert!(!f.accept(&msg));
+    }
+
+    #[test]
+    fn reply_filter_no_reply_to_bot_key() {
+        let f = ReplyFilter;
+        let msg = make_msg("hello", Some(json!({"other": "value"})));
+        assert!(!f.accept(&msg));
+    }
+
+    #[test]
+    fn conversation_filter_no_is_group_key() {
+        let f = ConversationFilter;
+        let msg = make_msg("hi", Some(json!({"other": "value"})));
+        assert!(f.accept(&msg));
+    }
+
+    #[test]
+    fn default_chain_has_three_filters() {
+        let chain = default_addressability_chain("bot");
+        assert_eq!(chain.filters().len(), 3);
+        assert!(chain.filters().contains(&"MentionFilter"));
+        assert!(chain.filters().contains(&"ReplyFilter"));
+        assert!(chain.filters().contains(&"ConversationFilter"));
+    }
+
+    #[test]
+    fn default_chain_accepts_dm() {
+        let chain = default_addressability_chain("bot");
+        let msg = make_msg("hello", Some(json!({"is_group": false})));
+        assert!(chain.accepts(&msg));
+    }
+
+    #[test]
+    fn default_chain_accepts_reply() {
+        let chain = default_addressability_chain("bot");
+        let msg = make_msg(
+            "thanks",
+            Some(json!({"reply_to_bot": true, "is_group": true})),
+        );
+        assert!(chain.accepts(&msg));
+    }
+
+    #[test]
+    fn default_chain_rejects_group_no_mention_no_reply() {
+        let chain = default_addressability_chain("bot");
+        let msg = make_msg("hello everyone", Some(json!({"is_group": true})));
+        assert!(!chain.accepts(&msg));
+    }
+
+    #[test]
+    fn mention_filter_partial_match() {
+        let f = MentionFilter::new("ironclad".into());
+        let msg = make_msg("hey @ironclad-bot do something", None);
+        assert!(f.accept(&msg));
+    }
 }

@@ -1,16 +1,54 @@
 use axum::{
-    extract::{Path, State},
+    Json,
+    extract::{Path, Query, State},
     response::IntoResponse,
 };
+use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::Path as FsPath;
 
-use super::{AppState, internal_err};
+use super::{AppState, JsonError, bad_request, internal_err, not_found};
 
 struct BuiltinSkillDef {
     name: &'static str,
     description: &'static str,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RegistryManifest {
+    version: String,
+    packs: RegistryPacks,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RegistryPacks {
+    skills: RegistrySkillPack,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RegistrySkillPack {
+    path: String,
+    files: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CatalogQuery {
+    #[serde(default)]
+    pub q: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CatalogInstallRequest {
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub activate: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CatalogActivateRequest {
+    pub skills: Vec<String>,
 }
 
 const BUILTIN_SKILLS: &[BuiltinSkillDef] = &[
@@ -139,88 +177,49 @@ fn normalize_risk_level(raw: &str) -> Result<&'static str, String> {
     }
 }
 
-pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
-    match ironclad_db::skills::list_skills(&state.db) {
-        Ok(skills) => {
-            let mut items: Vec<Value> = skills
-                .into_iter()
-                .map(|s| {
-                    let built_in = is_builtin_skill(&s);
-                    serde_json::json!({
-                        "id": s.id,
-                        "name": s.name,
-                        "kind": s.kind,
-                        "description": s.description,
-                        "source_path": s.source_path,
-                        "risk_level": s.risk_level,
-                        "enabled": s.enabled || built_in,
-                        "built_in": built_in,
-                        "last_loaded_at": s.last_loaded_at,
-                        "created_at": s.created_at,
-                    })
-                })
-                .collect();
-            let seen: HashSet<String> = items
-                .iter()
-                .filter_map(|item| item.get("name").and_then(|v| v.as_str()))
-                .map(|name| name.to_ascii_lowercase())
-                .collect();
-            for built_in in BUILTIN_SKILLS {
-                if seen.contains(&built_in.name.to_ascii_lowercase()) {
-                    continue;
-                }
-                items.push(serde_json::json!({
-                    "id": format!("builtin:{}", built_in.name),
-                    "name": built_in.name,
-                    "kind": "builtin",
-                    "description": built_in.description,
-                    "source_path": Value::Null,
-                    "risk_level": "Caution",
-                    "enabled": true,
-                    "built_in": true,
-                    "last_loaded_at": Value::Null,
-                    "created_at": Value::Null,
-                }));
-            }
-            Ok(axum::Json(serde_json::json!({ "skills": items })))
-        }
-        Err(e) => Err(internal_err(&e)),
+fn registry_base_url(manifest_url: &str) -> String {
+    if let Some(pos) = manifest_url.rfind('/') {
+        manifest_url[..pos].to_string()
+    } else {
+        manifest_url.to_string()
     }
 }
 
-pub async fn get_skill(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    match ironclad_db::skills::get_skill(&state.db, &id) {
-        Ok(Some(s)) => {
-            let built_in = is_builtin_skill(&s);
-            Ok(axum::Json(serde_json::json!({
-                "id": s.id,
-                "name": s.name,
-                "kind": s.kind,
-                "description": s.description,
-                "source_path": s.source_path,
-                "content_hash": s.content_hash,
-                "triggers_json": s.triggers_json,
-                "tool_chain_json": s.tool_chain_json,
-                "policy_overrides_json": s.policy_overrides_json,
-                "script_path": s.script_path,
-                "risk_level": s.risk_level,
-                "enabled": s.enabled || built_in,
-                "built_in": built_in,
-                "last_loaded_at": s.last_loaded_at,
-                "created_at": s.created_at,
-            })))
-        }
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("skill {id} not found"),
-        )),
-        Err(e) => Err(internal_err(&e)),
+async fn fetch_catalog_manifest(state: &AppState) -> Result<(RegistryManifest, String), String> {
+    let config = state.config.read().await;
+    let registry_url = config.update.registry_url.clone();
+    drop(config);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("catalog client init failed: {e}"))?;
+    let resp = client
+        .get(&registry_url)
+        .send()
+        .await
+        .map_err(|e| format!("catalog manifest fetch failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "catalog manifest endpoint returned HTTP {}",
+            resp.status()
+        ));
     }
+    let manifest: RegistryManifest = resp
+        .json()
+        .await
+        .map_err(|e| format!("invalid catalog manifest JSON: {e}"))?;
+    Ok((manifest, registry_base_url(&registry_url)))
 }
 
-pub async fn reload_skills(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+fn skill_item_matches_query(name: &str, query: Option<&str>) -> bool {
+    if let Some(q) = query {
+        return name.to_ascii_lowercase().contains(&q.to_ascii_lowercase());
+    }
+    true
+}
+
+async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
     fn risk_level_str(r: ironclad_core::RiskLevel) -> &'static str {
         match r {
             ironclad_core::RiskLevel::Safe => "Safe",
@@ -373,19 +372,284 @@ pub async fn reload_skills(
         }
     }
 
-    Ok(axum::Json(serde_json::json!({
+    Ok(serde_json::json!({
         "reloaded": true,
         "scanned": loaded.len(),
         "added": added,
         "updated": updated,
         "rejected": rejected,
         "issues": issues,
+    }))
+}
+
+pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
+    match ironclad_db::skills::list_skills(&state.db) {
+        Ok(skills) => {
+            let mut items: Vec<Value> = skills
+                .into_iter()
+                .map(|s| {
+                    let built_in = is_builtin_skill(&s);
+                    serde_json::json!({
+                        "id": s.id,
+                        "name": s.name,
+                        "kind": s.kind,
+                        "description": s.description,
+                        "risk_level": s.risk_level,
+                        "enabled": s.enabled || built_in,
+                        "built_in": built_in,
+                        "last_loaded_at": s.last_loaded_at,
+                        "created_at": s.created_at,
+                    })
+                })
+                .collect();
+            let seen: HashSet<String> = items
+                .iter()
+                .filter_map(|item| item.get("name").and_then(|v| v.as_str()))
+                .map(|name| name.to_ascii_lowercase())
+                .collect();
+            for built_in in BUILTIN_SKILLS {
+                if seen.contains(&built_in.name.to_ascii_lowercase()) {
+                    continue;
+                }
+                items.push(serde_json::json!({
+                    "id": format!("builtin:{}", built_in.name),
+                    "name": built_in.name,
+                    "kind": "builtin",
+                    "description": built_in.description,
+                    "risk_level": "Caution",
+                    "enabled": true,
+                    "built_in": true,
+                    "last_loaded_at": Value::Null,
+                    "created_at": Value::Null,
+                }));
+            }
+            Ok(axum::Json(serde_json::json!({ "skills": items })))
+        }
+        Err(e) => Err(internal_err(&e)),
+    }
+}
+
+pub async fn get_skill(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match ironclad_db::skills::get_skill(&state.db, &id) {
+        Ok(Some(s)) => {
+            let built_in = is_builtin_skill(&s);
+            Ok(axum::Json(serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "kind": s.kind,
+                "description": s.description,
+                "content_hash": s.content_hash,
+                "triggers_json": s.triggers_json,
+                "tool_chain_json": s.tool_chain_json,
+                "policy_overrides_json": s.policy_overrides_json,
+                "risk_level": s.risk_level,
+                "enabled": s.enabled || built_in,
+                "built_in": built_in,
+                "last_loaded_at": s.last_loaded_at,
+                "created_at": s.created_at,
+            })))
+        }
+        Ok(None) => Err(not_found(format!("skill {id} not found"))),
+        Err(e) => Err(internal_err(&e)),
+    }
+}
+
+pub async fn reload_skills(State(state): State<AppState>) -> Result<impl IntoResponse, JsonError> {
+    let payload = reload_skills_internal(&state).await?;
+    Ok(axum::Json(payload))
+}
+
+pub async fn catalog_list(
+    State(state): State<AppState>,
+    Query(query): Query<CatalogQuery>,
+) -> impl IntoResponse {
+    let q = query.q.as_deref();
+    let mut items = Vec::<Value>::new();
+    for built_in in BUILTIN_SKILLS {
+        if skill_item_matches_query(built_in.name, q) {
+            items.push(serde_json::json!({
+                "name": built_in.name,
+                "kind": "builtin",
+                "description": built_in.description,
+                "source": "builtin",
+            }));
+        }
+    }
+
+    if let Ok((manifest, _base_url)) = fetch_catalog_manifest(&state).await {
+        for (filename, sha256) in &manifest.packs.skills.files {
+            let name = filename.strip_suffix(".md").unwrap_or(filename).to_string();
+            if skill_item_matches_query(&name, q) {
+                items.push(serde_json::json!({
+                    "name": name,
+                    "kind": "instruction",
+                    "source": "registry",
+                    "filename": filename,
+                    "sha256": sha256,
+                    "version": manifest.version,
+                }));
+            }
+        }
+    }
+
+    axum::Json(serde_json::json!({ "items": items }))
+}
+
+pub async fn catalog_install(
+    State(state): State<AppState>,
+    Json(req): Json<CatalogInstallRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    if req.skills.is_empty() {
+        return Err(bad_request("skills list is required"));
+    }
+    let (manifest, base_url) = fetch_catalog_manifest(&state).await.map_err(|e| {
+        (
+            axum::http::StatusCode::BAD_GATEWAY,
+            format!("failed to fetch catalog: {e}"),
+        )
+    })?;
+
+    let config = state.config.read().await;
+    let skills_dir = config.skills.skills_dir.clone();
+    drop(config);
+    std::fs::create_dir_all(&skills_dir)
+        .map_err(|e| internal_err(&format!("failed to create skills dir: {e}")))?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| internal_err(&format!("catalog client init failed: {e}")))?;
+
+    let selected: Vec<(&String, &String)> = manifest
+        .packs
+        .skills
+        .files
+        .iter()
+        .filter(|(filename, _)| {
+            let name = filename.strip_suffix(".md").unwrap_or(filename.as_str());
+            req.skills.iter().any(|s| s == name || s == *filename)
+        })
+        .collect();
+    if selected.is_empty() {
+        return Err(not_found("no matching catalog skills found"));
+    }
+
+    let mut rollback_existing: Vec<(std::path::PathBuf, Vec<u8>)> = Vec::new();
+    let mut rollback_new: Vec<std::path::PathBuf> = Vec::new();
+    let mut installed: Vec<String> = Vec::new();
+
+    for (filename, expected_hash) in selected {
+        let url = format!("{}/{}{}", base_url, manifest.packs.skills.path, filename);
+        let bytes = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| internal_err(&format!("download failed for {filename}: {e}")))?
+            .bytes()
+            .await
+            .map_err(|e| internal_err(&format!("download body failed for {filename}: {e}")))?;
+        let actual_hash = hex::encode(Sha256::digest(&bytes));
+        if actual_hash != *expected_hash {
+            // Roll back any files already touched.
+            for (path, old) in rollback_existing.drain(..) {
+                let _ = std::fs::write(path, old);
+            }
+            for path in rollback_new.drain(..) {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(bad_request(format!("checksum mismatch for {filename}")));
+        }
+
+        // Path traversal guard: reject filenames containing path separators or
+        // parent-directory components so that a malicious registry manifest
+        // cannot write outside skills_dir.
+        if filename.contains('/')
+            || filename.contains('\\')
+            || filename.contains("..")
+            || filename.starts_with('.')
+        {
+            // Roll back any files already touched.
+            for (path, old) in rollback_existing.drain(..) {
+                let _ = std::fs::write(path, old);
+            }
+            for path in rollback_new.drain(..) {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(bad_request(format!(
+                "invalid filename rejected: {filename}"
+            )));
+        }
+
+        let target = skills_dir.join(filename);
+        // Canonicalize and verify the resolved path stays inside skills_dir.
+        // We check the parent directory (which must exist) since the file
+        // itself may not exist yet.
+        let target_parent = target.parent().unwrap_or(&skills_dir);
+        let canonical_parent = std::fs::canonicalize(target_parent)
+            .map_err(|e| internal_err(&format!("failed to resolve target directory: {e}")))?;
+        let canonical_skills_dir = std::fs::canonicalize(&skills_dir)
+            .map_err(|e| internal_err(&format!("failed to resolve skills_dir: {e}")))?;
+        if !canonical_parent.starts_with(&canonical_skills_dir) {
+            return Err(bad_request(format!(
+                "filename escapes skills directory: {filename}"
+            )));
+        }
+
+        if target.exists() {
+            let old = std::fs::read(&target)
+                .map_err(|e| internal_err(&format!("failed to backup {filename}: {e}")))?;
+            rollback_existing.push((target.clone(), old));
+        } else {
+            rollback_new.push(target.clone());
+        }
+
+        let tmp = skills_dir.join(format!(".{}.tmp", filename));
+        std::fs::write(&tmp, &bytes)
+            .map_err(|e| internal_err(&format!("failed to write temp {filename}: {e}")))?;
+        std::fs::rename(&tmp, &target)
+            .map_err(|e| internal_err(&format!("failed to install {filename}: {e}")))?;
+        installed.push(filename.clone());
+    }
+
+    let mut activation = None;
+    if req.activate {
+        match reload_skills_internal(&state).await {
+            Ok(payload) => activation = Some(payload),
+            Err(e) => {
+                // Roll back all file writes if activation failed.
+                for (path, old) in rollback_existing {
+                    let _ = std::fs::write(path, old);
+                }
+                for path in rollback_new {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    Ok(axum::Json(serde_json::json!({
+        "ok": true,
+        "version": manifest.version,
+        "installed": installed,
+        "activated": req.activate,
+        "activation": activation,
     })))
 }
 
-pub async fn audit_skills(
+pub async fn catalog_activate(
     State(state): State<AppState>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+    Json(req): Json<CatalogActivateRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let payload = reload_skills_internal(&state).await?;
+    Ok(axum::Json(serde_json::json!({
+        "ok": true,
+        "requested_skills": req.skills,
+        "activation": payload,
+    })))
+}
+
+pub async fn audit_skills(State(state): State<AppState>) -> Result<impl IntoResponse, JsonError> {
     let config = state.config.read().await;
     let skills_dir = std::fs::canonicalize(&config.skills.skills_dir).map_err(|e| {
         (
@@ -467,7 +731,6 @@ pub async fn audit_skills(
             "name": s.name,
             "enabled": s.enabled,
             "risk_level": s.risk_level,
-            "source_path": s.source_path,
             "drift_status": drift_status,
             "drift_reason": drift_reason,
         }));
@@ -555,12 +818,12 @@ pub async fn audit_skills(
 pub async fn toggle_skill(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     let existing = ironclad_db::skills::get_skill(&state.db, &id).map_err(|e| internal_err(&e))?;
     if let Some(s) = existing.as_ref()
         && is_builtin_skill(s)
     {
-        return Err((
+        return Err(JsonError(
             axum::http::StatusCode::FORBIDDEN,
             format!("skill {} is built-in and cannot be disabled", s.name),
         ));
@@ -570,10 +833,7 @@ pub async fn toggle_skill(
             "id": id,
             "enabled": new_enabled,
         }))),
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("skill {id} not found"),
-        )),
+        Ok(None) => Err(not_found(format!("skill {id} not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -581,11 +841,11 @@ pub async fn toggle_skill(
 pub async fn delete_skill(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     match ironclad_db::skills::get_skill(&state.db, &id) {
         Ok(Some(skill)) => {
             if is_builtin_skill(&skill) {
-                return Err((
+                return Err(JsonError(
                     axum::http::StatusCode::FORBIDDEN,
                     format!("skill {} is built-in and cannot be deleted", skill.name),
                 ));
@@ -597,10 +857,119 @@ pub async fn delete_skill(
                 "deleted": true,
             })))
         }
-        Ok(None) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("skill {id} not found"),
-        )),
+        Ok(None) => Err(not_found(format!("skill {id} not found"))),
         Err(e) => Err(internal_err(&e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_record(name: &str, kind: &str) -> ironclad_db::skills::SkillRecord {
+        ironclad_db::skills::SkillRecord {
+            id: "s1".into(),
+            name: name.into(),
+            kind: kind.into(),
+            description: Some("desc".into()),
+            source_path: "/tmp/skill.md".into(),
+            content_hash: "abc".into(),
+            triggers_json: None,
+            tool_chain_json: None,
+            policy_overrides_json: None,
+            script_path: None,
+            risk_level: "Caution".into(),
+            enabled: true,
+            last_loaded_at: None,
+            created_at: "now".into(),
+        }
+    }
+
+    #[test]
+    fn builtin_skill_detection_is_case_insensitive() {
+        assert!(is_builtin_skill_name("SELF-DIAGNOSTICS"));
+        assert!(is_builtin_skill(&sample_record(
+            "self-diagnostics",
+            "instruction"
+        )));
+        assert!(is_builtin_skill(&sample_record("custom", "builtin")));
+        assert!(!is_builtin_skill(&sample_record("custom", "instruction")));
+    }
+
+    #[test]
+    fn canonical_in_root_accepts_files_and_rejects_escape() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("scripts");
+        std::fs::create_dir_all(&nested).unwrap();
+        let script = nested.join("run.sh");
+        std::fs::write(&script, "echo ok\n").unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+
+        let canonical = canonical_in_root(
+            &canonical_root,
+            &canonical_root,
+            FsPath::new("scripts/run.sh"),
+        )
+        .expect("path inside root should resolve");
+        assert!(canonical.ends_with("run.sh"));
+
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let escaped = canonical_in_root(&canonical_root, &canonical_root, outside.path());
+        assert!(escaped.is_err());
+    }
+
+    #[test]
+    fn validate_policy_overrides_accepts_allowed_boolean_keys() {
+        let ok = serde_json::json!({
+            "require_creator": true,
+            "deny_external": false,
+            "disabled": false
+        });
+        assert!(validate_policy_overrides(&ok).is_ok());
+
+        let bad_key = serde_json::json!({"nope": true});
+        assert!(validate_policy_overrides(&bad_key).is_err());
+
+        let bad_type = serde_json::json!({"disabled": "yes"});
+        assert!(validate_policy_overrides(&bad_type).is_err());
+    }
+
+    #[test]
+    fn normalize_risk_level_canonicalizes_supported_values() {
+        assert_eq!(normalize_risk_level("safe").unwrap(), "Safe");
+        assert_eq!(normalize_risk_level("CAUTION").unwrap(), "Caution");
+        assert_eq!(normalize_risk_level("Dangerous").unwrap(), "Dangerous");
+        assert_eq!(normalize_risk_level("forbidden").unwrap(), "Forbidden");
+        assert!(normalize_risk_level("unknown").is_err());
+    }
+
+    #[test]
+    fn registry_base_url_and_query_matching_behave() {
+        assert_eq!(
+            registry_base_url("https://example.com/catalog/manifest.json"),
+            "https://example.com/catalog"
+        );
+        assert_eq!(registry_base_url("manifest.json"), "manifest.json");
+
+        assert!(skill_item_matches_query("self-diagnostics", None));
+        assert!(skill_item_matches_query("self-diagnostics", Some("Diag")));
+        assert!(!skill_item_matches_query(
+            "self-diagnostics",
+            Some("wallet")
+        ));
+    }
+
+    #[test]
+    fn validate_policy_overrides_rejects_non_object() {
+        assert!(validate_policy_overrides(&serde_json::json!("not-object")).is_err());
+    }
+
+    #[test]
+    fn canonical_in_root_rejects_directory_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+        std::fs::create_dir_all(canonical_root.join("scripts")).unwrap();
+        let result = canonical_in_root(&canonical_root, &canonical_root, FsPath::new("scripts"));
+        assert!(result.is_err());
     }
 }

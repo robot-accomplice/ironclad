@@ -42,7 +42,7 @@ ironclad-tests       Integration test suite
 
 - **Streaming responses** -- `POST /api/agent/message/stream` streams tokens to the user in real-time via SSE as they arrive from the provider
 - **Model-agnostic proxy** -- provider configuration is fully externalized in TOML; adding a new provider requires zero code changes
-- **Bundled provider configs** for OpenAI, Anthropic, Google, Ollama, OpenRouter (shipped as `bundled_providers.toml`)
+- **Bundled provider configs** for SGLang, vLLM, Docker Model Runner, Ollama, OpenAI, Anthropic, Google, OpenRouter (shipped as `bundled_providers.toml`)
 - **Format translation** -- typed Rust enums with `From<T>` implementations for 4 API formats (OpenAI Chat, OpenAI Responses, Anthropic Messages, Google GenerativeAI); 12+ translation pairs
 - **Circuit breaker** per provider (Closed/Open/HalfOpen states, exponential backoff, rate/credit/timeout trips)
 - **In-flight deduplication** -- SHA-256 fingerprinting prevents duplicate concurrent requests
@@ -212,6 +212,7 @@ Single-page application embedded in the binary (zero external dependencies):
 - **4 themes**: AI Black & Purple (Default), CRT Orange, CRT Green, Psychedelic Freakout
 - **Live sparkline charts** and stacked area charts for multi-provider cost breakdown
 - **Retro CRT aesthetic** with scanline effects and monospace typography
+- **Skills catalog controls** on the Skills page for registry sync (`Install selected`, `Activate selected`, `Install + Activate`)
 
 ### Data Migration
 

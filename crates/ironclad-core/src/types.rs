@@ -13,7 +13,7 @@ pub enum SurvivalTier {
 
 impl SurvivalTier {
     pub fn from_balance(usd: f64, hours_below_zero: f64) -> Self {
-        if usd < 0.0 && hours_below_zero >= 1.0 {
+        if usd < 0.0 && hours_below_zero >= 0.999 {
             Self::Dead
         } else if usd < 0.10 {
             Self::Critical
@@ -263,5 +263,86 @@ mod tests {
             let back: InputAuthority = serde_json::from_str(&json).unwrap();
             assert_eq!(auth, back);
         }
+    }
+
+    #[test]
+    fn default_priority_is_five() {
+        assert_eq!(default_priority(), 5);
+    }
+
+    #[test]
+    fn default_risk_level_is_caution() {
+        assert_eq!(default_risk_level(), RiskLevel::Caution);
+    }
+
+    #[test]
+    fn survival_tier_boundary_dead_needs_one_hour() {
+        // Exactly at the 0.999 boundary
+        assert_eq!(SurvivalTier::from_balance(-0.01, 0.999), SurvivalTier::Dead);
+        // Just under the boundary
+        assert_eq!(
+            SurvivalTier::from_balance(-0.01, 0.998),
+            SurvivalTier::Critical
+        );
+    }
+
+    #[test]
+    fn survival_tier_serde() {
+        for tier in [
+            SurvivalTier::High,
+            SurvivalTier::Normal,
+            SurvivalTier::LowCompute,
+            SurvivalTier::Critical,
+            SurvivalTier::Dead,
+        ] {
+            let json = serde_json::to_string(&tier).unwrap();
+            let back: SurvivalTier = serde_json::from_str(&json).unwrap();
+            assert_eq!(tier, back);
+        }
+    }
+
+    #[test]
+    fn skill_manifest_serde() {
+        let manifest = SkillManifest {
+            name: "test".into(),
+            description: "A test skill".into(),
+            kind: SkillKind::Structured,
+            triggers: SkillTrigger::default(),
+            priority: 5,
+            tool_chain: None,
+            policy_overrides: None,
+            script_path: None,
+            risk_level: RiskLevel::Safe,
+        };
+        let json = serde_json::to_string(&manifest).unwrap();
+        let back: SkillManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "test");
+        assert_eq!(back.risk_level, RiskLevel::Safe);
+    }
+
+    #[test]
+    fn instruction_skill_serde() {
+        let skill = InstructionSkill {
+            name: "help".into(),
+            description: "Provides help".into(),
+            triggers: SkillTrigger::default(),
+            priority: 3,
+            body: "Help text".into(),
+        };
+        let json = serde_json::to_string(&skill).unwrap();
+        let back: InstructionSkill = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "help");
+        assert_eq!(back.priority, 3);
+    }
+
+    #[test]
+    fn tool_chain_step_serde() {
+        let step = ToolChainStep {
+            tool_name: "git_commit".into(),
+            params: serde_json::json!({"message": "fix"}),
+        };
+        let json = serde_json::to_string(&step).unwrap();
+        let back: ToolChainStep = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tool_name, "git_commit");
     }
 }

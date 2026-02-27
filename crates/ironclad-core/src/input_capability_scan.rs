@@ -195,4 +195,250 @@ mod tests {
         let scan = scan_input_capabilities(&json!({"env_var": "SECRET_TOKEN"}));
         assert!(scan.requires_environment);
     }
+
+    // ── is_url coverage ─────────────────────────────────────────────────
+
+    #[test]
+    fn is_url_detects_http() {
+        assert!(is_url("http://example.com"));
+        assert!(is_url("HTTP://EXAMPLE.COM"));
+    }
+
+    #[test]
+    fn is_url_detects_https() {
+        assert!(is_url("https://example.com/path"));
+    }
+
+    #[test]
+    fn is_url_detects_ws() {
+        assert!(is_url("ws://localhost:8080"));
+        assert!(is_url("wss://secure.example.com"));
+    }
+
+    #[test]
+    fn is_url_rejects_non_urls() {
+        assert!(!is_url("not a url"));
+        assert!(!is_url("/etc/passwd"));
+        assert!(!is_url("ftp://something"));
+        assert!(!is_url(""));
+    }
+
+    // ── looks_like_filesystem_path coverage ──────────────────────────────
+
+    #[test]
+    fn path_context_always_returns_true() {
+        assert!(looks_like_filesystem_path("anything", None, true, false));
+    }
+
+    #[test]
+    fn path_key_always_returns_true() {
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("path"),
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("file"),
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("directory"),
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("dir"),
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("filename"),
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path(
+            "anything",
+            Some("filepath"),
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn url_is_not_filesystem_path() {
+        assert!(!looks_like_filesystem_path(
+            "https://example.com",
+            None,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn absolute_paths_detected() {
+        assert!(looks_like_filesystem_path(
+            "/etc/passwd",
+            None,
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path("./relative", None, false, false));
+        assert!(looks_like_filesystem_path("../parent", None, false, false));
+        assert!(looks_like_filesystem_path("~/home", None, false, false));
+    }
+
+    #[test]
+    fn backslash_paths_detected() {
+        assert!(looks_like_filesystem_path(".\\windows", None, false, false));
+        assert!(looks_like_filesystem_path("..\\parent", None, false, false));
+        assert!(looks_like_filesystem_path("~\\user", None, false, false));
+        assert!(looks_like_filesystem_path(
+            "\\\\server\\share",
+            None,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn windows_drive_path_detected() {
+        assert!(looks_like_filesystem_path(
+            "C:\\Users\\test",
+            None,
+            false,
+            false
+        ));
+        assert!(looks_like_filesystem_path("D:/path", None, false, false));
+    }
+
+    #[test]
+    fn model_context_suppresses_slash_heuristic() {
+        assert!(!looks_like_filesystem_path(
+            "openai/gpt-4",
+            None,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn slash_separated_without_model_context_is_path() {
+        assert!(looks_like_filesystem_path(
+            "some/path/here",
+            None,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn model_key_suppresses_slash_heuristic() {
+        assert!(!looks_like_filesystem_path(
+            "openai/gpt-4",
+            Some("model"),
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn plain_string_is_not_path() {
+        assert!(!looks_like_filesystem_path(
+            "hello world",
+            None,
+            false,
+            false
+        ));
+    }
+
+    // ── is_path_key / is_model_key / is_network_key / is_environment_key ──
+
+    #[test]
+    fn helper_key_functions() {
+        assert!(is_path_key("path"));
+        assert!(is_path_key("file"));
+        assert!(!is_path_key("name"));
+
+        assert!(is_model_key("model"));
+        assert!(is_model_key("engine"));
+        assert!(is_model_key("primary"));
+        assert!(!is_model_key("name"));
+
+        assert!(is_network_key("url"));
+        assert!(is_network_key("endpoint"));
+        assert!(!is_network_key("name"));
+
+        assert!(is_environment_key("env"));
+        assert!(is_environment_key("env_var"));
+        assert!(!is_environment_key("name"));
+    }
+
+    // ── collect_strings / scan_input_capabilities integration ───────────
+
+    #[test]
+    fn nested_object_with_path_context() {
+        let scan = scan_input_capabilities(&json!({
+            "file": {
+                "name": "config.toml"
+            }
+        }));
+        assert!(scan.requires_filesystem);
+    }
+
+    #[test]
+    fn array_values_scanned() {
+        let scan = scan_input_capabilities(&json!({
+            "urls": ["https://a.com", "https://b.com"]
+        }));
+        assert!(scan.requires_network);
+    }
+
+    #[test]
+    fn network_key_sets_network_flag() {
+        let scan = scan_input_capabilities(&json!({
+            "url": "some-value"
+        }));
+        assert!(scan.requires_network);
+    }
+
+    #[test]
+    fn null_and_boolean_values_ignored() {
+        let scan = scan_input_capabilities(&json!({
+            "flag": true,
+            "nothing": null,
+            "count": 42
+        }));
+        assert!(!scan.requires_filesystem);
+        assert!(!scan.requires_network);
+        assert!(!scan.requires_environment);
+    }
+
+    #[test]
+    fn empty_string_values_skipped() {
+        let scan = scan_input_capabilities(&json!({
+            "data": ""
+        }));
+        assert!(!scan.requires_filesystem);
+        assert!(!scan.requires_network);
+    }
+
+    #[test]
+    fn input_capability_scan_default() {
+        let scan = InputCapabilityScan::default();
+        assert!(!scan.requires_filesystem);
+        assert!(!scan.requires_network);
+        assert!(!scan.requires_environment);
+    }
+
+    #[test]
+    fn windows_drive_path_non_alpha_not_detected() {
+        // Byte at index 0 is non-alphabetic
+        assert!(!looks_like_filesystem_path("1:\\path", None, false, false));
+    }
 }

@@ -166,6 +166,10 @@ fn infer_is_local(provider_name: &str) -> bool {
         || lower.contains("local")
         || lower.contains("llama-cpp")
         || lower.contains("llama_cpp")
+        || lower.contains("sglang")
+        || lower.contains("vllm")
+        || lower.contains("docker-model-runner")
+        || lower.contains("docker_model_runner")
 }
 
 #[cfg(test)]

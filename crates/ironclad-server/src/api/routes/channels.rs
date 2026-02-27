@@ -5,14 +5,17 @@ use subtle::ConstantTimeEq;
 use axum::{
     Json,
     body::to_bytes,
-    extract::State,
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::AppState;
-use super::agent::process_channel_message;
+use super::agent::{
+    CHANNEL_PROCESSING_ERROR_REPLY, channel_chat_id_for_inbound, process_channel_message,
+};
 
 pub async fn webhook_telegram(
     State(state): State<AppState>,
@@ -56,8 +59,29 @@ pub async fn webhook_telegram(
         match adapter.process_webhook_update(&body) {
             Ok(Some(inbound)) => {
                 let state = state.clone();
+                state.channel_router.record_received("telegram").await;
+                let inbound_for_error = inbound.clone();
                 tokio::spawn(async move {
                     if let Err(e) = process_channel_message(&state, inbound).await {
+                        state
+                            .channel_router
+                            .record_processing_error("telegram", e.clone())
+                            .await;
+                        let chat_id = channel_chat_id_for_inbound(&inbound_for_error);
+                        if let Err(send_err) = state
+                            .channel_router
+                            .send_reply(
+                                "telegram",
+                                &chat_id,
+                                CHANNEL_PROCESSING_ERROR_REPLY.to_string(),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %send_err,
+                                "failed to send Telegram webhook processing failure reply"
+                            );
+                        }
                         tracing::error!(error = %e, "Telegram message processing failed");
                     }
                 });
@@ -170,8 +194,13 @@ pub async fn webhook_whatsapp(
     match adapter.process_webhook(&body_json) {
         Ok(Some(inbound)) => {
             let state = state.clone();
+            state.channel_router.record_received("whatsapp").await;
             tokio::spawn(async move {
                 if let Err(e) = process_channel_message(&state, inbound).await {
+                    state
+                        .channel_router
+                        .record_processing_error("whatsapp", e.clone())
+                        .await;
                     tracing::error!(error = %e, "WhatsApp message processing failed");
                 }
             });
@@ -203,4 +232,55 @@ pub async fn get_channels_status(State(state): State<AppState>) -> impl IntoResp
         }));
     }
     Json(json!(result))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeadLetterQuery {
+    #[serde(default = "default_dead_letter_limit")]
+    pub limit: usize,
+}
+
+fn default_dead_letter_limit() -> usize {
+    50
+}
+
+pub async fn get_dead_letters(
+    State(state): State<AppState>,
+    Query(query): Query<DeadLetterQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.clamp(1, 500);
+    let dead_letters = state.channel_router.dead_letters(limit).await;
+    let payload: Vec<Value> = dead_letters
+        .into_iter()
+        .map(|item| {
+            json!({
+                "id": item.id,
+                "channel": item.channel,
+                "recipient_id": item.recipient_id,
+                "content": item.content,
+                "idempotency_key": item.idempotency_key,
+                "attempts": item.attempts,
+                "max_attempts": item.max_attempts,
+                "last_error": item.last_error,
+                "created_at": item.created_at,
+            })
+        })
+        .collect();
+    Json(json!({ "items": payload, "count": payload.len() }))
+}
+
+pub async fn replay_dead_letter(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let replayed = state.channel_router.replay_dead_letter(&id).await;
+    if replayed {
+        (StatusCode::OK, Json(json!({"ok": true, "id": id}))).into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "dead-letter item not found"})),
+        )
+            .into_response()
+    }
 }

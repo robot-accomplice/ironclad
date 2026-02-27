@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::error::Result;
+
 // ---------------------------------------------------------------------------
 // OS.toml -- personality, voice, tone
 // ---------------------------------------------------------------------------
@@ -571,13 +573,13 @@ rule = "Never impersonate a human or claim to be one"
 }
 
 /// Generate OPERATOR.toml from interview-gathered user profile data.
-pub fn generate_operator_toml(op: &OperatorConfig) -> String {
-    toml::to_string(op).unwrap_or_default()
+pub fn generate_operator_toml(op: &OperatorConfig) -> Result<String> {
+    Ok(toml::to_string(op)?)
 }
 
 /// Generate DIRECTIVES.toml from interview-gathered goals and missions.
-pub fn generate_directives_toml(dir: &DirectivesConfig) -> String {
-    toml::to_string(dir).unwrap_or_default()
+pub fn generate_directives_toml(dir: &DirectivesConfig) -> Result<String> {
+    Ok(toml::to_string(dir)?)
 }
 
 /// Attempt to parse four TOML blocks out of LLM interview output.
@@ -644,7 +646,7 @@ pub struct InterviewOutput {
 
 impl InterviewOutput {
     /// Validate that all present TOML blocks parse into their expected types.
-    pub fn validate(&self) -> Result<(), Vec<String>> {
+    pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
         let mut errors = Vec::new();
         if let Some(ref s) = self.os_toml
             && toml::from_str::<OsConfig>(s).is_err()
@@ -862,7 +864,7 @@ domain = "developer"
             },
             context: "Building an autonomous agent platform.".into(),
         };
-        let toml_str = generate_operator_toml(&op);
+        let toml_str = generate_operator_toml(&op).unwrap();
         let parsed: OperatorConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.identity.name, "Jon");
         assert_eq!(parsed.identity.role, "Founder");
@@ -889,7 +891,7 @@ domain = "developer"
             ],
             context: "Early-stage startup.".into(),
         };
-        let toml_str = generate_directives_toml(&dir);
+        let toml_str = generate_directives_toml(&dir).unwrap();
         let parsed: DirectivesConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.missions.len(), 2);
         assert_eq!(parsed.missions[0].name, "Launch MVP");
@@ -1010,7 +1012,7 @@ this is not valid toml {{{
             preferences: OperatorPreferences::default(),
             context: "Works on backend systems.".into(),
         };
-        let toml_str = generate_operator_toml(&op);
+        let toml_str = generate_operator_toml(&op).unwrap();
         std::fs::write(dir.path().join("OPERATOR.toml"), &toml_str).unwrap();
         let loaded = load_operator(dir.path()).unwrap();
         assert_eq!(loaded.identity.name, "Alice");
@@ -1029,7 +1031,7 @@ this is not valid toml {{{
             }],
             context: "Startup phase.".into(),
         };
-        let toml_str = generate_directives_toml(&directives);
+        let toml_str = generate_directives_toml(&directives).unwrap();
         std::fs::write(dir.path().join("DIRECTIVES.toml"), &toml_str).unwrap();
         let loaded = load_directives(dir.path()).unwrap();
         assert_eq!(loaded.missions.len(), 1);
@@ -1166,5 +1168,448 @@ this is not valid toml {{{
         };
         let text = compose_identity_text(None, None, Some(&dir));
         assert!(text.is_empty());
+    }
+
+    // ── default functions ────────────────────────────────────────────
+
+    #[test]
+    fn default_voice_functions_return_expected() {
+        assert_eq!(default_version(), "1.0");
+        assert_eq!(default_generated_by(), "default");
+        assert_eq!(default_formality(), "balanced");
+        assert_eq!(default_proactiveness(), "suggest");
+        assert_eq!(default_verbosity(), "concise");
+        assert_eq!(default_humor(), "dry");
+        assert_eq!(default_domain(), "general");
+    }
+
+    #[test]
+    fn default_firmware_functions_return_expected() {
+        assert!((default_spending_threshold() - 50.0).abs() < f64::EPSILON);
+        assert_eq!(default_require_confirmation(), "risky");
+    }
+
+    // ── serde defaults exercised via minimal TOML ────────────────────
+
+    #[test]
+    fn os_identity_serde_defaults() {
+        let toml_str = r#"
+prompt_text = "Hello"
+
+[identity]
+name = "Bot"
+
+[voice]
+"#;
+        let os: OsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(os.identity.version, "1.0");
+        assert_eq!(os.identity.generated_by, "default");
+        assert_eq!(os.voice.formality, "balanced");
+        assert_eq!(os.voice.humor, "dry");
+    }
+
+    #[test]
+    fn firmware_approvals_serde_defaults() {
+        let toml_str = r#"
+[approvals]
+
+[[rules]]
+type = "must"
+rule = "Test rule"
+"#;
+        let fw: FirmwareConfig = toml::from_str(toml_str).unwrap();
+        assert!((fw.approvals.spending_threshold - 50.0).abs() < f64::EPSILON);
+        assert_eq!(fw.approvals.require_confirmation, "risky");
+    }
+
+    // ── parse_interview_output: all four blocks ──────────────────────
+
+    #[test]
+    fn parse_interview_output_all_four_blocks() {
+        let llm_output = r#"Here are your files:
+
+**OS.toml**
+
+```toml
+prompt_text = "You are TestBot."
+
+[identity]
+name = "TestBot"
+
+[voice]
+formality = "casual"
+```
+
+**FIRMWARE.toml**
+
+```toml
+[approvals]
+spending_threshold = 100.0
+require_confirmation = "always"
+
+[[rules]]
+type = "must"
+rule = "Be honest"
+```
+
+**OPERATOR.toml**
+
+```toml
+context = "Works on infrastructure."
+
+[identity]
+name = "Alice"
+role = "SRE"
+timezone = "UTC"
+
+[preferences]
+work_hours = "9-5"
+response_style = "terse"
+```
+
+**DIRECTIVES.toml**
+
+```toml
+context = "Q1 focus."
+
+[[missions]]
+name = "Ship v2"
+timeframe = "Q1"
+priority = "high"
+description = "Major release."
+```
+"#;
+        let output = parse_interview_output(llm_output);
+        assert_eq!(output.file_count(), 4);
+        assert!(output.os_toml.is_some());
+        assert!(output.firmware_toml.is_some());
+        assert!(output.operator_toml.is_some());
+        assert!(output.directives_toml.is_some());
+        assert!(output.validate().is_ok());
+
+        let op: OperatorConfig = toml::from_str(output.operator_toml.as_ref().unwrap()).unwrap();
+        assert_eq!(op.identity.name, "Alice");
+
+        let dir: DirectivesConfig =
+            toml::from_str(output.directives_toml.as_ref().unwrap()).unwrap();
+        assert_eq!(dir.missions[0].name, "Ship v2");
+    }
+
+    // ── parse_interview_output: alternative fence pattern ────────────
+
+    #[test]
+    fn parse_interview_output_alternative_fence() {
+        // The parser also accepts ``` followed by text containing "toml"
+        let llm_output = r#"
+**OS.toml**
+
+```language=toml
+prompt_text = "Hello."
+
+[identity]
+name = "AltBot"
+
+[voice]
+```
+"#;
+        let output = parse_interview_output(llm_output);
+        assert!(output.os_toml.is_some());
+        let os: OsConfig = toml::from_str(output.os_toml.as_ref().unwrap()).unwrap();
+        assert_eq!(os.identity.name, "AltBot");
+    }
+
+    // ── validate() with invalid operator/directives ─────────────────
+
+    #[test]
+    fn validate_invalid_operator_toml() {
+        let output = InterviewOutput {
+            os_toml: None,
+            firmware_toml: None,
+            operator_toml: Some("{{invalid operator}}".into()),
+            directives_toml: None,
+        };
+        let errors = output.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("OPERATOR.toml")));
+    }
+
+    #[test]
+    fn validate_invalid_directives_toml() {
+        let output = InterviewOutput {
+            os_toml: None,
+            firmware_toml: None,
+            operator_toml: None,
+            directives_toml: Some("{{invalid directives}}".into()),
+        };
+        let errors = output.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("DIRECTIVES.toml")));
+    }
+
+    #[test]
+    fn validate_invalid_firmware_toml() {
+        let output = InterviewOutput {
+            os_toml: None,
+            firmware_toml: Some("{{invalid firmware}}".into()),
+            operator_toml: None,
+            directives_toml: None,
+        };
+        let errors = output.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("FIRMWARE.toml")));
+    }
+
+    #[test]
+    fn validate_multiple_errors() {
+        let output = InterviewOutput {
+            os_toml: Some("{{bad}}".into()),
+            firmware_toml: Some("{{bad}}".into()),
+            operator_toml: Some("{{bad}}".into()),
+            directives_toml: Some("{{bad}}".into()),
+        };
+        let errors = output.validate().unwrap_err();
+        assert_eq!(errors.len(), 4);
+    }
+
+    // ── write_to_workspace with operator/directives ─────────────────
+
+    #[test]
+    fn write_to_workspace_all_four_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let op = OperatorConfig {
+            identity: OperatorIdentity {
+                name: "Bob".into(),
+                role: "Dev".into(),
+                timezone: "UTC".into(),
+            },
+            preferences: OperatorPreferences::default(),
+            context: "Testing.".into(),
+        };
+        let directives = DirectivesConfig {
+            missions: vec![Mission {
+                name: "Test".into(),
+                timeframe: "Q1".into(),
+                priority: "high".into(),
+                description: "A test mission.".into(),
+            }],
+            context: "Test context.".into(),
+        };
+        let output = InterviewOutput {
+            os_toml: Some(DEFAULT_OS_TOML.into()),
+            firmware_toml: Some(DEFAULT_FIRMWARE_TOML.into()),
+            operator_toml: Some(generate_operator_toml(&op).unwrap()),
+            directives_toml: Some(generate_directives_toml(&directives).unwrap()),
+        };
+        output.write_to_workspace(dir.path()).unwrap();
+        assert!(dir.path().join("OS.toml").exists());
+        assert!(dir.path().join("FIRMWARE.toml").exists());
+        assert!(dir.path().join("OPERATOR.toml").exists());
+        assert!(dir.path().join("DIRECTIVES.toml").exists());
+
+        let loaded_op = load_operator(dir.path()).unwrap();
+        assert_eq!(loaded_op.identity.name, "Bob");
+
+        let loaded_dir = load_directives(dir.path()).unwrap();
+        assert_eq!(loaded_dir.missions[0].name, "Test");
+    }
+
+    // ── generate_firmware_toml edge cases ────────────────────────────
+
+    #[test]
+    fn generate_firmware_toml_boundaries_with_empty_lines() {
+        let boundaries = "\nDo not hack\n\n\nNo spam\n";
+        let toml_str = generate_firmware_toml(boundaries);
+        let fw: FirmwareConfig = toml::from_str(&toml_str).unwrap();
+        // 5 default rules + 2 custom = 7
+        assert_eq!(fw.rules.len(), 7);
+        assert!(fw.rules.iter().any(|r| r.rule.contains("hack")));
+        assert!(fw.rules.iter().any(|r| r.rule.contains("spam")));
+    }
+
+    #[test]
+    fn generate_firmware_toml_boundaries_with_quotes() {
+        let boundaries = r#"Don't say "hello" to strangers"#;
+        let toml_str = generate_firmware_toml(boundaries);
+        let fw: FirmwareConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(fw.rules.len(), 6);
+    }
+
+    // ── compose_soul with operator + directives ──────────────────────
+
+    #[test]
+    fn compose_soul_full_with_operator_and_directives() {
+        let os: OsConfig = toml::from_str(DEFAULT_OS_TOML).unwrap();
+        let fw: FirmwareConfig = toml::from_str(DEFAULT_FIRMWARE_TOML).unwrap();
+        let op = OperatorConfig {
+            context: "I build robots.".into(),
+            ..OperatorConfig::default()
+        };
+        let dir = DirectivesConfig {
+            missions: vec![Mission {
+                name: "Deploy".into(),
+                timeframe: "".into(),
+                priority: "high".into(),
+                description: "Deploy the app.".into(),
+            }],
+            context: "Production push.".into(),
+        };
+        let soul = compose_soul(Some(&os), Some(&fw), Some(&op), Some(&dir));
+        assert!(soul.contains("Roboticus"));
+        assert!(soul.contains("YOU MUST"));
+        assert!(soul.contains("## Operator Context"));
+        assert!(soul.contains("I build robots"));
+        assert!(soul.contains("## Active Directives"));
+        assert!(soul.contains("Production push"));
+        assert!(soul.contains("## Missions"));
+        assert!(soul.contains("**Deploy** (ongoing)"));
+    }
+
+    // ── compose_identity_text: prompt_text empty branch ──────────────
+
+    #[test]
+    fn compose_identity_text_skips_empty_prompt_text() {
+        let os_toml = r#"
+prompt_text = ""
+
+[identity]
+name = "EmptyBot"
+
+[voice]
+formality = "formal"
+"#;
+        let os: OsConfig = toml::from_str(os_toml).unwrap();
+        let text = compose_identity_text(Some(&os), None, None);
+        // Should have voice profile but not the empty prompt text
+        assert!(text.contains("## Voice Profile"));
+        assert!(!text.contains("EmptyBot"));
+    }
+
+    // ── file_count edge cases ────────────────────────────────────────
+
+    #[test]
+    fn file_count_zero_for_default() {
+        let output = InterviewOutput::default();
+        assert_eq!(output.file_count(), 0);
+    }
+
+    #[test]
+    fn file_count_three() {
+        let output = InterviewOutput {
+            os_toml: Some("x".into()),
+            firmware_toml: None,
+            operator_toml: Some("y".into()),
+            directives_toml: Some("z".into()),
+        };
+        assert_eq!(output.file_count(), 3);
+    }
+
+    // ── OperatorConfig / DirectivesConfig defaults ───────────────────
+
+    #[test]
+    fn operator_config_default_is_empty() {
+        let op = OperatorConfig::default();
+        assert!(op.identity.name.is_empty());
+        assert!(op.identity.role.is_empty());
+        assert!(op.identity.timezone.is_empty());
+        assert!(op.preferences.communication_channels.is_empty());
+        assert!(op.preferences.work_hours.is_empty());
+        assert!(op.preferences.response_style.is_empty());
+        assert!(op.context.is_empty());
+    }
+
+    #[test]
+    fn directives_config_default_is_empty() {
+        let dir = DirectivesConfig::default();
+        assert!(dir.missions.is_empty());
+        assert!(dir.context.is_empty());
+    }
+
+    // ── parse_interview_output: no blocks at all ─────────────────────
+
+    #[test]
+    fn parse_interview_output_no_blocks_returns_empty() {
+        let output = parse_interview_output("Just some text without any TOML blocks.");
+        assert_eq!(output.file_count(), 0);
+        assert!(output.validate().is_ok());
+    }
+
+    // ── parse_interview_output: unknown label is ignored ─────────────
+
+    #[test]
+    fn parse_interview_output_unknown_label_ignored() {
+        let llm_output = r#"
+**RANDOM.toml**
+
+```toml
+key = "value"
+```
+"#;
+        let output = parse_interview_output(llm_output);
+        assert_eq!(output.file_count(), 0);
+    }
+
+    // ── load functions with invalid TOML files ───────────────────────
+
+    #[test]
+    fn load_os_returns_none_for_invalid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("OS.toml"), "{{invalid}}").unwrap();
+        assert!(load_os(dir.path()).is_none());
+    }
+
+    #[test]
+    fn load_firmware_returns_none_for_invalid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("FIRMWARE.toml"), "{{invalid}}").unwrap();
+        assert!(load_firmware(dir.path()).is_none());
+    }
+
+    #[test]
+    fn load_operator_returns_none_for_invalid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("OPERATOR.toml"), "{{invalid}}").unwrap();
+        assert!(load_operator(dir.path()).is_none());
+    }
+
+    #[test]
+    fn load_directives_returns_none_for_invalid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("DIRECTIVES.toml"), "{{invalid}}").unwrap();
+        assert!(load_directives(dir.path()).is_none());
+    }
+
+    // ── voice_summary: individual field coverage ─────────────────────
+
+    #[test]
+    fn voice_summary_each_non_default_field() {
+        // Only proactiveness is non-default
+        let voice = OsVoice {
+            proactiveness: "initiative".into(),
+            ..OsVoice::default()
+        };
+        let summary = voice_summary(&voice).unwrap();
+        assert!(summary.contains("Proactiveness: initiative"));
+        assert!(!summary.contains("Formality:"));
+
+        // Only verbosity is non-default
+        let voice = OsVoice {
+            verbosity: "verbose".into(),
+            ..OsVoice::default()
+        };
+        let summary = voice_summary(&voice).unwrap();
+        assert!(summary.contains("Verbosity: verbose"));
+
+        // Only humor is non-default
+        let voice = OsVoice {
+            humor: "witty".into(),
+            ..OsVoice::default()
+        };
+        let summary = voice_summary(&voice).unwrap();
+        assert!(summary.contains("Humor: witty"));
+
+        // Only domain is non-default
+        let voice = OsVoice {
+            domain: "security".into(),
+            ..OsVoice::default()
+        };
+        let summary = voice_summary(&voice).unwrap();
+        assert!(summary.contains("Domain: security"));
     }
 }

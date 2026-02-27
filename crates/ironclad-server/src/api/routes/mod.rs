@@ -10,6 +10,7 @@ mod skills;
 mod subagents;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
@@ -19,6 +20,7 @@ use axum::{
 };
 use tokio::sync::RwLock;
 
+use crate::config_runtime::ConfigApplyStatus;
 use ironclad_agent::policy::PolicyEngine;
 use ironclad_agent::subagents::SubagentRegistry;
 use ironclad_browser::Browser;
@@ -44,9 +46,46 @@ use ironclad_channels::voice::VoicePipeline;
 
 use crate::ws::EventBus;
 
+// ── JSON error response type ─────────────────────────────────
+
+/// A JSON-formatted API error response. All error paths in the API return
+/// `{"error": "<message>"}` with the appropriate HTTP status code.
+#[derive(Debug)]
+pub(crate) struct JsonError(pub axum::http::StatusCode, pub String);
+
+impl axum::response::IntoResponse for JsonError {
+    fn into_response(self) -> axum::response::Response {
+        let body = serde_json::json!({ "error": self.1 });
+        (self.0, axum::Json(body)).into_response()
+    }
+}
+
+impl From<(axum::http::StatusCode, String)> for JsonError {
+    fn from((status, msg): (axum::http::StatusCode, String)) -> Self {
+        Self(status, msg)
+    }
+}
+
+/// Shorthand for a 400 Bad Request JSON error.
+pub(crate) fn bad_request(msg: impl std::fmt::Display) -> JsonError {
+    JsonError(axum::http::StatusCode::BAD_REQUEST, msg.to_string())
+}
+
+/// Shorthand for a 404 Not Found JSON error.
+pub(crate) fn not_found(msg: impl std::fmt::Display) -> JsonError {
+    JsonError(axum::http::StatusCode::NOT_FOUND, msg.to_string())
+}
+
 // ── Helpers (used by submodules) ──────────────────────────────
 
 /// Sanitizes error messages before returning to clients (strip paths, internal details, cap length).
+///
+/// LIMITATIONS: This is a best-effort filter that strips known wrapper
+/// prefixes and truncates. It does NOT guarantee that internal details
+/// (file paths, SQL fragments, stack traces) are fully redacted. If a new
+/// error source leaks sensitive info, add its prefix to the stripping list
+/// below or, better, ensure the call site maps the error before it reaches
+/// this function.
 pub(crate) fn sanitize_error_message(msg: &str) -> String {
     let sanitized = msg.lines().next().unwrap_or(msg);
 
@@ -55,6 +94,26 @@ pub(crate) fn sanitize_error_message(msg: &str) -> String {
         .trim_end_matches("\")")
         .trim_start_matches("Wallet(\"")
         .trim_end_matches("\")");
+
+    // Strip content after common internal-detail prefixes that may leak
+    // implementation specifics (connection strings, file paths, etc.).
+    let sensitive_prefixes = [
+        "at /", // stack trace file paths
+        "called `Result::unwrap()` on an `Err` value:",
+        "SQLITE_",            // raw SQLite error codes
+        "Connection refused", // infra details
+    ];
+    let sanitized = {
+        let mut s = sanitized.to_string();
+        for prefix in &sensitive_prefixes {
+            if let Some(pos) = s.find(prefix) {
+                s.truncate(pos);
+                s.push_str("[details redacted]");
+                break;
+            }
+        }
+        s
+    };
 
     if sanitized.len() > 200 {
         let boundary = sanitized
@@ -65,17 +124,58 @@ pub(crate) fn sanitize_error_message(msg: &str) -> String {
             .unwrap_or(0);
         format!("{}...", &sanitized[..boundary])
     } else {
-        sanitized.to_string()
+        sanitized
     }
 }
 
-/// Logs the full error and returns (INTERNAL_SERVER_ERROR, sanitized message) for API responses.
-pub(crate) fn internal_err(e: &impl std::fmt::Display) -> (axum::http::StatusCode, String) {
+/// Logs the full error and returns a JSON 500 error for API responses.
+pub(crate) fn internal_err(e: &impl std::fmt::Display) -> JsonError {
     tracing::error!(error = %e, "request failed");
-    (
+    JsonError(
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         sanitize_error_message(&e.to_string()),
     )
+}
+
+// ── Input validation helpers ──────────────────────────────────
+
+/// Maximum allowed length for short identifier fields (agent_id, name, etc.).
+const MAX_SHORT_FIELD: usize = 256;
+/// Maximum allowed length for long text fields (description, content, etc.).
+const MAX_LONG_FIELD: usize = 4096;
+
+/// Validate a user-supplied string field: reject null bytes and enforce length.
+pub(crate) fn validate_field(
+    field_name: &str,
+    value: &str,
+    max_len: usize,
+) -> Result<(), JsonError> {
+    if value.contains('\0') {
+        return Err(bad_request(format!(
+            "{field_name} must not contain null bytes"
+        )));
+    }
+    if value.len() > max_len {
+        return Err(bad_request(format!(
+            "{field_name} exceeds max length ({max_len})"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate a short identifier field (agent_id, name, session_id, etc.).
+pub(crate) fn validate_short(field_name: &str, value: &str) -> Result<(), JsonError> {
+    validate_field(field_name, value, MAX_SHORT_FIELD)
+}
+
+/// Validate a long text field (description, content, etc.).
+pub(crate) fn validate_long(field_name: &str, value: &str) -> Result<(), JsonError> {
+    validate_field(field_name, value, MAX_LONG_FIELD)
+}
+
+/// Strip HTML tags from a string to prevent injection in stored values.
+pub(crate) fn sanitize_html(input: &str) -> String {
+    input.replace('<', "&lt;").replace('>', "&gt;")
 }
 
 // ── Shared state and types ────────────────────────────────────
@@ -198,6 +298,9 @@ pub struct AppState {
     pub keystore: Arc<ironclad_core::keystore::Keystore>,
     pub obsidian: Option<Arc<RwLock<ObsidianVault>>>,
     pub started_at: std::time::Instant,
+    pub config_path: Arc<PathBuf>,
+    pub config_apply_status: Arc<RwLock<ConfigApplyStatus>>,
+    pub pending_specialist_proposals: Arc<RwLock<HashMap<String, serde_json::Value>>>,
 }
 
 impl AppState {
@@ -223,16 +326,16 @@ pub fn build_router(state: AppState) -> Router {
         a2a_hello, breaker_reset, breaker_status, browser_action, browser_start, browser_status,
         browser_stop, change_agent_model, delete_provider_key, execute_plugin_tool,
         generate_deep_analysis, get_agents, get_available_models, get_cache_stats,
-        get_capacity_stats, get_config, get_config_capabilities, get_costs, get_efficiency,
-        get_mcp_runtime, get_overview_timeseries, get_plugins, get_recommendations,
-        get_runtime_surfaces, get_transactions, list_discovered_agents, list_paired_devices,
-        mcp_client_disconnect, mcp_client_discover, pair_device, register_discovered_agent, roster,
-        set_provider_key, start_agent, stop_agent, toggle_plugin, unpair_device, update_config,
-        verify_discovered_agent, verify_paired_device, wallet_address, wallet_balance,
-        workspace_state,
+        get_capacity_stats, get_config, get_config_apply_status, get_config_capabilities,
+        get_costs, get_efficiency, get_mcp_runtime, get_overview_timeseries, get_plugins,
+        get_recommendations, get_runtime_surfaces, get_transactions, list_discovered_agents,
+        list_paired_devices, mcp_client_disconnect, mcp_client_discover, pair_device,
+        register_discovered_agent, roster, set_provider_key, start_agent, stop_agent,
+        toggle_plugin, unpair_device, update_config, verify_discovered_agent, verify_paired_device,
+        wallet_address, wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
-    use channels::get_channels_status;
+    use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
     use cron::{
         create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs, list_cron_runs,
         update_cron_job,
@@ -249,7 +352,10 @@ pub fn build_router(state: AppState) -> Router {
         list_model_selection_events, list_session_turns, list_sessions, post_message,
         post_turn_feedback, put_turn_feedback,
     };
-    use skills::{audit_skills, delete_skill, get_skill, list_skills, reload_skills, toggle_skill};
+    use skills::{
+        audit_skills, catalog_activate, catalog_install, catalog_list, delete_skill, get_skill,
+        list_skills, reload_skills, toggle_skill,
+    };
     use subagents::{
         create_sub_agent, delete_sub_agent, list_sub_agents, toggle_sub_agent, update_sub_agent,
     };
@@ -259,6 +365,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/health", get(health))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/config/capabilities", get(get_config_capabilities))
+        .route("/api/config/status", get(get_config_apply_status))
         .route(
             "/api/providers/{name}/key",
             put(set_provider_key).delete(delete_provider_key),
@@ -329,6 +436,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/wallet/balance", get(wallet_balance))
         .route("/api/wallet/address", get(wallet_address))
         .route("/api/skills", get(list_skills))
+        .route("/api/skills/catalog", get(catalog_list))
+        .route("/api/skills/catalog/install", post(catalog_install))
+        .route("/api/skills/catalog/activate", post(catalog_activate))
         .route("/api/skills/audit", get(audit_skills))
         .route("/api/skills/{id}", get(get_skill).delete(delete_skill))
         .route("/api/skills/reload", post(reload_skills))
@@ -360,6 +470,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/roster/{name}/model", put(change_agent_model))
         .route("/api/a2a/hello", post(a2a_hello))
         .route("/api/channels/status", get(get_channels_status))
+        .route("/api/channels/dead-letter", get(get_dead_letters))
+        .route(
+            "/api/channels/dead-letter/{id}/replay",
+            post(replay_dead_letter),
+        )
         .route("/api/runtime/surfaces", get(get_runtime_surfaces))
         .route(
             "/api/runtime/discovery",
@@ -396,6 +511,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/interview/finish", post(interview::finish_interview))
         .route("/api/audit/policy/{turn_id}", get(admin::get_policy_audit))
         .route("/api/audit/tools/{turn_id}", get(admin::get_tool_audit))
+        .route(
+            "/favicon.ico",
+            get(|| async { axum::http::StatusCode::NO_CONTENT }),
+        )
+        .fallback(|| async { JsonError(axum::http::StatusCode::NOT_FOUND, "not found".into()) })
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB
         .with_state(state)
 }
@@ -426,9 +546,15 @@ pub use health::LogEntry;
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
+    use crate::rate_limit::GlobalRateLimitLayer;
+    use async_trait::async_trait;
+    use axum::Json;
     use axum::body::Body;
+    use axum::extract::{Query, State as AxumState};
     use axum::http::{Request, StatusCode};
+    use axum::routing::get;
     use ironclad_agent::policy::{AuthorityRule, CommandSafetyRule, PolicyEngine};
     use ironclad_agent::subagents::SubagentRegistry;
     use ironclad_browser::Browser;
@@ -436,12 +562,16 @@ mod tests {
     use ironclad_channels::router::ChannelRouter;
     use ironclad_channels::telegram::TelegramAdapter;
     use ironclad_channels::whatsapp::WhatsAppAdapter;
+    use ironclad_channels::{ChannelAdapter, InboundMessage, OutboundMessage};
     use ironclad_core::InputAuthority;
     use ironclad_db::Database;
     use ironclad_llm::LlmService;
     use ironclad_llm::OAuthManager;
     use ironclad_plugin_sdk::registry::PluginRegistry;
     use ironclad_plugin_sdk::{Plugin, ToolDef, ToolResult};
+    use serde_json::json;
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex;
     use tower::ServiceExt;
 
     use ironclad_agent::approvals::ApprovalManager;
@@ -493,6 +623,12 @@ primary = "ollama/qwen3:8b"
         let retriever = Arc::new(ironclad_agent::retrieval::MemoryRetriever::new(
             config.memory.clone(),
         ));
+        let config_path = std::env::temp_dir().join(format!(
+            "ironclad-test-config-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        let config_toml = toml::to_string_pretty(&config).expect("serialize test config");
+        std::fs::write(&config_path, config_toml).expect("write test config file");
         AppState {
             db,
             config: Arc::new(RwLock::new(config)),
@@ -535,6 +671,9 @@ primary = "ollama/qwen3:8b"
             )),
             obsidian: None,
             started_at: std::time::Instant::now(),
+            config_path: Arc::new(config_path.clone()),
+            config_apply_status: Arc::new(RwLock::new(ConfigApplyStatus::new(&config_path))),
+            pending_specialist_proposals: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -567,6 +706,10 @@ primary = "ollama/qwen3:8b"
 
     fn full_app(state: AppState) -> Router {
         build_router(state.clone()).merge(build_public_router(state))
+    }
+
+    fn expected_loopback_status() -> &'static str {
+        "legacy_proxy_unsupported"
     }
 
     async fn json_body(resp: axum::http::Response<Body>) -> serde_json::Value {
@@ -637,7 +780,7 @@ primary = "ollama/qwen3:8b"
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = json_body(resp).await;
-        let session_id = body["session_id"].as_str().unwrap().to_string();
+        let session_id = body["id"].as_str().unwrap().to_string();
         assert!(!session_id.is_empty());
     }
 
@@ -742,7 +885,8 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn put_config_updates_runtime_config() {
-        let app = build_router(test_state());
+        let state = test_state();
+        let app = build_router(state);
         let req = Request::builder()
             .method("PUT")
             .uri("/api/config")
@@ -755,11 +899,15 @@ primary = "ollama/qwen3:8b"
 
         let body = json_body(resp).await;
         assert_eq!(body["updated"], true);
+        assert_eq!(body["persisted"], true);
+        assert!(body["backup_path"].is_string());
     }
 
     #[tokio::test]
     async fn put_config_rejects_invalid() {
-        let app = build_router(test_state());
+        let state = test_state();
+        let old_name = state.config.read().await.agent.name.clone();
+        let app = build_router(state.clone());
         let req = Request::builder()
             .method("PUT")
             .uri("/api/config")
@@ -768,7 +916,9 @@ primary = "ollama/qwen3:8b"
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
-        assert!(resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let current_name = state.config.read().await.agent.name.clone();
+        assert_eq!(current_name, old_name);
     }
 
     #[tokio::test]
@@ -1163,7 +1313,13 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn breaker_reset_returns_success() {
-        let app = build_router(test_state());
+        let state = test_state();
+        // Register "ollama" as a known provider so the reset endpoint finds it
+        {
+            let mut llm = state.llm.write().await;
+            llm.breakers.record_credit_error("ollama");
+        }
+        let app = build_router(state);
         let req = Request::builder()
             .method("POST")
             .uri("/api/breaker/reset/ollama")
@@ -1297,6 +1453,7 @@ primary = "ollama/qwen3:8b"
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let app = build_router(state);
@@ -1414,6 +1571,7 @@ params = { path = "README.md" }
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1459,6 +1617,7 @@ params = { path = "README.md" }
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1483,6 +1642,7 @@ params = { path = "README.md" }
             Some("To be deleted"),
             "/skills/delete-me",
             "abc123",
+            None,
             None,
             None,
             None,
@@ -1534,6 +1694,7 @@ params = { path = "README.md" }
             Some("Core continuity protocol"),
             "/skills/context-continuity",
             "abc123",
+            None,
             None,
             None,
             None,
@@ -1646,6 +1807,37 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
+    async fn webhook_telegram_non_message_update_advances_offset() {
+        let state = test_state_with_telegram_webhook_secret("expected-secret");
+        let telegram = state.telegram.as_ref().expect("telegram adapter").clone();
+        let app = full_app(state);
+        let body = serde_json::json!({
+            "update_id": 42,
+            "edited_message": {"message_id": 99}
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/webhooks/telegram")
+                    .header("content-type", "application/json")
+                    .header("X-Telegram-Bot-Api-Secret-Token", "expected-secret")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let seen_offset = *telegram
+            .last_update_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert_eq!(seen_offset, 42);
+    }
+
+    #[tokio::test]
     async fn webhook_whatsapp_verify_no_adapter_returns_503() {
         let app = full_app(test_state());
         let response = app
@@ -1748,6 +1940,161 @@ params = { path = "README.md" }
         let body = json_body(response).await;
         let channels = body.as_array().unwrap();
         assert!(!channels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn channels_dead_letter_lists_items() {
+        let state = test_state();
+        let q = state.channel_router.delivery_queue();
+        q.enqueue(
+            "telegram".into(),
+            ironclad_channels::OutboundMessage {
+                content: "fail".into(),
+                recipient_id: "r1".into(),
+                metadata: None,
+            },
+        )
+        .await;
+        let item = q.next_ready().await.expect("queued");
+        q.requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/channels/dead-letter?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["count"].as_u64().unwrap_or(0), 1);
+        assert_eq!(
+            body["items"][0]["channel"].as_str().unwrap_or(""),
+            "telegram"
+        );
+    }
+
+    #[tokio::test]
+    async fn channels_dead_letter_limit_is_clamped() {
+        let state = test_state();
+        let q = state.channel_router.delivery_queue();
+        q.enqueue(
+            "telegram".into(),
+            ironclad_channels::OutboundMessage {
+                content: "fail".into(),
+                recipient_id: "r1".into(),
+                metadata: None,
+            },
+        )
+        .await;
+        let item = q.next_ready().await.expect("queued");
+        q.requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/channels/dead-letter?limit=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["count"].as_u64().unwrap_or(0), 1);
+    }
+
+    #[tokio::test]
+    async fn channels_dead_letter_replay_moves_item_back_to_pending() {
+        let state = test_state();
+        let q = state.channel_router.delivery_queue();
+        let id = q
+            .enqueue(
+                "telegram".into(),
+                ironclad_channels::OutboundMessage {
+                    content: "retry me".into(),
+                    recipient_id: "r2".into(),
+                    metadata: None,
+                },
+            )
+            .await;
+        let item = q.next_ready().await.expect("queued");
+        q.requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+
+        let app = build_router(state.clone());
+        let replay = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/channels/dead-letter/{id}/replay"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::OK);
+
+        let after = state.channel_router.dead_letters(10).await;
+        assert!(
+            after.is_empty(),
+            "item should no longer be in dead-letter state"
+        );
+    }
+
+    #[tokio::test]
+    async fn routes_return_429_when_rate_limited() {
+        let app = build_router(test_state()).layer(
+            GlobalRateLimitLayer::new(1, std::time::Duration::from_secs(60))
+                .with_per_ip_capacity(1)
+                .with_per_actor_capacity(1),
+        );
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn skills_catalog_list_returns_items() {
+        let app = build_router(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/skills/catalog")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        let items = body["items"].as_array().cloned().unwrap_or_default();
+        assert!(!items.is_empty(), "catalog should include builtin skills");
     }
 
     /// Policy engine denies high-risk tool calls in execute_plugin_tool (External + Caution -> Deny).
@@ -1877,6 +2224,153 @@ params = { path = "README.md" }
             err.contains("requires Creator authority"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn virtual_select_subagent_model_tool_executes() {
+        let state = test_state();
+        let row = ironclad_db::agents::SubAgentRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "geo-specialist".to_string(),
+            display_name: Some("Geopolitical Specialist".to_string()),
+            model: "auto".to_string(),
+            role: "subagent".to_string(),
+            description: Some("Tracks geopolitical risk".to_string()),
+            skills_json: Some(r#"["geopolitics","risk-analysis"]"#.to_string()),
+            enabled: true,
+            session_count: 0,
+        };
+        ironclad_db::agents::upsert_sub_agent(&state.db, &row).unwrap();
+        state
+            .registry
+            .register(ironclad_agent::subagents::AgentInstanceConfig {
+                id: row.name.clone(),
+                name: row.display_name.clone().unwrap_or_else(|| row.name.clone()),
+                model: "ollama/qwen3:8b".to_string(),
+                skills: vec!["geopolitics".to_string()],
+                allowed_subagents: vec![],
+                max_concurrent: 4,
+            })
+            .await
+            .unwrap();
+        state.registry.start_agent(&row.name).await.unwrap();
+
+        let sid =
+            ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
+        let turn_id =
+            ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None).unwrap();
+
+        let output = agent::execute_tool_call(
+            &state,
+            "select-subagent-model",
+            &serde_json::json!({
+                "specialist": "geo-specialist",
+                "task": "geopolitical sitrep last 24h"
+            }),
+            &turn_id,
+            InputAuthority::Creator,
+        )
+        .await
+        .unwrap();
+        assert!(output.contains("selected_subagent=geo-specialist"));
+        assert!(output.contains("resolved_model="));
+    }
+
+    #[tokio::test]
+    async fn virtual_orchestrate_subagents_executes_and_returns_output() {
+        let state = test_state();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(|| async {
+                Json(serde_json::json!({
+                    "model": "test-subagent-model",
+                    "choices": [{
+                        "message": {"role": "assistant", "content": "Delegated geopolitical summary: calm with elevated monitoring."},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 10}
+                }))
+            }),
+        );
+        let mock_task = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        {
+            let mut llm = state.llm.write().await;
+            llm.providers.register(ironclad_llm::Provider {
+                name: "mock".to_string(),
+                url: format!("http://{}", addr),
+                tier: ironclad_core::ModelTier::T2,
+                api_key_env: "MOCK_API_KEY".to_string(),
+                format: ironclad_core::ApiFormat::OpenAiCompletions,
+                chat_path: "/v1/chat/completions".to_string(),
+                embedding_path: None,
+                embedding_model: None,
+                embedding_dimensions: None,
+                is_local: true,
+                cost_per_input_token: 0.0,
+                cost_per_output_token: 0.0,
+                auth_header: "Authorization".to_string(),
+                extra_headers: HashMap::new(),
+                tpm_limit: None,
+                rpm_limit: None,
+                auth_mode: "api_key".to_string(),
+                oauth_client_id: None,
+                api_key_ref: None,
+            });
+        }
+
+        let row = ironclad_db::agents::SubAgentRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "geo-specialist".to_string(),
+            display_name: Some("Geopolitical Specialist".to_string()),
+            model: "mock/subagent".to_string(),
+            role: "subagent".to_string(),
+            description: Some("Tracks geopolitical risk".to_string()),
+            skills_json: Some(r#"["geopolitics","risk-analysis"]"#.to_string()),
+            enabled: true,
+            session_count: 0,
+        };
+        ironclad_db::agents::upsert_sub_agent(&state.db, &row).unwrap();
+        state
+            .registry
+            .register(ironclad_agent::subagents::AgentInstanceConfig {
+                id: row.name.clone(),
+                name: row.display_name.clone().unwrap_or_else(|| row.name.clone()),
+                model: row.model.clone(),
+                skills: vec!["geopolitics".to_string()],
+                allowed_subagents: vec![],
+                max_concurrent: 4,
+            })
+            .await
+            .unwrap();
+        state.registry.start_agent(&row.name).await.unwrap();
+
+        let sid =
+            ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
+        let turn_id =
+            ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None).unwrap();
+
+        let output = agent::execute_tool_call(
+            &state,
+            "orchestrate-subagents",
+            &serde_json::json!({
+                "task": "geopolitical sitrep, last 24h",
+                "subtasks": ["collect high-impact events", "summarize executive impacts"]
+            }),
+            &turn_id,
+            InputAuthority::Creator,
+        )
+        .await
+        .unwrap();
+        assert!(output.contains("delegated_subagent=geo-specialist"));
+        assert!(output.contains("subtask 1 -> geo-specialist"));
+        assert!(output.contains("Delegated geopolitical summary"));
+
+        mock_task.abort();
     }
 
     #[tokio::test]
@@ -2425,6 +2919,198 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
+    async fn dashboard_returns_single_document_without_trailing_bytes() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let html = text_body(resp).await;
+        let lower = html.to_ascii_lowercase();
+        assert_eq!(lower.matches("</html>").count(), 1);
+        let idx = lower
+            .rfind("</html>")
+            .expect("document must contain </html>");
+        assert!(
+            html[idx + "</html>".len()..].trim().is_empty(),
+            "dashboard HTML should not have trailing bytes after </html>"
+        );
+    }
+
+    #[tokio::test]
+    async fn models_available_uses_v1_models_and_query_auth_for_non_ollama_local_proxy() {
+        let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mock_hits = hits.clone();
+        let mock = Router::new()
+            .route(
+                "/v1/models",
+                get(
+                    |AxumState(hits): AxumState<Arc<Mutex<Vec<String>>>>,
+                     uri: axum::http::Uri,
+                     Query(query): Query<HashMap<String, String>>| async move {
+                        hits.lock().await.push(uri.to_string());
+                        if !query.contains_key("key") {
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                Json(json!({"error":"missing key query param"})),
+                            );
+                        }
+                        (StatusCode::OK, Json(json!({"data":[{"id":"test-model"}]})))
+                    },
+                ),
+            )
+            .with_state(mock_hits);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_task = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let state = test_state();
+        state.keystore.unlock_machine().unwrap();
+        state.keystore.set("google_api_key", "test-key").unwrap();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.providers.clear();
+            let mut provider =
+                ironclad_core::config::ProviderConfig::new(format!("http://{addr}"), "T2");
+            provider.auth_header = Some("query:key".into());
+            provider.is_local = Some(false);
+            cfg.providers.insert("google".into(), provider);
+            cfg.models.primary = "google/test-model".into();
+            cfg.models.fallbacks.clear();
+        }
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/available?validation_level=zero")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["providers"]["google"]["status"], "ok");
+        assert_eq!(body["proxy"]["mode"], "in_process");
+        assert_eq!(body["proxy"]["legacy_loopback_support"], "removed_v0_8");
+        assert!(
+            body["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m.as_str() == Some("google/test-model"))
+        );
+
+        let seen = hits.lock().await.clone();
+        assert!(
+            seen.iter().any(|u| u.contains("/v1/models?key=test-key")),
+            "expected /v1/models with query key, got: {seen:?}"
+        );
+        assert!(
+            seen.iter().all(|u| !u.contains("/api/tags")),
+            "non-ollama provider discovery should not call /api/tags: {seen:?}"
+        );
+        mock_task.abort();
+    }
+
+    #[tokio::test]
+    async fn models_available_reports_proxy_unreachable_for_local_proxy_refusal() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // ensure immediate connection refusal on this port
+
+        let state = test_state();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.providers.clear();
+            let provider = ironclad_core::config::ProviderConfig::new(
+                format!("http://{addr}/anthropic"),
+                "T3",
+            );
+            cfg.providers.insert("anthropic".into(), provider);
+            cfg.models.primary = "anthropic/test-model".into();
+            cfg.models.fallbacks.clear();
+        }
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/available?validation_level=zero")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(
+            body["providers"]["anthropic"]["status"],
+            expected_loopback_status()
+        );
+        assert!(
+            body["providers"]["anthropic"]["hint"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("providers.anthropic.url")
+        );
+    }
+
+    #[tokio::test]
+    async fn models_available_reports_proxy_misconfigured_for_non_models_payload() {
+        let mock = Router::new().route(
+            "/anthropic/v1/models",
+            get(|| async move { (StatusCode::OK, "not a models payload") }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_task = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+
+        let state = test_state();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.providers.clear();
+            let provider = ironclad_core::config::ProviderConfig::new(
+                format!("http://{addr}/anthropic"),
+                "T3",
+            );
+            cfg.providers.insert("anthropic".into(), provider);
+            cfg.models.primary = "anthropic/test-model".into();
+            cfg.models.fallbacks.clear();
+        }
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/available?validation_level=zero")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(
+            body["providers"]["anthropic"]["status"],
+            "legacy_proxy_unsupported"
+        );
+        assert!(
+            body["providers"]["anthropic"]["hint"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("unsupported in v0.8.0+")
+        );
+        mock_task.abort();
+    }
+
+    #[tokio::test]
     async fn skills_list_returns_empty_array() {
         let state = test_state();
         let app = build_router(state);
@@ -2513,7 +3199,7 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
-    async fn put_config_rejects_immutable_server_key() {
+    async fn put_config_accepts_server_key_and_reports_deferred_apply() {
         let app = build_router(test_state());
         let resp = app
             .oneshot(
@@ -2526,11 +3212,15 @@ params = { path = "README.md" }
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["updated"], true);
+        assert_eq!(body["persisted"], true);
+        assert!(body["deferred_apply"].is_array());
     }
 
     #[tokio::test]
-    async fn put_config_rejects_immutable_wallet_key() {
+    async fn put_config_accepts_wallet_key() {
         let app = build_router(test_state());
         let resp = app
             .oneshot(
@@ -2543,11 +3233,11 @@ params = { path = "README.md" }
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn put_config_rejects_immutable_treasury_key() {
+    async fn put_config_accepts_treasury_key() {
         let app = build_router(test_state());
         let resp = app
             .oneshot(
@@ -2560,11 +3250,11 @@ params = { path = "README.md" }
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn put_config_rejects_immutable_a2a_key() {
+    async fn put_config_accepts_a2a_key() {
         let app = build_router(test_state());
         let resp = app
             .oneshot(
@@ -2577,7 +3267,25 @@ params = { path = "README.md" }
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_config_status_returns_apply_metadata() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["status"]["config_path"].is_string());
+        assert!(body["status"]["deferred_apply"].is_array());
     }
 
     #[tokio::test]
@@ -2874,7 +3582,7 @@ params = { path = "README.md" }
             ironclad_core::RiskLevel::Dangerous,
         );
         assert!(result.is_err());
-        let (status, msg) = result.unwrap_err();
+        let JsonError(status, msg) = result.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(
             msg.contains("denied") || msg.contains("Policy"),
@@ -3323,6 +4031,48 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
+    async fn list_subagents_includes_runtime_state_and_taskable_flag() {
+        let state = test_state();
+        let app = build_router(state);
+        let create_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/subagents")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"booting-check","model":"test/model","role":"subagent"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_resp.status(), StatusCode::OK);
+
+        let list_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/subagents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body = json_body(list_resp).await;
+        assert!(body["runtime_summary"]["running"].is_number());
+        assert!(body["runtime_summary"]["booting"].is_number());
+        let agents = body["agents"].as_array().unwrap();
+        let created = agents
+            .iter()
+            .find(|agent| agent["name"] == "booting-check")
+            .expect("created subagent should be listed");
+        assert!(created["runtime_state"].is_string());
+        assert!(created["taskable"].is_boolean());
+    }
+
+    #[tokio::test]
     async fn toggle_nonexistent_subagent_returns_404() {
         let state = test_state();
         let app = build_router(state);
@@ -3370,6 +4120,68 @@ params = { path = "README.md" }
         assert!(reply.contains("/breaker"));
         assert!(reply.contains("/retry"));
         assert!(reply.contains("/help"));
+    }
+
+    #[tokio::test]
+    async fn slash_status_includes_subagent_runtime_summary() {
+        let state = test_state();
+        let reply = agent::handle_bot_command(&state, "/status", None)
+            .await
+            .unwrap();
+        assert!(reply.contains("taskable subagents"));
+        assert!(reply.contains("subagent taskability"));
+    }
+
+    #[tokio::test]
+    async fn slash_status_includes_per_subagent_breakdown() {
+        let state = test_state();
+        let running = ironclad_db::agents::SubAgentRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "econ-analyst".to_string(),
+            display_name: Some("Economic Analyst".to_string()),
+            model: "ollama/qwen3:8b".to_string(),
+            role: "subagent".to_string(),
+            description: Some("Economic monitoring".to_string()),
+            skills_json: Some(r#"["macro","markets"]"#.to_string()),
+            enabled: true,
+            session_count: 0,
+        };
+        let booting = ironclad_db::agents::SubAgentRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "geopolitical-specialist".to_string(),
+            display_name: Some("Geopolitical Specialist".to_string()),
+            model: "ollama/qwen3:8b".to_string(),
+            role: "subagent".to_string(),
+            description: Some("Geopolitical monitoring".to_string()),
+            skills_json: Some(r#"["geopolitics"]"#.to_string()),
+            enabled: true,
+            session_count: 0,
+        };
+        ironclad_db::agents::upsert_sub_agent(&state.db, &running).unwrap();
+        ironclad_db::agents::upsert_sub_agent(&state.db, &booting).unwrap();
+        state
+            .registry
+            .register(ironclad_agent::subagents::AgentInstanceConfig {
+                id: running.name.clone(),
+                name: running
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| running.name.clone()),
+                model: running.model.clone(),
+                skills: vec!["macro".to_string()],
+                allowed_subagents: vec![],
+                max_concurrent: 4,
+            })
+            .await
+            .unwrap();
+        state.registry.start_agent(&running.name).await.unwrap();
+
+        let reply = agent::handle_bot_command(&state, "/status", None)
+            .await
+            .unwrap();
+        assert!(reply.contains("subagents:"));
+        assert!(reply.contains("econ-analyst=running"));
+        assert!(reply.contains("geopolitical-specialist=booting"));
     }
 
     #[tokio::test]
@@ -3508,5 +4320,623 @@ params = { path = "README.md" }
             .await
             .unwrap();
         assert!(reply.contains("requires a channel context"));
+    }
+
+    struct CaptureAdapter {
+        name: String,
+        sent: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl CaptureAdapter {
+        fn new(name: &str, sent: Arc<Mutex<Vec<String>>>) -> Self {
+            Self {
+                name: name.to_string(),
+                sent,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ChannelAdapter for CaptureAdapter {
+        fn platform_name(&self) -> &str {
+            &self.name
+        }
+
+        async fn recv(&self) -> ironclad_core::Result<Option<InboundMessage>> {
+            Ok(None)
+        }
+
+        async fn send(&self, msg: OutboundMessage) -> ironclad_core::Result<()> {
+            self.sent.lock().await.push(msg.content);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_non_repetition_guard_rewrites_second_repeated_reply() {
+        let state = test_state();
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        state
+            .channel_router
+            .register(Arc::new(CaptureAdapter::new("telegram", Arc::clone(&sent))))
+            .await;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock = Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(|| async {
+                Json(serde_json::json!({
+                    "model": "qwen3:8b",
+                    "choices": [{
+                        "message": {"role": "assistant", "content": "System status unchanged. Monitoring active. No new events."},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 10}
+                }))
+            }),
+        );
+        let mock_task = tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        {
+            let mut llm = state.llm.write().await;
+            llm.providers.register(ironclad_llm::Provider {
+                name: "ollama".to_string(),
+                url: format!("http://{}", addr),
+                tier: ironclad_core::ModelTier::T1,
+                api_key_env: "IGNORED".to_string(),
+                format: ironclad_core::ApiFormat::OpenAiCompletions,
+                chat_path: "/v1/chat/completions".to_string(),
+                embedding_path: None,
+                embedding_model: None,
+                embedding_dimensions: None,
+                is_local: true,
+                cost_per_input_token: 0.0,
+                cost_per_output_token: 0.0,
+                auth_header: "Authorization".to_string(),
+                extra_headers: HashMap::new(),
+                tpm_limit: None,
+                rpm_limit: None,
+                auth_mode: "api_key".to_string(),
+                oauth_client_id: None,
+                api_key_ref: None,
+            });
+        }
+
+        let inbound_1 = InboundMessage {
+            id: "m1".into(),
+            platform: "telegram".into(),
+            sender_id: "user-1".into(),
+            content: "status update?".into(),
+            timestamp: chrono::Utc::now(),
+            metadata: None,
+        };
+        let inbound_2 = InboundMessage {
+            id: "m2".into(),
+            platform: "telegram".into(),
+            sender_id: "user-1".into(),
+            content: "status update?".into(),
+            timestamp: chrono::Utc::now(),
+            metadata: None,
+        };
+
+        agent::process_channel_message(&state, inbound_1)
+            .await
+            .unwrap();
+        agent::process_channel_message(&state, inbound_2)
+            .await
+            .unwrap();
+
+        let msgs = sent.lock().await.clone();
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[0].contains("System status unchanged"));
+        assert!(msgs[1].contains("fresh check now"));
+
+        mock_task.abort();
+    }
+
+    // ── Interview endpoint tests ─────────────────────────────────
+
+    #[tokio::test]
+    async fn interview_start_creates_session_with_auto_key() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/start")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert_eq!(body["status"], "started");
+        assert!(body["session_key"].as_str().is_some());
+        assert!(!body["session_key"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn interview_start_creates_session_with_custom_key() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/start")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "my-custom-key"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert_eq!(body["session_key"], "my-custom-key");
+    }
+
+    #[tokio::test]
+    async fn interview_start_conflict_for_existing_session() {
+        let state = test_state();
+        // Start first session
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/start")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "dupe-key"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Try to start duplicate
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/start")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "dupe-key"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("already in progress")
+        );
+    }
+
+    #[tokio::test]
+    async fn interview_finish_not_found_for_missing_session() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/finish")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "nonexistent"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn interview_finish_rejects_empty_history() {
+        let state = test_state();
+        // Start a session
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/start")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "empty-session"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Try to finish without any assistant turns
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/finish")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_key": "empty-session"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("no TOML personality files")
+        );
+    }
+
+    #[tokio::test]
+    async fn interview_turn_not_found_for_missing_session() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/interview/turn")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"session_key": "nonexistent", "content": "hello"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── Session endpoint tests ───────────────────────────────────
+
+    #[tokio::test]
+    async fn list_sessions_returns_empty() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/sessions")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert!(body["sessions"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_session_returns_new_session() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"agent_id":"test"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert!(body["id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn get_session_returns_not_found_for_bogus_id() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/sessions/nonexistent-id")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_messages_returns_empty_for_nonexistent_session() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/sessions/nonexistent-id/messages")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // list_messages queries the DB and returns whatever it finds (empty array)
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["messages"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_message_rejects_invalid_role() {
+        let state = test_state();
+
+        // Create a session first
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"agent_id":"test"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = json_body(resp).await;
+        let session_id = body["id"].as_str().unwrap();
+
+        // Try to post with invalid role
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/sessions/{session_id}/messages"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"role": "admin", "content": "hack attempt"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn post_message_accepts_valid_role() {
+        let state = test_state();
+
+        // Create a session
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"agent_id":"test"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = json_body(resp).await;
+        let session_id = body["id"].as_str().unwrap();
+
+        // Post a valid user message
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/sessions/{session_id}/messages"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"role": "user", "content": "hello"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn session_turns_returns_empty_for_new_session() {
+        let state = test_state();
+
+        // Create a session
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"agent_id":"test"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = json_body(resp).await;
+        let session_id = body["id"].as_str().unwrap();
+
+        // List turns
+        let app = build_router(state);
+        let req = Request::builder()
+            .uri(format!("/api/sessions/{session_id}/turns"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert!(body["turns"].as_array().unwrap().is_empty());
+    }
+
+    // ── Cron endpoint test ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn cron_list_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/cron/jobs")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Subagent endpoint tests ──────────────────────────────────
+
+    #[tokio::test]
+    async fn subagents_list_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/subagents")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Skills endpoint tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn skills_list_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/skills")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Memory endpoint tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn memory_semantic_categories_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/memory/semantic/categories")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // May be 200 or 500 depending on memory state; at least test it doesn't panic
+        assert!(
+            resp.status() == StatusCode::OK || resp.status() == StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    // ── Admin endpoint tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn admin_config_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/config")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = json_body(resp).await;
+        assert!(body["agent"].is_object());
+    }
+
+    #[tokio::test]
+    async fn admin_config_capabilities_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/config/capabilities")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_approvals_list_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/approvals")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_costs_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/stats/costs")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_cache_stats_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/stats/cache")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_breaker_status_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/breaker/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_plugins_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/plugins")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_agents_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/agents")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_browser_status_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/browser/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn agent_status_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/agent/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_wallet_address_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/wallet/address")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_config_apply_status_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/config/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admin_capacity_stats_returns_ok() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .uri("/api/stats/capacity")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

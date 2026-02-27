@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tracing::debug;
 
 use crate::session::CdpSession;
+
+/// Maximum allowed length (in characters) for `BrowserAction::Evaluate` expressions.
+const MAX_EXPRESSION_LENGTH: usize = 100_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
@@ -279,7 +283,26 @@ impl ActionExecutor {
         }
     }
 
+    // SECURITY: expressions are controlled by the agent, not end users.
+    // The length limit guards against accidental megabyte-sized payloads
+    // from prompt injection or runaway template expansion.
     async fn evaluate(session: &CdpSession, expression: &str) -> ActionResult {
+        if expression.len() > MAX_EXPRESSION_LENGTH {
+            return ActionResult::err(
+                "evaluate",
+                format!(
+                    "expression too large ({} chars, max {})",
+                    expression.len(),
+                    MAX_EXPRESSION_LENGTH
+                ),
+            );
+        }
+
+        debug!(
+            expression_len = expression.len(),
+            "evaluating JS expression"
+        );
+
         match session
             .send_command(
                 "Runtime.evaluate",
@@ -567,5 +590,862 @@ mod tests {
         assert!(!ActionExecutor::is_url_scheme_blocked(
             "https://google.com/search?q=test"
         ));
+    }
+
+    #[test]
+    fn action_result_serde_roundtrip_ok() {
+        let result = ActionResult::ok("test", json!({"key": "value"}));
+        let json_str = serde_json::to_string(&result).unwrap();
+        let back: ActionResult = serde_json::from_str(&json_str).unwrap();
+        assert!(back.success);
+        assert_eq!(back.action, "test");
+        assert_eq!(back.data.unwrap()["key"], "value");
+        assert!(back.error.is_none());
+    }
+
+    #[test]
+    fn action_result_serde_roundtrip_err() {
+        let result = ActionResult::err("fail_action", "something broke".into());
+        let json_str = serde_json::to_string(&result).unwrap();
+        let back: ActionResult = serde_json::from_str(&json_str).unwrap();
+        assert!(!back.success);
+        assert_eq!(back.action, "fail_action");
+        assert!(back.data.is_none());
+        assert_eq!(back.error.as_deref(), Some("something broke"));
+    }
+
+    #[test]
+    fn all_action_names_exhaustive() {
+        // Verify action_name covers every variant
+        let variants: Vec<(BrowserAction, &str)> = vec![
+            (BrowserAction::Navigate { url: "x".into() }, "navigate"),
+            (
+                BrowserAction::Click {
+                    selector: "x".into(),
+                },
+                "click",
+            ),
+            (
+                BrowserAction::Type {
+                    selector: "x".into(),
+                    text: "y".into(),
+                },
+                "type",
+            ),
+            (BrowserAction::Screenshot, "screenshot"),
+            (BrowserAction::Pdf, "pdf"),
+            (
+                BrowserAction::Evaluate {
+                    expression: "x".into(),
+                },
+                "evaluate",
+            ),
+            (BrowserAction::GetCookies, "get_cookies"),
+            (BrowserAction::ClearCookies, "clear_cookies"),
+            (BrowserAction::ReadPage, "read_page"),
+            (BrowserAction::GoBack, "go_back"),
+            (BrowserAction::GoForward, "go_forward"),
+            (BrowserAction::Reload, "reload"),
+        ];
+        for (action, expected_name) in &variants {
+            assert_eq!(action_name(action), *expected_name);
+        }
+    }
+
+    #[test]
+    fn action_deserialize_all_variants() {
+        let cases = vec![
+            r##"{"action":"Navigate","url":"https://example.com"}"##,
+            r##"{"action":"Click","selector":"#btn"}"##,
+            r##"{"action":"Type","selector":"input","text":"hi"}"##,
+            r##"{"action":"Screenshot"}"##,
+            r##"{"action":"Pdf"}"##,
+            r##"{"action":"Evaluate","expression":"1+1"}"##,
+            r##"{"action":"GetCookies"}"##,
+            r##"{"action":"ClearCookies"}"##,
+            r##"{"action":"ReadPage"}"##,
+            r##"{"action":"GoBack"}"##,
+            r##"{"action":"GoForward"}"##,
+            r##"{"action":"Reload"}"##,
+        ];
+        for json_str in &cases {
+            let action: BrowserAction = serde_json::from_str(json_str).unwrap();
+            let reserialized = serde_json::to_string(&action).unwrap();
+            assert!(!reserialized.is_empty());
+        }
+    }
+
+    // ─── Mock CDP session tests ─────────────────────────────────────────
+    // These tests create a real WebSocket server that echoes appropriate
+    // CDP responses, then connect a CdpSession to it and run
+    // ActionExecutor methods.
+
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
+
+    /// Spin up a mock CDP server that responds to commands with the given handler.
+    async fn mock_cdp_session<F>(handler: F) -> CdpSession
+    where
+        F: Fn(Value) -> Value + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("ws://127.0.0.1:{port}");
+
+        tokio::spawn(async move {
+            if let Ok((stream, _addr)) = listener.accept().await {
+                let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let (mut sink, mut source) = ws.split();
+                while let Some(Ok(msg)) = source.next().await {
+                    if let Message::Text(ref t) = msg
+                        && let Ok(req) = serde_json::from_str::<Value>(t)
+                    {
+                        let resp = handler(req);
+                        let _ = sink
+                            .send(Message::Text(serde_json::to_string(&resp).unwrap()))
+                            .await;
+                    }
+                }
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        CdpSession::connect(&url).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn execute_navigate_success() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {"frameId": "frame1"}})
+        })
+        .await;
+
+        let action = BrowserAction::Navigate {
+            url: "https://example.com".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(
+            result.success,
+            "navigate should succeed: {:?}",
+            result.error
+        );
+        assert_eq!(result.action, "navigate");
+        let data = result.data.unwrap();
+        assert_eq!(data["url"], "https://example.com");
+        assert_eq!(data["frameId"], "frame1");
+    }
+
+    #[tokio::test]
+    async fn execute_navigate_blocked_scheme() {
+        // Don't even need a real session for this, but let's test via execute()
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {}})
+        })
+        .await;
+
+        let action = BrowserAction::Navigate {
+            url: "file:///etc/passwd".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap().contains("blocked"));
+    }
+
+    #[tokio::test]
+    async fn execute_navigate_with_error_text() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {"errorText": "net::ERR_NAME_NOT_RESOLVED"}})
+        })
+        .await;
+
+        let action = BrowserAction::Navigate {
+            url: "https://nonexistent.invalid".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("ERR_NAME_NOT_RESOLVED")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_navigate_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Navigation failed"}})
+        })
+        .await;
+
+        let action = BrowserAction::Navigate {
+            url: "https://example.com".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_click_element_found() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            let method = req["method"].as_str().unwrap_or("");
+            match method {
+                "Runtime.evaluate" => {
+                    // Return coordinates
+                    json!({"id": id, "result": {"result": {"value": r#"{"x":100,"y":200}"#}}})
+                }
+                "Input.dispatchMouseEvent" => {
+                    json!({"id": id, "result": {}})
+                }
+                _ => json!({"id": id, "result": {}}),
+            }
+        })
+        .await;
+
+        let action = BrowserAction::Click {
+            selector: "#btn".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(result.success, "click should succeed: {:?}", result.error);
+        let data = result.data.unwrap();
+        assert_eq!(data["x"], 100.0);
+        assert_eq!(data["y"], 200.0);
+    }
+
+    #[tokio::test]
+    async fn execute_click_element_not_found() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {"result": {"value": r#"{"error":"element not found"}"#}}})
+        })
+        .await;
+
+        let action = BrowserAction::Click {
+            selector: "#nonexistent".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn execute_type_success() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            let method = req["method"].as_str().unwrap_or("");
+            match method {
+                "Runtime.evaluate" => {
+                    json!({"id": id, "result": {"result": {"value": "ok"}}})
+                }
+                "Input.insertText" => {
+                    json!({"id": id, "result": {}})
+                }
+                _ => json!({"id": id, "result": {}}),
+            }
+        })
+        .await;
+
+        let action = BrowserAction::Type {
+            selector: "input".into(),
+            text: "hello world".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(result.success, "type should succeed: {:?}", result.error);
+        let data = result.data.unwrap();
+        assert_eq!(data["text"], "hello world");
+        assert_eq!(data["length"], 11);
+    }
+
+    #[tokio::test]
+    async fn execute_type_element_not_found() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {"result": {"value": "not_found"}}})
+        })
+        .await;
+
+        let action = BrowserAction::Type {
+            selector: "#missing".into(),
+            text: "test".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn execute_screenshot_success() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {"data": "iVBORw0KGgo="}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::Screenshot).await;
+        assert!(
+            result.success,
+            "screenshot should succeed: {:?}",
+            result.error
+        );
+        let data = result.data.unwrap();
+        assert_eq!(data["format"], "png");
+        assert!(data["data_base64_length"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn execute_screenshot_no_data() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::Screenshot).await;
+        assert!(result.success);
+        let data = result.data.unwrap();
+        assert_eq!(data["data"], "");
+    }
+
+    #[tokio::test]
+    async fn execute_pdf_success() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {"data": "JVBERi0xLjQ="}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::Pdf).await;
+        assert!(result.success, "pdf should succeed: {:?}", result.error);
+        let data = result.data.unwrap();
+        assert!(data["data_base64_length"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn execute_evaluate_success() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {"result": {"type": "number", "value": 42}}})
+        })
+        .await;
+
+        let action = BrowserAction::Evaluate {
+            expression: "21 * 2".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(
+            result.success,
+            "evaluate should succeed: {:?}",
+            result.error
+        );
+        let data = result.data.unwrap();
+        assert_eq!(data["value"], 42);
+    }
+
+    #[tokio::test]
+    async fn execute_evaluate_expression_too_large() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {}})
+        })
+        .await;
+
+        let big_expr = "x".repeat(MAX_EXPRESSION_LENGTH + 1);
+        let action = BrowserAction::Evaluate {
+            expression: big_expr,
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn execute_evaluate_js_exception() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({
+                "id": id,
+                "result": {
+                    "result": {"type": "object"},
+                    "exceptionDetails": {
+                        "text": "ReferenceError: foo is not defined"
+                    }
+                }
+            })
+        })
+        .await;
+
+        let action = BrowserAction::Evaluate {
+            expression: "foo()".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap().contains("ReferenceError"));
+    }
+
+    #[tokio::test]
+    async fn execute_evaluate_exception_no_text() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({
+                "id": id,
+                "result": {
+                    "result": {"type": "object"},
+                    "exceptionDetails": {}
+                }
+            })
+        })
+        .await;
+
+        let action = BrowserAction::Evaluate {
+            expression: "bad()".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("JavaScript exception")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_read_page_success() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            let page_json = serde_json::to_string(&json!({
+                "url": "https://example.com",
+                "title": "Example",
+                "text": "Hello World",
+                "html_length": 1234
+            }))
+            .unwrap();
+            json!({"id": id, "result": {"result": {"value": page_json}}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::ReadPage).await;
+        assert!(
+            result.success,
+            "read_page should succeed: {:?}",
+            result.error
+        );
+        let data = result.data.unwrap();
+        assert_eq!(data["url"], "https://example.com");
+        assert_eq!(data["title"], "Example");
+    }
+
+    #[tokio::test]
+    async fn execute_get_cookies_success() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {"cookies": [{"name": "sid", "value": "abc"}]}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::GetCookies).await;
+        assert!(
+            result.success,
+            "get_cookies should succeed: {:?}",
+            result.error
+        );
+        let data = result.data.unwrap();
+        assert_eq!(data["count"], 1);
+    }
+
+    #[tokio::test]
+    async fn execute_clear_cookies_success() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::ClearCookies).await;
+        assert!(
+            result.success,
+            "clear_cookies should succeed: {:?}",
+            result.error
+        );
+        let data = result.data.unwrap();
+        assert_eq!(data["cleared"], true);
+    }
+
+    #[tokio::test]
+    async fn execute_go_back_success() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {"result": {"value": "ok"}}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::GoBack).await;
+        assert!(result.success, "go_back should succeed: {:?}", result.error);
+        assert_eq!(result.data.unwrap()["navigated"], "back");
+    }
+
+    #[tokio::test]
+    async fn execute_go_forward_success() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {"result": {"value": "ok"}}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::GoForward).await;
+        assert!(
+            result.success,
+            "go_forward should succeed: {:?}",
+            result.error
+        );
+        assert_eq!(result.data.unwrap()["navigated"], "forward");
+    }
+
+    #[tokio::test]
+    async fn execute_reload_success() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::Reload).await;
+        assert!(result.success, "reload should succeed: {:?}", result.error);
+        assert_eq!(result.data.unwrap()["reloaded"], true);
+    }
+
+    #[tokio::test]
+    async fn execute_navigate_cdp_send_error() {
+        // Test when the CDP session returns an error (not a CDP protocol error)
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32601, "message": "Method not found"}})
+        })
+        .await;
+
+        let action = BrowserAction::Navigate {
+            url: "https://example.com".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_click_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Target closed"}})
+        })
+        .await;
+
+        let action = BrowserAction::Click {
+            selector: "#btn".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_type_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Target closed"}})
+        })
+        .await;
+
+        let action = BrowserAction::Type {
+            selector: "input".into(),
+            text: "hello".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_screenshot_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Target closed"}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::Screenshot).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_pdf_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Printing failed"}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::Pdf).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_evaluate_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Runtime error"}})
+        })
+        .await;
+
+        let action = BrowserAction::Evaluate {
+            expression: "1+1".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_read_page_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Eval failed"}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::ReadPage).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_get_cookies_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Network error"}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::GetCookies).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_clear_cookies_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Clear failed"}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::ClearCookies).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_go_back_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Navigation failed"}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::GoBack).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_go_forward_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Navigation failed"}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::GoForward).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_reload_cdp_error() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "error": {"code": -32000, "message": "Reload failed"}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::Reload).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_click_mouse_event_error() {
+        // First eval succeeds with coords, but mouse dispatch fails
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering as AtomOrd};
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let call_count_clone = call_count.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("ws://127.0.0.1:{port}");
+
+        tokio::spawn(async move {
+            if let Ok((stream, _addr)) = listener.accept().await {
+                let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let (mut sink, mut source) = ws.split();
+                while let Some(Ok(msg)) = source.next().await {
+                    if let Message::Text(ref t) = msg
+                        && let Ok(req) = serde_json::from_str::<Value>(t)
+                    {
+                        let id = req["id"].as_u64().unwrap();
+                        let method = req["method"].as_str().unwrap_or("");
+                        let _n = call_count_clone.fetch_add(1, AtomOrd::SeqCst);
+
+                        let resp = match method {
+                            "Runtime.evaluate" => {
+                                json!({"id": id, "result": {"result": {"value": r#"{"x":50,"y":50}"#}}})
+                            }
+                            "Input.dispatchMouseEvent" => {
+                                json!({"id": id, "error": {"code": -32000, "message": "Input error"}})
+                            }
+                            _ => json!({"id": id, "result": {}}),
+                        };
+                        let _ = sink
+                            .send(Message::Text(serde_json::to_string(&resp).unwrap()))
+                            .await;
+                    }
+                }
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let session = CdpSession::connect(&url).await.unwrap();
+
+        let action = BrowserAction::Click {
+            selector: "#btn".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_type_insert_text_error() {
+        // Focus succeeds but insert text fails
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("ws://127.0.0.1:{port}");
+
+        tokio::spawn(async move {
+            if let Ok((stream, _addr)) = listener.accept().await {
+                let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let (mut sink, mut source) = ws.split();
+                while let Some(Ok(msg)) = source.next().await {
+                    if let Message::Text(ref t) = msg
+                        && let Ok(req) = serde_json::from_str::<Value>(t)
+                    {
+                        let id = req["id"].as_u64().unwrap();
+                        let method = req["method"].as_str().unwrap_or("");
+                        let resp = match method {
+                            "Runtime.evaluate" => {
+                                json!({"id": id, "result": {"result": {"value": "ok"}}})
+                            }
+                            "Input.insertText" => {
+                                json!({"id": id, "error": {"code": -32000, "message": "Insert failed"}})
+                            }
+                            _ => json!({"id": id, "result": {}}),
+                        };
+                        let _ = sink
+                            .send(Message::Text(serde_json::to_string(&resp).unwrap()))
+                            .await;
+                    }
+                }
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let session = CdpSession::connect(&url).await.unwrap();
+
+        let action = BrowserAction::Type {
+            selector: "input".into(),
+            text: "hello".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_read_page_invalid_json() {
+        // Server returns something that is not valid JSON in the value
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {"result": {"value": "not valid json"}}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::ReadPage).await;
+        // Should still succeed with fallback to empty object
+        assert!(result.success);
+    }
+
+    #[tokio::test]
+    async fn execute_get_cookies_empty() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {}})
+        })
+        .await;
+
+        let result = ActionExecutor::execute(&session, &BrowserAction::GetCookies).await;
+        assert!(result.success);
+        let data = result.data.unwrap();
+        assert_eq!(data["count"], 0);
+    }
+
+    #[tokio::test]
+    async fn execute_navigate_no_frame_id() {
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            json!({"id": id, "result": {}})
+        })
+        .await;
+
+        let action = BrowserAction::Navigate {
+            url: "https://example.com".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        assert!(result.success);
+        let data = result.data.unwrap();
+        assert_eq!(data["frameId"], "");
+    }
+
+    #[tokio::test]
+    async fn execute_click_no_coords_in_response() {
+        // Element found but coords are missing from response
+        let session = mock_cdp_session(|req| {
+            let id = req["id"].as_u64().unwrap();
+            let method = req["method"].as_str().unwrap_or("");
+            match method {
+                "Runtime.evaluate" => {
+                    json!({"id": id, "result": {"result": {"value": "{}"}}})
+                }
+                "Input.dispatchMouseEvent" => {
+                    json!({"id": id, "result": {}})
+                }
+                _ => json!({"id": id, "result": {}}),
+            }
+        })
+        .await;
+
+        let action = BrowserAction::Click {
+            selector: "#btn".into(),
+        };
+        let result = ActionExecutor::execute(&session, &action).await;
+        // Should succeed (defaults to 0,0 coords)
+        assert!(result.success);
     }
 }

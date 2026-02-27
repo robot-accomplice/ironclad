@@ -96,6 +96,14 @@ fn load_embedding_from_row(blob: Option<Vec<u8>>, json_text: &str) -> Option<Vec
     None
 }
 
+/// Brute-force cosine similarity search over all stored embeddings.
+///
+/// **Complexity**: O(N) where N is the number of stored embeddings. Every row is loaded
+/// into memory and compared. For production workloads with large embedding tables,
+/// use `AnnIndex` (approximate nearest neighbor) instead.
+///
+/// A `LIMIT 10000` cap is applied to the SQL query to prevent unbounded memory usage
+/// while the AnnIndex integration is pending.
 pub fn search_similar(
     db: &Database,
     query_embedding: &[f32],
@@ -106,7 +114,7 @@ pub fn search_similar(
     let mut stmt = conn
         .prepare(
             "SELECT source_table, source_id, content_preview, embedding_blob, embedding_json \
-             FROM embeddings",
+             FROM embeddings LIMIT 10000",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
@@ -207,8 +215,8 @@ pub fn hybrid_search(
     Ok(fts_results)
 }
 
-#[allow(dead_code)]
-pub fn embedding_count(db: &Database) -> Result<usize> {
+#[cfg(test)]
+pub(crate) fn embedding_count(db: &Database) -> Result<usize> {
     let conn = db.conn();
     let count: usize = conn
         .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
@@ -416,5 +424,94 @@ mod tests {
     fn load_embedding_empty_both() {
         let loaded = load_embedding_from_row(None, "");
         assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn load_embedding_empty_blob_with_json() {
+        let json = serde_json::to_string(&vec![1.0f32, 2.0]).unwrap();
+        // Empty blob (not None) should fall back to JSON
+        let loaded = load_embedding_from_row(Some(vec![]), &json).unwrap();
+        assert_eq!(loaded, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn load_embedding_empty_blob_empty_json() {
+        let loaded = load_embedding_from_row(Some(vec![]), "");
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn search_similar_skips_row_without_embedding() {
+        let db = test_db();
+        // Insert a row with empty embedding data (both blob and json empty)
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO embeddings (id, source_table, source_id, content_preview, embedding_json, embedding_blob, dimensions) \
+                 VALUES ('e-no-emb', 'test', 't1', 'no embedding here', '', NULL, 0)",
+                [],
+            ).unwrap();
+        }
+        // Also insert one with a real embedding
+        store_embedding(&db, "e-real", "test", "t2", "has embedding", &[1.0, 0.0]).unwrap();
+
+        let results = search_similar(&db, &[1.0, 0.0], 10, 0.0).unwrap();
+        // Should only find the one with a real embedding
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source_id, "t2");
+    }
+
+    #[test]
+    fn hybrid_search_fts_matches() {
+        let db = test_db();
+        // Store data in FTS-indexed tables (working_memory populates memory_fts)
+        crate::memory::store_working(&db, "sess", "note", "quantum computing breakthrough", 5)
+            .unwrap();
+        store_embedding(&db, "e1", "test", "t1", "classical computing", &[0.0, 1.0]).unwrap();
+
+        // Search with FTS query that should match the working memory entry
+        let results = hybrid_search(&db, "quantum", Some(&[1.0, 0.0]), 10, 0.5).unwrap();
+        assert!(
+            !results.is_empty(),
+            "hybrid search should find FTS match for 'quantum'"
+        );
+    }
+
+    #[test]
+    fn hybrid_search_fts_only_no_embedding() {
+        let db = test_db();
+        crate::memory::store_working(&db, "sess", "note", "unique identifier xyzzy", 5).unwrap();
+
+        // Search with only FTS (no embedding provided), weight doesn't matter much
+        let results = hybrid_search(&db, "xyzzy", None, 10, 0.5).unwrap();
+        // FTS results get weighted by (1 - hybrid_weight), so they should appear
+        assert!(
+            !results.is_empty(),
+            "hybrid search without embedding should find FTS results"
+        );
+    }
+
+    #[test]
+    fn hybrid_search_combined_scores() {
+        let db = test_db();
+        crate::memory::store_working(&db, "sess", "note", "machine learning algorithms", 5)
+            .unwrap();
+        store_embedding(
+            &db,
+            "e1",
+            "test",
+            "t1",
+            "machine learning",
+            &[1.0, 0.0, 0.0],
+        )
+        .unwrap();
+
+        let results = hybrid_search(&db, "machine", Some(&[1.0, 0.0, 0.0]), 10, 0.5).unwrap();
+        // Should have results from both FTS and vector search
+        assert!(!results.is_empty());
+        // Results should be sorted by similarity desc
+        for w in results.windows(2) {
+            assert!(w[0].similarity >= w[1].similarity);
+        }
     }
 }

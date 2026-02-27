@@ -12,6 +12,7 @@ readme = "README.md"
 
 [dependencies]
 ironclad-core.workspace = true
+ironclad-db.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -33,3 +34,4 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+proptest = { workspace = true }

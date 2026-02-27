@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use ironclad_core::{IroncladError, Result};
 
@@ -28,6 +28,10 @@ struct TokenFile {
     tokens: Vec<StoredTokens>,
 }
 
+// SECURITY TODO: encrypt tokens at rest using the Keystore.
+// Tokens are currently stored as plaintext JSON in ~/.ironclad/oauth_tokens.json.
+// This is acceptable only as a temporary measure; a future release must use
+// OS-level keychain integration or an encrypted envelope before GA.
 fn token_file_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(home)
@@ -125,6 +129,16 @@ impl OAuthManager {
             .await
             .map_err(|e| IroncladError::Network(format!("invalid token response: {e}")))?;
 
+        if let Some(ref tt) = token_resp.token_type
+            && !tt.eq_ignore_ascii_case("bearer")
+        {
+            warn!(
+                provider = provider_name,
+                token_type = tt.as_str(),
+                "unexpected token_type in OAuth response (expected \"Bearer\")"
+            );
+        }
+
         let expires_at = token_resp
             .expires_in
             .map(|secs| chrono::Utc::now().timestamp() + secs);
@@ -149,24 +163,28 @@ impl OAuthManager {
             tokens.insert(provider_name.to_string(), new_stored);
         }
 
-        self.persist().await;
+        if let Err(e) = self.persist().await {
+            error!(provider = provider_name, error = %e, "failed to persist refreshed OAuth tokens");
+        }
         Ok(token_resp.access_token)
     }
 
     pub async fn store_tokens(&self, stored: StoredTokens) {
         let name = stored.provider.clone();
         let mut tokens = self.tokens.write().await;
-        tokens.insert(name, stored);
+        tokens.insert(name.clone(), stored);
         drop(tokens);
-        self.persist().await;
+        if let Err(e) = self.persist().await {
+            error!(provider = %name, error = %e, "failed to persist stored OAuth tokens");
+        }
     }
 
     pub async fn remove_tokens(&self, provider_name: &str) -> bool {
         let mut tokens = self.tokens.write().await;
         let removed = tokens.remove(provider_name).is_some();
         drop(tokens);
-        if removed {
-            self.persist().await;
+        if removed && let Err(e) = self.persist().await {
+            error!(provider = provider_name, error = %e, "failed to persist OAuth token removal");
         }
         removed
     }
@@ -189,33 +207,38 @@ impl OAuthManager {
             .collect()
     }
 
-    async fn persist(&self) {
+    async fn persist(&self) -> Result<()> {
         let tokens = self.tokens.read().await;
         let file = TokenFile {
             tokens: tokens.values().cloned().collect(),
         };
         let path = token_file_path();
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent).map_err(|e| {
+                IroncladError::Config(format!(
+                    "failed to create token directory {}: {e}",
+                    parent.display()
+                ))
+            })?;
         }
-        match serde_json::to_string_pretty(&file) {
-            Ok(json) => {
-                let tmp = path.with_extension("tmp");
-                if let Err(e) = std::fs::write(&tmp, &json) {
-                    warn!(error = %e, "failed to write OAuth token temp file");
-                    return;
-                }
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-                }
-                if let Err(e) = std::fs::rename(&tmp, &path) {
-                    warn!(error = %e, "failed to rename OAuth token file into place");
-                }
-            }
-            Err(e) => warn!(error = %e, "failed to serialize OAuth tokens"),
+        let json = serde_json::to_string_pretty(&file)
+            .map_err(|e| IroncladError::Config(format!("failed to serialize OAuth tokens: {e}")))?;
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &json).map_err(|e| {
+            IroncladError::Config(format!(
+                "failed to write OAuth token file {}: {e}",
+                tmp.display()
+            ))
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
         }
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            IroncladError::Config(format!("failed to rename OAuth token file into place: {e}"))
+        })?;
+        Ok(())
     }
 }
 
@@ -233,7 +256,6 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<i64>,
-    #[allow(dead_code)]
     token_type: Option<String>,
 }
 
@@ -477,5 +499,332 @@ mod tests {
         let mgr = OAuthManager::new().unwrap();
         let removed = mgr.remove_tokens("does-not-exist").await;
         assert!(!removed);
+    }
+
+    // ── token_url / callback_port / default_redirect_uri ──────────────
+
+    #[test]
+    fn token_url_is_anthropic() {
+        let url = token_url();
+        assert_eq!(url, ANTHROPIC_TOKEN_URL);
+        assert!(url.starts_with("https://"));
+        assert!(url.contains("token"));
+    }
+
+    #[test]
+    fn callback_port_returns_constant() {
+        let port = callback_port();
+        assert_eq!(port, CALLBACK_PORT);
+        assert!(port > 1024, "should be a high port");
+    }
+
+    // ── resolve_token expiry logic ──────────────────────────────
+
+    #[tokio::test]
+    async fn resolve_token_not_expired_returns_access_token() {
+        let mgr = OAuthManager::new().unwrap();
+        let far_future = chrono::Utc::now().timestamp() + 7200; // 2 hours from now
+        mgr.store_tokens(StoredTokens {
+            provider: "test-resolve".into(),
+            access_token: "valid-token".into(),
+            refresh_token: Some("rt-123".into()),
+            expires_at: Some(far_future),
+            client_id: None,
+        })
+        .await;
+
+        let token = mgr.resolve_token("test-resolve").await.unwrap();
+        assert_eq!(token, "valid-token");
+        mgr.remove_tokens("test-resolve").await;
+    }
+
+    #[tokio::test]
+    async fn resolve_token_no_expiry_returns_access_token() {
+        let mgr = OAuthManager::new().unwrap();
+        mgr.store_tokens(StoredTokens {
+            provider: "test-no-exp".into(),
+            access_token: "no-expiry-token".into(),
+            refresh_token: None,
+            expires_at: None, // no expiry set
+            client_id: None,
+        })
+        .await;
+
+        let token = mgr.resolve_token("test-no-exp").await.unwrap();
+        assert_eq!(token, "no-expiry-token");
+        mgr.remove_tokens("test-no-exp").await;
+    }
+
+    #[tokio::test]
+    async fn resolve_token_expired_attempts_refresh_fails_network() {
+        let mgr = OAuthManager::new().unwrap();
+        let past = chrono::Utc::now().timestamp() - 3600; // already expired
+        mgr.store_tokens(StoredTokens {
+            provider: "test-expired".into(),
+            access_token: "old-token".into(),
+            refresh_token: Some("rt-old".into()),
+            expires_at: Some(past),
+            client_id: None,
+        })
+        .await;
+
+        // resolve_token should attempt refresh, which will fail (network)
+        let err = mgr.resolve_token("test-expired").await;
+        assert!(
+            err.is_err(),
+            "refresh should fail against real Anthropic endpoint"
+        );
+        mgr.remove_tokens("test-expired").await;
+    }
+
+    #[tokio::test]
+    async fn resolve_token_about_to_expire_attempts_refresh() {
+        let mgr = OAuthManager::new().unwrap();
+        // Expires within the 60-second buffer
+        let almost_expired = chrono::Utc::now().timestamp() + 30;
+        mgr.store_tokens(StoredTokens {
+            provider: "test-almost".into(),
+            access_token: "almost-expired-token".into(),
+            refresh_token: Some("rt-almost".into()),
+            expires_at: Some(almost_expired),
+            client_id: Some("test-client".into()),
+        })
+        .await;
+
+        // Should attempt refresh (within 60s buffer) and fail
+        let err = mgr.resolve_token("test-almost").await;
+        assert!(err.is_err(), "refresh should fail");
+        mgr.remove_tokens("test-almost").await;
+    }
+
+    #[tokio::test]
+    async fn resolve_token_expired_no_refresh_token_errors() {
+        let mgr = OAuthManager::new().unwrap();
+        let past = chrono::Utc::now().timestamp() - 3600;
+        mgr.store_tokens(StoredTokens {
+            provider: "test-no-rt".into(),
+            access_token: "old-token".into(),
+            refresh_token: None, // no refresh token
+            expires_at: Some(past),
+            client_id: None,
+        })
+        .await;
+
+        let err = mgr.resolve_token("test-no-rt").await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("no refresh token") || msg.contains("re-run"),
+            "should mention missing refresh token: {msg}"
+        );
+        mgr.remove_tokens("test-no-rt").await;
+    }
+
+    // ── store_tokens / status / persist ──────────────────────────────
+
+    #[tokio::test]
+    async fn store_tokens_overwrites_existing() {
+        let mgr = OAuthManager::new().unwrap();
+        let future = chrono::Utc::now().timestamp() + 3600;
+        mgr.store_tokens(StoredTokens {
+            provider: "test-overwrite".into(),
+            access_token: "first-token".into(),
+            refresh_token: None,
+            expires_at: Some(future),
+            client_id: None,
+        })
+        .await;
+
+        let token1 = mgr.resolve_token("test-overwrite").await.unwrap();
+        assert_eq!(token1, "first-token");
+
+        // Overwrite
+        mgr.store_tokens(StoredTokens {
+            provider: "test-overwrite".into(),
+            access_token: "second-token".into(),
+            refresh_token: Some("new-rt".into()),
+            expires_at: Some(future),
+            client_id: Some("new-client".into()),
+        })
+        .await;
+
+        let token2 = mgr.resolve_token("test-overwrite").await.unwrap();
+        assert_eq!(token2, "second-token");
+        mgr.remove_tokens("test-overwrite").await;
+    }
+
+    #[tokio::test]
+    async fn status_empty_access_token_reports_false() {
+        let mgr = OAuthManager::new().unwrap();
+        mgr.store_tokens(StoredTokens {
+            provider: "test-empty-at".into(),
+            access_token: "".into(), // empty
+            refresh_token: Some("rt".into()),
+            expires_at: None,
+            client_id: None,
+        })
+        .await;
+
+        let statuses = mgr.status().await;
+        let s = statuses
+            .iter()
+            .find(|s| s.provider == "test-empty-at")
+            .unwrap();
+        assert!(!s.has_access_token);
+        assert!(s.has_refresh_token);
+        assert!(!s.expired); // no expiry set
+        assert!(s.expires_at.is_none());
+        mgr.remove_tokens("test-empty-at").await;
+    }
+
+    #[tokio::test]
+    async fn status_not_expired_when_future() {
+        let mgr = OAuthManager::new().unwrap();
+        let future = chrono::Utc::now().timestamp() + 86400;
+        mgr.store_tokens(StoredTokens {
+            provider: "test-future".into(),
+            access_token: "at".into(),
+            refresh_token: None,
+            expires_at: Some(future),
+            client_id: None,
+        })
+        .await;
+
+        let statuses = mgr.status().await;
+        let s = statuses
+            .iter()
+            .find(|s| s.provider == "test-future")
+            .unwrap();
+        assert!(!s.expired);
+        assert_eq!(s.expires_at, Some(future));
+        mgr.remove_tokens("test-future").await;
+    }
+
+    // ── authorization URL with special chars ──────────────────
+
+    #[test]
+    fn authorization_url_encodes_special_chars_in_client_id() {
+        let url = build_authorization_url(
+            "client id with spaces",
+            "http://localhost/callback",
+            "challenge",
+            "state",
+        );
+        assert!(url.contains("client%20id%20with%20spaces"));
+    }
+
+    #[test]
+    fn authorization_url_encodes_state() {
+        let url = build_authorization_url(
+            "client",
+            "http://localhost/callback",
+            "challenge",
+            "state=with&special",
+        );
+        assert!(url.contains("state%3Dwith%26special"));
+    }
+
+    // ── base64url_encode ──────────────────────────────────
+
+    #[test]
+    fn base64url_encode_roundtrip() {
+        let data = b"hello world 123!@#";
+        let encoded = base64url_encode(data);
+        assert!(!encoded.contains('+'));
+        assert!(!encoded.contains('/'));
+        assert!(!encoded.contains('='));
+    }
+
+    // ── TokenFile serde edge cases ──────────────────────────
+
+    #[test]
+    fn token_file_empty_tokens() {
+        let file = TokenFile { tokens: vec![] };
+        let json = serde_json::to_string(&file).unwrap();
+        let parsed: TokenFile = serde_json::from_str(&json).unwrap();
+        assert!(parsed.tokens.is_empty());
+    }
+
+    #[test]
+    fn token_file_multiple_providers() {
+        let file = TokenFile {
+            tokens: vec![
+                StoredTokens {
+                    provider: "provider-a".into(),
+                    access_token: "at-a".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                    client_id: None,
+                },
+                StoredTokens {
+                    provider: "provider-b".into(),
+                    access_token: "at-b".into(),
+                    refresh_token: Some("rt-b".into()),
+                    expires_at: Some(9999999999),
+                    client_id: Some("cid-b".into()),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&file).unwrap();
+        let parsed: TokenFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tokens.len(), 2);
+        assert_eq!(parsed.tokens[0].provider, "provider-a");
+        assert_eq!(parsed.tokens[1].provider, "provider-b");
+    }
+
+    #[test]
+    fn stored_tokens_client_id_skipped_when_none() {
+        let token = StoredTokens {
+            provider: "p".into(),
+            access_token: "at".into(),
+            refresh_token: None,
+            expires_at: None,
+            client_id: None,
+        };
+        let json = serde_json::to_string(&token).unwrap();
+        assert!(
+            !json.contains("client_id"),
+            "client_id should be skipped: {json}"
+        );
+    }
+
+    #[test]
+    fn stored_tokens_client_id_present_when_some() {
+        let token = StoredTokens {
+            provider: "p".into(),
+            access_token: "at".into(),
+            refresh_token: None,
+            expires_at: None,
+            client_id: Some("my-client".into()),
+        };
+        let json = serde_json::to_string(&token).unwrap();
+        assert!(
+            json.contains("client_id"),
+            "client_id should be present: {json}"
+        );
+        assert!(json.contains("my-client"));
+    }
+
+    // ── token_file_path ──────────────────────────────────
+
+    #[test]
+    fn token_file_path_contains_ironclad() {
+        let path = token_file_path();
+        assert!(
+            path.to_str().unwrap().contains(".ironclad"),
+            "path should contain .ironclad: {path:?}"
+        );
+        assert!(
+            path.to_str().unwrap().contains("oauth_tokens.json"),
+            "path should end with oauth_tokens.json: {path:?}"
+        );
+    }
+
+    // ── PKCE verifier uniqueness ──────────────────────────
+
+    #[test]
+    fn code_verifiers_are_unique() {
+        let v1 = generate_code_verifier();
+        let v2 = generate_code_verifier();
+        assert_ne!(v1, v2, "verifiers should be unique per call");
     }
 }

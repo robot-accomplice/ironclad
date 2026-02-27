@@ -5,7 +5,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{AppState, internal_err};
+use super::{AppState, bad_request, internal_err};
 
 #[derive(Deserialize)]
 pub struct LimitQuery {
@@ -167,10 +167,7 @@ pub async fn memory_search(
 ) -> impl IntoResponse {
     let query = params.q.unwrap_or_default();
     if query.is_empty() {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "missing ?q= parameter".to_string(),
-        ));
+        return Err(bad_request("missing ?q= parameter"));
     }
     match ironclad_db::memory::fts_search(&state.db, &query, 100) {
         Ok(results) => Ok(axum::Json(serde_json::json!({ "results": results }))),

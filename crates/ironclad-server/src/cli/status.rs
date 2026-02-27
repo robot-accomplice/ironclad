@@ -54,7 +54,7 @@ pub async fn cmd_status(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let hit_rate = if hits + misses > 0 {
         format!("{:.1}%", hits as f64 / (hits + misses) as f64 * 100.0)
     } else {
-        "n/a".into()
+        "0%".into()
     };
     let balance = wallet["balance"].as_str().unwrap_or("0.00");
     let currency = wallet["currency"].as_str().unwrap_or("USDC");
@@ -75,6 +75,9 @@ pub async fn cmd_status(url: &str) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Json, Router, routing::get};
+    use std::net::SocketAddr;
+    use tokio::net::TcpListener;
 
     #[test]
     fn detects_connection_refused() {
@@ -115,5 +118,67 @@ mod tests {
     #[test]
     fn detects_connection_refused_variant() {
         assert!(is_connection_error("ConnectionRefused: host unreachable"));
+    }
+
+    #[tokio::test]
+    async fn cmd_status_succeeds_against_local_mock_server() {
+        async fn health() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"version":"0.8.0"}))
+        }
+        async fn agent_status() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"state":"running"}))
+        }
+        async fn config() -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "agent": {"name":"TestBot","id":"test-bot"},
+                "models": {"primary":"ollama/qwen3:8b"}
+            }))
+        }
+        async fn sessions() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"sessions":[{"id":"s1"}]}))
+        }
+        async fn skills() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"skills":[{"id":"k1"},{"id":"k2"}]}))
+        }
+        async fn cron_jobs() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"jobs":[{"id":"j1"}]}))
+        }
+        async fn cache() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"hits":3,"misses":1}))
+        }
+        async fn wallet() -> Json<serde_json::Value> {
+            Json(serde_json::json!({"balance":"12.34","currency":"USDC"}))
+        }
+
+        let app = Router::new()
+            .route("/api/health", get(health))
+            .route("/api/agent/status", get(agent_status))
+            .route("/api/config", get(config))
+            .route("/api/sessions", get(sessions))
+            .route("/api/skills", get(skills))
+            .route("/api/cron/jobs", get(cron_jobs))
+            .route("/api/stats/cache", get(cache))
+            .route("/api/wallet/balance", get(wallet));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("http://{}:{}", addr.ip(), addr.port());
+        let result = cmd_status(&url).await;
+        server.abort();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cmd_status_returns_ok_for_unreachable_server() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let url = format!("http://127.0.0.1:{port}");
+        let result = cmd_status(&url).await;
+        assert!(result.is_ok());
     }
 }

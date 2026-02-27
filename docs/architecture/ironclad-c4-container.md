@@ -41,13 +41,20 @@ C4Container
     System_Ext(peerAgents, "Peer Agents", "A2A")
 
     Rel(creator, server, "Dashboard / WebSocket / REST")
-    Rel(creator, channels, "Telegram / WhatsApp")
+    Rel(creator, channels, "Telegram / WhatsApp / Discord / Signal / Email / Voice")
     Rel(server, agent, "In-process")
-    Rel(channels, agent, "In-process")
+    Rel(server, db, "In-process: sessions, metrics, config")
+    Rel(server, llm, "In-process: inference_costs, cache flush")
+    Rel(server, wallet, "In-process: balance, address")
+    Rel(server, schedule, "In-process: bootstrap scheduler")
+    Rel(server, channels, "In-process: bootstrap adapters")
+    Rel(server, core, "In-process: config, types")
+    Rel(server, pluginSdk, "In-process")
+    Rel(server, browser, "In-process")
+    Rel(channels, db, "In-process: delivery_queue")
     Rel(agent, llm, "In-process: inference")
     Rel(agent, db, "In-process: sessions, memory, tools")
     Rel(llm, llmProviders, "HTTPS / HTTP")
-    Rel(llm, db, "Indirect via server: inference_costs recording mediated by ironclad-server")
     Rel(schedule, agent, "In-process: cron payloads")
     Rel(schedule, db, "In-process: cron_jobs, cron_runs")
     Rel(schedule, wallet, "In-process: heartbeat")
@@ -55,8 +62,6 @@ C4Container
     Rel(wallet, db, "In-process: transactions")
     Rel(channels, peerAgents, "HTTPS (A2A)")
     Rel(channels, chatChannels, "HTTPS")
-    Rel(server, pluginSdk, "In-process")
-    Rel(server, browser, "In-process")
 ```
 
 ## Crates (Workspace Members)
@@ -69,13 +74,13 @@ C4Container
 | `ironclad-agent` | Agent loop, tools, policy (6 rules), injection defense, hybrid RAG retrieval, chunking, skills | `ironclad-core`, `ironclad-db`, `ironclad-llm` |
 | `ironclad-wallet` | Wallet, treasury, yield (Base, Aave V3) | `ironclad-core`, `ironclad-db` |
 | `ironclad-schedule` | Heartbeat daemon, cron worker | `ironclad-core`, `ironclad-db`, `ironclad-agent`, `ironclad-wallet` |
-| `ironclad-channels` | Telegram, WhatsApp, WebSocket, A2A | `ironclad-core` |
+| `ironclad-channels` | Telegram, WhatsApp, Discord, Signal, Email, Voice, WebSocket, A2A | `ironclad-core`, `ironclad-db` |
 | `ironclad-plugin-sdk` | Plugin registry | `ironclad-core` |
 | `ironclad-browser` | Browser automation | `ironclad-core` |
 | `ironclad-server` | HTTP server, API, dashboard, CLI, bootstrap | All of the above (except tests) |
 | `ironclad-tests` | Integration tests | Multiple crates |
 
-The diagram includes `Rel(schedule, wallet, "In-process: heartbeat")`: ironclad-schedule uses ironclad-wallet for tick context (USDC balance, survival tier).
+**Note**: All containers depend on `ironclad-core` for shared types, config, and errors; `Rel` arrows to `core` are omitted from the diagram for visual clarity. The diagram includes `Rel(schedule, wallet, "In-process: heartbeat")`: ironclad-schedule uses ironclad-wallet for tick context (USDC balance, survival tier).
 
 ## Implementation Notes
 

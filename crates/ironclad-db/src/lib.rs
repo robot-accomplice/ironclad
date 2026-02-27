@@ -35,6 +35,7 @@ pub mod backend;
 pub mod cache;
 pub mod checkpoint;
 pub mod cron;
+pub mod delivery_queue;
 pub mod efficiency;
 pub mod embeddings;
 pub mod hippocampus;

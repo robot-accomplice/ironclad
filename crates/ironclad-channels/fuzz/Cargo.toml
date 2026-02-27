@@ -1,0 +1,40 @@
+[package]
+name = "ironclad-channels-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ironclad-channels = { path = ".." }
+serde_json = "1"
+
+[[bin]]
+name = "fuzz_sanitize_platform"
+path = "fuzz_targets/fuzz_sanitize_platform.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_parse_ws_message"
+path = "fuzz_targets/fuzz_parse_ws_message.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_telegram_parse_inbound"
+path = "fuzz_targets/fuzz_telegram_parse_inbound.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_whatsapp_parse_inbound"
+path = "fuzz_targets/fuzz_whatsapp_parse_inbound.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_signal_parse_inbound"
+path = "fuzz_targets/fuzz_signal_parse_inbound.rs"
+doc = false
+
+[workspace]

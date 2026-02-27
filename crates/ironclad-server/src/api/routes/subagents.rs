@@ -4,8 +4,12 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 
-use super::{AppState, internal_err};
+use super::{
+    AppState, JsonError, bad_request, internal_err, not_found, sanitize_html, validate_long,
+    validate_short,
+};
 
 const ROLE_SUBAGENT: &str = "subagent";
 const ROLE_MODEL_PROXY: &str = "model-proxy";
@@ -52,6 +56,28 @@ pub struct UpdateSubAgentRequest {
     #[serde(default)]
     pub personality: Option<Value>,
     pub enabled: Option<bool>,
+}
+
+const MAX_SUBAGENT_NAME_LEN: usize = 128;
+
+fn validate_subagent_name(name: &str) -> Result<(), JsonError> {
+    if name.is_empty() {
+        return Err(bad_request("subagent name cannot be empty"));
+    }
+    if name.len() > MAX_SUBAGENT_NAME_LEN {
+        return Err(bad_request(format!(
+            "subagent name exceeds max length of {MAX_SUBAGENT_NAME_LEN} characters"
+        )));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(bad_request(
+            "subagent name may only contain alphanumeric characters, hyphens, and underscores",
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_role(raw: &str) -> Option<&'static str> {
@@ -105,7 +131,7 @@ fn validate_subagent_contract(
     model: &str,
     skills: &[String],
     personality: Option<&Value>,
-) -> Result<(), (axum::http::StatusCode, String)> {
+) -> Result<(), JsonError> {
     let normalized = normalize_role(role).ok_or_else(|| {
         (
             axum::http::StatusCode::BAD_REQUEST,
@@ -113,64 +139,109 @@ fn validate_subagent_contract(
         )
     })?;
     if personality.is_some() {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "personality is not supported for subagents; subagents must be personality-free"
-                .to_string(),
+        return Err(bad_request(
+            "personality is not supported for subagents; subagents must be personality-free",
         ));
     }
     if normalized == ROLE_MODEL_PROXY && !skills.is_empty() {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "model-proxy entries cannot own skills; only taskable subagents may have fixed skills"
-                .to_string(),
+        return Err(bad_request(
+            "model-proxy entries cannot own skills; only taskable subagents may have fixed skills",
         ));
     }
     if model.trim().is_empty() {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "model cannot be empty; use a concrete provider/model, 'auto', or 'commander'"
-                .to_string(),
+        return Err(bad_request(
+            "model cannot be empty; use a concrete provider/model, 'auto', or 'commander'",
         ));
     }
     if normalized == ROLE_MODEL_PROXY && is_model_mode(model) {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "model-proxy entries require a concrete provider/model, not 'auto' or 'commander'"
-                .to_string(),
+        return Err(bad_request(
+            "model-proxy entries require a concrete provider/model, not 'auto' or 'commander'",
         ));
     }
     Ok(())
 }
 
+fn runtime_state_label(state: ironclad_agent::subagents::AgentRunState) -> &'static str {
+    match state {
+        ironclad_agent::subagents::AgentRunState::Idle => "idle",
+        ironclad_agent::subagents::AgentRunState::Starting => "booting",
+        ironclad_agent::subagents::AgentRunState::Running => "running",
+        ironclad_agent::subagents::AgentRunState::Stopped => "stopped",
+        ironclad_agent::subagents::AgentRunState::Error => "error",
+    }
+}
+
 pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse {
     match ironclad_db::agents::list_sub_agents(&state.db) {
         Ok(agents) => {
+            let runtime = state.registry.list_agents().await;
+            let runtime_by_name: HashMap<String, ironclad_agent::subagents::AgentInstance> =
+                runtime
+                    .into_iter()
+                    .map(|a| (a.id.to_ascii_lowercase(), a))
+                    .collect();
+            let session_counts =
+                ironclad_db::agents::list_session_counts_by_agent(&state.db).unwrap_or_default();
+            let mut booting = 0usize;
+            let mut running = 0usize;
+            let mut errored = 0usize;
             let items: Vec<serde_json::Value> = agents
                 .into_iter()
                 .map(|a| {
+                    let normalized_role = normalize_role(&a.role).unwrap_or(ROLE_SUBAGENT);
+                    let runtime_entry = runtime_by_name.get(&a.name.to_ascii_lowercase());
                     let skills = a
                         .skills_json
                         .as_deref()
                         .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
                         .unwrap_or_default();
+                    let session_count = session_counts
+                        .get(&a.name)
+                        .copied()
+                        .unwrap_or(a.session_count);
+                    let runtime_state = if normalized_role == ROLE_MODEL_PROXY {
+                        "n/a".to_string()
+                    } else if let Some(inst) = runtime_entry {
+                        runtime_state_label(inst.state).to_string()
+                    } else if a.enabled {
+                        "booting".to_string()
+                    } else {
+                        "stopped".to_string()
+                    };
+                    let taskable = a.enabled && runtime_state == "running";
+                    if normalized_role != ROLE_MODEL_PROXY {
+                        match runtime_state.as_str() {
+                            "booting" | "idle" => booting += 1,
+                            "running" => running += 1,
+                            "error" => errored += 1,
+                            _ => {}
+                        }
+                    }
                     serde_json::json!({
                         "id": a.id,
                         "name": a.name,
                         "display_name": a.display_name,
                         "model": a.model,
-                        "role": a.role,
+                        "role": normalized_role,
                         "description": a.description,
                         "skills": skills,
                         "enabled": a.enabled,
-                        "session_count": a.session_count,
+                        "session_count": session_count,
+                        "runtime_state": runtime_state,
+                        "taskable": taskable,
                     })
                 })
                 .collect();
             let count = items.len();
-            Ok(axum::Json(
-                serde_json::json!({ "agents": items, "count": count }),
-            ))
+            Ok(axum::Json(serde_json::json!({
+                "agents": items,
+                "count": count,
+                "runtime_summary": {
+                    "booting": booting,
+                    "running": running,
+                    "error": errored,
+                }
+            })))
         }
         Err(e) => Err(internal_err(&e)),
     }
@@ -179,7 +250,18 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
 pub async fn create_sub_agent(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<CreateSubAgentRequest>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
+    validate_short("name", &body.name)?;
+    if let Some(ref d) = body.description {
+        validate_long("description", d)?;
+    }
+    let body = CreateSubAgentRequest {
+        name: sanitize_html(&body.name),
+        description: body.description.as_deref().map(sanitize_html),
+        display_name: body.display_name.as_deref().map(sanitize_html),
+        ..body
+    };
+    validate_subagent_name(&body.name)?;
     let role = normalize_role(&body.role)
         .ok_or_else(|| {
             (
@@ -232,6 +314,7 @@ pub async fn create_sub_agent(
                     max_concurrent: 4,
                 };
                 let _ = state.registry.register(config).await;
+                let _ = state.registry.start_agent(&agent.name).await;
             }
             Ok(axum::Json(serde_json::json!({
                 "id": agent.id,
@@ -247,7 +330,13 @@ pub async fn update_sub_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
     axum::Json(body): axum::Json<UpdateSubAgentRequest>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
+    if let Some(ref d) = body.description {
+        validate_long("description", d)?;
+    }
+    if let Some(ref d) = body.display_name {
+        validate_short("display_name", d)?;
+    }
     let agents = ironclad_db::agents::list_sub_agents(&state.db).map_err(|e| internal_err(&e))?;
 
     let existing = agents.iter().find(|a| a.name == name).ok_or_else(|| {
@@ -307,6 +396,27 @@ pub async fn update_sub_agent(
 
     ironclad_db::agents::upsert_sub_agent(&state.db, &updated).map_err(|e| internal_err(&e))?;
 
+    if updated.role == ROLE_SUBAGENT && updated.enabled {
+        if state.registry.get_agent(&updated.name).await.is_none() {
+            let config = ironclad_agent::subagents::AgentInstanceConfig {
+                id: updated.name.clone(),
+                name: updated
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| updated.name.clone()),
+                model: resolve_taskable_subagent_runtime_model(&state, &updated.model).await,
+                skills: merged_skills.clone(),
+                allowed_subagents: vec![],
+                max_concurrent: 4,
+            };
+            let _ = state.registry.register(config).await;
+        }
+        let _ = state.registry.start_agent(&updated.name).await;
+    } else {
+        let _ = state.registry.stop_agent(&updated.name).await;
+        let _ = state.registry.unregister(&updated.name).await;
+    }
+
     Ok(axum::Json(serde_json::json!({
         "updated": true,
         "name": name,
@@ -316,15 +426,16 @@ pub async fn update_sub_agent(
 pub async fn delete_sub_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     match ironclad_db::agents::delete_sub_agent(&state.db, &name) {
-        Ok(true) => Ok(axum::Json(
-            serde_json::json!({ "deleted": true, "name": name }),
-        )),
-        Ok(false) => Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("sub-agent '{name}' not found"),
-        )),
+        Ok(true) => {
+            let _ = state.registry.stop_agent(&name).await;
+            let _ = state.registry.unregister(&name).await;
+            Ok(axum::Json(
+                serde_json::json!({ "deleted": true, "name": name }),
+            ))
+        }
+        Ok(false) => Err(not_found(format!("sub-agent '{name}' not found"))),
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -332,7 +443,7 @@ pub async fn delete_sub_agent(
 pub async fn toggle_sub_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, (axum::http::StatusCode, String)> {
+) -> Result<impl IntoResponse, JsonError> {
     let agents = ironclad_db::agents::list_sub_agents(&state.db).map_err(|e| internal_err(&e))?;
 
     let existing = agents.iter().find(|a| a.name == name).ok_or_else(|| {
@@ -348,8 +459,313 @@ pub async fn toggle_sub_agent(
 
     ironclad_db::agents::upsert_sub_agent(&state.db, &updated).map_err(|e| internal_err(&e))?;
 
+    if updated.role == ROLE_SUBAGENT && updated.enabled {
+        if state.registry.get_agent(&updated.name).await.is_none() {
+            let skills = updated
+                .skills_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                .unwrap_or_default();
+            let config = ironclad_agent::subagents::AgentInstanceConfig {
+                id: updated.name.clone(),
+                name: updated
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| updated.name.clone()),
+                model: resolve_taskable_subagent_runtime_model(&state, &updated.model).await,
+                skills,
+                allowed_subagents: vec![],
+                max_concurrent: 4,
+            };
+            let _ = state.registry.register(config).await;
+        }
+        let _ = state.registry.start_agent(&updated.name).await;
+    } else {
+        let _ = state.registry.stop_agent(&updated.name).await;
+        let _ = state.registry.unregister(&updated.name).await;
+    }
+
     Ok(axum::Json(serde_json::json!({
         "name": name,
         "enabled": new_enabled,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── default_role / default_model / default_true ──────────────
+
+    #[test]
+    fn default_role_is_subagent() {
+        assert_eq!(default_role(), "subagent");
+    }
+
+    #[test]
+    fn default_model_is_auto() {
+        assert_eq!(default_model(), "auto");
+    }
+
+    #[test]
+    fn default_true_returns_true() {
+        assert!(default_true());
+    }
+
+    // ── validate_subagent_name ──────────────────────────────────
+
+    #[test]
+    fn validate_subagent_name_accepts_valid_names() {
+        assert!(validate_subagent_name("geo-specialist").is_ok());
+        assert!(validate_subagent_name("agent_1").is_ok());
+        assert!(validate_subagent_name("A").is_ok());
+        assert!(validate_subagent_name("abc-def_123").is_ok());
+    }
+
+    #[test]
+    fn validate_subagent_name_rejects_empty() {
+        let err = validate_subagent_name("").unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("empty"));
+    }
+
+    #[test]
+    fn validate_subagent_name_rejects_too_long() {
+        let long_name = "a".repeat(MAX_SUBAGENT_NAME_LEN + 1);
+        let err = validate_subagent_name(&long_name).unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("max length"));
+    }
+
+    #[test]
+    fn validate_subagent_name_rejects_special_chars() {
+        let err = validate_subagent_name("agent name").unwrap_err();
+        assert!(err.1.contains("alphanumeric"));
+
+        let err = validate_subagent_name("agent.name").unwrap_err();
+        assert!(err.1.contains("alphanumeric"));
+
+        let err = validate_subagent_name("agent/name").unwrap_err();
+        assert!(err.1.contains("alphanumeric"));
+    }
+
+    #[test]
+    fn validate_subagent_name_at_boundary_length() {
+        let exactly_max = "a".repeat(MAX_SUBAGENT_NAME_LEN);
+        assert!(validate_subagent_name(&exactly_max).is_ok());
+    }
+
+    // ── normalize_role ──────────────────────────────────────────
+
+    #[test]
+    fn normalize_role_accepts_subagent_and_specialist() {
+        assert_eq!(normalize_role("subagent"), Some(ROLE_SUBAGENT));
+        assert_eq!(normalize_role("specialist"), Some(ROLE_SUBAGENT));
+        assert_eq!(normalize_role("  Subagent  "), Some(ROLE_SUBAGENT));
+        assert_eq!(normalize_role("SPECIALIST"), Some(ROLE_SUBAGENT));
+    }
+
+    #[test]
+    fn normalize_role_accepts_model_proxy() {
+        assert_eq!(normalize_role("model-proxy"), Some(ROLE_MODEL_PROXY));
+        assert_eq!(normalize_role("MODEL-PROXY"), Some(ROLE_MODEL_PROXY));
+    }
+
+    #[test]
+    fn normalize_role_rejects_unknown() {
+        assert_eq!(normalize_role("commander"), None);
+        assert_eq!(normalize_role(""), None);
+        assert_eq!(normalize_role("worker"), None);
+    }
+
+    // ── normalize_skills ────────────────────────────────────────
+
+    #[test]
+    fn normalize_skills_deduplicates_and_sorts() {
+        let skills = vec![
+            "risk".to_string(),
+            "geo".to_string(),
+            "risk".to_string(),
+            "  geo  ".to_string(),
+        ];
+        let out = normalize_skills(&skills);
+        assert_eq!(out, vec!["geo", "risk"]);
+    }
+
+    #[test]
+    fn normalize_skills_removes_empty_and_whitespace() {
+        let skills = vec!["".to_string(), "  ".to_string(), "analysis".to_string()];
+        let out = normalize_skills(&skills);
+        assert_eq!(out, vec!["analysis"]);
+    }
+
+    #[test]
+    fn normalize_skills_empty_input() {
+        assert!(normalize_skills(&[]).is_empty());
+    }
+
+    // ── normalize_model_input ───────────────────────────────────
+
+    #[test]
+    fn normalize_model_input_trims_whitespace() {
+        assert_eq!(normalize_model_input("  openai/gpt-4o  "), "openai/gpt-4o");
+        assert_eq!(normalize_model_input("auto"), "auto");
+    }
+
+    // ── is_model_mode ───────────────────────────────────────────
+
+    #[test]
+    fn is_model_mode_detects_auto_and_commander() {
+        assert!(is_model_mode("auto"));
+        assert!(is_model_mode("AUTO"));
+        assert!(is_model_mode("commander"));
+        assert!(is_model_mode("COMMANDER"));
+        assert!(is_model_mode("  auto  "));
+    }
+
+    #[test]
+    fn is_model_mode_rejects_concrete_models() {
+        assert!(!is_model_mode("openai/gpt-4o"));
+        assert!(!is_model_mode("anthropic/claude-sonnet-4-20250514"));
+        assert!(!is_model_mode(""));
+    }
+
+    // ── validate_subagent_contract ──────────────────────────────
+
+    #[test]
+    fn validate_contract_accepts_valid_subagent() {
+        assert!(
+            validate_subagent_contract(
+                "subagent",
+                "auto",
+                &["geo".to_string(), "risk".to_string()],
+                None
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_contract_accepts_valid_model_proxy() {
+        assert!(validate_subagent_contract("model-proxy", "openai/gpt-4o", &[], None).is_ok());
+    }
+
+    #[test]
+    fn validate_contract_rejects_unknown_role() {
+        let err = validate_subagent_contract("worker", "auto", &[], None).unwrap_err();
+        assert!(err.1.contains("role must be"));
+    }
+
+    #[test]
+    fn validate_contract_rejects_personality() {
+        let personality = serde_json::json!({"tone": "formal"});
+        let err =
+            validate_subagent_contract("subagent", "auto", &[], Some(&personality)).unwrap_err();
+        assert!(err.1.contains("personality"));
+    }
+
+    #[test]
+    fn validate_contract_rejects_model_proxy_with_skills() {
+        let err =
+            validate_subagent_contract("model-proxy", "openai/gpt-4o", &["geo".to_string()], None)
+                .unwrap_err();
+        assert!(err.1.contains("cannot own skills"));
+    }
+
+    #[test]
+    fn validate_contract_rejects_empty_model() {
+        let err = validate_subagent_contract("subagent", "  ", &[], None).unwrap_err();
+        assert!(err.1.contains("model cannot be empty"));
+    }
+
+    #[test]
+    fn validate_contract_rejects_model_proxy_with_auto() {
+        let err = validate_subagent_contract("model-proxy", "auto", &[], None).unwrap_err();
+        assert!(err.1.contains("concrete provider/model"));
+    }
+
+    #[test]
+    fn validate_contract_rejects_model_proxy_with_commander() {
+        let err = validate_subagent_contract("model-proxy", "commander", &[], None).unwrap_err();
+        assert!(err.1.contains("concrete provider/model"));
+    }
+
+    // ── runtime_state_label ─────────────────────────────────────
+
+    #[test]
+    fn runtime_state_label_maps_all_states() {
+        use ironclad_agent::subagents::AgentRunState;
+        assert_eq!(runtime_state_label(AgentRunState::Idle), "idle");
+        assert_eq!(runtime_state_label(AgentRunState::Starting), "booting");
+        assert_eq!(runtime_state_label(AgentRunState::Running), "running");
+        assert_eq!(runtime_state_label(AgentRunState::Stopped), "stopped");
+        assert_eq!(runtime_state_label(AgentRunState::Error), "error");
+    }
+
+    // ── CreateSubAgentRequest deserialization ────────────────────
+
+    #[test]
+    fn create_request_defaults() {
+        let json = serde_json::json!({
+            "name": "test-agent"
+        });
+        let req: CreateSubAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "test-agent");
+        assert_eq!(req.model, "auto");
+        assert_eq!(req.role, "subagent");
+        assert!(req.enabled);
+        assert!(req.skills.is_empty());
+        assert!(req.display_name.is_none());
+        assert!(req.description.is_none());
+        assert!(req.personality.is_none());
+    }
+
+    #[test]
+    fn create_request_with_all_fields() {
+        let json = serde_json::json!({
+            "name": "geo-specialist",
+            "display_name": "Geo Specialist",
+            "model": "openai/gpt-4o",
+            "role": "model-proxy",
+            "description": "proxy for openai",
+            "skills": [],
+            "enabled": false
+        });
+        let req: CreateSubAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "geo-specialist");
+        assert_eq!(req.display_name.as_deref(), Some("Geo Specialist"));
+        assert_eq!(req.model, "openai/gpt-4o");
+        assert_eq!(req.role, "model-proxy");
+        assert!(!req.enabled);
+    }
+
+    // ── UpdateSubAgentRequest deserialization ────────────────────
+
+    #[test]
+    fn update_request_all_none() {
+        let json = serde_json::json!({});
+        let req: UpdateSubAgentRequest = serde_json::from_value(json).unwrap();
+        assert!(req.display_name.is_none());
+        assert!(req.model.is_none());
+        assert!(req.role.is_none());
+        assert!(req.description.is_none());
+        assert!(req.skills.is_none());
+        assert!(req.personality.is_none());
+        assert!(req.enabled.is_none());
+    }
+
+    #[test]
+    fn update_request_partial_fields() {
+        let json = serde_json::json!({
+            "model": "anthropic/claude-sonnet-4-20250514",
+            "enabled": false
+        });
+        let req: UpdateSubAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            req.model.as_deref(),
+            Some("anthropic/claude-sonnet-4-20250514")
+        );
+        assert_eq!(req.enabled, Some(false));
+        assert!(req.role.is_none());
+    }
 }

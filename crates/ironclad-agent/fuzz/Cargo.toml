@@ -20,3 +20,5 @@ doc = false
 name = "fuzz_scan_output"
 path = "fuzz_targets/fuzz_scan_output.rs"
 doc = false
+
+[workspace]
