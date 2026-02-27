@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-02-27
+
+### Added
+
+- **100+ API route integration tests**: Comprehensive test coverage for sessions, turns, interviews, feedback, skills, model selection, channels, webhooks, dead letters, admin, memory, cron, context, and approvals endpoints. Tests exercise both success and error paths including validation, 404s, auth, and edge cases.
+- **Homebrew tap distribution**: macOS/Linux users can install via `brew install robot-accomplice/tap/ironclad`.
+- **Winget package distribution**: Windows users can install via Winget package manager.
+
+### Changed
+
+- **Workspace version bump**: All 11 crates bumped from 0.8.1 to 0.8.3. Workspace test count now at 3,316 (up from ~3,200).
+
+## [0.8.2] - 2026-02-27
+
+### Fixed
+
+- **29 stabilization bug fixes**: Resolved input validation gaps, API error format inconsistencies, query parameter hardening, security headers, dashboard trailing content, model persistence, cron field naming, and Windows TOML path issues discovered during exhaustive hands-on testing of v0.8.1.
+- **HTML injection prevention**: Closed remaining sanitization coverage gaps in API write endpoints.
+- **Dashboard SPA cleanup**: Removed duplicate trailing content after `</html>` close tag.
+- **Model change persistence**: Fixed model selection not persisting across server restarts.
+- **Config serialization**: Fixed TOML config serialization on Windows paths.
+
 ## [0.8.1] - 2026-02-27
 
 ### Fixed
