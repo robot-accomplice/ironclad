@@ -7219,15 +7219,8 @@ params = { path = "README.md" }
         )
         .unwrap();
         // Seed initial feedback
-        ironclad_db::sessions::record_feedback(
-            &state.db,
-            &tid,
-            &sid,
-            3,
-            "dashboard",
-            Some("ok"),
-        )
-        .unwrap();
+        ironclad_db::sessions::record_feedback(&state.db, &tid, &sid, 3, "dashboard", Some("ok"))
+            .unwrap();
 
         let app = build_router(state);
         let resp = app
@@ -7295,15 +7288,24 @@ params = { path = "README.md" }
         let state = test_state();
         let sid = ironclad_db::sessions::create_new(&state.db, "agent-fb2", None).unwrap();
         let t1 = ironclad_db::sessions::create_turn(
-            &state.db, &sid, None, Some(10), Some(5), Some(0.001),
+            &state.db,
+            &sid,
+            None,
+            Some(10),
+            Some(5),
+            Some(0.001),
         )
         .unwrap();
         let t2 = ironclad_db::sessions::create_turn(
-            &state.db, &sid, None, Some(20), Some(10), Some(0.002),
+            &state.db,
+            &sid,
+            None,
+            Some(20),
+            Some(10),
+            Some(0.002),
         )
         .unwrap();
-        ironclad_db::sessions::record_feedback(&state.db, &t1, &sid, 4, "dashboard", None)
-            .unwrap();
+        ironclad_db::sessions::record_feedback(&state.db, &t1, &sid, 4, "dashboard", None).unwrap();
         ironclad_db::sessions::record_feedback(&state.db, &t2, &sid, 2, "dashboard", Some("bad"))
             .unwrap();
 
@@ -7381,7 +7383,12 @@ params = { path = "README.md" }
         let state = test_state();
         let sid = ironclad_db::sessions::create_new(&state.db, "agent-tools", None).unwrap();
         let tid = ironclad_db::sessions::create_turn(
-            &state.db, &sid, None, Some(10), Some(5), Some(0.001),
+            &state.db,
+            &sid,
+            None,
+            Some(10),
+            Some(5),
+            Some(0.001),
         )
         .unwrap();
 
@@ -7455,8 +7462,7 @@ params = { path = "README.md" }
     #[tokio::test]
     async fn get_session_insights_empty() {
         let state = test_state();
-        let sid =
-            ironclad_db::sessions::create_new(&state.db, "agent-insights", None).unwrap();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-insights", None).unwrap();
 
         let app = build_router(state);
         let resp = app
@@ -7480,8 +7486,7 @@ params = { path = "README.md" }
     #[tokio::test]
     async fn get_session_insights_with_turns() {
         let state = test_state();
-        let sid =
-            ironclad_db::sessions::create_new(&state.db, "agent-insights2", None).unwrap();
+        let sid = ironclad_db::sessions::create_new(&state.db, "agent-insights2", None).unwrap();
         ironclad_db::sessions::create_turn(
             &state.db,
             &sid,
