@@ -321,4 +321,186 @@ mod tests {
         assert_eq!(reply["in_reply_to"], "<orig-id>");
         assert!(reply["message_id"].as_str().unwrap().contains("ironclad"));
     }
+
+    #[test]
+    fn format_reply_without_in_reply_to() {
+        let adapter = test_adapter();
+        let reply = adapter.format_reply("user@example.com", "Hello!", None);
+        assert!(reply["in_reply_to"].is_null());
+        assert_eq!(reply["subject"], "Re: Agent Response");
+    }
+
+    #[test]
+    fn parse_email_with_message_id_and_in_reply_to() {
+        let msg = EmailAdapter::parse_email(
+            "alice@example.com",
+            "Re: Topic",
+            "Reply body",
+            Some("<msg-1@example.com>"),
+            Some("<orig@example.com>"),
+        );
+        let meta = msg.metadata.unwrap();
+        assert_eq!(meta["message_id"], "<msg-1@example.com>");
+        assert_eq!(meta["in_reply_to"], "<orig@example.com>");
+    }
+
+    #[test]
+    fn parse_email_without_message_id() {
+        let msg = EmailAdapter::parse_email("alice@example.com", "Test", "Body", None, None);
+        assert_eq!(msg.id, "unknown");
+    }
+
+    #[test]
+    fn parse_email_truncates_large_body() {
+        let large_body = "x".repeat(MAX_EMAIL_BODY_BYTES + 1000);
+        let msg = EmailAdapter::parse_email("a@b.com", "Big", &large_body, Some("<id>"), None);
+        assert!(msg.content.len() <= MAX_EMAIL_BODY_BYTES + 100); // +100 for subject prefix
+    }
+
+    #[test]
+    fn parse_email_large_body_at_boundary() {
+        let exact_body = "y".repeat(MAX_EMAIL_BODY_BYTES);
+        let msg = EmailAdapter::parse_email("a@b.com", "", &exact_body, Some("<id>"), None);
+        assert_eq!(msg.content.len(), MAX_EMAIL_BODY_BYTES);
+    }
+
+    #[test]
+    fn buffer_handle_shared() {
+        let adapter = test_adapter();
+        let handle = adapter.buffer_handle();
+        let msg = EmailAdapter::parse_email("test@example.com", "S", "B", Some("<id>"), None);
+        adapter.push_message(msg);
+        let buf = handle.lock().unwrap();
+        assert_eq!(buf.len(), 1);
+    }
+
+    #[test]
+    fn parse_email_empty_body_with_subject() {
+        let msg = EmailAdapter::parse_email("a@b.com", "Subject Only", "", Some("<id>"), None);
+        assert!(msg.content.contains("Subject Only"));
+    }
+
+    #[test]
+    fn parse_email_empty_both() {
+        let msg = EmailAdapter::parse_email("a@b.com", "", "", Some("<id>"), None);
+        assert!(msg.content.is_empty());
+    }
+
+    #[test]
+    fn is_sender_allowed_case_insensitive() {
+        let adapter = test_adapter().with_allowed_senders(vec!["Alice@Example.COM".into()]);
+        assert!(adapter.is_sender_allowed("alice@example.com"));
+        assert!(adapter.is_sender_allowed("ALICE@EXAMPLE.COM"));
+        assert!(!adapter.is_sender_allowed("bob@example.com"));
+    }
+
+    #[test]
+    fn parse_email_truncates_multibyte_body() {
+        // Create a body that is over the limit and contains multi-byte chars
+        // so the char boundary loop (lines 95-96) is exercised.
+        let prefix = "x".repeat(MAX_EMAIL_BODY_BYTES - 2);
+        // Append a 3-byte UTF-8 char that straddles the boundary
+        let body = format!("{prefix}\u{2603}\u{2603}\u{2603}"); // snowman is 3 bytes
+        assert!(body.len() > MAX_EMAIL_BODY_BYTES);
+        let msg = EmailAdapter::parse_email("a@b.com", "", &body, Some("<id>"), None);
+        assert!(msg.content.len() <= MAX_EMAIL_BODY_BYTES);
+        // Verify the truncation didn't split a multi-byte char
+        assert!(msg.content.is_char_boundary(msg.content.len()));
+    }
+
+    #[tokio::test]
+    async fn send_fails_with_smtp_error() {
+        // test_adapter points at smtp.example.com which is unresolvable
+        let adapter = test_adapter();
+        let msg = OutboundMessage {
+            content: "hello".into(),
+            recipient_id: "bob@example.com".into(),
+            metadata: None,
+        };
+        let result = adapter.send(msg).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("SMTP send failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_in_reply_to() {
+        let adapter = test_adapter();
+        let msg = OutboundMessage {
+            content: "reply content".into(),
+            recipient_id: "bob@example.com".into(),
+            metadata: Some(serde_json::json!({"in_reply_to": "<orig@example.com>"})),
+        };
+        let result = adapter.send(msg).await;
+        // Should fail at SMTP level, not at message building
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("SMTP send failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_invalid_from_address() {
+        // This tests the from_address parse error path (line 184)
+        let adapter = EmailAdapter::new(
+            "not-an-email".into(),
+            "smtp.example.com".into(),
+            587,
+            "imap.example.com".into(),
+            993,
+            "user".into(),
+            "pass".into(),
+        );
+        let msg = OutboundMessage {
+            content: "test".into(),
+            recipient_id: "bob@example.com".into(),
+            metadata: None,
+        };
+        let result = adapter.send(msg).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid from address"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_invalid_to_address() {
+        let adapter = test_adapter();
+        let msg = OutboundMessage {
+            content: "test".into(),
+            recipient_id: "not-an-email".into(),
+            metadata: None,
+        };
+        let result = adapter.send(msg).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid to address"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_returns_none_when_buffer_empty() {
+        let adapter = test_adapter();
+        let result = adapter.recv().await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn recv_returns_buffered_message() {
+        let adapter = test_adapter();
+        let msg = EmailAdapter::parse_email("test@example.com", "Hi", "Body", Some("<id>"), None);
+        adapter.push_message(msg);
+        let result = adapter.recv().await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().sender_id, "test@example.com");
+    }
 }

@@ -552,4 +552,135 @@ mod tests {
         assert!(!audit.contains("telegram_bot_token"));
         assert!(!audit.contains("secret"));
     }
+
+    #[test]
+    fn test_default_path() {
+        let path = Keystore::default_path();
+        assert!(path.to_str().unwrap().contains("keystore.enc"));
+        assert!(path.to_str().unwrap().contains(".ironclad"));
+    }
+
+    #[test]
+    fn test_set_on_locked_keystore_fails() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        // Don't unlock
+        let result = ks.set("key", "value");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("locked"));
+    }
+
+    #[test]
+    fn test_remove_on_locked_keystore_fails() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        let result = ks.remove("key");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("locked"));
+    }
+
+    #[test]
+    fn test_import_on_locked_keystore_fails() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        let result = ks.import(HashMap::new());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("locked"));
+    }
+
+    #[test]
+    fn test_rekey_on_locked_keystore_fails() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        let result = ks.rekey("new-pass");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("locked"));
+    }
+
+    #[test]
+    fn test_get_on_locked_keystore_returns_none() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        assert_eq!(ks.get("anything"), None);
+    }
+
+    #[test]
+    fn test_list_keys_on_locked_keystore_returns_empty() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        assert!(ks.list_keys().is_empty());
+    }
+
+    #[test]
+    fn test_corrupt_keystore_file() {
+        let path = temp_path();
+        // Write too-short data (less than SALT_LEN + NONCE_LEN + 1)
+        std::fs::write(&path, b"short").unwrap();
+        let ks = Keystore::new(&path);
+        let result = ks.unlock("pass");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("corrupt"));
+    }
+
+    #[test]
+    fn test_set_overwrites_existing_key() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        ks.unlock("pass").unwrap();
+
+        ks.set("key", "first").unwrap();
+        assert_eq!(ks.get("key"), Some("first".into()));
+
+        ks.set("key", "second").unwrap();
+        assert_eq!(ks.get("key"), Some("second".into()));
+    }
+
+    #[test]
+    fn test_import_audit_entry() {
+        let path = temp_path();
+        let ks = Keystore::new(&path);
+        ks.unlock("pass").unwrap();
+
+        let mut batch = HashMap::new();
+        batch.insert("imported_key".into(), "imported_value".into());
+        ks.import(batch).unwrap();
+
+        let audit_path = path.with_extension("audit.log");
+        let audit = std::fs::read_to_string(audit_path).unwrap();
+        assert!(audit.contains("\"operation\":\"import\""));
+    }
+
+    #[test]
+    fn redact_key_name_short_keys() {
+        assert_eq!(redact_key_name("ab"), "ab***");
+        assert_eq!(redact_key_name("a"), "a***");
+        assert_eq!(redact_key_name(""), "***");
+    }
+
+    #[test]
+    fn redact_key_name_long_keys() {
+        assert_eq!(redact_key_name("telegram_bot_token"), "tel***");
+        assert_eq!(redact_key_name("abc"), "abc***");
+    }
+
+    #[test]
+    fn machine_passphrase_is_deterministic() {
+        let p1 = machine_passphrase();
+        let p2 = machine_passphrase();
+        assert_eq!(p1, p2);
+        assert!(p1.starts_with("ironclad-machine-key:"));
+    }
+
+    #[test]
+    fn lock_or_recover_works_on_clean_mutex() {
+        let m = Mutex::new(42);
+        let guard = lock_or_recover(&m);
+        assert_eq!(*guard, 42);
+    }
+
+    #[test]
+    fn audit_log_path_derives_from_keystore_path() {
+        let ks = Keystore::new("/tmp/test.enc");
+        assert_eq!(ks.audit_log_path(), PathBuf::from("/tmp/test.audit.log"));
+    }
 }

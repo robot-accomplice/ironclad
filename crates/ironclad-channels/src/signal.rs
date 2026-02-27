@@ -347,4 +347,208 @@ mod tests {
         let adapter = SignalAdapter::new("+1".into(), "http://custom:9999".into());
         assert_eq!(adapter.rpc_url(), "http://custom:9999");
     }
+
+    #[test]
+    fn parse_inbound_source_fallback() {
+        // Uses "source" instead of "sourceNumber"
+        let envelope = json!({
+            "source": "+15559999999",
+            "dataMessage": {
+                "timestamp": 1700000000000_u64,
+                "message": "via source field"
+            }
+        });
+        let msg = SignalAdapter::parse_inbound(&envelope).unwrap();
+        assert_eq!(msg.sender_id, "+15559999999");
+        assert_eq!(msg.content, "via source field");
+    }
+
+    #[test]
+    fn parse_inbound_unknown_sender() {
+        // Neither sourceNumber nor source present
+        let envelope = json!({
+            "dataMessage": {
+                "timestamp": 1700000000000_u64,
+                "message": "no sender"
+            }
+        });
+        let msg = SignalAdapter::parse_inbound(&envelope).unwrap();
+        assert_eq!(msg.sender_id, "unknown");
+    }
+
+    #[test]
+    fn parse_inbound_no_timestamp_defaults_zero() {
+        let envelope = json!({
+            "sourceNumber": "+1555",
+            "dataMessage": {
+                "message": "no timestamp"
+            }
+        });
+        let msg = SignalAdapter::parse_inbound(&envelope).unwrap();
+        assert!(msg.id.contains("+1555"));
+        assert!(msg.id.contains("-0"));
+    }
+
+    #[test]
+    fn parse_inbound_no_message_field_defaults_empty() {
+        let envelope = json!({
+            "sourceNumber": "+1555",
+            "dataMessage": {
+                "timestamp": 100
+            }
+        });
+        // message field missing means empty string, which returns None
+        let result = SignalAdapter::parse_inbound(&envelope);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_inbound_id_format() {
+        let envelope = json!({
+            "sourceNumber": "+15551234567",
+            "dataMessage": {
+                "timestamp": 1234567890,
+                "message": "test"
+            }
+        });
+        let msg = SignalAdapter::parse_inbound(&envelope).unwrap();
+        assert_eq!(msg.id, "+15551234567-1234567890");
+    }
+
+    #[test]
+    fn parse_inbound_metadata_preserved() {
+        let envelope = json!({
+            "sourceNumber": "+1555",
+            "dataMessage": {
+                "timestamp": 100,
+                "message": "meta test",
+                "groupInfo": { "groupId": "abc" }
+            }
+        });
+        let msg = SignalAdapter::parse_inbound(&envelope).unwrap();
+        let meta = msg.metadata.unwrap();
+        assert_eq!(meta["sourceNumber"], "+1555");
+    }
+
+    #[test]
+    fn process_envelope_returns_none_for_no_data_message() {
+        let adapter = SignalAdapter::new("+1".into(), "http://localhost:8080".into());
+        let envelope = json!({"sourceNumber": "+1555"});
+        assert!(adapter.process_envelope(&envelope).is_none());
+    }
+
+    #[test]
+    fn process_envelope_returns_none_for_empty_message() {
+        let adapter = SignalAdapter::new("+1".into(), "http://localhost:8080".into());
+        let envelope = json!({
+            "sourceNumber": "+1555",
+            "dataMessage": {
+                "timestamp": 1,
+                "message": ""
+            }
+        });
+        assert!(adapter.process_envelope(&envelope).is_none());
+    }
+
+    #[test]
+    fn push_multiple_messages_fifo() {
+        let adapter = SignalAdapter::new("+1".into(), "http://localhost:8080".into());
+        for i in 0..3 {
+            adapter.push_message(InboundMessage {
+                id: format!("s{}", i),
+                platform: "signal".into(),
+                sender_id: "+555".into(),
+                content: format!("msg{}", i),
+                timestamp: Utc::now(),
+                metadata: None,
+            });
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for i in 0..3 {
+            let result = rt.block_on(adapter.recv()).unwrap().unwrap();
+            assert_eq!(result.content, format!("msg{}", i));
+        }
+        assert!(rt.block_on(adapter.recv()).unwrap().is_none());
+    }
+
+    #[test]
+    fn with_config_multiple_allowed_numbers() {
+        let adapter = SignalAdapter::with_config(
+            "+1".into(),
+            "http://localhost:8080".into(),
+            vec!["+111".into(), "+222".into(), "+333".into()],
+        );
+        assert!(adapter.is_sender_allowed("+111"));
+        assert!(adapter.is_sender_allowed("+222"));
+        assert!(adapter.is_sender_allowed("+333"));
+        assert!(!adapter.is_sender_allowed("+444"));
+    }
+
+    #[test]
+    fn new_adapter_fields() {
+        let adapter = SignalAdapter::new("+15551234567".into(), "http://signal:7583".into());
+        assert_eq!(adapter.phone_number, "+15551234567");
+        assert_eq!(adapter.daemon_url, "http://signal:7583");
+        assert!(adapter.allowed_numbers.is_empty());
+        let buf = adapter.message_buffer.lock().unwrap();
+        assert!(buf.is_empty());
+    }
+
+    // ── async method tests (exercise error paths via connection refusal) ──
+
+    fn fast_fail_adapter() -> SignalAdapter {
+        let mut adapter = SignalAdapter::new("+1555".into(), "http://127.0.0.1:1/rpc".into());
+        adapter.client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .unwrap();
+        adapter
+    }
+
+    #[tokio::test]
+    async fn json_rpc_network_error() {
+        let adapter = fast_fail_adapter();
+        let result = adapter
+            .json_rpc("send", json!({"message": "test"}))
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("signal-cli RPC failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_text_network_error() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.send_text("+1666", "hello").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn send_typing_best_effort_no_panic() {
+        let adapter = fast_fail_adapter();
+        adapter.send_typing("+1666").await;
+    }
+
+    #[tokio::test]
+    async fn send_ephemeral_returns_none_on_failure() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.send_ephemeral("+1666", "test").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn send_trait_impl_network_error() {
+        let adapter = fast_fail_adapter();
+        let msg = OutboundMessage {
+            content: "hello".into(),
+            recipient_id: "+1666".into(),
+            metadata: None,
+        };
+        let result = adapter.send(msg).await;
+        assert!(result.is_err());
+    }
 }

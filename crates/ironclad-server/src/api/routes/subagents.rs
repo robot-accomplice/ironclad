@@ -488,3 +488,293 @@ pub async fn toggle_sub_agent(
         "enabled": new_enabled,
     })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── default_role / default_model / default_true ──────────────
+
+    #[test]
+    fn default_role_is_subagent() {
+        assert_eq!(default_role(), "subagent");
+    }
+
+    #[test]
+    fn default_model_is_auto() {
+        assert_eq!(default_model(), "auto");
+    }
+
+    #[test]
+    fn default_true_returns_true() {
+        assert!(default_true());
+    }
+
+    // ── validate_subagent_name ──────────────────────────────────
+
+    #[test]
+    fn validate_subagent_name_accepts_valid_names() {
+        assert!(validate_subagent_name("geo-specialist").is_ok());
+        assert!(validate_subagent_name("agent_1").is_ok());
+        assert!(validate_subagent_name("A").is_ok());
+        assert!(validate_subagent_name("abc-def_123").is_ok());
+    }
+
+    #[test]
+    fn validate_subagent_name_rejects_empty() {
+        let err = validate_subagent_name("").unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("empty"));
+    }
+
+    #[test]
+    fn validate_subagent_name_rejects_too_long() {
+        let long_name = "a".repeat(MAX_SUBAGENT_NAME_LEN + 1);
+        let err = validate_subagent_name(&long_name).unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("max length"));
+    }
+
+    #[test]
+    fn validate_subagent_name_rejects_special_chars() {
+        let err = validate_subagent_name("agent name").unwrap_err();
+        assert!(err.1.contains("alphanumeric"));
+
+        let err = validate_subagent_name("agent.name").unwrap_err();
+        assert!(err.1.contains("alphanumeric"));
+
+        let err = validate_subagent_name("agent/name").unwrap_err();
+        assert!(err.1.contains("alphanumeric"));
+    }
+
+    #[test]
+    fn validate_subagent_name_at_boundary_length() {
+        let exactly_max = "a".repeat(MAX_SUBAGENT_NAME_LEN);
+        assert!(validate_subagent_name(&exactly_max).is_ok());
+    }
+
+    // ── normalize_role ──────────────────────────────────────────
+
+    #[test]
+    fn normalize_role_accepts_subagent_and_specialist() {
+        assert_eq!(normalize_role("subagent"), Some(ROLE_SUBAGENT));
+        assert_eq!(normalize_role("specialist"), Some(ROLE_SUBAGENT));
+        assert_eq!(normalize_role("  Subagent  "), Some(ROLE_SUBAGENT));
+        assert_eq!(normalize_role("SPECIALIST"), Some(ROLE_SUBAGENT));
+    }
+
+    #[test]
+    fn normalize_role_accepts_model_proxy() {
+        assert_eq!(normalize_role("model-proxy"), Some(ROLE_MODEL_PROXY));
+        assert_eq!(normalize_role("MODEL-PROXY"), Some(ROLE_MODEL_PROXY));
+    }
+
+    #[test]
+    fn normalize_role_rejects_unknown() {
+        assert_eq!(normalize_role("commander"), None);
+        assert_eq!(normalize_role(""), None);
+        assert_eq!(normalize_role("worker"), None);
+    }
+
+    // ── normalize_skills ────────────────────────────────────────
+
+    #[test]
+    fn normalize_skills_deduplicates_and_sorts() {
+        let skills = vec![
+            "risk".to_string(),
+            "geo".to_string(),
+            "risk".to_string(),
+            "  geo  ".to_string(),
+        ];
+        let out = normalize_skills(&skills);
+        assert_eq!(out, vec!["geo", "risk"]);
+    }
+
+    #[test]
+    fn normalize_skills_removes_empty_and_whitespace() {
+        let skills = vec![
+            "".to_string(),
+            "  ".to_string(),
+            "analysis".to_string(),
+        ];
+        let out = normalize_skills(&skills);
+        assert_eq!(out, vec!["analysis"]);
+    }
+
+    #[test]
+    fn normalize_skills_empty_input() {
+        assert!(normalize_skills(&[]).is_empty());
+    }
+
+    // ── normalize_model_input ───────────────────────────────────
+
+    #[test]
+    fn normalize_model_input_trims_whitespace() {
+        assert_eq!(normalize_model_input("  openai/gpt-4o  "), "openai/gpt-4o");
+        assert_eq!(normalize_model_input("auto"), "auto");
+    }
+
+    // ── is_model_mode ───────────────────────────────────────────
+
+    #[test]
+    fn is_model_mode_detects_auto_and_commander() {
+        assert!(is_model_mode("auto"));
+        assert!(is_model_mode("AUTO"));
+        assert!(is_model_mode("commander"));
+        assert!(is_model_mode("COMMANDER"));
+        assert!(is_model_mode("  auto  "));
+    }
+
+    #[test]
+    fn is_model_mode_rejects_concrete_models() {
+        assert!(!is_model_mode("openai/gpt-4o"));
+        assert!(!is_model_mode("anthropic/claude-sonnet-4-20250514"));
+        assert!(!is_model_mode(""));
+    }
+
+    // ── validate_subagent_contract ──────────────────────────────
+
+    #[test]
+    fn validate_contract_accepts_valid_subagent() {
+        assert!(validate_subagent_contract(
+            "subagent",
+            "auto",
+            &["geo".to_string(), "risk".to_string()],
+            None
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_contract_accepts_valid_model_proxy() {
+        assert!(validate_subagent_contract(
+            "model-proxy",
+            "openai/gpt-4o",
+            &[],
+            None
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_contract_rejects_unknown_role() {
+        let err = validate_subagent_contract("worker", "auto", &[], None).unwrap_err();
+        assert!(err.1.contains("role must be"));
+    }
+
+    #[test]
+    fn validate_contract_rejects_personality() {
+        let personality = serde_json::json!({"tone": "formal"});
+        let err =
+            validate_subagent_contract("subagent", "auto", &[], Some(&personality)).unwrap_err();
+        assert!(err.1.contains("personality"));
+    }
+
+    #[test]
+    fn validate_contract_rejects_model_proxy_with_skills() {
+        let err = validate_subagent_contract(
+            "model-proxy",
+            "openai/gpt-4o",
+            &["geo".to_string()],
+            None,
+        )
+        .unwrap_err();
+        assert!(err.1.contains("cannot own skills"));
+    }
+
+    #[test]
+    fn validate_contract_rejects_empty_model() {
+        let err = validate_subagent_contract("subagent", "  ", &[], None).unwrap_err();
+        assert!(err.1.contains("model cannot be empty"));
+    }
+
+    #[test]
+    fn validate_contract_rejects_model_proxy_with_auto() {
+        let err =
+            validate_subagent_contract("model-proxy", "auto", &[], None).unwrap_err();
+        assert!(err.1.contains("concrete provider/model"));
+    }
+
+    #[test]
+    fn validate_contract_rejects_model_proxy_with_commander() {
+        let err =
+            validate_subagent_contract("model-proxy", "commander", &[], None).unwrap_err();
+        assert!(err.1.contains("concrete provider/model"));
+    }
+
+    // ── runtime_state_label ─────────────────────────────────────
+
+    #[test]
+    fn runtime_state_label_maps_all_states() {
+        use ironclad_agent::subagents::AgentRunState;
+        assert_eq!(runtime_state_label(AgentRunState::Idle), "idle");
+        assert_eq!(runtime_state_label(AgentRunState::Starting), "booting");
+        assert_eq!(runtime_state_label(AgentRunState::Running), "running");
+        assert_eq!(runtime_state_label(AgentRunState::Stopped), "stopped");
+        assert_eq!(runtime_state_label(AgentRunState::Error), "error");
+    }
+
+    // ── CreateSubAgentRequest deserialization ────────────────────
+
+    #[test]
+    fn create_request_defaults() {
+        let json = serde_json::json!({
+            "name": "test-agent"
+        });
+        let req: CreateSubAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "test-agent");
+        assert_eq!(req.model, "auto");
+        assert_eq!(req.role, "subagent");
+        assert!(req.enabled);
+        assert!(req.skills.is_empty());
+        assert!(req.display_name.is_none());
+        assert!(req.description.is_none());
+        assert!(req.personality.is_none());
+    }
+
+    #[test]
+    fn create_request_with_all_fields() {
+        let json = serde_json::json!({
+            "name": "geo-specialist",
+            "display_name": "Geo Specialist",
+            "model": "openai/gpt-4o",
+            "role": "model-proxy",
+            "description": "proxy for openai",
+            "skills": [],
+            "enabled": false
+        });
+        let req: CreateSubAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "geo-specialist");
+        assert_eq!(req.display_name.as_deref(), Some("Geo Specialist"));
+        assert_eq!(req.model, "openai/gpt-4o");
+        assert_eq!(req.role, "model-proxy");
+        assert!(!req.enabled);
+    }
+
+    // ── UpdateSubAgentRequest deserialization ────────────────────
+
+    #[test]
+    fn update_request_all_none() {
+        let json = serde_json::json!({});
+        let req: UpdateSubAgentRequest = serde_json::from_value(json).unwrap();
+        assert!(req.display_name.is_none());
+        assert!(req.model.is_none());
+        assert!(req.role.is_none());
+        assert!(req.description.is_none());
+        assert!(req.skills.is_none());
+        assert!(req.personality.is_none());
+        assert!(req.enabled.is_none());
+    }
+
+    #[test]
+    fn update_request_partial_fields() {
+        let json = serde_json::json!({
+            "model": "anthropic/claude-sonnet-4-20250514",
+            "enabled": false
+        });
+        let req: UpdateSubAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.model.as_deref(), Some("anthropic/claude-sonnet-4-20250514"));
+        assert_eq!(req.enabled, Some(false));
+        assert!(req.role.is_none());
+    }
+}

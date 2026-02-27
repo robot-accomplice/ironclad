@@ -373,4 +373,88 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn query_param_from_owned_string() {
+        let s = String::from("owned");
+        let p = QueryParam::from(s);
+        match p {
+            QueryParam::Text(t) => assert_eq!(t, "owned"),
+            _ => panic!("expected Text variant"),
+        }
+    }
+
+    #[test]
+    fn row_get_real_returns_none_for_wrong_type() {
+        let mut row = Row::new();
+        row.columns.insert("name".into(), ColumnValue::Text("not a number".into()));
+        assert!(row.get_real("name").is_none());
+    }
+
+    #[test]
+    fn row_get_blob_returns_none_for_wrong_type() {
+        let mut row = Row::new();
+        row.columns.insert("count".into(), ColumnValue::Integer(42));
+        assert!(row.get_blob("count").is_none());
+    }
+
+    #[test]
+    fn storage_error_kind_display_all_variants() {
+        assert_eq!(format!("{}", StorageErrorKind::ConnectionFailed), "connection_failed");
+        assert_eq!(format!("{}", StorageErrorKind::QueryFailed), "query_failed");
+        assert_eq!(format!("{}", StorageErrorKind::TransactionFailed), "transaction_failed");
+        assert_eq!(format!("{}", StorageErrorKind::ConstraintViolation), "constraint_violation");
+        assert_eq!(format!("{}", StorageErrorKind::NotFound), "not_found");
+        assert_eq!(format!("{}", StorageErrorKind::Internal), "internal");
+    }
+
+    #[test]
+    fn in_memory_backend_default() {
+        let backend = InMemoryBackend::default();
+        assert_eq!(backend.backend_type(), "in-memory");
+        assert!(backend.is_healthy());
+    }
+
+    #[test]
+    fn row_default() {
+        let row = Row::default();
+        assert!(row.columns.is_empty());
+    }
+
+    #[test]
+    fn storage_error_is_error_trait() {
+        let err = StorageError::new(StorageErrorKind::Internal, "test error");
+        // Verify it implements std::error::Error (the method exists)
+        let _: &dyn std::error::Error = &err;
+        assert!(err.to_string().contains("internal"));
+        assert!(err.to_string().contains("test error"));
+    }
+
+    #[test]
+    fn backend_config_serde_roundtrip() {
+        let config = BackendConfig {
+            backend: "postgres".to_string(),
+            postgres_url: Some("postgres://localhost/test".to_string()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let back: BackendConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.backend, "postgres");
+        assert_eq!(back.postgres_url.as_deref(), Some("postgres://localhost/test"));
+    }
+
+    #[test]
+    fn backend_config_default_serde() {
+        // Test deserialization with empty object uses defaults
+        let config: BackendConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.backend, "sqlite");
+        assert!(config.postgres_url.is_none());
+    }
+
+    #[test]
+    fn query_param_blob_variant() {
+        let p = QueryParam::Blob(vec![1, 2, 3]);
+        let json = serde_json::to_string(&p).unwrap();
+        let back: QueryParam = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, QueryParam::Blob(_)));
+    }
 }

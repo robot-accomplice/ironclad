@@ -1423,6 +1423,193 @@ mod tests {
         assert_eq!(all.len(), 1, "upsert should not create duplicate rows");
     }
 
+    // ── SessionStatus Display and from_str_lossy tests ─────────────
+
+    #[test]
+    fn session_status_display() {
+        assert_eq!(SessionStatus::Active.to_string(), "active");
+        assert_eq!(SessionStatus::Archived.to_string(), "archived");
+        assert_eq!(SessionStatus::Expired.to_string(), "expired");
+    }
+
+    #[test]
+    fn session_status_from_str_lossy() {
+        assert_eq!(SessionStatus::from_str_lossy("archived"), SessionStatus::Archived);
+        assert_eq!(SessionStatus::from_str_lossy("expired"), SessionStatus::Expired);
+        assert_eq!(SessionStatus::from_str_lossy("active"), SessionStatus::Active);
+        assert_eq!(SessionStatus::from_str_lossy("unknown"), SessionStatus::Active);
+        assert_eq!(SessionStatus::from_str_lossy(""), SessionStatus::Active);
+    }
+
+    // ── MessageRole Display and from_str_lossy tests ─────────────
+
+    #[test]
+    fn message_role_display() {
+        assert_eq!(MessageRole::User.to_string(), "user");
+        assert_eq!(MessageRole::Assistant.to_string(), "assistant");
+        assert_eq!(MessageRole::System.to_string(), "system");
+        assert_eq!(MessageRole::Tool.to_string(), "tool");
+    }
+
+    #[test]
+    fn message_role_from_str_lossy() {
+        assert_eq!(MessageRole::from_str_lossy("assistant"), MessageRole::Assistant);
+        assert_eq!(MessageRole::from_str_lossy("system"), MessageRole::System);
+        assert_eq!(MessageRole::from_str_lossy("tool"), MessageRole::Tool);
+        assert_eq!(MessageRole::from_str_lossy("user"), MessageRole::User);
+        assert_eq!(MessageRole::from_str_lossy("unknown"), MessageRole::User);
+        assert_eq!(MessageRole::from_str_lossy(""), MessageRole::User);
+    }
+
+    // ── create_turn_with_id tests ────────────────────────────────
+
+    #[test]
+    fn create_turn_with_id_roundtrip() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-twid", None).unwrap();
+        create_turn_with_id(&db, "custom-turn-1", &sid, Some("gpt-4"), Some(100), Some(200), Some(0.05)).unwrap();
+
+        let turns = list_turns_for_session(&db, &sid).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].id, "custom-turn-1");
+        assert_eq!(turns[0].model.as_deref(), Some("gpt-4"));
+        assert_eq!(turns[0].tokens_in, Some(100));
+        assert_eq!(turns[0].tokens_out, Some(200));
+    }
+
+    #[test]
+    fn create_turn_with_id_none_fields() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-twid2", None).unwrap();
+        create_turn_with_id(&db, "custom-turn-2", &sid, None, None, None, None).unwrap();
+
+        let turns = list_turns_for_session(&db, &sid).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].id, "custom-turn-2");
+        assert!(turns[0].model.is_none());
+    }
+
+    // ── expire_stale_sessions and list_stale_active_session_ids tests ──
+
+    #[test]
+    fn expire_stale_sessions_with_fresh_sessions() {
+        let db = test_db();
+        let _sid = find_or_create(&db, "agent-fresh", None).unwrap();
+        // With a very large max_age (1 year), nothing should expire
+        let count = expire_stale_sessions(&db, 365 * 86400).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn expire_stale_sessions_expires_old() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-old", None).unwrap();
+        // Artificially age the session by setting updated_at to a past date
+        db.conn().execute(
+            "UPDATE sessions SET updated_at = datetime('now', '-2 days') WHERE id = ?1",
+            [&sid],
+        ).unwrap();
+
+        let count = expire_stale_sessions(&db, 60).unwrap(); // 60 seconds max age
+        assert_eq!(count, 1);
+
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.status, "expired");
+    }
+
+    #[test]
+    fn list_stale_active_session_ids_returns_stale() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-stale", None).unwrap();
+        db.conn().execute(
+            "UPDATE sessions SET updated_at = datetime('now', '-3 days') WHERE id = ?1",
+            [&sid],
+        ).unwrap();
+
+        let stale_ids = list_stale_active_session_ids(&db, 60).unwrap();
+        assert_eq!(stale_ids.len(), 1);
+        assert_eq!(stale_ids[0], sid);
+    }
+
+    #[test]
+    fn list_stale_active_session_ids_excludes_fresh() {
+        let db = test_db();
+        let _sid = find_or_create(&db, "agent-fresh2", None).unwrap();
+        let stale_ids = list_stale_active_session_ids(&db, 365 * 86400).unwrap();
+        assert!(stale_ids.is_empty());
+    }
+
+    // ── set_session_status tests ─────────────────────────────────
+
+    #[test]
+    fn set_session_status_active_to_archived() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-setstatus", None).unwrap();
+        set_session_status(&db, &sid, SessionStatus::Archived).unwrap();
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.status, "archived");
+    }
+
+    #[test]
+    fn set_session_status_active_to_expired() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-setstatus2", None).unwrap();
+        set_session_status(&db, &sid, SessionStatus::Expired).unwrap();
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.status, "expired");
+    }
+
+    #[test]
+    fn set_session_status_missing_session_errors() {
+        let db = test_db();
+        let result = set_session_status(&db, "nonexistent", SessionStatus::Archived);
+        assert!(result.is_err());
+    }
+
+    // ── get_turn_by_id tests ─────────────────────────────────────
+
+    #[test]
+    fn get_turn_by_id_existing() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-gtbi", None).unwrap();
+        let tid = create_turn(&db, &sid, Some("gpt-4"), Some(50), Some(100), Some(0.02)).unwrap();
+
+        let turn = get_turn_by_id(&db, &tid).unwrap().expect("turn should exist");
+        assert_eq!(turn.id, tid);
+        assert_eq!(turn.session_id, sid);
+        assert_eq!(turn.model.as_deref(), Some("gpt-4"));
+        assert_eq!(turn.tokens_in, Some(50));
+        assert_eq!(turn.tokens_out, Some(100));
+    }
+
+    #[test]
+    fn get_turn_by_id_nonexistent() {
+        let db = test_db();
+        let turn = get_turn_by_id(&db, "no-such-turn").unwrap();
+        assert!(turn.is_none());
+    }
+
+    #[test]
+    fn get_turn_by_id_with_custom_id() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-gtbi2", None).unwrap();
+        create_turn_with_id(&db, "my-turn-id", &sid, Some("claude"), Some(10), Some(20), Some(0.01)).unwrap();
+
+        let turn = get_turn_by_id(&db, "my-turn-id").unwrap().expect("turn should exist");
+        assert_eq!(turn.id, "my-turn-id");
+        assert_eq!(turn.model.as_deref(), Some("claude"));
+    }
+
+    // ── list_turns_for_session tests ─────────────────────────────
+
+    #[test]
+    fn list_turns_for_session_empty() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-turns-empty", None).unwrap();
+        let turns = list_turns_for_session(&db, &sid).unwrap();
+        assert!(turns.is_empty());
+    }
+
     // ── property-based tests (v0.8.0 stabilization) ────────────────────
 
     use proptest::prelude::*;

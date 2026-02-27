@@ -242,4 +242,95 @@ mod tests {
         assert_eq!(decoded.platform, "");
         assert_eq!(decoded.content, "hello");
     }
+
+    #[test]
+    fn sanitize_platform_only_control_chars() {
+        assert_eq!(sanitize_platform("\x00\x01\x02\n\r\t"), "");
+    }
+
+    #[test]
+    fn sanitize_platform_mixed_control_and_printable() {
+        assert_eq!(sanitize_platform("te\x00le\ngr\x01am"), "telegram");
+    }
+
+    #[test]
+    fn sanitize_platform_exact_max_len() {
+        let exact = "a".repeat(MAX_PLATFORM_LEN);
+        assert_eq!(sanitize_platform(&exact).len(), MAX_PLATFORM_LEN);
+    }
+
+    #[test]
+    fn sanitize_platform_one_over_max_len() {
+        let over = "a".repeat(MAX_PLATFORM_LEN + 1);
+        assert_eq!(sanitize_platform(&over).len(), MAX_PLATFORM_LEN);
+    }
+
+    #[test]
+    fn inbound_message_sanitize_long_platform() {
+        let mut msg = InboundMessage {
+            id: "s-2".into(),
+            platform: "x".repeat(200),
+            sender_id: "u1".into(),
+            content: "hi".into(),
+            timestamp: Utc::now(),
+            metadata: None,
+        };
+        msg.sanitize();
+        assert_eq!(msg.platform.len(), MAX_PLATFORM_LEN);
+    }
+
+    #[test]
+    fn outbound_message_with_metadata() {
+        let msg = OutboundMessage {
+            content: "reply".into(),
+            recipient_id: "user-1".into(),
+            metadata: Some(serde_json::json!({"thread_id": "t1"})),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: OutboundMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.metadata.unwrap()["thread_id"], "t1");
+    }
+
+    #[test]
+    fn inbound_message_clone() {
+        let msg = InboundMessage {
+            id: "c-1".into(),
+            platform: "test".into(),
+            sender_id: "u1".into(),
+            content: "cloneable".into(),
+            timestamp: Utc::now(),
+            metadata: Some(serde_json::json!({"key": "val"})),
+        };
+        let cloned = msg.clone();
+        assert_eq!(cloned.id, msg.id);
+        assert_eq!(cloned.content, msg.content);
+        assert_eq!(cloned.metadata, msg.metadata);
+    }
+
+    #[test]
+    fn inbound_message_debug() {
+        let msg = InboundMessage {
+            id: "d-1".into(),
+            platform: "test".into(),
+            sender_id: "u1".into(),
+            content: "debug".into(),
+            timestamp: Utc::now(),
+            metadata: None,
+        };
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("d-1"));
+        assert!(debug.contains("debug"));
+    }
+
+    #[test]
+    fn outbound_message_clone() {
+        let msg = OutboundMessage {
+            content: "out".into(),
+            recipient_id: "r1".into(),
+            metadata: None,
+        };
+        let cloned = msg.clone();
+        assert_eq!(cloned.content, "out");
+        assert_eq!(cloned.recipient_id, "r1");
+    }
 }

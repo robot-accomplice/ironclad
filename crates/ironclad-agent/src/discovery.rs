@@ -305,4 +305,91 @@ mod tests {
             assert_eq!(method, back);
         }
     }
+
+    #[test]
+    fn touch_nonexistent_agent_is_noop() {
+        let mut reg = DiscoveryRegistry::new();
+        // Should not panic -- silently ignored
+        reg.touch("nonexistent-agent");
+        assert_eq!(reg.count(), 0);
+    }
+
+    #[test]
+    fn touch_updates_last_seen() {
+        let mut reg = DiscoveryRegistry::new();
+        let mut agent = test_agent("a1");
+        agent.last_seen = Utc::now() - chrono::Duration::hours(10);
+        let old_last_seen = agent.last_seen;
+        reg.register(agent);
+
+        reg.touch("a1");
+        let updated = reg.get("a1").unwrap();
+        assert!(
+            updated.last_seen > old_last_seen,
+            "touch should update last_seen to a more recent time"
+        );
+    }
+
+    #[test]
+    fn remove_nonexistent_returns_none() {
+        let mut reg = DiscoveryRegistry::new();
+        assert!(reg.remove("ghost").is_none());
+    }
+
+    #[test]
+    fn all_agents_includes_verified_and_unverified() {
+        let mut reg = DiscoveryRegistry::new();
+        let mut a1 = test_agent("a1");
+        a1.verified = true;
+        reg.register(a1);
+        reg.register(test_agent("a2")); // unverified
+
+        let all = reg.all_agents();
+        assert_eq!(all.len(), 2);
+        let verified = reg.verified_agents();
+        assert_eq!(verified.len(), 1);
+    }
+
+    #[test]
+    fn prune_stale_no_stale_agents() {
+        let mut reg = DiscoveryRegistry::new();
+        reg.register(test_agent("fresh"));
+        let pruned = reg.prune_stale(chrono::Duration::hours(24));
+        assert_eq!(pruned, 0);
+        assert_eq!(reg.count(), 1);
+    }
+
+    #[test]
+    fn default_impl() {
+        let reg = DiscoveryRegistry::default();
+        assert_eq!(reg.count(), 0);
+    }
+
+    #[test]
+    fn register_overwrites_existing() {
+        let mut reg = DiscoveryRegistry::new();
+        let a1 = test_agent("dup");
+        let mut a2 = test_agent("dup");
+        a2.name = "Updated Agent dup".to_string();
+        reg.register(a1);
+        reg.register(a2);
+        assert_eq!(reg.count(), 1);
+        assert_eq!(reg.get("dup").unwrap().name, "Updated Agent dup");
+    }
+
+    #[test]
+    fn build_advertisement_with_empty_capabilities() {
+        let (srv, txt) = build_advertisement("agent-x", "host.local", 8080, &[]);
+        assert_eq!(srv.port, 8080);
+        assert_eq!(txt.entries["caps"], "");
+    }
+
+    #[test]
+    fn discovered_agent_serde_roundtrip() {
+        let agent = test_agent("serde-test");
+        let json = serde_json::to_string(&agent).unwrap();
+        let back: DiscoveredAgent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.agent_id, "serde-test");
+        assert_eq!(back.capabilities, vec!["research", "coding"]);
+    }
 }

@@ -148,4 +148,166 @@ mod tests {
             .unwrap();
         assert_eq!(archived.status, "archived");
     }
+
+    // ── compact_before_archive tests (BUG-084) ─────────────────────
+
+    #[test]
+    fn compact_before_archive_fewer_than_4_messages_is_noop() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+        let sid = ironclad_db::sessions::create_new(&db, "compact-few", None).unwrap();
+
+        // Add only 2 messages (< 4 threshold)
+        ironclad_db::sessions::append_message(&db, &sid, "user", "hello").unwrap();
+        ironclad_db::sessions::append_message(&db, &sid, "assistant", "hi there").unwrap();
+
+        gov.compact_before_archive(&db, &sid).unwrap();
+
+        // No extra system message should be appended
+        let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert!(!msgs.iter().any(|m| m.content.contains("[Conversation Summary Draft]")));
+    }
+
+    #[test]
+    fn compact_before_archive_with_enough_messages_appends_digest() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+        let sid = ironclad_db::sessions::create_new(&db, "compact-enough", None).unwrap();
+
+        // Add 6 messages (>= 4 threshold)
+        for i in 0..6 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            ironclad_db::sessions::append_message(
+                &db,
+                &sid,
+                role,
+                &format!("message number {i}"),
+            )
+            .unwrap();
+        }
+
+        gov.compact_before_archive(&db, &sid).unwrap();
+
+        let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
+        // Should have original 6 + 1 compaction system message = 7
+        assert_eq!(msgs.len(), 7);
+        let last = msgs.last().unwrap();
+        assert_eq!(last.role, "system");
+        assert!(
+            last.content.contains("[Conversation Summary Draft]"),
+            "expected summary draft header"
+        );
+        assert!(
+            last.content.contains("Summarize"),
+            "expected summarize instruction"
+        );
+    }
+
+    #[test]
+    fn compact_before_archive_trims_old_keeps_recent_4() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+        let sid = ironclad_db::sessions::create_new(&db, "compact-trim", None).unwrap();
+
+        // Add 8 messages
+        for i in 0..8 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            ironclad_db::sessions::append_message(
+                &db,
+                &sid,
+                role,
+                &format!("content-{i}"),
+            )
+            .unwrap();
+        }
+
+        gov.compact_before_archive(&db, &sid).unwrap();
+
+        let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
+        let summary_msg = msgs.iter().find(|m| m.content.contains("[Conversation Summary Draft]")).unwrap();
+
+        // The summary should include content from trimmed messages (0..4) but
+        // not from the kept recent 4 (4..8)
+        assert!(
+            summary_msg.content.contains("content-0"),
+            "summary should include trimmed message 0"
+        );
+        assert!(
+            summary_msg.content.contains("content-3"),
+            "summary should include trimmed message 3"
+        );
+    }
+
+    #[test]
+    fn compact_before_archive_exactly_4_messages_is_noop() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+        let sid = ironclad_db::sessions::create_new(&db, "compact-exact", None).unwrap();
+
+        // Add exactly 4 messages — trimmed slice would be empty
+        for i in 0..4 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            ironclad_db::sessions::append_message(
+                &db,
+                &sid,
+                role,
+                &format!("msg-{i}"),
+            )
+            .unwrap();
+        }
+
+        gov.compact_before_archive(&db, &sid).unwrap();
+
+        // keep_recent = 4, trim_end = 4 - 4 = 0, trimmed slice is empty -> early return
+        let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
+        assert_eq!(msgs.len(), 4);
+    }
+
+    #[test]
+    fn tick_expires_stale_sessions_with_compaction() {
+        let gov = SessionGovernor::new(SessionConfig {
+            ttl_seconds: 0, // immediate expiry
+            ..SessionConfig::default()
+        });
+        let db = test_db();
+        let sid = ironclad_db::sessions::create_new(&db, "stale-agent", None).unwrap();
+
+        // Add enough messages to trigger compaction
+        for i in 0..6 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            ironclad_db::sessions::append_message(
+                &db,
+                &sid,
+                role,
+                &format!("stale-msg-{i}"),
+            )
+            .unwrap();
+        }
+
+        // Allow the session to become stale
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let expired = gov.tick(&db).unwrap();
+        assert_eq!(expired, 1);
+
+        // Check the session is now expired
+        let session = ironclad_db::sessions::get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(session.status, "expired");
+
+        // Compaction should have run — check for summary message
+        let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
+        assert!(
+            msgs.iter().any(|m| m.content.contains("[Conversation Summary Draft]")),
+            "compaction should have appended a summary"
+        );
+    }
+
+    #[test]
+    fn rotate_with_no_sessions_returns_zero() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+        let rotated = gov.rotate_agent_scope_sessions(&db, "nonexistent-agent").unwrap();
+        assert_eq!(rotated, 0);
+    }
 }

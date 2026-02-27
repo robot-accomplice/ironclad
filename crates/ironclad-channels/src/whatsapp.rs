@@ -813,4 +813,199 @@ mod tests {
         let result = adapter.verify_webhook_signature(b"body", None);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn verify_webhook_signature_empty_secret_rejects() {
+        let adapter = WhatsAppAdapter::with_config(
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
+            vec![],
+            Some("".into()),
+        );
+        let result = adapter.verify_webhook_signature(b"body", Some("sha256=aabb"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("app_secret"));
+    }
+
+    #[test]
+    fn verify_webhook_signature_missing_prefix() {
+        let adapter = WhatsAppAdapter::with_config(
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
+            vec![],
+            Some("secret".into()),
+        );
+        let result = adapter.verify_webhook_signature(b"body", Some("no_prefix_here"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("sha256= prefix"));
+    }
+
+    #[test]
+    fn verify_webhook_signature_invalid_hex() {
+        let adapter = WhatsAppAdapter::with_config(
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
+            vec![],
+            Some("secret".into()),
+        );
+        let result = adapter.verify_webhook_signature(b"body", Some("sha256=NOT_VALID_HEX!!!"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("hex"));
+    }
+
+    #[test]
+    fn parse_inbound_metadata_preserved() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w1", "type": "text", "text": {"body": "hi"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        assert!(msg.metadata.is_some());
+        // Metadata should contain the original webhook payload
+        let meta = msg.metadata.unwrap();
+        assert!(meta.get("entry").is_some());
+    }
+
+    #[test]
+    fn parse_media_message_no_media_id_defaults_unknown() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w1", "type": "image", "image": {}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        assert!(msg.content.contains("image:unknown"));
+    }
+
+    #[test]
+    fn process_webhook_allowed_sender() {
+        let adapter = WhatsAppAdapter::with_config(
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
+            vec!["allowed_num".into()],
+            None,
+        );
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "allowed_num", "id": "w1", "type": "text", "text": {"body": "allowed"}}]
+            }}]}]
+        });
+        let result = adapter.process_webhook(&webhook).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().content, "allowed");
+    }
+
+    #[test]
+    fn api_url_custom_endpoint() {
+        let adapter = WhatsAppAdapter::new("tok".into(), "PH_ID".into());
+        let url = adapter.api_url("media");
+        assert_eq!(url, "https://graph.facebook.com/v21.0/PH_ID/media");
+    }
+
+    #[test]
+    fn format_media_outbound_document() {
+        let payload = WhatsAppAdapter::format_media_outbound(
+            "555",
+            "document",
+            "https://example.com/file.pdf",
+            Some("important doc"),
+        );
+        assert_eq!(payload["type"], "document");
+        assert_eq!(payload["document"]["link"], "https://example.com/file.pdf");
+        assert_eq!(payload["document"]["caption"], "important doc");
+    }
+
+    #[test]
+    fn with_config_verify_token() {
+        let adapter = WhatsAppAdapter::with_config(
+            "tok".into(),
+            "ph".into(),
+            "my_verify_token".into(),
+            vec![],
+            None,
+        );
+        assert_eq!(adapter.verify_token, "my_verify_token");
+    }
+
+    #[test]
+    fn parse_inbound_text_missing_text_object() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w1", "type": "text"}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        // text.body missing should default to empty
+        assert_eq!(msg.content, "");
+    }
+
+    fn fast_fail_adapter() -> WhatsAppAdapter {
+        let mut adapter = WhatsAppAdapter::new("fake-token".into(), "12345".into());
+        adapter.client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .unwrap();
+        adapter.api_version = "v21.0".into();
+        adapter
+    }
+
+    #[tokio::test]
+    async fn mark_as_read_network_error() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.mark_as_read("wamid.abc123").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("mark_as_read failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_typing_with_message_id_no_panic() {
+        let adapter = fast_fail_adapter();
+        adapter.send_typing("+15551234567", Some("wamid.abc")).await;
+    }
+
+    #[tokio::test]
+    async fn send_typing_without_message_id_no_panic() {
+        let adapter = fast_fail_adapter();
+        adapter.send_typing("+15551234567", None).await;
+    }
+
+    #[tokio::test]
+    async fn send_ephemeral_returns_none_on_failure() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.send_ephemeral("+15551234567", "test").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn recv_returns_none_for_webhook_adapter() {
+        let adapter = fast_fail_adapter();
+        let result = adapter.recv().await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn send_trait_impl_network_error() {
+        let adapter = fast_fail_adapter();
+        let msg = OutboundMessage {
+            content: "hello".into(),
+            recipient_id: "+15551234567".into(),
+            metadata: None,
+        };
+        let result = adapter.send(msg).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("send message failed"),
+            "unexpected error: {err}"
+        );
+    }
 }

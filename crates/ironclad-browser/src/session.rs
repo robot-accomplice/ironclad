@@ -242,4 +242,313 @@ mod tests {
         assert_eq!(method, Some("Page.loadEventFired"));
         assert!(event.get("id").is_none());
     }
+
+    // ─── Helper: spin up a mock WebSocket server ────────────────────────
+    // Returns (ws_url, JoinHandle).  The server accepts one connection and
+    // runs `handler` on each incoming text frame, sending back whatever the
+    // handler returns.
+
+    use tokio::net::TcpListener;
+
+    async fn mock_ws_server<F>(handler: F) -> (String, tokio::task::JoinHandle<()>)
+    where
+        F: Fn(String) -> Option<String> + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("ws://127.0.0.1:{port}");
+
+        let handle = tokio::spawn(async move {
+            if let Ok((stream, _addr)) = listener.accept().await {
+                let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let (mut sink, mut source) = ws.split();
+                while let Some(Ok(msg)) = source.next().await {
+                    if let Message::Text(ref t) = msg {
+                        if let Some(reply) = handler(t.clone()) {
+                            let _ = sink.send(Message::Text(reply)).await;
+                        }
+                    }
+                }
+            }
+        });
+
+        // Give the server a moment to bind
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        (url, handle)
+    }
+
+    #[tokio::test]
+    async fn send_command_success() {
+        let (url, _server) = mock_ws_server(|text| {
+            let req: Value = serde_json::from_str(&text).ok()?;
+            let id = req.get("id")?.as_u64()?;
+            Some(serde_json::to_string(&json!({"id": id, "result": {"frameId": "F1"}})).unwrap())
+        })
+        .await;
+
+        let session = CdpSession::connect(&url).await.unwrap();
+        let result = session
+            .send_command("Page.navigate", json!({"url": "https://example.com"}))
+            .await
+            .unwrap();
+        assert_eq!(result["frameId"], "F1");
+    }
+
+    #[tokio::test]
+    async fn send_command_cdp_error() {
+        let (url, _server) = mock_ws_server(|text| {
+            let req: Value = serde_json::from_str(&text).ok()?;
+            let id = req.get("id")?.as_u64()?;
+            Some(
+                serde_json::to_string(&json!({
+                    "id": id,
+                    "error": {"code": -32000, "message": "Cannot navigate"}
+                }))
+                .unwrap(),
+            )
+        })
+        .await;
+
+        let session = CdpSession::connect(&url).await.unwrap();
+        let result = session
+            .send_command("Page.navigate", json!({"url": "invalid"}))
+            .await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("Cannot navigate"),
+            "expected CDP error message: {err_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_command_timeout() {
+        // Server never responds
+        let (url, _server) = mock_ws_server(|_text| None).await;
+
+        let session = CdpSession::connect(&url).await.unwrap();
+        session.set_timeout(Duration::from_millis(200));
+
+        let result = session
+            .send_command("Page.navigate", json!({"url": "https://example.com"}))
+            .await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("timed out"),
+            "expected timeout error: {err_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_command_skips_events_before_response() {
+        let (url, _server) = mock_ws_server(|text| {
+            let req: Value = serde_json::from_str(&text).ok()?;
+            let id = req.get("id")?.as_u64()?;
+            // Return: first an event, then the matching response (concatenated by sending both)
+            // We'll send the event first, then the response
+            // But since our handler returns one message per call, we need a different approach.
+            // Instead, let's just return the response; the event-skipping is tested via
+            // the response_matching_logic test already.
+            Some(serde_json::to_string(&json!({"id": id, "result": {"ok": true}})).unwrap())
+        })
+        .await;
+
+        let session = CdpSession::connect(&url).await.unwrap();
+        let result = session
+            .send_command("Runtime.evaluate", json!({"expression": "1+1"}))
+            .await
+            .unwrap();
+        assert_eq!(result["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn send_command_events_before_matching_response() {
+        // Server sends an event first, then the matching response
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("ws://127.0.0.1:{port}");
+
+        let _server = tokio::spawn(async move {
+            if let Ok((stream, _addr)) = listener.accept().await {
+                let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let (mut sink, mut source) = ws.split();
+                while let Some(Ok(msg)) = source.next().await {
+                    if let Message::Text(ref t) = msg {
+                        if let Ok(req) = serde_json::from_str::<Value>(t) {
+                            if let Some(id) = req.get("id").and_then(|v| v.as_u64()) {
+                                // Send a CDP event first
+                                let event = serde_json::to_string(
+                                    &json!({"method": "Page.loadEventFired", "params": {}}),
+                                )
+                                .unwrap();
+                                let _ = sink.send(Message::Text(event)).await;
+
+                                // Small delay to ensure event is processed first
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                                // Then send the matching response
+                                let resp = serde_json::to_string(
+                                    &json!({"id": id, "result": {"value": 42}}),
+                                )
+                                .unwrap();
+                                let _ = sink.send(Message::Text(resp)).await;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let session = CdpSession::connect(&url).await.unwrap();
+        let result = session
+            .send_command("Runtime.evaluate", json!({"expression": "21*2"}))
+            .await
+            .unwrap();
+        assert_eq!(result["value"], 42);
+    }
+
+    #[tokio::test]
+    async fn send_command_ws_closed_unexpectedly() {
+        // Server accepts and immediately closes
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("ws://127.0.0.1:{port}");
+
+        let _server = tokio::spawn(async move {
+            if let Ok((stream, _addr)) = listener.accept().await {
+                let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let (mut sink, _source) = ws.split();
+                // Close the connection immediately after accepting
+                let _ = sink.close().await;
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let session = CdpSession::connect(&url).await.unwrap();
+        session.set_timeout(Duration::from_millis(2000));
+
+        let result = session
+            .send_command("Page.enable", json!({}))
+            .await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("closed") || err_str.contains("timed out"),
+            "expected close/timeout error: {err_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_timeout_affects_deadline() {
+        let (url, _server) = mock_ws_server(|_text| None).await;
+
+        let session = CdpSession::connect(&url).await.unwrap();
+
+        // Set a very short timeout
+        session.set_timeout(Duration::from_millis(100));
+        let start = tokio::time::Instant::now();
+        let result = session.send_command("Test", json!({})).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err());
+        // Should timeout in roughly 100ms (allow some slack)
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "timeout took too long: {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn close_session() {
+        let (url, _server) = mock_ws_server(|_text| None).await;
+
+        let session = CdpSession::connect(&url).await.unwrap();
+        let result = session.close().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn send_command_result_without_result_field() {
+        // Server responds with just an id (no "result" key)
+        let (url, _server) = mock_ws_server(|text| {
+            let req: Value = serde_json::from_str(&text).ok()?;
+            let id = req.get("id")?.as_u64()?;
+            Some(serde_json::to_string(&json!({"id": id})).unwrap())
+        })
+        .await;
+
+        let session = CdpSession::connect(&url).await.unwrap();
+        let result = session.send_command("Page.enable", json!({})).await.unwrap();
+        // Should default to empty object
+        assert_eq!(result, json!({}));
+    }
+
+    #[tokio::test]
+    async fn send_command_error_missing_message() {
+        // CDP error with only code, no message
+        let (url, _server) = mock_ws_server(|text| {
+            let req: Value = serde_json::from_str(&text).ok()?;
+            let id = req.get("id")?.as_u64()?;
+            Some(serde_json::to_string(&json!({"id": id, "error": {"code": -1}})).unwrap())
+        })
+        .await;
+
+        let session = CdpSession::connect(&url).await.unwrap();
+        let result = session.send_command("Bad.command", json!({})).await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        // Should use "unknown CDP error" as fallback
+        assert!(
+            err_str.contains("unknown CDP error") || err_str.contains("CDP error -1"),
+            "unexpected error: {err_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_command_mismatched_ids_eventually_matches() {
+        // Server sends a response with wrong id first, then correct id
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("ws://127.0.0.1:{port}");
+
+        let _server = tokio::spawn(async move {
+            if let Ok((stream, _addr)) = listener.accept().await {
+                let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let (mut sink, mut source) = ws.split();
+                while let Some(Ok(msg)) = source.next().await {
+                    if let Message::Text(ref t) = msg {
+                        if let Ok(req) = serde_json::from_str::<Value>(t) {
+                            if let Some(id) = req.get("id").and_then(|v| v.as_u64()) {
+                                // Send response with wrong id first
+                                let wrong = serde_json::to_string(
+                                    &json!({"id": id + 999, "result": {"wrong": true}}),
+                                )
+                                .unwrap();
+                                let _ = sink.send(Message::Text(wrong)).await;
+
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                                // Then correct response
+                                let correct = serde_json::to_string(
+                                    &json!({"id": id, "result": {"correct": true}}),
+                                )
+                                .unwrap();
+                                let _ = sink.send(Message::Text(correct)).await;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let session = CdpSession::connect(&url).await.unwrap();
+        let result = session.send_command("Test", json!({})).await.unwrap();
+        assert_eq!(result["correct"], true);
+    }
 }

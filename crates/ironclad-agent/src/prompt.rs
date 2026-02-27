@@ -278,4 +278,119 @@ mod tests {
         assert!(verify_hmac_boundary(&tagged, secret));
         assert!(tagged.contains("Ironclad v0.1.1"));
     }
+
+    #[test]
+    fn build_system_prompt_with_firmware() {
+        let prompt = build_system_prompt(
+            "TestBot",
+            Some("I am helpful."),
+            Some("FIRMWARE: Always verify inputs."),
+            &[],
+        );
+        assert!(prompt.contains("# Agent: TestBot"));
+        assert!(prompt.contains("FIRMWARE: Always verify inputs."));
+        assert!(prompt.contains("## Identity"));
+        assert!(prompt.contains("I am helpful."));
+    }
+
+    #[test]
+    fn build_system_prompt_with_empty_firmware() {
+        // Empty firmware string should be treated as None (not included)
+        let prompt = build_system_prompt("TestBot", None, Some(""), &[]);
+        assert!(prompt.contains("# Agent: TestBot"));
+        // Empty firmware should not add any extra content
+        assert!(!prompt.contains("FIRMWARE"));
+    }
+
+    #[test]
+    fn verify_hmac_boundary_fewer_than_3_lines() {
+        let secret = b"secret";
+        // Only 2 lines -- should return false
+        assert!(!verify_hmac_boundary("line1\nline2", secret));
+        // Only 1 line
+        assert!(!verify_hmac_boundary("single line", secret));
+        // Empty string
+        assert!(!verify_hmac_boundary("", secret));
+    }
+
+    #[test]
+    fn verify_hmac_boundary_mismatched_tags() {
+        let secret = b"secret";
+        let content = "trusted content";
+        let tag = compute_hmac(content, secret);
+        // Construct with different first/last tags
+        let tagged = format!(
+            "{BOUNDARY_PREFIX}{tag}{BOUNDARY_SUFFIX}\n{content}\n{BOUNDARY_PREFIX}wrongtag{BOUNDARY_SUFFIX}"
+        );
+        assert!(!verify_hmac_boundary(&tagged, secret));
+    }
+
+    #[test]
+    fn verify_hmac_boundary_no_boundary_markers() {
+        let secret = b"secret";
+        let no_markers = "line1\nline2\nline3";
+        assert!(!verify_hmac_boundary(no_markers, secret));
+    }
+
+    #[test]
+    fn verify_hmac_boundary_first_line_no_marker() {
+        let secret = b"secret";
+        let content = "trusted content";
+        let tag = compute_hmac(content, secret);
+        // First line missing boundary marker
+        let tagged = format!(
+            "not a boundary\n{content}\n{BOUNDARY_PREFIX}{tag}{BOUNDARY_SUFFIX}"
+        );
+        assert!(!verify_hmac_boundary(&tagged, secret));
+    }
+
+    #[test]
+    fn verify_hmac_boundary_last_line_no_marker() {
+        let secret = b"secret";
+        let content = "trusted content";
+        let tag = compute_hmac(content, secret);
+        // Last line missing boundary marker
+        let tagged = format!(
+            "{BOUNDARY_PREFIX}{tag}{BOUNDARY_SUFFIX}\n{content}\nnot a boundary"
+        );
+        assert!(!verify_hmac_boundary(&tagged, secret));
+    }
+
+    #[test]
+    fn extract_tag_from_valid_boundary() {
+        let tag = extract_tag("<<<TRUST_BOUNDARY:abc123>>>");
+        assert_eq!(tag, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn extract_tag_from_invalid_line() {
+        assert!(extract_tag("not a boundary").is_none());
+        assert!(extract_tag("<<<TRUST_BOUNDARY:no_close").is_none());
+        assert!(extract_tag("no_open>>>").is_none());
+    }
+
+    #[test]
+    fn build_system_prompt_skills_only() {
+        let prompt = build_system_prompt(
+            "SkillBot",
+            None,
+            None,
+            &["Skill A instructions".into()],
+        );
+        assert!(prompt.contains("# Agent: SkillBot"));
+        assert!(prompt.contains("## Active Skills"));
+        assert!(prompt.contains("### Skill 1"));
+        assert!(prompt.contains("Skill A instructions"));
+        assert!(!prompt.contains("## Identity"));
+    }
+
+    #[test]
+    fn hmac_multiline_content() {
+        let secret = b"multiline-test";
+        let content = "Line 1\nLine 2\nLine 3\nLine 4";
+        let tagged = inject_hmac_boundary(content, secret);
+        assert!(verify_hmac_boundary(&tagged, secret));
+        let stripped = strip_hmac_boundaries(&tagged);
+        assert_eq!(stripped, content);
+    }
 }

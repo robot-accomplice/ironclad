@@ -457,4 +457,292 @@ mod tests {
             prop_assert!(result, "cron '{}' should match now '{}'", cron_expr, now);
         }
     }
+
+    // ── BUG-094: parse_offset exhaustive coverage ──────────────────────
+
+    #[test]
+    fn parse_offset_empty_returns_zero() {
+        let result = parse_offset("");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), zero_offset());
+    }
+
+    #[test]
+    fn parse_offset_whitespace_only_returns_zero() {
+        let result = parse_offset("   ");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), zero_offset());
+    }
+
+    #[test]
+    fn parse_offset_positive_hours_only() {
+        let result = parse_offset("+5");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), FixedOffset::east_opt(5 * 3600).unwrap());
+    }
+
+    #[test]
+    fn parse_offset_negative_hours_only() {
+        let result = parse_offset("-8");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), FixedOffset::west_opt(8 * 3600).unwrap());
+    }
+
+    #[test]
+    fn parse_offset_colon_notation() {
+        let result = parse_offset("+05:30");
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap(),
+            FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_offset_negative_colon_notation() {
+        let result = parse_offset("-03:30");
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap(),
+            FixedOffset::west_opt(3 * 3600 + 30 * 60).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_offset_four_digit_compact() {
+        let result = parse_offset("+0530");
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap(),
+            FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_offset_negative_four_digit() {
+        let result = parse_offset("-0930");
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap(),
+            FixedOffset::west_opt(9 * 3600 + 30 * 60).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_offset_no_sign_treated_as_positive() {
+        let result = parse_offset("3");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), FixedOffset::east_opt(3 * 3600).unwrap());
+    }
+
+    #[test]
+    fn parse_offset_invalid_returns_none() {
+        assert!(parse_offset("abc").is_none());
+        assert!(parse_offset("+abc").is_none());
+        assert!(parse_offset("+05:xx").is_none());
+    }
+
+    // ── BUG-094: parse_timezone exhaustive coverage ────────────────────
+
+    #[test]
+    fn parse_timezone_utc_literal() {
+        let result = parse_timezone("UTC");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), zero_offset());
+    }
+
+    #[test]
+    fn parse_timezone_z_literal() {
+        let result = parse_timezone("Z");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), zero_offset());
+    }
+
+    #[test]
+    fn parse_timezone_utc_case_insensitive() {
+        assert!(parse_timezone("utc").is_some());
+        assert_eq!(parse_timezone("utc").unwrap(), zero_offset());
+        assert!(parse_timezone("Utc").is_some());
+        assert_eq!(parse_timezone("Utc").unwrap(), zero_offset());
+        assert!(parse_timezone("z").is_some());
+        assert_eq!(parse_timezone("z").unwrap(), zero_offset());
+    }
+
+    #[test]
+    fn parse_timezone_utc_with_positive_offset() {
+        let result = parse_timezone("UTC+05:30");
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap(),
+            FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_timezone_utc_with_negative_offset() {
+        let result = parse_timezone("UTC-08");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), FixedOffset::west_opt(8 * 3600).unwrap());
+    }
+
+    #[test]
+    fn parse_timezone_lowercase_utc_prefix() {
+        let result = parse_timezone("utc+02:00");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), FixedOffset::east_opt(2 * 3600).unwrap());
+    }
+
+    #[test]
+    fn parse_timezone_bare_offset_no_utc_prefix() {
+        let result = parse_timezone("+09:00");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), FixedOffset::east_opt(9 * 3600).unwrap());
+    }
+
+    #[test]
+    fn parse_timezone_whitespace_trimmed() {
+        let result = parse_timezone("  UTC  ");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), zero_offset());
+    }
+
+    #[test]
+    fn parse_timezone_invalid_returns_none() {
+        assert!(parse_timezone("America/New_York").is_none());
+        assert!(parse_timezone("PST").is_none());
+        assert!(parse_timezone("foobar").is_none());
+    }
+
+    // ── split_schedule_timezone coverage ────────────────────────────────
+
+    #[test]
+    fn split_schedule_timezone_no_prefix() {
+        let (tz, expr) = split_schedule_timezone("0 12 * * *");
+        assert_eq!(tz, zero_offset());
+        assert_eq!(expr, "0 12 * * *");
+    }
+
+    #[test]
+    fn split_schedule_timezone_cron_tz_prefix() {
+        let (tz, expr) = split_schedule_timezone("CRON_TZ=UTC+05:00 30 9 * * *");
+        assert_eq!(tz, FixedOffset::east_opt(5 * 3600).unwrap());
+        assert_eq!(expr, "30 9 * * *");
+    }
+
+    #[test]
+    fn split_schedule_timezone_tz_prefix() {
+        let (tz, expr) = split_schedule_timezone("TZ=UTC-03:00 15 18 * * *");
+        assert_eq!(tz, FixedOffset::west_opt(3 * 3600).unwrap());
+        assert_eq!(expr, "15 18 * * *");
+    }
+
+    #[test]
+    fn split_schedule_timezone_invalid_tz_falls_back_to_zero() {
+        let (tz, expr) = split_schedule_timezone("CRON_TZ=America/Chicago 0 12 * * *");
+        assert_eq!(tz, zero_offset()); // IANA names not supported, fallback to zero
+        assert_eq!(expr, "0 12 * * *");
+    }
+
+    #[test]
+    fn split_schedule_timezone_leading_trailing_whitespace() {
+        let (tz, expr) = split_schedule_timezone("  0 12 * * *  ");
+        assert_eq!(tz, zero_offset());
+        assert_eq!(expr, "0 12 * * *");
+    }
+
+    // ── parse_iso and parse_rfc3339 coverage via scheduler APIs ────────
+
+    #[test]
+    fn evaluate_cron_invalid_now_returns_false() {
+        assert!(!DurableScheduler::evaluate_cron("0 12 * * *", None, "garbage"));
+    }
+
+    #[test]
+    fn evaluate_interval_iso_without_offset() {
+        // parse_iso supports bare ISO timestamps without timezone offset
+        assert!(DurableScheduler::evaluate_interval(
+            Some("2025-01-01T00:00:00"),
+            60_000,
+            "2025-01-01T00:02:00"
+        ));
+    }
+
+    #[test]
+    fn evaluate_at_iso_without_offset() {
+        assert!(DurableScheduler::evaluate_at(
+            "2025-01-01T00:00:00",
+            "2025-01-01T01:00:00"
+        ));
+    }
+
+    #[test]
+    fn calculate_next_run_invalid_now() {
+        assert!(DurableScheduler::calculate_next_run("interval", None, Some(60_000), "bad").is_none());
+    }
+
+    #[test]
+    fn calculate_next_run_at_missing_expr() {
+        assert!(DurableScheduler::calculate_next_run("at", None, None, "2025-01-01T00:00:00+00:00").is_none());
+    }
+
+    #[test]
+    fn calculate_next_run_cron_missing_expr() {
+        assert!(DurableScheduler::calculate_next_run("cron", None, None, "2025-01-01T00:00:00+00:00").is_none());
+    }
+
+    #[test]
+    fn calculate_next_run_cron_invalid_expr() {
+        // Pass a malformed cron expression
+        let result = DurableScheduler::calculate_next_run(
+            "cron",
+            Some("this is not cron"),
+            None,
+            "2025-01-01T00:00:00+00:00",
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn calculate_next_run_at_with_bad_expr() {
+        let result = DurableScheduler::calculate_next_run(
+            "at",
+            Some("not-a-date"),
+            None,
+            "2025-01-01T00:00:00+00:00",
+        );
+        assert!(result.is_none());
+    }
+
+    // ── cron edge cases for coverage ───────────────────────────────────
+
+    #[test]
+    fn cron_slot_missed_by_more_than_60_seconds() {
+        // The probe should still find the slot but delta > 60s means not due
+        assert!(!DurableScheduler::evaluate_cron(
+            "0 12 * * *",
+            None,
+            "2025-01-01T12:02:00+00:00" // 2 minutes past the slot
+        ));
+    }
+
+    #[test]
+    fn cron_tz_prefix_with_utc_bare() {
+        // TZ=UTC (bare UTC, no offset)
+        assert!(DurableScheduler::evaluate_cron(
+            "TZ=UTC 0 12 * * *",
+            None,
+            "2025-01-01T12:00:00+00:00"
+        ));
+    }
+
+    #[test]
+    fn next_run_cron_with_tz_prefix() {
+        let result = DurableScheduler::calculate_next_run(
+            "cron",
+            Some("TZ=UTC-05:00 0 9 * * *"),
+            None,
+            "2025-01-01T10:00:00+00:00",
+        );
+        assert!(result.is_some());
+    }
 }

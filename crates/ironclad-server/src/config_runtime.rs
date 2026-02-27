@@ -304,4 +304,152 @@ primary = "ollama/qwen3:8b"
         assert!(written.contains("[agent]"));
         assert!(written.contains("primary = \"ollama/qwen3:8b\""));
     }
+
+    #[test]
+    fn restore_from_backup_restores_original_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ironclad.toml");
+        let backup_path = dir.path().join("ironclad.toml.bak");
+
+        let original = "original-content";
+        let overwritten = "overwritten-content";
+
+        std::fs::write(&path, original).expect("seed original");
+        std::fs::write(&backup_path, original).expect("seed backup");
+        std::fs::write(&path, overwritten).expect("overwrite");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            overwritten
+        );
+
+        restore_from_backup(&path, &backup_path).expect("restore");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn merge_patch_deep_merge_objects() {
+        let mut base = serde_json::json!({"a": {"inner": 1, "keep": true}});
+        merge_patch(&mut base, &serde_json::json!({"a": {"inner": 99, "new": "val"}}));
+        assert_eq!(base["a"]["inner"], 99);
+        assert_eq!(base["a"]["keep"], true);
+        assert_eq!(base["a"]["new"], "val");
+    }
+
+    #[test]
+    fn merge_patch_replaces_scalar() {
+        let mut base = serde_json::json!({"key": "old"});
+        merge_patch(&mut base, &serde_json::json!({"key": "new"}));
+        assert_eq!(base["key"], "new");
+    }
+
+    #[test]
+    fn merge_patch_adds_new_keys() {
+        let mut base = serde_json::json!({"existing": 1});
+        merge_patch(&mut base, &serde_json::json!({"added": 2}));
+        assert_eq!(base["existing"], 1);
+        assert_eq!(base["added"], 2);
+    }
+
+    #[test]
+    fn merge_patch_replaces_array() {
+        let mut base = serde_json::json!({"arr": [1, 2, 3]});
+        merge_patch(&mut base, &serde_json::json!({"arr": [4, 5]}));
+        assert_eq!(base["arr"], serde_json::json!([4, 5]));
+    }
+
+    #[test]
+    fn merge_patch_replaces_scalar_with_object() {
+        let mut base = serde_json::json!({"val": "string"});
+        merge_patch(&mut base, &serde_json::json!({"val": {"nested": true}}));
+        assert_eq!(base["val"]["nested"], true);
+    }
+
+    #[test]
+    fn config_value_from_file_or_runtime_uses_file_when_it_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ironclad.toml");
+        std::fs::write(&path, test_config()).expect("seed config");
+
+        let runtime_cfg = parse_and_validate_toml(test_config()).expect("parse");
+        let val = config_value_from_file_or_runtime(&path, &runtime_cfg).expect("read");
+        assert_eq!(val["agent"]["id"], "test");
+    }
+
+    #[test]
+    fn config_value_from_file_or_runtime_uses_runtime_when_no_file() {
+        let path = std::path::PathBuf::from("/nonexistent/ironclad.toml");
+        let runtime_cfg = parse_and_validate_toml(test_config()).expect("parse");
+        let val = config_value_from_file_or_runtime(&path, &runtime_cfg).expect("read");
+        assert_eq!(val["agent"]["id"], "test");
+    }
+
+    #[test]
+    fn config_runtime_error_display_variants() {
+        let io_err = ConfigRuntimeError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file not found",
+        ));
+        assert!(io_err.to_string().contains("I/O error"));
+
+        let validation_err = ConfigRuntimeError::Validation("bad field".into());
+        assert!(validation_err.to_string().contains("validation failed"));
+
+        let missing_parent = ConfigRuntimeError::MissingParent(PathBuf::from("/some/path"));
+        assert!(missing_parent
+            .to_string()
+            .contains("config parent directory is missing"));
+    }
+
+    #[test]
+    fn config_runtime_error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let err: ConfigRuntimeError = io_err.into();
+        assert!(err.to_string().contains("I/O error"));
+    }
+
+    #[test]
+    fn config_apply_status_new_initializes_empty() {
+        let status = ConfigApplyStatus::new(std::path::Path::new("/tmp/test.toml"));
+        assert_eq!(status.config_path, "/tmp/test.toml");
+        assert!(status.last_attempt_at.is_none());
+        assert!(status.last_success_at.is_none());
+        assert!(status.last_error.is_none());
+        assert!(status.last_backup_path.is_none());
+        assert!(status.deferred_apply.is_empty());
+    }
+
+    #[test]
+    fn status_for_path_returns_arc_rwlock() {
+        let arc = status_for_path(std::path::Path::new("/tmp/status.toml"));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let status = rt.block_on(arc.read());
+        assert_eq!(status.config_path, "/tmp/status.toml");
+    }
+
+    #[test]
+    fn backup_config_file_returns_none_for_missing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("does_not_exist.toml");
+        let result = backup_config_file(&path).expect("ok");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_and_validate_file_works_for_valid_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ironclad.toml");
+        std::fs::write(&path, test_config()).expect("seed config");
+        let cfg = parse_and_validate_file(&path).expect("parse");
+        assert_eq!(cfg.agent.id, "test");
+    }
+
+    #[test]
+    fn parse_and_validate_file_errors_for_missing_file() {
+        let err = parse_and_validate_file(std::path::Path::new("/nonexistent/file.toml"));
+        assert!(err.is_err());
+    }
 }

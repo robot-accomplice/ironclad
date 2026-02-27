@@ -364,4 +364,140 @@ mod tests {
             assert!(predictions[i - 1].confidence >= predictions[i].confidence);
         }
     }
+
+    #[test]
+    fn common_follow_ups_http_get() {
+        // http_get follow-ups should predict another http_get
+        let predictor = ToolPredictor::new(0.3);
+        let recent = vec!["http_get".to_string()];
+        let available = vec!["http_get".to_string()];
+        let predictions = predictor.predict(&recent, &available);
+        assert!(
+            predictions.iter().any(|p| p.tool_name == "http_get"),
+            "http_get should predict a follow-up http_get"
+        );
+    }
+
+    #[test]
+    fn common_follow_ups_unknown_tool_returns_empty() {
+        // Unknown tool names produce no follow-up predictions (only repeat heuristic)
+        let predictor = ToolPredictor::new(0.3);
+        let recent = vec!["unknown_exotic_tool".to_string()];
+        let available = vec!["unknown_exotic_tool".to_string(), "file_read".to_string()];
+        let predictions = predictor.predict(&recent, &available);
+        // No follow-ups for unknown tool, and only 1 call so no repeat heuristic
+        assert!(
+            predictions.is_empty(),
+            "unknown tool with single call should produce no predictions"
+        );
+    }
+
+    #[test]
+    fn predict_empty_available_tools() {
+        let predictor = ToolPredictor::new(0.3);
+        let recent = vec!["file_read".to_string()];
+        let predictions = predictor.predict(&recent, &[]);
+        assert!(predictions.is_empty(), "no available tools means no predictions");
+    }
+
+    #[test]
+    fn predict_empty_recent_tools() {
+        let predictor = ToolPredictor::new(0.3);
+        let available = vec!["file_read".to_string()];
+        let predictions = predictor.predict(&[], &available);
+        assert!(predictions.is_empty(), "no recent tools means no predictions");
+    }
+
+    #[test]
+    fn start_speculation_exhaustion_and_recovery() {
+        let cache = SpeculationCache::new(1);
+        assert!(cache.start_speculation(), "first slot should succeed");
+        assert!(!cache.start_speculation(), "second slot should fail");
+        assert_eq!(cache.active_count(), 1, "count should remain 1 after failed attempt");
+        cache.end_speculation();
+        assert_eq!(cache.active_count(), 0);
+        assert!(cache.start_speculation(), "slot should be available again");
+    }
+
+    #[test]
+    fn memory_search_follow_ups() {
+        let predictor = ToolPredictor::new(0.3);
+        let recent = vec!["memory_search".to_string()];
+        let available = vec!["memory_search".to_string(), "file_read".to_string()];
+        let predictions = predictor.predict(&recent, &available);
+        assert!(
+            predictions.iter().any(|p| p.tool_name == "memory_search"),
+            "memory_search should predict memory_search follow-up"
+        );
+    }
+
+    #[test]
+    fn repeated_tool_no_duplicate_with_follow_up() {
+        // file_read repeated 3 times: follow-up includes file_read (0.7),
+        // repeat heuristic should not add a duplicate
+        let predictor = ToolPredictor::new(0.3);
+        let recent = vec![
+            "file_read".to_string(),
+            "file_read".to_string(),
+            "file_read".to_string(),
+        ];
+        let available = vec!["file_read".to_string(), "memory_search".to_string()];
+        let predictions = predictor.predict(&recent, &available);
+        let file_read_count = predictions.iter().filter(|p| p.tool_name == "file_read").count();
+        assert_eq!(
+            file_read_count, 1,
+            "file_read should appear exactly once (no duplicate from repeat heuristic)"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_different_tools_same_params() {
+        let cache = SpeculationCache::new(4);
+        let params = serde_json::json!({"path": "/tmp/test.txt"});
+        cache
+            .insert(
+                "file_read",
+                &params,
+                SpeculativeResult {
+                    output: "read result".to_string(),
+                    metadata: None,
+                    created_at: std::time::Instant::now(),
+                },
+            )
+            .await;
+        cache
+            .insert(
+                "file_write",
+                &params,
+                SpeculativeResult {
+                    output: "write result".to_string(),
+                    metadata: None,
+                    created_at: std::time::Instant::now(),
+                },
+            )
+            .await;
+        assert_eq!(cache.size().await, 2);
+        let read_result = cache.get("file_read", &params).await.unwrap();
+        assert_eq!(read_result.output, "read result");
+        let write_result = cache.get("file_write", &params).await.unwrap();
+        assert_eq!(write_result.output, "write result");
+    }
+
+    #[test]
+    fn speculation_key_different_tool_names() {
+        let params = serde_json::json!({"key": "value"});
+        let key1 = SpeculationKey::new("tool_a", &params);
+        let key2 = SpeculationKey::new("tool_b", &params);
+        assert_ne!(key1, key2, "different tool names should produce different keys");
+    }
+
+    #[test]
+    fn speculative_result_metadata() {
+        let result = SpeculativeResult {
+            output: "data".to_string(),
+            metadata: Some(serde_json::json!({"source": "cache"})),
+            created_at: std::time::Instant::now(),
+        };
+        assert_eq!(result.metadata.unwrap()["source"], "cache");
+    }
 }

@@ -25,3 +25,4 @@ cron = "0.15"
 
 [dev-dependencies]
 proptest = { workspace = true }
+tokio = { version = "1", features = ["test-util"] }

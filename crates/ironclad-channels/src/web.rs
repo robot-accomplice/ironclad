@@ -195,4 +195,71 @@ mod tests {
         assert_eq!(from_sub.content, "reply from server");
         assert_eq!(from_sub.recipient_id, "user-1");
     }
+
+    #[test]
+    fn parse_ws_message_missing_id_generates_uuid() {
+        let raw = serde_json::json!({
+            "sender_id": "user-1",
+            "content": "no id"
+        });
+        let msg = WebSocketChannel::parse_ws_message(&raw.to_string()).unwrap();
+        assert!(!msg.id.is_empty());
+        assert!(msg.id.len() > 10); // UUID length
+    }
+
+    #[test]
+    fn parse_ws_message_missing_sender_defaults_anonymous() {
+        let raw = serde_json::json!({
+            "content": "anon message"
+        });
+        let msg = WebSocketChannel::parse_ws_message(&raw.to_string()).unwrap();
+        assert_eq!(msg.sender_id, "anonymous");
+    }
+
+    #[test]
+    fn parse_ws_message_missing_content_defaults_empty() {
+        let raw = serde_json::json!({
+            "id": "m1",
+            "sender_id": "u1"
+        });
+        let msg = WebSocketChannel::parse_ws_message(&raw.to_string()).unwrap();
+        assert_eq!(msg.content, "");
+    }
+
+    #[test]
+    fn parse_ws_message_no_metadata() {
+        let raw = serde_json::json!({
+            "id": "m1",
+            "sender_id": "u1",
+            "content": "hi"
+        });
+        let msg = WebSocketChannel::parse_ws_message(&raw.to_string()).unwrap();
+        assert!(msg.metadata.is_none());
+    }
+
+    #[test]
+    fn format_ws_message_with_metadata() {
+        let outbound = OutboundMessage {
+            content: "test".into(),
+            recipient_id: "u1".into(),
+            metadata: Some(serde_json::json!({"key": "value"})),
+        };
+        let json_str = WebSocketChannel::format_ws_message(&outbound).unwrap();
+        assert!(json_str.contains("key"));
+        assert!(json_str.contains("value"));
+    }
+
+    #[test]
+    fn platform_name_is_web() {
+        let (channel, _sink) = WebSocketChannel::new();
+        assert_eq!(channel.platform_name(), "web");
+    }
+
+    #[test]
+    fn parse_ws_message_empty_json_object() {
+        let msg = WebSocketChannel::parse_ws_message("{}").unwrap();
+        assert_eq!(msg.sender_id, "anonymous");
+        assert_eq!(msg.content, "");
+        assert_eq!(msg.platform, "web");
+    }
 }

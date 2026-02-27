@@ -741,4 +741,430 @@ mod tests {
         assert_eq!(back.name, "test");
         assert_eq!(back.capabilities, vec![WasmCapability::Network]);
     }
+
+    // ── Memory read/write path tests (BUG-079) ─────────────────────
+
+    /// WAT module that exports memory, stores JSON `{"ok":true}` at offset 4096
+    /// (beyond input write area), and returns (ptr=4096, len=11) from `process`.
+    fn wasm_bytes_memory_json() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (data (i32.const 4096) "{\"ok\":true}")
+                (func (export "process") (result i32 i32)
+                    i32.const 4096  ;; ptr (beyond input write zone)
+                    i32.const 11    ;; len of {"ok":true}
+                )
+            )"#,
+        )
+        .unwrap()
+    }
+
+    /// WAT module that exports memory, stores plain text at offset 4096
+    /// (beyond input write area), and returns (ptr=4096, len=5).
+    fn wasm_bytes_memory_text() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (data (i32.const 4096) "hello")
+                (func (export "process") (result i32 i32)
+                    i32.const 4096  ;; ptr (beyond input write zone)
+                    i32.const 5     ;; len
+                )
+            )"#,
+        )
+        .unwrap()
+    }
+
+    /// WAT module returning (ptr, len) that goes out of bounds.
+    fn wasm_bytes_memory_oob() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "process") (result i32 i32)
+                    i32.const 0
+                    i32.const 99999  ;; len far exceeds 1 page (65536 bytes)
+                )
+            )"#,
+        )
+        .unwrap()
+    }
+
+    /// WAT module with memory that returns a single i32 — exercises the
+    /// "memory exists but not 2-value return" path.
+    fn wasm_bytes_memory_single_return() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "process") (result i32)
+                    i32.const 99
+                )
+            )"#,
+        )
+        .unwrap()
+    }
+
+    /// WAT module returning 3 values — exercises the multi-result fallback path.
+    fn wasm_bytes_multi_return() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                (func (export "process") (result i32 i32 i32)
+                    i32.const 1
+                    i32.const 2
+                    i32.const 3
+                )
+            )"#,
+        )
+        .unwrap()
+    }
+
+    /// WAT module returning no values — exercises the 0-result path.
+    fn wasm_bytes_void_return() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                (func (export "process") nop)
+            )"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn execute_memory_json_output() {
+        let dir = TempDir::new().unwrap();
+        let wasm_path = dir.path().join("mem-json.wasm");
+        fs::write(&wasm_path, wasm_bytes_memory_json()).unwrap();
+
+        let config = WasmPluginConfig {
+            name: "mem-json".into(),
+            wasm_path,
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities: vec![],
+        };
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        let result = plugin.execute(&serde_json::json!({})).unwrap();
+        assert_eq!(result["status"], "executed");
+        assert_eq!(result["plugin"], "mem-json");
+        // The output should be parsed JSON: {"ok":true}
+        assert_eq!(result["output"]["ok"], true);
+    }
+
+    #[test]
+    fn execute_memory_text_output() {
+        let dir = TempDir::new().unwrap();
+        let wasm_path = dir.path().join("mem-text.wasm");
+        fs::write(&wasm_path, wasm_bytes_memory_text()).unwrap();
+
+        let config = WasmPluginConfig {
+            name: "mem-text".into(),
+            wasm_path,
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities: vec![],
+        };
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        let result = plugin.execute(&serde_json::json!({})).unwrap();
+        assert_eq!(result["status"], "executed");
+        assert_eq!(result["output"], "hello");
+    }
+
+    #[test]
+    fn execute_memory_out_of_bounds() {
+        let dir = TempDir::new().unwrap();
+        let wasm_path = dir.path().join("mem-oob.wasm");
+        fs::write(&wasm_path, wasm_bytes_memory_oob()).unwrap();
+
+        let config = WasmPluginConfig {
+            name: "mem-oob".into(),
+            wasm_path,
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities: vec![],
+        };
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        let err = plugin.execute(&serde_json::json!({})).unwrap_err();
+        assert!(
+            err.to_string().contains("out of bounds"),
+            "expected out-of-bounds error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn execute_memory_single_return_with_exported_memory() {
+        let dir = TempDir::new().unwrap();
+        let wasm_path = dir.path().join("mem-single.wasm");
+        fs::write(&wasm_path, wasm_bytes_memory_single_return()).unwrap();
+
+        let config = WasmPluginConfig {
+            name: "mem-single".into(),
+            wasm_path,
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities: vec![],
+        };
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        let result = plugin.execute(&serde_json::json!({})).unwrap();
+        assert_eq!(result["status"], "executed");
+        // Single return value should go to "result", not "output"
+        assert_eq!(result["result"], 99);
+    }
+
+    #[test]
+    fn execute_multi_return_values() {
+        let dir = TempDir::new().unwrap();
+        let wasm_path = dir.path().join("multi.wasm");
+        fs::write(&wasm_path, wasm_bytes_multi_return()).unwrap();
+
+        let config = WasmPluginConfig {
+            name: "multi".into(),
+            wasm_path,
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities: vec![],
+        };
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        let result = plugin.execute(&serde_json::json!({})).unwrap();
+        assert_eq!(result["status"], "executed");
+        // No exported memory, 3 return values -> result is an array
+        let arr = result["result"].as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0], 1);
+        assert_eq!(arr[1], 2);
+        assert_eq!(arr[2], 3);
+    }
+
+    #[test]
+    fn execute_void_return() {
+        let dir = TempDir::new().unwrap();
+        let wasm_path = dir.path().join("void.wasm");
+        fs::write(&wasm_path, wasm_bytes_void_return()).unwrap();
+
+        let config = WasmPluginConfig {
+            name: "void".into(),
+            wasm_path,
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities: vec![],
+        };
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        let result = plugin.execute(&serde_json::json!({})).unwrap();
+        assert_eq!(result["status"], "executed");
+        // 0 return values -> result is null
+        assert!(result["result"].is_null());
+    }
+
+    #[test]
+    fn execute_writes_input_to_memory() {
+        // Use a module with memory to confirm input write path is exercised
+        let dir = TempDir::new().unwrap();
+        let wasm_path = dir.path().join("mem-write.wasm");
+        fs::write(&wasm_path, wasm_bytes_memory_text()).unwrap();
+
+        let config = WasmPluginConfig {
+            name: "mem-write".into(),
+            wasm_path,
+            memory_limit_bytes: default_memory_limit(),
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities: vec![],
+        };
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        // Execute with large-ish input; this exercises the memory write path
+        let big_input = serde_json::json!({"data": "x".repeat(100)});
+        let result = plugin.execute(&big_input).unwrap();
+        assert_eq!(result["status"], "executed");
+    }
+
+    // ── wasmer_value_to_json coverage ────────────────────────────────
+
+    #[test]
+    fn wasmer_value_to_json_i32() {
+        let v = wasmer::Value::I32(42);
+        assert_eq!(wasmer_value_to_json(&v), serde_json::json!(42));
+    }
+
+    #[test]
+    fn wasmer_value_to_json_i64() {
+        let v = wasmer::Value::I64(9_999_999_999);
+        assert_eq!(wasmer_value_to_json(&v), serde_json::json!(9_999_999_999i64));
+    }
+
+    #[test]
+    fn wasmer_value_to_json_f32() {
+        let v = wasmer::Value::F32(3.14);
+        let json = wasmer_value_to_json(&v);
+        assert!(json.is_number());
+        let n = json.as_f64().unwrap();
+        assert!((n - 3.14).abs() < 0.01);
+    }
+
+    #[test]
+    fn wasmer_value_to_json_f64() {
+        let v = wasmer::Value::F64(2.71828);
+        let json = wasmer_value_to_json(&v);
+        let n = json.as_f64().unwrap();
+        assert!((n - 2.71828).abs() < 0.001);
+    }
+
+    // ── enforce_capabilities explicit capability parsing ─────────────
+
+    #[test]
+    fn enforce_capabilities_explicit_read_filesystem_aliases() {
+        let dir = TempDir::new().unwrap();
+        let mut config = test_config(dir.path(), "cap-explicit");
+        config.capabilities = vec![WasmCapability::ReadFilesystem];
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        for alias in ["readfilesystem", "read_filesystem", "filesystem_read"] {
+            let input = serde_json::json!({"required_capabilities": [alias]});
+            assert!(
+                plugin.execute(&input).is_ok(),
+                "ReadFilesystem alias '{alias}' should be granted"
+            );
+        }
+    }
+
+    #[test]
+    fn enforce_capabilities_explicit_write_filesystem_aliases() {
+        let dir = TempDir::new().unwrap();
+        let mut config = test_config(dir.path(), "cap-write");
+        config.capabilities = vec![WasmCapability::WriteFilesystem];
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        for alias in ["writefilesystem", "write_filesystem", "filesystem_write"] {
+            let input = serde_json::json!({"required_capabilities": [alias]});
+            assert!(
+                plugin.execute(&input).is_ok(),
+                "WriteFilesystem alias '{alias}' should be granted"
+            );
+        }
+    }
+
+    #[test]
+    fn enforce_capabilities_explicit_network() {
+        let dir = TempDir::new().unwrap();
+        let mut config = test_config(dir.path(), "cap-net");
+        config.capabilities = vec![WasmCapability::Network];
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        let input = serde_json::json!({"required_capabilities": ["network"]});
+        assert!(plugin.execute(&input).is_ok());
+    }
+
+    #[test]
+    fn enforce_capabilities_explicit_environment_aliases() {
+        let dir = TempDir::new().unwrap();
+        let mut config = test_config(dir.path(), "cap-env");
+        config.capabilities = vec![WasmCapability::Environment];
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        for alias in ["environment", "env"] {
+            let input = serde_json::json!({"required_capabilities": [alias]});
+            assert!(
+                plugin.execute(&input).is_ok(),
+                "Environment alias '{alias}' should be granted"
+            );
+        }
+    }
+
+    #[test]
+    fn enforce_capabilities_explicit_unknown_ignored() {
+        let dir = TempDir::new().unwrap();
+        let config = test_config(dir.path(), "cap-unknown");
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        // Unknown capabilities in the array are silently ignored
+        let input = serde_json::json!({"required_capabilities": ["nonexistent_capability"]});
+        assert!(plugin.execute(&input).is_ok());
+    }
+
+    #[test]
+    fn enforce_capabilities_explicit_denied_without_grant() {
+        let dir = TempDir::new().unwrap();
+        // No capabilities granted
+        let config = test_config(dir.path(), "cap-deny");
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        let input = serde_json::json!({"required_capabilities": ["network"]});
+        let err = plugin.execute(&input).unwrap_err();
+        assert!(err.to_string().contains("missing required WASM capability"));
+    }
+
+    #[test]
+    fn enforce_capabilities_deduplicates() {
+        let dir = TempDir::new().unwrap();
+        let mut config = test_config(dir.path(), "cap-dedup");
+        config.capabilities = vec![WasmCapability::Network];
+        let mut plugin = WasmPlugin::new(config);
+        plugin.load().unwrap();
+
+        // Same capability requested via two aliases — should not cause double deny
+        let input = serde_json::json!({
+            "required_capabilities": ["network", "network"],
+            "url": "https://example.com"
+        });
+        assert!(plugin.execute(&input).is_ok());
+    }
+
+    // ── Memory limit enforcement on load ─────────────────────────────
+
+    #[test]
+    fn load_rejects_oversized_memory() {
+        let dir = TempDir::new().unwrap();
+        // Module requests 256 pages = 16 MB of memory
+        let wasm = wat::parse_str(
+            r#"(module (memory (export "memory") 256) (func (export "process") nop))"#,
+        )
+        .unwrap();
+        let wasm_path = dir.path().join("big-mem.wasm");
+        fs::write(&wasm_path, wasm).unwrap();
+
+        let config = WasmPluginConfig {
+            name: "big-mem".into(),
+            wasm_path,
+            memory_limit_bytes: 1024 * 1024, // 1 MB limit
+            execution_timeout_ms: default_execution_timeout_ms(),
+            capabilities: vec![],
+        };
+        let mut plugin = WasmPlugin::new(config);
+        let err = plugin.load().unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds limit"),
+            "expected memory limit error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn debug_impl_for_plugin() {
+        let config = WasmPluginConfig {
+            name: "debug-test".into(),
+            wasm_path: PathBuf::from("/tmp/debug.wasm"),
+            memory_limit_bytes: 1024,
+            execution_timeout_ms: 5000,
+            capabilities: vec![],
+        };
+        let plugin = WasmPlugin::new(config);
+        let dbg = format!("{:?}", plugin);
+        assert!(dbg.contains("debug-test"));
+        assert!(dbg.contains("has_engine"));
+    }
 }

@@ -511,4 +511,390 @@ mod tests {
             "permanent errors must not be queued for retry"
         );
     }
+
+    struct TransientFailAdapter {
+        name: String,
+    }
+
+    #[async_trait]
+    impl ChannelAdapter for TransientFailAdapter {
+        fn platform_name(&self) -> &str {
+            &self.name
+        }
+
+        async fn recv(&self) -> Result<Option<InboundMessage>> {
+            Ok(None)
+        }
+
+        async fn send(&self, _msg: OutboundMessage) -> Result<()> {
+            Err(IroncladError::Network("connection timeout".into()))
+        }
+    }
+
+    struct RecvErrorAdapter;
+
+    #[async_trait]
+    impl ChannelAdapter for RecvErrorAdapter {
+        fn platform_name(&self) -> &str {
+            "error_channel"
+        }
+
+        async fn recv(&self) -> Result<Option<InboundMessage>> {
+            Err(IroncladError::Network("recv failed".into()))
+        }
+
+        async fn send(&self, _msg: OutboundMessage) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn send_to_transient_error_enqueues_retry() {
+        let router = ChannelRouter::new();
+        router
+            .register(Arc::new(TransientFailAdapter {
+                name: "telegram".into(),
+            }))
+            .await;
+
+        let msg = OutboundMessage {
+            content: "retry me".into(),
+            recipient_id: "r1".into(),
+            metadata: None,
+        };
+        router.send_to("telegram", msg).await.unwrap();
+        assert_eq!(
+            router.delivery_queue().queue_size().await,
+            1,
+            "transient errors should be queued for retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_to_transient_error_records_last_error() {
+        let router = ChannelRouter::new();
+        router
+            .register(Arc::new(TransientFailAdapter {
+                name: "ch".into(),
+            }))
+            .await;
+
+        let msg = OutboundMessage {
+            content: "fail".into(),
+            recipient_id: "r1".into(),
+            metadata: None,
+        };
+        router.send_to("ch", msg).await.unwrap();
+        let statuses = router.channel_status().await;
+        assert!(statuses[0].last_error.is_some());
+        assert!(statuses[0].last_error.as_ref().unwrap().contains("timeout"));
+    }
+
+    #[tokio::test]
+    async fn poll_all_records_recv_error() {
+        let router = ChannelRouter::new();
+        router.register(Arc::new(RecvErrorAdapter)).await;
+        let msgs = router.poll_all().await;
+        assert!(msgs.is_empty());
+        let statuses = router.channel_status().await;
+        assert!(statuses[0].last_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn default_router() {
+        let router = ChannelRouter::default();
+        assert_eq!(router.channel_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn channel_status_fields() {
+        let status = ChannelStatus {
+            name: "test".into(),
+            connected: true,
+            messages_received: 5,
+            messages_sent: 3,
+            last_error: None,
+            last_activity: Some(Utc::now()),
+        };
+        assert_eq!(status.name, "test");
+        assert!(status.connected);
+        assert_eq!(status.messages_received, 5);
+        assert_eq!(status.messages_sent, 3);
+        assert!(status.last_error.is_none());
+        assert!(status.last_activity.is_some());
+    }
+
+    #[tokio::test]
+    async fn channel_status_serde() {
+        let status = ChannelStatus {
+            name: "telegram".into(),
+            connected: true,
+            messages_received: 10,
+            messages_sent: 5,
+            last_error: Some("timeout".into()),
+            last_activity: None,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        let back: ChannelStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "telegram");
+        assert_eq!(back.messages_received, 10);
+        assert_eq!(back.last_error.as_deref(), Some("timeout"));
+    }
+
+    #[tokio::test]
+    async fn record_received_nonexistent_channel_noop() {
+        let router = ChannelRouter::new();
+        // Should not panic
+        router.record_received("nonexistent").await;
+    }
+
+    #[tokio::test]
+    async fn record_processing_error_nonexistent_channel_noop() {
+        let router = ChannelRouter::new();
+        // Should not panic
+        router
+            .record_processing_error("nonexistent", "err".into())
+            .await;
+    }
+
+    #[tokio::test]
+    async fn drain_retry_queue_empty_is_noop() {
+        let router = ChannelRouter::new();
+        router.drain_retry_queue().await;
+        // No assertions needed; just verify no panic
+    }
+
+    #[tokio::test]
+    async fn drain_retry_queue_with_missing_channel_dead_letters() {
+        let router = ChannelRouter::new();
+        // Enqueue something for a channel that's not registered
+        router
+            .delivery_queue()
+            .enqueue(
+                "gone_channel".into(),
+                OutboundMessage {
+                    content: "orphan".into(),
+                    recipient_id: "r1".into(),
+                    metadata: None,
+                },
+            )
+            .await;
+        router.drain_retry_queue().await;
+        // The item should be dead-lettered since channel is gone
+    }
+
+    #[tokio::test]
+    async fn dead_letters_empty() {
+        let router = ChannelRouter::new();
+        let dead = router.dead_letters(10).await;
+        assert!(dead.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_dead_letter_nonexistent_returns_false() {
+        let router = ChannelRouter::new();
+        let replayed = router.replay_dead_letter("nonexistent-id").await;
+        assert!(!replayed);
+    }
+
+    #[tokio::test]
+    async fn is_registered_after_register() {
+        let router = ChannelRouter::new();
+        assert!(!router.is_registered("test").await);
+        router.register(Arc::new(MockAdapter::new("test"))).await;
+        assert!(router.is_registered("test").await);
+    }
+
+    #[tokio::test]
+    async fn send_reply_to_nonexistent_channel() {
+        let router = ChannelRouter::new();
+        let result = router
+            .send_reply("nonexistent", "user1", "hello".into())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn poll_all_clears_error_on_success() {
+        let router = ChannelRouter::new();
+        router
+            .register(Arc::new(MockAdapter::with_message("ch", "hello")))
+            .await;
+        // First, set an error
+        router
+            .record_processing_error("ch", "previous error".into())
+            .await;
+        // Poll should clear error on success
+        router.poll_all().await;
+        let statuses = router.channel_status().await;
+        assert!(
+            statuses[0].last_error.is_none(),
+            "error should be cleared after successful recv"
+        );
+    }
+
+    #[tokio::test]
+    async fn delivery_queue_accessor() {
+        let router = ChannelRouter::new();
+        assert_eq!(router.delivery_queue().queue_size().await, 0);
+    }
+
+    #[tokio::test]
+    async fn drain_retry_queue_successful_delivery() {
+        let router = ChannelRouter::new();
+        // Register a mock adapter that succeeds
+        router
+            .register(Arc::new(MockAdapter::new("test_ch")))
+            .await;
+
+        // Enqueue a delivery item
+        router
+            .delivery_queue()
+            .enqueue(
+                "test_ch".into(),
+                OutboundMessage {
+                    content: "retry me".into(),
+                    recipient_id: "r1".into(),
+                    metadata: None,
+                },
+            )
+            .await;
+
+        // Drain should succeed
+        router.drain_retry_queue().await;
+
+        // Queue should be empty after successful delivery
+        assert_eq!(router.delivery_queue().queue_size().await, 0);
+
+        // Verify messages_sent was incremented
+        let statuses = router.channel_status().await;
+        let ch_status = statuses.iter().find(|s| s.name == "test_ch").unwrap();
+        assert!(ch_status.messages_sent > 0);
+        assert!(ch_status.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn drain_retry_queue_transient_failure() {
+        let router = ChannelRouter::new();
+        // Register an adapter that fails with a transient error
+        router
+            .register(Arc::new(TransientFailAdapter {
+                name: "fail_ch".into(),
+            }))
+            .await;
+
+        router
+            .delivery_queue()
+            .enqueue(
+                "fail_ch".into(),
+                OutboundMessage {
+                    content: "will fail".into(),
+                    recipient_id: "r1".into(),
+                    metadata: None,
+                },
+            )
+            .await;
+
+        router.drain_retry_queue().await;
+
+        // Verify last_error was set
+        let statuses = router.channel_status().await;
+        let ch_status = statuses.iter().find(|s| s.name == "fail_ch").unwrap();
+        assert!(ch_status.last_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn drain_retry_queue_permanent_failure_dead_letters() {
+        let router = ChannelRouter::new();
+        // Register an adapter that fails with a permanent error
+        router
+            .register(Arc::new(PermanentFailAdapter {
+                name: "perm_ch".into(),
+            }))
+            .await;
+
+        router
+            .delivery_queue()
+            .enqueue(
+                "perm_ch".into(),
+                OutboundMessage {
+                    content: "permanent fail".into(),
+                    recipient_id: "r1".into(),
+                    metadata: None,
+                },
+            )
+            .await;
+
+        router.drain_retry_queue().await;
+
+        // Verify last_error was set
+        let statuses = router.channel_status().await;
+        let ch_status = statuses.iter().find(|s| s.name == "perm_ch").unwrap();
+        assert!(ch_status.last_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn dead_letters_returns_from_memory() {
+        let router = ChannelRouter::new();
+        // Enqueue then force to dead letter
+        router
+            .delivery_queue()
+            .enqueue(
+                "ch".into(),
+                OutboundMessage {
+                    content: "dead".into(),
+                    recipient_id: "r1".into(),
+                    metadata: None,
+                },
+            )
+            .await;
+        let item = router.delivery_queue().next_ready().await.unwrap();
+        router
+            .delivery_queue()
+            .requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+
+        let dead = router.dead_letters(10).await;
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].content, "dead");
+    }
+
+    #[tokio::test]
+    async fn replay_dead_letter_from_memory() {
+        let router = ChannelRouter::new();
+        router
+            .delivery_queue()
+            .enqueue(
+                "ch".into(),
+                OutboundMessage {
+                    content: "replay".into(),
+                    recipient_id: "r1".into(),
+                    metadata: None,
+                },
+            )
+            .await;
+        let item = router.delivery_queue().next_ready().await.unwrap();
+        let item_id = item.id.clone();
+        router
+            .delivery_queue()
+            .requeue_failed(item, "403 Forbidden: bot was blocked by the user".into())
+            .await;
+
+        let replayed = router.replay_dead_letter(&item_id).await;
+        assert!(replayed);
+    }
+
+    #[tokio::test]
+    async fn channel_names() {
+        let router = ChannelRouter::new();
+        router
+            .register(Arc::new(MockAdapter::new("alpha")))
+            .await;
+        router
+            .register(Arc::new(MockAdapter::new("beta")))
+            .await;
+        let mut names = router.channel_names().await;
+        names.sort();
+        assert_eq!(names, vec!["alpha", "beta"]);
+    }
 }

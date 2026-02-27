@@ -5095,4 +5095,255 @@ fallbacks = ["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514", "google/gemi
         assert!(more_complex > base);
         assert!(lower_fit < more_complex);
     }
+
+    // ── repeat_tokens tests ──────────────────────────────────────
+
+    #[test]
+    fn repeat_tokens_extracts_lowercase_alpha_tokens() {
+        let tokens = repeat_tokens("Hello World! Foo-Bar 42");
+        assert!(tokens.contains("hello"));
+        assert!(tokens.contains("world"));
+        assert!(tokens.contains("foo"));
+        assert!(tokens.contains("bar"));
+        // "42" is only 2 chars, below the 3-char minimum
+        assert!(!tokens.contains("42"));
+    }
+
+    #[test]
+    fn repeat_tokens_empty_input() {
+        let tokens = repeat_tokens("");
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn repeat_tokens_deduplicates() {
+        let tokens = repeat_tokens("hello hello hello");
+        assert_eq!(tokens.len(), 1);
+        assert!(tokens.contains("hello"));
+    }
+
+    // ── common_prefix_ratio tests ────────────────────────────────
+
+    #[test]
+    fn common_prefix_ratio_identical() {
+        assert!((common_prefix_ratio("hello", "hello") - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn common_prefix_ratio_no_common() {
+        assert!((common_prefix_ratio("abc", "xyz") - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn common_prefix_ratio_partial() {
+        let ratio = common_prefix_ratio("abcdef", "abcxyz");
+        // common prefix = "abc" (3 bytes), max_len = 6
+        assert!((ratio - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn common_prefix_ratio_empty_strings() {
+        assert!((common_prefix_ratio("", "") - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn common_prefix_ratio_one_empty() {
+        assert!((common_prefix_ratio("abc", "") - 0.0).abs() < f64::EPSILON);
+        assert!((common_prefix_ratio("", "abc") - 0.0).abs() < f64::EPSILON);
+    }
+
+    // ── looks_repetitive tests ───────────────────────────────────
+
+    #[test]
+    fn looks_repetitive_exact_match_case_insensitive() {
+        assert!(looks_repetitive("Hello World", "hello world"));
+    }
+
+    #[test]
+    fn looks_repetitive_empty_inputs() {
+        assert!(!looks_repetitive("", "some text"));
+        assert!(!looks_repetitive("some text", ""));
+        assert!(!looks_repetitive("", ""));
+    }
+
+    #[test]
+    fn looks_repetitive_short_but_different() {
+        // Texts under 80 chars and not identical should not be flagged
+        assert!(!looks_repetitive("Short text A", "Short text B"));
+    }
+
+    #[test]
+    fn looks_repetitive_high_overlap_long_texts() {
+        let base = "The system monitoring is active and operational. All channels report normal status. There are no critical errors detected. Continuing to watch for changes and will report immediately.";
+        let similar = "The system monitoring is active and operational. All channels report normal status. There are no critical errors detected. Continuing to watch for changes and will report at once.";
+        assert!(looks_repetitive(base, similar));
+    }
+
+    #[test]
+    fn looks_repetitive_different_long_texts() {
+        let a = "The provider health is degraded due to circuit breaker activation. Multiple fallback attempts are being tried through the configured fallback model list, but latency has increased significantly across all routes.";
+        let b = "Two new subagent processes have started and are now fully operational. The geopolitical specialist is running with updated skills. The risk analysis agent has completed its initial calibration phase successfully.";
+        assert!(!looks_repetitive(a, b));
+    }
+
+    // ── enforce_non_repetition tests ─────────────────────────────
+
+    #[test]
+    fn enforce_non_repetition_with_none_previous() {
+        let response = "Some unique response";
+        let result = enforce_non_repetition(response.to_string(), None);
+        assert_eq!(result, response);
+    }
+
+    // ── is_virtual_delegation_tool tests ─────────────────────────
+
+    #[test]
+    fn is_virtual_delegation_tool_recognizes_all_variants() {
+        assert!(is_virtual_delegation_tool("orchestrate-subagents"));
+        assert!(is_virtual_delegation_tool("orchestrate_subagents"));
+        assert!(is_virtual_delegation_tool("assign-tasks"));
+        assert!(is_virtual_delegation_tool("assign_tasks"));
+        assert!(is_virtual_delegation_tool("delegate-subagent"));
+        assert!(is_virtual_delegation_tool("delegate_subagent"));
+        assert!(is_virtual_delegation_tool("select-subagent-model"));
+        assert!(is_virtual_delegation_tool("select_subagent_model"));
+    }
+
+    #[test]
+    fn is_virtual_delegation_tool_case_insensitive() {
+        assert!(is_virtual_delegation_tool("ORCHESTRATE-SUBAGENTS"));
+        assert!(is_virtual_delegation_tool("Assign-Tasks"));
+        assert!(is_virtual_delegation_tool("  Delegate_Subagent  "));
+    }
+
+    #[test]
+    fn is_virtual_delegation_tool_rejects_non_delegation() {
+        assert!(!is_virtual_delegation_tool("read_file"));
+        assert!(!is_virtual_delegation_tool("bash"));
+        assert!(!is_virtual_delegation_tool("web_search"));
+        assert!(!is_virtual_delegation_tool(""));
+    }
+
+    // ── sanitize_diag_token edge cases ───────────────────────────
+
+    #[test]
+    fn sanitize_diag_token_empty_input() {
+        assert_eq!(sanitize_diag_token("", 50), "");
+    }
+
+    #[test]
+    fn sanitize_diag_token_all_special_chars() {
+        assert_eq!(sanitize_diag_token("!!!@@@###$$$", 50), "");
+    }
+
+    #[test]
+    fn sanitize_diag_token_preserves_allowed_chars() {
+        assert_eq!(
+            sanitize_diag_token("openai/gpt-4o:mini_v2", 50),
+            "openai/gpt-4o:mini_v2"
+        );
+    }
+
+    #[test]
+    fn sanitize_diag_token_strips_leading_trailing_separators() {
+        assert_eq!(sanitize_diag_token("---model---", 50), "model");
+        assert_eq!(sanitize_diag_token("___test___", 50), "test");
+        assert_eq!(sanitize_diag_token("///path///", 50), "path");
+    }
+
+    // ── metadata_str edge cases ──────────────────────────────────
+
+    #[test]
+    fn metadata_str_returns_none_for_none_meta() {
+        assert!(metadata_str(None, "/chat_id").is_none());
+    }
+
+    #[test]
+    fn metadata_str_returns_none_for_non_matching_pointer() {
+        let meta = serde_json::json!({"a": 1});
+        assert!(metadata_str(Some(&meta), "/b").is_none());
+    }
+
+    #[test]
+    fn metadata_str_returns_none_for_bool_or_array() {
+        let meta = serde_json::json!({"flag": true, "list": [1, 2]});
+        assert!(metadata_str(Some(&meta), "/flag").is_none());
+        assert!(metadata_str(Some(&meta), "/list").is_none());
+    }
+
+    // ── resolve_channel_scope edge cases ─────────────────────────
+
+    #[test]
+    fn resolve_channel_scope_non_group_in_group_mode_falls_to_peer() {
+        let cfg = test_config_with_scope("group");
+        // Non-group message in group mode falls back to peer
+        let inbound = inbound_with_meta(serde_json::json!({}));
+        let scope = resolve_channel_scope(&cfg, &inbound, "some-chat");
+        assert_eq!(
+            scope,
+            ironclad_db::sessions::SessionScope::Peer {
+                peer_id: "sender-1".into(),
+                channel: "telegram".into()
+            }
+        );
+    }
+
+    // ── split_subtasks edge cases ────────────────────────────────
+
+    #[test]
+    fn split_subtasks_semicolons() {
+        let parts = split_subtasks("task A; task B; task C");
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "task A");
+        assert_eq!(parts[1], "task B");
+        assert_eq!(parts[2], "task C");
+    }
+
+    #[test]
+    fn split_subtasks_empty() {
+        let parts = split_subtasks("");
+        assert!(parts.is_empty());
+    }
+
+    #[test]
+    fn split_subtasks_newlines() {
+        let parts = split_subtasks("line 1\nline 2\nline 3");
+        assert_eq!(parts.len(), 3);
+    }
+
+    #[test]
+    fn split_subtasks_deduplicates_adjacent() {
+        let parts = split_subtasks("task A\ntask A");
+        assert_eq!(parts.len(), 1);
+    }
+
+    // ── capability_tokens edge cases ─────────────────────────────
+
+    #[test]
+    fn capability_tokens_filters_short_tokens() {
+        let tokens = capability_tokens("a bb ccc dddd");
+        assert!(!tokens.contains(&"a".to_string()));
+        assert!(!tokens.contains(&"bb".to_string()));
+        assert!(!tokens.contains(&"ccc".to_string()));
+        assert!(tokens.contains(&"dddd".to_string()));
+    }
+
+    #[test]
+    fn capability_tokens_empty() {
+        assert!(capability_tokens("").is_empty());
+    }
+
+    // ── utility_margin_for_delegation edge cases ─────────────────
+
+    #[test]
+    fn utility_margin_negative_for_single_task_low_complexity() {
+        let margin = utility_margin_for_delegation(0.1, 1, 0.1);
+        assert!(margin < 0.0, "single trivial task should not justify delegation");
+    }
+
+    #[test]
+    fn utility_margin_high_for_complex_multi_task() {
+        let margin = utility_margin_for_delegation(1.0, 5, 1.0);
+        assert!(margin > 0.0, "complex multi-task with perfect fit should justify delegation");
+    }
 }

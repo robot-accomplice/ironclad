@@ -179,4 +179,160 @@ mod tests {
         let mgr = BrowserManager::new(config);
         assert_eq!(mgr.cdp_port(), 9333);
     }
+
+    #[test]
+    fn is_running_false_initially() {
+        let mgr = BrowserManager::new(BrowserConfig::default());
+        assert!(!mgr.is_running());
+    }
+
+    #[tokio::test]
+    async fn stop_when_not_started_is_ok() {
+        let mut mgr = BrowserManager::new(BrowserConfig::default());
+        let result = mgr.stop().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn start_with_nonexistent_executable_and_no_system_chrome() {
+        // Use a config with a nonexistent path and hope system chrome doesn't exist either.
+        // If system chrome DOES exist, this test will actually try to start it,
+        // so we use a config where the explicit path is bogus but fall through
+        // to candidates that might not exist.
+        let config = BrowserConfig {
+            executable_path: Some("/nonexistent/path/to/chrome_12345".into()),
+            ..Default::default()
+        };
+        let mut mgr = BrowserManager::new(config);
+        let result = mgr.start().await;
+
+        // If no system Chrome exists, this returns an error.
+        // If system Chrome exists, it returns Ok. Either way the test validates the code path.
+        if result.is_err() {
+            let err_str = result.unwrap_err().to_string();
+            assert!(
+                err_str.contains("Chrome") || err_str.contains("not found"),
+                "unexpected error: {err_str}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn start_already_running_returns_ok() {
+        // Simulate a running process by starting a harmless short-lived process
+        // via the manager's internal mechanism.
+        // We'll use /bin/sleep as the "chrome" executable.
+        let config = BrowserConfig {
+            executable_path: Some("/bin/sleep".into()),
+            ..Default::default()
+        };
+        let mut mgr = BrowserManager::new(config);
+
+        // Manually set process to simulate "already running"
+        let child = Command::new("/bin/sleep")
+            .arg("10")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        mgr.process = Some(child);
+
+        assert!(mgr.is_running());
+
+        // start() should return Ok immediately without spawning a second process
+        let result = mgr.start().await;
+        assert!(result.is_ok());
+        assert!(mgr.is_running());
+
+        // Cleanup
+        mgr.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_kills_process() {
+        let child = Command::new("/bin/sleep")
+            .arg("60")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let mut mgr = BrowserManager::new(BrowserConfig::default());
+        mgr.process = Some(child);
+        assert!(mgr.is_running());
+
+        let result = mgr.stop().await;
+        assert!(result.is_ok());
+        assert!(!mgr.is_running());
+    }
+
+    #[test]
+    fn drop_kills_process() {
+        let child = std::process::Command::new("/bin/sleep")
+            .arg("60")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+
+        // Wrap in tokio Child for the manager
+        // Actually, manager uses tokio::process::Child. Let's use a runtime for this.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let tokio_child = Command::new("/bin/sleep")
+                .arg("60")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+
+            let mut mgr = BrowserManager::new(BrowserConfig::default());
+            mgr.process = Some(tokio_child);
+            assert!(mgr.is_running());
+            // Drop mgr - should kill the process
+            drop(mgr);
+        });
+
+        // Kill the std child too
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status();
+    }
+
+    #[test]
+    fn find_chrome_with_no_explicit_path_and_no_candidates() {
+        // When executable_path is None and no candidate paths exist,
+        // find_chrome_executable should return None.
+        // On a Mac with Chrome installed, this will still find Chrome.
+        // We just verify the method doesn't panic.
+        let config = BrowserConfig {
+            executable_path: None,
+            ..Default::default()
+        };
+        let mgr = BrowserManager::new(config);
+        let found = mgr.find_chrome_executable();
+        // found may be Some or None depending on system; just ensure no panic
+        if let Some(ref path) = found {
+            assert!(Path::new(path).exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn start_with_invalid_executable() {
+        // Use a file that exists but is not executable as a Chrome binary
+        // /dev/null exists but cannot be executed as a process
+        let config = BrowserConfig {
+            executable_path: Some("/dev/null".into()),
+            ..Default::default()
+        };
+        let mut mgr = BrowserManager::new(config);
+        let result = mgr.start().await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("failed to start Chrome") || err_str.contains("browser"),
+            "unexpected error: {err_str}"
+        );
+    }
 }

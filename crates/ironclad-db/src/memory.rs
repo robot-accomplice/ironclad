@@ -725,4 +725,165 @@ mod tests {
         let hits = fts_search(&db, "tar the archive", 10).unwrap();
         assert!(!hits.is_empty());
     }
+
+    // ── retrieve_working_all tests ────────────────────────────
+
+    #[test]
+    fn retrieve_working_all_returns_across_sessions() {
+        let db = test_db();
+        store_working(&db, "sess-a", "note", "alpha entry", 5).unwrap();
+        store_working(&db, "sess-b", "note", "beta entry", 8).unwrap();
+        store_working(&db, "sess-c", "note", "gamma entry", 3).unwrap();
+
+        let entries = retrieve_working_all(&db, 100).unwrap();
+        assert_eq!(entries.len(), 3);
+        // Ordered by importance DESC
+        assert_eq!(entries[0].importance, 8);
+        assert_eq!(entries[1].importance, 5);
+        assert_eq!(entries[2].importance, 3);
+    }
+
+    #[test]
+    fn retrieve_working_all_respects_limit() {
+        let db = test_db();
+        for i in 0..5 {
+            store_working(&db, "sess", "note", &format!("entry {i}"), i).unwrap();
+        }
+        let entries = retrieve_working_all(&db, 2).unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn retrieve_working_all_empty_db() {
+        let db = test_db();
+        let entries = retrieve_working_all(&db, 10).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    // ── list_semantic_categories tests ────────────────────────
+
+    #[test]
+    fn list_semantic_categories_returns_grouped() {
+        let db = test_db();
+        store_semantic(&db, "facts", "sky_color", "blue", 0.9).unwrap();
+        store_semantic(&db, "facts", "grass_color", "green", 0.8).unwrap();
+        store_semantic(&db, "prefs", "theme", "dark", 0.7).unwrap();
+
+        let categories = list_semantic_categories(&db).unwrap();
+        assert_eq!(categories.len(), 2);
+        // Ordered by count DESC
+        assert_eq!(categories[0].0, "facts");
+        assert_eq!(categories[0].1, 2);
+        assert_eq!(categories[1].0, "prefs");
+        assert_eq!(categories[1].1, 1);
+    }
+
+    #[test]
+    fn list_semantic_categories_empty() {
+        let db = test_db();
+        let categories = list_semantic_categories(&db).unwrap();
+        assert!(categories.is_empty());
+    }
+
+    // ── retrieve_semantic_all tests ──────────────────────────
+
+    #[test]
+    fn retrieve_semantic_all_returns_across_categories() {
+        let db = test_db();
+        store_semantic(&db, "facts", "sky", "blue", 0.9).unwrap();
+        store_semantic(&db, "prefs", "theme", "dark", 0.7).unwrap();
+        store_semantic(&db, "facts", "grass", "green", 0.8).unwrap();
+
+        let entries = retrieve_semantic_all(&db, 100).unwrap();
+        assert_eq!(entries.len(), 3);
+        // Ordered by confidence DESC
+        assert!((entries[0].confidence - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn retrieve_semantic_all_respects_limit() {
+        let db = test_db();
+        for i in 0..5 {
+            store_semantic(&db, "cat", &format!("key{i}"), &format!("val{i}"), 0.5 + i as f64 * 0.1).unwrap();
+        }
+        let entries = retrieve_semantic_all(&db, 2).unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn retrieve_semantic_all_empty() {
+        let db = test_db();
+        let entries = retrieve_semantic_all(&db, 10).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    // ── fts_search LIKE fallback additional paths ────────────
+
+    #[test]
+    fn fts_search_like_fallback_relationship() {
+        let db = test_db();
+        // Store a relationship with an interaction_summary that can be found via LIKE fallback
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO relationship_memory (id, entity_id, entity_name, trust_score, interaction_summary) \
+             VALUES ('r1', 'user-99', 'TestUser', 0.8, 'discussed the quantum physics experiment')",
+            [],
+        ).unwrap();
+
+        let hits = fts_search(&db, "quantum physics", 10).unwrap();
+        assert!(!hits.is_empty(), "LIKE fallback should find relationship interaction_summary");
+    }
+
+    #[test]
+    fn fts_search_limit_reached_in_fts_phase() {
+        let db = test_db();
+        // Create enough FTS entries so the limit is reached during the FTS phase
+        for i in 0..5 {
+            store_working(&db, "sess", "note", &format!("searchable keyword item {i}"), 5).unwrap();
+        }
+        let hits = fts_search(&db, "keyword", 2).unwrap();
+        assert_eq!(hits.len(), 2, "should stop at limit during FTS phase");
+    }
+
+    #[test]
+    fn fts_search_limit_reached_in_like_phase() {
+        let db = test_db();
+        // Store items in procedural memory (LIKE fallback) with a common pattern
+        for i in 0..5 {
+            store_procedural(&db, &format!("proc_{i}"), &format!("step: run the xyzzy command {i}")).unwrap();
+        }
+        let hits = fts_search(&db, "xyzzy command", 2).unwrap();
+        assert_eq!(hits.len(), 2, "should stop at limit during LIKE fallback phase");
+    }
+
+    #[test]
+    fn fts_search_special_chars_in_query() {
+        let db = test_db();
+        store_working(&db, "sess", "note", "test with percent % and underscore _", 5).unwrap();
+        // This tests the sanitize_fts_query and the LIKE escape logic
+        let hits = fts_search(&db, "percent", 10).unwrap();
+        assert!(!hits.is_empty());
+    }
+
+    #[test]
+    fn sanitize_fts_query_strips_operators() {
+        // FTS5 operators like AND, OR, NOT should be neutralized by the sanitizer
+        let result = sanitize_fts_query("hello AND world");
+        // Should wrap in quotes, stripping non-alnum/space
+        assert!(result.starts_with('"'));
+        assert!(result.ends_with('"'));
+    }
+
+    #[test]
+    fn sanitize_fts_query_empty() {
+        let result = sanitize_fts_query("");
+        assert_eq!(result, "\"\"");
+    }
+
+    #[test]
+    fn sanitize_fts_query_special_chars_stripped() {
+        let result = sanitize_fts_query("hello* OR world");
+        // * and OR should be kept as alphanumeric/space
+        assert!(!result.contains('*'));
+    }
 }

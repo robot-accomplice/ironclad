@@ -298,4 +298,159 @@ Always greet the user with enthusiasm and warmth.
         let matches = registry.match_skills(&["unrelated"]);
         assert!(matches.is_empty());
     }
+
+    // ── Coverage for LoadedSkill accessor methods ─────────────────
+
+    #[test]
+    fn loaded_skill_structured_accessors() {
+        let manifest = SkillManifest {
+            name: "code_review".into(),
+            description: "Reviews code".into(),
+            kind: ironclad_core::SkillKind::Structured,
+            priority: 3,
+            risk_level: ironclad_core::RiskLevel::Safe,
+            triggers: SkillTrigger {
+                keywords: vec!["review".into()],
+                tool_names: vec![],
+                regex_patterns: vec![],
+            },
+            tool_chain: None,
+            policy_overrides: None,
+            script_path: None,
+        };
+        let skill = LoadedSkill::Structured(
+            manifest.clone(),
+            "abc123".into(),
+            PathBuf::from("/tmp/test.toml"),
+        );
+
+        assert_eq!(skill.name(), "code_review");
+        assert_eq!(skill.hash(), "abc123");
+        assert_eq!(skill.source_path(), Path::new("/tmp/test.toml"));
+        assert_eq!(skill.description(), Some("Reviews code"));
+        assert!(skill.structured_manifest().is_some());
+        assert_eq!(
+            skill.structured_manifest().unwrap().name,
+            "code_review"
+        );
+        let triggers = skill.triggers();
+        assert!(triggers.keywords.contains(&"review".to_string()));
+    }
+
+    #[test]
+    fn loaded_skill_instruction_accessors() {
+        let instr = InstructionSkill {
+            name: "greeting".into(),
+            description: "Greets user".into(),
+            triggers: SkillTrigger {
+                keywords: vec!["hello".into()],
+                tool_names: vec![],
+                regex_patterns: vec![],
+            },
+            priority: 5,
+            body: "Greet warmly.".into(),
+        };
+        let skill = LoadedSkill::Instruction(
+            instr,
+            "def456".into(),
+            PathBuf::from("/tmp/greet.md"),
+        );
+
+        assert_eq!(skill.name(), "greeting");
+        assert_eq!(skill.hash(), "def456");
+        assert_eq!(skill.source_path(), Path::new("/tmp/greet.md"));
+        assert_eq!(skill.description(), Some("Greets user"));
+        assert!(skill.structured_manifest().is_none());
+        let triggers = skill.triggers();
+        assert!(triggers.keywords.contains(&"hello".to_string()));
+    }
+
+    // ── Coverage for SkillRegistry::default ──────────────────────
+
+    #[test]
+    fn skill_registry_default() {
+        let registry = SkillRegistry::default();
+        assert!(registry.match_skills(&["anything"]).is_empty());
+    }
+
+    // ── Coverage for SkillLoader with nonexistent dir ─────────────
+
+    #[test]
+    fn skill_loader_nonexistent_dir() {
+        let result = SkillLoader::load_from_dir(Path::new("/nonexistent/skills/dir"));
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    // ── Coverage for SkillLoader ignores other file extensions ────
+
+    #[test]
+    fn skill_loader_ignores_unknown_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("readme.txt"), "just text").unwrap();
+        fs::write(dir.path().join("config.json"), "{}").unwrap();
+        let skills = SkillLoader::load_from_dir(dir.path()).unwrap();
+        assert!(skills.is_empty());
+    }
+
+    // ── Coverage for parse_instruction_md error paths ─────────────
+
+    #[test]
+    fn parse_instruction_md_no_frontmatter() {
+        let content = "This is just plain text without frontmatter.";
+        let result = parse_instruction_md(content, Path::new("test.md"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_instruction_md_unclosed_frontmatter() {
+        let content = "---\nname: test\n";
+        let result = parse_instruction_md(content, Path::new("test.md"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_instruction_md_invalid_yaml() {
+        let content = "---\ninvalid: [unclosed\n---\nBody here.";
+        let result = parse_instruction_md(content, Path::new("test.md"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_instruction_md_default_priority() {
+        let content = "---\nname: test_skill\ndescription: A test\n---\nBody content here.";
+        let skill = parse_instruction_md(content, Path::new("test.md")).unwrap();
+        assert_eq!(skill.priority, 5); // default_priority()
+        assert_eq!(skill.name, "test_skill");
+        assert!(skill.body.contains("Body content"));
+    }
+
+    // ── Coverage for case-insensitive keyword matching ────────────
+
+    #[test]
+    fn trigger_matching_case_insensitive() {
+        let mut registry = SkillRegistry::new();
+        let skill = LoadedSkill::Instruction(
+            InstructionSkill {
+                name: "test".into(),
+                description: "Test".into(),
+                triggers: SkillTrigger {
+                    keywords: vec!["Review".into()],
+                    tool_names: vec![],
+                    regex_patterns: vec![],
+                },
+                priority: 5,
+                body: "test".into(),
+            },
+            "h".into(),
+            PathBuf::from("/tmp/t"),
+        );
+        registry.register(skill);
+
+        let matches = registry.match_skills(&["REVIEW"]);
+        assert_eq!(matches.len(), 1);
+
+        let matches = registry.match_skills(&["review"]);
+        assert_eq!(matches.len(), 1);
+    }
 }

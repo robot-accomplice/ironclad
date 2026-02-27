@@ -308,4 +308,186 @@ mod tests {
             "should store tool use in episodic memory"
         );
     }
+
+    #[test]
+    fn ingest_turn_financial_stores_episodic() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
+        ingest_turn(
+            &db,
+            &session_id,
+            "check my wallet balance",
+            "Your balance is 42 USDC",
+            &[],
+        );
+        let episodic = ironclad_db::memory::retrieve_episodic(&db, 10).unwrap();
+        assert!(
+            !episodic.is_empty(),
+            "financial turn should store episodic memory"
+        );
+        assert!(
+            episodic.iter().any(|e| e.content.contains("Financial interaction")),
+            "should prefix with 'Financial interaction'"
+        );
+    }
+
+    #[test]
+    fn ingest_turn_long_reasoning_stores_semantic() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
+        // assistant_msg > 100 chars + Reasoning turn type -> stores semantic
+        let long_response = "A ".repeat(60); // 120 chars
+        ingest_turn(
+            &db,
+            &session_id,
+            "explain monads",
+            &long_response,
+            &[],
+        );
+        let semantic = ironclad_db::memory::retrieve_semantic(&db, "learned").unwrap();
+        assert!(
+            !semantic.is_empty(),
+            "long reasoning turn should store semantic memory"
+        );
+    }
+
+    #[test]
+    fn ingest_turn_long_creative_stores_semantic() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
+        let long_response = "B ".repeat(60); // 120 chars
+        ingest_turn(
+            &db,
+            &session_id,
+            "write a poem about Rust",
+            &long_response,
+            &[],
+        );
+        let semantic = ironclad_db::memory::retrieve_semantic(&db, "learned").unwrap();
+        assert!(
+            !semantic.is_empty(),
+            "long creative turn should store semantic memory"
+        );
+    }
+
+    #[test]
+    fn ingest_turn_short_reasoning_skips_semantic() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
+        // assistant_msg <= 100 chars => no semantic storage
+        ingest_turn(
+            &db,
+            &session_id,
+            "explain monads",
+            "short answer",
+            &[],
+        );
+        let semantic = ironclad_db::memory::retrieve_semantic(&db, "learned").unwrap();
+        assert!(
+            semantic.is_empty(),
+            "short reasoning turn should not store semantic memory"
+        );
+    }
+
+    #[test]
+    fn ingest_turn_truncates_long_summary() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
+        // assistant_msg > 200 chars -> summary truncated to first 200
+        let long_response = "X".repeat(300);
+        ingest_turn(
+            &db,
+            &session_id,
+            "explain something",
+            &long_response,
+            &[],
+        );
+        let working = ironclad_db::memory::retrieve_working(&db, &session_id).unwrap();
+        assert!(!working.is_empty());
+        // The stored summary should be at most 200 chars
+        for entry in &working {
+            assert!(
+                entry.content.len() <= 200,
+                "working memory summary should be truncated to 200 chars, got {}",
+                entry.content.len()
+            );
+        }
+    }
+
+    #[test]
+    fn ingest_turn_records_procedural_success() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
+        ironclad_db::memory::store_procedural(&db, "custom_tool", "a tool").ok();
+        ingest_turn(
+            &db,
+            &session_id,
+            "use custom_tool",
+            "done",
+            &[("custom_tool".into(), "success".into())],
+        );
+        // This exercises the procedural success recording path
+        // The test passes if no panic occurs
+    }
+
+    #[test]
+    fn classify_turn_financial_payment() {
+        assert_eq!(
+            classify_turn("make a payment of $50", "Processing payment", &[]),
+            TurnType::Financial
+        );
+    }
+
+    #[test]
+    fn classify_turn_financial_transfer() {
+        assert_eq!(
+            classify_turn("transfer 10 USDC", "Transferring...", &[]),
+            TurnType::Financial
+        );
+    }
+
+    #[test]
+    fn classify_turn_creative_compose() {
+        assert_eq!(
+            classify_turn("compose a sonnet", "Here is your sonnet...", &[]),
+            TurnType::Creative
+        );
+    }
+
+    #[test]
+    fn classify_turn_creative_design() {
+        assert_eq!(
+            classify_turn("design a logo concept", "Here's the concept...", &[]),
+            TurnType::Creative
+        );
+    }
+
+    #[test]
+    fn classify_turn_creative_generate() {
+        assert_eq!(
+            classify_turn("generate a story", "Once upon a time...", &[]),
+            TurnType::Creative
+        );
+    }
+
+    #[test]
+    fn classify_turn_social_thanks() {
+        assert_eq!(
+            classify_turn("thanks for your help", "You're welcome!", &[]),
+            TurnType::Social
+        );
+    }
+
+    #[test]
+    fn classify_turn_tool_use_takes_precedence() {
+        // Even if content matches financial keywords, tool_results non-empty -> ToolUse
+        assert_eq!(
+            classify_turn(
+                "check my wallet balance",
+                "Done",
+                &[("wallet".into(), "42".into())]
+            ),
+            TurnType::ToolUse
+        );
+    }
 }

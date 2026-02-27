@@ -1056,6 +1056,585 @@ mod tests {
         assert_eq!(metadata["skipped_large_files"].as_u64(), Some(1));
     }
 
+    #[test]
+    fn validate_rel_path_rejects_absolute() {
+        let p = Path::new("/etc/passwd");
+        let err = validate_rel_path(p).unwrap_err();
+        assert!(err.message.contains("absolute"));
+    }
+
+    #[test]
+    fn validate_rel_path_rejects_parent_traversal() {
+        let p = Path::new("subdir/../../etc/passwd");
+        let err = validate_rel_path(p).unwrap_err();
+        assert!(err.message.contains("traversal"));
+    }
+
+    #[test]
+    fn validate_rel_path_accepts_normal() {
+        assert!(validate_rel_path(Path::new("src/main.rs")).is_ok());
+        assert!(validate_rel_path(Path::new("file.txt")).is_ok());
+        assert!(validate_rel_path(Path::new("a/b/c/d")).is_ok());
+    }
+
+    #[test]
+    fn resolve_workspace_path_nonexistent_disallowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let err = resolve_workspace_path(&root, "does_not_exist.txt", false).unwrap_err();
+        assert!(err.message.contains("does not exist"));
+    }
+
+    #[test]
+    fn resolve_workspace_path_nonexistent_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let result = resolve_workspace_path(&root, "new_file.txt", true).unwrap();
+        assert!(result.to_string_lossy().contains("new_file.txt"));
+    }
+
+    #[test]
+    fn resolve_workspace_path_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("hello.txt"), "hi").unwrap();
+        let result = resolve_workspace_path(&root, "hello.txt", false).unwrap();
+        assert!(result.starts_with(&root));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_workspace_path_symlink_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        // Create a symlink that points outside the workspace
+        let link_path = root.join("escape");
+        std::os::unix::fs::symlink("/tmp", &link_path).unwrap();
+        let err = resolve_workspace_path(&root, "escape", false).unwrap_err();
+        assert!(err.message.contains("escapes workspace root"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_tool_single_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("edit_me.txt"), "foo bar foo baz").unwrap();
+
+        let tool = EditFileTool;
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            agent_id: "test".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+        };
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "path": "edit_me.txt",
+                    "old_text": "foo",
+                    "new_text": "qux"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output, "ok");
+
+        let content = std::fs::read_to_string(root.join("edit_me.txt")).unwrap();
+        // Only first occurrence replaced
+        assert_eq!(content, "qux bar foo baz");
+    }
+
+    #[tokio::test]
+    async fn edit_file_tool_replace_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("edit_me.txt"), "foo bar foo baz").unwrap();
+
+        let tool = EditFileTool;
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            agent_id: "test".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+        };
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "path": "edit_me.txt",
+                    "old_text": "foo",
+                    "new_text": "qux",
+                    "replace_all": true
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output, "ok");
+
+        let content = std::fs::read_to_string(root.join("edit_me.txt")).unwrap();
+        assert_eq!(content, "qux bar qux baz");
+    }
+
+    #[tokio::test]
+    async fn edit_file_tool_old_text_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("edit_me.txt"), "hello world").unwrap();
+
+        let tool = EditFileTool;
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            agent_id: "test".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+        };
+
+        let err = tool
+            .execute(
+                serde_json::json!({
+                    "path": "edit_me.txt",
+                    "old_text": "nonexistent",
+                    "new_text": "replacement"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("old_text not found"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_tool_missing_params() {
+        let tool = EditFileTool;
+        let ctx = test_ctx();
+
+        // Missing path
+        let err = tool
+            .execute(
+                serde_json::json!({ "old_text": "a", "new_text": "b" }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("missing 'path'"));
+
+        // Missing old_text
+        let err = tool
+            .execute(
+                serde_json::json!({ "path": "file.txt", "new_text": "b" }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("missing 'old_text'"));
+
+        // Missing new_text
+        let err = tool
+            .execute(
+                serde_json::json!({ "path": "file.txt", "old_text": "a" }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("missing 'new_text'"));
+    }
+
+    #[tokio::test]
+    async fn write_file_tool_append_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("log.txt"), "line 1\n").unwrap();
+
+        let tool = WriteFileTool;
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            agent_id: "test".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+        };
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "path": "log.txt",
+                    "content": "line 2\n",
+                    "append": true
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output, "ok");
+        let meta = result.metadata.unwrap();
+        assert_eq!(meta["append"], true);
+
+        let content = std::fs::read_to_string(root.join("log.txt")).unwrap();
+        assert_eq!(content, "line 1\nline 2\n");
+    }
+
+    #[tokio::test]
+    async fn write_file_tool_creates_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+
+        let tool = WriteFileTool;
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            agent_id: "test".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+        };
+
+        tool.execute(
+            serde_json::json!({
+                "path": "deep/nested/dir/file.txt",
+                "content": "deep content"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let content = std::fs::read_to_string(root.join("deep/nested/dir/file.txt")).unwrap();
+        assert_eq!(content, "deep content");
+    }
+
+    #[tokio::test]
+    async fn search_files_case_sensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("test.txt"), "Hello World\nhello world\nHELLO WORLD").unwrap();
+
+        let tool = SearchFilesTool;
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            agent_id: "test".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+        };
+
+        // Case sensitive should only find exact match
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "query": "Hello World",
+                    "path": ".",
+                    "case_sensitive": true
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let hits: Vec<Value> = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["line"], 1);
+
+        // Case insensitive should find all three
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "query": "Hello World",
+                    "path": ".",
+                    "case_sensitive": false
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let hits: Vec<Value> = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(hits.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn search_files_respects_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let content = (0..50).map(|i| format!("needle line {i}")).collect::<Vec<_>>().join("\n");
+        std::fs::write(root.join("many.txt"), content).unwrap();
+
+        let tool = SearchFilesTool;
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            agent_id: "test".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+        };
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "query": "needle",
+                    "path": ".",
+                    "limit": 5
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let hits: Vec<Value> = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(hits.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn glob_files_tool_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main(){}").unwrap();
+        std::fs::write(root.join("src/lib.rs"), "// lib").unwrap();
+        std::fs::write(root.join("readme.md"), "# readme").unwrap();
+
+        let tool = GlobFilesTool;
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            agent_id: "test".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+        };
+
+        let result = tool
+            .execute(
+                serde_json::json!({ "pattern": "src/*.rs", "path": "." }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let matches: Vec<String> = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(matches.len(), 2);
+        assert!(matches.iter().any(|m| m.contains("main.rs")));
+        assert!(matches.iter().any(|m| m.contains("lib.rs")));
+    }
+
+    #[tokio::test]
+    async fn glob_files_tool_respects_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        for i in 0..10 {
+            std::fs::write(root.join(format!("file_{i}.txt")), "content").unwrap();
+        }
+
+        let tool = GlobFilesTool;
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            agent_id: "test".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+        };
+
+        let result = tool
+            .execute(
+                serde_json::json!({ "pattern": "*.txt", "path": ".", "limit": 3 }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let matches: Vec<String> = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(matches.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn read_file_tool_missing_path_param() {
+        let tool = ReadFileTool;
+        let ctx = test_ctx();
+        let err = tool.execute(serde_json::json!({}), &ctx).await.unwrap_err();
+        assert!(err.message.contains("missing 'path'"));
+    }
+
+    #[tokio::test]
+    async fn read_file_tool_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("big.txt"), vec![b'x'; MAX_FILE_BYTES + 1]).unwrap();
+
+        let tool = ReadFileTool;
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            agent_id: "test".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+        };
+
+        let err = tool
+            .execute(serde_json::json!({ "path": "big.txt" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("file too large"));
+    }
+
+    #[tokio::test]
+    async fn write_file_tool_missing_params() {
+        let tool = WriteFileTool;
+        let ctx = test_ctx();
+
+        let err = tool
+            .execute(serde_json::json!({ "content": "hi" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("missing 'path'"));
+
+        let err = tool
+            .execute(serde_json::json!({ "path": "file.txt" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("missing 'content'"));
+    }
+
+    #[tokio::test]
+    async fn list_directory_tool_default_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("a.txt"), "a").unwrap();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+
+        let tool = ListDirectoryTool;
+        let ctx = ToolContext {
+            session_id: "test".into(),
+            agent_id: "test".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+        };
+
+        // No path param -- should default to "."
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        assert!(result.output.contains("a.txt"));
+        assert!(result.output.contains("subdir"));
+
+        let meta = result.metadata.unwrap();
+        assert_eq!(meta["count"], 2);
+    }
+
+    #[test]
+    fn tool_error_display() {
+        let err = ToolError {
+            message: "something went wrong".into(),
+        };
+        let displayed = format!("{err}");
+        assert_eq!(displayed, "ToolError: something went wrong");
+    }
+
+    #[test]
+    fn tool_registry_default() {
+        let reg = ToolRegistry::default();
+        assert!(reg.list().is_empty());
+    }
+
+    #[test]
+    fn wildcard_match_exact_filename() {
+        assert!(wildcard_match("main.rs", "main.rs"));
+        assert!(!wildcard_match("main.rs", "lib.rs"));
+    }
+
+    #[test]
+    fn wildcard_match_consecutive_double_stars() {
+        // Consecutive ** should be collapsed
+        assert!(wildcard_match("**/**/*.rs", "src/nested/main.rs"));
+        assert!(wildcard_match("src/**/**/*.rs", "src/a/b/c/main.rs"));
+    }
+
+    #[test]
+    fn wildcard_match_empty_candidate() {
+        assert!(!wildcard_match("*.rs", ""));
+    }
+
+    #[test]
+    fn wildcard_match_double_star_alone() {
+        // ** alone should match everything
+        assert!(wildcard_match("**", "src/main.rs"));
+        assert!(wildcard_match("**", "a/b/c/d/e.txt"));
+    }
+
+    #[test]
+    fn wildcard_match_question_mark_does_not_cross_directories() {
+        assert!(wildcard_match("src/?.rs", "src/a.rs"));
+        assert!(!wildcard_match("src/?.rs", "src/ab.rs")); // ? matches exactly one char
+    }
+
+    #[test]
+    fn wildcard_match_segment_with_star_in_middle() {
+        assert!(wildcard_match_segment("foo*bar", "foobazbar"));
+        assert!(wildcard_match_segment("foo*bar", "foobar"));
+        assert!(!wildcard_match_segment("foo*bar", "foobaz"));
+    }
+
+    #[test]
+    fn wildcard_match_segment_exact() {
+        assert!(wildcard_match_segment("hello", "hello"));
+        assert!(!wildcard_match_segment("hello", "helo"));
+    }
+
+    #[test]
+    fn wildcard_match_segment_question_mark() {
+        assert!(wildcard_match_segment("h?llo", "hello"));
+        assert!(wildcard_match_segment("h?llo", "hxllo"));
+        assert!(!wildcard_match_segment("h?llo", "hlo"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_workspace_files_skips_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("real.txt"), "real content").unwrap();
+        std::os::unix::fs::symlink("/tmp", root.join("symlink_dir")).unwrap();
+        std::os::unix::fs::symlink(root.join("real.txt"), root.join("symlink_file")).unwrap();
+
+        let mut files = Vec::new();
+        let mut count = 0usize;
+        walk_workspace_files(root, &mut files, &mut count).unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+        assert!(names.contains(&"real.txt".to_string()));
+        assert!(!names.contains(&"symlink_dir".to_string()));
+        assert!(!names.contains(&"symlink_file".to_string()));
+    }
+
+    #[test]
+    fn edit_file_tool_metadata() {
+        assert_eq!(EditFileTool.name(), "edit_file");
+        assert_eq!(EditFileTool.risk_level(), RiskLevel::Caution);
+        let schema = EditFileTool.parameters_schema();
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "path"));
+        assert!(required.iter().any(|v| v == "old_text"));
+        assert!(required.iter().any(|v| v == "new_text"));
+    }
+
+    #[test]
+    fn glob_files_tool_metadata() {
+        assert_eq!(GlobFilesTool.name(), "glob_files");
+        assert_eq!(GlobFilesTool.risk_level(), RiskLevel::Caution);
+        let schema = GlobFilesTool.parameters_schema();
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "pattern"));
+    }
+
+    #[test]
+    fn search_files_tool_metadata() {
+        assert_eq!(SearchFilesTool.name(), "search_files");
+        assert_eq!(SearchFilesTool.risk_level(), RiskLevel::Caution);
+        let schema = SearchFilesTool.parameters_schema();
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "query"));
+    }
+
+    #[test]
+    fn script_runner_tool_metadata() {
+        let cfg = SkillsConfig::default();
+        let tool = ScriptRunnerTool::new(cfg);
+        assert_eq!(tool.name(), "run_script");
+        assert_eq!(tool.risk_level(), RiskLevel::Caution);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn run_script_tool_nonzero_exit_is_error() {

@@ -568,4 +568,135 @@ mod tests {
         assert_eq!(decoded.name, "test_col");
         assert!(decoded.nullable);
     }
+
+    #[test]
+    fn validate_identifier_valid() {
+        validate_identifier("hello").unwrap();
+        validate_identifier("my_table").unwrap();
+        validate_identifier("col123").unwrap();
+        validate_identifier("A").unwrap();
+    }
+
+    #[test]
+    fn validate_identifier_empty_fails() {
+        assert!(validate_identifier("").is_err());
+    }
+
+    #[test]
+    fn validate_identifier_special_chars_fail() {
+        assert!(validate_identifier("name;drop").is_err());
+        assert!(validate_identifier("col name").is_err());
+        assert!(validate_identifier("table-name").is_err());
+        assert!(validate_identifier("col.name").is_err());
+    }
+
+    #[test]
+    fn create_agent_table_empty_columns() {
+        let db = test_db();
+        let name = create_agent_table(&db, "agent", "empty", "No columns", &[]).unwrap();
+        assert_eq!(name, "agent_empty");
+
+        // Table should have at least id and created_at
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO \"agent_empty\" (id) VALUES ('row1')",
+            [],
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM \"agent_empty\"", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn create_agent_table_invalid_column_name() {
+        let db = test_db();
+        let cols = vec![ColumnDef {
+            name: "bad;col".into(),
+            col_type: "TEXT".into(),
+            nullable: false,
+            description: None,
+        }];
+        let result = create_agent_table(&db, "agent", "badcol", "test", &cols);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_agent_table_invalid_column_type() {
+        let db = test_db();
+        let cols = vec![ColumnDef {
+            name: "good_col".into(),
+            col_type: "TEXT;DROP".into(),
+            nullable: false,
+            description: None,
+        }];
+        let result = create_agent_table(&db, "agent", "badtype", "test", &cols);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn drop_agent_table_nonexistent() {
+        let db = test_db();
+        let result = drop_agent_table(&db, "agent", "nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn schema_summary_with_agent_owned_table() {
+        let db = test_db();
+        let cols = vec![
+            ColumnDef {
+                name: "note".into(),
+                col_type: "TEXT".into(),
+                nullable: false,
+                description: Some("The note content".into()),
+            },
+            ColumnDef {
+                name: "priority".into(),
+                col_type: "INTEGER".into(),
+                nullable: true,
+                description: None,
+            },
+        ];
+        create_agent_table(&db, "agent1", "notes", "Agent notes storage", &cols).unwrap();
+
+        let summary = schema_summary(&db).unwrap();
+        assert!(summary.contains("(owned by: agent1)"), "summary should show agent owner");
+        assert!(summary.contains("note"), "summary should include column names");
+        assert!(summary.contains("nullable"), "nullable columns should be marked");
+        assert!(summary.contains("The note content"), "column descriptions should appear");
+    }
+
+    #[test]
+    fn schema_summary_column_without_description() {
+        let db = test_db();
+        let cols = vec![ColumnDef {
+            name: "val".into(),
+            col_type: "REAL".into(),
+            nullable: false,
+            description: None,
+        }];
+        register_table(&db, "metrics", "Metric values", &cols, "system", false).unwrap();
+
+        let summary = schema_summary(&db).unwrap();
+        assert!(summary.contains("`val` (REAL)"));
+    }
+
+    #[test]
+    fn list_agent_tables_empty_for_unknown_agent() {
+        let db = test_db();
+        create_agent_table(&db, "agent1", "data", "Data", &[]).unwrap();
+        let tables = list_agent_tables(&db, "agent_unknown").unwrap();
+        assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn seed_system_tables_idempotent() {
+        let db = test_db();
+        seed_system_tables(&db).unwrap();
+        seed_system_tables(&db).unwrap();
+        let tables = list_tables(&db).unwrap();
+        assert_eq!(tables.len(), 4, "seeding twice should not create duplicates");
+    }
 }
