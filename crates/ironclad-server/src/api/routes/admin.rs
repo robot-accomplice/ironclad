@@ -305,7 +305,11 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "failed to serialize config");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "failed to serialize config").into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to serialize config",
+            )
+                .into_response();
         }
     };
     if let Some(providers) = cfg.get_mut("providers")
@@ -2035,7 +2039,11 @@ pub async fn get_efficiency(
             Ok(v) => Json(v).into_response(),
             Err(e) => {
                 tracing::error!(error = %e, "failed to serialize efficiency report");
-                (StatusCode::INTERNAL_SERVER_ERROR, "failed to serialize report").into_response()
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to serialize report",
+                )
+                    .into_response()
             }
         },
         Err(e) => {

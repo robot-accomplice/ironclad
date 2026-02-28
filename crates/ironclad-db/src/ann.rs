@@ -13,9 +13,7 @@ fn read_or_recover<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     })
 }
 
-fn write_or_poison_err<T>(
-    lock: &RwLock<T>,
-) -> ironclad_core::Result<RwLockWriteGuard<'_, T>> {
+fn write_or_poison_err<T>(lock: &RwLock<T>) -> ironclad_core::Result<RwLockWriteGuard<'_, T>> {
     lock.write().map_err(|_| {
         ironclad_core::IroncladError::Database(
             "ANN index RwLock poisoned, cannot write; rebuild required".into(),

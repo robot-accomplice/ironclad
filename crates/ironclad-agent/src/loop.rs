@@ -57,7 +57,8 @@ impl AgentLoop {
             }
             ReactAction::Act { tool_name, params } => {
                 self.idle_count = 0;
-                self.recent_calls.push_back((tool_name.clone(), params.clone()));
+                self.recent_calls
+                    .push_back((tool_name.clone(), params.clone()));
                 if self.recent_calls.len() > LOOP_DETECTION_WINDOW {
                     self.recent_calls.pop_front();
                 }
