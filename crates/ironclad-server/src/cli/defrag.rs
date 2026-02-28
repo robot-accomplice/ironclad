@@ -670,9 +670,10 @@ pub fn cmd_defrag(
         });
         let json_str = serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
         // Write JSON to stdout directly, bypassing CRT effect
-        let _ = std::io::stdout().write_all(json_str.as_bytes());
-        let _ = std::io::stdout().write_all(b"\n");
-        let _ = std::io::stdout().flush();
+        std::io::stdout()
+            .write_all(json_str.as_bytes())
+            .and_then(|_| std::io::stdout().write_all(b"\n"))
+            .and_then(|_| std::io::stdout().flush())?;
         return Ok(());
     }
 

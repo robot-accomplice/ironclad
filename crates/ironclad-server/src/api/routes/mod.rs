@@ -7641,4 +7641,116 @@ params = { path = "README.md" }
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
+
+    // ── Auth middleware roundtrip tests ──────────────────────────
+
+    #[tokio::test]
+    async fn protected_route_returns_401_with_wrong_api_key() {
+        use crate::auth::ApiKeyLayer;
+        let state = test_state();
+        let app = build_router(state).layer(ApiKeyLayer::new(Some("correct-key".into())));
+        let req = Request::builder()
+            .uri("/api/sessions")
+            .header("x-api-key", "wrong-key")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn no_api_key_configured_allows_all_requests() {
+        use crate::auth::ApiKeyLayer;
+        let state = test_state();
+        let app = build_router(state).layer(ApiKeyLayer::new(None));
+        let req = Request::builder()
+            .uri("/api/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_works_with_post_requests() {
+        use crate::auth::ApiKeyLayer;
+        let state = test_state();
+        let app = build_router(state).layer(ApiKeyLayer::new(Some("post-test-key".into())));
+
+        // POST without key → 401
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"agent_id":"test"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_post_with_correct_key() {
+        use crate::auth::ApiKeyLayer;
+        let state = test_state();
+        let app = build_router(state).layer(ApiKeyLayer::new(Some("post-test-key".into())));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions")
+            .header("content-type", "application/json")
+            .header("x-api-key", "post-test-key")
+            .body(Body::from(r#"{"agent_id":"test"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── SSE streaming endpoint tests ────────────────────────────
+
+    #[tokio::test]
+    async fn stream_rejects_empty_content() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/agent/message/stream")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"content":"   "}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(resp).await;
+        assert!(body["error"].as_str().unwrap().contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn stream_rejects_oversized_content() {
+        let app = build_router(test_state());
+        let huge = "x".repeat(33_000);
+        let payload = serde_json::json!({"content": huge}).to_string();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/agent/message/stream")
+            .header("content-type", "application/json")
+            .body(Body::from(payload))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn stream_rejects_missing_content_field() {
+        let app = build_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/agent/message/stream")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Missing required field → 422 (Unprocessable Entity from axum)
+        assert!(
+            resp.status() == StatusCode::BAD_REQUEST
+                || resp.status() == StatusCode::UNPROCESSABLE_ENTITY,
+        );
+    }
 }

@@ -212,8 +212,12 @@ fn cleanup_legacy_windows_service() {
         .map(|s| s.success())
         .unwrap_or(false);
     if is_admin {
-        let _ = run_cmd("sc.exe", &["stop", WINDOWS_DAEMON_NAME]);
-        let _ = run_cmd("sc.exe", &["delete", WINDOWS_DAEMON_NAME]);
+        if let Err(e) = run_cmd("sc.exe", &["stop", WINDOWS_DAEMON_NAME]) {
+            tracing::debug!(error = %e, "legacy Windows service stop failed (may not exist)");
+        }
+        if let Err(e) = run_cmd("sc.exe", &["delete", WINDOWS_DAEMON_NAME]) {
+            tracing::debug!(error = %e, "legacy Windows service delete failed (may not exist)");
+        }
     }
 }
 

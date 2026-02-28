@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-02-28
+
+### Security
+
+- **CRIT: Unauthenticated rate-limit actor identity**: Removed `x-user-id` header as rate-limit actor identity — it was unauthenticated and trivially spoofable.
+- **CRIT: Stable token fingerprinting**: Replaced `DefaultHasher` with SHA-256 for token fingerprinting, since `DefaultHasher` is not stable across processes and could cause cache/rate-limit bypasses.
+- **HIGH: Rate-limit IP fallback**: IP extraction now uses `ConnectInfo<SocketAddr>` (real TCP peer address) instead of a hardcoded `127.0.0.1` fallback.
+- **HIGH: ASCII-only identifiers**: `validate_identifier` now restricts to ASCII alphanumeric characters, closing Unicode homoglyph and normalization attacks.
+- **HIGH: Memory search query cap**: `/api/memory/search` query parameter capped at 512 characters to prevent regex-based DoS.
+- **HIGH: Error message sanitization**: Added SQLite schema-leaking prefixes (`no such table`, `no such column`, etc.) to the error sanitization blocklist.
+- **MED: Rate-limit counter ordering**: Global rate-limit counter now incremented after per-IP/per-actor checks pass, preventing global exhaustion from blocked IPs.
+- **MED: Symlink-safe directory traversal**: `collect_findings_recursive` now uses `entry.file_type()` and skips symlinks, preventing symlink-following attacks.
+- **MED: WhatsApp HMAC raw byte comparison**: HMAC verification now compares raw bytes instead of hex string representations, closing timing side-channels from variable-length hex comparison.
+
+### Fixed
+
+- **Windows daemon error propagation**: `schtasks /Create` errors now propagate instead of being silently dropped; post-spawn verification added; `schtasks /Delete` errors during uninstall handled correctly.
+- **CLI API key headers**: Added `--api-key`/`IRONCLAD_API_KEY` global CLI argument. All 22 bare `reqwest` calls replaced with `http_client()` helper that injects API key as default header.
+- **Flaky test elimination**: Replaced TOCTOU ephemeral port test with RFC 5737 TEST-NET-1 address (192.0.2.1) for deterministic unreachable-port testing.
+- **Bundled providers parse failure (F5)**: Changed `.unwrap_or_default()` to `.expect()` — bundled TOML is build-time data; parse failure means the binary is broken and should panic fast.
+- **Update state save errors (F3)**: Three `state.save().ok()` sites now log errors before discarding, plus update state load now logs parse/read failures.
+- **Legacy Windows service cleanup (F7)**: `sc.exe stop/delete` errors during legacy cleanup now logged at debug level instead of silently dropped.
+- **OAuth token resolution (F8)**: `resolve_token().ok()` now logs failures, surfacing OAuth refresh errors that were previously invisible.
+- **Translate request error propagation (F9)**: `translate_request` errors now return HTTP 400 instead of falling back to an empty JSON body.
+- **Corrupted cost row logging (F10)**: `filter_map(|r| r.ok())` on cost query rows now logs dropped rows.
+- **Embedding failure logging (F12)**: Three `embed_single().ok()` sites now log failures, making RAG degradation visible.
+- **Defrag stdout write errors (F14)**: JSON stdout writes now propagate `io::Error` instead of silently dropping.
+- **Session nickname update (F19)**: `update_nickname().ok()` now logs failures.
+- **Recommendation inference cost (F20)**: `record_inference_cost().ok()` now logs failures.
+- **Agent status query errors**: Tool call and turn queries in agent status now log errors at debug level.
+
+### Added
+
+- Auth middleware roundtrip tests: wrong key rejection, no-auth passthrough, POST method coverage.
+- SSE streaming endpoint validation tests: empty content, oversized content, missing fields.
+
 ## [0.8.5] - 2026-02-28
 
 ### Security

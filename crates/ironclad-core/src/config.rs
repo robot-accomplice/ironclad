@@ -340,8 +340,7 @@ impl IroncladConfig {
 
     fn merge_bundled_providers(&mut self) {
         let bundled: BundledProviders = toml::from_str(BUNDLED_PROVIDERS_TOML)
-            .inspect_err(|e| tracing::error!(error = %e, "failed to parse bundled providers TOML — this is a build-time error"))
-            .unwrap_or_default();
+            .expect("bundled providers TOML must parse — this is a build-time error");
         for (name, bundled_cfg) in bundled.providers {
             self.providers.entry(name).or_insert(bundled_cfg);
         }

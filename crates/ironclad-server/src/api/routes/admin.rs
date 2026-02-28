@@ -110,7 +110,9 @@ pub(crate) async fn resolve_provider_key(
     );
     match source {
         KeySource::NotRequired | KeySource::Missing => None,
-        KeySource::OAuth => oauth.resolve_token(provider_name).await.ok(),
+        KeySource::OAuth => oauth.resolve_token(provider_name).await
+            .inspect_err(|e| tracing::warn!(error = %e, provider = provider_name, "OAuth token resolution failed"))
+            .ok(),
         KeySource::Keystore(v) | KeySource::EnvVar(v) => Some(v),
     }
 }
@@ -829,7 +831,12 @@ pub async fn get_costs(
         })
         .map_err(|e| internal_err(&e))?;
 
-    let costs: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
+    let costs: Vec<Value> = rows
+        .filter_map(|r| {
+            r.inspect_err(|e| tracing::warn!(error = %e, "skipping corrupted cost row"))
+                .ok()
+        })
+        .collect();
     Ok::<_, JsonError>(axum::Json(json!({ "costs": costs })))
 }
 
@@ -1497,6 +1504,9 @@ fn derive_workspace_activity(
             [agent_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
+        .inspect_err(
+            |e| tracing::debug!(error = %e, "failed to query latest tool call for agent status"),
+        )
         .ok();
 
     if let Some((tool_name, created_at)) = latest_tool
@@ -1516,6 +1526,9 @@ fn derive_workspace_activity(
              LIMIT 1",
             [agent_id],
             |row| row.get(0),
+        )
+        .inspect_err(
+            |e| tracing::debug!(error = %e, "failed to query latest turn for agent status"),
         )
         .ok();
 
@@ -2189,8 +2202,12 @@ async fn run_llm_recommendation_analysis(
     }
 
     let url = format!("{}{}", provider.url, provider.chat_path);
-    let body = ironclad_llm::format::translate_request(&req, provider.format)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let body = ironclad_llm::format::translate_request(&req, provider.format).map_err(|e| {
+        JsonError(
+            StatusCode::BAD_REQUEST,
+            format!("failed to translate request: {e}"),
+        )
+    })?;
     let llm = state.llm.read().await;
     let resp = llm
         .client
@@ -2234,6 +2251,7 @@ async fn run_llm_recommendation_analysis(
         Some("recommendations"),
         false,
     )
+    .inspect_err(|e| tracing::warn!(error = %e, "failed to record recommendation inference cost"))
     .ok();
 
     Ok(json!({

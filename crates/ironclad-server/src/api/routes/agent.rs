@@ -1279,7 +1279,9 @@ pub async fn agent_message(
     let session_nickname = match ironclad_db::sessions::get_session(&state.db, &session_id) {
         Ok(Some(s)) if s.nickname.is_none() => {
             let nick = ironclad_db::sessions::derive_nickname(&body.content);
-            ironclad_db::sessions::update_nickname(&state.db, &session_id, &nick).ok();
+            ironclad_db::sessions::update_nickname(&state.db, &session_id, &nick)
+                .inspect_err(|e| tracing::warn!(error = %e, session_id = %session_id, "failed to set session nickname"))
+                .ok();
             Some(nick)
         }
         Ok(Some(s)) => s.nickname,
@@ -1347,7 +1349,9 @@ pub async fn agent_message(
     // Generate query embedding for RAG retrieval and cache L2 lookup
     let query_embedding = {
         let llm = state.llm.read().await;
-        llm.embedding.embed_single(&user_content).await.ok()
+        llm.embedding.embed_single(&user_content).await
+            .inspect_err(|e| tracing::warn!(error = %e, "embedding generation failed, RAG retrieval will be skipped"))
+            .ok()
     };
 
     // Check cache (full L1 -> L3 -> L2 cascade, using real embedding when available)
@@ -1983,7 +1987,9 @@ pub async fn agent_message_stream(
 
     let query_embedding = {
         let llm = state.llm.read().await;
-        llm.embedding.embed_single(&user_content).await.ok()
+        llm.embedding.embed_single(&user_content).await
+            .inspect_err(|e| tracing::warn!(error = %e, "streaming embedding generation failed, RAG retrieval will be skipped"))
+            .ok()
     };
 
     let complexity_level = ironclad_agent::context::determine_level(complexity);
@@ -3983,7 +3989,9 @@ pub async fn process_channel_message(
     // Generate query embedding for RAG retrieval
     let query_embedding = {
         let llm = state.llm.read().await;
-        llm.embedding.embed_single(&user_content).await.ok()
+        llm.embedding.embed_single(&user_content).await
+            .inspect_err(|e| tracing::warn!(error = %e, "channel embedding generation failed, RAG retrieval will be skipped"))
+            .ok()
     };
 
     // Retrieve memories from all tiers (using ANN index when available)

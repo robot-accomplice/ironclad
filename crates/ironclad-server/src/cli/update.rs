@@ -81,8 +81,13 @@ impl UpdateState {
         let path = state_path();
         if path.exists() {
             match std::fs::read_to_string(&path) {
-                Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-                Err(_) => Self::default(),
+                Ok(content) => serde_json::from_str(&content)
+                    .inspect_err(|e| tracing::warn!(error = %e, "corrupted update state file, resetting to default"))
+                    .unwrap_or_default(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read update state file, resetting to default");
+                    Self::default()
+                }
             }
         } else {
             Self::default()
@@ -697,7 +702,12 @@ async fn apply_binary_update(yes: bool, method: &str) -> Result<bool, Box<dyn st
         let mut state = UpdateState::load();
         state.binary_version = latest;
         state.last_check = now_iso();
-        state.save().ok();
+        state
+            .save()
+            .inspect_err(
+                |e| tracing::warn!(error = %e, "failed to save update state after version check"),
+            )
+            .ok();
         Ok(true)
     } else {
         if method == "download" {
@@ -837,7 +847,12 @@ async fn apply_providers_update(
         installed_at: now_iso(),
     });
     state.last_check = now_iso();
-    state.save().ok();
+    state
+        .save()
+        .inspect_err(
+            |e| tracing::warn!(error = %e, "failed to save update state after provider install"),
+        )
+        .ok();
 
     println!("    {OK} Provider configs updated to v{}", manifest.version);
     Ok(true)
@@ -1011,7 +1026,12 @@ async fn apply_skills_update(
         installed_at: now_iso(),
     });
     state.last_check = now_iso();
-    state.save().ok();
+    state
+        .save()
+        .inspect_err(
+            |e| tracing::warn!(error = %e, "failed to save update state after skills install"),
+        )
+        .ok();
 
     println!();
     println!(
