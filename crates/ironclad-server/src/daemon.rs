@@ -293,21 +293,31 @@ pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result
             port = port,
         );
         let task_file = std::env::temp_dir().join("ironclad-task.xml");
-        if std::fs::write(&task_file, &task_xml).is_ok() {
-            // schtasks /Create works without admin for the current user
-            let _ = std::process::Command::new("schtasks")
-                .args([
-                    "/Create",
-                    "/TN",
-                    "IroncladAgent",
-                    "/XML",
-                    &task_file.to_string_lossy(),
-                    "/F",
-                ])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            let _ = std::fs::remove_file(&task_file);
+        std::fs::write(&task_file, &task_xml).map_err(|e| {
+            IroncladError::Config(format!("failed to write task scheduler XML: {e}"))
+        })?;
+        let schtasks_out = std::process::Command::new("schtasks")
+            .args([
+                "/Create",
+                "/TN",
+                "IroncladAgent",
+                "/XML",
+                &task_file.to_string_lossy(),
+                "/F",
+            ])
+            .output()
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&task_file);
+                IroncladError::Config(format!("failed to run schtasks: {e}"))
+            })?;
+        let _ = std::fs::remove_file(&task_file);
+        if !schtasks_out.status.success() {
+            let stderr = String::from_utf8_lossy(&schtasks_out.stderr);
+            return Err(IroncladError::Config(format!(
+                "schtasks /Create failed (exit {}): {}",
+                schtasks_out.status.code().unwrap_or(-1),
+                stderr.trim()
+            )));
         }
     }
 
@@ -355,7 +365,17 @@ pub fn start_daemon() -> Result<()> {
             }
             let pid = spawn_windows_daemon_process(&install)?;
             install.pid = Some(pid);
-            write_windows_daemon_marker(&install)
+            write_windows_daemon_marker(&install)?;
+
+            // Verify the spawned process is still alive after a brief settle period.
+            // The process may crash immediately on startup (bad config, port conflict, etc.).
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if !windows_pid_running(pid)? {
+                return Err(IroncladError::Config(
+                    "daemon process exited immediately after spawn — check config and port availability".into(),
+                ));
+            }
+            Ok(())
         }
         other => Err(IroncladError::Config(format!(
             "daemon start not supported on {other}"
@@ -596,12 +616,25 @@ pub fn uninstall_daemon() -> Result<()> {
     }
     if std::env::consts::OS == "windows" {
         cleanup_legacy_windows_service();
-        // Remove the logon Task Scheduler entry if present
-        let _ = std::process::Command::new("schtasks")
+        // Remove the logon Task Scheduler entry if present (best-effort on uninstall)
+        let schtasks_del = std::process::Command::new("schtasks")
             .args(["/Delete", "/TN", "IroncladAgent", "/F"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+            .output();
+        if let Ok(out) = schtasks_del
+            && !out.status.success()
+        {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            // Ignore "task does not exist" — it may never have been registered
+            if !stderr.to_ascii_lowercase().contains("does not exist")
+                && !stderr.to_ascii_lowercase().contains("cannot find")
+            {
+                return Err(IroncladError::Config(format!(
+                    "schtasks /Delete failed (exit {}): {}",
+                    out.status.code().unwrap_or(-1),
+                    stderr.trim()
+                )));
+            }
+        }
         let marker = windows_service_marker_path();
         if marker.exists()
             && let Err(e) = std::fs::remove_file(&marker)

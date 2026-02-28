@@ -169,6 +169,9 @@ pub async fn memory_search(
     if query.is_empty() {
         return Err(bad_request("missing ?q= parameter"));
     }
+    if query.len() > 512 {
+        return Err(bad_request("search query too long (max 512 chars)"));
+    }
     match ironclad_db::memory::fts_search(&state.db, &query, 100) {
         Ok(results) => Ok(axum::Json(serde_json::json!({ "results": results }))),
         Err(e) => Err(internal_err(&e)),

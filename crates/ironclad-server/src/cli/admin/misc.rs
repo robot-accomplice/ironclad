@@ -300,7 +300,10 @@ async fn cmd_mechanic_json(
         }
     }
 
-    let gateway = reqwest::get(format!("{base_url}/api/health")).await;
+    let gateway = super::http_client()?
+        .get(format!("{base_url}/api/health"))
+        .send()
+        .await;
     let gateway_up = matches!(gateway, Ok(ref resp) if resp.status().is_success());
     if !gateway_up {
         findings.push(finding(
@@ -315,7 +318,10 @@ async fn cmd_mechanic_json(
             false,
         ));
     } else {
-        let diag_resp = reqwest::get(format!("{base_url}/api/agent/status")).await?;
+        let diag_resp = super::http_client()?
+            .get(format!("{base_url}/api/agent/status"))
+            .send()
+            .await?;
         let diagnostics: serde_json::Value = diag_resp.json().await.unwrap_or_default();
         if let Some(diag) = diagnostics.get("diagnostics") {
             let enabled = diag
@@ -343,7 +349,10 @@ async fn cmd_mechanic_json(
             }
         }
 
-        let channels_resp = reqwest::get(format!("{base_url}/api/channels/status")).await?;
+        let channels_resp = super::http_client()?
+            .get(format!("{base_url}/api/channels/status"))
+            .send()
+            .await?;
         let channels: Vec<serde_json::Value> = channels_resp.json().await.unwrap_or_default();
         if let Some(tg) = channels
             .iter()
@@ -380,7 +389,10 @@ async fn cmd_mechanic_json(
         }
 
         if repair && !allow_jobs.is_empty() {
-            let jobs_resp = reqwest::get(format!("{base_url}/api/cron/jobs")).await?;
+            let jobs_resp = super::http_client()?
+                .get(format!("{base_url}/api/cron/jobs"))
+                .send()
+                .await?;
             if jobs_resp.status().is_success() {
                 let payload: serde_json::Value = jobs_resp.json().await.unwrap_or_default();
                 let jobs = payload
@@ -390,7 +402,7 @@ async fn cmd_mechanic_json(
                     .unwrap_or_default();
                 let allowset: std::collections::HashSet<String> =
                     allow_jobs.iter().map(|s| s.to_string()).collect();
-                let client = reqwest::Client::new();
+                let client = super::http_client()?;
                 for job in jobs {
                     let name = job.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     let id = job.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -554,7 +566,7 @@ pub async fn cmd_circuit_status(url: &str) -> Result<(), Box<dyn std::error::Err
 pub async fn cmd_circuit_reset(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    let client = reqwest::Client::new();
+    let client = super::http_client()?;
     let status = client
         .get(format!("{url}/api/breaker/status"))
         .send()
@@ -622,8 +634,39 @@ pub async fn cmd_circuit_reset(url: &str) -> Result<(), Box<dyn std::error::Erro
 
 // ── Agents, channels ──────────────────────────────────────────
 
+pub async fn cmd_agent_start(base_url: &str, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let client = super::http_client()?;
+    let resp = client
+        .post(format!("{base_url}/api/agents/{id}/start"))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {status}: {body}").into());
+    }
+    eprintln!("  Agent {id} started");
+    Ok(())
+}
+
+pub async fn cmd_agent_stop(base_url: &str, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let client = super::http_client()?;
+    let resp = client
+        .post(format!("{base_url}/api/agents/{id}/stop"))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {status}: {body}").into());
+    }
+    eprintln!("  Agent {id} stopped");
+    Ok(())
+}
+
 pub async fn cmd_agents_list(base_url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = reqwest::get(format!("{base_url}/api/agents")).await?;
+    let client = super::http_client()?;
+    let resp = client.get(format!("{base_url}/api/agents")).send().await?;
     let body: serde_json::Value = resp.json().await?;
 
     let agents = body
@@ -654,7 +697,10 @@ pub async fn cmd_agents_list(base_url: &str) -> Result<(), Box<dyn std::error::E
 }
 
 pub async fn cmd_channels_status(base_url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = reqwest::get(format!("{base_url}/api/channels/status")).await?;
+    let resp = super::http_client()?
+        .get(format!("{base_url}/api/channels/status"))
+        .send()
+        .await?;
     let channels: Vec<serde_json::Value> = resp.json().await?;
 
     if channels.is_empty() {
@@ -695,7 +741,10 @@ pub async fn cmd_channels_dead_letter(
     base_url: &str,
     limit: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = reqwest::get(format!("{base_url}/api/channels/dead-letter?limit={limit}")).await?;
+    let resp = super::http_client()?
+        .get(format!("{base_url}/api/channels/dead-letter?limit={limit}"))
+        .send()
+        .await?;
     let body: serde_json::Value = resp.json().await?;
     let items = body
         .get("items")
@@ -744,7 +793,7 @@ pub async fn cmd_channels_replay(
     base_url: &str,
     id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client = reqwest::Client::new();
+    let client = super::http_client()?;
     let resp = client
         .post(format!("{base_url}/api/channels/dead-letter/{id}/replay"))
         .send()
@@ -1101,7 +1150,11 @@ pub async fn cmd_mechanic(
     }
 
     // Check gateway reachability first -- all subsequent server checks depend on this
-    let gateway_up = match reqwest::get(format!("{base_url}/api/health")).await {
+    let gateway_up = match super::http_client()?
+        .get(format!("{base_url}/api/health"))
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => {
             println!("  {OK} Gateway reachable at {base_url}");
             true
@@ -1121,7 +1174,11 @@ pub async fn cmd_mechanic(
         let mut runtime_diag: Option<serde_json::Value> = None;
 
         // Config
-        match reqwest::get(format!("{base_url}/api/config")).await {
+        match super::http_client()?
+            .get(format!("{base_url}/api/config"))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 println!("  {OK} Configuration loaded on server");
             }
@@ -1134,7 +1191,11 @@ pub async fn cmd_mechanic(
         }
 
         // Runtime diagnostics (delegation integrity signals)
-        match reqwest::get(format!("{base_url}/api/agent/status")).await {
+        match super::http_client()?
+            .get(format!("{base_url}/api/agent/status"))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 let body: serde_json::Value = resp.json().await.unwrap_or_default();
                 runtime_diag = body.get("diagnostics").cloned();
@@ -1152,7 +1213,11 @@ pub async fn cmd_mechanic(
         }
 
         // Skills
-        match reqwest::get(format!("{base_url}/api/skills")).await {
+        match super::http_client()?
+            .get(format!("{base_url}/api/skills"))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 let body: serde_json::Value = resp.json().await.unwrap_or_default();
                 let count = body
@@ -1171,7 +1236,11 @@ pub async fn cmd_mechanic(
         }
 
         // Wallet
-        match reqwest::get(format!("{base_url}/api/wallet/balance")).await {
+        match super::http_client()?
+            .get(format!("{base_url}/api/wallet/balance"))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 println!("  {OK} Wallet accessible");
             }
@@ -1184,7 +1253,11 @@ pub async fn cmd_mechanic(
         }
 
         // Channels
-        match reqwest::get(format!("{base_url}/api/channels/status")).await {
+        match super::http_client()?
+            .get(format!("{base_url}/api/channels/status"))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 let body: Vec<serde_json::Value> = resp.json().await.unwrap_or_default();
                 let active = body
@@ -1304,8 +1377,12 @@ pub async fn cmd_mechanic(
         if repair && !allow_jobs.is_empty() {
             let allowset: std::collections::HashSet<String> =
                 allow_jobs.iter().map(|s| s.to_string()).collect();
-            let client = reqwest::Client::new();
-            match reqwest::get(format!("{base_url}/api/cron/jobs")).await {
+            let client = super::http_client()?;
+            match super::http_client()?
+                .get(format!("{base_url}/api/cron/jobs"))
+                .send()
+                .await
+            {
                 Ok(resp) if resp.status().is_success() => {
                     let payload: serde_json::Value = resp.json().await.unwrap_or_default();
                     let jobs = payload
@@ -1737,7 +1814,7 @@ pub async fn cmd_logs(
     if follow {
         println!("  {BOLD}Tailing logs{RESET} (level >= {level}, Ctrl+C to stop)\n");
 
-        let client = reqwest::Client::new();
+        let client = super::http_client()?;
         let resp = client
             .get(format!("{base_url}/api/logs"))
             .query(&[
@@ -1775,7 +1852,10 @@ pub async fn cmd_logs(
             }
         }
     } else {
-        let resp = reqwest::get(format!("{base_url}/api/logs?lines={lines}&level={level}")).await;
+        let resp = super::http_client()?
+            .get(format!("{base_url}/api/logs?lines={lines}&level={level}"))
+            .send()
+            .await;
 
         match resp {
             Ok(r) if r.status().is_success() => {

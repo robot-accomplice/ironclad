@@ -100,8 +100,14 @@ pub(crate) fn sanitize_error_message(msg: &str) -> String {
     let sensitive_prefixes = [
         "at /", // stack trace file paths
         "called `Result::unwrap()` on an `Err` value:",
-        "SQLITE_",            // raw SQLite error codes
-        "Connection refused", // infra details
+        "SQLITE_",                // raw SQLite error codes
+        "Connection refused",     // infra details
+        "constraint failed",      // SQLite constraint errors (leaks table/column names)
+        "no such table",          // SQLite schema details
+        "no such column",         // SQLite schema details
+        "UNIQUE constraint",      // SQLite constraint (leaks table.column)
+        "FOREIGN KEY constraint", // SQLite constraint
+        "NOT NULL constraint",    // SQLite constraint
     ];
     let sanitized = {
         let mut s = sanitized.to_string();
@@ -3737,7 +3743,8 @@ params = { path = "README.md" }
     fn sanitize_error_strips_database_wrapper() {
         let msg = r#"Database("no such table: foobar")"#;
         let cleaned = sanitize_error_message(msg);
-        assert_eq!(cleaned, "no such table: foobar");
+        // Schema-leaking SQLite errors are now redacted
+        assert_eq!(cleaned, "[details redacted]");
     }
 
     #[test]

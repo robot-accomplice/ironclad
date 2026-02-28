@@ -3,7 +3,10 @@ use super::*;
 // ── Plugin listing ────────────────────────────────────────────
 
 pub async fn cmd_plugins_list(base_url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = reqwest::get(format!("{base_url}/api/plugins")).await?;
+    let resp = super::http_client()?
+        .get(format!("{base_url}/api/plugins"))
+        .send()
+        .await?;
     let body: serde_json::Value = resp.json().await?;
 
     let plugins = body
@@ -45,7 +48,10 @@ pub async fn cmd_plugins_list(base_url: &str) -> Result<(), Box<dyn std::error::
 pub async fn cmd_plugin_info(base_url: &str, name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    let resp = reqwest::get(format!("{base_url}/api/plugins")).await?;
+    let resp = super::http_client()?
+        .get(format!("{base_url}/api/plugins"))
+        .send()
+        .await?;
     let body: serde_json::Value = resp.json().await.unwrap_or_default();
     let plugins: Vec<serde_json::Value> = body
         .get("plugins")
@@ -179,7 +185,7 @@ pub async fn cmd_plugin_toggle(
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let action = if enable { "enable" } else { "disable" };
-    let client = reqwest::Client::new();
+    let client = super::http_client()?;
     let resp = client
         .put(format!("{base_url}/api/plugins/{name}/toggle"))
         .json(&serde_json::json!({ "enabled": enable }))

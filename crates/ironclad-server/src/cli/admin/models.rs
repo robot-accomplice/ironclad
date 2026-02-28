@@ -5,7 +5,10 @@ use super::*;
 pub async fn cmd_models_list(base_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    let resp = reqwest::get(format!("{base_url}/api/config")).await?;
+    let resp = super::http_client()?
+        .get(format!("{base_url}/api/config"))
+        .send()
+        .await?;
     let config: serde_json::Value = resp.json().await?;
 
     println!("\n  {BOLD}Configured Models{RESET}\n");
@@ -59,7 +62,10 @@ pub async fn cmd_models_scan(
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     println!("\n  {BOLD}Scanning for available models...{RESET}\n");
 
-    let resp = reqwest::get(format!("{base_url}/api/config")).await?;
+    let resp = super::http_client()?
+        .get(format!("{base_url}/api/config"))
+        .send()
+        .await?;
     let config: serde_json::Value = resp.json().await?;
 
     let providers = config

@@ -147,7 +147,7 @@ pub fn list_agent_tables(db: &Database, agent_id: &str) -> Result<Vec<SchemaEntr
 fn validate_identifier(s: &str) -> Result<()> {
     if s.is_empty()
         || s.chars().next().is_some_and(|c| c.is_ascii_digit())
-        || !s.chars().all(|c| c.is_alphanumeric() || c == '_')
+        || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     {
         return Err(IroncladError::Database(format!(
             "invalid SQL identifier: {s}"

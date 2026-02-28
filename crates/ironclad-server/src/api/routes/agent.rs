@@ -2313,12 +2313,14 @@ pub async fn agent_message_stream(
         };
 
         // Post-stream: store assistant response (scanned content)
-        ironclad_db::sessions::append_message(
+        if let Err(e) = ironclad_db::sessions::append_message(
             &db,
             &session_id_clone,
             "assistant",
             &assistant_content,
-        ).ok();
+        ) {
+            tracing::error!(error = %e, session_id = %session_id_clone, "failed to persist assistant response after streaming inference");
+        }
 
         // Record inference cost
         let cost = unified_resp.tokens_in as f64 * cost_in + unified_resp.tokens_out as f64 * cost_out;

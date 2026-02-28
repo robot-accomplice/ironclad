@@ -1,7 +1,7 @@
 //! Global API rate limiting (fixed window, Clone-friendly for axum Router).
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -135,9 +135,11 @@ fn too_many_requests_response() -> Response<Body> {
 }
 
 fn stable_token_fingerprint(raw: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    raw.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(raw.as_bytes());
+    // 8 bytes (64 bits) is plenty for rate-limit dedup — collision-resistant
+    // enough for bucket identity while keeping map keys small.
+    hex::encode(&hash[..8])
 }
 
 fn extract_actor_id(req: &Request<Body>) -> Option<String> {
@@ -155,12 +157,8 @@ fn extract_actor_id(req: &Request<Body>) -> Option<String> {
     {
         return Some(format!("bearer:{}", stable_token_fingerprint(token)));
     }
-    if let Some(v) = req.headers().get("x-user-id")
-        && let Ok(raw) = v.to_str()
-        && !raw.is_empty()
-    {
-        return Some(format!("user:{raw}"));
-    }
+    // x-user-id header is intentionally NOT used as an actor identity here.
+    // It is unauthenticated and would allow rate-limit bypass by cycling IDs.
     principal
 }
 
@@ -203,7 +201,15 @@ fn resolve_client_ip(req: &Request<Body>, trusted_proxy_cidrs: &[IpCidr]) -> IpA
         return proxy_ip;
     }
 
-    IpAddr::from([127, 0, 0, 1])
+    // Fall back to the actual TCP peer address from ConnectInfo rather than
+    // hardcoding 127.0.0.1, which would lump all headerless clients into
+    // a single rate-limit bucket.
+    use axum::extract::ConnectInfo;
+    use std::net::SocketAddr;
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip())
+        .unwrap_or(IpAddr::from([127, 0, 0, 1]))
 }
 
 impl IpCidr {
@@ -300,8 +306,8 @@ where
                 guard.throttled_global += 1;
                 return Ok(too_many_requests_response());
             }
-            guard.count += 1;
 
+            // Check per-IP limit.
             let per_ip_cap = per_ip_capacity;
             if !guard.per_ip.contains_key(&ip) && guard.per_ip.len() >= MAX_DISTINCT_IPS {
                 return Ok(too_many_requests_response());
@@ -316,8 +322,9 @@ where
             }
             ip_entry.0 += 1;
 
-            if let Some(actor_id) = actor {
-                if !guard.per_actor.contains_key(&actor_id)
+            // Check per-actor limit.
+            if let Some(ref actor_id) = actor {
+                if !guard.per_actor.contains_key(actor_id)
                     && guard.per_actor.len() >= MAX_DISTINCT_ACTORS
                 {
                     return Ok(too_many_requests_response());
@@ -327,11 +334,17 @@ where
                     *actor_entry = (0, now);
                 }
                 if actor_entry.0 >= per_actor_capacity {
-                    *guard.throttled_per_actor.entry(actor_id).or_insert(0) += 1;
+                    *guard
+                        .throttled_per_actor
+                        .entry(actor_id.clone())
+                        .or_insert(0) += 1;
                     return Ok(too_many_requests_response());
                 }
                 actor_entry.0 += 1;
             }
+
+            // All per-IP/per-actor checks passed — now increment global counter.
+            guard.count += 1;
 
             drop(guard);
 

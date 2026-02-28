@@ -25,6 +25,10 @@ struct Cli {
     )]
     url: String,
 
+    /// API key for authenticating with the server
+    #[arg(long, global = true, env = "IRONCLAD_API_KEY")]
+    api_key: Option<String>,
+
     /// Profile name for state isolation
     #[arg(long, global = true, env = "IRONCLAD_PROFILE")]
     profile: Option<String>,
@@ -696,6 +700,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         parsed.no_draw,
         parsed.nerdmode,
     );
+    cli::init_api_key(parsed.api_key.clone());
     let t = cli::theme();
     eprint!("{}", t.reset());
     let url = if parsed.url == "http://127.0.0.1:18789" && parsed.config.is_some() {
@@ -910,24 +915,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Some(Commands::Agents(sub)) => match sub {
             AgentsCmd::List => cli::cmd_agents_list(url).await,
-            AgentsCmd::Start { id } => {
-                let client = reqwest::Client::new();
-                client
-                    .post(format!("{url}/api/agents/{id}/start"))
-                    .send()
-                    .await?;
-                eprintln!("  Agent {id} started");
-                Ok(())
-            }
-            AgentsCmd::Stop { id } => {
-                let client = reqwest::Client::new();
-                client
-                    .post(format!("{url}/api/agents/{id}/stop"))
-                    .send()
-                    .await?;
-                eprintln!("  Agent {id} stopped");
-                Ok(())
-            }
+            AgentsCmd::Start { id } => cli::cmd_agent_start(url, &id).await,
+            AgentsCmd::Stop { id } => cli::cmd_agent_stop(url, &id).await,
         },
         Some(Commands::Channels(sub)) => match sub {
             ChannelsCmd::List => cli::cmd_channels_status(url).await,
@@ -2272,10 +2261,9 @@ is_local = true
 
     #[test]
     fn tcp_endpoint_reachable_detects_closed_port() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        assert!(!tcp_endpoint_reachable("127.0.0.1", port));
+        // Use TEST-NET-1 (RFC 5737) — a non-routable address that guarantees connection
+        // failure without the TOCTOU race of binding+dropping an ephemeral port.
+        assert!(!tcp_endpoint_reachable("192.0.2.1", 1));
     }
 
     #[test]

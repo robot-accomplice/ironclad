@@ -170,8 +170,15 @@ pub async fn webhook_whatsapp(
     let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes())
         .expect("HMAC accepts any key size");
     mac.update(&bytes);
-    let computed = hex::encode(mac.finalize().into_bytes());
-    if !bool::from(computed.as_bytes().ct_eq(expected.as_bytes())) {
+    let computed = mac.finalize().into_bytes();
+    let Ok(expected_bytes) = hex::decode(expected) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "invalid webhook signature (bad hex)"})),
+        )
+            .into_response();
+    };
+    if !bool::from(computed.ct_eq(expected_bytes.as_slice())) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"ok": false, "error": "invalid webhook signature"})),
