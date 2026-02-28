@@ -46,30 +46,39 @@ impl Drop for DedupGuard {
 /// Try to extract a tool call from the LLM's text response.
 /// Looks for `{"tool_call": {"name": "...", "params": {...}}}` in the response.
 fn parse_tool_call(response: &str) -> Option<(String, serde_json::Value)> {
-    let start = response.find(r#""tool_call""#)?;
-    let brace_start = response[..start].rfind('{')?;
-    let mut depth = 0;
-    let mut end = brace_start;
-    for (i, ch) in response[brace_start..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = brace_start + i + 1;
-                    break;
+    // Search from the end to avoid locking onto a fake "tool_call" earlier in the text.
+    // Try each candidate from last to first; accept the first valid parse.
+    let mut search_end = response.len();
+    while let Some(rel) = response[..search_end].rfind(r#""tool_call""#) {
+        if let Some(brace_start) = response[..rel].rfind('{') {
+            let mut depth = 0;
+            let mut end = brace_start;
+            for (i, ch) in response[brace_start..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = brace_start + i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            _ => {}
-        }
-    }
 
-    let json_str = &response[brace_start..end];
-    let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
-    let tool_call = parsed.get("tool_call")?;
-    let name = tool_call.get("name")?.as_str()?.to_string();
-    let params = tool_call.get("params").cloned().unwrap_or(json!({}));
-    Some((name, params))
+            let json_str = &response[brace_start..end];
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str)
+                && let Some(tool_call) = parsed.get("tool_call")
+                && let Some(name) = tool_call.get("name").and_then(|n| n.as_str())
+            {
+                let params = tool_call.get("params").cloned().unwrap_or(json!({}));
+                return Some((name.to_string(), params));
+            }
+        }
+        search_end = rel;
+    }
+    None
 }
 
 fn claims_unverified_subagent_output(response: &str) -> bool {
@@ -111,17 +120,18 @@ fn repeat_tokens(text: &str) -> HashSet<String> {
 }
 
 fn common_prefix_ratio(a: &str, b: &str) -> f64 {
-    let aa = a.as_bytes();
-    let bb = b.as_bytes();
-    let max_len = aa.len().max(bb.len());
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let max_len = a_chars.len().max(b_chars.len());
     if max_len == 0 {
         return 0.0;
     }
-    let mut i = 0usize;
-    while i < aa.len() && i < bb.len() && aa[i] == bb[i] {
-        i += 1;
-    }
-    i as f64 / max_len as f64
+    let shared = a_chars
+        .iter()
+        .zip(b_chars.iter())
+        .take_while(|(ac, bc)| ac == bc)
+        .count();
+    shared as f64 / max_len as f64
 }
 
 fn looks_repetitive(current: &str, previous: &str) -> bool {
@@ -240,7 +250,7 @@ fn proposal_to_json(proposal: &SpecialistProposal, rationale: &str) -> serde_jso
     })
 }
 
-fn classify_provider_error(raw: &str) -> &'static str {
+pub(crate) fn classify_provider_error(raw: &str) -> &'static str {
     let lower = raw.to_ascii_lowercase();
     if lower.contains("circuit breaker") {
         "provider temporarily unavailable"
@@ -5594,5 +5604,40 @@ fallbacks = ["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514", "google/gemi
         // Should contain the safe category instead
         assert!(msg_stored.contains("provider authentication error"));
         assert!(msg_retry.contains("provider authentication error"));
+    }
+
+    // ── L-HIGH-1: parse_tool_call fake mention resistance ─────────
+
+    #[test]
+    fn parse_tool_call_ignores_fake_earlier_mention() {
+        // L-HIGH-1: a fake "tool_call" in natural language must not prevent
+        // parsing the real tool call at the end
+        let resp = r#"The "tool_call" pattern is used for function calls. Here is the actual one: {"tool_call": {"name": "echo", "params": {"msg": "hello"}}}"#;
+        let (name, params) = parse_tool_call(resp).expect("should find real tool call");
+        assert_eq!(name, "echo");
+        assert_eq!(params["msg"], "hello");
+    }
+
+    // ── L-HIGH-2: common_prefix_ratio Unicode correctness ─────────
+
+    #[test]
+    fn common_prefix_ratio_ascii() {
+        assert!((common_prefix_ratio("hello", "hello") - 1.0).abs() < f64::EPSILON);
+        assert!((common_prefix_ratio("hello", "world") - 0.0).abs() < f64::EPSILON);
+        assert!((common_prefix_ratio("hello", "help") - 0.6).abs() < f64::EPSILON); // 3/5
+        assert!((common_prefix_ratio("", "") - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn common_prefix_ratio_unicode() {
+        // L-HIGH-2: must compare characters, not bytes
+        let a = "\u{4F60}\u{597D}\u{4E16}\u{754C}"; // 你好世界
+        let b = "\u{4F60}\u{597D}\u{5929}\u{6C14}"; // 你好天气
+        // 2 shared chars out of 4 = 0.5
+        let ratio = common_prefix_ratio(a, b);
+        assert!(
+            (ratio - 0.5).abs() < f64::EPSILON,
+            "expected 0.5 for 2/4 shared CJK chars, got {ratio}"
+        );
     }
 }

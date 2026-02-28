@@ -160,13 +160,21 @@ impl FinancialRule {
 
     fn extract_amount_cents(params: &Value) -> Option<i64> {
         let obj = params.as_object()?;
+        // Check integer cent keys first
         for key in ["amount", "amount_cents", "cents", "value_cents"] {
-            if let Some(v) = obj.get(key)
-                && let Some(n) = v.as_i64()
-            {
-                return Some(n);
+            if let Some(v) = obj.get(key) {
+                if let Some(n) = v.as_i64() {
+                    return Some(n);
+                }
+                // Float fallback for "amount" — treat as dollars if fractional
+                if key == "amount"
+                    && let Some(n) = v.as_f64()
+                {
+                    return Some((n * 100.0).round() as i64);
+                }
             }
         }
+        // Dollar-denominated keys
         if let Some(v) = obj
             .get("amount_dollars")
             .or(obj.get("dollars"))
@@ -935,6 +943,47 @@ mod tests {
             engine
                 .evaluate_all(&make_request("anything", RiskLevel::Forbidden), &ctx)
                 .is_allowed()
+        );
+    }
+
+    #[test]
+    fn financial_rule_blocks_float_amount() {
+        // L-NEW-1: a float "amount" must not bypass the threshold
+        let rule = FinancialRule::new(100.0);
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+        };
+
+        let float_high = ToolCallRequest {
+            tool_name: "transfer".into(),
+            params: serde_json::json!({ "amount": 150.50 }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(
+            !rule.evaluate(&float_high, &ctx).is_allowed(),
+            "float amount $150.50 should be blocked by $100 threshold"
+        );
+
+        let float_low = ToolCallRequest {
+            tool_name: "send".into(),
+            params: serde_json::json!({ "amount": 50.0 }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(
+            rule.evaluate(&float_low, &ctx).is_allowed(),
+            "float amount $50.00 should be allowed under $100 threshold"
+        );
+
+        // Integer "amount" still works as cents
+        let int_high = ToolCallRequest {
+            tool_name: "transfer".into(),
+            params: serde_json::json!({ "amount": 15050 }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(
+            !rule.evaluate(&int_high, &ctx).is_allowed(),
+            "integer amount 15050 cents should be blocked by 10000-cent threshold"
         );
     }
 }
