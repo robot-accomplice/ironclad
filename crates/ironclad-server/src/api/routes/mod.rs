@@ -184,7 +184,12 @@ pub(crate) fn validate_long(field_name: &str, value: &str) -> Result<(), JsonErr
 
 /// Strip HTML tags from a string to prevent injection in stored values.
 pub(crate) fn sanitize_html(input: &str) -> String {
-    input.replace('<', "&lt;").replace('>', "&gt;")
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
 }
 
 // ── Pagination helpers ──────────────────────────────────────────
@@ -657,6 +662,7 @@ pub fn build_public_router(state: AppState) -> Router {
             "/api/webhooks/whatsapp",
             get(webhook_whatsapp_verify).post(webhook_whatsapp),
         )
+        .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB — match auth router
         .with_state(state)
 }
 
@@ -5881,7 +5887,19 @@ params = { path = "README.md" }
     #[test]
     fn sanitize_html_preserves_safe_content() {
         assert_eq!(sanitize_html("hello world"), "hello world");
-        assert_eq!(sanitize_html("a&b"), "a&b");
+    }
+
+    #[test]
+    fn sanitize_html_escapes_all_entities() {
+        // S-MED-1: must escape & " ' for attribute-context XSS
+        assert_eq!(sanitize_html("a&b"), "a&amp;b");
+        assert_eq!(
+            sanitize_html(r#"" onmouseover="x"#),
+            "&quot; onmouseover=&quot;x"
+        );
+        assert_eq!(sanitize_html("' onclick='y"), "&#x27; onclick=&#x27;y");
+        // & before < to avoid double-escaping
+        assert_eq!(sanitize_html("&lt;"), "&amp;lt;");
     }
 
     // ── BUG-007/008: PaginationQuery clamps limits ──

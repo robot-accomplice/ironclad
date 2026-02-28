@@ -1158,6 +1158,20 @@ pub struct AgentMessageRequest {
     is_group: Option<bool>,
 }
 
+/// Max length for scope identifiers (peer_id, group_id, channel).
+const MAX_SCOPE_ID: usize = 256;
+
+/// Validate a scope identifier: reject control chars and enforce length cap.
+fn validate_scope_id(value: &str, field: &'static str) -> Result<(), &'static str> {
+    if value.len() > MAX_SCOPE_ID {
+        return Err(field);
+    }
+    if value.chars().any(|c| c.is_control()) {
+        return Err(field);
+    }
+    Ok(())
+}
+
 fn resolve_web_scope(
     cfg: &ironclad_core::IroncladConfig,
     body: &AgentMessageRequest,
@@ -1168,6 +1182,10 @@ fn resolve_web_scope(
         .unwrap_or("web")
         .trim()
         .to_lowercase();
+    validate_scope_id(
+        &channel,
+        "channel exceeds max length or contains control characters",
+    )?;
     let peer_id = body
         .peer_id
         .clone()
@@ -1180,6 +1198,18 @@ fn resolve_web_scope(
                 Some(trimmed.to_string())
             }
         });
+    if let Some(ref pid) = peer_id {
+        validate_scope_id(
+            pid,
+            "peer_id exceeds max length or contains control characters",
+        )?;
+    }
+    if let Some(ref gid) = body.group_id {
+        validate_scope_id(
+            gid.trim(),
+            "group_id exceeds max length or contains control characters",
+        )?;
+    }
     let mode = cfg.session.scope_mode.as_str();
     if (mode == "group"
         || (mode != "agent" && body.is_group == Some(true) && body.group_id.is_some()))
@@ -5132,6 +5162,49 @@ scope_mode = "{scope_mode}"
 
         let cfg_group = test_config_with_scope("group");
         assert!(resolve_web_scope(&cfg_group, &req).is_err());
+    }
+
+    #[test]
+    fn resolve_web_scope_rejects_oversized_scope_ids() {
+        // S-MED-2: peer_id, group_id, channel capped at MAX_SCOPE_ID
+        let long = "a".repeat(MAX_SCOPE_ID + 1);
+        let cfg = test_config_with_scope("peer");
+        let req = AgentMessageRequest {
+            content: "hi".into(),
+            session_id: None,
+            channel: Some("web".into()),
+            sender_id: None,
+            peer_id: Some(long.clone()),
+            group_id: None,
+            is_group: None,
+        };
+        assert!(resolve_web_scope(&cfg, &req).is_err());
+
+        let req2 = AgentMessageRequest {
+            content: "hi".into(),
+            session_id: None,
+            channel: Some(long),
+            sender_id: None,
+            peer_id: Some("ok".into()),
+            group_id: None,
+            is_group: None,
+        };
+        assert!(resolve_web_scope(&cfg, &req2).is_err());
+    }
+
+    #[test]
+    fn resolve_web_scope_rejects_control_chars() {
+        let cfg = test_config_with_scope("peer");
+        let req = AgentMessageRequest {
+            content: "hi".into(),
+            session_id: None,
+            channel: Some("web".into()),
+            sender_id: None,
+            peer_id: Some("user\x00evil".into()),
+            group_id: None,
+            is_group: None,
+        };
+        assert!(resolve_web_scope(&cfg, &req).is_err());
     }
 
     #[test]
