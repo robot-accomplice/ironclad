@@ -185,9 +185,7 @@ impl WasmPlugin {
             let (results, store) = match rx.recv_timeout(deadline) {
                 Ok((Ok(results), store)) => (results, store),
                 Ok((Err(e), _)) => {
-                    return Err(IroncladError::Config(format!(
-                        "WASM execution failed: {e}"
-                    )));
+                    return Err(IroncladError::Config(format!("WASM execution failed: {e}")));
                 }
                 Err(_) => {
                     warn!(
@@ -197,8 +195,7 @@ impl WasmPlugin {
                     );
                     return Err(IroncladError::Config(format!(
                         "WASM plugin '{}' timed out after {}ms",
-                        self.config.name,
-                        self.config.execution_timeout_ms,
+                        self.config.name, self.config.execution_timeout_ms,
                     )));
                 }
             };
@@ -270,9 +267,7 @@ impl WasmPlugin {
                     }));
                 }
                 Ok(Err(e)) => {
-                    return Err(IroncladError::Config(format!(
-                        "WASM execution failed: {e}"
-                    )));
+                    return Err(IroncladError::Config(format!("WASM execution failed: {e}")));
                 }
                 Err(_) => {
                     warn!(
@@ -282,8 +277,7 @@ impl WasmPlugin {
                     );
                     return Err(IroncladError::Config(format!(
                         "WASM plugin '{}' timed out after {}ms",
-                        self.config.name,
-                        self.config.execution_timeout_ms,
+                        self.config.name, self.config.execution_timeout_ms,
                     )));
                 }
             }

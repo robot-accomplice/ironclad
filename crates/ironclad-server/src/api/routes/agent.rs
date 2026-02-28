@@ -2949,31 +2949,43 @@ async fn send_thinking_indicator(
 
     match platform {
         "telegram" => {
-            if let Some(ref tg) = state.telegram {
-                if let None = tg.send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}").await {
-                    tracing::debug!(platform, chat_id, "thinking indicator send failed");
-                }
+            if let Some(ref tg) = state.telegram
+                && tg
+                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
+                    .await
+                    .is_none()
+            {
+                tracing::debug!(platform, chat_id, "thinking indicator send failed");
             }
         }
         "whatsapp" => {
-            if let Some(ref wa) = state.whatsapp {
-                if let None = wa.send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}").await {
-                    tracing::debug!(platform, chat_id, "thinking indicator send failed");
-                }
+            if let Some(ref wa) = state.whatsapp
+                && wa
+                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
+                    .await
+                    .is_none()
+            {
+                tracing::debug!(platform, chat_id, "thinking indicator send failed");
             }
         }
         "discord" => {
-            if let Some(ref dc) = state.discord {
-                if let None = dc.send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}").await {
-                    tracing::debug!(platform, chat_id, "thinking indicator send failed");
-                }
+            if let Some(ref dc) = state.discord
+                && dc
+                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
+                    .await
+                    .is_none()
+            {
+                tracing::debug!(platform, chat_id, "thinking indicator send failed");
             }
         }
         "signal" => {
-            if let Some(ref sig) = state.signal {
-                if let None = sig.send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}").await {
-                    tracing::debug!(platform, chat_id, "thinking indicator send failed");
-                }
+            if let Some(ref sig) = state.signal
+                && sig
+                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
+                    .await
+                    .is_none()
+            {
+                tracing::debug!(platform, chat_id, "thinking indicator send failed");
             }
         }
         _ => {}
@@ -3832,7 +3844,9 @@ pub async fn process_channel_message(
                 wf_input,
             );
             let available_agents = ironclad_db::agents::list_sub_agents(&state.db)
-                .inspect_err(|e| tracing::error!(error = %e, "failed to list sub-agents for workflow"))
+                .inspect_err(
+                    |e| tracing::error!(error = %e, "failed to list sub-agents for workflow"),
+                )
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|a| !is_model_proxy_role(&a.role) && a.enabled)

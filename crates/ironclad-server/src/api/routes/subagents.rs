@@ -180,10 +180,11 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
                     .into_iter()
                     .map(|a| (a.id.to_ascii_lowercase(), a))
                     .collect();
-            let session_counts =
-                ironclad_db::agents::list_session_counts_by_agent(&state.db)
-                    .inspect_err(|e| tracing::warn!(error = %e, "failed to load session counts for sub-agents"))
-                    .unwrap_or_default();
+            let session_counts = ironclad_db::agents::list_session_counts_by_agent(&state.db)
+                .inspect_err(
+                    |e| tracing::warn!(error = %e, "failed to load session counts for sub-agents"),
+                )
+                .unwrap_or_default();
             let mut booting = 0usize;
             let mut running = 0usize;
             let mut errored = 0usize;

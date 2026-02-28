@@ -1155,7 +1155,11 @@ async fn cmd_auth_login(
         .await?;
 
     if !resp.status().is_success() {
-        let body = resp.text().await.inspect_err(|e| tracing::warn!(error = %e, "CLI response parse failed")).unwrap_or_default();
+        let body = resp
+            .text()
+            .await
+            .inspect_err(|e| tracing::warn!(error = %e, "CLI response parse failed"))
+            .unwrap_or_default();
         return Err(format!("Token exchange failed: {body}").into());
     }
 

@@ -272,7 +272,13 @@ impl Plugin for ScriptPlugin {
             let stdout_fut = async {
                 let mut buf = Vec::new();
                 if let Some(out) = child_stdout.take() {
-                    out.take(MAX_SCRIPT_OUTPUT).read_to_end(&mut buf).await.inspect_err(|e| tracing::debug!(error = %e, "failed to read script stdout")).ok();
+                    out.take(MAX_SCRIPT_OUTPUT)
+                        .read_to_end(&mut buf)
+                        .await
+                        .inspect_err(
+                            |e| tracing::debug!(error = %e, "failed to read script stdout"),
+                        )
+                        .ok();
                 }
                 // `out` dropped here — closes the pipe, which sends SIGPIPE
                 // to the child if it tries to write more.
@@ -281,7 +287,13 @@ impl Plugin for ScriptPlugin {
             let stderr_fut = async {
                 let mut buf = Vec::new();
                 if let Some(err) = child_stderr.take() {
-                    err.take(MAX_SCRIPT_OUTPUT).read_to_end(&mut buf).await.inspect_err(|e| tracing::debug!(error = %e, "failed to read script stderr")).ok();
+                    err.take(MAX_SCRIPT_OUTPUT)
+                        .read_to_end(&mut buf)
+                        .await
+                        .inspect_err(
+                            |e| tracing::debug!(error = %e, "failed to read script stderr"),
+                        )
+                        .ok();
                 }
                 buf
             };

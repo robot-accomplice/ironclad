@@ -118,10 +118,7 @@ impl KnowledgeSource for DirectorySource {
                     let file = std::fs::File::open(&path)?;
                     let meta = file.metadata()?;
                     if meta.len() > MAX_FILE_BYTES {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "file too large for knowledge query",
-                        ));
+                        return Err(std::io::Error::other("file too large for knowledge query"));
                     }
                     let mut buf = String::new();
                     file.take(MAX_FILE_BYTES).read_to_string(&mut buf)?;
@@ -644,8 +641,9 @@ mod tests {
 
     #[test]
     fn graph_source_with_api_key() {
-        let source =
-            GraphSource::new("neo4j", "http://localhost:7474").unwrap().with_api_key("token".to_string());
+        let source = GraphSource::new("neo4j", "http://localhost:7474")
+            .unwrap()
+            .with_api_key("token".to_string());
         assert!(source.api_key.is_some());
     }
 
@@ -664,10 +662,9 @@ mod tests {
             "docs",
             dir.path().to_path_buf(),
         )));
-        reg.add(Box::new(VectorDbSource::new(
-            "pinecone",
-            "https://api.pinecone.io",
-        ).unwrap()));
+        reg.add(Box::new(
+            VectorDbSource::new("pinecone", "https://api.pinecone.io").unwrap(),
+        ));
 
         let list = reg.list();
         assert_eq!(list.len(), 2);

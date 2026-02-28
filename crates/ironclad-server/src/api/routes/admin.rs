@@ -338,10 +338,22 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
                 // Allowlist approach: keep only known-safe display fields.
                 // New secret fields are safe by default (excluded unless added here).
                 const ALLOWED_FIELDS: &[&str] = &[
-                    "url", "chat_path", "model", "models", "format", "auth_mode",
-                    "auth_header", "extra_headers", "is_local", "cost_per_input_token",
-                    "cost_per_output_token", "max_tokens", "supports_streaming",
-                    "_key_status", "_key_source", "_provider_name",
+                    "url",
+                    "chat_path",
+                    "model",
+                    "models",
+                    "format",
+                    "auth_mode",
+                    "auth_header",
+                    "extra_headers",
+                    "is_local",
+                    "cost_per_input_token",
+                    "cost_per_output_token",
+                    "max_tokens",
+                    "supports_streaming",
+                    "_key_status",
+                    "_key_source",
+                    "_provider_name",
                 ];
                 p.retain(|k, _| ALLOWED_FIELDS.contains(&k.as_str()));
             }

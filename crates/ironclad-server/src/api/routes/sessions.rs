@@ -455,7 +455,9 @@ pub async fn get_session_insights(
         .collect();
 
     let grades: Vec<(String, i32)> = ironclad_db::sessions::list_session_feedback(&state.db, &id)
-        .inspect_err(|e| tracing::warn!(error = %e, session_id = %id, "failed to list session feedback"))
+        .inspect_err(
+            |e| tracing::warn!(error = %e, session_id = %id, "failed to list session feedback"),
+        )
         .unwrap_or_default()
         .into_iter()
         .map(|fb| (fb.turn_id, fb.grade))
@@ -490,10 +492,11 @@ pub async fn analyze_turn(
         Err(e) => return Err(internal_err(&e)),
     };
 
-    let tool_calls =
-        ironclad_db::tools::get_tool_calls_for_turn(&state.db, &id)
-            .inspect_err(|e| tracing::warn!(error = %e, turn_id = %id, "failed to get tool calls for turn"))
-            .unwrap_or_default();
+    let tool_calls = ironclad_db::tools::get_tool_calls_for_turn(&state.db, &id)
+        .inspect_err(
+            |e| tracing::warn!(error = %e, turn_id = %id, "failed to get tool calls for turn"),
+        )
+        .unwrap_or_default();
     let turn_data = build_turn_data(&turn_record, &tool_calls);
 
     let analyzer = ContextAnalyzer::new();
@@ -563,7 +566,9 @@ pub async fn analyze_session(
         .collect();
 
     let grades: Vec<(String, i32)> = ironclad_db::sessions::list_session_feedback(&state.db, &id)
-        .inspect_err(|e| tracing::warn!(error = %e, session_id = %id, "failed to list session feedback"))
+        .inspect_err(
+            |e| tracing::warn!(error = %e, session_id = %id, "failed to list session feedback"),
+        )
         .unwrap_or_default()
         .into_iter()
         .map(|fb| (fb.turn_id, fb.grade))

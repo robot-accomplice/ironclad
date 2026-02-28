@@ -1819,14 +1819,20 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
         match fs::read_to_string(&channels_path) {
             Ok(c) => c,
             Err(e) => {
-                return err(MigrationArea::Channels, format!("Failed to read channels.toml: {e}"));
+                return err(
+                    MigrationArea::Channels,
+                    format!("Failed to read channels.toml: {e}"),
+                );
             }
         }
     } else if config_path.exists() {
         match fs::read_to_string(&config_path) {
             Ok(c) => c,
             Err(e) => {
-                return err(MigrationArea::Channels, format!("Failed to read ironclad.toml: {e}"));
+                return err(
+                    MigrationArea::Channels,
+                    format!("Failed to read ironclad.toml: {e}"),
+                );
             }
         }
     } else {
@@ -1900,12 +1906,16 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
             Ok(c) => match serde_json::from_str(&c) {
                 Ok(map) => map,
                 Err(e) => {
-                    warnings.push(format!("Could not parse existing openclaw.json: {e}; starting fresh"));
+                    warnings.push(format!(
+                        "Could not parse existing openclaw.json: {e}; starting fresh"
+                    ));
                     serde_json::Map::new()
                 }
             },
             Err(e) => {
-                warnings.push(format!("Could not read existing openclaw.json: {e}; starting fresh"));
+                warnings.push(format!(
+                    "Could not read existing openclaw.json: {e}; starting fresh"
+                ));
                 serde_json::Map::new()
             }
         }
