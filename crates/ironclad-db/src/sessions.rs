@@ -126,6 +126,7 @@ pub fn find_or_create(
             rusqlite::params![agent_id, &scope_key],
             |row| row.get(0),
         )
+        .inspect_err(|e| tracing::warn!(error = %e, "session query failed"))
         .ok();
 
     if let Some(id) = existing {
@@ -149,6 +150,7 @@ pub fn find_or_create(
                 rusqlite::params![agent_id, &scope_key],
                 |row| row.get(0),
             )
+            .inspect_err(|e| tracing::warn!(error = %e, "session query failed"))
             .ok();
         if let Some(id) = existing_after_conflict {
             tx.commit()

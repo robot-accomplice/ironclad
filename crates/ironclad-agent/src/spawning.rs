@@ -171,13 +171,19 @@ impl SpawnManager {
     }
 
     /// Record spending by a child agent.
+    ///
+    /// Budget comparison uses a small epsilon to avoid floating-point
+    /// rounding errors causing spurious over-budget rejections
+    /// (e.g. 0.1 + 0.2 > 0.3 in IEEE 754).
     pub fn record_spending(&mut self, child_id: &str, amount: f64) -> Result<()> {
+        const EPSILON: f64 = 1e-9;
+
         let child = self
             .children
             .get_mut(child_id)
             .ok_or_else(|| IroncladError::Config(format!("child '{}' not found", child_id)))?;
 
-        if child.spent_usdc + amount > child.budget_usdc {
+        if child.spent_usdc + amount > child.budget_usdc + EPSILON {
             return Err(IroncladError::Config(format!(
                 "child '{}' would exceed budget ({} + {} > {})",
                 child_id, child.spent_usdc, amount, child.budget_usdc

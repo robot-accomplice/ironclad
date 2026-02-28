@@ -251,7 +251,9 @@ pub async fn apply_runtime_config(
 
     if let Err(err) = apply_result {
         if let Some(ref backup) = backup_path {
-            let _ = restore_from_backup(&config_path, backup);
+            if let Err(e) = restore_from_backup(&config_path, backup) {
+                tracing::error!(error = %e, path = %config_path.display(), "failed to restore config from backup — config file may be corrupted");
+            }
         }
         {
             let mut config = state.config.write().await;

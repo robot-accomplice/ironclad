@@ -134,12 +134,15 @@ impl DiscordAdapter {
     /// or until a message is sent. Best-effort; errors are silently ignored.
     pub async fn send_typing(&self, channel_id: &str) {
         let url = format!("{}/channels/{}/typing", DISCORD_API_BASE, channel_id);
-        let _ = self
+        if let Err(e) = self
             .client
             .post(&url)
             .header("Authorization", format!("Bot {}", self.token))
             .send()
-            .await;
+            .await
+        {
+            tracing::debug!(error = %e, "Discord typing indicator failed");
+        }
     }
 
     /// Send a short ephemeral message and return its message ID. Best-effort.

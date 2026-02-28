@@ -165,7 +165,7 @@ impl SignalAdapter {
     /// API through signal-cli's JSON-RPC, so we send a short receipt action.
     /// This is a no-op if the daemon doesn't support it.
     pub async fn send_typing(&self, recipient: &str) {
-        let _ = self
+        if let Err(e) = self
             .json_rpc(
                 "sendTyping",
                 json!({
@@ -173,7 +173,10 @@ impl SignalAdapter {
                     "account": self.phone_number,
                 }),
             )
-            .await;
+            .await
+        {
+            tracing::debug!(error = %e, "Signal typing indicator failed");
+        }
     }
 
     /// Send a short ephemeral text message. Returns the timestamp (Signal's

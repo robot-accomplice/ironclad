@@ -233,7 +233,9 @@ impl OAuthManager {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            if let Err(e) = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)) {
+                tracing::warn!(error = %e, path = %tmp.display(), "failed to set token file permissions");
+            }
         }
         std::fs::rename(&tmp, &path).map_err(|e| {
             IroncladError::Config(format!("failed to rename OAuth token file into place: {e}"))

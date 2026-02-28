@@ -1103,10 +1103,12 @@ pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path, no_safety_check: boo
                             registered += 1;
                             if !enabled {
                                 let conn = db.conn();
-                                let _ = conn.execute(
+                                if let Err(e) = conn.execute(
                                     "UPDATE skills SET enabled = 0 WHERE id = ?1",
                                     rusqlite::params![id],
-                                );
+                                ) {
+                                    warnings.push(format!("Failed to disable skill {name}: {e}"));
+                                }
                                 disabled_count += 1;
                             }
                         }
@@ -1355,10 +1357,12 @@ pub(crate) fn import_sessions(oc_root: &Path, ic_root: &Path) -> AreaResult {
                 let role = msg.role.as_deref().unwrap_or("user");
                 let content = msg.content.as_deref().unwrap_or("");
                 let ts = msg.timestamp.as_deref().unwrap_or(created);
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "INSERT OR IGNORE INTO session_messages (id, session_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                     rusqlite::params![mid, sid, role, content, ts],
-                );
+                ) {
+                    warnings.push(format!("Failed to import message for session {sid}: {e}"));
+                }
             }
         }
         items += 1;
@@ -1576,10 +1580,12 @@ pub(crate) fn import_cron(oc_root: &Path, ic_root: &Path) -> AreaResult {
             .unwrap_or_else(|| "{}".to_string());
 
         // Delete any existing job with the same name to avoid duplicates on re-import
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             "DELETE FROM cron_jobs WHERE name = ?1",
             rusqlite::params![name],
-        );
+        ) {
+            warnings.push(format!("Failed to clean existing cron job {name}: {e}"));
+        }
 
         match conn.execute(
             "INSERT INTO cron_jobs (id, name, enabled, schedule_kind, schedule_expr, agent_id, payload_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1646,7 +1652,10 @@ pub(crate) fn export_cron(ic_root: &Path, oc_root: &Path) -> AreaResult {
             }))
         })
         .map(|iter| iter.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to iterate cron job rows during export");
+            vec![]
+        });
 
     if let Err(e) = fs::create_dir_all(oc_root) {
         return err(
@@ -1654,10 +1663,16 @@ pub(crate) fn export_cron(ic_root: &Path, oc_root: &Path) -> AreaResult {
             format!("Failed to create output dir: {e}"),
         );
     }
-    if let Err(e) = fs::write(
-        oc_root.join("jobs.json"),
-        serde_json::to_string_pretty(&jobs).unwrap_or_default(),
-    ) {
+    let jobs_json = match serde_json::to_string_pretty(&jobs) {
+        Ok(s) => s,
+        Err(e) => {
+            return err(
+                MigrationArea::Cron,
+                format!("Failed to serialize jobs.json: {e}"),
+            );
+        }
+    };
+    if let Err(e) = fs::write(oc_root.join("jobs.json"), &jobs_json) {
         return err(
             MigrationArea::Cron,
             format!("Failed to write jobs.json: {e}"),
@@ -1801,9 +1816,19 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
     let mut warnings = Vec::new();
 
     let channel_toml = if channels_path.exists() {
-        fs::read_to_string(&channels_path).unwrap_or_default()
+        match fs::read_to_string(&channels_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return err(MigrationArea::Channels, format!("Failed to read channels.toml: {e}"));
+            }
+        }
     } else if config_path.exists() {
-        fs::read_to_string(&config_path).unwrap_or_default()
+        match fs::read_to_string(&config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return err(MigrationArea::Channels, format!("Failed to read ironclad.toml: {e}"));
+            }
+        }
     } else {
         return AreaResult {
             area: MigrationArea::Channels,
@@ -1871,10 +1896,19 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
     // Merge into existing openclaw.json
     let oc_config_path = oc_root.join("openclaw.json");
     let mut oc_config: serde_json::Map<String, serde_json::Value> = if oc_config_path.exists() {
-        fs::read_to_string(&oc_config_path)
-            .ok()
-            .and_then(|c| serde_json::from_str(&c).ok())
-            .unwrap_or_default()
+        match fs::read_to_string(&oc_config_path) {
+            Ok(c) => match serde_json::from_str(&c) {
+                Ok(map) => map,
+                Err(e) => {
+                    warnings.push(format!("Could not parse existing openclaw.json: {e}; starting fresh"));
+                    serde_json::Map::new()
+                }
+            },
+            Err(e) => {
+                warnings.push(format!("Could not read existing openclaw.json: {e}; starting fresh"));
+                serde_json::Map::new()
+            }
+        }
     } else {
         serde_json::Map::new()
     };
@@ -1886,10 +1920,16 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
             format!("Failed to create output dir: {e}"),
         );
     }
-    if let Err(e) = fs::write(
-        &oc_config_path,
-        serde_json::to_string_pretty(&oc_config).unwrap_or_default(),
-    ) {
+    let serialized = match serde_json::to_string_pretty(&oc_config) {
+        Ok(s) => s,
+        Err(e) => {
+            return err(
+                MigrationArea::Channels,
+                format!("Failed to serialize openclaw.json: {e}"),
+            );
+        }
+    };
+    if let Err(e) = fs::write(&oc_config_path, &serialized) {
         return err(
             MigrationArea::Channels,
             format!("Failed to write openclaw.json: {e}"),

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-02-28
+
+### Security
+
+- **WASM preemptive timeout (BUG-101)**: WASM plugin execution now runs on a dedicated thread with `recv_timeout`, providing true preemptive timeout instead of the previous post-hoc elapsed-time check that allowed malicious modules to run indefinitely.
+- **Script runner orphan kill (BUG-102)**: Script runner now captures the child PID before `wait_with_output()` and sends `kill -9` on timeout, preventing orphan process accumulation.
+- **Rate limiter memory bounds (BUG-103)**: Per-IP and per-actor rate limit maps are now capped at 10,000 and 5,000 entries respectively, preventing unbounded memory growth during distributed floods. Throttle tracking maps are also cleared on window reset.
+- **Knowledge/Obsidian bounded reads (BUG-104, BUG-110)**: `DirectorySource::query()` and `parse_note()` now enforce 10 MB and 5 MB file size limits respectively, preventing OOM on oversized files.
+- **Config secret allowlist (BUG-106)**: Admin config endpoint now uses an allowlist (`ALLOWED_FIELDS`) instead of a blocklist for field filtering, ensuring new secret fields are safe by default.
+- **Interview turn cap (BUG-107)**: Interview sessions now enforce a 200-turn maximum to prevent unbounded memory growth within the 3600s TTL.
+
+### Fixed
+
+- **reqwest Client panic (BUG-105)**: `VectorDbSource::new()` and `GraphSource::new()` now return `Result` instead of panicking via `.expect()` when TLS initialization fails.
+- **Signal handler crash (BUG-108)**: SIGTERM handler installation now falls back to SIGINT-only mode instead of crashing via `.expect()` in containerized environments.
+- **Heartbeat unreachable panic (BUG-109)**: `interval_for_tier()` catch-all arm now returns a safe default (`interval_ms * 2`) instead of `unreachable!()`, preventing runtime panics if new `SurvivalTier` variants are added.
+- **Regex recompilation (BUG-111)**: Obsidian tag and wikilink regexes are now `LazyLock` statics instead of being recompiled on every invocation.
+- **Budget float precision (BUG-112)**: `record_spending()` now uses epsilon-aware comparison to avoid IEEE 754 rounding errors causing spurious over-budget rejections.
+- **Sub-agent lifecycle failures (SF-15–SF-20)**: All `let _ =` patterns on `registry.register()`, `start_agent()`, `stop_agent()`, `unregister()`, and `assign_agent()` now log errors at appropriate levels.
+- **API key env var diagnostics (SF-21, SF-22)**: Empty and missing API key / email password environment variables now produce warn-level log messages instead of silently returning empty strings.
+- **Sub-agent list errors (SF-23)**: `list_sub_agents` DB errors now propagate at the delegation entry point and log at remaining fallback sites.
+- **Skills list errors (SF-24)**: `list_skills` DB failure now logged before fallback.
+- **MCP discovery failure (SF-25)**: MCP client discovery errors at startup now logged at warn level.
+- **Semantic cache load failure (SF-26)**: Cache load errors now logged before fallback to empty.
+- **Provider key resolution (SF-27)**: Missing provider keys for non-local providers now produce warn-level diagnostics.
+- **Bundled providers parse failure (SF-28)**: TOML parse errors for bundled providers now logged.
+- **Config backup restore (SF-29)**: Failed hot-reload backup restoration now logged at error level.
+- **Migration SQL errors (SF-30)**: SQL execution failures during migration now surfaced as warnings.
+- **Thinking indicator failures (SF-31)**: Channel thinking indicator send failures now logged at debug level across all 4 platforms.
+- **Session candidates JSON (SF-32)**: Model selection candidate deserialization errors now logged.
+- **Telegram API errors (SF-33)**: Typing indicator and message delete HTTP failures now logged at debug level.
+- **Session counts fallback (SF-34)**: Sub-agent session count DB errors now logged before fallback.
+- **Subtask JSON parse (SF-35)**: Malformed `subtasks` parameter (non-array) now produces a warning instead of silently returning empty.
+- **19 additional MEDIUM silent failures (SF-36–SF-52)**: Error logging added across oauth, plugin-sdk, retrieval, digest, skills, signal, discord, whatsapp, sessions, defrag, embedding, main CLI, keystore, and obsidian modules.
+- **Migration export cascade (SF-48)**: Channel export now properly reports file read failures and JSON serialization errors instead of silently producing empty output.
+
 ## [0.8.4] - 2026-02-28
 
 ### Security

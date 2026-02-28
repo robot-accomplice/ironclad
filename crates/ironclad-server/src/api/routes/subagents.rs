@@ -181,7 +181,9 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
                     .map(|a| (a.id.to_ascii_lowercase(), a))
                     .collect();
             let session_counts =
-                ironclad_db::agents::list_session_counts_by_agent(&state.db).unwrap_or_default();
+                ironclad_db::agents::list_session_counts_by_agent(&state.db)
+                    .inspect_err(|e| tracing::warn!(error = %e, "failed to load session counts for sub-agents"))
+                    .unwrap_or_default();
             let mut booting = 0usize;
             let mut running = 0usize;
             let mut errored = 0usize;
@@ -313,8 +315,12 @@ pub async fn create_sub_agent(
                     allowed_subagents: vec![],
                     max_concurrent: 4,
                 };
-                let _ = state.registry.register(config).await;
-                let _ = state.registry.start_agent(&agent.name).await;
+                if let Err(e) = state.registry.register(config).await {
+                    tracing::error!(agent = %agent.name, error = %e, "failed to register sub-agent in runtime");
+                }
+                if let Err(e) = state.registry.start_agent(&agent.name).await {
+                    tracing::error!(agent = %agent.name, error = %e, "failed to start sub-agent in runtime");
+                }
             }
             Ok(axum::Json(serde_json::json!({
                 "id": agent.id,
@@ -409,12 +415,20 @@ pub async fn update_sub_agent(
                 allowed_subagents: vec![],
                 max_concurrent: 4,
             };
-            let _ = state.registry.register(config).await;
+            if let Err(e) = state.registry.register(config).await {
+                tracing::error!(agent = %updated.name, error = %e, "failed to register sub-agent in runtime");
+            }
         }
-        let _ = state.registry.start_agent(&updated.name).await;
+        if let Err(e) = state.registry.start_agent(&updated.name).await {
+            tracing::error!(agent = %updated.name, error = %e, "failed to start sub-agent in runtime");
+        }
     } else {
-        let _ = state.registry.stop_agent(&updated.name).await;
-        let _ = state.registry.unregister(&updated.name).await;
+        if let Err(e) = state.registry.stop_agent(&updated.name).await {
+            tracing::error!(agent = %updated.name, error = %e, "failed to stop sub-agent in runtime");
+        }
+        if !state.registry.unregister(&updated.name).await {
+            tracing::warn!(agent = %updated.name, "sub-agent was not registered in runtime during unregister");
+        }
     }
 
     Ok(axum::Json(serde_json::json!({
@@ -429,8 +443,12 @@ pub async fn delete_sub_agent(
 ) -> Result<impl IntoResponse, JsonError> {
     match ironclad_db::agents::delete_sub_agent(&state.db, &name) {
         Ok(true) => {
-            let _ = state.registry.stop_agent(&name).await;
-            let _ = state.registry.unregister(&name).await;
+            if let Err(e) = state.registry.stop_agent(&name).await {
+                tracing::error!(agent = %name, error = %e, "failed to stop sub-agent in runtime during delete");
+            }
+            if !state.registry.unregister(&name).await {
+                tracing::warn!(agent = %name, "sub-agent was not registered in runtime during delete");
+            }
             Ok(axum::Json(
                 serde_json::json!({ "deleted": true, "name": name }),
             ))
@@ -477,12 +495,20 @@ pub async fn toggle_sub_agent(
                 allowed_subagents: vec![],
                 max_concurrent: 4,
             };
-            let _ = state.registry.register(config).await;
+            if let Err(e) = state.registry.register(config).await {
+                tracing::error!(agent = %updated.name, error = %e, "failed to register sub-agent in runtime");
+            }
         }
-        let _ = state.registry.start_agent(&updated.name).await;
+        if let Err(e) = state.registry.start_agent(&updated.name).await {
+            tracing::error!(agent = %updated.name, error = %e, "failed to start sub-agent in runtime");
+        }
     } else {
-        let _ = state.registry.stop_agent(&updated.name).await;
-        let _ = state.registry.unregister(&updated.name).await;
+        if let Err(e) = state.registry.stop_agent(&updated.name).await {
+            tracing::error!(agent = %updated.name, error = %e, "failed to stop sub-agent in runtime");
+        }
+        if !state.registry.unregister(&updated.name).await {
+            tracing::warn!(agent = %updated.name, "sub-agent was not registered in runtime during toggle");
+        }
     }
 
     Ok(axum::Json(serde_json::json!({

@@ -530,7 +530,7 @@ fn apply_fixes(workspace: &Path, findings: &[DefragFinding]) -> usize {
         for f in &refs_findings {
             let content = patched_files
                 .entry(f.file.clone())
-                .or_insert_with(|| fs::read_to_string(&f.file).unwrap_or_default());
+                .or_insert_with(|| fs::read_to_string(&f.file).inspect_err(|e| tracing::warn!(error = %e, path = %f.file.display(), "failed to read file for defrag")).unwrap_or_default());
             // not yet replaced — we'll do all replacements at end
         }
         for (path, content) in &mut patched_files {
@@ -588,7 +588,7 @@ fn apply_fixes(workspace: &Path, findings: &[DefragFinding]) -> usize {
         for f in &identity_findings {
             patched_files
                 .entry(f.file.clone())
-                .or_insert_with(|| fs::read_to_string(&f.file).unwrap_or_default());
+                .or_insert_with(|| fs::read_to_string(&f.file).inspect_err(|e| tracing::warn!(error = %e, path = %f.file.display(), "failed to read file for defrag")).unwrap_or_default());
         }
         for (path, content) in &mut patched_files {
             let mut updated = content.clone();

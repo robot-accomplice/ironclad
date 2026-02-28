@@ -43,12 +43,13 @@ impl HeartbeatDaemon {
                     None
                 }
             }
-            _ => {
+            tier => {
                 let new = match tier {
                     SurvivalTier::LowCompute => self.interval_ms * 2,
                     SurvivalTier::Critical => self.interval_ms * 2,
                     SurvivalTier::Dead => self.interval_ms * 10,
-                    _ => unreachable!(),
+                    // Safe default for any future tier variants
+                    _ => self.interval_ms * 2,
                 };
                 let max = match tier {
                     SurvivalTier::Dead => MAX_HEARTBEAT_INTERVAL_MS,

@@ -166,26 +166,47 @@ impl WasmPlugin {
 
         let deadline = std::time::Duration::from_millis(self.config.execution_timeout_ms);
 
-        if let Ok(func) = instance.exports.get_function("process") {
-            let start = std::time::Instant::now();
-            let results = func
-                .call(&mut store, &[])
-                .map_err(|e| IroncladError::Config(format!("WASM execution failed: {e}")))?;
+        // Run WASM calls on a dedicated thread with a preemptive timeout.
+        // If the module loops forever, recv_timeout returns Err and we
+        // report failure instead of hanging the caller indefinitely.
+        // The orphaned thread continues (WASM is sandboxed — no host I/O),
+        // but the caller is immediately unblocked.
 
-            let elapsed = start.elapsed();
-            if elapsed > deadline {
-                warn!(
-                    plugin = %self.config.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    deadline_ms = self.config.execution_timeout_ms,
-                    "WASM execution exceeded configured timeout"
-                );
-            }
+        if let Ok(func) = instance.exports.get_function("process") {
+            let func = func.clone();
+            let memory = instance.exports.get_memory("memory").ok().cloned();
+
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            std::thread::spawn(move || {
+                let result = func.call(&mut store, &[]);
+                let _ = tx.send((result, store));
+            });
+
+            let (results, store) = match rx.recv_timeout(deadline) {
+                Ok((Ok(results), store)) => (results, store),
+                Ok((Err(e), _)) => {
+                    return Err(IroncladError::Config(format!(
+                        "WASM execution failed: {e}"
+                    )));
+                }
+                Err(_) => {
+                    warn!(
+                        plugin = %self.config.name,
+                        deadline_ms = self.config.execution_timeout_ms,
+                        "WASM execution timed out — orphan thread may still be running"
+                    );
+                    return Err(IroncladError::Config(format!(
+                        "WASM plugin '{}' timed out after {}ms",
+                        self.config.name,
+                        self.config.execution_timeout_ms,
+                    )));
+                }
+            };
 
             let result_values: Vec<serde_json::Value> =
                 results.iter().map(wasmer_value_to_json).collect();
 
-            if let Ok(memory) = instance.exports.get_memory("memory")
+            if let Some(ref memory) = memory
                 && result_values.len() == 2
                 && let Some(ptr) = result_values[0].as_i64().filter(|&v| v >= 0)
                 && let Some(len) = result_values[1]
@@ -234,23 +255,38 @@ impl WasmPlugin {
         }
 
         if let Ok(func) = instance.exports.get_function("_start") {
-            let start = std::time::Instant::now();
-            func.call(&mut store, &[])
-                .map_err(|e| IroncladError::Config(format!("WASM execution failed: {e}")))?;
+            let func = func.clone();
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            std::thread::spawn(move || {
+                let result = func.call(&mut store, &[]);
+                let _ = tx.send(result);
+            });
 
-            let elapsed = start.elapsed();
-            if elapsed > deadline {
-                warn!(
-                    plugin = %self.config.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    deadline_ms = self.config.execution_timeout_ms,
-                    "WASM execution exceeded configured timeout"
-                );
+            match rx.recv_timeout(deadline) {
+                Ok(Ok(_)) => {
+                    return Ok(serde_json::json!({
+                        "status": "executed",
+                        "plugin": self.config.name,
+                    }));
+                }
+                Ok(Err(e)) => {
+                    return Err(IroncladError::Config(format!(
+                        "WASM execution failed: {e}"
+                    )));
+                }
+                Err(_) => {
+                    warn!(
+                        plugin = %self.config.name,
+                        deadline_ms = self.config.execution_timeout_ms,
+                        "WASM execution timed out — orphan thread may still be running"
+                    );
+                    return Err(IroncladError::Config(format!(
+                        "WASM plugin '{}' timed out after {}ms",
+                        self.config.name,
+                        self.config.execution_timeout_ms,
+                    )));
+                }
             }
-            return Ok(serde_json::json!({
-                "status": "executed",
-                "plugin": self.config.name,
-            }));
         }
 
         let export_names: Vec<String> = instance

@@ -250,6 +250,7 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
 
     let existing_by_name: std::collections::HashMap<String, ironclad_db::skills::SkillRecord> =
         ironclad_db::skills::list_skills(&state.db)
+            .inspect_err(|e| tracing::error!(error = %e, "failed to list skills during sync"))
             .unwrap_or_default()
             .into_iter()
             .map(|s| (s.name.clone(), s))
@@ -552,10 +553,14 @@ pub async fn catalog_install(
         if actual_hash != *expected_hash {
             // Roll back any files already touched.
             for (path, old) in rollback_existing.drain(..) {
-                let _ = std::fs::write(path, old);
+                if let Err(e) = std::fs::write(&path, old) {
+                    tracing::warn!(error = %e, path = %path.display(), "failed to restore file during skill install rollback");
+                }
             }
             for path in rollback_new.drain(..) {
-                let _ = std::fs::remove_file(path);
+                if let Err(e) = std::fs::remove_file(&path) {
+                    tracing::warn!(error = %e, path = %path.display(), "failed to remove file during skill install rollback");
+                }
             }
             return Err(bad_request(format!("checksum mismatch for {filename}")));
         }
@@ -570,10 +575,14 @@ pub async fn catalog_install(
         {
             // Roll back any files already touched.
             for (path, old) in rollback_existing.drain(..) {
-                let _ = std::fs::write(path, old);
+                if let Err(e) = std::fs::write(&path, old) {
+                    tracing::warn!(error = %e, path = %path.display(), "failed to restore file during skill install rollback");
+                }
             }
             for path in rollback_new.drain(..) {
-                let _ = std::fs::remove_file(path);
+                if let Err(e) = std::fs::remove_file(&path) {
+                    tracing::warn!(error = %e, path = %path.display(), "failed to remove file during skill install rollback");
+                }
             }
             return Err(bad_request(format!(
                 "invalid filename rejected: {filename}"

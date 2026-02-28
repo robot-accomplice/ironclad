@@ -17,7 +17,9 @@ pub struct EpisodicDigest {
 impl EpisodicDigest {
     /// Generate a digest from a session's message history.
     pub fn from_session(db: &Database, session: &Session) -> Option<Self> {
-        let messages = sessions::list_messages(db, &session.id, None).ok()?;
+        let messages = sessions::list_messages(db, &session.id, None)
+            .inspect_err(|e| tracing::warn!(error = %e, session_id = %session.id, "failed to list messages for digest"))
+            .ok()?;
         if messages.is_empty() {
             return None;
         }

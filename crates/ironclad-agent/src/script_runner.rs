@@ -58,6 +58,7 @@ impl ScriptRunner {
             tool: "script_runner".into(),
             message: format!("failed to spawn {interpreter}: {e}"),
         })?;
+        let child_pid = child.id();
 
         let output = match tokio::time::timeout(timeout_dur, child.wait_with_output()).await {
             Ok(Ok(output)) => output,
@@ -68,6 +69,15 @@ impl ScriptRunner {
                 });
             }
             Err(_) => {
+                // child.wait_with_output() consumed the Child. Kill via PID
+                // to prevent orphan process accumulation on timeout.
+                // Best-effort kill via shell; libc would require an
+                // additional dependency for the agent crate.
+                if let Some(pid) = child_pid {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-9", &pid.to_string()])
+                        .status();
+                }
                 return Err(IroncladError::Tool {
                     tool: "script_runner".into(),
                     message: format!(

@@ -240,7 +240,9 @@ impl TelegramAdapter {
             "chat_id": chat_id,
             "action": "typing",
         });
-        let _ = self.client.post(&url).json(&body).send().await;
+        if let Err(e) = self.client.post(&url).json(&body).send().await {
+            tracing::debug!(chat_id, error = %e, "Telegram typing indicator failed");
+        }
     }
 
     /// Send a short message and return its message_id (for later deletion).
@@ -262,7 +264,9 @@ impl TelegramAdapter {
             "chat_id": chat_id,
             "message_id": message_id,
         });
-        let _ = self.client.post(&url).json(&body).send().await;
+        if let Err(e) = self.client.post(&url).json(&body).send().await {
+            tracing::debug!(chat_id, message_id, error = %e, "Telegram message delete failed");
+        }
     }
 }
 

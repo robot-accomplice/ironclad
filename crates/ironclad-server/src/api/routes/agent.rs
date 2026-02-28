@@ -419,17 +419,21 @@ async fn execute_virtual_subagent_tool_call(
         .and_then(|v| v.as_str())
         .or_else(|| params.get("subagent").and_then(|v| v.as_str()));
 
-    let subtasks: Vec<String> = params
-        .get("subtasks")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
+    let subtasks: Vec<String> = match params.get("subtasks") {
+        Some(v) => match v.as_array() {
+            Some(arr) => arr
+                .iter()
                 .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
                 .filter(|s| !s.is_empty())
                 .take(6)
-                .collect()
-        })
-        .unwrap_or_default();
+                .collect(),
+            None => {
+                tracing::warn!("delegation 'subtasks' param is not an array, ignoring");
+                vec![]
+            }
+        },
+        None => vec![],
+    };
     if task.is_empty() && !subtasks.is_empty() {
         task = subtasks.join("; ");
     }
@@ -437,7 +441,8 @@ async fn execute_virtual_subagent_tool_call(
         return Err("delegation tool requires `task` (or `subtasks`)".to_string());
     }
 
-    let all_subagents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let all_subagents = ironclad_db::agents::list_sub_agents(&state.db)
+        .map_err(|e| format!("failed to query sub-agents: {e}"))?;
     let taskable_subagents: Vec<ironclad_db::agents::SubAgentRow> = all_subagents
         .into_iter()
         .filter(|sa| !is_model_proxy_role(&sa.role) && sa.enabled)
@@ -957,7 +962,9 @@ async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiagnostics {
     let channels = state.channel_router.channel_status().await;
     let channels_with_errors = channels.iter().filter(|c| c.last_error.is_some()).count();
     let runtime_agents = state.registry.list_agents().await;
-    let configured_subagents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let configured_subagents = ironclad_db::agents::list_sub_agents(&state.db)
+        .inspect_err(|e| tracing::error!(error = %e, "failed to list sub-agents for status"))
+        .unwrap_or_default();
     let model_proxy_names: HashSet<String> = configured_subagents
         .iter()
         .filter(|a| is_model_proxy_role(&a.role))
@@ -2452,7 +2459,12 @@ async fn refine_session_nickname(
                 keystore,
             )
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                if !p.is_local {
+                    tracing::warn!(provider = %p.name, "API key resolved to None for non-local provider");
+                }
+                String::new()
+            });
             (
                 format!("{}{}", p.url, p.chat_path),
                 key,
@@ -2729,7 +2741,12 @@ async fn resolve_inference_provider(
         &state.keystore,
     )
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|| {
+        if !provider.is_local {
+            tracing::warn!(provider = %provider.name, "API key resolved to None for non-local provider");
+        }
+        String::new()
+    });
     Some(ResolvedInferenceProvider {
         url,
         api_key: key,
@@ -2933,30 +2950,30 @@ async fn send_thinking_indicator(
     match platform {
         "telegram" => {
             if let Some(ref tg) = state.telegram {
-                let _ = tg
-                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
-                    .await;
+                if let None = tg.send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}").await {
+                    tracing::debug!(platform, chat_id, "thinking indicator send failed");
+                }
             }
         }
         "whatsapp" => {
             if let Some(ref wa) = state.whatsapp {
-                let _ = wa
-                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
-                    .await;
+                if let None = wa.send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}").await {
+                    tracing::debug!(platform, chat_id, "thinking indicator send failed");
+                }
             }
         }
         "discord" => {
             if let Some(ref dc) = state.discord {
-                let _ = dc
-                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
-                    .await;
+                if let None = dc.send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}").await {
+                    tracing::debug!(platform, chat_id, "thinking indicator send failed");
+                }
             }
         }
         "signal" => {
             if let Some(ref sig) = state.signal {
-                let _ = sig
-                    .send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}")
-                    .await;
+                if let None = sig.send_ephemeral(chat_id, "\u{1F916}\u{1F9E0}\u{2026}").await {
+                    tracing::debug!(platform, chat_id, "thinking indicator send failed");
+                }
             }
         }
         _ => {}
@@ -3254,7 +3271,9 @@ async fn build_status_reply(state: &AppState) -> String {
         .into_iter()
         .map(|a| (a.id.to_ascii_lowercase(), a.state))
         .collect();
-    let configured_subagents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let configured_subagents = ironclad_db::agents::list_sub_agents(&state.db)
+        .inspect_err(|e| tracing::error!(error = %e, "failed to list sub-agents for diagnostics"))
+        .unwrap_or_default();
     let channel_summary: Vec<String> = channels
         .iter()
         .map(|c| {
@@ -3421,7 +3440,11 @@ fn resolve_channel_scope(
 
 fn parse_skills_json(skills_json: Option<&str>) -> Vec<String> {
     skills_json
-        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .and_then(|s| {
+            serde_json::from_str::<Vec<String>>(s)
+                .inspect_err(|e| tracing::warn!(error = %e, "failed to parse skills JSON"))
+                .ok()
+        })
         .unwrap_or_default()
 }
 
@@ -3450,7 +3473,9 @@ async fn evaluate_decomposition_gate(
         };
     }
 
-    let subagents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
+    let subagents = ironclad_db::agents::list_sub_agents(&state.db)
+        .inspect_err(|e| tracing::error!(error = %e, "failed to list sub-agents for decomposition"))
+        .unwrap_or_default();
     let taskable: Vec<_> = subagents
         .into_iter()
         .filter(|a| !is_model_proxy_role(&a.role) && a.enabled)
@@ -3597,8 +3622,12 @@ async fn maybe_handle_specialist_creation_controls(
             allowed_subagents: vec![],
             max_concurrent: 4,
         };
-        let _ = state.registry.register(config).await;
-        let _ = state.registry.start_agent(&name).await;
+        if let Err(e) = state.registry.register(config).await {
+            tracing::error!(agent = %name, error = %e, "failed to register specialist in runtime");
+        }
+        if let Err(e) = state.registry.start_agent(&name).await {
+            tracing::error!(agent = %name, error = %e, "failed to start specialist in runtime");
+        }
         {
             let mut map = state.pending_specialist_proposals.write().await;
             map.remove(session_id);
@@ -3803,6 +3832,7 @@ pub async fn process_channel_message(
                 wf_input,
             );
             let available_agents = ironclad_db::agents::list_sub_agents(&state.db)
+                .inspect_err(|e| tracing::error!(error = %e, "failed to list sub-agents for workflow"))
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|a| !is_model_proxy_role(&a.role) && a.enabled)
@@ -3812,7 +3842,9 @@ pub async fn process_channel_message(
                 .match_capabilities(&wf_id, &available_agents)
                 .unwrap_or_default();
             for (task_id, agent_id) in &matches {
-                let _ = orch.assign_agent(&wf_id, task_id, agent_id);
+                if let Err(e) = orch.assign_agent(&wf_id, task_id, agent_id) {
+                    tracing::error!(workflow = %wf_id, task = %task_id, agent = %agent_id, error = %e, "failed to assign agent to workflow task");
+                }
             }
             let assignments = matches
                 .iter()

@@ -264,7 +264,9 @@ impl WhatsAppAdapter {
     /// to acknowledge receipt.
     pub async fn send_typing(&self, _recipient: &str, message_id: Option<&str>) {
         if let Some(mid) = message_id {
-            let _ = self.mark_as_read(mid).await;
+            if let Err(e) = self.mark_as_read(mid).await {
+                tracing::debug!(error = %e, "WhatsApp read receipt failed");
+            }
         }
     }
 

@@ -335,18 +335,15 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
                 p.insert("_key_source".into(), json!(key_source));
                 p.insert("_provider_name".into(), json!(name.clone()));
 
-                // Blocklist approach: strip all known secret-bearing fields.
-                // WARNING: when adding new provider config fields that contain
-                // secrets, you MUST add them here or they will be exposed via
-                // the GET /api/config endpoint.
-                p.remove("api_key");
-                p.remove("api_key_env");
-                p.remove("api_key_ref");
-                p.remove("secret");
-                p.remove("token");
-                p.remove("password");
-                p.remove("auth_token");
-                p.remove("client_secret");
+                // Allowlist approach: keep only known-safe display fields.
+                // New secret fields are safe by default (excluded unless added here).
+                const ALLOWED_FIELDS: &[&str] = &[
+                    "url", "chat_path", "model", "models", "format", "auth_mode",
+                    "auth_header", "extra_headers", "is_local", "cost_per_input_token",
+                    "cost_per_output_token", "max_tokens", "supports_streaming",
+                    "_key_status", "_key_source", "_provider_name",
+                ];
+                p.retain(|k, _| ALLOWED_FIELDS.contains(&k.as_str()));
             }
         }
     }

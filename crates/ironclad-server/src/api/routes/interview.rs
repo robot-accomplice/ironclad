@@ -8,6 +8,9 @@ use super::AppState;
 
 const MAX_INTERVIEW_SESSIONS: usize = 1000;
 const INTERVIEW_TTL_SECS: u64 = 3600;
+/// Hard cap on conversation turns per interview session to prevent
+/// unbounded memory growth within the 3600s TTL.
+const MAX_TURNS_PER_SESSION: usize = 200;
 
 #[derive(Deserialize)]
 pub struct InterviewStartRequest {
@@ -81,6 +84,17 @@ pub async fn interview_turn(
                 ));
             }
         };
+
+        if session.history.len() >= MAX_TURNS_PER_SESSION {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                axum::Json(json!({
+                    "error": "interview session has reached the maximum number of turns",
+                    "session_key": body.session_key,
+                    "max_turns": MAX_TURNS_PER_SESSION,
+                })),
+            ));
+        }
 
         session.history.push(ironclad_llm::format::UnifiedMessage {
             role: "user".into(),

@@ -182,7 +182,17 @@ fn resolve_token(
         tracing::warn!(key = %name, "keystore reference not found, falling back to env var");
     }
     if !token_env.is_empty() {
-        return std::env::var(token_env).unwrap_or_default();
+        return match std::env::var(token_env) {
+            Ok(val) if !val.is_empty() => val,
+            Ok(_) => {
+                tracing::warn!(env_var = %token_env, "API key env var is set but empty");
+                String::new()
+            }
+            Err(_) => {
+                tracing::warn!(env_var = %token_env, "API key env var is not set");
+                String::new()
+            }
+        };
     }
     String::new()
 }
@@ -405,7 +415,13 @@ pub async fn bootstrap_with_config_path(
         let password = if email_cfg.password_env.is_empty() {
             String::new()
         } else {
-            std::env::var(&email_cfg.password_env).unwrap_or_default()
+            match std::env::var(&email_cfg.password_env) {
+                Ok(val) => val,
+                Err(_) => {
+                    tracing::warn!(env_var = %email_cfg.password_env, "email password env var is not set");
+                    String::new()
+                }
+            }
         };
         if email_cfg.smtp_host.is_empty()
             || email_cfg.username.is_empty()
@@ -532,7 +548,9 @@ pub async fn bootstrap_with_config_path(
     let mut mcp_clients = ironclad_agent::mcp::McpClientManager::new();
     for c in &config.mcp.clients {
         let mut conn = ironclad_agent::mcp::McpClientConnection::new(c.name.clone(), c.url.clone());
-        let _ = conn.discover();
+        if let Err(e) = conn.discover() {
+            tracing::warn!(mcp_name = %c.name, error = %e, "MCP client discovery failed at startup");
+        }
         mcp_clients.add_connection(conn);
     }
     let mcp_clients = Arc::new(RwLock::new(mcp_clients));
@@ -652,7 +670,9 @@ pub async fn bootstrap_with_config_path(
 
     // Load persisted semantic cache
     {
-        let loaded = ironclad_db::cache::load_cache_entries(&state.db).unwrap_or_default();
+        let loaded = ironclad_db::cache::load_cache_entries(&state.db)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load semantic cache entries"))
+            .unwrap_or_default();
         if !loaded.is_empty() {
             let imported: Vec<(String, ironclad_llm::ExportedCacheEntry)> = loaded
                 .into_iter()

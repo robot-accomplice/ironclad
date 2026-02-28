@@ -1155,7 +1155,7 @@ async fn cmd_auth_login(
         .await?;
 
     if !resp.status().is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp.text().await.inspect_err(|e| tracing::warn!(error = %e, "CLI response parse failed")).unwrap_or_default();
         return Err(format!("Token exchange failed: {body}").into());
     }
 
@@ -1585,12 +1585,18 @@ async fn cmd_serve(
 
         #[cfg(unix)]
         {
-            let mut sigterm =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("failed to install SIGTERM handler");
-            tokio::select! {
-                _ = ctrl_c => info!("SIGINT received, shutting down gracefully"),
-                _ = sigterm.recv() => info!("SIGTERM received, shutting down gracefully"),
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut sigterm) => {
+                    tokio::select! {
+                        _ = ctrl_c => info!("SIGINT received, shutting down gracefully"),
+                        _ = sigterm.recv() => info!("SIGTERM received, shutting down gracefully"),
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to install SIGTERM handler, falling back to SIGINT only");
+                    ctrl_c.await.ok();
+                    info!("SIGINT received, shutting down gracefully");
+                }
             }
         }
         #[cfg(not(unix))]

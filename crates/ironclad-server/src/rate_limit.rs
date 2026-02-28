@@ -12,6 +12,12 @@ use futures_util::future::BoxFuture;
 use tokio::sync::Mutex;
 use tower::{Layer, Service};
 
+/// Hard cap on distinct tracked IPs/actors within a window.
+/// Requests from new IPs beyond this limit are immediately rate-limited
+/// to prevent unbounded memory growth during distributed floods.
+const MAX_DISTINCT_IPS: usize = 10_000;
+const MAX_DISTINCT_ACTORS: usize = 5_000;
+
 /// Fixed-window rate limit state: at most `capacity` requests per `window`.
 #[derive(Clone)]
 pub struct GlobalRateLimitLayer {
@@ -286,6 +292,9 @@ where
                 guard.count = 0;
                 GlobalRateLimitLayer::evict_stale(&mut guard.per_ip, window);
                 GlobalRateLimitLayer::evict_stale(&mut guard.per_actor, window);
+                guard.throttled_per_ip.clear();
+                guard.throttled_per_actor.clear();
+                guard.throttled_global = 0;
             }
             if guard.count >= capacity {
                 guard.throttled_global += 1;
@@ -294,6 +303,9 @@ where
             guard.count += 1;
 
             let per_ip_cap = per_ip_capacity;
+            if !guard.per_ip.contains_key(&ip) && guard.per_ip.len() >= MAX_DISTINCT_IPS {
+                return Ok(too_many_requests_response());
+            }
             let ip_entry = guard.per_ip.entry(ip).or_insert((0, now));
             if now.duration_since(ip_entry.1) >= window {
                 *ip_entry = (0, now);
@@ -305,6 +317,11 @@ where
             ip_entry.0 += 1;
 
             if let Some(actor_id) = actor {
+                if !guard.per_actor.contains_key(&actor_id)
+                    && guard.per_actor.len() >= MAX_DISTINCT_ACTORS
+                {
+                    return Ok(too_many_requests_response());
+                }
                 let actor_entry = guard.per_actor.entry(actor_id.clone()).or_insert((0, now));
                 if now.duration_since(actor_entry.1) >= window {
                     *actor_entry = (0, now);
