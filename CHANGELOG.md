@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-02-28
+
+### Security
+
+- **WebSocket message size limit**: Unauthenticated WebSocket connections now enforce a 4 KiB inbound message limit and no longer echo full message bodies, closing a ~3x memory amplification DoS vector.
+- **Hippocampus TOCTOU fix**: `drop_agent_table` auth check and DROP are now wrapped in a single transaction, preventing race-condition bypasses.
+- **Script runner bounded reads**: Shebang detection now uses `BufReader::take(512)` instead of `read_to_string`, preventing OOM on oversized script files.
+
+### Fixed
+
+- **Agent amnesia on DB error (SF-2)**: `list_messages` calls in agent routes now propagate errors instead of silently returning empty history via `.unwrap_or_default()`.
+- **Governor silent write failures (SF-1)**: Session expiry and compaction errors are now logged at warn/error level; `tick()` returns an accurate expired count instead of silently swallowing failures with `.ok()`.
+- **Money::from_dollars NaN panic (BUG-2)**: `from_dollars` now returns `Result`, rejecting NaN and Infinity inputs instead of panicking via `assert!`.
+- **Delivery queue recovery (SF-7)**: `recover_from_store` is now async with proper `.lock().await`, replacing a `try_lock()` that silently dropped recovered messages.
+- **Agent loop detection enforcement (BUG-3)**: `is_looping()` is now called inside `transition()` and forces `Done` state, preventing callers from bypassing loop detection.
+- **Digit-leading SQL identifiers (BUG-7)**: `validate_identifier` now rejects names starting with digits, which would produce invalid SQL.
+- **Embedding API key error message (SF-4)**: Missing API key env var now returns a clear error message instead of a cryptic 401 via `.unwrap_or_default()`.
+- **ANN index corruption paths (SF-6, SF-10)**: Corrupt embedding JSON is now logged and skipped; RwLock poison on write returns an error instead of silently recovering with stale data.
+- **Admin dashboard false empties (SF-3)**: DB read errors in dashboard endpoints are now logged with `inspect_err` before falling back to defaults, enabling diagnosis.
+- **Session tool call queries (SF-9)**: Tool call endpoints now propagate DB errors with proper HTTP 500 responses instead of returning empty arrays.
+- **EventBus publish logging (SF-5)**: `let _ =` on channel send replaced with debug-level logging when no subscribers are active.
+- **Delivery queue timestamp fallback (SF-11)**: Failed timestamp parse now falls back to `UNIX_EPOCH` (safe backoff) instead of `Utc::now()` (immediate retry).
+- **Dead letter false empties (SF-8)**: `dead_letters_from_store` errors now logged before fallback.
+- **Admin config serialization (SF-12)**: Config endpoint returns HTTP 500 on serialization failure instead of null body.
+- **Efficiency report serialization (SF-13)**: Efficiency endpoint returns HTTP 500 on serialization failure instead of null body.
+- **Webhook body bytes (SF-14)**: Failed body extraction now logs a warning instead of silently discarding the payload.
+
+### Changed
+
+- **Crate publish ordering**: Release workflow now publishes crates in correct topological dependency order with increased index propagation wait times, fixing the v0.8.3 publish failure.
+
 ## [0.8.3] - 2026-02-27
 
 ### Security

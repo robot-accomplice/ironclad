@@ -287,43 +287,43 @@ jobs:
           fi
 
       - name: Wait for crates.io index
-        run: sleep 30
+        run: sleep 45
 
       - name: Publish level 1
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          for crate in ironclad-db ironclad-llm ironclad-channels ironclad-browser ironclad-plugin-sdk; do
+          for crate in ironclad-db ironclad-llm ironclad-plugin-sdk ironclad-browser ironclad-wallet; do
             if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
               echo "::notice::${crate} v${VERSION} already published, skipping"
             else
               echo "Publishing $crate..."
               cargo publish -p "$crate" --locked
-              sleep 10
+              sleep 15
             fi
           done
 
       - name: Wait for crates.io index
-        run: sleep 30
+        run: sleep 45
 
       - name: Publish level 2
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          for crate in ironclad-agent ironclad-wallet; do
+          for crate in ironclad-channels ironclad-agent; do
             if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
               echo "::notice::${crate} v${VERSION} already published, skipping"
             else
               echo "Publishing $crate..."
               cargo publish -p "$crate" --locked
-              sleep 10
+              sleep 15
             fi
           done
 
       - name: Wait for crates.io index
-        run: sleep 30
+        run: sleep 45
 
       - name: Publish level 3
         env:
@@ -338,7 +338,7 @@ jobs:
           fi
 
       - name: Wait for crates.io index
-        run: sleep 30
+        run: sleep 45
 
       - name: Publish level 4
         env:
