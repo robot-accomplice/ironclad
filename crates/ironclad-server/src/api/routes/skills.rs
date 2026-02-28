@@ -338,7 +338,7 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
                 || existing.source_path != source
                 || existing.risk_level != risk_level
             {
-                if let Err(e) = ironclad_db::skills::update_skill_full(
+                match ironclad_db::skills::update_skill_full(
                     &state.db,
                     &existing.id,
                     hash,
@@ -349,12 +349,14 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
                     &source,
                     &risk_level,
                 ) {
-                    tracing::warn!(error = %e, skill = name, "skill sync: update_skill failed");
+                    Ok(_) => updated += 1,
+                    Err(e) => {
+                        tracing::warn!(error = %e, skill = name, "skill sync: update_skill failed");
+                    }
                 }
-                updated += 1;
             }
         } else {
-            if let Err(e) = ironclad_db::skills::register_skill_full(
+            match ironclad_db::skills::register_skill_full(
                 &state.db,
                 name,
                 kind,
@@ -367,9 +369,11 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
                 script_path.as_deref(),
                 &risk_level,
             ) {
-                tracing::warn!(error = %e, skill = name, "skill sync: register_skill failed");
+                Ok(_) => added += 1,
+                Err(e) => {
+                    tracing::warn!(error = %e, skill = name, "skill sync: register_skill failed");
+                }
             }
-            added += 1;
         }
     }
 
@@ -627,10 +631,14 @@ pub async fn catalog_install(
             Err(e) => {
                 // Roll back all file writes if activation failed.
                 for (path, old) in rollback_existing {
-                    let _ = std::fs::write(path, old);
+                    if let Err(e) = std::fs::write(&path, old) {
+                        tracing::error!(error = %e, path = %path.display(), "rollback: failed to restore file");
+                    }
                 }
                 for path in rollback_new {
-                    let _ = std::fs::remove_file(path);
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        tracing::error!(error = %e, path = %path.display(), "rollback: failed to remove file");
+                    }
                 }
                 return Err(e);
             }

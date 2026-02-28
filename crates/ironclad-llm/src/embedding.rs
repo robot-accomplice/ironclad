@@ -137,20 +137,21 @@ fn build_embedding_url(cfg: &EmbeddingConfig, count: usize) -> String {
 
     let mut url = format!("{}{}", cfg.base_url, path);
 
-    if cfg.format == ApiFormat::GoogleGenerativeAi && !cfg.api_key_env.is_empty() {
-        let key = std::env::var(&cfg.api_key_env)
-            .inspect_err(|e| tracing::warn!(error = %e, env_var = %cfg.api_key_env, "embedding API key env var not set"))
-            .unwrap_or_default();
-        url = format!("{url}?key={key}");
-    }
-
     if cfg.auth_header.starts_with("query:") {
+        // query: auth mode handles the key as a URL query parameter
         let param = &cfg.auth_header["query:".len()..];
         let key = std::env::var(&cfg.api_key_env)
             .inspect_err(|e| tracing::warn!(error = %e, env_var = %cfg.api_key_env, "embedding API key env var not set"))
             .unwrap_or_default();
+        let encoded_key = crate::client::pct_encode_query_value(&key);
         let sep = if url.contains('?') { '&' } else { '?' };
-        url = format!("{url}{sep}{param}={key}");
+        url = format!("{url}{sep}{param}={encoded_key}");
+    } else if cfg.format == ApiFormat::GoogleGenerativeAi && !cfg.api_key_env.is_empty() {
+        let key = std::env::var(&cfg.api_key_env)
+            .inspect_err(|e| tracing::warn!(error = %e, env_var = %cfg.api_key_env, "embedding API key env var not set"))
+            .unwrap_or_default();
+        let encoded_key = crate::client::pct_encode_query_value(&key);
+        url = format!("{url}?key={encoded_key}");
     }
 
     url

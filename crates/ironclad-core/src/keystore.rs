@@ -367,7 +367,7 @@ fn fresh_salt() -> [u8; SALT_LEN] {
 /// Redact a key name for audit logging: show the first 3 characters followed
 /// by `***` so that logs are useful for debugging without exposing full names.
 fn redact_key_name(key: &str) -> String {
-    let visible = &key[..key.len().min(3)];
+    let visible: String = key.chars().take(3).collect();
     format!("{visible}***")
 }
 

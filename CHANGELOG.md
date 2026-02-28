@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-02-28
+
+### Fixed
+
+- **CRIT: Cron jobs silently never firing**: `run_cron_worker` timestamp format lacked timezone suffix (`Z`), causing `evaluate_cron` RFC 3339 parse to always fail — all cron-scheduled jobs were silently skipped.
+- **HIGH: Telegram chunk_message UTF-8 panic**: Byte-level string slicing in `chunk_message` panicked on multi-byte characters (emoji, CJK). Now uses `floor_char_boundary()` matching the Discord adapter.
+- **HIGH: Keystore redact_key_name UTF-8 panic**: Byte-level `&key[..3]` slicing panicked on multi-byte key names. Now uses `key.chars().take(3)`.
+- **HIGH: LLM forward_stream missing query: auth mode**: Streaming requests to providers using query-string authentication (e.g., Google Generative AI) failed because the `query:` prefix was not handled, sending it as a literal HTTP header instead.
+- **HIGH: yield_engine U256-to-u64 panic**: `real_a_token_balance` panicked via `U256::to::<u64>()` if an aToken balance exceeded `u64::MAX`. Now uses safe `try_into::<u128>()`.
+- **HIGH: yield_engine amount_to_raw saturation**: `amount_to_raw` silently saturated USDC amounts above ~$18.4B via unchecked `f64 -> u64` cast. Now explicitly clamps.
+- **MED: Email adapter SMTP relay panic**: `EmailAdapter::new` panicked via `.expect()` on invalid SMTP hostname. Now returns `Result`.
+- **MED: Email adapter mutex panics**: `push_message`/`recv` used `.expect("mutex poisoned")`. Now uses `.unwrap_or_else(|e| e.into_inner())` for poison recovery, matching other adapters.
+- **MED: Discord GatewayConnection mutex panics**: All 4 accessor methods used `.expect("mutex poisoned")`. Now uses poison recovery matching the rest of the Discord adapter.
+- **MED: CDP client initialization panic**: `CdpClient::new` panicked via `.expect()` on TLS cert issues. Now returns `Result`.
+- **MED: Embedding URL double API key**: When both Google format and `query:` auth were active, the API key was appended twice. Made the two paths mutually exclusive.
+- **MED: Embedding URL missing percent-encoding**: API keys were interpolated into URLs without encoding. Now uses `pct_encode_query_value`.
+- **MED: Hippocampus Unicode/ASCII mismatch**: `create_agent_table` allowed Unicode alphanumeric characters but `drop_agent_table` required ASCII-only, creating undeletable tables. Both now require ASCII.
+- **MED: Skills reload counters wrong on failure**: `added`/`updated` counters incremented even when DB operations failed. Now only increment on success.
+- **MED: Skills rollback silent failures**: File rollback operations used `let _ =` silently. Now log errors at error level.
+- **LOW: sanitize_platform mixed byte/char units**: Truncation used `.chars().take()` (char count) after a `.len()` (byte count) guard. Now truncates at byte boundary consistently.
+- **LOW: mock_tx_hash f64 saturation**: Used `amount * 1e18` (overflows u64 above ~18.4). Changed to USDC scale (1e6).
+
+### Added
+
+- Release notes for v0.8.5 and v0.8.6 (missing from previous releases, blocking release doc gate).
+
 ## [0.8.6] - 2026-02-28
 
 ### Security

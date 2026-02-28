@@ -54,7 +54,12 @@ pub fn sanitize_platform(raw: &str) -> String {
     if cleaned.len() <= MAX_PLATFORM_LEN {
         cleaned
     } else {
-        cleaned.chars().take(MAX_PLATFORM_LEN).collect()
+        // Truncate to MAX_PLATFORM_LEN bytes at a char boundary
+        let mut end = MAX_PLATFORM_LEN;
+        while end > 0 && !cleaned.is_char_boundary(end) {
+            end -= 1;
+        }
+        cleaned[..end].to_string()
     }
 }
 

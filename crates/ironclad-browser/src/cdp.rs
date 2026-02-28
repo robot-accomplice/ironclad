@@ -33,15 +33,15 @@ pub struct CdpClient {
 }
 
 impl CdpClient {
-    pub fn new(port: u16) -> Self {
-        Self {
+    pub fn new(port: u16) -> Result<Self> {
+        Ok(Self {
             http_base: format!("http://127.0.0.1:{port}"),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
-                .expect("HTTP client initialization - check TLS certificates"),
+                .map_err(|e| IroncladError::Network(format!("HTTP client init failed: {e}")))?,
             command_id: AtomicU64::new(1),
-        }
+        })
     }
 
     pub fn next_id(&self) -> u64 {
@@ -191,13 +191,13 @@ mod tests {
 
     #[test]
     fn cdp_client_new() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         assert_eq!(client.http_base, "http://127.0.0.1:9222");
     }
 
     #[test]
     fn command_ids_increment() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         let id1 = client.next_id();
         let id2 = client.next_id();
         assert_eq!(id2, id1 + 1);
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn build_command_structure() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         let cmd = client.build_command("Page.navigate", json!({"url": "https://example.com"}));
         assert!(cmd.get("id").is_some());
         assert_eq!(cmd["method"], "Page.navigate");
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn navigate_command() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         let cmd = client.navigate_command("https://test.com");
         assert_eq!(cmd["method"], "Page.navigate");
         assert_eq!(cmd["params"]["url"], "https://test.com");
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn evaluate_command() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         let cmd = client.evaluate_command("document.title");
         assert_eq!(cmd["method"], "Runtime.evaluate");
         assert_eq!(cmd["params"]["expression"], "document.title");
@@ -230,14 +230,14 @@ mod tests {
 
     #[test]
     fn screenshot_command() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         let cmd = client.screenshot_command();
         assert_eq!(cmd["method"], "Page.captureScreenshot");
     }
 
     #[test]
     fn click_command() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         let cmd = client.click_command(100.0, 200.0);
         assert_eq!(cmd["method"], "Input.dispatchMouseEvent");
         assert_eq!(cmd["params"]["x"], 100.0);
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn type_text_command() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         let cmd = client.type_text_command("hello");
         assert_eq!(cmd["method"], "Input.insertText");
         assert_eq!(cmd["params"]["text"], "hello");
@@ -254,14 +254,14 @@ mod tests {
 
     #[test]
     fn pdf_command() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         let cmd = client.pdf_command();
         assert_eq!(cmd["method"], "Page.printToPDF");
     }
 
     #[test]
     fn cookie_commands() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         let get = client.get_cookies_command();
         assert_eq!(get["method"], "Network.getCookies");
         let clear = client.clear_cookies_command();
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn get_document_command() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         let cmd = client.get_document_command();
         assert_eq!(cmd["method"], "DOM.getDocument");
         assert!(cmd.get("id").is_some());
@@ -311,13 +311,13 @@ mod tests {
 
     #[test]
     fn custom_port_http_base() {
-        let client = CdpClient::new(9333);
+        let client = CdpClient::new(9333).unwrap();
         assert_eq!(client.http_base, "http://127.0.0.1:9333");
     }
 
     #[test]
     fn command_ids_are_sequential() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
         let cmd1 = client.build_command("A", json!({}));
         let cmd2 = client.build_command("B", json!({}));
         let cmd3 = client.build_command("C", json!({}));
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn all_command_builders_have_correct_structure() {
-        let client = CdpClient::new(9222);
+        let client = CdpClient::new(9222).unwrap();
 
         // Each builder should produce: id, method, params
         let cmds = vec![
@@ -361,7 +361,7 @@ mod tests {
     #[tokio::test]
     async fn list_targets_connection_refused() {
         // Use a port that is (almost certainly) not listening
-        let client = CdpClient::new(19999);
+        let client = CdpClient::new(19999).unwrap();
         let result = client.list_targets().await;
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();
@@ -373,7 +373,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_tab_connection_refused() {
-        let client = CdpClient::new(19999);
+        let client = CdpClient::new(19999).unwrap();
         let result = client.new_tab("https://example.com").await;
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();
@@ -385,7 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_tab_connection_refused() {
-        let client = CdpClient::new(19999);
+        let client = CdpClient::new(19999).unwrap();
         let result = client.close_tab("some-target-id").await;
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();
@@ -397,7 +397,7 @@ mod tests {
 
     #[tokio::test]
     async fn version_connection_refused() {
-        let client = CdpClient::new(19999);
+        let client = CdpClient::new(19999).unwrap();
         let result = client.version().await;
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();

@@ -431,23 +431,30 @@ pub async fn bootstrap_with_config_path(
             tracing::warn!("Email enabled but SMTP credentials are incomplete");
             None
         } else {
-            let adapter = Arc::new(
-                EmailAdapter::new(
-                    email_cfg.from_address.clone(),
-                    email_cfg.smtp_host.clone(),
-                    email_cfg.smtp_port,
-                    email_cfg.imap_host.clone(),
-                    email_cfg.imap_port,
-                    email_cfg.username.clone(),
-                    password,
-                )
-                .with_allowed_senders(email_cfg.allowed_senders.clone()),
-            );
-            channel_router
-                .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
-                .await;
-            tracing::info!("Email adapter registered");
-            Some(adapter)
+            match EmailAdapter::new(
+                email_cfg.from_address.clone(),
+                email_cfg.smtp_host.clone(),
+                email_cfg.smtp_port,
+                email_cfg.imap_host.clone(),
+                email_cfg.imap_port,
+                email_cfg.username.clone(),
+                password,
+            ) {
+                Ok(email_adapter) => {
+                    let adapter = Arc::new(
+                        email_adapter.with_allowed_senders(email_cfg.allowed_senders.clone()),
+                    );
+                    channel_router
+                        .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
+                        .await;
+                    tracing::info!("Email adapter registered");
+                    Some(adapter)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create email adapter");
+                    None
+                }
+            }
         }
     } else {
         None
