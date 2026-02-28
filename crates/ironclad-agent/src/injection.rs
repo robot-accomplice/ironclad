@@ -186,14 +186,28 @@ fn decode_common_encodings(s: &str) -> String {
     let mut chars = out.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '%' {
-            let a = chars.next().and_then(|c| c.to_digit(16));
-            let b = chars.next().and_then(|c| c.to_digit(16));
-            if let (Some(a), Some(b)) = (a, b) {
-                bytes.push((a as u8 * 16) + (b as u8));
+            let c1 = chars.peek().and_then(|c| c.to_digit(16));
+            if let Some(hi) = c1 {
+                let _ = chars.next(); // consume first hex digit
+                let c2 = chars.peek().and_then(|c| c.to_digit(16));
+                if let Some(lo) = c2 {
+                    let _ = chars.next(); // consume second hex digit
+                    bytes.push((hi as u8 * 16) + (lo as u8));
+                    continue;
+                }
+                // Only first digit was valid hex — emit '%' + that digit literally
+                bytes.push(b'%');
+                // hi came from a hex digit 0-15, reconstruct the original char
+                bytes.extend(
+                    char::from_digit(hi, 16)
+                        .unwrap_or('?')
+                        .to_string()
+                        .as_bytes(),
+                );
                 continue;
             }
-            // Incomplete or invalid %XX: emit % literally (consumed chars already lost)
-            bytes.extend(b"%");
+            // Not a hex digit after % — emit '%' literally, don't consume
+            bytes.push(b'%');
             continue;
         }
         bytes.extend(c.to_string().as_bytes());

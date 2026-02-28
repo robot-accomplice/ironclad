@@ -765,13 +765,15 @@ pub async fn update_config(
     let updated: IroncladConfig = match serde_json::from_value(current) {
         Ok(v) => v,
         Err(e) => {
-            let msg = format!("invalid config: {e}");
+            tracing::warn!(error = %e, "config deserialization failed");
+            let msg = "invalid config: schema validation failed".to_string();
             state.config_apply_status.write().await.last_error = Some(msg.clone());
             return Err(bad_request(msg));
         }
     };
     if let Err(e) = updated.validate() {
-        let msg = format!("validation failed: {e}");
+        tracing::warn!(error = %e, "config validation failed");
+        let msg = "invalid config: validation failed".to_string();
         state.config_apply_status.write().await.last_error = Some(msg.clone());
         return Err(bad_request(msg));
     }
@@ -1778,7 +1780,12 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
             "state": state_str,
             "session_count": session_counts.get(&sa.name).copied().unwrap_or(sa.session_count),
             "description": sa.description,
-            "skills": sa.skills_json.as_ref().and_then(|s| serde_json::from_str::<Vec<String>>(s).ok()).unwrap_or_default(),
+            "skills": sa.skills_json.as_ref().map(|s| {
+                serde_json::from_str::<Vec<String>>(s).unwrap_or_else(|e| {
+                    tracing::warn!(agent = %sa.name, error = %e, "corrupt skills_json, defaulting to []");
+                    Vec::new()
+                })
+            }).unwrap_or_default(),
             "supervisor": config.agent.id,
         })
     }).collect();

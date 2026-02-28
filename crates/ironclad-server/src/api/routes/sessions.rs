@@ -703,8 +703,13 @@ async fn run_llm_analysis(
         ));
     }
 
-    let body = ironclad_llm::format::translate_request(&req, provider.format)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let body = ironclad_llm::format::translate_request(&req, provider.format).map_err(|e| {
+        tracing::warn!(error = %e, format = ?provider.format, "failed to translate analysis request");
+        JsonError(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to format analysis request".into(),
+        )
+    })?;
     let llm = state.llm.read().await;
     let resp = llm
         .client
@@ -727,15 +732,13 @@ async fn run_llm_analysis(
     drop(llm);
 
     let unified =
-        ironclad_llm::format::translate_response(&resp, provider.format).unwrap_or_else(|_| {
-            ironclad_llm::format::UnifiedResponse {
-                content: "(no response)".into(),
-                model: model.clone(),
-                tokens_in: 0,
-                tokens_out: 0,
-                finish_reason: None,
-            }
-        });
+        ironclad_llm::format::translate_response(&resp, provider.format).map_err(|e| {
+            tracing::warn!(error = %e, format = ?provider.format, "failed to translate analysis response");
+            JsonError(
+                axum::http::StatusCode::BAD_GATEWAY,
+                "failed to parse analysis provider response".into(),
+            )
+        })?;
 
     let tin = unified.tokens_in as i64;
     let tout = unified.tokens_out as i64;

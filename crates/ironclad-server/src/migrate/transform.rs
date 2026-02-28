@@ -711,7 +711,15 @@ pub(crate) fn export_config(ic_root: &Path, oc_root: &Path) -> AreaResult {
             format!("Failed to create output dir: {e}"),
         );
     }
-    let json = serde_json::to_string_pretty(&merged).unwrap_or_default();
+    let json = match serde_json::to_string_pretty(&merged) {
+        Ok(s) => s,
+        Err(e) => {
+            return err(
+                MigrationArea::Config,
+                format!("Failed to serialize config: {e}"),
+            );
+        }
+    };
     if let Err(e) = fs::write(&oc_config_path, &json) {
         return err(
             MigrationArea::Config,
@@ -1460,10 +1468,16 @@ pub(crate) fn export_sessions(ic_root: &Path, oc_root: &Path) -> AreaResult {
             format!("Failed to create output dir: {e}"),
         );
     }
-    if let Err(e) = fs::write(
-        oc_root.join("sessions.json"),
-        serde_json::to_string_pretty(&all).unwrap_or_default(),
-    ) {
+    let sessions_json = match serde_json::to_string_pretty(&all) {
+        Ok(s) => s,
+        Err(e) => {
+            return err(
+                MigrationArea::Sessions,
+                format!("Failed to serialize sessions.json: {e}"),
+            );
+        }
+    };
+    if let Err(e) = fs::write(oc_root.join("sessions.json"), &sessions_json) {
         return err(
             MigrationArea::Sessions,
             format!("Failed to write sessions.json: {e}"),
