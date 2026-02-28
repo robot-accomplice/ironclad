@@ -54,6 +54,20 @@ download() {
     fi
 }
 
+verify_sha256() {
+    local file="$1" expected="$2"
+    local actual
+    if command -v sha256sum &>/dev/null; then
+        actual="$(sha256sum "$file" | awk '{print $1}')"
+    elif command -v shasum &>/dev/null; then
+        actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+    else
+        warn "No SHA256 tool found (sha256sum or shasum), skipping verification"
+        return 0
+    fi
+    [ "$actual" = "$expected" ]
+}
+
 main() {
     echo ""
     echo -e "${BOLD}Ironclad Installer${RESET}"
@@ -81,6 +95,24 @@ main() {
 
     info "Downloading ${url}..."
     download "$url" "${tmpdir}/ironclad.tar.gz" || fail "Download failed. Check the version and try again."
+
+    local sums_url="https://github.com/${REPO}/releases/download/v${VERSION}/SHA256SUMS.txt"
+    info "Verifying SHA256 checksum..."
+    if download "$sums_url" "${tmpdir}/SHA256SUMS.txt" 2>/dev/null; then
+        local expected_sum
+        expected_sum="$(grep "${artifact}.tar.gz" "${tmpdir}/SHA256SUMS.txt" | awk '{print $1}')"
+        if [ -n "$expected_sum" ]; then
+            if verify_sha256 "${tmpdir}/ironclad.tar.gz" "$expected_sum"; then
+                ok "Checksum verified"
+            else
+                fail "SHA256 checksum mismatch! Archive may be corrupted or tampered with."
+            fi
+        else
+            warn "No checksum entry for ${artifact}.tar.gz, skipping verification"
+        fi
+    else
+        warn "SHA256SUMS.txt not available, skipping verification"
+    fi
 
     info "Extracting..."
     tar -xzf "${tmpdir}/ironclad.tar.gz" -C "${tmpdir}" || fail "Extraction failed"

@@ -1,5 +1,16 @@
 name: Release
 
+# Notification secrets (optional — notifications are skipped if not configured):
+#   Email (via Resend SMTP or any SMTP provider):
+#     SMTP_SERVER          e.g. smtp.resend.com
+#     SMTP_PORT            e.g. 465
+#     SMTP_USERNAME        e.g. resend
+#     SMTP_PASSWORD        e.g. re_YOUR_API_KEY
+#     RELEASE_NOTIFY_EMAIL recipient address
+#     RELEASE_FROM_EMAIL   (optional) sender address, must match verified domain
+#   Discord:
+#     DISCORD_RELEASE_WEBHOOK
+
 on:
   push:
     tags: ["v*"]
@@ -612,6 +623,23 @@ jobs:
             echo "summary=One or more release stages failed. Check the workflow run for details." >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Verify crates.io availability
+        id: verify-crates
+        run: |
+          VERSION="${{ needs.preflight.outputs.version }}"
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL "https://crates.io/api/v1/crates/ironclad-server" \
+              | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' > /dev/null 2>&1; then
+              echo "crates_live=true" >> "$GITHUB_OUTPUT"
+              echo "Verified: ironclad-server v${VERSION} is live on crates.io"
+              exit 0
+            fi
+            echo "Attempt $attempt: v${VERSION} not yet visible, waiting 30s..."
+            sleep 30
+          done
+          echo "crates_live=false" >> "$GITHUB_OUTPUT"
+          echo "WARNING: v${VERSION} not confirmed on crates.io after 5 attempts"
+
       - name: Send email notification
         if: env.SMTP_SERVER != ''
         uses: dawidd6/action-send-mail@v3
@@ -624,7 +652,7 @@ jobs:
           password: ${{ secrets.SMTP_PASSWORD }}
           subject: "${{ steps.status.outputs.emoji }} Ironclad v${{ env.VERSION }} release ${{ steps.status.outputs.outcome }}"
           to: ${{ secrets.RELEASE_NOTIFY_EMAIL }}
-          from: "Ironclad CI <ci@roboticus.ai>"
+          from: ${{ secrets.RELEASE_FROM_EMAIL || 'Ironclad CI <ci@accomplice.ch>' }}
           content_type: text/html
           body: |
             <h2>${{ steps.status.outputs.emoji }} Ironclad v${{ env.VERSION }} — Release ${{ steps.status.outputs.outcome }}</h2>
@@ -632,7 +660,8 @@ jobs:
             <table>
               <tr><td><strong>Version</strong></td><td>v${{ env.VERSION }}</td></tr>
               <tr><td><strong>Date</strong></td><td>${{ env.DATE }}</td></tr>
-              <tr><td><strong>Crates.io</strong></td><td>${{ needs.publish.result }}</td></tr>
+              <tr><td><strong>Crates.io Publish</strong></td><td>${{ needs.publish.result }}</td></tr>
+              <tr><td><strong>Crates.io Live</strong></td><td>${{ steps.verify-crates.outputs.crates_live == 'true' && '✅ Verified' || '⚠️ Not confirmed' }}</td></tr>
               <tr><td><strong>GitHub Release</strong></td><td>${{ needs.release.result }}</td></tr>
               <tr><td><strong>Site Sync</strong></td><td>${{ needs.sync-site.result }}</td></tr>
               <tr><td><strong>Homebrew Tap</strong></td><td>${{ needs.update-homebrew.result }}</td></tr>

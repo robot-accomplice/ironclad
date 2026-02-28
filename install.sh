@@ -45,6 +45,19 @@ fail()  { printf "  $(red "✖") %s\n" "$*"; exit 1; }
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+verify_sha256() {
+    local file="$1" expected="$2"
+    local actual
+    if command_exists sha256sum; then
+        actual="$(sha256sum "$file" | awk '{print $1}')"
+    elif command_exists shasum; then
+        actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+    else
+        return 1  # no tool available, skip verification
+    fi
+    [ "$actual" = "$expected" ]
+}
+
 version_ge() {
     printf '%s\n%s' "$1" "$2" | sort -V | head -n1 | grep -qx "$2"
 }
@@ -282,7 +295,8 @@ info "This installer will:"
 info ""
 info "  1. Check prerequisites (C compiler)"
 info "  2. Install or update the Rust toolchain (>= $MIN_RUST)"
-info "  3. Install Ironclad from crates.io (cargo install $CRATE)"
+info "  3. Download precompiled binary from GitHub Releases (SHA256-verified)"
+info "     Falls back to cargo install if binary unavailable for this platform"
 info ""
 info "Version:          $(bold "$VERSION_DISPLAY")"
 info "Cargo --locked:   $(bold "$LOCKED_DISPLAY")"
@@ -375,35 +389,137 @@ elif [ "$NEED_RUST_UPDATE" = "1" ]; then
     info "Updated to Rust $RUST_VER ✓"
 fi
 
-# ── Install from crates.io ──────────────────────────────────────────────────
+# ── Install ─────────────────────────────────────────────────────────────────
 
-step "Install from crates.io"
+BINARY_INSTALLED=0
+GITHUB_REPO="robot-accomplice/ironclad"
 
-if [ -n "$VERSION" ]; then
-    INSTALL_CMD="cargo install $CRATE --version $VERSION"
-else
-    INSTALL_CMD="cargo install $CRATE"
-fi
-if [ "$INSTALL_LOCKED" != "0" ]; then
-    INSTALL_CMD="$INSTALL_CMD --locked"
-fi
+# Map platform to release artifact naming
+map_platform() {
+    local os arch
+    case "$OS" in
+        Darwin) os="macos" ;;
+        Linux)  os="linux" ;;
+        *)      return 1 ;;
+    esac
+    case "$ARCH" in
+        x86_64|amd64)   arch="x86_64" ;;
+        aarch64|arm64)  arch="aarch64" ;;
+        *)              return 1 ;;
+    esac
+    echo "${arch}-${os}"
+}
 
-info "This will run:"
-info "  $(bold "$INSTALL_CMD")"
-info ""
-info "Cargo will download, compile, and install the Ironclad binary."
-info "This typically takes 2-5 minutes on the first install."
+try_binary_download() {
+    local platform version archive_url sums_url tmpdir archive expected_sum
+
+    platform="$(map_platform)" || return 1
+
+    # Resolve version if not set
+    if [ -z "$VERSION" ]; then
+        info "Resolving latest release version..."
+        version="$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null \
+            | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "v\?\([^"]*\)".*/\1/')" || return 1
+        if [ -z "$version" ]; then
+            return 1
+        fi
+    else
+        version="$VERSION"
+    fi
+
+    local artifact="ironclad-${version}-${platform}"
+    archive_url="https://github.com/${GITHUB_REPO}/releases/download/v${version}/${artifact}.tar.gz"
+    sums_url="https://github.com/${GITHUB_REPO}/releases/download/v${version}/SHA256SUMS.txt"
+
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    # Download SHA256SUMS
+    info "Fetching checksums..."
+    if ! curl -fsSL "$sums_url" -o "${tmpdir}/SHA256SUMS.txt" 2>/dev/null; then
+        info "No SHA256SUMS.txt found for v${version}"
+        return 1
+    fi
+
+    # Extract expected checksum for our artifact
+    expected_sum="$(grep "${artifact}.tar.gz" "${tmpdir}/SHA256SUMS.txt" | awk '{print $1}')"
+    if [ -z "$expected_sum" ]; then
+        info "No checksum entry for ${artifact}.tar.gz"
+        return 1
+    fi
+
+    # Download archive
+    info "Downloading precompiled binary (v${version}, ${platform})..."
+    if ! curl -fsSL "$archive_url" -o "${tmpdir}/${artifact}.tar.gz" 2>/dev/null; then
+        info "Download failed for ${artifact}.tar.gz"
+        return 1
+    fi
+
+    # Verify SHA256
+    info "Verifying SHA256 checksum..."
+    if ! verify_sha256 "${tmpdir}/${artifact}.tar.gz" "$expected_sum"; then
+        warn "SHA256 checksum mismatch! Archive may be corrupted or tampered with."
+        return 1
+    fi
+    info "Checksum verified ✓"
+
+    # Extract and install
+    tar -xzf "${tmpdir}/${artifact}.tar.gz" -C "${tmpdir}" || return 1
+
+    local binary
+    binary="$(find "$tmpdir" -name ironclad -type f 2>/dev/null | head -1)"
+    if [ -z "$binary" ] || [ ! -f "$binary" ]; then
+        info "Binary not found in archive"
+        return 1
+    fi
+
+    mkdir -p "$CARGO_BIN"
+    cp "$binary" "${CARGO_BIN}/ironclad"
+    chmod +x "${CARGO_BIN}/ironclad"
+
+    # Update VERSION so downstream steps know what was installed
+    VERSION="$version"
+    return 0
+}
+
+step "Installing Ironclad"
 
 abort_if_declined "Install Ironclad now?"
 
-$INSTALL_CMD 2>&1 | while IFS= read -r line; do
-    case "$line" in
-        *Compiling*) printf "\r    Compiling: %-40s" "$(echo "$line" | awk '{print $2}')" ;;
-        *Finished*)  printf "\r    %-60s\n" "$line" ;;
-        *Installing*) info "$line" ;;
-        *warning*) ;;
-    esac
-done
+# Attempt 1: Precompiled binary download with SHA256 verification
+info "Attempting precompiled binary download..."
+if try_binary_download; then
+    BINARY_INSTALLED=1
+    info "Precompiled binary installed ✓"
+else
+    # Attempt 2: Fall back to cargo install from crates.io
+    warn "Binary download unavailable for this platform, falling back to source build"
+    step "Building from source (crates.io)"
+
+    if [ -n "$VERSION" ]; then
+        INSTALL_CMD="cargo install $CRATE --version $VERSION"
+    else
+        INSTALL_CMD="cargo install $CRATE"
+    fi
+    if [ "$INSTALL_LOCKED" != "0" ]; then
+        INSTALL_CMD="$INSTALL_CMD --locked"
+    fi
+
+    info "This will run:"
+    info "  $(bold "$INSTALL_CMD")"
+    info ""
+    info "Cargo will download, compile, and install the Ironclad binary."
+    info "This typically takes 2-5 minutes on the first install."
+
+    $INSTALL_CMD 2>&1 | while IFS= read -r line; do
+        case "$line" in
+            *Compiling*) printf "\r    Compiling: %-40s" "$(echo "$line" | awk '{print $2}')" ;;
+            *Finished*)  printf "\r    %-60s\n" "$line" ;;
+            *Installing*) info "$line" ;;
+            *warning*) ;;
+        esac
+    done
+fi
 
 IRONCLAD_BIN="$(command -v ironclad 2>/dev/null || echo "$CARGO_BIN/ironclad")"
 
