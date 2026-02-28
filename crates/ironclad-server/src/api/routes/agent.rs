@@ -240,17 +240,48 @@ fn proposal_to_json(proposal: &SpecialistProposal, rationale: &str) -> serde_jso
     })
 }
 
+fn classify_provider_error(raw: &str) -> &'static str {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("circuit breaker") {
+        "provider temporarily unavailable"
+    } else if lower.contains("no api key") || lower.contains("no provider configured") {
+        "no provider configured for this model"
+    } else if lower.contains("401") || lower.contains("403") || lower.contains("authentication") {
+        "provider authentication error"
+    } else if lower.contains("429") || lower.contains("rate limit") || lower.contains("rate_limit")
+    {
+        "provider rate limit reached"
+    } else if lower.contains("402")
+        || lower.contains("quota")
+        || lower.contains("billing")
+        || lower.contains("credit")
+    {
+        "provider quota or billing issue"
+    } else if lower.contains("500")
+        || lower.contains("502")
+        || lower.contains("503")
+        || lower.contains("504")
+    {
+        "provider server error"
+    } else if lower.contains("request failed")
+        || lower.contains("timeout")
+        || lower.contains("connection")
+    {
+        "network error reaching provider"
+    } else {
+        "provider error"
+    }
+}
+
 fn provider_failure_user_message(last_error: &str, message_already_stored: bool) -> String {
+    let category = classify_provider_error(last_error);
     if message_already_stored {
         format!(
-            "I encountered an error reaching all LLM providers: {}. Your message has been stored and I'll retry when a provider is available.",
-            last_error
+            "I encountered an error reaching all LLM providers ({category}). \
+             Your message has been stored and I'll retry when a provider is available."
         )
     } else {
-        format!(
-            "I encountered an error reaching all LLM providers: {}. Please try again.",
-            last_error
-        )
+        format!("I encountered an error reaching all LLM providers ({category}). Please try again.")
     }
 }
 
@@ -5438,5 +5469,127 @@ fallbacks = ["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514", "google/gemi
             margin > 0.0,
             "complex multi-task with perfect fit should justify delegation"
         );
+    }
+
+    // ── classify_provider_error / info-disclosure tests ──────────
+
+    #[test]
+    fn classify_provider_error_auth() {
+        assert_eq!(
+            classify_provider_error("HTTP 401 Unauthorized: invalid api key sk-abc123xyz"),
+            "provider authentication error"
+        );
+        assert_eq!(
+            classify_provider_error("403 Forbidden"),
+            "provider authentication error"
+        );
+    }
+
+    #[test]
+    fn classify_provider_error_rate_limit() {
+        assert_eq!(
+            classify_provider_error("429 Too Many Requests - rate limit exceeded"),
+            "provider rate limit reached"
+        );
+        assert_eq!(
+            classify_provider_error("rate_limit_error: you have exceeded your quota"),
+            "provider rate limit reached"
+        );
+    }
+
+    #[test]
+    fn classify_provider_error_network() {
+        assert_eq!(
+            classify_provider_error(
+                "request failed: connection refused to https://internal.corp:8443/v1/chat"
+            ),
+            "network error reaching provider"
+        );
+        assert_eq!(
+            classify_provider_error("timeout after 30s"),
+            "network error reaching provider"
+        );
+    }
+
+    #[test]
+    fn classify_provider_error_server() {
+        assert_eq!(
+            classify_provider_error("500 Internal Server Error\n<html>stack trace...</html>"),
+            "provider server error"
+        );
+        assert_eq!(
+            classify_provider_error("502 Bad Gateway"),
+            "provider server error"
+        );
+    }
+
+    #[test]
+    fn classify_provider_error_circuit_breaker() {
+        assert_eq!(
+            classify_provider_error("circuit breaker open for provider openai"),
+            "provider temporarily unavailable"
+        );
+    }
+
+    #[test]
+    fn classify_provider_error_no_key() {
+        assert_eq!(
+            classify_provider_error("no API key configured for openai"),
+            "no provider configured for this model"
+        );
+        assert_eq!(
+            classify_provider_error("no provider configured for model gpt-4"),
+            "no provider configured for this model"
+        );
+    }
+
+    #[test]
+    fn classify_provider_error_quota() {
+        assert_eq!(
+            classify_provider_error("402 Payment Required - billing issue"),
+            "provider quota or billing issue"
+        );
+        assert_eq!(
+            classify_provider_error("insufficient credit balance"),
+            "provider quota or billing issue"
+        );
+    }
+
+    #[test]
+    fn classify_provider_error_unknown_fallback() {
+        assert_eq!(
+            classify_provider_error("something completely unexpected happened"),
+            "provider error"
+        );
+    }
+
+    #[test]
+    fn provider_failure_user_message_no_leak() {
+        let raw_error = "HTTP 401 Unauthorized: api key sk-secret-key-12345 \
+                         at https://internal.corp:8443/v1/chat/completions";
+        let msg_stored = provider_failure_user_message(raw_error, true);
+        let msg_retry = provider_failure_user_message(raw_error, false);
+
+        // The raw error must NOT appear in user-facing messages
+        assert!(
+            !msg_stored.contains("sk-secret"),
+            "API key leaked in stored message: {msg_stored}"
+        );
+        assert!(
+            !msg_stored.contains("internal.corp"),
+            "internal URL leaked in stored message: {msg_stored}"
+        );
+        assert!(
+            !msg_retry.contains("sk-secret"),
+            "API key leaked in retry message: {msg_retry}"
+        );
+        assert!(
+            !msg_retry.contains("internal.corp"),
+            "internal URL leaked in retry message: {msg_retry}"
+        );
+
+        // Should contain the safe category instead
+        assert!(msg_stored.contains("provider authentication error"));
+        assert!(msg_retry.contains("provider authentication error"));
     }
 }
