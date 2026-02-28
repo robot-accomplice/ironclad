@@ -2130,7 +2130,12 @@ pub(crate) fn export_agents(ic_root: &Path, _oc_root: &Path) -> AreaResult {
         }
     };
 
-    let agents = ironclad_db::agents::list_sub_agents(&db).unwrap_or_default();
+    let agents = match ironclad_db::agents::list_sub_agents(&db) {
+        Ok(a) => a,
+        Err(e) => {
+            return err(MigrationArea::Agents, format!("Failed to list agents: {e}"));
+        }
+    };
 
     AreaResult {
         area: MigrationArea::Agents,

@@ -23,19 +23,20 @@ pub struct WhatsAppAdapter {
 }
 
 impl WhatsAppAdapter {
-    pub fn new(token: String, phone_number_id: String) -> Self {
-        Self {
+    pub fn new(token: String, phone_number_id: String) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| IroncladError::Config(format!("HTTP/TLS client init failed: {e}")))?;
+        Ok(Self {
             token,
             phone_number_id,
             verify_token: String::new(),
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .expect("HTTP client initialization - check TLS certificates"),
+            client,
             allowed_numbers: Vec::new(),
             api_version: "v21.0".into(),
             app_secret: None,
-        }
+        })
     }
 
     pub fn with_config(
@@ -44,13 +45,13 @@ impl WhatsAppAdapter {
         verify_token: String,
         allowed_numbers: Vec<String>,
         app_secret: Option<String>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        Ok(Self {
             verify_token,
             allowed_numbers,
             app_secret,
-            ..Self::new(token, phone_number_id)
-        }
+            ..Self::new(token, phone_number_id)?
+        })
     }
 
     fn api_url(&self, endpoint: &str) -> String {
@@ -410,7 +411,7 @@ mod tests {
 
     #[test]
     fn new_adapter_defaults() {
-        let adapter = WhatsAppAdapter::new("tok".into(), "phone123".into());
+        let adapter = WhatsAppAdapter::new("tok".into(), "phone123".into()).unwrap();
         assert_eq!(adapter.token, "tok");
         assert_eq!(adapter.phone_number_id, "phone123");
         assert_eq!(adapter.api_version, "v21.0");
@@ -425,7 +426,8 @@ mod tests {
             "verify_secret".into(),
             vec!["15551234567".into()],
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(adapter.verify_token, "verify_secret");
         assert_eq!(adapter.allowed_numbers, vec!["15551234567"]);
     }
@@ -438,7 +440,8 @@ mod tests {
             "my_verify".into(),
             vec![],
             None,
-        );
+        )
+        .unwrap();
         let result = adapter.verify_webhook_challenge("subscribe", "my_verify", "challenge123");
         assert_eq!(result.unwrap(), "challenge123");
     }
@@ -451,7 +454,8 @@ mod tests {
             "my_verify".into(),
             vec![],
             None,
-        );
+        )
+        .unwrap();
         let result = adapter.verify_webhook_challenge("unsubscribe", "my_verify", "c");
         assert!(result.is_err());
     }
@@ -464,14 +468,15 @@ mod tests {
             "my_verify".into(),
             vec![],
             None,
-        );
+        )
+        .unwrap();
         let result = adapter.verify_webhook_challenge("subscribe", "wrong", "c");
         assert!(result.is_err());
     }
 
     #[test]
     fn sender_allowed_empty_means_all() {
-        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into());
+        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into()).unwrap();
         assert!(adapter.is_sender_allowed("any_number"));
     }
 
@@ -483,14 +488,15 @@ mod tests {
             "v".into(),
             vec!["111".into(), "222".into()],
             None,
-        );
+        )
+        .unwrap();
         assert!(adapter.is_sender_allowed("111"));
         assert!(!adapter.is_sender_allowed("333"));
     }
 
     #[test]
     fn process_webhook_valid() {
-        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into());
+        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into()).unwrap();
         let webhook = json!({
             "entry": [{
                 "changes": [{
@@ -512,7 +518,7 @@ mod tests {
 
     #[test]
     fn process_webhook_no_entry() {
-        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into());
+        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into()).unwrap();
         let result = adapter.process_webhook(&json!({})).unwrap();
         assert!(result.is_none());
     }
@@ -525,7 +531,8 @@ mod tests {
             "v".into(),
             vec!["allowed_only".into()],
             None,
-        );
+        )
+        .unwrap();
         let webhook = json!({
             "entry": [{
                 "changes": [{
@@ -583,13 +590,13 @@ mod tests {
 
     #[test]
     fn platform_name_is_whatsapp() {
-        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into());
+        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into()).unwrap();
         assert_eq!(adapter.platform_name(), "whatsapp");
     }
 
     #[test]
     fn api_url_formats_correctly() {
-        let adapter = WhatsAppAdapter::new("tok".into(), "PHONE123".into());
+        let adapter = WhatsAppAdapter::new("tok".into(), "PHONE123".into()).unwrap();
         assert_eq!(
             adapter.api_url("messages"),
             "https://graph.facebook.com/v21.0/PHONE123/messages"
@@ -604,7 +611,8 @@ mod tests {
             "v".into(),
             vec![],
             Some("appsecret123".into()),
-        );
+        )
+        .unwrap();
         assert_eq!(adapter.app_secret.unwrap(), "appsecret123");
     }
 
@@ -775,7 +783,8 @@ mod tests {
             "v".into(),
             vec![],
             Some(secret.into()),
-        );
+        )
+        .unwrap();
         let result = adapter.verify_webhook_signature(body, Some(&format!("sha256={sig}")));
         assert!(result.is_ok());
     }
@@ -788,7 +797,8 @@ mod tests {
             "v".into(),
             vec![],
             Some("real_secret".into()),
-        );
+        )
+        .unwrap();
         let result = adapter.verify_webhook_signature(
             b"some body",
             Some("sha256=0000000000000000000000000000000000000000000000000000000000000000"),
@@ -804,14 +814,15 @@ mod tests {
             "v".into(),
             vec![],
             Some("secret".into()),
-        );
+        )
+        .unwrap();
         let result = adapter.verify_webhook_signature(b"body", None);
         assert!(result.is_err());
     }
 
     #[test]
     fn verify_webhook_signature_no_secret_rejects() {
-        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into());
+        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into()).unwrap();
         let result = adapter.verify_webhook_signature(b"body", None);
         assert!(result.is_err());
     }
@@ -824,7 +835,8 @@ mod tests {
             "v".into(),
             vec![],
             Some("".into()),
-        );
+        )
+        .unwrap();
         let result = adapter.verify_webhook_signature(b"body", Some("sha256=aabb"));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("app_secret"));
@@ -838,7 +850,8 @@ mod tests {
             "v".into(),
             vec![],
             Some("secret".into()),
-        );
+        )
+        .unwrap();
         let result = adapter.verify_webhook_signature(b"body", Some("no_prefix_here"));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("sha256= prefix"));
@@ -852,7 +865,8 @@ mod tests {
             "v".into(),
             vec![],
             Some("secret".into()),
-        );
+        )
+        .unwrap();
         let result = adapter.verify_webhook_signature(b"body", Some("sha256=NOT_VALID_HEX!!!"));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("hex"));
@@ -891,7 +905,8 @@ mod tests {
             "v".into(),
             vec!["allowed_num".into()],
             None,
-        );
+        )
+        .unwrap();
         let webhook = json!({
             "entry": [{"changes": [{"value": {
                 "messages": [{"from": "allowed_num", "id": "w1", "type": "text", "text": {"body": "allowed"}}]
@@ -904,7 +919,7 @@ mod tests {
 
     #[test]
     fn api_url_custom_endpoint() {
-        let adapter = WhatsAppAdapter::new("tok".into(), "PH_ID".into());
+        let adapter = WhatsAppAdapter::new("tok".into(), "PH_ID".into()).unwrap();
         let url = adapter.api_url("media");
         assert_eq!(url, "https://graph.facebook.com/v21.0/PH_ID/media");
     }
@@ -930,7 +945,8 @@ mod tests {
             "my_verify_token".into(),
             vec![],
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(adapter.verify_token, "my_verify_token");
     }
 
@@ -947,7 +963,7 @@ mod tests {
     }
 
     fn fast_fail_adapter() -> WhatsAppAdapter {
-        let mut adapter = WhatsAppAdapter::new("fake-token".into(), "12345".into());
+        let mut adapter = WhatsAppAdapter::new("fake-token".into(), "12345".into()).unwrap();
         adapter.client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(50))
             .build()

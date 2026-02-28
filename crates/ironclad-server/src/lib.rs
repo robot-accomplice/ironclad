@@ -336,7 +336,7 @@ pub async fn bootstrap_with_config_path(
                         wa_config.verify_token.clone(),
                         wa_config.allowed_numbers.clone(),
                         wa_config.app_secret.clone(),
-                    ));
+                    )?);
                     channel_router
                         .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
                         .await;

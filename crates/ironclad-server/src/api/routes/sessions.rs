@@ -751,7 +751,9 @@ async fn run_llm_analysis(
         Some("analysis"),
         false,
     )
-    .inspect_err(|e| tracing::warn!(error = %e, model = %model, "failed to record analysis inference cost"))
+    .inspect_err(
+        |e| tracing::warn!(error = %e, model = %model, "failed to record analysis inference cost"),
+    )
     .ok();
 
     Ok(serde_json::json!({
@@ -936,7 +938,8 @@ mod tests {
     #[test]
     fn classify_provider_error_no_leak_in_analysis() {
         // S-HIGH-4: verify classify_provider_error is reachable from sessions
-        let raw = "HTTP 401 Unauthorized: invalid api key sk-proj-abc123 for https://internal.corp/v1";
+        let raw =
+            "HTTP 401 Unauthorized: invalid api key sk-proj-abc123 for https://internal.corp/v1";
         let category = crate::api::routes::agent::classify_provider_error(raw);
         assert_eq!(category, "provider authentication error");
         assert!(!category.contains("sk-proj"));

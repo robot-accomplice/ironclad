@@ -830,7 +830,8 @@ primary = "ollama/qwen3:8b"
             "verify-token".into(),
             vec![],
             Some(secret.to_string()),
-        );
+        )
+        .unwrap();
         state.whatsapp = Some(Arc::new(adapter));
         state
     }
