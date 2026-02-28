@@ -212,6 +212,10 @@ jobs:
           size=$(ls -l "${artifact}.tar.gz" | awk '{print $5}')
           mb=$(echo "scale=1; $size / 1048576" | bc)
           echo "${mb} MB" > "${artifact}.tar.gz.size"
+          # Raw binary size (for site metrics display)
+          raw_size=$(ls -l "target/${TARGET}/release/ironclad" | awk '{print $5}')
+          raw_mb=$(echo "scale=0; $raw_size / 1048576" | bc)
+          echo "~${raw_mb}MB" > "${artifact}.tar.gz.binsize"
           echo "ARTIFACT=${artifact}.tar.gz" >> "$GITHUB_ENV"
 
       - name: Package artifact (windows)
@@ -468,11 +472,19 @@ jobs:
               '. + {($k): {"sha256": $s, "size": $sz}}')
           done
 
+          # Extract reference binary size (linux x86_64) for site metrics
+          binary_size="unknown"
+          ref_binsize="artifacts/binary-linux-x86_64/ironclad-${VERSION}-x86_64-linux.tar.gz.binsize"
+          if [ -f "$ref_binsize" ]; then
+            binary_size=$(cat "$ref_binsize")
+          fi
+
           payload=$(jq -n \
             --arg version "$VERSION" \
             --arg date "$DATE" \
+            --arg binary_size "$binary_size" \
             --argjson binaries "$binaries" \
-            '{version: $version, date: $date, binaries: $binaries}')
+            '{version: $version, date: $date, binary_size: $binary_size, binaries: $binaries}')
 
           echo "$payload" | jq .
 
