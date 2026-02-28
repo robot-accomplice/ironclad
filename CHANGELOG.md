@@ -28,10 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MED: Skills rollback silent failures**: File rollback operations used `let _ =` silently. Now log errors at error level.
 - **LOW: sanitize_platform mixed byte/char units**: Truncation used `.chars().take()` (char count) after a `.len()` (byte count) guard. Now truncates at byte boundary consistently.
 - **LOW: mock_tx_hash f64 saturation**: Used `amount * 1e18` (overflows u64 above ~18.4). Changed to USDC scale (1e6).
+- **LOW: Session model column never populated**: `update_model()` was not called after LLM routing, leaving the `sessions.model` column perpetually NULL.
+- **LOW: Moonshot/Kimi tier misclassified**: `classify()` in `tier.rs` did not match `moonshot` or `kimi` substrings, causing Kimi K2 models to fall through to the T2 default instead of T3.
 
 ### Added
 
 - Release notes for v0.8.5 and v0.8.6 (missing from previous releases, blocking release doc gate).
+- Roadmap section 1.24: Built-in CLI Agent Skills (Claude Code + Codex CLI).
 
 ## [0.8.6] - 2026-02-28
 
