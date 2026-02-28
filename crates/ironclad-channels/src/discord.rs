@@ -287,19 +287,22 @@ impl GatewayConnection {
     }
 
     pub fn sequence(&self) -> Option<u64> {
-        *self.sequence.lock().expect("mutex poisoned")
+        *self.sequence.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn set_sequence(&self, seq: Option<u64>) {
-        *self.sequence.lock().expect("mutex poisoned") = seq;
+        *self.sequence.lock().unwrap_or_else(|e| e.into_inner()) = seq;
     }
 
     pub fn session_id(&self) -> Option<String> {
-        self.session_id.lock().expect("mutex poisoned").clone()
+        self.session_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn set_session_id(&self, id: String) {
-        *self.session_id.lock().expect("mutex poisoned") = Some(id);
+        *self.session_id.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
     }
 }
 

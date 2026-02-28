@@ -167,7 +167,10 @@ pub fn create_agent_table(
 ) -> Result<String> {
     let table_name = format!("{agent_id}_{table_suffix}");
 
-    if !table_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+    if !table_name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
         return Err(IroncladError::Database(
             "table name contains invalid characters".into(),
         ));

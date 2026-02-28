@@ -203,16 +203,29 @@ impl YieldEngine {
 }
 
 fn mock_tx_hash(amount: f64) -> String {
+    // Use USDC scale (1e6) instead of 1e18 to avoid u64 saturation for amounts > ~18.4
+    let scaled = (amount * USDC_SCALE).round().max(0.0);
+    let amount_bits = if scaled > u64::MAX as f64 {
+        u64::MAX
+    } else {
+        scaled as u64
+    };
     format!(
         "0x{:016x}{:016x}",
-        (amount * 1e18) as u64,
+        amount_bits,
         chrono::Utc::now().timestamp() as u64
     )
 }
 
 fn amount_to_raw(amount_usdc: f64) -> U256 {
-    let scaled = (amount_usdc * USDC_SCALE).round();
-    U256::from(scaled.max(0.0) as u64)
+    let scaled = (amount_usdc * USDC_SCALE).round().max(0.0);
+    // Clamp to u64::MAX to avoid silent saturation on extreme values
+    let clamped = if scaled > u64::MAX as f64 {
+        u64::MAX
+    } else {
+        scaled as u64
+    };
+    U256::from(clamped)
 }
 
 fn parse_address(s: &str) -> Result<Address> {
@@ -340,7 +353,11 @@ async fn real_a_token_balance(rpc_url: &str, a_token_address: &str, account: &st
         .call()
         .await
         .map_err(|e| IroncladError::Wallet(format!("balanceOf failed: {e}")))?;
-    Ok(balance._0.to::<u64>() as f64 / USDC_SCALE)
+    let raw: u128 = balance
+        ._0
+        .try_into()
+        .map_err(|_| IroncladError::Wallet("aToken balance exceeds u128::MAX".into()))?;
+    Ok(raw as f64 / USDC_SCALE)
 }
 
 #[cfg(test)]

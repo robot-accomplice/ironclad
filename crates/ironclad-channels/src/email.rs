@@ -37,15 +37,15 @@ impl EmailAdapter {
         imap_port: u16,
         username: String,
         password: String,
-    ) -> Self {
+    ) -> Result<Self> {
         let creds = Credentials::new(username, password);
         let transport = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp_host)
-            .expect("valid SMTP relay hostname")
+            .map_err(|e| IroncladError::Config(format!("invalid SMTP relay hostname: {e}")))?
             .port(smtp_port)
             .credentials(creds)
             .build();
 
-        Self {
+        Ok(Self {
             from_address,
             smtp_host,
             imap_host,
@@ -53,7 +53,7 @@ impl EmailAdapter {
             allowed_senders: Vec::new(),
             buffer: Arc::new(Mutex::new(VecDeque::new())),
             transport,
-        }
+        })
     }
 
     pub fn with_allowed_senders(mut self, senders: Vec<String>) -> Self {
@@ -127,7 +127,7 @@ impl EmailAdapter {
 
     /// Push a parsed email into the receive buffer.
     pub fn push_message(&self, msg: InboundMessage) {
-        let mut buf = self.buffer.lock().expect("mutex poisoned");
+        let mut buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
         buf.push_back(msg);
     }
 
@@ -161,7 +161,7 @@ impl ChannelAdapter for EmailAdapter {
     }
 
     async fn recv(&self) -> Result<Option<InboundMessage>> {
-        let mut buf = self.buffer.lock().expect("mutex poisoned");
+        let mut buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
         Ok(buf.pop_front())
     }
 
@@ -227,6 +227,7 @@ mod tests {
             "agent@example.com".into(),
             "password".into(),
         )
+        .expect("test adapter")
     }
 
     #[test]
@@ -449,7 +450,8 @@ mod tests {
             993,
             "user".into(),
             "pass".into(),
-        );
+        )
+        .expect("test adapter");
         let msg = OutboundMessage {
             content: "test".into(),
             recipient_id: "bob@example.com".into(),
