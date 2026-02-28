@@ -1357,6 +1357,7 @@ pub async fn agent_message(
         &model_audit,
     )
     .await;
+    let _ = ironclad_db::sessions::update_model(&state.db, &session_id, &model);
 
     let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
     let tier_adapt = config.tier_adapt.clone();
@@ -1998,6 +1999,7 @@ pub async fn agent_message_stream(
         &model_audit,
     )
     .await;
+    let _ = ironclad_db::sessions::update_model(&state.db, &session_id, &model);
 
     let tier_adapt = config.tier_adapt.clone();
     let agent_name = config.agent.name.clone();
@@ -3934,6 +3936,7 @@ pub async fn process_channel_message(
         &model_audit,
     )
     .await;
+    let _ = ironclad_db::sessions::update_model(&state.db, &session_id, &model);
     let config = state.config.read().await;
 
     let tier_adapt = config.tier_adapt.clone();

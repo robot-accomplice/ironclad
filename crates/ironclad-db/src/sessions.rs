@@ -381,6 +381,17 @@ pub fn update_nickname(db: &Database, session_id: &str, nickname: &str) -> Resul
     Ok(())
 }
 
+/// Update the model used for a session (best-effort, ignores missing sessions).
+pub fn update_model(db: &Database, session_id: &str, model: &str) -> Result<()> {
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE sessions SET model = ?1, updated_at = datetime('now') WHERE id = ?2",
+        rusqlite::params![model, session_id],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(())
+}
+
 /// Expire active sessions older than `max_age_seconds`.
 pub fn expire_stale_sessions(db: &Database, max_age_seconds: u64) -> Result<usize> {
     let conn = db.conn();
@@ -856,6 +867,21 @@ mod tests {
         assert_eq!(session.agent_id, "agent-x");
         assert_eq!(session.status, "active");
         assert!(session.model.is_none());
+    }
+
+    #[test]
+    fn update_model_populates_field() {
+        let db = test_db();
+        let sid = find_or_create(&db, "agent-x", None).unwrap();
+        assert!(get_session(&db, &sid).unwrap().unwrap().model.is_none());
+
+        update_model(&db, &sid, "moonshot/kimi-k2-turbo-preview").unwrap();
+
+        let session = get_session(&db, &sid).unwrap().unwrap();
+        assert_eq!(
+            session.model.as_deref(),
+            Some("moonshot/kimi-k2-turbo-preview")
+        );
     }
 
     #[test]

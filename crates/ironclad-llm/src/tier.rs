@@ -17,7 +17,6 @@ pub fn classify(model_name: &str) -> ModelTier {
     } else if lower.contains("flash")
         || lower.contains("haiku")
         || (lower.contains("mini") && !lower.contains("gemini"))
-        || lower.contains("moonshot")
     {
         ModelTier::T2
     } else if lower.contains("opus")
@@ -31,6 +30,8 @@ pub fn classify(model_name: &str) -> ModelTier {
         || lower.contains("codex")
         || lower.contains("gemini-2")
         || lower.contains("gemini-3")
+        || lower.contains("moonshot")
+        || lower.contains("kimi")
     {
         ModelTier::T3
     } else {
@@ -111,6 +112,8 @@ mod tests {
         assert_eq!(classify("gemini-3-pro-preview"), ModelTier::T3);
         assert_eq!(classify("gemini-3-flash-preview"), ModelTier::T2);
         assert_eq!(classify("gemini-3.1-pro-preview"), ModelTier::T3);
+        assert_eq!(classify("moonshot/kimi-k2-turbo-preview"), ModelTier::T3);
+        assert_eq!(classify("kimi-k2-0711"), ModelTier::T3);
 
         assert_eq!(classify("claude-opus-5"), ModelTier::T4);
         assert_eq!(classify("gpt-5-turbo"), ModelTier::T4);
