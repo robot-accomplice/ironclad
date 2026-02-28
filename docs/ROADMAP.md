@@ -213,6 +213,68 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
+### 1.21 Integrations Management (CLI + Dashboard)
+
+**Current state**: Channel integrations (Telegram, WhatsApp, Discord, email) are configured by manually editing `ironclad.toml` and the encrypted keystore. There is no unified CLI or dashboard surface for connecting, testing, inspecting status, or troubleshooting integrations. Operators must read logs to diagnose issues like expired tokens or misconfigured webhook secrets.
+
+**Target**: First-class integration management across CLI and dashboard — connect, test, inspect, and troubleshoot channel integrations without touching config files or logs directly.
+
+**Builds on**: `ironclad-channels` adapters, `ChannelRouter`, encrypted keystore, channel health metrics, dashboard SPA.
+
+**Scope**:
+
+- **CLI flows**: `ironclad integrations list` (status summary per channel), `ironclad integrations test <channel>` (send a health-check probe and report token validity, connectivity, and permissions), `ironclad integrations connect <channel>` (guided setup wizard — prompts for token, stores in keystore, writes config, runs test), `ironclad integrations disconnect <channel>` (removes token from keystore, disables in config).
+- **Dashboard UI**: Integrations panel showing per-channel health (connected/degraded/disconnected), last successful message timestamp, error counts, and one-click test button. Connection wizard with token input, validation feedback, and activation toggle.
+- **Channel metadata API**: `GET /api/integrations` returning per-channel status (enabled, healthy, last_error, last_message_at, config summary). `POST /api/integrations/<channel>/test` to run a live probe.
+- **Context awareness**: Expose active channel identity in the agent's runtime context so the agent knows which channel a message arrived on and can adapt its response format accordingly (e.g., markdown for Telegram, plain text for SMS).
+- **Diagnostic surface**: Surface recent channel errors and warnings inline (not buried in logs) — token expiry alerts, rate-limit warnings, webhook misconfiguration hints.
+
+**Release posture**: CLI-first; dashboard UI can follow in a subsequent release. Context awareness is a low-effort high-value sub-item that can ship independently.
+
+---
+
+### 1.22 Built-in Introspection Skill
+
+**Current state**: The agent has no way to query its own runtime state. Channel identity, session scope, memory budget usage, channel health, treasury balance, and active peer sessions are either baked into the system prompt (causing context bloat) or entirely invisible to the agent. The `ToolContext` struct carries only `session_id`, `agent_id`, `authority`, and `workspace_root` — no channel, no runtime metadata.
+
+**Target**: A built-in introspection skill that lets the agent query its own runtime state on demand, without any of that state consuming context tokens until the agent actually needs it. The design principle is **info on demand, not info by default** — the agent calls a tool when it needs context rather than having it pre-injected into every system prompt.
+
+**Builds on**: `Tool` trait, `ToolRegistry`, `ToolContext`, `SessionScope`, `ChannelRouter`, `AppState`.
+
+**Scope**:
+
+- **`get_runtime_context` tool**: Returns session channel (parsed from `scope_key`), session scope type (peer/group/agent), peer/group ID, agent name and ID, active channels list, and server uptime. This is the highest-priority sub-item — it directly addresses the channel awareness gap where the agent cannot determine which channel it's speaking over.
+- **`get_memory_stats` tool**: Returns memory budget usage per tier (working, episodic, semantic, procedural, relationship), total entry counts, and embedding store stats.
+- **`get_channel_health` tool**: Returns per-channel connection status, message counts, last error, last activity timestamp — surfacing the data from `ChannelRouter` health tracking.
+- **`get_treasury_status` tool**: Returns current balance, daily spend, budget remaining, and yield position if active.
+- **`get_active_peers` tool**: Returns current A2A peer sessions with connection state.
+- **`ToolContext` extension**: Add `channel: Option<String>` to `ToolContext` so any tool (not just introspection) can access the originating channel. Parse from `SessionScope::scope_key()` at context construction time in the agent message handler.
+- **Extensibility pattern**: Each introspection tool is a separate `Tool` impl registered in `ToolRegistry`, making it easy to add new introspection surfaces without modifying existing tools. The agent discovers available introspection tools through the standard tool discovery mechanism.
+
+**Design principle**: This pattern — lightweight, on-demand runtime queries — should be the default approach for any agent-visible metadata. Pre-injecting state into system prompts wastes context budget on information the agent may never need. Tools are zero-cost until called.
+
+**Release posture**: `get_runtime_context` is the minimum viable ship (solves channel awareness). Other introspection tools can follow incrementally. Low effort, high impact.
+
+---
+
+### 1.23 Context Budget Tuning
+
+**Current state**: `ComplexityLevel::L0` carries a 4,000-token budget. Duncan's soul (OS.toml + FIRMWARE.toml) consumes ~1,500 tokens of that, leaving only ~2,500 for memories and conversation history. All casual Telegram messages score complexity 0.04–0.06, which maps to L0 unconditionally. This causes personality degradation under sustained low-complexity chat — the soul is present but history is brutally truncated, so the agent loses conversational continuity and its responses feel generic.
+
+**Target**: Three adjustments to ensure the agent's personality and conversational quality survive low-complexity interactions:
+
+1. **Raise L0 token budget** (4,000 → 8,000) — simple constant change in `context.rs::token_budget()`. Doubles headroom for soul + history at minimal cost, since L0 conversations are short and the model can handle 8k easily.
+2. **Soul-size-aware complexity floor** — `build_context()` measures the system prompt token count and bumps the effective budget floor so the soul never consumes more than ~40% of the total context. Large personality files automatically get more room.
+3. **Channel conversation minimum L1** — Messages arriving via channel adapters (Telegram, Discord, WhatsApp) get a minimum of `ComplexityLevel::L1` (8,000 tokens), since channel conversations carry implicit context expectations. Only direct API calls can land on L0.
+
+**Builds on**: `context.rs` (`determine_level`, `token_budget`, `build_context`), `InboundMessage.platform`, complexity scorer.
+
+**Design note**: These are stopgap measures. The long-term fix is the introspection skill (1.22), which removes the need to pre-load state into the context at all. Once introspection tools are available, the agent can operate on smaller budgets by querying state on demand.
+
+**Release posture**: Parked for `v0.9.0`. Not part of the locked `v0.8.0` release gates.
+
+---
+
 ## Tier 2 — New Capabilities
 
 Features that require significant new code but have clear implementation paths. Medium-to-high effort.
@@ -964,6 +1026,10 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 1.17 | Production-grade abuse protection | 1 | rate limiter, auth, deployment config | Medium |
 | 1.18 | Cron-conformant session rotation | 1 | SessionGovernor, scheduler heartbeat | Medium |
 | 1.19 | `agent-browser` external runtime support | 1 | 1.3 Browser tool, policy engine, runtime config | Medium |
+| 1.20 | Homebrew & Winget package manager distribution | 1 | release.yml, GitHub Releases, SHA256 pipeline | Medium |
+| 1.21 | Integrations management (CLI + dashboard) | 1 | Channel adapters, keystore, channel health, dashboard SPA | Medium |
+| 1.22 | Built-in introspection skill | 1 | Tool trait, ToolRegistry, ToolContext, SessionScope, ChannelRouter | Low |
+| 1.23 | Context budget tuning | 1 | context.rs, token_budget, build_context, complexity scorer | Low |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
 | 2.3 | Tiered inference pipeline | 2 | Fallback chain, local model config | Medium |

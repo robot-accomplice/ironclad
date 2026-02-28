@@ -194,6 +194,7 @@ impl OpenClawJSONLMessage {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
+    let ks_path = ic_root.join("keystore.enc");
     let config_path = oc_root.join("openclaw.json");
     if !config_path.exists() {
         return err(
@@ -295,7 +296,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
         .and_then(|v| v.as_str())
         && !token.is_empty()
     {
-        match store_in_keystore("gateway_auth_token", token) {
+        match store_in_keystore("gateway_auth_token", token, &ks_path) {
             Ok(()) => {
                 toml.push(format!(
                     "api_key_ref = {}",
@@ -485,7 +486,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
                 && api_key != "not-needed"
             {
                 let ks_name = format!("{prov_name}_api_key");
-                match store_in_keystore(&ks_name, api_key) {
+                match store_in_keystore(&ks_name, api_key, &ks_path) {
                     Ok(()) => {
                         toml.push(format!(
                             "api_key_ref = {}",
@@ -517,7 +518,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
         }
         if let Some(api_key) = &oc_cfg.api_key {
             let ks_name = format!("{}_api_key", key);
-            match store_in_keystore(&ks_name, api_key) {
+            match store_in_keystore(&ks_name, api_key, &ks_path) {
                 Ok(()) => {
                     toml.push(format!(
                         "api_key_ref = {}",
@@ -545,7 +546,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
             toml.push("[channels.telegram]".into());
             toml.push(format!("enabled = {}", tg.enabled.unwrap_or(false)));
             if let Some(token) = &tg.token {
-                match store_in_keystore("telegram_bot_token", token) {
+                match store_in_keystore("telegram_bot_token", token, &ks_path) {
                     Ok(()) => {
                         toml.push("token_ref = \"keystore:telegram_bot_token\"".into());
                         warnings.push(
@@ -570,7 +571,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
             toml.push("[channels.whatsapp]".into());
             toml.push(format!("enabled = {}", wa.enabled.unwrap_or(false)));
             if let Some(token) = &wa.token {
-                match store_in_keystore("whatsapp_token", token) {
+                match store_in_keystore("whatsapp_token", token, &ks_path) {
                     Ok(()) => {
                         toml.push("token_ref = \"keystore:whatsapp_token\"".into());
                         warnings.push(
@@ -616,6 +617,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
 }
 
 pub(crate) fn export_config(ic_root: &Path, oc_root: &Path) -> AreaResult {
+    let ks_path = ic_root.join("keystore.enc");
     let config_path = ic_root.join("ironclad.toml");
     if !config_path.exists() {
         return err(MigrationArea::Config, "ironclad.toml not found".into());
@@ -671,7 +673,7 @@ pub(crate) fn export_config(ic_root: &Path, oc_root: &Path) -> AreaResult {
         if let Some(key_ref) = prov.get("api_key_ref").and_then(|v| v.as_str())
             && let Some(ks_name) = key_ref.strip_prefix("keystore:")
         {
-            if let Some(val) = read_from_keystore(ks_name) {
+            if let Some(val) = read_from_keystore(ks_name, &ks_path) {
                 oc.insert("api_key".into(), serde_json::Value::String(val));
                 key_resolved = true;
             } else {
@@ -1693,6 +1695,7 @@ pub(crate) fn export_cron(ic_root: &Path, oc_root: &Path) -> AreaResult {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
+    let ks_path = ic_root.join("keystore.enc");
     let config_path = oc_root.join("openclaw.json");
     if !config_path.exists() {
         return AreaResult {
@@ -1732,7 +1735,7 @@ pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
             lines.push("[channels.telegram]".into());
             lines.push(format!("enabled = {}", tg.enabled.unwrap_or(false)));
             if let Some(token) = &tg.token {
-                match store_in_keystore("telegram_bot_token", token) {
+                match store_in_keystore("telegram_bot_token", token, &ks_path) {
                     Ok(()) => {
                         lines.push("token_ref = \"keystore:telegram_bot_token\"".into());
                         warnings.push(
@@ -1755,7 +1758,7 @@ pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
             lines.push("[channels.whatsapp]".into());
             lines.push(format!("enabled = {}", wa.enabled.unwrap_or(false)));
             if let Some(token) = &wa.token {
-                match store_in_keystore("whatsapp_token", token) {
+                match store_in_keystore("whatsapp_token", token, &ks_path) {
                     Ok(()) => {
                         lines.push("token_ref = \"keystore:whatsapp_token\"".into());
                         warnings.push(
@@ -1811,6 +1814,7 @@ pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
 }
 
 pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
+    let ks_path = ic_root.join("keystore.enc");
     let channels_path = ic_root.join("channels.toml");
     let config_path = ic_root.join("ironclad.toml");
     let mut warnings = Vec::new();
@@ -1867,7 +1871,8 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
             if let Some(e) = tg.get("enabled").and_then(|v| v.as_bool()) {
                 obj.insert("enabled".into(), serde_json::Value::Bool(e));
             }
-            if !resolve_channel_token_for_export(tg, &mut obj, &mut warnings, "telegram") {
+            if !resolve_channel_token_for_export(tg, &mut obj, &mut warnings, "telegram", &ks_path)
+            {
                 // no token resolved
             }
             oc_channels.insert("telegram".into(), serde_json::Value::Object(obj));
@@ -1878,7 +1883,8 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
             if let Some(e) = wa.get("enabled").and_then(|v| v.as_bool()) {
                 obj.insert("enabled".into(), serde_json::Value::Bool(e));
             }
-            if !resolve_channel_token_for_export(wa, &mut obj, &mut warnings, "whatsapp") {
+            if !resolve_channel_token_for_export(wa, &mut obj, &mut warnings, "whatsapp", &ks_path)
+            {
                 // no token resolved
             }
             if let Some(phone) = wa.get("phone_id").and_then(|v| v.as_str()) {
@@ -2164,17 +2170,18 @@ fn err(area: MigrationArea, msg: String) -> AreaResult {
 
 /// Store a credential in the encrypted keystore during migration.
 /// Creates and auto-unlocks the keystore if it doesn't exist yet.
-fn store_in_keystore(key: &str, value: &str) -> Result<(), String> {
-    let ks =
-        ironclad_core::keystore::Keystore::new(ironclad_core::keystore::Keystore::default_path());
+/// The `ks_path` should be derived from the Ironclad root directory
+/// (e.g., `ic_root.join("keystore.enc")`) to ensure test isolation.
+fn store_in_keystore(key: &str, value: &str, ks_path: &Path) -> Result<(), String> {
+    let ks = ironclad_core::keystore::Keystore::new(ks_path.to_path_buf());
     ks.unlock_machine().map_err(|e| e.to_string())?;
     ks.set(key, value).map_err(|e| e.to_string())
 }
 
 /// Read a credential from the keystore (for export back to OpenClaw format).
-fn read_from_keystore(key: &str) -> Option<String> {
-    let ks =
-        ironclad_core::keystore::Keystore::new(ironclad_core::keystore::Keystore::default_path());
+/// The `ks_path` should be derived from the Ironclad root directory.
+fn read_from_keystore(key: &str, ks_path: &Path) -> Option<String> {
+    let ks = ironclad_core::keystore::Keystore::new(ks_path.to_path_buf());
     if ks.unlock_machine().is_err() {
         return None;
     }
@@ -2188,11 +2195,12 @@ fn resolve_channel_token_for_export(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     warnings: &mut Vec<String>,
     channel_name: &str,
+    ks_path: &Path,
 ) -> bool {
     if let Some(token_ref) = channel_table.get("token_ref").and_then(|v| v.as_str())
         && let Some(ks_name) = token_ref.strip_prefix("keystore:")
     {
-        if let Some(val) = read_from_keystore(ks_name) {
+        if let Some(val) = read_from_keystore(ks_name, ks_path) {
             obj.insert("token".into(), serde_json::Value::String(val));
             return true;
         }
