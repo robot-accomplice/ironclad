@@ -502,14 +502,19 @@ release-preflight:
     echo "  Run: just release-tag"
 
 # Create and push a release tag (triggers the release workflow)
-release-tag:
+# Pass confirm="y" to skip the interactive prompt (e.g. `just release-tag confirm=y`)
+release-tag confirm="":
     #!/usr/bin/env bash
     set -euo pipefail
     ver=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     just release-preflight
     echo ""
-    read -p "Tag and push v$ver? [y/N] " -n 1 -r
-    echo
+    if [ "{{confirm}}" = "y" ] || [ "{{confirm}}" = "Y" ]; then
+        REPLY="y"
+    else
+        read -p "Tag and push v$ver? [y/N] " -n 1 -r
+        echo
+    fi
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Aborted."
         exit 0
