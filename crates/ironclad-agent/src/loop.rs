@@ -57,11 +57,16 @@ impl AgentLoop {
             }
             ReactAction::Act { tool_name, params } => {
                 self.idle_count = 0;
-                self.recent_calls.push_back((tool_name, params));
+                self.recent_calls.push_back((tool_name.clone(), params.clone()));
                 if self.recent_calls.len() > LOOP_DETECTION_WINDOW {
                     self.recent_calls.pop_front();
                 }
-                self.state = ReactState::Acting;
+                if self.is_looping(&tool_name, &params) {
+                    tracing::warn!(tool = %tool_name, "agent loop detected, forcing Done");
+                    self.state = ReactState::Done;
+                } else {
+                    self.state = ReactState::Acting;
+                }
             }
             ReactAction::Observe => {
                 self.idle_count = 0;

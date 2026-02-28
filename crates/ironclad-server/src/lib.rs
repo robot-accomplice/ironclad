@@ -279,7 +279,7 @@ pub async fn bootstrap_with_config_path(
     }
     let keystore = Arc::new(keystore);
 
-    let channel_router = Arc::new(ChannelRouter::with_store(db.clone()));
+    let channel_router = Arc::new(ChannelRouter::with_store(db.clone()).await);
     let telegram: Option<Arc<TelegramAdapter>> =
         if let Some(ref tg_config) = config.channels.telegram {
             if tg_config.enabled {

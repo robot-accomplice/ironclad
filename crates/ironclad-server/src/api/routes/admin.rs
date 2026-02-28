@@ -301,7 +301,13 @@ fn merge_json_inner(base: &mut Value, patch: &Value, depth: usize) {
 
 pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     let config = state.config.read().await;
-    let mut cfg = serde_json::to_value(&*config).unwrap_or_default();
+    let mut cfg = match serde_json::to_value(&*config) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to serialize config");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "failed to serialize config").into_response();
+        }
+    };
     if let Some(providers) = cfg.get_mut("providers")
         && let Some(obj) = providers.as_object_mut()
     {
@@ -348,7 +354,7 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
         w.remove("secret");
         w.remove("password");
     }
-    axum::Json(cfg)
+    axum::Json(cfg).into_response()
 }
 
 pub async fn get_config_capabilities() -> impl IntoResponse {
@@ -1526,7 +1532,9 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
         json!({ "id": "standby",    "name": "Standby Bay",     "kind": "Standby",     "x": 0.08, "y": 0.50 }),
     ];
 
-    let skills = ironclad_db::skills::list_skills(&state.db).unwrap_or_default();
+    let skills = ironclad_db::skills::list_skills(&state.db)
+        .inspect_err(|e| tracing::error!(error = %e, "failed to load skills for workspace state"))
+        .unwrap_or_default();
     let enabled_skills: Vec<String> = skills
         .iter()
         .filter(|s| s.enabled)
@@ -1660,9 +1668,12 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         })
         .unwrap_or_default();
 
-    let sub_agents = ironclad_db::agents::list_sub_agents(&state.db).unwrap_or_default();
-    let session_counts =
-        ironclad_db::agents::list_session_counts_by_agent(&state.db).unwrap_or_default();
+    let sub_agents = ironclad_db::agents::list_sub_agents(&state.db)
+        .inspect_err(|e| tracing::error!(error = %e, "failed to load sub-agents for roster"))
+        .unwrap_or_default();
+    let session_counts = ironclad_db::agents::list_session_counts_by_agent(&state.db)
+        .inspect_err(|e| tracing::error!(error = %e, "failed to load session counts for roster"))
+        .unwrap_or_default();
     let taskable_sub_agents: Vec<&ironclad_db::agents::SubAgentRow> = sub_agents
         .iter()
         .filter(|sa| !sa.role.eq_ignore_ascii_case(ROLE_MODEL_PROXY))
@@ -2020,7 +2031,13 @@ pub async fn get_efficiency(
     let model = params.model.as_deref();
 
     match ironclad_db::efficiency::compute_efficiency(&state.db, period, model) {
-        Ok(report) => Json(serde_json::to_value(report).unwrap_or_default()).into_response(),
+        Ok(report) => match serde_json::to_value(report) {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => {
+                tracing::error!(error = %e, "failed to serialize efficiency report");
+                (StatusCode::INTERNAL_SERVER_ERROR, "failed to serialize report").into_response()
+            }
+        },
         Err(e) => {
             tracing::error!(error = %e, "failed to compute efficiency report");
             (

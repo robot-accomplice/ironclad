@@ -12,20 +12,26 @@ impl SessionGovernor {
     }
 
     /// Run a single maintenance tick: expire stale sessions based on TTL.
-    /// Returns the number of sessions expired.
+    /// Returns the number of sessions actually expired.
     pub fn tick(&self, db: &Database) -> ironclad_core::Result<usize> {
         let stale =
             ironclad_db::sessions::list_stale_active_session_ids(db, self.config.ttl_seconds)?;
+        let mut expired = 0usize;
         for session_id in &stale {
-            self.compact_before_archive(db, session_id).ok();
-            ironclad_db::sessions::set_session_status(
+            if let Err(e) = self.compact_before_archive(db, session_id) {
+                tracing::warn!(error = %e, session_id = %session_id, "compaction failed before archive, proceeding with expiry");
+            }
+            if let Err(e) = ironclad_db::sessions::set_session_status(
                 db,
                 session_id,
                 ironclad_db::sessions::SessionStatus::Expired,
-            )
-            .ok();
+            ) {
+                tracing::error!(error = %e, session_id = %session_id, "failed to expire session");
+                continue;
+            }
+            expired += 1;
         }
-        Ok(stale.len())
+        Ok(expired)
     }
 
     /// Spawn a new scoped session for the given agent, returning the session id.
@@ -51,7 +57,9 @@ impl SessionGovernor {
             .filter(|s| s.scope_key.as_deref() == Some("agent"))
             .collect();
         for s in &agent_scoped {
-            self.compact_before_archive(db, &s.id).ok();
+            if let Err(e) = self.compact_before_archive(db, &s.id) {
+                tracing::warn!(error = %e, session_id = %s.id, "compaction failed before rotation");
+            }
         }
         if agent_scoped.is_empty() {
             return Ok(0);

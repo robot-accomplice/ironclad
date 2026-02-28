@@ -57,8 +57,8 @@ impl TreasuryPolicy {
     /// assert!(policy.check_per_payment(5.0).is_ok());
     /// ```
     pub fn check_per_payment(&self, amount: f64) -> Result<()> {
-        let amt = Money::from_dollars(amount);
-        let cap = Money::from_dollars(self.per_payment_cap);
+        let amt = Money::from_dollars(amount)?;
+        let cap = Money::from_dollars(self.per_payment_cap)?;
         if amt <= Money::zero() {
             return Err(IroncladError::Policy {
                 rule: "non_positive_amount".into(),
@@ -83,15 +83,15 @@ impl TreasuryPolicy {
     }
 
     pub fn check_hourly_limit(&self, recent_hourly_total: f64, new_amount: f64) -> Result<()> {
-        let new_amt = Money::from_dollars(new_amount);
-        let limit = Money::from_dollars(self.hourly_transfer_limit);
+        let new_amt = Money::from_dollars(new_amount)?;
+        let limit = Money::from_dollars(self.hourly_transfer_limit)?;
         if new_amt <= Money::zero() {
             return Err(IroncladError::Policy {
                 rule: "non_positive_amount".into(),
                 reason: format!("payment amount must be positive, got {new_amount}"),
             });
         }
-        let projected = Money::from_dollars(recent_hourly_total) + new_amt;
+        let projected = Money::from_dollars(recent_hourly_total)? + new_amt;
         if projected > limit {
             warn!(
                 projected = projected.dollars(),
@@ -111,15 +111,15 @@ impl TreasuryPolicy {
     }
 
     pub fn check_daily_limit(&self, recent_daily_total: f64, new_amount: f64) -> Result<()> {
-        let new_amt = Money::from_dollars(new_amount);
-        let limit = Money::from_dollars(self.daily_transfer_limit);
+        let new_amt = Money::from_dollars(new_amount)?;
+        let limit = Money::from_dollars(self.daily_transfer_limit)?;
         if new_amt <= Money::zero() {
             return Err(IroncladError::Policy {
                 rule: "non_positive_amount".into(),
                 reason: format!("payment amount must be positive, got {new_amount}"),
             });
         }
-        let projected = Money::from_dollars(recent_daily_total) + new_amt;
+        let projected = Money::from_dollars(recent_daily_total)? + new_amt;
         if projected > limit {
             warn!(
                 projected = projected.dollars(),
@@ -139,8 +139,8 @@ impl TreasuryPolicy {
     }
 
     pub fn check_minimum_reserve(&self, current_balance: f64, amount: f64) -> Result<()> {
-        let remaining = Money::from_dollars(current_balance) - Money::from_dollars(amount);
-        let reserve = Money::from_dollars(self.minimum_reserve);
+        let remaining = Money::from_dollars(current_balance)? - Money::from_dollars(amount)?;
+        let reserve = Money::from_dollars(self.minimum_reserve)?;
         if remaining < reserve {
             warn!(
                 remaining = remaining.dollars(),
@@ -160,8 +160,8 @@ impl TreasuryPolicy {
     }
 
     pub fn check_inference_budget(&self, daily_inference_total: f64, new_cost: f64) -> Result<()> {
-        let projected = Money::from_dollars(daily_inference_total) + Money::from_dollars(new_cost);
-        let budget = Money::from_dollars(self.daily_inference_budget);
+        let projected = Money::from_dollars(daily_inference_total)? + Money::from_dollars(new_cost)?;
+        let budget = Money::from_dollars(self.daily_inference_budget)?;
         if projected > budget {
             warn!(
                 projected = projected.dollars(),

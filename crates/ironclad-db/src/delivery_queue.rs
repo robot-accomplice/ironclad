@@ -95,7 +95,10 @@ pub fn list_recoverable(db: &Database, max_items: usize) -> Result<Vec<DeliveryQ
                 status: row.get(4)?,
                 attempts: row.get::<_, i64>(5)? as u32,
                 max_attempts: row.get::<_, i64>(6)? as u32,
-                next_retry_at: parse_db_ts(&next_retry_raw).unwrap_or_else(Utc::now),
+                next_retry_at: parse_db_ts(&next_retry_raw).unwrap_or_else(|| {
+                    tracing::warn!(raw = %next_retry_raw, "corrupt next_retry_at timestamp, using epoch");
+                    DateTime::<Utc>::UNIX_EPOCH
+                }),
                 last_error: row.get(8)?,
                 idempotency_key: row.get(9)?,
                 created_at: parse_db_ts(&created_raw).unwrap_or_else(Utc::now),
@@ -154,7 +157,10 @@ pub fn list_dead_letters(db: &Database, max_items: usize) -> Result<Vec<Delivery
                 status: row.get(4)?,
                 attempts: row.get::<_, i64>(5)? as u32,
                 max_attempts: row.get::<_, i64>(6)? as u32,
-                next_retry_at: parse_db_ts(&next_retry_raw).unwrap_or_else(Utc::now),
+                next_retry_at: parse_db_ts(&next_retry_raw).unwrap_or_else(|| {
+                    tracing::warn!(raw = %next_retry_raw, "corrupt next_retry_at timestamp, using epoch");
+                    DateTime::<Utc>::UNIX_EPOCH
+                }),
                 last_error: row.get(8)?,
                 idempotency_key: row.get(9)?,
                 created_at: parse_db_ts(&created_raw).unwrap_or_else(Utc::now),

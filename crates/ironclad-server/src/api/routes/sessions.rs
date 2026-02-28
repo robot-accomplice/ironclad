@@ -306,8 +306,8 @@ pub async fn get_turn_context(
 ) -> impl IntoResponse {
     match ironclad_db::sessions::get_turn_by_id(&state.db, &id) {
         Ok(Some(t)) => {
-            let tool_calls =
-                ironclad_db::tools::get_tool_calls_for_turn(&state.db, &id).unwrap_or_default();
+            let tool_calls = ironclad_db::tools::get_tool_calls_for_turn(&state.db, &id)
+                .map_err(|e| internal_err(&e))?;
             Ok(axum::Json(serde_json::json!({
                 "turn_id": t.id,
                 "model": t.model,
@@ -403,8 +403,8 @@ pub async fn get_turn_tips(
         Err(e) => return Err(internal_err(&e)),
     };
 
-    let tool_calls =
-        ironclad_db::tools::get_tool_calls_for_turn(&state.db, &id).unwrap_or_default();
+    let tool_calls = ironclad_db::tools::get_tool_calls_for_turn(&state.db, &id)
+        .map_err(|e| internal_err(&e))?;
 
     let turn_data = build_turn_data(&turn_record, &tool_calls);
 
@@ -438,8 +438,8 @@ pub async fn get_session_insights(
         Err(e) => return Err(internal_err(&e)),
     };
 
-    let all_tool_calls =
-        ironclad_db::tools::get_tool_calls_for_session(&state.db, &id).unwrap_or_default();
+    let all_tool_calls = ironclad_db::tools::get_tool_calls_for_session(&state.db, &id)
+        .map_err(|e| internal_err(&e))?;
 
     let turn_data: Vec<TurnData> = turns
         .iter()
@@ -543,8 +543,8 @@ pub async fn analyze_session(
         Err(e) => return Err(internal_err(&e)),
     };
 
-    let all_tool_calls =
-        ironclad_db::tools::get_tool_calls_for_session(&state.db, &id).unwrap_or_default();
+    let all_tool_calls = ironclad_db::tools::get_tool_calls_for_session(&state.db, &id)
+        .map_err(|e| internal_err(&e))?;
 
     let turn_data: Vec<TurnData> = turns
         .iter()

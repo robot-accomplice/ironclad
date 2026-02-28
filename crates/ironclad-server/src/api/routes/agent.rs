@@ -1422,7 +1422,13 @@ pub async fn agent_message(
 
     // Load conversation history
     let history_messages =
-        ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).unwrap_or_default();
+        ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).map_err(|e| {
+            tracing::error!(error = %e, session_id = %session_id, "failed to load conversation history");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": "failed to load conversation history"})),
+            )
+        })?;
     let previous_assistant_before_turn = history_messages
         .iter()
         .rev()
@@ -1989,7 +1995,13 @@ pub async fn agent_message_stream(
     );
 
     let history_messages =
-        ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).unwrap_or_default();
+        ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).map_err(|e| {
+            tracing::error!(error = %e, session_id = %session_id, "failed to load conversation history");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": "failed to load conversation history"})),
+            )
+        })?;
     let history: Vec<ironclad_llm::format::UnifiedMessage> = history_messages
         .iter()
         .rev()
@@ -3943,7 +3955,10 @@ pub async fn process_channel_message(
     );
 
     let history_messages =
-        ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).unwrap_or_default();
+        ironclad_db::sessions::list_messages(&state.db, &session_id, Some(50)).map_err(|e| {
+            tracing::error!(error = %e, session_id = %session_id, "failed to load conversation history");
+            format!("failed to load conversation history: {e}")
+        })?;
     let previous_assistant_before_turn = history_messages
         .iter()
         .rev()

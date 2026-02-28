@@ -191,8 +191,13 @@ fn default_python_interpreter() -> &'static str {
 /// Determines the interpreter for a script by reading its shebang line
 /// or inferring from the file extension, then checks against the whitelist.
 pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<String> {
-    if let Ok(content) = std::fs::read_to_string(script_path)
-        && let Some(first_line) = content.lines().next()
+    if let Ok(first_line) = std::fs::File::open(script_path)
+        .and_then(|f| {
+            use std::io::{BufRead, Read};
+            let mut line = String::new();
+            std::io::BufReader::new(f.take(512)).read_line(&mut line)?;
+            Ok(line)
+        })
         && first_line.starts_with("#!")
     {
         let shebang = first_line[2..].trim();

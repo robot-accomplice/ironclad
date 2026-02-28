@@ -145,9 +145,12 @@ pub fn list_agent_tables(db: &Database, agent_id: &str) -> Result<Vec<SchemaEntr
 }
 
 fn validate_identifier(s: &str) -> Result<()> {
-    if s.is_empty() || !s.chars().all(|c| c.is_alphanumeric() || c == '_') {
+    if s.is_empty()
+        || s.chars().next().is_some_and(|c| c.is_ascii_digit())
+        || !s.chars().all(|c| c.is_alphanumeric() || c == '_')
+    {
         return Err(IroncladError::Database(format!(
-            "identifier contains invalid characters: {s}"
+            "invalid SQL identifier: {s}"
         )));
     }
     Ok(())
@@ -206,25 +209,45 @@ pub fn create_agent_table(
 }
 
 /// Drop an agent-owned table. Only tables created by the specified agent can be dropped.
+/// Auth check + DROP + registry DELETE are performed in a single transaction to prevent TOCTOU.
 pub fn drop_agent_table(db: &Database, agent_id: &str, table_name: &str) -> Result<()> {
-    let entry = get_table(db, table_name)?.ok_or_else(|| {
-        IroncladError::Database(format!("table {table_name} not found in hippocampus"))
-    })?;
+    validate_identifier(table_name)?;
 
-    if !entry.agent_owned || entry.created_by != agent_id {
+    let conn = db.conn();
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    // Atomic check: verify ownership inside the transaction
+    let owned: bool = tx
+        .query_row(
+            "SELECT agent_owned AND created_by = ?2 FROM hippocampus WHERE table_name = ?1",
+            rusqlite::params![table_name, agent_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                IroncladError::Database(format!("table {table_name} not found in hippocampus"))
+            }
+            other => IroncladError::Database(other.to_string()),
+        })?;
+
+    if !owned {
         return Err(IroncladError::Database(
             "cannot drop: table not owned by this agent".into(),
         ));
     }
 
-    let conn = db.conn();
-    conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), [])
+    tx.execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), [])
         .map_err(|e| IroncladError::Database(e.to_string()))?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM hippocampus WHERE table_name = ?1",
         [table_name],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    tx.commit()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     Ok(())
 }

@@ -13,7 +13,9 @@ impl EventBus {
     }
 
     pub fn publish(&self, event: String) {
-        let _ = self.tx.send(event);
+        if let Err(e) = self.tx.send(event) {
+            tracing::debug!(error = %e, "EventBus publish: no active subscribers");
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
@@ -69,12 +71,12 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        // Echo back or handle client messages
-                        let received: String = text.to_string();
-                        let resp = serde_json::json!({
-                            "type": "ack",
-                            "received": received,
-                        });
+                        // Limit inbound message size to prevent memory amplification
+                        if text.len() > 4096 {
+                            tracing::warn!(len = text.len(), "WebSocket message exceeds 4KiB limit, closing");
+                            break;
+                        }
+                        let resp = serde_json::json!({ "type": "ack" });
                         if let Err(e) = socket.send(Message::Text(resp.to_string().into())).await {
                             tracing::debug!(error = %e, "WebSocket ack send failed");
                             break;

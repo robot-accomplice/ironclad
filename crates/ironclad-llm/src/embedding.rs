@@ -68,7 +68,12 @@ impl EmbeddingClient {
         cfg: &EmbeddingConfig,
         texts: &[&str],
     ) -> Result<Vec<Vec<f32>>> {
-        let api_key = std::env::var(&cfg.api_key_env).unwrap_or_default();
+        let api_key = std::env::var(&cfg.api_key_env).map_err(|_| {
+            IroncladError::Llm(format!(
+                "embedding API key not found: set the {} environment variable",
+                cfg.api_key_env
+            ))
+        })?;
         let url = build_embedding_url(cfg, texts.len());
         let body = build_embedding_request(cfg, texts);
 

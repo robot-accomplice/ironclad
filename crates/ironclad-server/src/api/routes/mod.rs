@@ -377,7 +377,13 @@ async fn json_error_layer(
 
     let code = response.status();
     let (_parts, body) = response.into_parts();
-    let bytes = axum::body::to_bytes(body, 8192).await.unwrap_or_default();
+    let bytes = match axum::body::to_bytes(body, 8192).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read response body for JSON wrapping");
+            axum::body::Bytes::new()
+        }
+    };
     let original_text = String::from_utf8_lossy(&bytes);
 
     let error_msg = if original_text.trim().is_empty() {
