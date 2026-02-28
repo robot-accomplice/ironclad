@@ -61,11 +61,12 @@ impl SessionGovernor {
                 tracing::warn!(error = %e, session_id = %s.id, "compaction failed before rotation");
             }
         }
-        if agent_scoped.is_empty() {
+        let archived = agent_scoped.len();
+        if archived == 0 {
             return Ok(0);
         }
         let _ = ironclad_db::sessions::rotate_agent_session(db, agent_id)?;
-        Ok(1)
+        Ok(archived)
     }
 
     fn compact_before_archive(&self, db: &Database, session_id: &str) -> ironclad_core::Result<()> {

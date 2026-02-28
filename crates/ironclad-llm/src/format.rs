@@ -3,6 +3,11 @@ use serde_json::Value;
 
 use ironclad_core::{ApiFormat, IroncladError, Result};
 
+/// Saturating cast from u64 to u32 — caps at u32::MAX instead of wrapping.
+fn saturating_u32(v: u64) -> u32 {
+    v.min(u32::MAX as u64) as u32
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnifiedRequest {
     pub model: String,
@@ -187,12 +192,12 @@ pub fn parse_sse_chunk(data: &str, format: &ApiFormat) -> Option<StreamChunk> {
                     .get("usage")
                     .and_then(|u| u.get("prompt_tokens"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
                 tokens_out: json
                     .get("usage")
                     .and_then(|u| u.get("completion_tokens"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
             })
         }
         ApiFormat::AnthropicMessages => {
@@ -212,12 +217,12 @@ pub fn parse_sse_chunk(data: &str, format: &ApiFormat) -> Option<StreamChunk> {
                     .get("usage")
                     .and_then(|u| u.get("input_tokens"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
                 tokens_out: json
                     .get("usage")
                     .and_then(|u| u.get("output_tokens"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
             })
         }
         ApiFormat::GoogleGenerativeAi => {
@@ -239,12 +244,12 @@ pub fn parse_sse_chunk(data: &str, format: &ApiFormat) -> Option<StreamChunk> {
                     .get("usageMetadata")
                     .and_then(|u| u.get("promptTokenCount"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
                 tokens_out: json
                     .get("usageMetadata")
                     .and_then(|u| u.get("candidatesTokenCount"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
             })
         }
     }
@@ -468,8 +473,8 @@ fn parse_anthropic_response(body: &Value) -> Result<UnifiedResponse> {
         .to_string();
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
-    let tokens_in = body["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32;
-    let tokens_out = body["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32;
+    let tokens_in = saturating_u32(body["usage"]["input_tokens"].as_u64().unwrap_or(0));
+    let tokens_out = saturating_u32(body["usage"]["output_tokens"].as_u64().unwrap_or(0));
     let finish_reason = body["stop_reason"].as_str().map(String::from);
 
     Ok(UnifiedResponse {
@@ -492,8 +497,8 @@ fn parse_openai_completions_response(body: &Value) -> Result<UnifiedResponse> {
         .unwrap_or("")
         .to_string();
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
-    let tokens_in = body["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
-    let tokens_out = body["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
+    let tokens_in = saturating_u32(body["usage"]["prompt_tokens"].as_u64().unwrap_or(0));
+    let tokens_out = saturating_u32(body["usage"]["completion_tokens"].as_u64().unwrap_or(0));
     let finish_reason = choice["finish_reason"].as_str().map(String::from);
 
     Ok(UnifiedResponse {
@@ -516,8 +521,8 @@ fn parse_openai_responses_response(body: &Value) -> Result<UnifiedResponse> {
         .to_string();
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
-    let tokens_in = body["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32;
-    let tokens_out = body["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32;
+    let tokens_in = saturating_u32(body["usage"]["input_tokens"].as_u64().unwrap_or(0));
+    let tokens_out = saturating_u32(body["usage"]["output_tokens"].as_u64().unwrap_or(0));
 
     Ok(UnifiedResponse {
         content,
@@ -542,12 +547,16 @@ fn parse_google_response(body: &Value) -> Result<UnifiedResponse> {
         .as_str()
         .unwrap_or("unknown")
         .to_string();
-    let tokens_in = body["usageMetadata"]["promptTokenCount"]
-        .as_u64()
-        .unwrap_or(0) as u32;
-    let tokens_out = body["usageMetadata"]["candidatesTokenCount"]
-        .as_u64()
-        .unwrap_or(0) as u32;
+    let tokens_in = saturating_u32(
+        body["usageMetadata"]["promptTokenCount"]
+            .as_u64()
+            .unwrap_or(0),
+    );
+    let tokens_out = saturating_u32(
+        body["usageMetadata"]["candidatesTokenCount"]
+            .as_u64()
+            .unwrap_or(0),
+    );
     let finish_reason = body["candidates"]
         .as_array()
         .and_then(|arr| arr.first())

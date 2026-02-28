@@ -61,7 +61,12 @@ pub async fn list_sessions(
         })
         .map_err(|e| internal_err(&e))?;
 
-    let sessions: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
+    let sessions: Vec<Value> = rows
+        .filter_map(|r| {
+            r.inspect_err(|e| tracing::warn!(error = %e, "skipping corrupted session row"))
+                .ok()
+        })
+        .collect();
 
     Ok::<_, JsonError>(axum::Json(serde_json::json!({ "sessions": sessions })))
 }
@@ -423,6 +428,7 @@ pub async fn get_turn_tips(
 
     let session_avg_cost =
         ironclad_db::sessions::list_turns_for_session(&state.db, &turn_record.session_id)
+            .inspect_err(|e| tracing::warn!(error = %e, session_id = %turn_record.session_id, "failed to fetch turns for avg cost"))
             .ok()
             .and_then(|turns| {
                 if turns.is_empty() {
@@ -779,6 +785,9 @@ pub async fn post_turn_feedback(
     if !(1..=5).contains(&body.grade) {
         return Err(bad_request("grade must be between 1 and 5"));
     }
+    if body.comment.as_ref().is_some_and(|c| c.len() > 4096) {
+        return Err(bad_request("comment must be at most 4096 characters"));
+    }
 
     let turn = match ironclad_db::sessions::get_turn_by_id(&state.db, &turn_id) {
         Ok(Some(t)) => t,
@@ -831,6 +840,9 @@ pub async fn put_turn_feedback(
 ) -> impl IntoResponse {
     if !(1..=5).contains(&body.grade) {
         return Err(bad_request("grade must be between 1 and 5"));
+    }
+    if body.comment.as_ref().is_some_and(|c| c.len() > 4096) {
+        return Err(bad_request("comment must be at most 4096 characters"));
     }
 
     match ironclad_db::sessions::update_feedback(

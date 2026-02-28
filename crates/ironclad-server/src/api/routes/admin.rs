@@ -347,7 +347,6 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
                     "format",
                     "auth_mode",
                     "auth_header",
-                    "extra_headers",
                     "is_local",
                     "cost_per_input_token",
                     "cost_per_output_token",

@@ -204,6 +204,7 @@ struct DelegationProvenance {
 }
 
 fn split_subtasks(input: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for part in input
         .split(&['\n', ';'][..])
@@ -211,11 +212,10 @@ fn split_subtasks(input: &str) -> Vec<String> {
         .flat_map(|p| p.split(" and "))
     {
         let trimmed = part.trim();
-        if !trimmed.is_empty() {
+        if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
             out.push(trimmed.to_string());
         }
     }
-    out.dedup();
     out
 }
 
@@ -1664,15 +1664,15 @@ pub async fn agent_message(
         let mut current_tool = Some((tool_name, tool_params));
 
         while let Some((ref tool_name, ref tool_params)) = current_tool {
-            if react_loop.is_looping(tool_name, &tool_params.to_string()) {
-                tracing::warn!(tool = %tool_name, "ReAct loop detected, breaking");
-                break;
-            }
-
             react_loop.transition(ReactAction::Act {
                 tool_name: tool_name.clone(),
                 params: tool_params.to_string(),
             });
+
+            // Loop detection now lives solely inside transition(Act).
+            if react_loop.state == ReactState::Done {
+                break;
+            }
 
             let tool_result =
                 execute_tool_call(&state, tool_name, tool_params, &turn_id, authority).await;

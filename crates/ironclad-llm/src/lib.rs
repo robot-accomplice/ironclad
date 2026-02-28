@@ -276,9 +276,9 @@ impl Stream for SseChunkStream {
                         }
                         Err(e) => {
                             let valid_up_to = e.valid_up_to();
-                            // Safety: `valid_up_to` is a confirmed UTF-8 boundary.
-                            let valid =
-                                unsafe { std::str::from_utf8_unchecked(&combined[..valid_up_to]) };
+                            // valid_up_to is a confirmed UTF-8 boundary from Utf8Error.
+                            let valid = std::str::from_utf8(&combined[..valid_up_to])
+                                .expect("valid_up_to guarantees valid UTF-8");
                             this.text_buffer.push_str(valid);
                             this.raw_tail = combined[valid_up_to..].to_vec();
                         }

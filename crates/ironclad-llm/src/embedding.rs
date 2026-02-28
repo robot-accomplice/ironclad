@@ -429,14 +429,18 @@ mod tests {
 
     #[test]
     fn build_embedding_url_google_substitutes_model() {
-        unsafe { std::env::set_var("TEST_GOOGLE_KEY", "fake-key") };
+        // SAFETY: this test runs single-threaded (cargo test default for unit tests)
+        // and uses a unique env var name to avoid conflicts with other tests.
+        unsafe {
+            std::env::set_var("IRONCLAD_TEST_GOOGLE_EMBED_KEY", "fake-key");
+        }
         let cfg = EmbeddingConfig {
             base_url: "https://generativelanguage.googleapis.com".into(),
             embedding_path: "/v1beta/models/{model}:embedContent".into(),
             model: "text-embedding-004".into(),
             dimensions: 768,
             format: ApiFormat::GoogleGenerativeAi,
-            api_key_env: "TEST_GOOGLE_KEY".into(),
+            api_key_env: "IRONCLAD_TEST_GOOGLE_EMBED_KEY".into(),
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
         };
@@ -444,7 +448,9 @@ mod tests {
         assert!(url.contains("text-embedding-004"));
         assert!(url.contains("key=fake-key"));
         assert!(url.contains(":embedContent"));
-        unsafe { std::env::remove_var("TEST_GOOGLE_KEY") };
+        unsafe {
+            std::env::remove_var("IRONCLAD_TEST_GOOGLE_EMBED_KEY");
+        }
     }
 
     #[test]

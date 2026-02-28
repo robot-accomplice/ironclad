@@ -63,6 +63,11 @@ impl Tool for ObsidianReadTool {
         let vault = self.vault.read().await;
 
         let note = if let Some(path) = params.get("path").and_then(|v| v.as_str()) {
+            if path.contains("..") || std::path::Path::new(path).is_absolute() {
+                return Err(ToolError {
+                    message: "path must be relative and must not contain '..'".into(),
+                });
+            }
             vault.get_note(path).cloned()
         } else if let Some(title) = params.get("title").and_then(|v| v.as_str()) {
             vault
