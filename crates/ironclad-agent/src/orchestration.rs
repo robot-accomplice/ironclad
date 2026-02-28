@@ -356,8 +356,15 @@ impl Orchestrator {
                     .subtasks
                     .iter()
                     .rposition(|t| t.status == SubtaskStatus::Completed);
-                let next_idx = last_completed.map(|i| i + 1).unwrap_or(0);
-                Ok(workflow.subtasks.get(next_idx).into_iter().collect())
+                let start_idx = last_completed.map(|i| i + 1).unwrap_or(0);
+                // Skip past any Failed tasks to find the next actionable one
+                Ok(workflow.subtasks[start_idx..]
+                    .iter()
+                    .find(|t| {
+                        t.status == SubtaskStatus::Pending || t.status == SubtaskStatus::Assigned
+                    })
+                    .into_iter()
+                    .collect())
             }
         }
     }
@@ -556,6 +563,29 @@ mod tests {
             let back: OrchestrationPattern = serde_json::from_str(&json).unwrap();
             assert_eq!(pattern, back);
         }
+    }
+
+    #[test]
+    fn handoff_skips_failed_tasks() {
+        let mut orch = Orchestrator::new();
+        let wf_id = orch.create_workflow("Handoff", OrchestrationPattern::Handoff, simple_tasks());
+        let task_ids: Vec<String> = orch
+            .get_workflow(&wf_id)
+            .unwrap()
+            .subtasks
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+
+        // Complete first task, fail second
+        orch.complete_task(&wf_id, &task_ids[0], "done".into())
+            .unwrap();
+        orch.fail_task(&wf_id, &task_ids[1], "broken").unwrap();
+
+        // Handoff should skip the Failed task and return the third (Pending) task
+        let next = orch.next_tasks(&wf_id).unwrap();
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].description, "Review the output");
     }
 
     #[test]

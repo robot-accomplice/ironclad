@@ -43,15 +43,15 @@ impl AgentLoop {
     }
 
     pub fn transition(&mut self, action: ReactAction) -> ReactState {
-        self.turn_count += 1;
-
-        if self.turn_count > self.max_turns {
-            self.state = ReactState::Done;
-            return self.state;
-        }
-
         match action {
             ReactAction::Think => {
+                // Only count logical turns (Think phase starts a new turn).
+                // Previously every transition incremented, inflating count 2-3x.
+                self.turn_count += 1;
+                if self.turn_count > self.max_turns {
+                    self.state = ReactState::Done;
+                    return self.state;
+                }
                 self.idle_count = 0;
                 self.state = ReactState::Thinking;
             }
@@ -180,7 +180,18 @@ mod tests {
         let mut agent = AgentLoop::new(2);
 
         agent.transition(ReactAction::Think);
+        // Non-Think transitions don't inflate the turn count
+        agent.transition(ReactAction::Act {
+            tool_name: "echo".into(),
+            params: "{}".into(),
+        });
+        agent.transition(ReactAction::Observe);
+        assert_eq!(agent.turn_count, 1);
+
         agent.transition(ReactAction::Think);
+        assert_eq!(agent.turn_count, 2);
+
+        // Third Think exceeds max_turns=2
         let s = agent.transition(ReactAction::Think);
         assert_eq!(s, ReactState::Done);
     }

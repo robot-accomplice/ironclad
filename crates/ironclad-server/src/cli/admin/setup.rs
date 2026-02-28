@@ -788,7 +788,7 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
                 domains[domain_idx],
             );
             std::fs::write(ws_path.join("OS.toml"), &starter_os)?;
-            ironclad_core::personality::write_defaults(ws_path).ok();
+            ironclad_core::personality::write_defaults(ws_path)?;
 
             println!();
             println!("  {OK} Starter personality written.");

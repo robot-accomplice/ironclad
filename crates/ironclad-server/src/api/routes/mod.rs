@@ -507,7 +507,6 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/sessions/{id}/turns", get(list_session_turns))
         .route("/api/sessions/{id}/insights", get(get_session_insights))
-        .route("/api/sessions/{id}/analyze", post(analyze_session))
         .route("/api/sessions/{id}/feedback", get(get_session_feedback))
         .route("/api/turns/{id}", get(get_turn))
         .route("/api/turns/{id}/context", get(get_turn_context))
@@ -518,7 +517,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/turns/{id}/tools", get(get_turn_tools))
         .route("/api/turns/{id}/tips", get(get_turn_tips))
         .route("/api/models/selections", get(list_model_selection_events))
-        .route("/api/turns/{id}/analyze", post(analyze_turn))
         .route(
             "/api/turns/{id}/feedback",
             get(get_turn_feedback)
@@ -547,10 +545,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/stats/timeseries", get(get_overview_timeseries))
         .route("/api/stats/efficiency", get(get_efficiency))
         .route("/api/recommendations", get(get_recommendations))
-        .route(
-            "/api/recommendations/generate",
-            post(generate_deep_analysis),
-        )
         .route("/api/stats/transactions", get(get_transactions))
         .route("/api/stats/cache", get(get_cache_stats))
         .route("/api/stats/capacity", get(get_capacity_stats))
@@ -641,6 +635,19 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/favicon.ico",
             get(|| async { axum::http::StatusCode::NO_CONTENT }),
+        )
+        // LLM analysis routes have their own concurrency limit to prevent
+        // expensive analysis requests from starving lightweight API calls.
+        .merge(
+            Router::new()
+                .route("/api/sessions/{id}/analyze", post(analyze_session))
+                .route("/api/turns/{id}/analyze", post(analyze_turn))
+                .route(
+                    "/api/recommendations/generate",
+                    post(generate_deep_analysis),
+                )
+                .layer(tower::limit::ConcurrencyLimitLayer::new(3))
+                .with_state(state.clone()),
         )
         .fallback(|| async { JsonError(axum::http::StatusCode::NOT_FOUND, "not found".into()) })
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB

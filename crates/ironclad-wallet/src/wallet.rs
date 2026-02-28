@@ -168,25 +168,39 @@ impl Wallet {
                 })
             } else {
                 None
-            }
-            .or_else(|| {
-                std::env::var("IRONCLAD_WALLET_PASSPHRASE")
-                    .ok()
-                    .filter(|p| !p.is_empty())
-                    .and_then(|passphrase| {
-                        decrypt_wallet_data(&raw, &passphrase)
-                            .ok()
-                            .and_then(|decrypted| {
-                                serde_json::from_slice::<WalletFile>(&decrypted).ok()
-                            })
-                    })
-            })
-            .or_else(|| {
-                let machine_pass = Self::machine_passphrase();
-                decrypt_wallet_data(&raw, &machine_pass)
-                    .ok()
-                    .and_then(|decrypted| serde_json::from_slice::<WalletFile>(&decrypted).ok())
-            });
+            };
+
+            // If no plaintext wallet, try decryption. Explicit passphrase failures
+            // are hard errors — silently falling through could regenerate (and
+            // overwrite) a wallet the user intended to unlock.
+            let wallet_file = if wallet_file.is_none() {
+                if let Ok(passphrase) = std::env::var("IRONCLAD_WALLET_PASSPHRASE") {
+                    if !passphrase.is_empty() {
+                        let decrypted = decrypt_wallet_data(&raw, &passphrase).map_err(|e| {
+                            IroncladError::Wallet(format!(
+                                "IRONCLAD_WALLET_PASSPHRASE set but decryption failed: {e}"
+                            ))
+                        })?;
+                        Some(
+                            serde_json::from_slice::<WalletFile>(&decrypted).map_err(|e| {
+                                IroncladError::Wallet(format!(
+                                    "wallet decrypted but JSON invalid: {e}"
+                                ))
+                            })?,
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    // No explicit passphrase — try machine passphrase (best-effort)
+                    let machine_pass = Self::machine_passphrase();
+                    decrypt_wallet_data(&raw, &machine_pass)
+                        .ok()
+                        .and_then(|decrypted| serde_json::from_slice::<WalletFile>(&decrypted).ok())
+                }
+            } else {
+                wallet_file
+            };
 
             if let Some(wallet_file) = wallet_file {
                 let key_bytes = hex::decode(&wallet_file.private_key_hex)

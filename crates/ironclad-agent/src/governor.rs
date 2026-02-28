@@ -69,7 +69,7 @@ impl SessionGovernor {
     }
 
     fn compact_before_archive(&self, db: &Database, session_id: &str) -> ironclad_core::Result<()> {
-        let msgs = ironclad_db::sessions::list_messages(db, session_id, Some(20))?;
+        let msgs = ironclad_db::sessions::list_messages(db, session_id, None)?;
         if msgs.len() < 4 {
             return Ok(());
         }

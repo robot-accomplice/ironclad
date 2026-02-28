@@ -19,7 +19,10 @@ impl DurableScheduler {
         let full_expr = format!("0 {expr} *");
         let schedule = match cron::Schedule::from_str(&full_expr) {
             Ok(s) => s,
-            Err(_) => return false,
+            Err(e) => {
+                tracing::warn!(cron_expr, error = %e, "invalid cron expression, schedule will never fire");
+                return false;
+            }
         };
 
         let now_in_tz = now_dt.with_timezone(&tz);

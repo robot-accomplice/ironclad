@@ -951,8 +951,12 @@ pub async fn get_overview_timeseries(
             continue;
         }
         latency_samples[i].sort_unstable();
-        let mid = latency_samples[i].len() / 2;
-        latency_p50[i] = latency_samples[i][mid] as f64;
+        let n = latency_samples[i].len();
+        latency_p50[i] = if n % 2 == 1 {
+            latency_samples[i][n / 2] as f64
+        } else {
+            (latency_samples[i][n / 2 - 1] as f64 + latency_samples[i][n / 2] as f64) / 2.0
+        };
     }
 
     if let Ok(mut stmt) = conn.prepare(

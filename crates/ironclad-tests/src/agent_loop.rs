@@ -34,9 +34,11 @@ fn finish_transitions_to_done() {
 #[test]
 fn exceeding_max_turns_forces_done() {
     let mut agent = AgentLoop::new(2);
-    agent.transition(ReactAction::Think);
-    agent.transition(ReactAction::Observe);
-    let state = agent.transition(ReactAction::Think);
+    agent.transition(ReactAction::Think); // turn 1
+    agent.transition(ReactAction::Observe); // not a turn — doesn't count
+    agent.transition(ReactAction::Think); // turn 2
+    assert_eq!(agent.turn_count, 2);
+    let state = agent.transition(ReactAction::Think); // turn 3 > max_turns
     assert_eq!(
         state,
         ReactState::Done,

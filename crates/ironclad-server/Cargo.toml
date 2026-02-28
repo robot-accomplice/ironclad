@@ -31,7 +31,7 @@ tracing.workspace = true
 uuid = { workspace = true }
 chrono = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
-tower = "0.5"
+tower = { version = "0.5", features = ["limit"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tower-http = { version = "0.6", features = ["cors"] }
 clap = { version = "4", features = ["derive", "env"] }

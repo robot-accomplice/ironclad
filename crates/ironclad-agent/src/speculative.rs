@@ -12,20 +12,19 @@ pub struct ToolPrediction {
 }
 
 /// Cache key for speculative results.
+/// Uses the full JSON string for exact matching — no hash collisions and
+/// no dependency on DefaultHasher stability across Rust versions.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SpeculationKey {
     pub tool_name: String,
-    pub params_hash: u64,
+    pub params_json: String,
 }
 
 impl SpeculationKey {
     pub fn new(tool_name: &str, params: &serde_json::Value) -> Self {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        params.to_string().hash(&mut hasher);
         Self {
             tool_name: tool_name.to_string(),
-            params_hash: hasher.finish(),
+            params_json: params.to_string(),
         }
     }
 }
