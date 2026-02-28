@@ -357,7 +357,7 @@ ci-test:
 
     # Stage 3: Test (per-crate)
     for crate in "${CRATES[@]}"; do
-        run_stage "Test ($crate)" cargo test -p "$crate" --verbose
+        run_stage "Test ($crate)" cargo test -p "$crate" --verbose --locked
     done
 
     # Stage 4: Coverage gate (80% floor + no regression)
@@ -404,10 +404,10 @@ ci-test:
     fi
 
     # Stage 5: Build (debug)
-    run_stage "Build (debug)" cargo build --bin ironclad
+    run_stage "Build (debug)" cargo build --bin ironclad --locked
 
     # Stage 6: Build (release)
-    run_stage "Build (release)" cargo build --release --bin ironclad
+    run_stage "Build (release)" cargo build --release --bin ironclad --locked
 
     # Stage 7: Security Audit
     if command -v cargo-audit &>/dev/null; then
@@ -419,7 +419,7 @@ ci-test:
     fi
 
     # Stage 8: Docs
-    run_stage "Docs" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+    run_stage "Docs" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 
     # Summary
     echo ""
