@@ -275,6 +275,28 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
+### 1.24 Built-in CLI Agent Skills (Claude Code + Codex CLI)
+
+**Current state**: Ironclad's skill system supports user-created scripts in bash/python/node, loaded from the skills directory. There are no built-in skills that ship with the agent for delegating tasks to external CLI-based AI tools.
+
+**Target**: Ship built-in skills that let the agent delegate subtasks to Claude Code (`claude`) and OpenAI Codex CLI (`codex`) when they are installed on the host. These skills act as typed tool interfaces — the agent can invoke them with structured parameters (task description, working directory, file scope) and receive structured output, enabling Ironclad to orchestrate external AI tools as specialist sub-processes.
+
+**Builds on**: `SkillLoader`/`SkillRegistry`, existing skill manifest format, script execution sandbox (`skills.sandbox_env`), tool registry.
+
+**Scope**: Implement two built-in skills:
+
+1. **`claude-code`** — wraps `claude` CLI in non-interactive/headless mode. Parameters: task prompt, working directory, allowed tools, output format. Parses structured output (JSON/text) and returns it to the agent loop. Detects installation via `which claude` at skill load time; skill is unavailable (not errored) when not installed.
+
+2. **`codex-cli`** — wraps `codex` CLI similarly. Parameters: task prompt, working directory, approval mode. Parses output and returns structured result.
+
+Both skills: register as tools in the `ToolRegistry` so the agent can invoke them naturally during conversation. Respect `script_timeout_seconds` and `script_max_output_bytes` from skills config. Run in sandbox when `sandbox_env = true`. Gated behind `RiskLevel::Caution` in the policy engine (they execute arbitrary code via external tools). Include health checks (binary exists, version compatible) surfaced in `ironclad status`.
+
+**Non-goals**: Not a generic "run any CLI AI tool" framework. Each supported tool gets a purpose-built skill with typed parameters and output parsing. Additional tools (Aider, Cursor CLI, etc.) can be added as separate skills later.
+
+**Release posture**: Parked for `v0.9.0`. Depends on stable CLI interfaces from both tools.
+
+---
+
 ## Tier 2 — New Capabilities
 
 Features that require significant new code but have clear implementation paths. Medium-to-high effort.
@@ -1030,6 +1052,7 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 1.21 | Integrations management (CLI + dashboard) | 1 | Channel adapters, keystore, channel health, dashboard SPA | Medium |
 | 1.22 | Built-in introspection skill | 1 | Tool trait, ToolRegistry, ToolContext, SessionScope, ChannelRouter | Low |
 | 1.23 | Context budget tuning | 1 | context.rs, token_budget, build_context, complexity scorer | Low |
+| 1.24 | Built-in CLI agent skills (Claude Code + Codex CLI) | 1 | SkillLoader, SkillRegistry, ToolRegistry, script sandbox, policy engine | Medium |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
 | 2.3 | Tiered inference pipeline | 2 | Fallback chain, local model config | Medium |
