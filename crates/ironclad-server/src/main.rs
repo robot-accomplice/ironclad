@@ -734,7 +734,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cmd_check(&cfg)
         }
         Some(Commands::Version) => {
-            cmd_version();
+            cmd_version(parsed.json);
             Ok(())
         }
         Some(Commands::Update(subcmd)) => {
@@ -774,7 +774,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // ── Operations ──────────────────────────────────────
-        Some(Commands::Status) => cli::cmd_status(url).await,
+        Some(Commands::Status) => cli::cmd_status(url, parsed.json).await,
         Some(Commands::Mechanic {
             repair,
             json,
@@ -874,7 +874,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ── Configuration ───────────────────────────────────
         Some(Commands::Config(sub)) => match sub {
             ConfigCmd::Show => cli::cmd_config(url).await,
-            ConfigCmd::Get { path } => cli::cmd_config_get(&path),
+            ConfigCmd::Get { path } => cli::cmd_config_get(url, &path).await,
             ConfigCmd::Set {
                 path,
                 value,
@@ -2081,7 +2081,17 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_version() {
+fn cmd_version(json: bool) {
+    if json {
+        let out = serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "edition": "Rust 2024",
+            "target": std::env::consts::ARCH,
+            "os": std::env::consts::OS,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        return;
+    }
     let t = cli::theme();
     print_banner(t);
     let tw = |text: &str| t.typewrite_line(text, 4);

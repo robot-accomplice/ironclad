@@ -130,7 +130,7 @@ impl IroncladClient {
             base_url: base_url.trim_end_matches('/').to_string(),
         })
     }
-    async fn get(&self, path: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    pub(crate) async fn get(&self, path: &str) -> Result<Value, Box<dyn std::error::Error>> {
         let url = format!("{}{}", self.base_url, path);
         let resp = self.client.get(&url).send().await?;
         if !resp.status().is_success() {

@@ -9,20 +9,26 @@ pub(crate) fn is_connection_error(msg: &str) -> bool {
         || msg.contains("hyper::Error")
 }
 
-pub async fn cmd_status(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_status(url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let c = IroncladClient::new(url)?;
-    heading("Agent Status");
     let health = match c.get("/api/health").await {
         Ok(h) => h,
         Err(e) => {
             let msg = format!("{:?}", e);
             if is_connection_error(&msg) {
-                let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
-                let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-                eprintln!();
-                eprintln!("  {WARN} Server is not running at {BOLD}{url}{RESET}");
-                eprintln!("  {DIM}Start with: {BOLD}ironclad serve{RESET}");
-                eprintln!();
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"status": "offline", "url": url})
+                    );
+                } else {
+                    let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
+                    let (OK, ACTION, WARN, DETAIL, ERR) = icons();
+                    eprintln!();
+                    eprintln!("  {WARN} Server is not running at {BOLD}{url}{RESET}");
+                    eprintln!("  {DIM}Start with: {BOLD}ironclad serve{RESET}");
+                    eprintln!();
+                }
                 return Ok(());
             }
             eprintln!();
@@ -39,6 +45,28 @@ pub async fn cmd_status(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let jobs = c.get("/api/cron/jobs").await?;
     let cache = c.get("/api/stats/cache").await?;
     let wallet = c.get("/api/wallet/balance").await?;
+
+    if json {
+        let out = serde_json::json!({
+            "status": "online",
+            "version": health["version"],
+            "agent": {
+                "name": config["agent"]["name"],
+                "id": config["agent"]["id"],
+                "state": agent["state"],
+            },
+            "sessions": sessions["sessions"].as_array().map(|a| a.len()).unwrap_or(0),
+            "skills": skills["skills"].as_array().map(|a| a.len()).unwrap_or(0),
+            "cron_jobs": jobs["jobs"].as_array().map(|a| a.len()).unwrap_or(0),
+            "cache": cache,
+            "wallet": wallet,
+            "primary_model": config["models"]["primary"],
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    heading("Agent Status");
     let agent_name = config["agent"]["name"].as_str().unwrap_or("unknown");
     let agent_id = config["agent"]["id"].as_str().unwrap_or("unknown");
     let agent_state = agent["state"].as_str().unwrap_or("unknown");
@@ -167,7 +195,7 @@ mod tests {
         });
 
         let url = format!("http://{}:{}", addr.ip(), addr.port());
-        let result = cmd_status(&url).await;
+        let result = cmd_status(&url, false).await;
         server.abort();
         assert!(result.is_ok());
     }
@@ -178,7 +206,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let url = format!("http://127.0.0.1:{port}");
-        let result = cmd_status(&url).await;
+        let result = cmd_status(&url, false).await;
         assert!(result.is_ok());
     }
 }

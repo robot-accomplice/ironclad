@@ -373,7 +373,7 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
 
 pub async fn get_config_capabilities() -> impl IntoResponse {
     axum::Json(json!({
-        "immutable_sections": [],
+        "immutable_sections": ["server", "treasury", "a2a", "wallet"],
         "mutable_sections": ["agent", "server", "database", "models", "memory", "cache", "treasury", "yield", "wallet", "a2a", "skills", "channels", "circuit_breaker", "providers", "context", "approvals", "plugins", "browser", "daemon", "update", "tier_adapt", "personality", "session", "digest", "multimodal", "knowledge", "workspace_config", "mcp", "devices", "discovery", "obsidian"],
         "notes": {
             "runtime_reload": "all sections are accepted and persisted to ironclad.toml with validation",
