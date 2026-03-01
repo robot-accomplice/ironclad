@@ -4825,7 +4825,7 @@
       var nameEl = document.getElementById('cal-job-name'); var name = (nameEl && nameEl.value || '').trim();
       if (!name) { toast('Name is required'); return; }
       var sched = App._readSchedFromUI(); var cron = App._schedToCron(sched);
-      var jobData = { name: name, schedule_kind: cron.kind, schedule_expr: cron.expr, agent_id: 'ironclad' };
+      var jobData = { name: name, schedule_kind: cron.kind, schedule_expr: cron.expr, agent_id: App._activeAgentId || 'ironclad' };
       if (App._calModalMode === 'add') {
         api('/api/cron/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jobData) }).then(function() { toast('Added "' + name + '"'); App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Add failed'); });
       } else {

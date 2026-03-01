@@ -238,6 +238,15 @@ pub async fn get_channels_status(State(state): State<AppState>) -> impl IntoResp
             "last_activity": s.last_activity,
         }));
     }
+    // Include A2A protocol status
+    {
+        let a2a = state.a2a.read().await;
+        result.push(json!({
+            "name": "a2a",
+            "connected": a2a.config.enabled,
+            "sessions_active": a2a.session_count(),
+        }));
+    }
     Json(json!(result))
 }
 
