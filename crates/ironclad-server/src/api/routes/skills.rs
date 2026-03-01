@@ -53,7 +53,7 @@ struct BuiltinSkillRecord {
     description: String,
 }
 
-const BUILTIN_SKILLS_JSON: &str = include_str!("../../../../../registry/builtin-skills.json");
+const BUILTIN_SKILLS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/builtin-skills.json"));
 
 fn builtin_skills() -> &'static Vec<BuiltinSkillRecord> {
     static BUILTIN_SKILLS: OnceLock<Vec<BuiltinSkillRecord>> = OnceLock::new();
