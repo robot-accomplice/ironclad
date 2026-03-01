@@ -938,12 +938,12 @@ Create a new subagent.
 `model` supports:
 - a concrete provider/model string (fixed),
 - `auto` (Ironclad chooses per assignment),
-- `commander` (primary agent chooses per assignment).
+- `orchestrator` (primary agent chooses per assignment).
 
 Validation rules:
 - `personality` payloads are rejected (`400`) for all subagent records.
 - `model-proxy` records cannot own skills.
-- `model-proxy` records cannot use `auto` or `commander`; they require a concrete provider/model.
+- `model-proxy` records cannot use `auto` or `orchestrator`; they require a concrete provider/model.
 - `subagent` records store a fixed skills list (`skills`) on the subagent record.
 
 **Response:**
@@ -979,7 +979,7 @@ Toggle a subagent's enabled state.
 
 ### `GET /api/roster`
 
-Get the orchestrated roster (commander + taskable subagents) with fixed per-subagent skills and model assignments.
+Get the orchestrated roster (orchestrator + taskable subagents) with fixed per-subagent skills and model assignments.
 
 **Response:**
 
@@ -988,7 +988,7 @@ Get the orchestrated roster (commander + taskable subagents) with fixed per-suba
   "roster": [
     {
       "name": "Roboticus",
-      "role": "commander",
+      "role": "orchestrator",
       "model": "ollama/qwen3:8b",
       "skills": [],
       "capabilities": ["orchestrate-subagents", "assign-tasks", "select-subagent-model"]
@@ -1018,7 +1018,7 @@ Change the model for an agent in the roster.
 { "model": "anthropic/claude-opus-4" }
 ```
 
-For subagents, `model` may also be `auto` or `commander`.
+For subagents, `model` may also be `auto` or `orchestrator`.
 
 **Response:**
 

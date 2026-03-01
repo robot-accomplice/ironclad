@@ -856,10 +856,6 @@ primary = "ollama/qwen3:8b"
         build_router(state.clone()).merge(build_public_router(state))
     }
 
-    fn expected_loopback_status() -> &'static str {
-        "legacy_proxy_unsupported"
-    }
-
     async fn json_body(resp: axum::http::Response<Body>) -> serde_json::Value {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
@@ -2363,6 +2359,7 @@ params = { path = "README.md" }
             &serde_json::json!({ "path": "protected.sh" }),
             &turn_id,
             InputAuthority::External,
+            None,
         )
         .await;
 
@@ -2417,6 +2414,7 @@ params = { path = "README.md" }
             }),
             &turn_id,
             InputAuthority::Creator,
+            None,
         )
         .await
         .unwrap();
@@ -2511,6 +2509,7 @@ params = { path = "README.md" }
             }),
             &turn_id,
             InputAuthority::Creator,
+            None,
         )
         .await
         .unwrap();
@@ -2570,6 +2569,7 @@ params = { path = "README.md" }
             &serde_json::json!({ "path": "deny-external.sh" }),
             &turn_id,
             InputAuthority::External,
+            None,
         )
         .await;
 
@@ -2630,6 +2630,7 @@ params = { path = "README.md" }
             &serde_json::json!({ "path": "invalid-risk.sh" }),
             &turn_id,
             InputAuthority::Creator,
+            None,
         )
         .await;
 
@@ -2692,6 +2693,7 @@ params = { path = "README.md" }
             &serde_json::json!({ "path": "disabled.sh" }),
             &turn_id,
             InputAuthority::Creator,
+            None,
         )
         .await;
 
@@ -2749,6 +2751,7 @@ params = { path = "README.md" }
             &serde_json::json!({ "path": "malformed.sh" }),
             &turn_id,
             InputAuthority::Creator,
+            None,
         )
         .await;
 
@@ -2860,12 +2863,12 @@ params = { path = "README.md" }
         assert!(body["roster"].is_array());
         let roster = body["roster"].as_array().unwrap();
         assert!(!roster.is_empty(), "roster should include the main agent");
-        assert_eq!(roster[0]["role"], "commander");
+        assert_eq!(roster[0]["role"], "orchestrator");
         assert!(roster[0]["skills"].is_array());
     }
 
     #[tokio::test]
-    async fn change_commander_model() {
+    async fn change_orchestrator_model() {
         let state = test_state();
         let app = build_router(state);
         let resp = app
@@ -2888,7 +2891,7 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
-    async fn change_commander_model_and_order() {
+    async fn change_orchestrator_model_and_order() {
         let state = test_state();
         let app = build_router(state);
         let resp = app
@@ -3145,7 +3148,6 @@ params = { path = "README.md" }
         let body = json_body(resp).await;
         assert_eq!(body["providers"]["google"]["status"], "ok");
         assert_eq!(body["proxy"]["mode"], "in_process");
-        assert_eq!(body["proxy"]["legacy_loopback_support"], "removed_v0_8");
         assert!(
             body["models"]
                 .as_array()
@@ -3167,7 +3169,7 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
-    async fn models_available_reports_proxy_unreachable_for_local_proxy_refusal() {
+    async fn models_available_reports_unreachable_on_connection_refused() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener); // ensure immediate connection refusal on this port
@@ -3197,20 +3199,11 @@ params = { path = "README.md" }
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
-        assert_eq!(
-            body["providers"]["anthropic"]["status"],
-            expected_loopback_status()
-        );
-        assert!(
-            body["providers"]["anthropic"]["hint"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("providers.anthropic.url")
-        );
+        assert_eq!(body["providers"]["anthropic"]["status"], "unreachable");
     }
 
     #[tokio::test]
-    async fn models_available_reports_proxy_misconfigured_for_non_models_payload() {
+    async fn models_available_reports_error_for_non_models_payload() {
         let mock = Router::new().route(
             "/anthropic/v1/models",
             get(|| async move { (StatusCode::OK, "not a models payload") }),
@@ -3245,16 +3238,7 @@ params = { path = "README.md" }
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
-        assert_eq!(
-            body["providers"]["anthropic"]["status"],
-            "legacy_proxy_unsupported"
-        );
-        assert!(
-            body["providers"]["anthropic"]["hint"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("unsupported in v0.8.0+")
-        );
+        assert_eq!(body["providers"]["anthropic"]["status"], "error");
         mock_task.abort();
     }
 

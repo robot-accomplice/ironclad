@@ -210,6 +210,31 @@ pub fn build_compaction_prompt(trimmed: &[UnifiedMessage]) -> String {
     prompt
 }
 
+/// Compress assembled context messages using the `PromptCompressor`.
+///
+/// System messages (prompt, memories) and older history get compressed.
+/// The most recent user message is preserved intact so the LLM understands
+/// the current query.  Messages under 50 tokens are skipped (not worth it).
+pub fn compress_context(messages: &mut [UnifiedMessage], target_ratio: f64) {
+    use ironclad_llm::compression::PromptCompressor;
+
+    let compressor = PromptCompressor::new(target_ratio);
+
+    // Find the last user message index — preserve it intact
+    let last_user_idx = messages.iter().rposition(|m| m.role == "user");
+
+    for (i, msg) in messages.iter_mut().enumerate() {
+        if Some(i) == last_user_idx {
+            continue; // preserve current query
+        }
+        // Only compress messages with enough content to be worth it (~50 tokens ≈ 200 chars)
+        if msg.content.len() < 200 {
+            continue;
+        }
+        msg.content = compressor.compress(&msg.content);
+    }
+}
+
 /// Insert a compaction summary as a system message after the original system messages.
 pub fn insert_compaction_summary(messages: &mut Vec<UnifiedMessage>, summary: String) {
     let insert_pos = messages

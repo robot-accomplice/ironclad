@@ -29,7 +29,7 @@ pub mod personality;
 pub mod style;
 pub mod types;
 
-pub use config::{IroncladConfig, home_dir};
+pub use config::{IroncladConfig, home_dir, resolve_config_path};
 pub use error::{IroncladError, Result};
 pub use keystore::Keystore;
 pub use types::*;

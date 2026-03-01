@@ -464,6 +464,27 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir())
 }
 
+/// Resolves the configuration file path using a standard precedence chain:
+///
+/// 1. Explicit path (from `--config` flag or `IRONCLAD_CONFIG` env var)
+/// 2. `~/.ironclad/ironclad.toml` (if it exists)
+/// 3. `./ironclad.toml` in the current working directory (if it exists)
+/// 4. `None` — caller decides the fallback (e.g., built-in defaults or error)
+pub fn resolve_config_path(explicit: Option<&str>) -> Option<PathBuf> {
+    if let Some(p) = explicit {
+        return Some(PathBuf::from(p));
+    }
+    let home_config = home_dir().join(".ironclad").join("ironclad.toml");
+    if home_config.exists() {
+        return Some(home_config);
+    }
+    let cwd_config = PathBuf::from("ironclad.toml");
+    if cwd_config.exists() {
+        return Some(cwd_config);
+    }
+    None
+}
+
 /// Expands a leading `~` in `path` to the user's home directory; otherwise returns the path unchanged.
 fn expand_tilde(path: &Path) -> PathBuf {
     if let Ok(stripped) = path.strip_prefix("~") {
@@ -2787,6 +2808,22 @@ per_payment_cap = 0.0
     fn dirs_next_appends_ironclad() {
         let d = dirs_next();
         assert!(d.to_str().unwrap().contains(".ironclad"));
+    }
+
+    #[test]
+    fn resolve_config_path_explicit_overrides_all() {
+        let p = resolve_config_path(Some("/tmp/custom.toml"));
+        assert_eq!(p.unwrap(), std::path::PathBuf::from("/tmp/custom.toml"));
+    }
+
+    #[test]
+    fn resolve_config_path_explicit_even_if_nonexistent() {
+        // Explicit path is returned even if file doesn't exist — caller handles errors
+        let p = resolve_config_path(Some("/nonexistent/path/ironclad.toml"));
+        assert_eq!(
+            p.unwrap(),
+            std::path::PathBuf::from("/nonexistent/path/ironclad.toml")
+        );
     }
 
     // ── KnowledgeConfig / WorkspaceConfig defaults ──────────────────────

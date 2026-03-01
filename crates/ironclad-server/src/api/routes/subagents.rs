@@ -11,10 +11,10 @@ use super::{
     validate_short,
 };
 
-const ROLE_SUBAGENT: &str = "subagent";
-const ROLE_MODEL_PROXY: &str = "model-proxy";
-const MODEL_MODE_AUTO: &str = "auto";
-const MODEL_MODE_COMMANDER: &str = "commander";
+pub(crate) const ROLE_SUBAGENT: &str = "subagent";
+pub(crate) const ROLE_MODEL_PROXY: &str = "model-proxy";
+pub(crate) const MODEL_MODE_AUTO: &str = "auto";
+pub(crate) const MODEL_MODE_ORCHESTRATOR: &str = "orchestrator";
 
 #[derive(Deserialize)]
 pub struct CreateSubAgentRequest {
@@ -60,7 +60,7 @@ pub struct UpdateSubAgentRequest {
 
 const MAX_SUBAGENT_NAME_LEN: usize = 128;
 
-fn validate_subagent_name(name: &str) -> Result<(), JsonError> {
+pub(crate) fn validate_subagent_name(name: &str) -> Result<(), JsonError> {
     if name.is_empty() {
         return Err(bad_request("subagent name cannot be empty"));
     }
@@ -80,7 +80,7 @@ fn validate_subagent_name(name: &str) -> Result<(), JsonError> {
     Ok(())
 }
 
-fn normalize_role(raw: &str) -> Option<&'static str> {
+pub(crate) fn normalize_role(raw: &str) -> Option<&'static str> {
     let v = raw.trim().to_ascii_lowercase();
     match v.as_str() {
         ROLE_SUBAGENT | "specialist" => Some(ROLE_SUBAGENT),
@@ -89,7 +89,7 @@ fn normalize_role(raw: &str) -> Option<&'static str> {
     }
 }
 
-fn normalize_skills(skills: &[String]) -> Vec<String> {
+pub(crate) fn normalize_skills(skills: &[String]) -> Vec<String> {
     let mut out = std::collections::BTreeSet::new();
     for s in skills {
         let trimmed = s.trim();
@@ -100,25 +100,25 @@ fn normalize_skills(skills: &[String]) -> Vec<String> {
     out.into_iter().collect()
 }
 
-fn normalize_model_input(model: &str) -> String {
+pub(crate) fn normalize_model_input(model: &str) -> String {
     model.trim().to_string()
 }
 
 fn is_model_mode(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
-        MODEL_MODE_AUTO | MODEL_MODE_COMMANDER
+        MODEL_MODE_AUTO | MODEL_MODE_ORCHESTRATOR
     )
 }
 
-async fn resolve_taskable_subagent_runtime_model(
+pub(crate) async fn resolve_taskable_subagent_runtime_model(
     state: &AppState,
     configured_model: &str,
 ) -> String {
     let model = configured_model.trim().to_ascii_lowercase();
     match model.as_str() {
         MODEL_MODE_AUTO => super::agent::select_routed_model(state, "").await,
-        MODEL_MODE_COMMANDER => {
+        MODEL_MODE_ORCHESTRATOR => {
             let llm = state.llm.read().await;
             llm.router.select_model().to_string()
         }
@@ -126,7 +126,7 @@ async fn resolve_taskable_subagent_runtime_model(
     }
 }
 
-fn validate_subagent_contract(
+pub(crate) fn validate_subagent_contract(
     role: &str,
     model: &str,
     skills: &[String],
@@ -150,12 +150,12 @@ fn validate_subagent_contract(
     }
     if model.trim().is_empty() {
         return Err(bad_request(
-            "model cannot be empty; use a concrete provider/model, 'auto', or 'commander'",
+            "model cannot be empty; use a concrete provider/model, 'auto', or 'orchestrator'",
         ));
     }
     if normalized == ROLE_MODEL_PROXY && is_model_mode(model) {
         return Err(bad_request(
-            "model-proxy entries require a concrete provider/model, not 'auto' or 'commander'",
+            "model-proxy entries require a concrete provider/model, not 'auto' or 'orchestrator'",
         ));
     }
     Ok(())
@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn normalize_role_rejects_unknown() {
-        assert_eq!(normalize_role("commander"), None);
+        assert_eq!(normalize_role("orchestrator"), None);
         assert_eq!(normalize_role(""), None);
         assert_eq!(normalize_role("worker"), None);
     }
@@ -642,11 +642,11 @@ mod tests {
     // ── is_model_mode ───────────────────────────────────────────
 
     #[test]
-    fn is_model_mode_detects_auto_and_commander() {
+    fn is_model_mode_detects_auto_and_orchestrator() {
         assert!(is_model_mode("auto"));
         assert!(is_model_mode("AUTO"));
-        assert!(is_model_mode("commander"));
-        assert!(is_model_mode("COMMANDER"));
+        assert!(is_model_mode("orchestrator"));
+        assert!(is_model_mode("ORCHESTRATOR"));
         assert!(is_model_mode("  auto  "));
     }
 
@@ -712,8 +712,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_contract_rejects_model_proxy_with_commander() {
-        let err = validate_subagent_contract("model-proxy", "commander", &[], None).unwrap_err();
+    fn validate_contract_rejects_model_proxy_with_orchestrator() {
+        let err = validate_subagent_contract("model-proxy", "orchestrator", &[], None).unwrap_err();
         assert!(err.1.contains("concrete provider/model"));
     }
 

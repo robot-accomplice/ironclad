@@ -2672,7 +2672,7 @@
 
       if (opts.includeControlModes) {
         entries.push({ value: 'auto', configured: false, identified: false, tag: 'mode', label: 'auto [mode]' });
-        entries.push({ value: 'commander', configured: false, identified: false, tag: 'mode', label: 'commander [mode]' });
+        entries.push({ value: 'orchestrator', configured: false, identified: false, tag: 'mode', label: 'orchestrator [mode]' });
       }
       return entries;
     },
@@ -2777,7 +2777,7 @@
         if (roster.length === 0) return '<p style="color:var(--muted)">No taskable agents found.</p>';
 
         var grid = roster.map(function(agent) {
-          var isCmd = agent.role === 'commander';
+          var isCmd = agent.role === 'orchestrator';
           var borderColor = agent.color || 'var(--accent)';
           var stateColor = agent.state === 'Running' ? '#22c55e' : (agent.state === 'Error' ? '#ef4444' : (agent.state === 'Disabled' ? '#71717a' : '#eab308'));
           var stateDot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + stateColor + ';margin-right:6px"></span>';
@@ -2787,7 +2787,7 @@
           var skillCount = agent.skills == null ? '\u2014' : agent.skills.length;
           var sessionCount = agent.session_count != null ? agent.session_count : '\u2014';
 
-          var roleLabel = isCmd ? 'COMMANDER' : 'SUBAGENT';
+          var roleLabel = isCmd ? 'ORCHESTRATOR' : 'SUBAGENT';
           var roleBg = isCmd ? 'rgba(234,179,8,0.15)' : 'rgba(99,102,241,0.15)';
           var roleColor = isCmd ? '#eab308' : borderColor;
 
@@ -2808,11 +2808,11 @@
           return card;
         }).join('');
 
-        var cmdCount = roster.filter(function(a) { return a.role === 'commander'; }).length;
+        var cmdCount = roster.filter(function(a) { return a.role === 'orchestrator'; }).length;
         var specCount = roster.filter(function(a) { return a.role === 'subagent'; }).length;
         var header = '<div style="display:flex;align-items:baseline;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">'
           + '<span style="font-size:0.8125rem;color:var(--muted)">' + roster.length + ' taskable agents</span>'
-          + '<span class="badge">' + cmdCount + ' commander</span>'
+          + '<span class="badge">' + cmdCount + ' orchestrator</span>'
           + '<span class="badge">' + specCount + ' subagents</span>'
           + '</div>';
 
@@ -2947,7 +2947,7 @@
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Display Name</label>';
         html += '<input class="settings-input" id="sa-m-display" placeholder="e.g. Data Analyst" style="margin-bottom:0.75rem">';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Model</label>';
-        html += '<input class="settings-input" id="sa-m-model" list="sa-model-options" placeholder="e.g. ollama/qwen3:8b | auto | commander" style="margin-bottom:0.75rem;font-family:var(--font-mono)">';
+        html += '<input class="settings-input" id="sa-m-model" list="sa-model-options" placeholder="e.g. ollama/qwen3:8b | auto | orchestrator" style="margin-bottom:0.75rem;font-family:var(--font-mono)">';
         html += '<datalist id="sa-model-options">' + modelOptions + '</datalist>';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Role</label>';
         html += '<select class="settings-input" id="sa-m-role" style="margin-bottom:0.75rem"><option value="subagent">subagent</option><option value="model-proxy">model-proxy</option></select>';
@@ -4013,26 +4013,26 @@
         if (!agent) return;
         var modal = document.getElementById('roster-modal');
         if (!modal) return;
-        var isCmd = agent.role === 'commander';
+        var isCmd = agent.role === 'orchestrator';
         var color = agent.color || 'var(--accent)';
         var displayName = agent.display_name || agent.name;
         var stateColor = agent.state === 'Running' ? '#22c55e' : (agent.state === 'Error' ? '#ef4444' : (agent.state === 'Disabled' ? '#71717a' : '#eab308'));
-        var roleLabel = isCmd ? 'COMMANDER' : (agent.role === 'model-proxy' ? 'MODEL PROXY' : 'SUBAGENT');
-        var commanderOrder = [];
-        var commanderOrderState = [];
+        var roleLabel = isCmd ? 'ORCHESTRATOR' : (agent.role === 'model-proxy' ? 'MODEL PROXY' : 'SUBAGENT');
+        var orchestratorOrder = [];
+        var orchestratorOrderState = [];
         var rosterDragModelIndex = null;
-        function pushCommanderModel(v) {
+        function pushOrchestratorModel(v) {
           var s = String(v || '').trim();
           if (!s) return;
-          if (commanderOrder.indexOf(s) === -1) commanderOrder.push(s);
+          if (orchestratorOrder.indexOf(s) === -1) orchestratorOrder.push(s);
         }
         if (isCmd) {
-          pushCommanderModel(cfgModels.primary || agent.model);
-          (cfgModels.fallbacks || []).forEach(pushCommanderModel);
-          if (!commanderOrder.length) pushCommanderModel(agent.model);
-          commanderOrderState = commanderOrder.slice();
+          pushOrchestratorModel(cfgModels.primary || agent.model);
+          (cfgModels.fallbacks || []).forEach(pushOrchestratorModel);
+          if (!orchestratorOrder.length) pushOrchestratorModel(agent.model);
+          orchestratorOrderState = orchestratorOrder.slice();
         }
-        function renderCommanderOrderRows(order) {
+        function renderOrchestratorOrderRows(order) {
           if (!order.length) {
             return '<div class="card" style="padding:0.6rem;color:var(--muted)">No models added yet.</div>';
           }
@@ -4051,9 +4051,9 @@
               + '</div>';
           }).join('');
         }
-        function rerenderCommanderOrderList() {
+        function rerenderOrchestratorOrderList() {
           var listEl = document.getElementById('roster-model-order-list');
-          if (listEl) setHtml(listEl, renderCommanderOrderRows(commanderOrderState));
+          if (listEl) setHtml(listEl, renderOrchestratorOrderRows(orchestratorOrderState));
         }
 
         var voice = agent.voice || {};
@@ -4187,12 +4187,12 @@
               discoveredModels: availableModels,
               roster: data.roster || [],
               config: { models: cfgModels },
-              selected: commanderOrderState.concat([agent.model || '']),
+              selected: orchestratorOrderState.concat([agent.model || '']),
               includeControlModes: false
             });
             if (isCmd) {
               return '<div style="font-size:0.6875rem;color:var(--muted);margin-bottom:0.375rem">Model order (top = primary, next = fallback sequence)</div>'
-                + '<div class="model-order-list" id="roster-model-order-list">' + renderCommanderOrderRows(commanderOrderState) + '</div>'
+                + '<div class="model-order-list" id="roster-model-order-list">' + renderOrchestratorOrderRows(orchestratorOrderState) + '</div>'
                 + '<div style="display:flex;gap:0.4rem;align-items:center;margin-top:6px">'
                 + '<select id="roster-model-select" style="flex:1;font-size:0.75rem;font-family:var(--mono);padding:4px 6px;border-radius:4px;background:var(--surface);color:var(--text);border:1px solid var(--border)">'
                 + '<option value="">-- quick add known model --</option>' + opts + '</select>'
@@ -4241,7 +4241,7 @@
         modal.style.alignItems = 'flex-start';
         modal.style.justifyContent = 'center';
         setHtml(modal, html);
-        if (isCmd) rerenderCommanderOrderList();
+        if (isCmd) rerenderOrchestratorOrderList();
         modal.onclick = function(ev) {
           if (ev.target === modal || ev.target.closest('#roster-modal-close')) {
             modal.style.display = 'none';
@@ -4270,27 +4270,27 @@
             var customAdd = document.getElementById('roster-model-custom');
             var toAdd = (customAdd && customAdd.value.trim()) || (selAdd && selAdd.value) || '';
             if (!toAdd) { toast('Select or enter a model'); return; }
-            if (commanderOrderState.indexOf(toAdd) !== -1) { toast('Model already listed'); return; }
-            commanderOrderState.push(toAdd);
-            rerenderCommanderOrderList();
+            if (orchestratorOrderState.indexOf(toAdd) !== -1) { toast('Model already listed'); return; }
+            orchestratorOrderState.push(toAdd);
+            rerenderOrchestratorOrderList();
             if (customAdd) customAdd.value = '';
             if (selAdd) selAdd.value = '';
           }
           var removeOrderBtn = ev.target.closest('[data-roster-model-order-remove]');
           if (removeOrderBtn) {
             var removeIdx = Number(removeOrderBtn.getAttribute('data-roster-model-order-remove'));
-            if (!isNaN(removeIdx) && removeIdx >= 0 && removeIdx < commanderOrderState.length) {
-              commanderOrderState.splice(removeIdx, 1);
-              rerenderCommanderOrderList();
+            if (!isNaN(removeIdx) && removeIdx >= 0 && removeIdx < orchestratorOrderState.length) {
+              orchestratorOrderState.splice(removeIdx, 1);
+              rerenderOrchestratorOrderList();
             }
           }
           var primaryOrderBtn = ev.target.closest('[data-roster-model-order-primary]');
           if (primaryOrderBtn) {
             var promoteIdx = Number(primaryOrderBtn.getAttribute('data-roster-model-order-primary'));
-            if (!isNaN(promoteIdx) && promoteIdx > 0 && promoteIdx < commanderOrderState.length) {
-              var promoted = commanderOrderState.splice(promoteIdx, 1)[0];
-              commanderOrderState.unshift(promoted);
-              rerenderCommanderOrderList();
+            if (!isNaN(promoteIdx) && promoteIdx > 0 && promoteIdx < orchestratorOrderState.length) {
+              var promoted = orchestratorOrderState.splice(promoteIdx, 1)[0];
+              orchestratorOrderState.unshift(promoted);
+              rerenderOrchestratorOrderList();
             }
           }
           if (ev.target.closest('#roster-model-save')) {
@@ -4299,8 +4299,8 @@
             var agentKey = agent.name || agent.id;
             var payload;
             if (isCmd) {
-              if (!commanderOrderState.length) { toast('Add at least one model in order list'); return; }
-              payload = { model: commanderOrderState[0], fallbacks: commanderOrderState.slice(1) };
+              if (!orchestratorOrderState.length) { toast('Add at least one model in order list'); return; }
+              payload = { model: orchestratorOrderState[0], fallbacks: orchestratorOrderState.slice(1) };
             } else {
               var newModel = (custom && custom.value.trim()) || (sel && sel.value) || '';
               if (!newModel) { toast('Select or enter a model'); return; }
@@ -4352,10 +4352,10 @@
           modal.querySelectorAll('.model-order-item.drop-target,.model-order-item.dragging').forEach(function(el) { el.classList.remove('drop-target'); el.classList.remove('dragging'); });
           var fromIdx = rosterDragModelIndex;
           rosterDragModelIndex = null;
-          if (isNaN(fromIdx) || isNaN(toIdx) || fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= commanderOrderState.length || toIdx >= commanderOrderState.length) return;
-          var moved = commanderOrderState.splice(fromIdx, 1)[0];
-          commanderOrderState.splice(toIdx, 0, moved);
-          rerenderCommanderOrderList();
+          if (isNaN(fromIdx) || isNaN(toIdx) || fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= orchestratorOrderState.length || toIdx >= orchestratorOrderState.length) return;
+          var moved = orchestratorOrderState.splice(fromIdx, 1)[0];
+          orchestratorOrderState.splice(toIdx, 0, moved);
+          rerenderOrchestratorOrderList();
         };
         modal.ondragend = function() {
           if (!isCmd) return;

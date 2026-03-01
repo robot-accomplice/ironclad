@@ -1,14 +1,23 @@
-use ironclad_core::config::SessionConfig;
+use ironclad_core::config::{DigestConfig, SessionConfig};
 use ironclad_db::Database;
 use ironclad_llm::format::UnifiedMessage;
 
 pub struct SessionGovernor {
     config: SessionConfig,
+    digest_config: DigestConfig,
 }
 
 impl SessionGovernor {
     pub fn new(config: SessionConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            digest_config: DigestConfig::default(),
+        }
+    }
+
+    pub fn with_digest(mut self, digest_config: DigestConfig) -> Self {
+        self.digest_config = digest_config;
+        self
     }
 
     /// Run a single maintenance tick: expire stale sessions based on TTL.
@@ -20,6 +29,14 @@ impl SessionGovernor {
         for session_id in &stale {
             if let Err(e) = self.compact_before_archive(db, session_id) {
                 tracing::warn!(error = %e, session_id = %session_id, "compaction failed before archive, proceeding with expiry");
+            }
+            // Generate episodic digest before the session status changes
+            if let Ok(Some(session)) = ironclad_db::sessions::get_session(db, session_id) {
+                crate::digest::digest_on_close(db, &self.digest_config, &session);
+            }
+            // Clean up checkpoints before expiry
+            if let Err(e) = ironclad_db::checkpoint::clear_checkpoints(db, session_id) {
+                tracing::warn!(error = %e, session_id = %session_id, "failed to clear checkpoints");
             }
             if let Err(e) = ironclad_db::sessions::set_session_status(
                 db,
@@ -59,6 +76,10 @@ impl SessionGovernor {
         for s in &agent_scoped {
             if let Err(e) = self.compact_before_archive(db, &s.id) {
                 tracing::warn!(error = %e, session_id = %s.id, "compaction failed before rotation");
+            }
+            crate::digest::digest_on_close(db, &self.digest_config, s);
+            if let Err(e) = ironclad_db::checkpoint::clear_checkpoints(db, &s.id) {
+                tracing::warn!(error = %e, session_id = %s.id, "failed to clear checkpoints on rotation");
             }
         }
         let archived = agent_scoped.len();

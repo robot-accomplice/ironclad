@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-03-01
+
+### Added
+
+- **Durable Delivery Queue**: Channel messages now persist to SQLite before delivery. On startup, `DeliveryQueue::with_store(db)` recovers undelivered messages and retries them with exponential backoff, preventing message loss across restarts.
+- **Episodic Digest**: `digest_on_close()` is now wired into `SessionGovernor`. When sessions expire or rotate, the governor summarizes conversation history via the LLM and stores it as episodic memory, improving long-term context quality and reducing stale-context dredging.
+- **Prompt Compression**: A `PromptCompressor` gate in the context assembly pipeline compresses prompts when `config.cache.prompt_compression` is enabled. Reduces token usage on large context windows while preserving semantic fidelity.
+- **Context Checkpoint**: New `[context.checkpoint]` config section with `enabled` and `every_n_turns` controls. Checkpoints save system-prompt hash, memory summary, active tasks, and conversation digest to `context_checkpoints` table, enabling fast context warm-up on session restore.
+- **Introspection Skill**: Four new read-only tools (`get_runtime_context`, `get_memory_stats`, `get_channel_health`, `get_subagent_status`) give the agent self-awareness of its runtime state, memory tiers, channel connectivity, and subagent/task status.
+- **ToolContext extensions**: `channel: Option<String>` and `db: Option<Database>` fields added to `ToolContext`, enabling tools to understand their invocation context and query runtime state directly.
+- **Architecture diagrams**: Five new dataflow diagrams (§20–§24) and three new sequence diagrams (§14–§16) documenting checkpoint, delivery queue, digest, compression, and introspection subsystems.
+
+### Changed
+
+- **Agent module decomposition**: The monolithic `agent.rs` (5,832 lines) has been decomposed into 15 focused submodules under `agent/`: `mod.rs` (86 lines), `handlers.rs`, `streaming.rs`, `channel_message.rs`, `core.rs`, `decomposition.rs`, `routing.rs`, `tools.rs`, `guards.rs`, `delegation.rs`, `diagnostics.rs`, `orchestration.rs`, `bot_commands.rs`, `channel_helpers.rs`, `poll_loops.rs`. No file exceeds 500 lines.
+- **Test decomposition**: The monolithic `tests.rs` (1,067 lines) split into 6 focused test modules under `agent/tests/`: `guard_tests`, `tool_tests`, `channel_tests`, `decomposition_tests`, `diagnostics_tests`, `routing_tests`.
+- **Decomposition helper**: Extracted shared decomposition orchestration logic (previously duplicated between `agent_message` and `process_channel_message`) into `decomposition.rs::apply_decomposition_decision()`.
+- **DigestConfig threading**: `SessionGovernor` now receives `DigestConfig` from the heartbeat scheduler, enabling configurable digest behavior without hardcoded defaults.
+
 ## [0.8.9] - 2026-03-01
 
 ### Security
@@ -367,7 +386,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Roster and status semantics**: `/api/roster`, `/api/agent/status`, and dashboard agent views now distinguish taskable subagents from model proxies and report taskable counts with clearer operator-facing terminology.
-- **Subagent model assignment options**: Added support for `auto` (router-controlled) and `commander` (primary-agent-assigned) model modes for taskable subagents, including runtime model resolution behavior.
+- **Subagent model assignment options**: Added support for `auto` (router-controlled) and `orchestrator` (primary-agent-assigned) model modes for taskable subagents, including runtime model resolution behavior.
 - **Context forensics UX**: Context Explorer now supports live stream-turn handoff and direct forensic drill-down using active `turn_id` metadata.
 
 ## [0.6.1] - 2026-02-24

@@ -1492,14 +1492,14 @@ async fn admin_model_and_provider_key_endpoints_cover_branches() {
     let body = json_body(resp).await;
     let roster = body["roster"].as_array().unwrap();
     assert!(roster.len() >= 2);
-    let commander = roster
+    let orchestrator = roster
         .iter()
-        .find(|a| a["role"] == "commander")
-        .expect("commander must be present");
+        .find(|a| a["role"] == "orchestrator")
+        .expect("orchestrator must be present");
     assert_eq!(
-        commander["skills"].as_array().unwrap().len(),
+        orchestrator["skills"].as_array().unwrap().len(),
         0,
-        "commander should not claim global skill ownership in roster"
+        "orchestrator should not claim global skill ownership in roster"
     );
     let sub = roster
         .iter()
@@ -1634,7 +1634,7 @@ async fn subagent_contract_validation_enforced() {
                 .uri("/api/subagents")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"name":"triage","model":"commander","role":"subagent","skills":["triage"]}"#,
+                    r#"{"name":"triage","model":"orchestrator","role":"subagent","skills":["triage"]}"#,
                 ))
                 .unwrap(),
         )

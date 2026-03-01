@@ -218,6 +218,12 @@ pub struct ToolContext {
     pub agent_id: String,
     pub authority: InputAuthority,
     pub workspace_root: PathBuf,
+    /// The channel through which the current message arrived (e.g. "api", "telegram", "discord").
+    /// `None` when channel is unknown or the tool was invoked outside a channel context.
+    pub channel: Option<String>,
+    /// Optional database handle for tools that need to query runtime state
+    /// (e.g. subagent status, task lists, delivery queue depth).
+    pub db: Option<ironclad_db::Database>,
 }
 
 #[derive(Debug, Clone)]
@@ -882,6 +888,253 @@ impl Tool for SearchFilesTool {
     }
 }
 
+// ── Introspection Tools ─────────────────────────────────────────────────────
+// Read-only probes that let the agent reason about its own runtime state.
+// All return JSON strings so the LLM can parse structured data.
+
+/// Reports runtime context: agent id, session, channel, and workspace.
+pub struct GetRuntimeContextTool;
+
+#[async_trait]
+impl Tool for GetRuntimeContextTool {
+    fn name(&self) -> &str {
+        "get_runtime_context"
+    }
+
+    fn description(&self) -> &str {
+        "Returns the current agent runtime context including session, channel, and workspace path"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })
+    }
+
+    async fn execute(
+        &self,
+        _params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let info = serde_json::json!({
+            "agent_id": ctx.agent_id,
+            "session_id": ctx.session_id,
+            "channel": ctx.channel,
+            "workspace_root": ctx.workspace_root.display().to_string(),
+            "authority": format!("{:?}", ctx.authority),
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&info).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(info),
+        })
+    }
+}
+
+/// Reports memory budget allocation and retrieval tier configuration.
+pub struct GetMemoryStatsTool;
+
+#[async_trait]
+impl Tool for GetMemoryStatsTool {
+    fn name(&self) -> &str {
+        "get_memory_stats"
+    }
+
+    fn description(&self) -> &str {
+        "Returns memory retrieval tier allocations and configuration"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })
+    }
+
+    async fn execute(
+        &self,
+        _params: Value,
+        _ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        // Return the default tier budgets; runtime overrides would require
+        // access to the live config, which we thread in when available.
+        let tiers = serde_json::json!({
+            "tiers": {
+                "working": { "budget_pct": 30, "description": "Active conversation context" },
+                "episodic": { "budget_pct": 25, "description": "Session digests and summaries" },
+                "semantic": { "budget_pct": 20, "description": "Vector-similarity recalled facts" },
+                "procedural": { "budget_pct": 15, "description": "How-to knowledge and procedures" },
+                "relationship": { "budget_pct": 10, "description": "Entity relationships and graph" },
+            },
+            "retrieval_method": "5-tier hybrid (FTS5 + vector cosine)",
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&tiers).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(tiers),
+        })
+    }
+}
+
+/// Reports the health of the current delivery channel.
+pub struct GetChannelHealthTool;
+
+#[async_trait]
+impl Tool for GetChannelHealthTool {
+    fn name(&self) -> &str {
+        "get_channel_health"
+    }
+
+    fn description(&self) -> &str {
+        "Returns the health status of the current delivery channel"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })
+    }
+
+    async fn execute(
+        &self,
+        _params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let channel = ctx.channel.as_deref().unwrap_or("unknown");
+        let health = serde_json::json!({
+            "channel": channel,
+            "status": "operational",
+            "note": "Detailed channel health metrics require a ChannelRouter reference; \
+                     basic connectivity confirmed by successful tool invocation.",
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&health).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(health),
+        })
+    }
+}
+
+// ── Subagent & Task Introspection ──────────────────────────────────────
+
+/// Returns the status of registered subagents and open tasks.
+///
+/// Designed to grow over time — future versions may include delegation
+/// history, task completion rates, and specialist performance metrics.
+pub struct GetSubagentStatusTool;
+
+#[async_trait]
+impl Tool for GetSubagentStatusTool {
+    fn name(&self) -> &str {
+        "get_subagent_status"
+    }
+
+    fn description(&self) -> &str {
+        "Returns the status of registered subagents (specialists) and open tasks"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })
+    }
+
+    async fn execute(
+        &self,
+        _params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let db = match &ctx.db {
+            Some(db) => db,
+            None => {
+                let result = serde_json::json!({
+                    "error": "database not available",
+                    "subagents": [],
+                    "tasks": [],
+                });
+                return Ok(ToolResult {
+                    output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+                    metadata: Some(result),
+                });
+            }
+        };
+
+        // Query subagents
+        let subagents = ironclad_db::agents::list_sub_agents(db)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| {
+                serde_json::json!({
+                    "name": a.name,
+                    "display_name": a.display_name,
+                    "model": a.model,
+                    "role": a.role,
+                    "enabled": a.enabled,
+                    "session_count": a.session_count,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // Query open tasks
+        let tasks = {
+            let conn = db.conn();
+            conn.prepare(
+                "SELECT id, title, status, priority, source, created_at \
+                 FROM tasks WHERE status IN ('pending', 'in_progress') \
+                 ORDER BY priority DESC, created_at ASC LIMIT 50",
+            )
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([], |row| {
+                    Ok(serde_json::json!({
+                        "id": row.get::<_, String>(0)?,
+                        "title": row.get::<_, String>(1)?,
+                        "status": row.get::<_, String>(2)?,
+                        "priority": row.get::<_, i64>(3)?,
+                        "source": row.get::<_, Option<String>>(4)?,
+                        "created_at": row.get::<_, String>(5)?,
+                    }))
+                })
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+                .unwrap_or_default()
+            })
+            .unwrap_or_default()
+        };
+
+        let result = serde_json::json!({
+            "subagents": subagents,
+            "subagent_count": subagents.len(),
+            "tasks": tasks,
+            "open_task_count": tasks.len(),
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(result),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,6 +1147,8 @@ mod tests {
             agent_id: "test-agent".into(),
             authority: InputAuthority::Creator,
             workspace_root: std::env::current_dir().unwrap(),
+            channel: None,
+            db: None,
         }
     }
 
@@ -1042,6 +1297,8 @@ mod tests {
             agent_id: "test-agent".into(),
             authority: InputAuthority::Creator,
             workspace_root: dir.path().to_path_buf(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1126,6 +1383,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1158,6 +1417,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1190,6 +1451,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let err = tool
@@ -1254,6 +1517,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1286,6 +1551,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         tool.execute(
@@ -1318,6 +1585,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         // Case sensitive should only find exact match
@@ -1368,6 +1637,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1400,6 +1671,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1429,6 +1702,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1462,6 +1737,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let err = tool
@@ -1502,6 +1779,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         // No path param -- should default to "."
@@ -1659,5 +1938,173 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.message.contains("script exited with code 7"));
+    }
+
+    // ── Introspection tool tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_runtime_context_returns_all_fields() {
+        let tool = GetRuntimeContextTool;
+        let mut ctx = test_ctx();
+        ctx.channel = Some("telegram".into());
+
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(parsed["agent_id"], "test-agent");
+        assert_eq!(parsed["session_id"], "test-session");
+        assert_eq!(parsed["channel"], "telegram");
+        assert!(parsed["workspace_root"].is_string());
+        assert!(result.metadata.is_some());
+    }
+
+    #[tokio::test]
+    async fn get_runtime_context_no_channel() {
+        let tool = GetRuntimeContextTool;
+        let ctx = test_ctx();
+
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert!(parsed["channel"].is_null());
+    }
+
+    #[tokio::test]
+    async fn get_memory_stats_returns_all_tiers() {
+        let tool = GetMemoryStatsTool;
+        let ctx = test_ctx();
+
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        let tiers = &parsed["tiers"];
+        assert_eq!(tiers["working"]["budget_pct"], 30);
+        assert_eq!(tiers["episodic"]["budget_pct"], 25);
+        assert_eq!(tiers["semantic"]["budget_pct"], 20);
+        assert_eq!(tiers["procedural"]["budget_pct"], 15);
+        assert_eq!(tiers["relationship"]["budget_pct"], 10);
+        assert!(
+            parsed["retrieval_method"]
+                .as_str()
+                .unwrap()
+                .contains("FTS5")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_channel_health_with_channel() {
+        let tool = GetChannelHealthTool;
+        let mut ctx = test_ctx();
+        ctx.channel = Some("discord".into());
+
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(parsed["channel"], "discord");
+        assert_eq!(parsed["status"], "operational");
+    }
+
+    #[tokio::test]
+    async fn get_channel_health_unknown_channel() {
+        let tool = GetChannelHealthTool;
+        let ctx = test_ctx();
+
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(parsed["channel"], "unknown");
+    }
+
+    #[test]
+    fn introspection_tools_metadata() {
+        let rt = GetRuntimeContextTool;
+        assert_eq!(rt.name(), "get_runtime_context");
+        assert_eq!(rt.risk_level(), RiskLevel::Safe);
+
+        let ms = GetMemoryStatsTool;
+        assert_eq!(ms.name(), "get_memory_stats");
+        assert_eq!(ms.risk_level(), RiskLevel::Safe);
+
+        let ch = GetChannelHealthTool;
+        assert_eq!(ch.name(), "get_channel_health");
+        assert_eq!(ch.risk_level(), RiskLevel::Safe);
+
+        let sa = GetSubagentStatusTool;
+        assert_eq!(sa.name(), "get_subagent_status");
+        assert_eq!(sa.risk_level(), RiskLevel::Safe);
+    }
+
+    #[tokio::test]
+    async fn get_subagent_status_without_db_returns_empty() {
+        let tool = GetSubagentStatusTool;
+        let ctx = test_ctx(); // db: None
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(v["subagents"], serde_json::json!([]));
+        assert_eq!(v["tasks"], serde_json::json!([]));
+        assert!(
+            v["error"]
+                .as_str()
+                .unwrap()
+                .contains("database not available")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_subagent_status_with_db_returns_agents_and_tasks() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+
+        // Insert a subagent
+        ironclad_db::agents::upsert_sub_agent(
+            &db,
+            &ironclad_db::agents::SubAgentRow {
+                id: "sa-1".into(),
+                name: "code-reviewer".into(),
+                display_name: Some("Code Reviewer".into()),
+                model: "gpt-4o".into(),
+                role: "specialist".into(),
+                description: Some("Reviews code".into()),
+                skills_json: None,
+                enabled: true,
+                session_count: 3,
+            },
+        )
+        .unwrap();
+
+        // Insert some tasks
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority) VALUES ('t1', 'Fix bug', 'pending', 2)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority) VALUES ('t2', 'Write docs', 'in_progress', 1)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority) VALUES ('t3', 'Done task', 'completed', 0)",
+                [],
+            ).unwrap();
+        }
+
+        let ctx = ToolContext {
+            session_id: "test-session".into(),
+            agent_id: "test-agent".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: std::env::current_dir().unwrap(),
+            channel: None,
+            db: Some(db),
+        };
+
+        let tool = GetSubagentStatusTool;
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+
+        // Should have 1 subagent
+        assert_eq!(v["subagent_count"], 1);
+        assert_eq!(v["subagents"][0]["name"], "code-reviewer");
+        assert_eq!(v["subagents"][0]["enabled"], true);
+
+        // Should have 2 open tasks (pending + in_progress), not the completed one
+        assert_eq!(v["open_task_count"], 2);
+        // Priority DESC, so "Fix bug" (priority 2) comes first
+        assert_eq!(v["tasks"][0]["title"], "Fix bug");
+        assert_eq!(v["tasks"][1]["title"], "Write docs");
     }
 }

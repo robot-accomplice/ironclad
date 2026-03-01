@@ -180,6 +180,7 @@ fn normalize_schema_safe(state_db_path: &Path) -> Result<bool, Box<dyn std::erro
     conn.execute_batch(
         "BEGIN;
          UPDATE sub_agents SET role='subagent' WHERE lower(trim(role))='specialist';
+         UPDATE sub_agents SET role='orchestrator' WHERE lower(trim(role))='commander';
          UPDATE sub_agents SET skills_json='[]' WHERE skills_json IS NULL;
          COMMIT;",
     )?;
@@ -2170,22 +2171,36 @@ mod tests {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE sub_agents (role TEXT, skills_json TEXT);
-             INSERT INTO sub_agents (role, skills_json) VALUES ('specialist', NULL);",
+             INSERT INTO sub_agents (role, skills_json) VALUES ('specialist', NULL);
+             INSERT INTO sub_agents (role, skills_json) VALUES ('commander', '[]');",
         )
         .unwrap();
         drop(conn);
 
         assert!(normalize_schema_safe(&db_path).unwrap());
         let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+        // specialist → subagent, NULL skills → []
         let (role, skills): (String, String) = conn
             .query_row(
-                "SELECT role, skills_json FROM sub_agents LIMIT 1",
+                "SELECT role, skills_json FROM sub_agents WHERE rowid = 1",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
         assert_eq!(role, "subagent");
         assert_eq!(skills, "[]");
+
+        // commander → orchestrator, skills preserved
+        let (role2, skills2): (String, String) = conn
+            .query_row(
+                "SELECT role, skills_json FROM sub_agents WHERE rowid = 2",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(role2, "orchestrator");
+        assert_eq!(skills2, "[]");
     }
 
     #[tokio::test]

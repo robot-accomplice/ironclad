@@ -428,34 +428,6 @@ fn apply_provider_auth(
     }
 }
 
-fn is_loopback_url(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    lower.contains("127.0.0.1") || lower.contains("localhost")
-}
-
-fn legacy_loopback_support_state() -> &'static str {
-    "removed_v0_8"
-}
-
-fn classify_provider_connectivity_status(
-    provider_name: &str,
-    provider_url: &str,
-    models_url: &str,
-    _error: &str,
-    localish: bool,
-) -> (&'static str, Option<String>) {
-    let remote_discovery_target = models_url.contains("/v1/models");
-    if !localish && is_loopback_url(provider_url) && remote_discovery_target {
-        return (
-            "legacy_proxy_unsupported",
-            Some(format!(
-                "legacy loopback provider URL is unsupported in v0.8.0+: update providers.{provider_name}.url to a direct provider base URL"
-            )),
-        );
-    }
-    ("unreachable", None)
-}
-
 pub async fn get_available_models(
     State(state): State<AppState>,
     Query(query): Query<AvailableModelsQuery>,
@@ -556,24 +528,11 @@ pub async fn get_available_models(
                 let has_ollama_shape = body.get("models").and_then(|v| v.as_array()).is_some();
                 let has_openai_shape = body.get("data").and_then(|v| v.as_array()).is_some();
                 if !has_ollama_shape && !has_openai_shape {
-                    let status = if !localish && is_loopback_url(&url) {
-                        "legacy_proxy_unsupported"
-                    } else {
-                        "error"
-                    };
-                    let hint = if status == "legacy_proxy_unsupported" {
-                        Some(format!(
-                            "legacy loopback provider URL is unsupported in v0.8.0+: update providers.{name}.url to a direct provider base URL"
-                        ))
-                    } else {
-                        None
-                    };
                     provider_reports.insert(
                         name.clone(),
                         json!({
-                            "status": status,
+                            "status": "error",
                             "error": "invalid models discovery response",
-                            "hint": hint,
                             "models": [],
                             "count": 0,
                         }),
@@ -632,14 +591,11 @@ pub async fn get_available_models(
             }
             Err(e) => {
                 let err = e.to_string();
-                let (status, hint) =
-                    classify_provider_connectivity_status(&name, &url, &models_url, &err, localish);
                 provider_reports.insert(
                     name.clone(),
                     json!({
-                        "status": status,
+                        "status": "unreachable",
                         "error": err,
-                        "hint": hint,
                         "models": [],
                         "count": 0,
                     }),
@@ -671,8 +627,6 @@ pub async fn get_available_models(
         "validation_level": validation_level,
         "proxy": {
             "mode": "in_process",
-            "loopback_listener_required": false,
-            "legacy_loopback_support": legacy_loopback_support_state()
         },
         "providers": provider_reports,
     }))
@@ -1734,7 +1688,7 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         "id": config.agent.id,
         "name": config.agent.name,
         "display_name": config.agent.name,
-        "role": "commander",
+        "role": "orchestrator",
         "model": config.models.primary,
         "enabled": true,
         "color": WORKSPACE_PALETTE[0],
@@ -1748,7 +1702,7 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         "voice": voice,
         "missions": missions,
         "firmware_rules": firmware_rules,
-        "skills": [],
+        "skills": &enabled_skills,
         "capabilities": [
             "orchestrate-subagents",
             "assign-tasks",
@@ -1766,10 +1720,23 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         });
         let model_mode = match sa.model.trim().to_ascii_lowercase().as_str() {
             "auto" => "auto",
-            "commander" => "commander",
+            "orchestrator" => "orchestrator",
             _ => "fixed",
         };
         let color = WORKSPACE_PALETTE[(i + 1) % WORKSPACE_PALETTE.len()];
+        // Merge per-agent skills with workspace-level enabled skills
+        let mut agent_skills: Vec<String> = sa.skills_json.as_ref().map(|s| {
+            serde_json::from_str::<Vec<String>>(s).unwrap_or_else(|e| {
+                tracing::warn!(agent = %sa.name, error = %e, "corrupt skills_json, defaulting to []");
+                Vec::new()
+            })
+        }).unwrap_or_default();
+        for ws_skill in &enabled_skills {
+            let ws = ws_skill.to_string();
+            if !agent_skills.iter().any(|s| s == &ws) {
+                agent_skills.push(ws);
+            }
+        }
         json!({
             "id": sa.id,
             "name": sa.name,
@@ -1783,12 +1750,7 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
             "state": state_str,
             "session_count": session_counts.get(&sa.name).copied().unwrap_or(sa.session_count),
             "description": sa.description,
-            "skills": sa.skills_json.as_ref().map(|s| {
-                serde_json::from_str::<Vec<String>>(s).unwrap_or_else(|e| {
-                    tracing::warn!(agent = %sa.name, error = %e, "corrupt skills_json, defaulting to []");
-                    Vec::new()
-                })
-            }).unwrap_or_default(),
+            "skills": agent_skills,
             "supervisor": config.agent.id,
         })
     }).collect();
@@ -1850,11 +1812,11 @@ pub async fn change_agent_model(
     };
 
     let config = state.config.read().await;
-    let is_commander = agent_name == config.agent.name || agent_name == config.agent.id;
+    let is_orchestrator = agent_name == config.agent.name || agent_name == config.agent.id;
     let old_model;
     drop(config);
 
-    if is_commander {
+    if is_orchestrator {
         let mut config = state.config.write().await;
         old_model = config.models.primary.clone();
         let old_fallbacks = config.models.fallbacks.clone();
@@ -1870,7 +1832,7 @@ pub async fn change_agent_model(
         let models = config.models.clone();
         drop(config);
 
-        // Synchronize active router immediately for commander model changes.
+        // Synchronize active router immediately for orchestrator model changes.
         {
             let mut llm = state.llm.write().await;
             llm.router.sync_runtime(
@@ -1910,7 +1872,7 @@ pub async fn change_agent_model(
     } else {
         if body.fallbacks.is_some() {
             return Err(bad_request(
-                "fallback ordering is only supported for the commander agent",
+                "fallback ordering is only supported for the orchestrator agent",
             ));
         }
         let agents =
@@ -2739,30 +2701,6 @@ mod tests {
     }
 
     #[test]
-    fn classify_provider_connectivity_status_marks_local_proxy_refusal() {
-        let (status, hint) = classify_provider_connectivity_status(
-            "anthropic",
-            "http://127.0.0.1:8788/anthropic",
-            "http://127.0.0.1:8788/anthropic/v1/models",
-            "error sending request for url: connect: connection refused",
-            false,
-        );
-        assert_eq!(status, "legacy_proxy_unsupported");
-        assert!(hint.unwrap_or_default().contains("providers.anthropic.url"));
-    }
-
-    #[test]
-    fn loopback_nonlocal_proxy_can_be_marked_misconfigured() {
-        assert!(is_loopback_url("http://127.0.0.1:8788/anthropic"));
-        assert!(!is_loopback_url("https://api.anthropic.com"));
-    }
-
-    #[test]
-    fn legacy_loopback_support_state_is_removed() {
-        assert_eq!(legacy_loopback_support_state(), "removed_v0_8");
-    }
-
-    #[test]
     fn parse_db_timestamp_supports_rfc3339_and_sqlite_formats() {
         let rfc = parse_db_timestamp_utc("2026-02-26T10:11:12Z").unwrap();
         assert_eq!(rfc.to_rfc3339(), "2026-02-26T10:11:12+00:00");
@@ -2938,18 +2876,6 @@ mod tests {
         assert_eq!(format_balance(0.5, "cbBTC"), "0.50000000");
     }
 
-    // ── is_loopback_url additional tests ─────────────────────────
-
-    #[test]
-    fn is_loopback_url_localhost_case_insensitive() {
-        assert!(is_loopback_url("http://LOCALHOST:8080"));
-    }
-
-    #[test]
-    fn is_loopback_url_rejects_remote() {
-        assert!(!is_loopback_url("https://api.openai.com/v1"));
-    }
-
     // ── model_discovery_mode additional tests ────────────────────
 
     #[test]
@@ -3082,13 +3008,6 @@ mod tests {
     #[test]
     fn default_decided_by_returns_api() {
         assert_eq!(default_decided_by(), "api");
-    }
-
-    // ── legacy_loopback_support_state test ────────────────────────
-
-    #[test]
-    fn legacy_loopback_removed() {
-        assert_eq!(legacy_loopback_support_state(), "removed_v0_8");
     }
 
     // ── parse_db_timestamp_utc edge cases ────────────────────────

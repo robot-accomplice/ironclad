@@ -252,7 +252,7 @@ pub async fn bootstrap_with_config_path(
                 continue;
             }
             let resolved_model = match sa.model.trim().to_ascii_lowercase().as_str() {
-                "auto" | "commander" => llm.router.select_model().to_string(),
+                "auto" | "orchestrator" => llm.router.select_model().to_string(),
                 _ => sa.model.clone(),
             };
             let fixed_skills = sa
@@ -504,6 +504,15 @@ pub async fn bootstrap_with_config_path(
     tool_registry.register(Box::new(ListDirectoryTool));
     tool_registry.register(Box::new(GlobFilesTool));
     tool_registry.register(Box::new(SearchFilesTool));
+
+    // Introspection tools — read-only runtime probes for agent self-awareness
+    use ironclad_agent::tools::{
+        GetChannelHealthTool, GetMemoryStatsTool, GetRuntimeContextTool, GetSubagentStatusTool,
+    };
+    tool_registry.register(Box::new(GetRuntimeContextTool));
+    tool_registry.register(Box::new(GetMemoryStatsTool));
+    tool_registry.register(Box::new(GetChannelHealthTool));
+    tool_registry.register(Box::new(GetSubagentStatusTool));
 
     // Obsidian vault integration
     let obsidian_vault: Option<Arc<RwLock<ObsidianVault>>> = if config.obsidian.enabled {
@@ -774,11 +783,19 @@ pub async fn bootstrap_with_config_path(
         let hb_wallet = Arc::clone(&state.wallet);
         let hb_db = state.db.clone();
         let hb_session_cfg = config.session.clone();
+        let hb_digest_cfg = config.digest.clone();
         let hb_agent_id = config.agent.id.clone();
         let daemon = ironclad_schedule::HeartbeatDaemon::new(60_000);
         tokio::spawn(async move {
-            ironclad_schedule::run_heartbeat(daemon, hb_wallet, hb_db, hb_session_cfg, hb_agent_id)
-                .await;
+            ironclad_schedule::run_heartbeat(
+                daemon,
+                hb_wallet,
+                hb_db,
+                hb_session_cfg,
+                hb_digest_cfg,
+                hb_agent_id,
+            )
+            .await;
         });
         tracing::info!("Heartbeat daemon spawned (60s interval)");
     }

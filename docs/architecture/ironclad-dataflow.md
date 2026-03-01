@@ -1085,6 +1085,256 @@ flowchart TD
 
 ---
 
+## 20. Context Checkpoint Dataflow
+<!-- last_updated: 2026-03-01, version: 0.9.0 -->
+
+Checkpoints capture compiled context state every N turns, enabling instant agent readiness on boot and crash recovery with bounded data loss.
+
+```mermaid
+flowchart TD
+    subgraph turnLoop [Turn Loop]
+        turn[InferenceTurn]
+        counter[TurnCounter mod N]
+    end
+
+    subgraph saveFlow [Checkpoint Save]
+        snapshot[CompileContextSnapshot]
+        hash[HashSystemPrompt]
+        summarize[SummarizeTopKMemory]
+        persist[WriteToContextCheckpoints]
+    end
+
+    subgraph loadFlow [Checkpoint Load on Boot]
+        boot[SessionStart]
+        query[QueryLatestCheckpoint]
+        validate[ValidateFormatVersion]
+        warm[WarmContextFromCheckpoint]
+        background[BackgroundFullRetrieval]
+    end
+
+    subgraph clearFlow [Checkpoint Cleanup]
+        governor[SessionGovernor]
+        expire[SessionExpiry]
+        clear[ClearCheckpointsForSession]
+    end
+
+    turn --> counter
+    counter -->|every N turns| snapshot
+    snapshot --> hash
+    snapshot --> summarize
+    hash --> persist
+    summarize --> persist
+    persist -->|INSERT context_checkpoints| DB[(SQLite)]
+
+    boot --> query
+    query -->|SELECT latest by session| DB
+    DB --> validate
+    validate -->|version match| warm
+    validate -->|stale version| background
+    warm --> background
+
+    governor --> expire
+    expire --> clear
+    clear -->|DELETE by session_id| DB
+```
+
+Config: `[context.checkpoint]` — `enabled` (bool), `every_n_turns` (u32, default 10).
+
+---
+
+## 21. Durable Delivery Queue Dataflow
+<!-- last_updated: 2026-03-01, version: 0.9.0 -->
+
+Outbound channel messages are persisted before send attempts. On crash recovery, pending deliveries are replayed from the store, preventing message loss.
+
+```mermaid
+flowchart TD
+    subgraph sendPath [Send Path]
+        reply[ChannelReply]
+        enqueue[PersistToDeliveryQueue]
+        attempt[SendViaAdapter]
+        success[MarkDelivered]
+        fail[IncrementAttempts]
+        retry[ScheduleNextRetry]
+        deadletter[MoveToDeadLetter]
+    end
+
+    subgraph recoveryPath [Recovery on Boot]
+        startup[ServerStartup]
+        recover[RecoverFromStore]
+        replay[ReplayPendingDeliveries]
+    end
+
+    reply --> enqueue
+    enqueue -->|INSERT delivery_queue| DB[(SQLite)]
+    enqueue --> attempt
+    attempt -->|success| success
+    attempt -->|failure| fail
+    success -->|UPDATE status=delivered| DB
+    fail --> retry
+    retry -->|UPDATE next_retry_at| DB
+    fail -->|max attempts exceeded| deadletter
+    deadletter -->|UPDATE status=dead_letter| DB
+
+    startup --> recover
+    recover -->|SELECT status=pending| DB
+    recover --> replay
+    replay --> attempt
+```
+
+Schema: `delivery_queue` table with idempotency_key, attempt count, next_retry_at, and terminal failure reason.
+
+---
+
+## 22. Episodic Digest Dataflow
+<!-- last_updated: 2026-03-01, version: 0.9.0 -->
+
+When sessions close (TTL expiry, rotation, archive), an LLM-generated digest captures key decisions, unresolved tasks, and learned facts. These digests feed future context assembly with decay-weighted relevance.
+
+```mermaid
+flowchart TD
+    subgraph triggerLayer [Digest Triggers]
+        ttl[SessionTTLExpiry]
+        rotate[SessionRotation]
+        archive[CompactBeforeArchive]
+    end
+
+    subgraph digestLayer [Digest Generation]
+        governor[SessionGovernor]
+        fetch[FetchRecentMessages]
+        generate[DigestOnClose]
+        llm[LLMSummarize]
+        store[StoreAsEpisodicMemory]
+    end
+
+    subgraph retrievalLayer [Digest Retrieval]
+        newSession[NewSessionStart]
+        retrieve[MemoryRetriever]
+        decay[DecayWeightedRelevance]
+        inject[InjectIntoContext]
+    end
+
+    ttl --> governor
+    rotate --> governor
+    archive --> governor
+    governor --> fetch
+    fetch -->|list_messages| DB[(SQLite)]
+    fetch --> generate
+    generate --> llm
+    llm --> store
+    store -->|INSERT episodic_memory with digest flag| DB
+
+    newSession --> retrieve
+    retrieve -->|hybrid FTS5 + vector search| DB
+    retrieve --> decay
+    decay --> inject
+```
+
+Config: `[digest]` — `enabled` (bool), `max_tokens` (usize, default 512).
+
+---
+
+## 23. Prompt Compression Dataflow
+<!-- last_updated: 2026-03-01, version: 0.9.0 -->
+
+When enabled, the prompt compression gate reduces token count in assembled prompts before inference. Targets long conversation histories and verbose tool descriptions.
+
+```mermaid
+flowchart TD
+    subgraph assembly [Context Assembly]
+        system[SystemPrompt]
+        memory[MemoryRetrieval]
+        history[ConversationHistory]
+        tools[ToolDescriptions]
+        assemble[AssembleFullPrompt]
+    end
+
+    subgraph compression [Compression Gate]
+        gate{prompt_compression enabled?}
+        measure[MeasureTokenCount]
+        compress[PromptCompressor]
+        ratio[TargetCompressionRatio]
+        pruned[PrunedPrompt]
+    end
+
+    subgraph inference [Inference]
+        send[SendToLLM]
+    end
+
+    system --> assemble
+    memory --> assemble
+    history --> assemble
+    tools --> assemble
+    assemble --> gate
+    gate -->|disabled| send
+    gate -->|enabled| measure
+    measure --> compress
+    ratio --> compress
+    compress --> pruned
+    pruned --> send
+```
+
+Config: `[cache]` — `prompt_compression` (bool, default false), `compression_target_ratio` (f64, default 0.5).
+
+---
+
+## 24. Introspection Tool Architecture
+<!-- last_updated: 2026-03-01, version: 0.9.0 -->
+
+Four read-only introspection tools give the agent self-awareness of its runtime state, memory tiers, channel health, and subagent/task status. Tools access runtime state through `ToolContext` which now carries optional database and channel references.
+
+```mermaid
+flowchart TD
+    subgraph entryPoints [Entry Points]
+        api[REST API]
+        channel[Channel Message]
+        ws[WebSocket]
+    end
+
+    subgraph threading [Context Threading]
+        input[InferenceInput.channel_label]
+        react[RunInferenceAndReact]
+        exec[ExecuteToolCall]
+        ctx[ToolContext]
+    end
+
+    subgraph tools [Introspection Tools]
+        runtime[GetRuntimeContextTool]
+        memory[GetMemoryStatsTool]
+        health[GetChannelHealthTool]
+        subagent[GetSubagentStatusTool]
+    end
+
+    subgraph data [Data Sources]
+        ctxFields[session_id, agent_id, authority, workspace_root, channel]
+        budgets[Memory Tier Budgets: working 30%, episodic 25%, semantic 20%, procedural 15%, relationship 10%]
+        dbAgents[sub_agents table]
+        dbTasks[tasks table]
+    end
+
+    api -->|channel_label: api| input
+    channel -->|channel_label: platform| input
+    ws -->|channel_label: ws| input
+    input --> react
+    react --> exec
+    exec --> ctx
+
+    ctx --> runtime
+    ctx --> memory
+    ctx --> health
+    ctx --> subagent
+
+    runtime --> ctxFields
+    memory --> budgets
+    health --> ctxFields
+    subagent -->|db.conn()| dbAgents
+    subagent -->|db.conn()| dbTasks
+```
+
+`ToolContext` fields: `session_id`, `agent_id`, `authority`, `workspace_root`, `channel: Option<String>`, `db: Option<Database>`.
+
+---
+
 ## Cross-Reference Tables
 
 ### Table References
@@ -1110,8 +1360,13 @@ flowchart TD
 | 17. Plugin SDK | plugins, policy_decisions |
 | 18. OAuth & Credentials | (keystore encrypted on-disk, tokens in-memory) |
 | 19. Channel Adapter | sessions |
+| 20. Context Checkpoint | context_checkpoints, sessions |
+| 21. Durable Delivery Queue | delivery_queue |
+| 22. Episodic Digest | sessions, session_messages, episodic_memory |
+| 23. Prompt Compression | (no direct DB tables; compression is in-memory before inference) |
+| 24. Introspection Tools | sub_agents, tasks, working_memory, episodic_memory, semantic_memory, procedural_memory, relationship_memory, delivery_queue |
 
-Tables not referenced by any diagram: `schema_version` (infrastructure-only), `tasks`, `proxy_stats`, `identity`, `soul_history` -- these are straightforward CRUD subsystems not requiring dataflow diagrams.
+Tables not referenced by any diagram: `schema_version` (infrastructure-only), `proxy_stats`, `identity`, `soul_history` -- these are straightforward CRUD subsystems not requiring dataflow diagrams.
 
 ### Crate References
 
@@ -1136,6 +1391,11 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `t
 | 17. Plugin SDK | ironclad-agent, ironclad-db |
 | 18. OAuth & Credentials | ironclad-wallet, ironclad-llm |
 | 19. Channel Adapter | ironclad-channels, ironclad-agent, ironclad-db |
+| 20. Context Checkpoint | ironclad-db, ironclad-agent, ironclad-core |
+| 21. Durable Delivery Queue | ironclad-channels, ironclad-db |
+| 22. Episodic Digest | ironclad-agent, ironclad-db, ironclad-llm, ironclad-schedule |
+| 23. Prompt Compression | ironclad-llm, ironclad-agent |
+| 24. Introspection Tools | ironclad-agent, ironclad-db |
 
 `ironclad-server` is not dataflow-diagrammed because it is the outer shell that dispatches to channel adapters and serves the dashboard.
 

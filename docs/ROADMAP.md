@@ -98,7 +98,9 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.11 Context Checkpoint
+### 1.11 Context Checkpoint ✅
+
+> **Status**: Shipped in v0.9.0. Config section `[context.checkpoint]` with `enabled` and `every_n_turns`. Saves/loads/clears via `context_checkpoints` table.
 
 **Current state**: The agent rebuilds its full context from the database on every boot — querying memory tiers, retrieving embeddings, assembling the system prompt. This cold-start path adds latency before the agent is responsive.
 
@@ -147,7 +149,9 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.16 Durable Channel Delivery Queue
+### 1.16 Durable Channel Delivery Queue ✅
+
+> **Status**: Shipped in v0.9.0. `DeliveryQueue::with_store(db)` persists messages to `delivery_queue` table; `recover_from_store()` on startup.
 
 **Current state**: Channel retry handling is primarily process-memory based. Retries can be lost during crash/restart windows and operators lack a durable backlog for forensic replay.
 
@@ -233,7 +237,9 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.22 Built-in Introspection Skill
+### 1.22 Built-in Introspection Skill ✅
+
+> **Status**: Shipped in v0.9.0. Four tools: `get_runtime_context`, `get_memory_stats`, `get_channel_health`, `get_subagent_status`. `ToolContext` extended with `channel` and `db` fields.
 
 **Current state**: The agent has no way to query its own runtime state. Channel identity, session scope, memory budget usage, channel health, treasury balance, and active peer sessions are either baked into the system prompt (causing context bloat) or entirely invisible to the agent. The `ToolContext` struct carries only `session_id`, `agent_id`, `authority`, and `workspace_root` — no channel, no runtime metadata.
 
@@ -383,7 +389,9 @@ Features that require significant new code but have clear implementation paths. 
 
 ---
 
-### 2.8 Prompt Compression
+### 2.8 Prompt Compression ✅
+
+> **Status**: Shipped in v0.9.0. `PromptCompressor` gate in context assembly, controlled by `config.cache.prompt_compression`.
 
 **Current state**: Context assembly uses progressive loading (L0–L3) and structural dedup. No token-level pruning.
 
@@ -413,7 +421,9 @@ Features that require significant new code but have clear implementation paths. 
 
 ---
 
-### 2.12 Episodic Digest System
+### 2.12 Episodic Digest System ✅
+
+> **Status**: Shipped in v0.9.0. `digest_on_close()` wired into `SessionGovernor` for session expiry and rotation. `DigestConfig` threaded from heartbeat scheduler.
 
 **Current state**: Memory tiers persist raw data (turns, facts, procedures, relationships). When a session ends or is compacted, the raw history is archived but no coherent summary is produced. On the next session start, the agent has no concise record of where it left off — it must re-derive context from scattered memory fragments.
 
@@ -593,7 +603,7 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ### 3.3 Multi-Agent Orchestration (Partially Complete)
 
-**Current state**: Partially implemented in 0.7.0. Subagent role contracts (`subagent` vs `model-proxy`), roster semantics, model-assignment modes (`auto`/`commander`), and turn-linked model-selection forensics are live. Full workflow orchestration patterns are still pending.
+**Current state**: Partially implemented in 0.7.0. Subagent role contracts (`subagent` vs `model-proxy`), roster semantics, model-assignment modes (`auto`/`orchestrator`), and turn-linked model-selection forensics are live. Full workflow orchestration patterns are still pending.
 
 **Target**: Internal multi-agent patterns — specialist sub-agents for code review, research, financial analysis — orchestrated by a coordinator agent using graph-based workflows.
 

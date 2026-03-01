@@ -5,7 +5,7 @@ use std::time::Instant;
 use clap::{Parser, Subcommand};
 use tracing::info;
 
-use ironclad_core::config::IroncladConfig;
+use ironclad_core::config::{IroncladConfig, resolve_config_path};
 use ironclad_core::style::Theme;
 use ironclad_server::cli;
 
@@ -703,19 +703,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     cli::init_api_key(parsed.api_key.clone());
     let t = cli::theme();
     eprint!("{}", t.reset());
-    let url = if parsed.url == "http://127.0.0.1:18789" && parsed.config.is_some() {
-        // Default URL — try to derive from config file
-        match parsed
-            .config
-            .as_deref()
+    let url = if parsed.url == "http://127.0.0.1:18789" {
+        // Default URL — try to derive server address from resolved config
+        resolve_config_path(parsed.config.as_deref())
             .and_then(|p| std::fs::read_to_string(p).ok())
-        {
-            Some(contents) => match IroncladConfig::from_str(&contents) {
-                Ok(cfg) => format!("http://{}:{}", cfg.server.bind, cfg.server.port),
-                Err(_) => parsed.url.clone(),
-            },
-            None => parsed.url.clone(),
-        }
+            .and_then(|contents| IroncladConfig::from_str(&contents).ok())
+            .map(|cfg| format!("http://{}:{}", cfg.server.bind, cfg.server.port))
+            .unwrap_or_else(|| parsed.url.clone())
     } else {
         parsed.url.clone()
     };
@@ -727,18 +721,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Serve { port, bind }) => cmd_serve(config_flag.clone(), port, bind).await,
         Some(Commands::Init { path }) => cmd_init(&path),
         Some(Commands::Setup) => cli::cmd_setup(),
-        Some(Commands::Check) => {
-            let cfg = config_flag
-                .clone()
-                .unwrap_or_else(|| "ironclad.toml".into());
-            cmd_check(&cfg)
-        }
+        Some(Commands::Check) => match resolve_config_path(config_flag.as_deref()) {
+            Some(p) => cmd_check(&p.to_string_lossy()),
+            None => {
+                let t = cli::theme();
+                print_banner(t);
+                eprintln!("  {} No configuration file found.", t.icon_warn());
+                eprintln!("    Searched: ~/.ironclad/ironclad.toml, ./ironclad.toml");
+                eprintln!(
+                    "    Specify a path with {}--config <path>{} or create one with {}ironclad init{}",
+                    t.bold(),
+                    t.reset(),
+                    t.bold(),
+                    t.reset()
+                );
+                eprintln!();
+                Err("no configuration file found".into())
+            }
+        },
         Some(Commands::Version) => {
             cmd_version(parsed.json);
             Ok(())
         }
         Some(Commands::Update(subcmd)) => {
-            let config_path = parsed.config.as_deref().unwrap_or("ironclad.toml");
+            let resolved = resolve_config_path(parsed.config.as_deref());
+            let config_path = resolved
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "ironclad.toml".into());
+            let config_path = config_path.as_str();
             match subcmd {
                 UpdateCmd::Check {
                     channel,
@@ -1390,14 +1401,8 @@ async fn cmd_serve(
 
     const STEPS: u32 = 12;
 
-    let resolved_path = config_path.or_else(|| {
-        let home_config = ironclad_core::home_dir()
-            .join(".ironclad")
-            .join("ironclad.toml");
-        home_config
-            .exists()
-            .then(|| home_config.to_string_lossy().into_owned())
-    });
+    let resolved_path =
+        resolve_config_path(config_path.as_deref()).map(|p| p.to_string_lossy().into_owned());
 
     let mut config = match resolved_path {
         Some(ref p) => {
