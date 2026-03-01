@@ -33,6 +33,7 @@ pub struct ActionResult {
 }
 
 impl ActionResult {
+    #[must_use]
     pub fn ok(action: &str, data: Value) -> Self {
         Self {
             action: action.to_string(),
@@ -42,6 +43,7 @@ impl ActionResult {
         }
     }
 
+    #[must_use]
     pub fn err(action: &str, error: String) -> Self {
         Self {
             action: action.to_string(),
@@ -119,7 +121,30 @@ impl ActionExecutor {
         }
     }
 
+    /// Maximum allowed length for CSS selectors to prevent abuse.
+    const MAX_SELECTOR_LENGTH: usize = 500;
+
+    /// Validates a CSS selector to prevent injection attacks.
+    /// Rejects selectors that are too long or contain characters that could
+    /// escape the CSS context (curly braces enable CSS rule injection).
+    fn validate_selector(selector: &str) -> Result<(), String> {
+        if selector.len() > Self::MAX_SELECTOR_LENGTH {
+            return Err(format!(
+                "selector too long ({} chars, max {})",
+                selector.len(),
+                Self::MAX_SELECTOR_LENGTH
+            ));
+        }
+        if selector.contains('{') || selector.contains('}') {
+            return Err("selector contains invalid characters".to_string());
+        }
+        Ok(())
+    }
+
     async fn click(session: &CdpSession, selector: &str) -> ActionResult {
+        if let Err(e) = Self::validate_selector(selector) {
+            return ActionResult::err("click", e);
+        }
         let selector_json =
             serde_json::to_string(selector).unwrap_or_else(|_| format!("\"{}\"", selector));
 
@@ -186,6 +211,9 @@ impl ActionExecutor {
     }
 
     async fn type_text(session: &CdpSession, selector: &str, text: &str) -> ActionResult {
+        if let Err(e) = Self::validate_selector(selector) {
+            return ActionResult::err("type", e);
+        }
         let selector_json =
             serde_json::to_string(selector).unwrap_or_else(|_| format!("\"{}\"", selector));
 

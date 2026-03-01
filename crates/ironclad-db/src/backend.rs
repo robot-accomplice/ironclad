@@ -206,19 +206,19 @@ impl StorageBackend for InMemoryBackend {
 
     fn begin_transaction(&self) -> Result<(), StorageError> {
         self.in_transaction
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+            .store(true, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
     fn commit(&self) -> Result<(), StorageError> {
         self.in_transaction
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+            .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
     fn rollback(&self) -> Result<(), StorageError> {
         self.in_transaction
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+            .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 

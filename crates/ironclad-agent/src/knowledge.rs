@@ -58,6 +58,7 @@ impl DirectorySource {
         }
     }
 
+    #[must_use]
     pub fn with_extensions(mut self, exts: Vec<String>) -> Self {
         self.extensions = exts;
         self
@@ -230,6 +231,7 @@ impl VectorDbSource {
         })
     }
 
+    #[must_use]
     pub fn with_api_key(mut self, key: String) -> Self {
         self.api_key = Some(key);
         self
@@ -353,6 +355,7 @@ impl GraphSource {
         })
     }
 
+    #[must_use]
     pub fn with_api_key(mut self, key: String) -> Self {
         self.api_key = Some(key);
         self
