@@ -111,6 +111,19 @@ test-filter filter:
 test-verbose:
     cargo test --workspace -- --nocapture
 
+# Run parallel harness tests — full local preflight (all tests incl. CLI, WS, agent pathways)
+test-harness:
+    cargo test -p ironclad-harness -- --test-threads=8
+
+# Run lightweight harness tests — CI-safe (unit + API tests only, no CLI/WS/agent)
+test-harness-quick:
+    cargo test -p ironclad-harness --lib -- --test-threads=4
+    cargo test -p ironclad-harness --test api_smoke --test api_sessions --test api_memory --test api_domain --test dashboard -- --test-threads=4
+
+# Run harness in full-process mode (real binary, highest fidelity, slowest)
+test-harness-process:
+    cargo test -p ironclad-harness --features full-process --test process_mode -- --test-threads=2
+
 # ── Quality ────────────────────────────────────────────
 
 # Format all code
@@ -363,6 +376,10 @@ ci-test:
     for crate in "${CRATES[@]}"; do
         run_stage "Test ($crate)" cargo test -p "$crate" --verbose --locked
     done
+
+    # Stage 3h: Harness quick (API surface smoke)
+    run_stage "Harness Quick (unit)" cargo test -p ironclad-harness --lib --locked -- --test-threads=4
+    run_stage "Harness Quick (API)" cargo test -p ironclad-harness --test api_smoke --test api_sessions --test api_memory --test api_domain --test dashboard --locked -- --test-threads=4
 
     # Stage 4: Coverage gate (80% floor + no regression)
     COVERAGE_PCT=""

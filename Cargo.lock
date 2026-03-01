@@ -661,7 +661,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -672,7 +672,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2128,7 +2128,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2961,7 +2961,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-agent"
-version = "0.8.9"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2994,7 +2994,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-browser"
-version = "0.8.9"
+version = "0.9.0"
 dependencies = [
  "futures-util",
  "ironclad-core",
@@ -3009,7 +3009,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-channels"
-version = "0.8.9"
+version = "0.9.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3036,7 +3036,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-core"
-version = "0.8.9"
+version = "0.9.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3056,7 +3056,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-db"
-version = "0.8.9"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "instant-distance",
@@ -3071,8 +3071,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironclad-harness"
+version = "0.9.0"
+dependencies = [
+ "assert_cmd",
+ "axum",
+ "chrono",
+ "futures-util",
+ "ironclad-agent",
+ "ironclad-browser",
+ "ironclad-channels",
+ "ironclad-core",
+ "ironclad-db",
+ "ironclad-llm",
+ "ironclad-plugin-sdk",
+ "ironclad-schedule",
+ "ironclad-server",
+ "ironclad-wallet",
+ "predicates",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "ironclad-llm"
-version = "0.8.9"
+version = "0.9.0"
 dependencies = [
  "base64",
  "bytes",
@@ -3093,7 +3123,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-plugin-sdk"
-version = "0.8.9"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "ironclad-core",
@@ -3107,7 +3137,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-schedule"
-version = "0.8.9"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "cron",
@@ -3125,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-server"
-version = "0.8.9"
+version = "0.9.0"
 dependencies = [
  "assert_cmd",
  "async-stream",
@@ -3172,7 +3202,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-tests"
-version = "0.8.9"
+version = "0.9.0"
 dependencies = [
  "axum",
  "chrono",
@@ -3198,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-wallet"
-version = "0.8.9"
+version = "0.9.0"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -3712,7 +3742,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4693,7 +4723,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4709,6 +4739,18 @@ dependencies = [
  "rustls-webpki",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rustls-native-certs"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "612460d5f7bea540c490b2b6395d8e34a953e52b491accd6c86c8164c5932a63"
+dependencies = [
+ "openssl-probe",
+ "rustls-pki-types",
+ "schannel",
+ "security-framework",
 ]
 
 [[package]]
@@ -5283,7 +5325,7 @@ dependencies = [
  "getrandom 0.4.1",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5489,6 +5531,22 @@ dependencies = [
  "tokio-rustls",
  "tungstenite 0.24.0",
  "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.26.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084"
+dependencies = [
+ "futures-util",
+ "log",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tungstenite 0.26.2",
 ]
 
 [[package]]
@@ -5744,6 +5802,25 @@ dependencies = [
  "rustls-pki-types",
  "sha1",
  "thiserror 1.0.69",
+ "utf-8",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.26.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.9.2",
+ "rustls",
+ "rustls-pki-types",
+ "sha1",
+ "thiserror 2.0.18",
  "utf-8",
 ]
 
@@ -6356,7 +6433,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
