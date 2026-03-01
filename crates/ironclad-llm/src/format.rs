@@ -179,7 +179,11 @@ pub fn parse_sse_chunk(data: &str, format: &ApiFormat) -> Option<StreamChunk> {
             let choice = json.get("choices")?.get(0)?;
             let delta = choice.get("delta")?;
             Some(StreamChunk {
-                delta: delta.get("content")?.as_str()?.to_string(),
+                delta: delta
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 model: json
                     .get("model")
                     .and_then(|v| v.as_str())
@@ -996,9 +1000,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_sse_openai_missing_content_returns_none() {
+    fn parse_sse_openai_missing_content_returns_empty_delta() {
         let line = r#"data: {"id":"x","choices":[{"index":0,"delta":{},"finish_reason":null}]}"#;
-        assert!(parse_sse_chunk(line, &ApiFormat::OpenAiCompletions).is_none());
+        let chunk = parse_sse_chunk(line, &ApiFormat::OpenAiCompletions).unwrap();
+        assert_eq!(chunk.delta, "");
+    }
+
+    #[test]
+    fn parse_sse_openai_null_content_returns_empty_delta() {
+        let line = r#"data: {"id":"x","choices":[{"index":0,"delta":{"content":null},"finish_reason":null}]}"#;
+        let chunk = parse_sse_chunk(line, &ApiFormat::OpenAiCompletions).unwrap();
+        assert_eq!(chunk.delta, "");
     }
 
     #[test]
