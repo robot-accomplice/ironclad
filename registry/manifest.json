@@ -1,5 +1,5 @@
 {
-  "version": "0.3.1",
+  "version": "0.3.2",
   "packs": {
     "providers": {
       "sha256": "67379dd3a0a5a678ec25318135a0a4513a7d4bf49ea0d9ecaf9cc9b434574171",
@@ -20,13 +20,17 @@
         "golang.md": "1b0c0cecddc8d16dcef8050c248f2497f25ee80b6a5fd9ecb069b24645e633f7",
         "hello.md": "1c9e6f0fb1d0beb9451a716b631a6bf3ad1decd882ba304db062ba4a3585539d",
         "lessons-learned.md": "0c6f194fc254415e886e6213db7caea08fcffbeb3b95062d91d7b5b95b0430e7",
+        "model-routing-tuner.md": "31e8b7412089b01a08a9339fa102023cd6a338d2822f8d3bcd060a45041fcad5",
         "plan.md": "8b844c0d4dd9015f371624e81c0bd4d19354f30a00930d10404c2ea310019da5",
         "python.md": "ea37017b949deab1655b7b279dddb90a8ac753093b481cb81078684a9766633f",
         "review.md": "95ab99ec746de9547f974645b411835f55320308d79f60f46363b780d8c63c98",
         "rust.md": "c67fc5aa418e9fd9774d810835f1f0565472ec833b009dd3b8f37b15b570b30a",
         "scope-cli.md": "b8dd3b0179efe1d59dab41d7ada818c81cd8d02fb6112948f0e7836c30643981",
         "search.md": "c59739e28247ca63f7cb41ea486e15ddd94f9f0013972a3691da6a80c19b864a",
+        "session-operator.md": "4f3b465ebd329d110735b170089b53f143c79d9f1dadcca87fa38496ea39b870",
+        "skill-creation.md": "36f7970c8438ae716375ebee44c674ab86bdf58c5f6a2164f3edd984fa10278b",
         "summarize.md": "cd11b2ecb572628bc2c2cb5b84f8f2e2f4c31babb72247cdb27cf12e0be0bda1",
+        "update-and-rollback.md": "fe5c3f7fcdd1cce2b6892fdc32063e9dbd04ebac0adee3174d461fc18e085023",
         "typescript.md": "a57f29acdefd72698d3b1894342a1bb61ec663c862bee0406b9f5e83e98b101a"
       }
     }

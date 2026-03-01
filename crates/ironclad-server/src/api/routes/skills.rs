@@ -53,6 +53,18 @@ pub struct CatalogActivateRequest {
 
 const BUILTIN_SKILLS: &[BuiltinSkillDef] = &[
     BuiltinSkillDef {
+        name: "install-setup-assistant",
+        description: "Guide first-run installation, workspace init, and setup wizard flow.",
+    },
+    BuiltinSkillDef {
+        name: "runtime-diagnostics",
+        description: "Diagnose runtime health, logs, and breaker state with recovery actions.",
+    },
+    BuiltinSkillDef {
+        name: "provider-auth-troubleshooter",
+        description: "Resolve provider authentication, key precedence, and credential setup issues.",
+    },
+    BuiltinSkillDef {
         name: "context-continuity",
         description: "Preserve continuity across sessions and long-running workflows.",
     },

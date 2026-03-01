@@ -665,25 +665,29 @@ jobs:
           subject: "${{ steps.status.outputs.emoji }} Ironclad v${{ env.VERSION }} release ${{ steps.status.outputs.outcome }}"
           to: ${{ secrets.RELEASE_NOTIFY_EMAIL }}
           from: ${{ secrets.RELEASE_FROM_EMAIL || 'Ironclad CI <ci@accomplice.ch>' }}
-          content_type: text/html
-          body: |
-            <h2>${{ steps.status.outputs.emoji }} Ironclad v${{ env.VERSION }} — Release ${{ steps.status.outputs.outcome }}</h2>
-            <p>${{ steps.status.outputs.summary }}</p>
-            <table>
-              <tr><td><strong>Version</strong></td><td>v${{ env.VERSION }}</td></tr>
-              <tr><td><strong>Date</strong></td><td>${{ env.DATE }}</td></tr>
-              <tr><td><strong>Crates.io Publish</strong></td><td>${{ needs.publish.result }}</td></tr>
-              <tr><td><strong>Crates.io Live</strong></td><td>${{ steps.verify-crates.outputs.crates_live == 'true' && '✅ Verified' || '⚠️ Not confirmed' }}</td></tr>
-              <tr><td><strong>GitHub Release</strong></td><td>${{ needs.release.result }}</td></tr>
-              <tr><td><strong>Site Sync</strong></td><td>${{ needs.sync-site.result }}</td></tr>
-              <tr><td><strong>Homebrew Tap</strong></td><td>${{ needs.update-homebrew.result }}</td></tr>
-              <tr><td><strong>Winget Manifest</strong></td><td>${{ needs.update-winget.result }}</td></tr>
-              <tr><td><strong>Build Matrix</strong></td><td>${{ needs.build.result }}</td></tr>
-            </table>
-            <p>
-              <a href="https://github.com/robot-accomplice/ironclad/releases/tag/v${{ env.VERSION }}">View Release</a> |
-              <a href="https://github.com/robot-accomplice/ironclad/actions/runs/${{ github.run_id }}">View Workflow Run</a>
-            </p>
+          html_body: |
+            <!DOCTYPE html>
+            <html>
+            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color: #24292f; max-width: 600px; margin: 0 auto; padding: 20px;">
+              <h2 style="margin: 0 0 8px 0; font-size: 20px;">${{ steps.status.outputs.emoji }} Ironclad v${{ env.VERSION }} — Release ${{ steps.status.outputs.outcome }}</h2>
+              <p style="color: #57606a; margin: 0 0 16px 0;">${{ steps.status.outputs.summary }}</p>
+              <table style="border-collapse: collapse; width: 100%; font-size: 14px;">
+                <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Version</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">v${{ env.VERSION }}</td></tr>
+                <tr style="background: #f6f8fa;"><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Date</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ env.DATE }}</td></tr>
+                <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Crates.io Publish</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.publish.result }}</td></tr>
+                <tr style="background: #f6f8fa;"><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Crates.io Live</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ steps.verify-crates.outputs.crates_live == 'true' && '✅ Verified' || '⚠️ Not confirmed' }}</td></tr>
+                <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>GitHub Release</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.release.result }}</td></tr>
+                <tr style="background: #f6f8fa;"><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Site Sync</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.sync-site.result }}</td></tr>
+                <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Homebrew Tap</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.update-homebrew.result }}</td></tr>
+                <tr style="background: #f6f8fa;"><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Winget Manifest</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.update-winget.result }}</td></tr>
+                <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Build Matrix</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.build.result }}</td></tr>
+              </table>
+              <p style="margin: 16px 0 0 0; font-size: 14px;">
+                <a href="https://github.com/robot-accomplice/ironclad/releases/tag/v${{ env.VERSION }}" style="color: #0969da; text-decoration: none;">View Release</a> &middot;
+                <a href="https://github.com/robot-accomplice/ironclad/actions/runs/${{ github.run_id }}" style="color: #0969da; text-decoration: none;">View Workflow Run</a>
+              </p>
+            </body>
+            </html>
 
       - name: Send Discord notification
         if: env.DISCORD_WEBHOOK != ''
