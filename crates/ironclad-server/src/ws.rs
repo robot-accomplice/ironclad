@@ -1,5 +1,13 @@
+use std::sync::Arc;
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use serde::Deserialize;
+use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
+
+use crate::ws_ticket::TicketStore;
 
 #[derive(Clone)]
 pub struct EventBus {
@@ -23,20 +31,83 @@ impl EventBus {
     }
 }
 
-/// Returns an axum GET route handler that upgrades the connection to WebSocket and
-/// forwards EventBus events to the client. The handler captures `bus` by value (clone).
-pub fn ws_route(bus: EventBus) -> axum::routing::MethodRouter {
-    let handler = move |ws: WebSocketUpgrade| {
-        let bus = bus.clone();
-        async move { ws.on_upgrade(move |socket| handle_socket(socket, bus)) }
-    };
+#[derive(Deserialize)]
+struct WsQuery {
+    ticket: Option<String>,
+}
+
+/// Returns an axum GET route handler that upgrades the connection to WebSocket.
+///
+/// Authentication is handled inside this handler (not by the global API-key
+/// middleware) because the `/ws` route lives outside the authed router group.
+/// Accepts either:
+///   - `x-api-key` / `Authorization: Bearer …` header (programmatic clients)
+///   - `?ticket=wst_…` query param (short-lived, single-use ticket from `POST /api/ws-ticket`)
+pub fn ws_route(
+    bus: EventBus,
+    tickets: TicketStore,
+    api_key: Option<String>,
+) -> axum::routing::MethodRouter {
+    let api_key: Option<Arc<str>> = api_key.map(|k| Arc::from(k.as_str()));
+
+    let handler =
+        move |ws: WebSocketUpgrade,
+              headers: axum::http::HeaderMap,
+              axum::extract::Query(query): axum::extract::Query<WsQuery>| {
+            let bus = bus.clone();
+            let tickets = tickets.clone();
+            let api_key = api_key.clone();
+            async move {
+                if !ws_authenticate(&headers, &query, &tickets, api_key.as_deref()) {
+                    return (StatusCode::UNAUTHORIZED, "Valid API key or ticket required")
+                        .into_response();
+                }
+                ws.on_upgrade(move |socket| handle_socket(socket, bus))
+                    .into_response()
+            }
+        };
     axum::routing::get(handler)
 }
 
-// WebSocket connections are intentionally unauthenticated here because:
-// 1. The dashboard SPA is served behind the API key layer
-// 2. WebSocket upgrade requests cannot easily carry Authorization headers
-// 3. The /ws route only broadcasts events, it doesn't accept commands
+/// Check WebSocket auth: header first, then ticket, then reject.
+fn ws_authenticate(
+    headers: &axum::http::HeaderMap,
+    query: &WsQuery,
+    tickets: &TicketStore,
+    api_key: Option<&str>,
+) -> bool {
+    // If no API key is configured, allow all connections (local dev mode)
+    let Some(expected) = api_key else {
+        return true;
+    };
+
+    // 1. Check x-api-key header
+    if let Some(val) = headers.get("x-api-key")
+        && let Ok(provided) = val.to_str()
+        && bool::from(provided.as_bytes().ct_eq(expected.as_bytes()))
+    {
+        return true;
+    }
+
+    // 2. Check Authorization: Bearer header
+    if let Some(val) = headers.get("authorization")
+        && let Ok(s) = val.to_str()
+        && let Some(token) = s.strip_prefix("Bearer ")
+        && bool::from(token.as_bytes().ct_eq(expected.as_bytes()))
+    {
+        return true;
+    }
+
+    // 3. Check ticket query param (single-use, short-lived)
+    if let Some(ref ticket) = query.ticket
+        && tickets.redeem(ticket)
+    {
+        return true;
+    }
+
+    false
+}
+
 async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
     let mut rx = bus.subscribe();
 
@@ -149,7 +220,8 @@ mod tests {
     #[test]
     fn ws_route_returns_method_router() {
         let bus = EventBus::new(256);
-        let _router = super::ws_route(bus);
+        let tickets = TicketStore::new();
+        let _router = super::ws_route(bus, tickets, None);
     }
 
     #[tokio::test]
@@ -270,7 +342,129 @@ mod tests {
     #[test]
     fn ws_route_builds_without_panic() {
         let bus = EventBus::new(4);
-        let router = axum::Router::new().route("/ws", super::ws_route(bus));
+        let tickets = TicketStore::new();
+        let router = axum::Router::new().route("/ws", super::ws_route(bus, tickets, None));
         let _app = router.into_make_service();
+    }
+
+    // ── WebSocket authentication tests ────────────────────────────
+
+    #[test]
+    fn ws_auth_no_key_configured_allows_all() {
+        let headers = axum::http::HeaderMap::new();
+        let query = WsQuery { ticket: None };
+        let tickets = TicketStore::new();
+        assert!(ws_authenticate(&headers, &query, &tickets, None));
+    }
+
+    #[test]
+    fn ws_auth_header_x_api_key() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-api-key", "test-key".parse().unwrap());
+        let query = WsQuery { ticket: None };
+        let tickets = TicketStore::new();
+        assert!(ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key")
+        ));
+    }
+
+    #[test]
+    fn ws_auth_header_bearer() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer test-key".parse().unwrap());
+        let query = WsQuery { ticket: None };
+        let tickets = TicketStore::new();
+        assert!(ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key")
+        ));
+    }
+
+    #[test]
+    fn ws_auth_valid_ticket() {
+        let headers = axum::http::HeaderMap::new();
+        let tickets = TicketStore::new();
+        let ticket = tickets.issue();
+        let query = WsQuery {
+            ticket: Some(ticket),
+        };
+        assert!(ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key")
+        ));
+    }
+
+    #[test]
+    fn ws_auth_invalid_ticket_rejected() {
+        let headers = axum::http::HeaderMap::new();
+        let tickets = TicketStore::new();
+        let query = WsQuery {
+            ticket: Some("wst_invalid".to_string()),
+        };
+        assert!(!ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key")
+        ));
+    }
+
+    #[test]
+    fn ws_auth_no_credentials_rejected() {
+        let headers = axum::http::HeaderMap::new();
+        let query = WsQuery { ticket: None };
+        let tickets = TicketStore::new();
+        assert!(!ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key")
+        ));
+    }
+
+    #[test]
+    fn ws_auth_wrong_key_rejected() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-api-key", "wrong-key".parse().unwrap());
+        let query = WsQuery { ticket: None };
+        let tickets = TicketStore::new();
+        assert!(!ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key")
+        ));
+    }
+
+    #[test]
+    fn ws_auth_ticket_single_use() {
+        let headers = axum::http::HeaderMap::new();
+        let tickets = TicketStore::new();
+        let ticket = tickets.issue();
+        let query1 = WsQuery {
+            ticket: Some(ticket.clone()),
+        };
+        assert!(ws_authenticate(
+            &headers,
+            &query1,
+            &tickets,
+            Some("test-key")
+        ));
+        let query2 = WsQuery {
+            ticket: Some(ticket),
+        };
+        assert!(!ws_authenticate(
+            &headers,
+            &query2,
+            &tickets,
+            Some("test-key")
+        ));
     }
 }

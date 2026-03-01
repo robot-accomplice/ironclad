@@ -72,19 +72,8 @@ fn extract_api_key(req: &Request<Body>) -> Option<String> {
     {
         return Some(token.to_string());
     }
-    // Only allow query-string token for WebSocket upgrade path
-    if req.uri().path() == "/ws"
-        && let Some(query) = req.uri().query()
-    {
-        for pair in query.split('&') {
-            if let Some((k, v)) = pair.split_once('=')
-                && k == "token"
-                && !v.is_empty()
-            {
-                return Some(v.to_string());
-            }
-        }
-    }
+    // S-HIGH-2: query-string ?token= removed — use POST /api/ws-ticket
+    // for short-lived, single-use tickets instead.
     None
 }
 
@@ -194,12 +183,13 @@ mod tests {
     }
 
     #[test]
-    fn extract_token_from_query() {
+    fn query_token_no_longer_accepted() {
+        // S-HIGH-2: ?token= in URL is removed — tickets replace it
         let req = Request::builder()
             .uri("/ws?token=query-key-456")
             .body(Body::empty())
             .unwrap();
-        assert_eq!(extract_api_key(&req).as_deref(), Some("query-key-456"));
+        assert_eq!(extract_api_key(&req), None);
     }
 
     #[test]

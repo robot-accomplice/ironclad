@@ -42,10 +42,12 @@ pub mod migrate;
 pub mod plugins;
 pub mod rate_limit;
 pub mod ws;
+pub mod ws_ticket;
 
 pub use api::{AppState, PersonalityState, build_public_router, build_router};
 pub use dashboard::{build_dashboard_html, dashboard_handler};
 pub use ws::{EventBus, ws_route};
+pub use ws_ticket::TicketStore;
 
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -651,6 +653,7 @@ pub async fn bootstrap_with_config_path(
         config_path: Arc::new(resolved_config_path.clone()),
         config_apply_status: crate::config_runtime::status_for_path(&resolved_config_path),
         pending_specialist_proposals: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        ws_tickets: ws_ticket::TicketStore::new(),
     };
 
     // Periodic ANN index rebuild (every 10 minutes)
@@ -1002,21 +1005,34 @@ pub async fn bootstrap_with_config_path(
             axum::http::header::AUTHORIZATION,
             axum::http::HeaderName::from_static("x-api-key"),
         ]);
-    let authed_routes = build_router(state.clone())
-        .route("/ws", ws_route(event_bus.clone()))
-        .layer(auth_layer);
+    let authed_routes = build_router(state.clone()).layer(auth_layer);
+
+    // WebSocket route handles its own auth (header OR ticket) so it
+    // lives outside the API-key middleware layer.
+    let ws_routes = axum::Router::new().route(
+        "/ws",
+        ws_route(
+            event_bus.clone(),
+            state.ws_tickets.clone(),
+            config.server.api_key.clone(),
+        ),
+    );
 
     let public_routes = build_public_router(state);
 
-    let app = authed_routes.merge(public_routes).layer(cors).layer(
-        GlobalRateLimitLayer::new(
-            u64::from(config.server.rate_limit_requests),
-            Duration::from_secs(config.server.rate_limit_window_secs),
-        )
-        .with_per_ip_capacity(u64::from(config.server.per_ip_rate_limit_requests))
-        .with_per_actor_capacity(u64::from(config.server.per_actor_rate_limit_requests))
-        .with_trusted_proxy_cidrs(&config.server.trusted_proxy_cidrs),
-    );
+    let app = authed_routes
+        .merge(ws_routes)
+        .merge(public_routes)
+        .layer(cors)
+        .layer(
+            GlobalRateLimitLayer::new(
+                u64::from(config.server.rate_limit_requests),
+                Duration::from_secs(config.server.rate_limit_window_secs),
+            )
+            .with_per_ip_capacity(u64::from(config.server.per_ip_rate_limit_requests))
+            .with_per_actor_capacity(u64::from(config.server.per_actor_rate_limit_requests))
+            .with_trusted_proxy_cidrs(&config.server.trusted_proxy_cidrs),
+        );
     Ok(app)
 }
 

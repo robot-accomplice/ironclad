@@ -5955,60 +5955,84 @@
   };
 
   // BUG-002: WebSocket connection with exponential backoff reconnection.
+  // S-HIGH-2: Uses short-lived tickets instead of persistent API key in URL.
   App._wsReconnectDelay = 1000;
   App._wsReconnectTimer = null;
+  App._bindWsEvents = function(ws) {
+    ws.onopen = function() {
+      App._wsReconnectDelay = 1000;
+      var d = document.getElementById('ws-dot'); if (d) d.classList.remove('off');
+      var l = document.getElementById('ws-label'); if (l) l.textContent = 'Connected';
+    };
+    ws.onclose = function() {
+      var d = document.getElementById('ws-dot'); if (d) d.classList.add('off');
+      var l = document.getElementById('ws-label'); if (l) l.textContent = 'Reconnecting...';
+      clearTimeout(App._wsReconnectTimer);
+      App._wsReconnectTimer = setTimeout(function() { App._connectWs(); }, App._wsReconnectDelay);
+      App._wsReconnectDelay = Math.min(App._wsReconnectDelay * 2, 30000);
+    };
+    ws.onerror = function() {
+      var d = document.getElementById('ws-dot'); if (d) d.classList.add('off');
+    };
+    ws.onmessage = function(ev) {
+      try {
+        var event = JSON.parse(ev.data);
+        if (workspace && workspace.handleEvent) workspace.handleEvent(event);
+        if (event && event.type === 'stream_start') {
+          App._liveStreamTurn = {
+            turn_id: event.turn_id || '',
+            session_id: event.session_id || '',
+            model: event.model || ''
+          };
+          if (App.page === 'context') {
+            App.navigate('context');
+          }
+        } else if (event && event.type === 'stream_end') {
+          if (!event.turn_id || (App._liveStreamTurn && App._liveStreamTurn.turn_id === event.turn_id)) {
+            App._liveStreamTurn = null;
+            if (App.page === 'context') {
+              App.navigate('context');
+            }
+          }
+        }
+        if (event && event.type === 'model_selection') {
+          if (App.page === 'metrics') {
+            App.navigate('metrics');
+          } else if (App.page === 'context' && App._ctxActiveTurn && event.turn_id === App._ctxActiveTurn.id) {
+            App.navigate('context');
+          }
+        }
+      } catch(e) {}
+    };
+  };
   App._connectWs = function() {
     try {
       if (App.ws && (App.ws.readyState === WebSocket.CONNECTING || App.ws.readyState === WebSocket.OPEN)) return;
       var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       var wsUrl = proto + '//' + window.location.host + '/ws';
-      if (API_KEY) wsUrl += '?token=' + encodeURIComponent(API_KEY);
-      App.ws = new WebSocket(wsUrl);
-      App.ws.onopen = function() {
-        App._wsReconnectDelay = 1000;
-        var d = document.getElementById('ws-dot'); if (d) d.classList.remove('off');
-        var l = document.getElementById('ws-label'); if (l) l.textContent = 'Connected';
-      };
-      App.ws.onclose = function() {
+      if (!API_KEY) {
+        // No auth configured — connect directly
+        App.ws = new WebSocket(wsUrl);
+        App._bindWsEvents(App.ws);
+        return;
+      }
+      // Fetch a short-lived ticket, then connect with it
+      fetch(BASE + '/api/ws-ticket', {
+        method: 'POST',
+        headers: authHeaders({ 'Accept': 'application/json' })
+      }).then(function(r) {
+        if (!r.ok) throw new Error('ticket fetch failed: ' + r.status);
+        return r.json();
+      }).then(function(data) {
+        App.ws = new WebSocket(wsUrl + '?ticket=' + encodeURIComponent(data.ticket));
+        App._bindWsEvents(App.ws);
+      }).catch(function() {
         var d = document.getElementById('ws-dot'); if (d) d.classList.add('off');
         var l = document.getElementById('ws-label'); if (l) l.textContent = 'Reconnecting...';
         clearTimeout(App._wsReconnectTimer);
         App._wsReconnectTimer = setTimeout(function() { App._connectWs(); }, App._wsReconnectDelay);
         App._wsReconnectDelay = Math.min(App._wsReconnectDelay * 2, 30000);
-      };
-      App.ws.onerror = function() {
-        var d = document.getElementById('ws-dot'); if (d) d.classList.add('off');
-      };
-      App.ws.onmessage = function(ev) {
-        try {
-          var event = JSON.parse(ev.data);
-          if (workspace && workspace.handleEvent) workspace.handleEvent(event);
-          if (event && event.type === 'stream_start') {
-            App._liveStreamTurn = {
-              turn_id: event.turn_id || '',
-              session_id: event.session_id || '',
-              model: event.model || ''
-            };
-            if (App.page === 'context') {
-              App.navigate('context');
-            }
-          } else if (event && event.type === 'stream_end') {
-            if (!event.turn_id || (App._liveStreamTurn && App._liveStreamTurn.turn_id === event.turn_id)) {
-              App._liveStreamTurn = null;
-              if (App.page === 'context') {
-                App.navigate('context');
-              }
-            }
-          }
-          if (event && event.type === 'model_selection') {
-            if (App.page === 'metrics') {
-              App.navigate('metrics');
-            } else if (App.page === 'context' && App._ctxActiveTurn && event.turn_id === App._ctxActiveTurn.id) {
-              App.navigate('context');
-            }
-          }
-        } catch(e) {}
-      };
+      });
     } catch (err) { var d = document.getElementById('ws-dot'); if (d) d.classList.add('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'No WebSocket'; }
   };
   App._connectWs();

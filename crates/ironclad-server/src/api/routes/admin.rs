@@ -2536,6 +2536,13 @@ pub async fn mcp_client_disconnect(
     }
 }
 
+// ── WebSocket ticket issuance ─────────────────────────────────
+
+pub async fn issue_ws_ticket(State(state): State<AppState>) -> impl IntoResponse {
+    let ticket = state.ws_tickets.issue();
+    Json(json!({ "ticket": ticket, "expires_in": 30 }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

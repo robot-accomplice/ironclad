@@ -341,6 +341,7 @@ pub struct AppState {
     pub config_path: Arc<PathBuf>,
     pub config_apply_status: Arc<RwLock<ConfigApplyStatus>>,
     pub pending_specialist_proposals: Arc<RwLock<HashMap<String, serde_json::Value>>>,
+    pub ws_tickets: crate::ws_ticket::TicketStore,
 }
 
 impl AppState {
@@ -627,6 +628,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/approvals", get(admin::list_approvals))
         .route("/api/approvals/{id}/approve", post(admin::approve_request))
         .route("/api/approvals/{id}/deny", post(admin::deny_request))
+        .route("/api/ws-ticket", post(admin::issue_ws_ticket))
         .route("/api/interview/start", post(interview::start_interview))
         .route("/api/interview/turn", post(interview::interview_turn))
         .route("/api/interview/finish", post(interview::finish_interview))
@@ -818,6 +820,7 @@ primary = "ollama/qwen3:8b"
             config_path: Arc::new(config_path.clone()),
             config_apply_status: Arc::new(RwLock::new(ConfigApplyStatus::new(&config_path))),
             pending_specialist_proposals: Arc::new(RwLock::new(HashMap::new())),
+            ws_tickets: crate::ws_ticket::TicketStore::new(),
         }
     }
 
