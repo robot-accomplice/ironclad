@@ -1230,6 +1230,7 @@ pub async fn agent_message(
     State(state): State<AppState>,
     axum::Json(body): axum::Json<AgentMessageRequest>,
 ) -> impl IntoResponse {
+    tracing::info!(channel = "api", session_id = ?body.session_id, "Processing agent message");
     let config = state.config.read().await;
 
     if body.content.trim().is_empty() {
@@ -1384,6 +1385,96 @@ pub async fn agent_message(
     // Use the ModelRouter to select a model based on complexity
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
+
+    // Decomposition gate: evaluate whether this task should be delegated
+    let gate_decision = evaluate_decomposition_gate(&state, &user_content, complexity).await;
+    let mut delegation_workflow_note: Option<String> = None;
+    match &gate_decision {
+        DecompositionDecision::RequiresSpecialistCreation {
+            proposal,
+            rationale,
+        } => {
+            let payload = proposal_to_json(proposal, rationale);
+            {
+                let mut pending = state.pending_specialist_proposals.write().await;
+                pending.insert(session_id.clone(), payload.clone());
+            }
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            drop(config);
+            return Ok(axum::Json(json!({
+                "session_id": session_id,
+                "content": format!(
+                    "I identified a capability gap and can create a new specialist with your approval.\n\nProposed: `{}`\nRationale: {}\n\nReply with:\n- `review specialist config` to inspect full config\n- `approve specialist creation` to create it\n- `deny specialist creation` to continue with main-agent execution",
+                    proposal.name, rationale
+                ),
+                "decomposition": "requires_specialist_creation",
+            })));
+        }
+        DecompositionDecision::Centralized {
+            rationale,
+            expected_utility_margin,
+        } => {
+            tracing::info!(
+                decision = "centralized",
+                rationale = %rationale,
+                expected_utility_margin = *expected_utility_margin,
+                "api decomposition gate decision"
+            );
+        }
+        DecompositionDecision::Delegated(plan) => {
+            let mut orch = Orchestrator::new();
+            let wf_input = plan
+                .subtasks
+                .iter()
+                .map(|s| (s.clone(), capability_tokens(s)))
+                .collect::<Vec<_>>();
+            let wf_id = orch.create_workflow(
+                "api_decomposition",
+                OrchestrationPattern::Parallel,
+                wf_input,
+            );
+            let available_agents = ironclad_db::agents::list_sub_agents(&state.db)
+                .inspect_err(
+                    |e| tracing::error!(error = %e, "failed to list sub-agents for workflow"),
+                )
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|a| !is_model_proxy_role(&a.role) && a.enabled)
+                .map(|a| (a.name, parse_skills_json(a.skills_json.as_deref())))
+                .collect::<Vec<_>>();
+            let matches = orch
+                .match_capabilities(&wf_id, &available_agents)
+                .unwrap_or_default();
+            for (task_id, agent_id) in &matches {
+                if let Err(e) = orch.assign_agent(&wf_id, task_id, agent_id) {
+                    tracing::error!(workflow = %wf_id, task = %task_id, agent = %agent_id, error = %e, "failed to assign agent to workflow task");
+                }
+            }
+            let assignments = matches
+                .iter()
+                .map(|(task, agent)| format!("{task}->{agent}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            delegation_workflow_note = Some(format!(
+                "workflow_id={wf_id}; assignments={}",
+                if assignments.is_empty() {
+                    "none".to_string()
+                } else {
+                    assignments
+                }
+            ));
+            tracing::info!(
+                decision = "delegated",
+                rationale = %plan.rationale,
+                subtask_count = plan.subtasks.len(),
+                expected_utility_margin = plan.expected_utility_margin,
+                "api decomposition gate decision"
+            );
+        }
+    }
+
     let model_audit = select_routed_model_with_audit(&state, &user_content).await;
     let model = model_audit.selected_model.clone();
     let complexity_label = format!("{complexity:?}");
@@ -1550,6 +1641,12 @@ pub async fn agent_message(
         }
         prompt
     };
+    // Append delegation workflow note (if gate delegated subtasks)
+    let system_prompt = if let Some(ref wf_note) = delegation_workflow_note {
+        format!("{system_prompt}\nWorkflow: {wf_note}")
+    } else {
+        system_prompt
+    };
     let system_prompt = format!(
         "{system_prompt}{}",
         ironclad_agent::prompt::runtime_metadata_block(
@@ -1680,6 +1777,12 @@ pub async fn agent_message(
             let observation = match tool_result {
                 Ok(output) => format!("[Tool {tool_name} succeeded]: {output}"),
                 Err(err) => format!("[Tool {tool_name} failed]: {err}"),
+            };
+            let observation = if ironclad_agent::injection::scan_output(&observation) {
+                tracing::warn!(tool_name, "tool result flagged by output scan, sanitizing");
+                format!("[Tool {tool_name} result blocked by safety filter]")
+            } else {
+                observation
             };
 
             react_loop.transition(ReactAction::Observe);
@@ -2224,18 +2327,21 @@ pub async fn agent_message_stream(
             }
         };
 
-        let result = {
-            let llm = state.llm.read().await;
-            llm.stream_to_provider(
-                resolved.url,
-                resolved.api_key,
-                llm_body,
-                resolved.auth_header,
-                resolved.extra_headers,
-                resolved.format,
+        // Clone the HTTP client so we can release the RwLock before the
+        // potentially long-running network call (SA-HIGH-1).
+        let llm_client = state.llm.read().await.client.clone();
+        let mut llm_body_stream = llm_body;
+        llm_body_stream["stream"] = serde_json::json!(true);
+        let result = llm_client
+            .forward_stream(
+                &resolved.url,
+                &resolved.api_key,
+                llm_body_stream,
+                &resolved.auth_header,
+                &resolved.extra_headers,
             )
             .await
-        };
+            .map(|raw| ironclad_llm::SseChunkStream::new(raw, resolved.format));
 
         match result {
             Ok(stream) => {
@@ -2457,7 +2563,7 @@ pub async fn agent_message_stream(
 
         let done_event = json!({
             "type": "stream_chunk",
-            "content": "",
+            "delta": "",
             "done": true,
             "session_id": session_id_clone,
         });
@@ -3748,6 +3854,7 @@ pub async fn process_channel_message(
     state: &AppState,
     inbound: ironclad_channels::InboundMessage,
 ) -> Result<(), String> {
+    tracing::info!(channel = %inbound.platform, peer = %inbound.sender_id, "Processing channel message");
     let chat_id = resolve_channel_chat_id(&inbound);
     let platform = inbound.platform.clone();
 
@@ -4323,6 +4430,12 @@ pub async fn process_channel_message(
                     format!("[Tool {tn} succeeded]: {out}")
                 }
                 Err(err) => format!("[Tool {tn} failed]: {err}"),
+            };
+            let obs = if ironclad_agent::injection::scan_output(&obs) {
+                tracing::warn!(tool = tn.as_str(), "channel tool result flagged by output scan, sanitizing");
+                format!("[Tool {tn} result blocked by safety filter]")
+            } else {
+                obs
             };
             channel_react.transition(ReactAction::Observe);
             react_msgs.push(ironclad_llm::format::UnifiedMessage {

@@ -537,7 +537,14 @@ pub fn derive_nickname(first_message: &str) -> String {
     let lower = text.to_lowercase();
     for prefix in greeting_prefixes {
         if lower.starts_with(prefix) {
-            text = &text[prefix.len()..];
+            // Use char count to find equivalent byte position in original text,
+            // since to_lowercase() can change byte lengths for non-ASCII chars.
+            let prefix_chars = prefix.chars().count();
+            if let Some((byte_pos, _)) = text.char_indices().nth(prefix_chars) {
+                text = &text[byte_pos..];
+            } else {
+                text = "";
+            }
             break;
         }
     }
