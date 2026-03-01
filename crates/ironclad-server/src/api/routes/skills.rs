@@ -7,14 +7,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::sync::OnceLock;
 use std::path::Path as FsPath;
 
 use super::{AppState, JsonError, bad_request, internal_err, not_found};
-
-struct BuiltinSkillDef {
-    name: &'static str,
-    description: &'static str,
-}
 
 #[derive(Debug, Clone, Deserialize)]
 struct RegistryManifest {
@@ -51,67 +47,24 @@ pub struct CatalogActivateRequest {
     pub skills: Vec<String>,
 }
 
-const BUILTIN_SKILLS: &[BuiltinSkillDef] = &[
-    BuiltinSkillDef {
-        name: "context-continuity",
-        description: "Preserve continuity across sessions and long-running workflows.",
-    },
-    BuiltinSkillDef {
-        name: "conway-security",
-        description: "Security guardrails for high-impact infrastructure workflows.",
-    },
-    BuiltinSkillDef {
-        name: "ethereum-funding",
-        description: "Operational treasury and Ethereum funding workflows.",
-    },
-    BuiltinSkillDef {
-        name: "himalaya-email",
-        description: "CLI-based email operations through a local mail bridge.",
-    },
-    BuiltinSkillDef {
-        name: "knowledge-management",
-        description: "Knowledge capture, curation, and retrieval conventions.",
-    },
-    BuiltinSkillDef {
-        name: "local-subagents",
-        description: "Subagent orchestration for parallelized task execution.",
-    },
-    BuiltinSkillDef {
-        name: "model-management",
-        description: "Model routing and fallback strategy management.",
-    },
-    BuiltinSkillDef {
-        name: "obsidian-vault",
-        description: "Obsidian-backed knowledge workflows and synchronization.",
-    },
-    BuiltinSkillDef {
-        name: "scope-cli",
-        description: "Scope and boundary management for CLI-driven workflows.",
-    },
-    BuiltinSkillDef {
-        name: "search-management",
-        description: "Search and retrieval strategy management for investigations.",
-    },
-    BuiltinSkillDef {
-        name: "self-diagnostics",
-        description: "Runtime diagnostics and self-healing operational checks.",
-    },
-    BuiltinSkillDef {
-        name: "self-funding",
-        description: "Autonomous funding and sustainability operational workflows.",
-    },
-    BuiltinSkillDef {
-        name: "session-bloat-prevention",
-        description: "Context-budget controls to prevent session bloat.",
-    },
-    BuiltinSkillDef {
-        name: "supervisor-protocol",
-        description: "Supervisor and delegation protocol for specialist execution.",
-    },
-];
+#[derive(Debug, Clone, Deserialize)]
+struct BuiltinSkillRecord {
+    name: String,
+    description: String,
+}
+
+const BUILTIN_SKILLS_JSON: &str = include_str!("../../../../../registry/builtin-skills.json");
+
+fn builtin_skills() -> &'static Vec<BuiltinSkillRecord> {
+    static BUILTIN_SKILLS: OnceLock<Vec<BuiltinSkillRecord>> = OnceLock::new();
+    BUILTIN_SKILLS.get_or_init(|| {
+        serde_json::from_str(BUILTIN_SKILLS_JSON)
+            .expect("registry/builtin-skills.json must be valid JSON")
+    })
+}
 
 fn is_builtin_skill_name(name: &str) -> bool {
-    BUILTIN_SKILLS
+    builtin_skills()
         .iter()
         .any(|skill| skill.name.eq_ignore_ascii_case(name))
 }
@@ -407,7 +360,7 @@ pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
                 .filter_map(|item| item.get("name").and_then(|v| v.as_str()))
                 .map(|name| name.to_ascii_lowercase())
                 .collect();
-            for built_in in BUILTIN_SKILLS {
+            for built_in in builtin_skills() {
                 if seen.contains(&built_in.name.to_ascii_lowercase()) {
                     continue;
                 }
@@ -465,8 +418,12 @@ pub async fn catalog_list(
 ) -> impl IntoResponse {
     let q = query.q.as_deref();
     let mut items = Vec::<Value>::new();
-    for built_in in BUILTIN_SKILLS {
-        if skill_item_matches_query(built_in.name, q) {
+    let builtin_names: HashSet<String> = builtin_skills()
+        .iter()
+        .map(|skill| skill.name.to_ascii_lowercase())
+        .collect();
+    for built_in in builtin_skills() {
+        if skill_item_matches_query(&built_in.name, q) {
             items.push(serde_json::json!({
                 "name": built_in.name,
                 "kind": "builtin",
@@ -479,6 +436,9 @@ pub async fn catalog_list(
     if let Ok((manifest, _base_url)) = fetch_catalog_manifest(&state).await {
         for (filename, sha256) in &manifest.packs.skills.files {
             let name = filename.strip_suffix(".md").unwrap_or(filename).to_string();
+            if builtin_names.contains(&name.to_ascii_lowercase()) {
+                continue;
+            }
             if skill_item_matches_query(&name, q) {
                 items.push(serde_json::json!({
                     "name": name,
@@ -532,6 +492,26 @@ pub async fn catalog_install(
         .collect();
     if selected.is_empty() {
         return Err(not_found("no matching catalog skills found"));
+    }
+    let selected_names: HashSet<String> = selected
+        .iter()
+        .map(|(filename, _)| {
+            filename
+                .strip_suffix(".md")
+                .unwrap_or(filename.as_str())
+                .to_ascii_lowercase()
+        })
+        .collect();
+    let builtin_collisions: Vec<String> = builtin_skills()
+        .iter()
+        .filter(|skill| selected_names.contains(&skill.name.to_ascii_lowercase()))
+        .map(|skill| skill.name.clone())
+        .collect();
+    if !builtin_collisions.is_empty() {
+        return Err(bad_request(format!(
+            "cannot install skills that are built-in: {}",
+            builtin_collisions.join(", ")
+        )));
     }
 
     let mut rollback_existing: Vec<(std::path::PathBuf, Vec<u8>)> = Vec::new();
@@ -886,8 +866,25 @@ mod tests {
     }
 
     #[test]
+    fn builtin_catalog_loads_and_has_unique_names() {
+        let catalog = builtin_skills();
+        assert!(!catalog.is_empty());
+        let mut seen = std::collections::HashSet::new();
+        for skill in catalog {
+            assert!(!skill.name.trim().is_empty());
+            assert!(!skill.description.trim().is_empty());
+            assert!(
+                seen.insert(skill.name.to_ascii_lowercase()),
+                "duplicate builtin skill name: {}",
+                skill.name
+            );
+        }
+    }
+
+    #[test]
     fn builtin_skill_detection_is_case_insensitive() {
         assert!(is_builtin_skill_name("SELF-DIAGNOSTICS"));
+        assert!(!is_builtin_skill_name("scope-cli"));
         assert!(is_builtin_skill(&sample_record(
             "self-diagnostics",
             "instruction"
