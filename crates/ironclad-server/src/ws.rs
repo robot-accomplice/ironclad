@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::StatusCode;
@@ -6,6 +7,7 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
+use tokio::time::{interval, Instant};
 
 use crate::ws_ticket::TicketStore;
 
@@ -108,6 +110,9 @@ fn ws_authenticate(
     false
 }
 
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
 async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
     let mut rx = bus.subscribe();
 
@@ -122,6 +127,10 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
         return;
     }
 
+    let mut ping_timer = interval(PING_INTERVAL);
+    ping_timer.tick().await; // consume the immediate first tick
+    let mut last_activity = Instant::now();
+
     // Forward events from the bus to the WebSocket client
     loop {
         tokio::select! {
@@ -131,6 +140,7 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
                         if socket.send(Message::Text(event.into())).await.is_err() {
                             break; // client disconnected
                         }
+                        last_activity = Instant::now();
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(skipped = n, "WebSocket subscriber lagged, skipping lost events");
@@ -142,6 +152,7 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
+                        last_activity = Instant::now();
                         // Limit inbound message size to prevent memory amplification
                         if text.len() > 4096 {
                             tracing::warn!(len = text.len(), "WebSocket message exceeds 4KiB limit, closing");
@@ -154,13 +165,28 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
                         }
                     }
                     Some(Ok(Message::Ping(data))) => {
+                        last_activity = Instant::now();
                         if let Err(e) = socket.send(Message::Pong(data)).await {
                             tracing::debug!(error = %e, "WebSocket pong send failed");
                             break;
                         }
                     }
+                    Some(Ok(Message::Pong(_))) => {
+                        last_activity = Instant::now();
+                    }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
+                }
+            }
+            _ = ping_timer.tick() => {
+                if last_activity.elapsed() > IDLE_TIMEOUT {
+                    tracing::info!("WebSocket idle timeout, closing connection");
+                    let _ = socket.send(Message::Close(None)).await;
+                    break;
+                }
+                if let Err(e) = socket.send(Message::Ping(vec![].into())).await {
+                    tracing::debug!(error = %e, "WebSocket ping send failed");
+                    break;
                 }
             }
         }

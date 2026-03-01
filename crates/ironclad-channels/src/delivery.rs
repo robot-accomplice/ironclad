@@ -309,11 +309,11 @@ impl DeliveryQueue {
         if let Some(pos) = dead.iter().position(|item| item.id == id)
             && let Some(mut item) = dead.get(pos).cloned()
         {
+            // Hold both locks to avoid the item existing in neither collection
+            let mut items = self.items.lock().await;
             dead.remove(pos);
             item.status = DeliveryStatus::Pending;
             item.next_retry_at = Utc::now();
-            drop(dead);
-            let mut items = self.items.lock().await;
             items.push_back(item);
             return true;
         }
