@@ -170,23 +170,20 @@ fn parse_toml_value(s: &str) -> toml::Value {
     toml::Value::String(s.trim_matches('"').to_string())
 }
 
-pub async fn cmd_config_get(
-    url: &str,
-    path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_config_get(url: &str, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Try live API first — shows actual runtime config
-    if let Ok(client) = crate::cli::IroncladClient::new(url) {
-        if let Ok(live) = client.get("/api/config").await {
-            let value = navigate_json(&live, path);
-            match value {
-                Some(v) => {
-                    println!("{}", serde_json::to_string_pretty(&v)?);
-                    return Ok(());
-                }
-                None => {
-                    eprintln!("  Key not found: {path}");
-                    std::process::exit(1);
-                }
+    if let Ok(client) = crate::cli::IroncladClient::new(url)
+        && let Ok(live) = client.get("/api/config").await
+    {
+        let value = navigate_json(&live, path);
+        match value {
+            Some(v) => {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            None => {
+                eprintln!("  Key not found: {path}");
+                std::process::exit(1);
             }
         }
     }

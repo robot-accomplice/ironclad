@@ -1258,7 +1258,10 @@ async fn admin_endpoints_cover_config_wallet_breaker_and_stats() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    assert_eq!(body["immutable_sections"], serde_json::json!([]));
+    assert_eq!(
+        body["immutable_sections"],
+        serde_json::json!(["server", "treasury", "a2a", "wallet"])
+    );
     assert!(body["mutable_sections"].is_array());
 
     let app = build_router(state.clone());

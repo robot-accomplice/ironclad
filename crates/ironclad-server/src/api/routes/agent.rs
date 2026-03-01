@@ -4432,7 +4432,10 @@ pub async fn process_channel_message(
                 Err(err) => format!("[Tool {tn} failed]: {err}"),
             };
             let obs = if ironclad_agent::injection::scan_output(&obs) {
-                tracing::warn!(tool = tn.as_str(), "channel tool result flagged by output scan, sanitizing");
+                tracing::warn!(
+                    tool = tn.as_str(),
+                    "channel tool result flagged by output scan, sanitizing"
+                );
                 format!("[Tool {tn} result blocked by safety filter]")
             } else {
                 obs

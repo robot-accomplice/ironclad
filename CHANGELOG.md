@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-03-01
+
+### Security
+
+- **HIGH: RwLock held across LLM call**: Config read-lock was held for the entire duration of streaming LLM calls, blocking all config writes. Now clones needed values and drops the lock before the network call.
+- **HIGH: CSS selector injection**: Browser `click` and `type_text` actions now validate CSS selectors, rejecting inputs containing `{`/`}` (which can escape selector context into rule injection) and enforcing a 500-character length limit.
+- **HIGH: Relaxed atomic ordering**: Cross-task flags and counters using `Ordering::Relaxed` upgraded to `Acquire`/`Release`/`AcqRel` to ensure correct visibility guarantees across async task boundaries.
+
+### Fixed
+
+- **HIGH: SSE streaming drops tool-use deltas**: OpenAI-format SSE chunks with `content: null` (common in function-call and tool-use deltas) were silently dropped. Now emits an empty-string delta, matching the Anthropic and Google format arms.
+- **HIGH: Done event schema mismatch**: The SSE `stream_done` event used `"content"` key while all streaming chunks used `"delta"`, causing clients to miss the done signal. Now consistently uses `"delta"`.
+- **HIGH: Dead-letter replay race**: Two locks acquired non-atomically during message replay could interleave with concurrent deliveries. Now holds both locks in a single scope.
+- **HIGH: ReAct tool errors bypass scan_output**: Error messages from tool execution were returned directly to the model without content scanning. Now calls `scan_output()` on tool error strings.
+- **HIGH: derive_nickname Unicode panic**: `&text[prefix.len()..]` applied a byte offset from a lowercased string to the original, panicking on multi-byte characters. Now uses `char_indices().nth()` for safe boundary detection.
+- **MED: WebSocket idle timeout missing**: `handle_socket` had no timeout — idle clients held file descriptors and broadcast receivers indefinitely. Now sends ping every 30s with a 90s idle timeout.
+- **MED: Web path bypasses decomposition gate**: `evaluate_decomposition_gate` was only called in `process_channel_message`, not in the web API's `agent_message`. Extracted into a shared helper called from both paths.
+- **MED: Agent processing invisible in logs**: Neither `agent_message` nor `process_channel_message` logged entry spans. Added `info!` spans with session_id and channel at function entry.
+- **MED: --json flag ignored**: The `--json` CLI flag was only threaded to `cmd_defrag`. Now threaded to `cmd_status` and other output-producing commands.
+- **MED: Config capabilities empty**: `/api/config/capabilities` returned an empty `immutable_sections` list. Now populated with `["server", "treasury", "a2a", "wallet"]`.
+- **MED: config get returns stale TOML**: `ironclad config get` read from the on-disk TOML even when the server was running with different runtime values. Now tries the live API first, falling back to TOML when offline.
+- **MED: A2A missing from channel status**: `/api/channels/status` omitted the A2A channel. Now includes a hardcoded A2A entry reading enabled/listening state from server state.
+- **MED: Dashboard scheduler hardcodes agent_id**: The scheduler panel used a hardcoded `agent_id: 'ironclad'` instead of the active agent. Now uses `App._activeAgentId`.
+- **LOW: Missing #[must_use] annotations**: Added `#[must_use]` to 8 builder/constructor methods across `speculative.rs`, `actions.rs`, and `knowledge.rs` to prevent accidental discard of return values.
+
 ## [0.8.8] - 2026-03-01
 
 ### Security

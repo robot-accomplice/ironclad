@@ -17,10 +17,7 @@ pub async fn cmd_status(url: &str, json: bool) -> Result<(), Box<dyn std::error:
             let msg = format!("{:?}", e);
             if is_connection_error(&msg) {
                 if json {
-                    println!(
-                        "{}",
-                        serde_json::json!({"status": "offline", "url": url})
-                    );
+                    println!("{}", serde_json::json!({"status": "offline", "url": url}));
                 } else {
                     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
                     let (OK, ACTION, WARN, DETAIL, ERR) = icons();

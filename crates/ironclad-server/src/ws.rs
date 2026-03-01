@@ -7,7 +7,7 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
-use tokio::time::{interval, Instant};
+use tokio::time::{Instant, interval};
 
 use crate::ws_ticket::TicketStore;
 
