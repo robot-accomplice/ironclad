@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-03-01
+
+### Security
+
+- **HIGH: WebSocket API key leak**: Replaced `?token=` query-string authentication on WebSocket upgrade with a ticket-based flow, preventing API keys from appearing in server logs, proxy logs, and browser history.
+- **HIGH: Prompt injection in tips**: `get_turn_tips` and `get_session_insights` now sanitize LLM-generated tips before rendering, preventing stored prompt injection via malicious session content.
+- **HIGH: Provider error info leak**: `classify_provider_error` in `run_llm_analysis` now strips internal details from error responses before returning to callers.
+- **MED: XSS in sanitize_html**: `sanitize_html` now escapes all 5 OWASP-recommended HTML entities (`& < > " '`), closing a reflected XSS vector.
+- **MED: Input validation on identifiers**: `peer_id`, `group_id`, and `channel` fields now enforce length and character-set constraints, preventing injection of oversized or malformed identifiers.
+- **MED: Webhook body size limit**: Public webhook router now applies `DefaultBodyLimit` to prevent memory exhaustion from oversized payloads.
+- **MED: Analysis route DoS protection**: Analysis routes now apply `ConcurrencyLimitLayer(3)` to prevent resource exhaustion from concurrent expensive LLM calls.
+- **MED: Config schema leak**: `update_config` error responses now return a generic message instead of leaking internal schema details.
+- **MED: Feedback comment size limit**: `FeedbackRequest.comment` now enforces a 4096-character cap, preventing oversized payloads from reaching storage.
+- **MED: Config allowlist tightening**: Removed `extra_headers` from the `get_config` response allowlist, preventing exposure of sensitive header values.
+- **LOW: Unsafe UTF-8 decode**: Replaced `from_utf8_unchecked` with safe `from_utf8` to prevent undefined behavior on malformed input.
+- **LOW: Embedding test env isolation**: Embedding test uses a unique env var name with a SAFETY comment to prevent cross-test interference.
+- **LOW: Path traversal defense-in-depth**: `obsidian_read` now validates paths against directory traversal patterns as an additional defense layer.
+
+### Fixed
+
+- **HIGH: Float policy bypass**: Policy enforcement on `amount` fields now falls back to `as_f64()` conversion, closing a bypass where float amounts evaded integer-only checks.
+- **HIGH: Tool call parsing failures**: `parse_tool_call` now uses `rfind` with a candidate loop, correctly parsing tool calls that contain the delimiter character in arguments.
+- **HIGH: Unicode string metric**: `common_prefix_ratio` now operates on `chars()` instead of byte slices, producing correct ratios for multi-byte characters.
+- **HIGH: Incorrect P50 latency**: `latency_p50` now computes the true median by averaging the two middle values for even-length arrays.
+- **HIGH: Speculation cache collisions**: `SpeculationKey` now stores full parameter JSON instead of using `DefaultHasher`, which was not stable across processes and caused incorrect cache hits.
+- **HIGH: WhatsApp adapter panic**: `WhatsAppAdapter::new` now returns `Result<Self>` instead of panicking on initialization failures.
+- **HIGH: Export agents silent failure**: `export_agents` now matches on `Result` and propagates errors instead of silently dropping them.
+- **HIGH: Inference cost logging**: `record_inference_cost` now uses `inspect_err` to log failures instead of silently discarding them with `.ok()`.
+- **MED: Turn count inflation**: `turn_count` now only increments on `Think` state transitions, fixing 2-3x count inflation from duplicate counting.
+- **MED: Archive truncation**: `compact_before_archive` now fetches all messages instead of being capped at 20, preventing data loss during session archival.
+- **MED: URL decoder corruption**: `%XX` decoder now preserves characters on invalid hex sequences instead of silently dropping them.
+- **MED: Task handoff stalls**: Handoff logic now skips `Failed` tasks to find the next `Pending` task, preventing the scheduler from stalling on failed work.
+- **MED: Config write propagation**: `write_defaults` now propagates errors with `?` instead of silently discarding them with `.ok()`.
+- **MED: Cron validation logging**: Invalid cron expressions now log a warning before returning `false`, replacing a silent rejection.
+- **MED: Wallet passphrase fallthrough**: An incorrect `IRONCLAD_WALLET_PASSPHRASE` now produces a hard error instead of silently falling through to the default passphrase.
+- **MED: Config/session export errors**: `to_string_pretty` failures in config/session export now return proper error responses instead of empty bodies.
+- **MED: Corrupt skills warning**: Corrupt `skills_json` values now log a warning instead of being silently ignored.
+- **MED: Translation request errors**: `translate_request` failures now return HTTP 500 with a proper error body instead of an empty response.
+- **MED: Translation response errors**: `translate_response` failures now return HTTP 502 with a descriptive message instead of `"(no response)"`.
+- **LOW: Loop detection consolidation**: Removed redundant `is_looping` pre-check, consolidating loop detection into a single code path.
+- **LOW: Archive count accuracy**: `rotate_agent_scope_sessions` now returns the actual archived count instead of a potentially incorrect value.
+- **LOW: Token parse overflow**: Token parsing now uses saturating `u32` casts, capping at `u32::MAX` instead of panicking on overflow.
+- **LOW: Subtask dedup ordering**: `split_subtasks` now uses a `HashSet` for order-preserving deduplication instead of unstable dedup.
+- **LOW: Session row corruption logging**: Corrupted session rows now log a warning instead of being silently dropped during iteration.
+- **LOW: DB error logging for cost queries**: Database errors in turn-query average cost calculations are now logged instead of silently ignored.
+- **LOW: Defrag read error handling**: File defragmentation now skips files on read error with a warning instead of substituting an empty string.
+
 ## [0.8.7] - 2026-02-28
 
 ### Fixed
