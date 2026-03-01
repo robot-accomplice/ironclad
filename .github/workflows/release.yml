@@ -298,10 +298,15 @@ jobs:
         run: |
           set -euo pipefail
           crate="ironclad-core"
-          if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+          if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}" \
+            | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
             echo "::notice::${crate} v${VERSION} already published, skipping"
           else
-            cargo publish -p "${crate}" --locked
+            cargo publish -p "${crate}" --locked || {
+              err=$?; if [ $err -eq 101 ]; then
+                echo "::notice::${crate} v${VERSION} already on index (race), skipping"
+              else exit $err; fi
+            }
           fi
 
       - name: Wait for crates.io index
@@ -313,11 +318,16 @@ jobs:
         run: |
           set -euo pipefail
           for crate in ironclad-db ironclad-llm ironclad-plugin-sdk ironclad-browser ironclad-wallet; do
-            if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+            if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}" \
+              | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
               echo "::notice::${crate} v${VERSION} already published, skipping"
             else
               echo "Publishing $crate..."
-              cargo publish -p "$crate" --locked
+              cargo publish -p "$crate" --locked || {
+                err=$?; if [ $err -eq 101 ]; then
+                  echo "::notice::${crate} v${VERSION} already on index (race), skipping"
+                else exit $err; fi
+              }
               sleep 15
             fi
           done
@@ -331,11 +341,16 @@ jobs:
         run: |
           set -euo pipefail
           for crate in ironclad-channels ironclad-agent; do
-            if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+            if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}" \
+              | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
               echo "::notice::${crate} v${VERSION} already published, skipping"
             else
               echo "Publishing $crate..."
-              cargo publish -p "$crate" --locked
+              cargo publish -p "$crate" --locked || {
+                err=$?; if [ $err -eq 101 ]; then
+                  echo "::notice::${crate} v${VERSION} already on index (race), skipping"
+                else exit $err; fi
+              }
               sleep 15
             fi
           done
@@ -349,10 +364,15 @@ jobs:
         run: |
           set -euo pipefail
           crate="ironclad-schedule"
-          if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+          if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}" \
+            | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
             echo "::notice::${crate} v${VERSION} already published, skipping"
           else
-            cargo publish -p "${crate}" --locked
+            cargo publish -p "${crate}" --locked || {
+              err=$?; if [ $err -eq 101 ]; then
+                echo "::notice::${crate} v${VERSION} already on index (race), skipping"
+              else exit $err; fi
+            }
           fi
 
       - name: Wait for crates.io index
@@ -364,10 +384,15 @@ jobs:
         run: |
           set -euo pipefail
           crate="ironclad-server"
-          if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+          if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}" \
+            | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
             echo "::notice::${crate} v${VERSION} already published, skipping"
           else
-            cargo publish -p "${crate}" --locked
+            cargo publish -p "${crate}" --locked || {
+              err=$?; if [ $err -eq 101 ]; then
+                echo "::notice::${crate} v${VERSION} already on index (race), skipping"
+              else exit $err; fi
+            }
           fi
 
   # ── Release: GitHub Release with binaries ──────────────
