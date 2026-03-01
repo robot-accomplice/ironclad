@@ -56,6 +56,9 @@ jobs:
           echo "version=$tag" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
+      - name: Validate registry catalog
+        run: bash scripts/validate-registry-catalog.sh
+
   # ── Verify: integration tests on release tags ───────────
   integration-tests:
     name: Integration Tests

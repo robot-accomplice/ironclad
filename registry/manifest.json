@@ -1,6 +1,10 @@
 {
-  "version": "0.3.2",
+  "version": "0.3.4",
   "packs": {
+    "builtins": {
+      "sha256": "44ca8fdd5c57cbeefe5f1eedbbf068027ff7ce1e668c770b625e312d8ded8d7f",
+      "path": "builtin-skills.json"
+    },
     "providers": {
       "sha256": "67379dd3a0a5a678ec25318135a0a4513a7d4bf49ea0d9ecaf9cc9b434574171",
       "path": "providers.toml"
@@ -10,6 +14,7 @@
       "path": "skills/",
       "files": {
         "claims-auditor.md": "907aee550352b17b257bccc5cea48014d9a504832a9edcd4ef10a306fd4df290",
+        "code-analysis-bug-hunting.md": "cb9779315daab84fd11f47f977a63369f99049cf29642d0e3f30d7f958c4e385",
         "content-creation.md": "8e69588a65b3f7ec1a9d29b99fb516386a8ea4a1f08d75177ac60fb1270f2419",
         "crypto.md": "5e4b855e3ed8b2c2f86d3e5c4004470c08913857af63683274f55ef5945cf32c",
         "draft.md": "2ed65d61f5e2c3b59a7c6e81a079ca9d24d9ab595124dfdac5dc6be0c4459ec7",
