@@ -785,12 +785,17 @@ mod tests {
     // ── async method tests (exercise error paths via connection refusal) ──
 
     fn fast_fail_adapter() -> TelegramAdapter {
+        // Route api.telegram.org to a non-routable TEST-NET address (RFC 5737) so
+        // requests fail deterministically regardless of CI network speed.
         let mut adapter = TelegramAdapter::new("test-token".into());
         adapter.client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(50))
+            .resolve(
+                "api.telegram.org",
+                std::net::SocketAddr::from(([192, 0, 2, 1], 443)),
+            )
             .build()
             .unwrap();
-        // Point at a port that will refuse connections
         adapter.token = "fake".into();
         adapter
     }
