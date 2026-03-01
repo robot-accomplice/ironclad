@@ -47,6 +47,7 @@ pub mod embedding;
 pub mod format;
 pub mod ml_router;
 pub mod oauth;
+pub mod profile;
 pub mod provider;
 pub mod router;
 pub mod tier;
@@ -64,6 +65,7 @@ pub use dedup::DedupTracker;
 pub use embedding::{EmbeddingClient, EmbeddingConfig};
 pub use ml_router::{LogisticBackend, PreferenceCollector, PreferenceRecord};
 pub use oauth::OAuthManager;
+pub use profile::{MetascoreBreakdown, ModelProfile, build_model_profiles, select_by_metascore};
 pub use provider::{Provider, ProviderRegistry};
 pub use router::{ModelRouter, classify_complexity, extract_features};
 pub use tiered::{ConfidenceEvaluator, EscalationTracker, InferenceTier, TieredResult};
@@ -88,6 +90,9 @@ pub struct LlmService {
     pub client: LlmClient,
     pub providers: ProviderRegistry,
     pub capacity: CapacityTracker,
+    pub quality: QualityTracker,
+    pub confidence: ConfidenceEvaluator,
+    pub escalation: EscalationTracker,
     pub embedding: EmbeddingClient,
 }
 
@@ -122,6 +127,10 @@ impl LlmService {
             capacity.register(&provider.name, provider.tpm_limit, provider.rpm_limit);
         }
 
+        let quality = QualityTracker::new(100);
+        let confidence = ConfidenceEvaluator::new(config.models.tiered_inference.confidence_floor);
+        let escalation = EscalationTracker::default();
+
         let embedding_config = Self::resolve_embedding_config(&config.memory, &providers);
         let embedding = EmbeddingClient::new(embedding_config)?;
 
@@ -133,6 +142,9 @@ impl LlmService {
             client,
             providers,
             capacity,
+            quality,
+            confidence,
+            escalation,
             embedding,
         })
     }

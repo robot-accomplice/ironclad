@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-03-01
+
+### Added
+
+- **Model Metascore Routing (2.19 core)**: Unified per-model scoring replaces availability-first routing. `ModelProfile` combines static provider attributes (cost, tier, locality) with dynamic observations (quality, capacity headroom, circuit breaker health). `metascore()` produces a transparent 5-dimension breakdown (efficacy, cost, availability, locality, confidence) with configurable weights for cost-aware mode. `select_by_metascore()` is now the primary routing decision in `select_routed_model_with_audit()`.
+- **Tiered Inference Pipeline (2.3)**: `ConfidenceEvaluator` scores local model responses using token probability, response length, and self-reported uncertainty signals. Responses below the confidence floor trigger automatic escalation to the next model in the fallback chain. `EscalationTracker` records escalation events for capacity/cost telemetry.
+- **Throttle Event Observability (1.17)**: New `GET /api/stats/throttle` endpoint exposes live rate-limit counters including global/per-IP/per-actor request counts, throttle tallies, and top-10 offenders. `ThrottleSnapshot` struct provides admin visibility into abuse patterns.
+- **Quality Tracking**: `QualityTracker` now records observations on every inference success with a heuristic quality signal (response structure, finish reason, latency). Exponential moving average feeds into metascore efficacy dimension.
+- **Audit Trail Extensions**: `ModelSelectionAudit` now includes `metascore_breakdown` (full per-dimension scores) and `complexity_score` for routing decisions. `ModelCandidateAudit` includes per-candidate metascores.
+- **Profile module** (`ironclad-llm::profile`): `ModelProfile`, `MetascoreBreakdown`, `build_model_profiles()`, `select_by_metascore()` — 9 unit tests covering local/cloud task routing, cold-start penalties, cost-aware selection, blocked model filtering, and deterministic tie-breaking.
+
+### Changed
+
+- **Routing hot path**: `select_routed_model_with_audit()` now extracts features from user content, classifies task complexity, builds model profiles, and selects via metascore — replacing the previous first-usable-model strategy.
+- **Rate limiter architecture**: `GlobalRateLimitLayer` is now constructed once at startup and shared between the axum middleware stack and `AppState`, enabling admin observability of the same rate-limit counters the middleware uses.
+
 ## [0.9.0] - 2026-03-01
 
 ### Added

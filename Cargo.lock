@@ -2961,7 +2961,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-agent"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2994,7 +2994,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-browser"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "futures-util",
  "ironclad-core",
@@ -3009,7 +3009,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-channels"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3036,7 +3036,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-core"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3056,7 +3056,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-db"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "chrono",
  "instant-distance",
@@ -3072,7 +3072,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-harness"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "assert_cmd",
  "axum",
@@ -3102,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-llm"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "base64",
  "bytes",
@@ -3123,7 +3123,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-plugin-sdk"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "async-trait",
  "ironclad-core",
@@ -3137,7 +3137,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-schedule"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "chrono",
  "cron",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-server"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "assert_cmd",
  "async-stream",
@@ -3202,7 +3202,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-tests"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "axum",
  "chrono",
@@ -3228,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-wallet"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "aes-gcm",
  "alloy",

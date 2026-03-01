@@ -1024,6 +1024,11 @@ pub async fn get_capacity_stats(State(state): State<AppState>) -> impl IntoRespo
     axum::Json(json!({ "providers": Value::Object(providers) }))
 }
 
+pub async fn get_throttle_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let snapshot = state.rate_limiter.snapshot().await;
+    axum::Json(json!(snapshot))
+}
+
 pub async fn breaker_status(State(state): State<AppState>) -> impl IntoResponse {
     let llm = state.llm.read().await;
     let providers = llm.breakers.list_providers();

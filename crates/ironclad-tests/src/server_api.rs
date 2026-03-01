@@ -112,6 +112,10 @@ primary = "ollama/qwen3:8b"
         config_apply_status: Arc::new(RwLock::new(ConfigApplyStatus::new(&config_path))),
         pending_specialist_proposals: Arc::new(RwLock::new(std::collections::HashMap::new())),
         ws_tickets: ironclad_server::TicketStore::new(),
+        rate_limiter: ironclad_server::rate_limit::GlobalRateLimitLayer::new(
+            100,
+            std::time::Duration::from_secs(60),
+        ),
         policy_engine: {
             let mut engine = ironclad_agent::policy::PolicyEngine::new();
             engine.add_rule(Box::new(ironclad_agent::policy::AuthorityRule));

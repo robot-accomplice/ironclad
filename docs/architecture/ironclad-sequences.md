@@ -971,6 +971,56 @@ sequenceDiagram
 
 ---
 
+## 17. Metascore Routing + Tiered Inference
+<!-- added: 2026-03-01, version: 0.9.1 -->
+
+The intelligent routing pipeline that replaced availability-first model selection. Shows the full path from user content through feature extraction, metascore computation, model selection, and optional confidence-based escalation.
+
+```mermaid
+sequenceDiagram
+    participant H as Handler<br/>(routing.rs)
+    participant R as Router<br/>(router.rs)
+    participant P as Profile<br/>(profile.rs)
+    participant Q as QualityTracker
+    participant C as CapacityTracker
+    participant B as CircuitBreakerRegistry
+    participant L as LlmService<br/>(infer_with_fallback)
+    participant CE as ConfidenceEvaluator
+    participant ET as EscalationTracker
+
+    H->>R: extract_features(user_content)
+    R-->>H: FeatureVector
+    H->>R: classify_complexity(features)
+    R-->>H: complexity: f64
+
+    H->>P: build_model_profiles(router, providers, quality, capacity, breakers)
+    P->>Q: estimated_quality(model) for each candidate
+    P->>C: headroom(provider) for each candidate
+    P->>B: is_blocked(provider) for each candidate
+    P-->>H: Vec<ModelProfile>
+
+    H->>P: select_by_metascore(profiles, complexity, cost_aware)
+    note right of P: Filter blocked → score each →<br/>rank by final_score →<br/>return best with breakdown
+    P-->>H: (model_name, MetascoreBreakdown)
+
+    H->>L: infer_with_fallback(selected_model, prompt)
+    L->>L: Call local/cloud model
+    L->>CE: evaluate(response)
+    alt confidence >= floor
+        CE-->>L: Pass
+        L->>Q: record(model, quality_signal)
+        L-->>H: LlmResponse + audit
+    else confidence < floor (local model)
+        CE-->>L: Below threshold
+        L->>ET: record(model, complexity, reason)
+        L->>L: Escalate → next fallback model
+        L->>Q: record(escalated_model, quality_signal)
+        L-->>H: LlmResponse + audit (with escalation note)
+    end
+```
+
+---
+
 ## Cross-Reference Matrix
 
 | Sequence | Related Dataflow Diagrams | Related C4 Docs | Key Tables |
@@ -991,6 +1041,7 @@ sequenceDiagram
 | 14. Context Checkpoint | Diagram 20 (Context Checkpoint) | ironclad-c4-db, ironclad-c4-agent | context_checkpoints |
 | 15. Episodic Digest | Diagram 22 (Episodic Digest) | ironclad-c4-agent, ironclad-c4-db | episodic_memory |
 | 16. Introspection Tool | Diagram 24 (Introspection Tool Architecture) | ironclad-c4-agent | sub_agents, tasks |
+| 17. Metascore + Tiered Inference | Diagram 3 (Metascore Router) | ironclad-c4-llm, ironclad-c4-server | inference_costs, model_selection events |
 
 ### Embedded Sequences in C4 Docs (not duplicated here)
 

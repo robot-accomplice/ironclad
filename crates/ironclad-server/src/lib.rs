@@ -626,6 +626,17 @@ pub async fn bootstrap_with_config_path(
 
     let resolved_config_path =
         config_path.unwrap_or_else(crate::config_runtime::resolve_default_config_path);
+
+    // Build rate limiter once — AppState and the middleware layer share the same
+    // Arc<Mutex<…>> so admin observability sees live counters.
+    let rate_limiter = GlobalRateLimitLayer::new(
+        u64::from(config.server.rate_limit_requests),
+        Duration::from_secs(config.server.rate_limit_window_secs),
+    )
+    .with_per_ip_capacity(u64::from(config.server.per_ip_rate_limit_requests))
+    .with_per_actor_capacity(u64::from(config.server.per_actor_rate_limit_requests))
+    .with_trusted_proxy_cidrs(&config.server.trusted_proxy_cidrs);
+
     let state = AppState {
         db,
         config: Arc::new(RwLock::new(config.clone())),
@@ -663,6 +674,7 @@ pub async fn bootstrap_with_config_path(
         config_apply_status: crate::config_runtime::status_for_path(&resolved_config_path),
         pending_specialist_proposals: Arc::new(RwLock::new(std::collections::HashMap::new())),
         ws_tickets: ws_ticket::TicketStore::new(),
+        rate_limiter: rate_limiter.clone(),
     };
 
     // Periodic ANN index rebuild (every 10 minutes)
@@ -1041,15 +1053,7 @@ pub async fn bootstrap_with_config_path(
         .merge(ws_routes)
         .merge(public_routes)
         .layer(cors)
-        .layer(
-            GlobalRateLimitLayer::new(
-                u64::from(config.server.rate_limit_requests),
-                Duration::from_secs(config.server.rate_limit_window_secs),
-            )
-            .with_per_ip_capacity(u64::from(config.server.per_ip_rate_limit_requests))
-            .with_per_actor_capacity(u64::from(config.server.per_actor_rate_limit_requests))
-            .with_trusted_proxy_cidrs(&config.server.trusted_proxy_cidrs),
-        );
+        .layer(rate_limiter);
     Ok(app)
 }
 

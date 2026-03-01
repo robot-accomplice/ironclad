@@ -165,6 +165,8 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.17 Production-Grade Abuse Protection
 
+> **Status**: Shipped in v0.9.1. `GlobalRateLimitLayer` wired with per-IP, per-actor, and global limits. Trusted proxy CIDR resolution via X-Forwarded-For/X-Real-IP. Actor identity via API key/Bearer token fingerprinting. Throttle observability via `GET /api/stats/throttle`.
+
 **Current state**: Global rate limiting exists, but trusted proxy boundaries and distributed enforcement are not first-class across all deployment topologies.
 
 **Target**: Hardened anti-abuse controls for internet-facing deployments with trusted proxy semantics, actor-aware quotas, and horizontally safe limit enforcement.
@@ -332,6 +334,8 @@ Features that require significant new code but have clear implementation paths. 
 ---
 
 ### 2.3 Tiered Inference Pipeline
+
+> **Status**: Shipped in v0.9.1. `ConfidenceEvaluator` scores local model responses via token probability, response length, and self-reported uncertainty. `EscalationTracker` records escalation events. Wired into `infer_with_fallback()` — local model responses below confidence floor trigger cloud escalation.
 
 **Current state**: All queries go through the same path — cache check, then a single LLM call.
 
@@ -511,6 +515,8 @@ On first boot, `initialize_db()` populates the hippocampus with all system table
 ---
 
 ### 2.19 Model Metascore Routing Profiles
+
+> **Status**: Core shipped in v0.9.1. `ModelProfile` + `MetascoreBreakdown` with 5-dimension scoring (efficacy, cost, availability, locality, confidence). `build_model_profiles()` assembles live profiles from `QualityTracker`, `CapacityTracker`, `CircuitBreakerRegistry`. `select_by_metascore()` replaces availability-first routing in `select_routed_model_with_audit()`. Dashboard explainability panels and simulation mode deferred to v0.9.2.
 
 **Current state**: Routing decisions are spread across heuristics (complexity, fallback order, capacity, and partial pricing) without a unified per-model profile that can be matched against task-level requirements.
 

@@ -37,6 +37,9 @@ pub(super) struct ModelCandidateAudit {
     pub breaker_blocked: bool,
     pub usable: bool,
     pub note: String,
+    /// Metascore for this candidate (populated when metascore routing is active).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metascore: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +50,12 @@ pub(super) struct ModelSelectionAudit {
     pub override_model: Option<String>,
     pub ordered_models: Vec<String>,
     pub candidates: Vec<ModelCandidateAudit>,
+    /// Metascore breakdown for the selected model (when metascore routing was used).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metascore_breakdown: Option<ironclad_llm::MetascoreBreakdown>,
+    /// Complexity score \[0,1\] from feature extraction (when complexity routing active).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub complexity_score: Option<f64>,
 }
 
 pub(super) fn summarize_user_excerpt(input: &str) -> String {
@@ -102,6 +111,8 @@ pub(super) async fn persist_model_selection_audit(
             "primary_model": audit.primary_model,
             "override_model": audit.override_model,
             "complexity": complexity,
+            "complexity_score": audit.complexity_score,
+            "metascore_breakdown": audit.metascore_breakdown,
             "candidates": audit.candidates,
             "created_at": row.created_at,
         })
@@ -130,10 +141,12 @@ pub(crate) async fn select_routed_model(state: &AppState, user_content: &str) ->
 
 pub(super) async fn select_routed_model_with_audit(
     state: &AppState,
-    _user_content: &str,
+    user_content: &str,
 ) -> ModelSelectionAudit {
     let config = state.config.read().await;
     let primary = config.models.primary.clone();
+    let routing_mode = config.models.routing.mode.clone();
+    let cost_aware = config.models.routing.cost_aware;
     let mut ordered_models = vec![primary.clone()];
     for fb in &config.models.fallbacks {
         if !fb.is_empty() && !ordered_models.iter().any(|m| m == fb) {
@@ -163,10 +176,12 @@ pub(super) async fn select_routed_model_with_audit(
             breaker_blocked,
             usable,
             note,
+            metascore: None,
         }
     };
     let mut candidates = Vec::new();
 
+    // Phase 1: Override takes absolute priority.
     if let Some(ovr) = llm_read.router.get_override() {
         let c = evaluate(ovr, "override");
         let usable = c.usable;
@@ -179,16 +194,79 @@ pub(super) async fn select_routed_model_with_audit(
                 override_model: Some(ovr.to_string()),
                 ordered_models,
                 candidates,
+                metascore_breakdown: None,
+                complexity_score: None,
             };
         }
         tracing::warn!(
             model = ovr,
-            "configured override is not usable (missing provider or breaker open), falling back to ordered models"
+            "configured override is not usable (missing provider or breaker open), falling back"
         );
     }
 
+    // Phase 2: Metascore routing (2.19).
+    // Build per-model profiles from current system state, score with metascore,
+    // and select the highest-scoring candidate.
+    if routing_mode != "primary" {
+        let features = ironclad_llm::extract_features(user_content, 0, 0);
+        let complexity = ironclad_llm::classify_complexity(&features);
+
+        let profiles = ironclad_llm::build_model_profiles(
+            &llm_read.router,
+            &llm_read.providers,
+            &llm_read.quality,
+            &llm_read.capacity,
+            &llm_read.breakers,
+        );
+
+        // Build audit entries for all profiled candidates.
+        for profile in &profiles {
+            let breakdown = profile.metascore(complexity, cost_aware);
+            let mut c = evaluate(&profile.model_name, "metascore_candidate");
+            c.metascore = Some(breakdown.final_score);
+            candidates.push(c);
+        }
+
+        if let Some((selected, breakdown)) =
+            ironclad_llm::select_by_metascore(&profiles, complexity, cost_aware)
+        {
+            let strategy = format!(
+                "metascore_{:.3}_c{complexity:.2}{}",
+                breakdown.final_score,
+                if cost_aware { "_cost" } else { "" }
+            );
+            tracing::debug!(
+                model = selected.as_str(),
+                complexity,
+                cost_aware,
+                metascore = breakdown.final_score,
+                efficacy = breakdown.efficacy,
+                cost_score = breakdown.cost,
+                availability = breakdown.availability,
+                locality = breakdown.locality,
+                confidence = breakdown.confidence,
+                "metascore routing selected model"
+            );
+            return ModelSelectionAudit {
+                selected_model: selected,
+                strategy,
+                primary_model: primary,
+                override_model: llm_read.router.get_override().map(|s| s.to_string()),
+                ordered_models,
+                candidates,
+                metascore_breakdown: Some(breakdown),
+                complexity_score: Some(complexity),
+            };
+        }
+        tracing::debug!(
+            complexity,
+            "metascore returned no candidates, falling back to ordered iteration"
+        );
+    }
+
+    // Phase 3: Availability-first fallback — iterate ordered models.
     for (idx, model) in ordered_models.iter().enumerate() {
-        let c = evaluate(
+        let mut c = evaluate(
             model,
             if idx == 0 {
                 "primary_ordered"
@@ -196,6 +274,7 @@ pub(super) async fn select_routed_model_with_audit(
                 "fallback_ordered"
             },
         );
+        c.metascore = None;
         let usable = c.usable;
         candidates.push(c);
         if usable {
@@ -210,6 +289,8 @@ pub(super) async fn select_routed_model_with_audit(
                 override_model: llm_read.router.get_override().map(|s| s.to_string()),
                 ordered_models,
                 candidates,
+                metascore_breakdown: None,
+                complexity_score: None,
             };
         }
     }
@@ -222,6 +303,8 @@ pub(super) async fn select_routed_model_with_audit(
         override_model: llm_read.router.get_override().map(|s| s.to_string()),
         ordered_models,
         candidates,
+        metascore_breakdown: None,
+        complexity_score: None,
     }
 }
 
@@ -272,6 +355,12 @@ pub(super) fn estimate_cost_from_provider(
 
 /// Attempt inference on the selected model, falling back through the configured
 /// chain on transient errors. Updates circuit breakers on success/failure.
+///
+/// When tiered inference is enabled, local model responses are evaluated for
+/// confidence. If the response falls below the confidence floor and the
+/// latency budget allows, inference escalates to the next (cloud) candidate.
+/// The low-confidence local response is preserved as a fallback in case all
+/// cloud candidates fail.
 pub(super) async fn infer_with_fallback(
     state: &AppState,
     unified_req: &ironclad_llm::format::UnifiedRequest,
@@ -279,8 +368,13 @@ pub(super) async fn infer_with_fallback(
 ) -> Result<InferenceResult, String> {
     let config = state.config.read().await;
     let candidates = fallback_candidates(&config, initial_model);
+    let tiered_enabled = config.models.tiered_inference.enabled;
+    let confidence_floor = config.models.tiered_inference.confidence_floor;
+    let escalation_budget_ms = config.models.tiered_inference.escalation_latency_budget_ms;
     drop(config);
 
+    let confidence_eval = ironclad_llm::ConfidenceEvaluator::new(confidence_floor);
+    let mut fallback_result: Option<InferenceResult> = None;
     let mut last_error = String::new();
 
     for model in &candidates {
@@ -321,6 +415,7 @@ pub(super) async fn infer_with_fallback(
         let llm_body = ironclad_llm::format::translate_request(&req_clone, resolved.format)
             .unwrap_or_else(|_| serde_json::json!({}));
 
+        let inference_start = std::time::Instant::now();
         let llm = state.llm.read().await;
         let result = llm
             .client
@@ -350,13 +445,63 @@ pub(super) async fn infer_with_fallback(
                     estimate_cost_from_provider(resolved.cost_in, resolved.cost_out, tin, tout);
                 let total_tokens = tin.max(0) as u64 + tout.max(0) as u64;
 
+                // Evaluate confidence before acquiring write lock (pure computation).
+                let latency_ms = inference_start.elapsed().as_millis() as u64;
+                let (should_escalate, confidence) = if tiered_enabled && resolved.is_local {
+                    let conf = confidence_eval.evaluate(&unified_resp.content, latency_ms);
+                    (
+                        conf < confidence_floor && latency_ms < escalation_budget_ms,
+                        conf,
+                    )
+                } else {
+                    (false, 1.0)
+                };
+
+                // Single write lock for all recording: breakers, capacity, quality, escalation.
                 let mut llm = state.llm.write().await;
                 llm.breakers.record_success(&resolved.provider_prefix);
                 llm.capacity.record(&resolved.provider_prefix, total_tokens);
                 let pressured = llm.capacity.is_sustained_hot(&resolved.provider_prefix);
                 llm.breakers
                     .set_capacity_pressure(&resolved.provider_prefix, pressured);
+                let quality_score = if unified_resp.content.trim().is_empty() {
+                    0.5
+                } else {
+                    1.0
+                };
+                llm.quality.record(model, quality_score);
+                if tiered_enabled {
+                    if resolved.is_local {
+                        llm.escalation
+                            .record(ironclad_llm::InferenceTier::Local, should_escalate);
+                    } else {
+                        llm.escalation
+                            .record(ironclad_llm::InferenceTier::Cloud, false);
+                    }
+                }
                 drop(llm);
+
+                // Tiered inference: escalate low-confidence local responses to cloud.
+                if should_escalate {
+                    tracing::info!(
+                        model,
+                        confidence,
+                        latency_ms,
+                        floor = confidence_floor,
+                        "local response below confidence floor, escalating to next candidate"
+                    );
+                    fallback_result = Some(InferenceResult {
+                        content: unified_resp.content,
+                        model: model.clone(),
+                        provider: resolved.provider_prefix,
+                        tokens_in: tin,
+                        tokens_out: tout,
+                        cost,
+                    });
+                    last_error =
+                        format!("confidence {confidence:.2} below floor {confidence_floor:.2}");
+                    continue;
+                }
 
                 if model != initial_model {
                     tracing::info!(
@@ -391,10 +536,21 @@ pub(super) async fn infer_with_fallback(
                 }
                 llm.breakers
                     .set_capacity_pressure(&resolved.provider_prefix, false);
+                // Record quality failure — transient errors still count against the model.
+                llm.quality.record(model, 0.0);
                 drop(llm);
                 last_error = e.to_string();
             }
         }
+    }
+
+    // Prefer low-confidence local response over total failure.
+    if let Some(fallback) = fallback_result {
+        tracing::info!(
+            model = fallback.model.as_str(),
+            "all escalation candidates failed, returning local fallback"
+        );
+        return Ok(fallback);
     }
 
     Err(last_error)

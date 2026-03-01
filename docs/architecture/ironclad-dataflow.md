@@ -204,47 +204,48 @@ flowchart TD
 
 ---
 
-## 3. Heuristic Model Router Dataflow
-<!-- last_updated: 2026-02-26, version: 0.8.0 -->
+## 3. Metascore Model Router Dataflow
+<!-- last_updated: 2026-03-01, version: 0.9.1 -->
 
-Implemented in `ironclad-llm/router.rs`. Heuristic classifier by default; `ml_router.rs` provides an alternative ONNX-based `MlBackend` when `models.routing.mode = "ml"`.
+Routing hot path in `ironclad-server/api/routes/agent/routing.rs::select_routed_model_with_audit()`. Feature extraction and complexity classification in `ironclad-llm/router.rs`. Model profiles and metascore in `ironclad-llm/profile.rs`. Tiered inference (confidence evaluation + cloud escalation) in `ironclad-llm/tiered.rs`.
 
 ```mermaid
 flowchart TD
     QUERY["Incoming query<br/>(post context assembly)"]
     QUERY --> MODE{"models.routing.mode?"}
 
-    MODE -->|"primary"| DIRECT["Use primary model"]
+    MODE -->|"primary"| DIRECT["Use primary model<br/>(skip scoring)"]
 
     MODE -->|"heuristic / ml"| FEATURES["extract_features():<br/>message len, tool_call count, depth"]
-    FEATURES --> HEURISTIC["HeuristicBackend::classify_complexity<br/>weighted sum → score 0.0–1.0"]
-    FEATURES -.->|"mode = ml"| ML_BACKEND["ml_router.rs · MlBackend<br/>ONNX classify_complexity<br/>(alternative backend)"]
-    ML_BACKEND -.-> LOCAL_FIRST
+    FEATURES --> CLASSIFY["classify_complexity()<br/>weighted sum → score 0.0–1.0"]
 
-    subgraph ModelSelection["Model Selection"]
-        HEURISTIC --> LOCAL_FIRST{"local_first &&<br/>score < threshold?"}
-        LOCAL_FIRST -->|yes| T1_ROUTE["Use primary (local)"]
-        LOCAL_FIRST -->|no| PRIMARY_ROUTE["select_for_complexity:<br/>high score → fallback[0]<br/>else primary"]
+    subgraph MetascoreRouting["Metascore Model Selection (v0.9.1)"]
+        CLASSIFY --> PROFILES["build_model_profiles():<br/>primary + fallbacks ×<br/>(provider, quality, capacity, breakers)"]
+        PROFILES --> SCORE["metascore(model, complexity, cost_aware):<br/>efficacy × cost × availability × locality<br/>× confidence penalty"]
+        SCORE --> SELECT["select_by_metascore():<br/>filter blocked → rank → best candidate"]
     end
 
-    subgraph ProviderCheck["Provider Availability (with fallback chain)"]
-        DIRECT & T1_ROUTE & PRIMARY_ROUTE --> BREAKER{"Circuit breaker<br/>open?"}
-        BREAKER -->|open| ACCEPT["Accept provider · forward"]
-        BREAKER -->|blocked| FALLBACK{"Fallbacks<br/>remaining?"}
-        FALLBACK -->|yes| NEXT["Advance to next<br/>fallback model"]
-        NEXT --> BREAKER
-        FALLBACK -->|no| EXHAUST["All providers exhausted<br/>→ error to caller"]
+    subgraph TieredInference["Tiered Inference (v0.9.1)"]
+        DIRECT & SELECT --> INFER["infer_with_fallback()"]
+        INFER --> CONFIDENCE{"ConfidenceEvaluator:<br/>token prob + length +<br/>uncertainty signals"}
+        CONFIDENCE -->|"above floor"| RECORD
+        CONFIDENCE -->|"below floor<br/>(local model)"| ESCALATE["EscalationTracker::record()<br/>→ cloud model fallback"]
+        ESCALATE --> INFER
     end
 
-    subgraph QualityGate["Response Quality Gate (local models)"]
-        ACCEPT --> QUALITY{"Response<br/>quality OK?"}
-        QUALITY -->|yes| RECORD
-        QUALITY -->|"no (local only)"| ESCALATE["Escalate → re-enter<br/>with next fallback"]
-        ESCALATE --> BREAKER
-    end
-
-    RECORD["Record inference_costs<br/>(model, provider, tier,<br/>tokens_in/out, cost)"]
+    RECORD["Record inference_costs +<br/>QualityTracker::record() +<br/>ModelSelectionAudit with<br/>metascore breakdown"]
 ```
+
+**Metascore dimensions** (weights: normal / cost-aware):
+
+| Dimension | Normal | Cost-Aware | Source |
+|-----------|--------|------------|--------|
+| Efficacy | 0.45 | 0.35 | `QualityTracker` estimated quality (EMA) |
+| Cost | 0.15 | 0.30 | Sigmoid-normalized inverse of per-token cost |
+| Availability | 0.30 | 0.25 | Circuit breaker health × capacity headroom |
+| Locality | 0.10 | 0.10 | Local bonus for simple tasks, cloud for complex |
+
+Cold-start confidence penalty: linear ramp 0.6→1.0 over first 10 observations.
 
 ---
 
