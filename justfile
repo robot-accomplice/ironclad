@@ -125,6 +125,10 @@ fmt-check:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
+# Validate registry manifest, hashes, and collision guardrails
+validate-registry:
+    bash scripts/validate-registry-catalog.sh
+
 # Format + lint
 check-all: fmt-check lint
     cargo test --workspace --no-run
