@@ -352,6 +352,7 @@ pub async fn agent_message_stream(
         );
 
         let mut accumulator = ironclad_llm::format::StreamAccumulator::default();
+        let stream_start = std::time::Instant::now();
         let mut stream = std::pin::pin!(chunk_stream);
 
         while let Some(item) = stream.next().await {
@@ -435,6 +436,7 @@ pub async fn agent_message_stream(
         ) {
             tracing::warn!(error = %e, turn_id = %turn_id_clone, "failed to persist streaming turn");
         }
+        let stream_latency_ms = stream_start.elapsed().as_millis() as i64;
         core::record_cost(
             &state_clone,
             &model_clone,
@@ -443,6 +445,9 @@ pub async fn agent_message_stream(
             unified_resp.tokens_out as i64,
             cost,
             None,
+            false,
+            Some(stream_latency_ms),
+            None, // quality_score not computed for streaming
             false,
         );
 

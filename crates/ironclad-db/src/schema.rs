@@ -204,6 +204,9 @@ CREATE TABLE IF NOT EXISTS inference_costs (
     cost REAL NOT NULL,
     tier TEXT,
     cached INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER,
+    quality_score REAL,
+    escalation INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_inference_costs_time ON inference_costs(created_at DESC);
@@ -483,6 +486,28 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
         .map_err(|e| IroncladError::Database(e.to_string()))?;
         conn.execute(
             "UPDATE delivery_queue SET idempotency_key = id WHERE idempotency_key = ''",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    // v0.9.2: inference_costs extension — latency, quality, escalation
+    if !has_column(&conn, "inference_costs", "latency_ms")? {
+        conn.execute(
+            "ALTER TABLE inference_costs ADD COLUMN latency_ms INTEGER",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "inference_costs", "quality_score")? {
+        conn.execute(
+            "ALTER TABLE inference_costs ADD COLUMN quality_score REAL",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "inference_costs", "escalation")? {
+        conn.execute(
+            "ALTER TABLE inference_costs ADD COLUMN escalation INTEGER NOT NULL DEFAULT 0",
             [],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;

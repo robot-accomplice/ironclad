@@ -1376,6 +1376,9 @@ primary = "ollama/qwen3:8b"
             0.001,
             Some("default"),
             false,
+            Some(100),
+            Some(0.85),
+            false,
         )
         .unwrap();
         let app = build_router(state);
@@ -5671,7 +5674,7 @@ params = { path = "README.md" }
         let state = test_state();
         // Seed some inference cost data so the report has something to aggregate
         ironclad_db::metrics::record_inference_cost(
-            &state.db, "gpt-4", "openai", 1000, 500, 0.05, None, false,
+            &state.db, "gpt-4", "openai", 1000, 500, 0.05, None, false, Some(200), Some(0.90), false,
         )
         .unwrap();
 

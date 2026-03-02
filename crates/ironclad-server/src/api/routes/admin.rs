@@ -2227,6 +2227,9 @@ async fn run_llm_recommendation_analysis(
         cost,
         Some("recommendations"),
         false,
+        None,
+        None,
+        false,
     )
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record recommendation inference cost"))
     .ok();

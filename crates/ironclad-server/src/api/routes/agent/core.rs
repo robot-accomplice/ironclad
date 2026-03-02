@@ -67,6 +67,9 @@ pub(super) struct InferenceOutput {
     pub tokens_out: i64,
     pub cost: f64,
     pub react_turns: usize,
+    pub latency_ms: u64,
+    pub quality_score: f64,
+    pub escalated: bool,
 }
 
 /// Build a `PreparedInference` from the caller's `InferenceInput`.
@@ -311,19 +314,25 @@ pub(super) async fn run_inference_and_react(
     delegation_provenance: &mut DelegationProvenance,
 ) -> InferenceOutput {
     // Initial inference
-    let (initial_content, mut total_in, mut total_out, mut total_cost) =
+    let (initial_content, mut total_in, mut total_out, mut total_cost, latency_ms, quality_score, escalated) =
         match infer_with_fallback(state, &prepared.request, &prepared.model).await {
             Ok(result) => (
                 result.content,
                 result.tokens_in,
                 result.tokens_out,
                 result.cost,
+                result.latency_ms,
+                result.quality_score,
+                result.escalated,
             ),
             Err(last_error) => (
                 super::tools::provider_failure_user_message(&last_error.to_string(), true),
                 0,
                 0,
                 0.0,
+                0,
+                0.0,
+                false,
             ),
         };
 
@@ -452,6 +461,9 @@ pub(super) async fn run_inference_and_react(
         tokens_out: total_out,
         cost: total_cost,
         react_turns: react_loop.turn_count,
+        latency_ms,
+        quality_score,
+        escalated,
     }
 }
 
@@ -577,6 +589,9 @@ pub(super) fn record_cost(
     cost: f64,
     variant: Option<&str>,
     cached: bool,
+    latency_ms: Option<i64>,
+    quality_score: Option<f64>,
+    escalation: bool,
 ) {
     ironclad_db::metrics::record_inference_cost(
         &state.db,
@@ -587,6 +602,9 @@ pub(super) fn record_cost(
         cost,
         variant,
         cached,
+        latency_ms,
+        quality_score,
+        escalation,
     )
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record inference cost"))
     .ok();

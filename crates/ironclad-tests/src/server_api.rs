@@ -1224,6 +1224,9 @@ async fn admin_endpoints_cover_config_wallet_breaker_and_stats() {
         0.012,
         Some("analysis"),
         false,
+        None,
+        None,
+        false,
     )
     .unwrap();
     ironclad_db::metrics::record_transaction(

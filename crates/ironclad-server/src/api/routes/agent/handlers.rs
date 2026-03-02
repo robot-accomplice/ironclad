@@ -276,6 +276,9 @@ pub async fn agent_message(
             0.0,
             Some("cached"),
             true,
+            Some(0), // cache hit — zero latency
+            None,
+            false,
         );
 
         {
@@ -342,6 +345,9 @@ pub async fn agent_message(
         inference.cost,
         None,
         false,
+        Some(inference.latency_ms as i64),
+        Some(inference.quality_score),
+        inference.escalated,
     );
 
     core::post_turn_ingest(&state, &session_id, &user_content, &assistant_content);

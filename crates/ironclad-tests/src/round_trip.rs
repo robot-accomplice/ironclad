@@ -95,6 +95,9 @@ fn session_message_and_llm_format_roundtrip() {
         cost,
         Some("T3"),
         false,
+        None,
+        None,
+        false,
     )
     .unwrap();
 

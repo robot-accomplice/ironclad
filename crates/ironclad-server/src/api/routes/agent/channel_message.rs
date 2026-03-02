@@ -342,6 +342,9 @@ pub async fn process_channel_message(
         inference.cost,
         None,
         false,
+        Some(inference.latency_ms as i64),
+        Some(inference.quality_score),
+        inference.escalated,
     );
 
     core::post_turn_ingest(state, &session_id, &user_content, &response_content);

@@ -15,6 +15,9 @@ pub(super) struct InferenceResult {
     pub tokens_in: i64,
     pub tokens_out: i64,
     pub cost: f64,
+    pub latency_ms: u64,
+    pub quality_score: f64,
+    pub escalated: bool,
 }
 
 pub(super) struct ResolvedInferenceProvider {
@@ -497,6 +500,9 @@ pub(super) async fn infer_with_fallback(
                         tokens_in: tin,
                         tokens_out: tout,
                         cost,
+                        latency_ms,
+                        quality_score,
+                        escalated: true,
                     });
                     last_error =
                         format!("confidence {confidence:.2} below floor {confidence_floor:.2}");
@@ -518,6 +524,9 @@ pub(super) async fn infer_with_fallback(
                     tokens_in: tin,
                     tokens_out: tout,
                     cost,
+                    latency_ms,
+                    quality_score,
+                    escalated: false,
                 });
             }
             Err(e) => {

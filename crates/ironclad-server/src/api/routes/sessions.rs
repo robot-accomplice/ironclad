@@ -759,6 +759,9 @@ async fn run_llm_analysis(
         cost,
         Some("analysis"),
         false,
+        None,
+        None,
+        false,
     )
     .inspect_err(
         |e| tracing::warn!(error = %e, model = %model, "failed to record analysis inference cost"),

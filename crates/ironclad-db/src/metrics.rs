@@ -23,13 +23,29 @@ pub fn record_inference_cost(
     cost: f64,
     tier: Option<&str>,
     cached: bool,
+    latency_ms: Option<i64>,
+    quality_score: Option<f64>,
+    escalation: bool,
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO inference_costs (id, model, provider, tokens_in, tokens_out, cost, tier, cached) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        rusqlite::params![id, model, provider, tokens_in, tokens_out, cost, tier, cached as i32],
+        "INSERT INTO inference_costs \
+         (id, model, provider, tokens_in, tokens_out, cost, tier, cached, latency_ms, quality_score, escalation) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![
+            id,
+            model,
+            provider,
+            tokens_in,
+            tokens_out,
+            cost,
+            tier,
+            cached as i32,
+            latency_ms,
+            quality_score,
+            escalation as i32
+        ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
@@ -119,6 +135,9 @@ mod tests {
             0.015,
             Some("T1"),
             false,
+            Some(150),
+            Some(0.92),
+            false,
         )
         .unwrap();
         assert!(!id.is_empty());
@@ -162,7 +181,7 @@ mod tests {
     #[test]
     fn record_inference_cost_cached() {
         let db = test_db();
-        let id = record_inference_cost(&db, "gpt-4", "openai", 100, 50, 0.005, None, true).unwrap();
+        let id = record_inference_cost(&db, "gpt-4", "openai", 100, 50, 0.005, None, true, None, None, false).unwrap();
         assert!(!id.is_empty());
     }
 
