@@ -40,16 +40,20 @@ jobs:
           tag="${GITHUB_REF#refs/tags/v}"
           ws_ver=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
+          # Strip semver build metadata (+...) for comparison — 0.9.2+hotfix.1 == 0.9.2
+          tag_base="${tag%%+*}"
+
           echo "Tag version:       $tag"
+          echo "Tag base version:  $tag_base"
           echo "Workspace version: $ws_ver"
 
-          if [ "$tag" != "$ws_ver" ]; then
-            echo "::error::Tag v$tag does not match workspace version $ws_ver"
+          if [ "$tag_base" != "$ws_ver" ]; then
+            echo "::error::Tag v$tag (base: $tag_base) does not match workspace version $ws_ver"
             exit 1
           fi
 
-          if ! grep -q "## \[$tag\]" CHANGELOG.md; then
-            echo "::error::No CHANGELOG.md entry for version $tag"
+          if ! grep -q "## \[$tag_base\]" CHANGELOG.md; then
+            echo "::error::No CHANGELOG.md entry for version $tag_base"
             exit 1
           fi
 
