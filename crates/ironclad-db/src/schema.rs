@@ -436,6 +436,7 @@ pub fn initialize_db(db: &Database) -> Result<()> {
 
     run_migrations(db)?;
     ensure_optional_columns(db)?;
+    crate::hippocampus::bootstrap_hippocampus(db)?;
     Ok(())
 }
 
@@ -508,6 +509,21 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
     if !has_column(&conn, "inference_costs", "escalation")? {
         conn.execute(
             "ALTER TABLE inference_costs ADD COLUMN escalation INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    // v0.9.2: hippocampus extension — access_level, row_count
+    if !has_column(&conn, "hippocampus", "access_level")? {
+        conn.execute(
+            "ALTER TABLE hippocampus ADD COLUMN access_level TEXT NOT NULL DEFAULT 'internal'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "hippocampus", "row_count")? {
+        conn.execute(
+            "ALTER TABLE hippocampus ADD COLUMN row_count INTEGER NOT NULL DEFAULT 0",
             [],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
