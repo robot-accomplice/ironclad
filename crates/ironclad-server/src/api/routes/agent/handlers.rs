@@ -173,6 +173,22 @@ pub async fn agent_message(
 
     // Create a turn ID early so model-selection audit can be tied to this task.
     let turn_id = uuid::Uuid::new_v4().to_string();
+
+    // Pre-create the turn record so that any tool calls executed during
+    // delegation (before the main inference pipeline) can reference it
+    // without violating the tool_calls.turn_id FK constraint.
+    if let Err(e) = ironclad_db::sessions::create_turn_with_id(
+        &state.db,
+        &turn_id,
+        &session_id,
+        None,
+        None,
+        None,
+        None,
+    ) {
+        tracing::warn!(error = %e, "failed to pre-create turn record for API handler");
+    }
+
     // Use the ModelRouter to select a model based on complexity
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);

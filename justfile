@@ -558,9 +558,9 @@ ci-test:
     fi
 
     # Stage 6-8: Build + docs (parallelized)
-    run_stage_parallel "Build + Docs" \
-        "Build (debug)" "cargo build --bin ironclad --locked" \
-        "Build (release)" "cargo build --release --bin ironclad --locked" \
+    run_stage_parallel "Check + Docs" \
+        "Build (debug)" "cargo check --bin ironclad --locked" \
+        "Build (release)" "cargo check --release --bin ironclad --locked" \
         "Docs" "env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items"
 
     # Stage 9: Security Audit

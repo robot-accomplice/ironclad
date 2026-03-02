@@ -183,17 +183,17 @@ fn normalize_schema_safe(state_db_path: &Path) -> Result<bool, Box<dyn std::erro
         "UPDATE sub_agents SET role='subagent' WHERE lower(trim(role))='specialist'",
         [],
     )?;
-    total_changes += conn.changes() as u64;
+    total_changes += conn.changes();
     conn.execute(
         "UPDATE sub_agents SET role='orchestrator' WHERE lower(trim(role))='commander'",
         [],
     )?;
-    total_changes += conn.changes() as u64;
+    total_changes += conn.changes();
     conn.execute(
         "UPDATE sub_agents SET skills_json='[]' WHERE skills_json IS NULL",
         [],
     )?;
-    total_changes += conn.changes() as u64;
+    total_changes += conn.changes();
     conn.execute_batch("COMMIT;")?;
     Ok(total_changes > 0)
 }

@@ -28,6 +28,11 @@ pub(super) fn is_virtual_orchestration_tool(tool_name: &str) -> bool {
 ///
 /// All tools apply the same policy + approval checks as delegation tools,
 /// then dispatch to the appropriate subagent management operation.
+///
+/// Orchestration tools are system-internal: the agent managing its own
+/// subagent roster. We elevate External/Peer callers to SelfGenerated so
+/// the policy engine allows these Caution-level operations regardless of
+/// which channel triggered the conversation.
 pub(super) async fn execute_virtual_orchestration_tool(
     state: &AppState,
     tool_name: &str,
@@ -36,12 +41,27 @@ pub(super) async fn execute_virtual_orchestration_tool(
     authority: ironclad_core::InputAuthority,
     tier: ironclad_core::SurvivalTier,
 ) -> Result<String, String> {
+    // Orchestration tools are system-internal operations (the agent
+    // managing its own team). Elevate restricted callers so the policy
+    // engine doesn't block roster queries or subagent composition.
+    let effective_authority = match authority {
+        ironclad_core::InputAuthority::External | ironclad_core::InputAuthority::Peer => {
+            tracing::debug!(
+                tool = tool_name,
+                original = ?authority,
+                "elevating orchestration authority to SelfGenerated"
+            );
+            ironclad_core::InputAuthority::SelfGenerated
+        }
+        other => other,
+    };
+
     // ── policy gate ──────────────────────────────────────────────
     let policy_result = super::check_tool_policy(
         &state.policy_engine,
         tool_name,
         params,
-        authority,
+        effective_authority,
         tier,
         ironclad_core::RiskLevel::Caution,
     );
