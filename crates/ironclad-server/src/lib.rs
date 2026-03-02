@@ -514,6 +514,12 @@ pub async fn bootstrap_with_config_path(
     tool_registry.register(Box::new(GetChannelHealthTool));
     tool_registry.register(Box::new(GetSubagentStatusTool));
 
+    // Data tools — agent-managed tables via hippocampus
+    use ironclad_agent::tools::{AlterTableTool, CreateTableTool, DropTableTool};
+    tool_registry.register(Box::new(CreateTableTool));
+    tool_registry.register(Box::new(AlterTableTool));
+    tool_registry.register(Box::new(DropTableTool));
+
     // Obsidian vault integration
     let obsidian_vault: Option<Arc<RwLock<ObsidianVault>>> = if config.obsidian.enabled {
         match ObsidianVault::from_config(&config.obsidian) {

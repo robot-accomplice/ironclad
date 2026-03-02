@@ -1135,6 +1135,480 @@ impl Tool for GetSubagentStatusTool {
     }
 }
 
+// ── Agent Data Tools ───────────────────────────────────────────────────
+// Let the agent create, modify, and drop its own database tables.
+// All tables are prefixed with the agent id for isolation.
+
+const MAX_AGENT_TABLES: usize = 50;
+const MAX_COLUMNS_PER_TABLE: usize = 64;
+const ALLOWED_COL_TYPES: &[&str] = &["TEXT", "INTEGER", "REAL", "BLOB"];
+const RESERVED_COL_NAMES: &[&str] = &["id", "created_at", "rowid"];
+
+fn require_db(ctx: &ToolContext) -> std::result::Result<&ironclad_db::Database, ToolError> {
+    ctx.db.as_ref().ok_or_else(|| ToolError {
+        message: "database not available in this context".into(),
+    })
+}
+
+fn parse_column_defs(
+    raw: &[Value],
+) -> std::result::Result<Vec<ironclad_db::hippocampus::ColumnDef>, ToolError> {
+    let mut cols = Vec::with_capacity(raw.len());
+    for (i, v) in raw.iter().enumerate() {
+        let name = v
+            .get("name")
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| ToolError {
+                message: format!("column {i}: missing 'name'"),
+            })?;
+
+        if RESERVED_COL_NAMES.contains(&name.to_lowercase().as_str()) {
+            return Err(ToolError {
+                message: format!("column '{name}' is reserved and added automatically"),
+            });
+        }
+
+        let col_type = v
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("TEXT")
+            .to_uppercase();
+
+        if !ALLOWED_COL_TYPES.contains(&col_type.as_str()) {
+            return Err(ToolError {
+                message: format!(
+                    "column '{name}': type '{col_type}' not allowed (use TEXT, INTEGER, REAL, or BLOB)"
+                ),
+            });
+        }
+
+        let nullable = v.get("nullable").and_then(|n| n.as_bool()).unwrap_or(true);
+        let description = v
+            .get("description")
+            .and_then(|d| d.as_str())
+            .map(String::from);
+
+        cols.push(ironclad_db::hippocampus::ColumnDef {
+            name: name.into(),
+            col_type,
+            nullable,
+            description,
+        });
+    }
+    Ok(cols)
+}
+
+/// Creates a new agent-owned database table. Tables are automatically
+/// prefixed with the agent id and registered in the hippocampus.
+pub struct CreateTableTool;
+
+#[async_trait]
+impl Tool for CreateTableTool {
+    fn name(&self) -> &str {
+        "create_table"
+    }
+
+    fn description(&self) -> &str {
+        "Create a new database table owned by this agent. Tables are prefixed with the agent id \
+         for isolation. Columns 'id' (TEXT PK) and 'created_at' are added automatically."
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Caution
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Table suffix (will be prefixed with agent id). Alphanumeric and underscores only."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Human-readable description of the table's purpose"
+                },
+                "columns": {
+                    "type": "array",
+                    "description": "Column definitions. Each has 'name', optional 'type' (TEXT|INTEGER|REAL|BLOB, default TEXT), optional 'nullable' (default true), optional 'description'.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" },
+                            "type": { "type": "string" },
+                            "nullable": { "type": "boolean" },
+                            "description": { "type": "string" }
+                        },
+                        "required": ["name"]
+                    }
+                }
+            },
+            "required": ["name", "description", "columns"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let db = require_db(ctx)?;
+
+        let name = params
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'name' parameter".into(),
+            })?;
+        let description = params
+            .get("description")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'description' parameter".into(),
+            })?;
+        let raw_columns = params
+            .get("columns")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ToolError {
+                message: "missing 'columns' array parameter".into(),
+            })?;
+
+        if raw_columns.len() > MAX_COLUMNS_PER_TABLE {
+            return Err(ToolError {
+                message: format!(
+                    "too many columns ({}, max {MAX_COLUMNS_PER_TABLE})",
+                    raw_columns.len()
+                ),
+            });
+        }
+
+        // Enforce per-agent table limit
+        let existing = ironclad_db::hippocampus::list_agent_tables(db, &ctx.agent_id)
+            .map_err(|e| ToolError {
+                message: format!("failed to check existing tables: {e}"),
+            })?;
+        if existing.len() >= MAX_AGENT_TABLES {
+            return Err(ToolError {
+                message: format!(
+                    "agent table limit reached ({MAX_AGENT_TABLES}). Drop unused tables first."
+                ),
+            });
+        }
+
+        let columns = parse_column_defs(raw_columns)?;
+
+        let full_name = ironclad_db::hippocampus::create_agent_table(
+            db,
+            &ctx.agent_id,
+            name,
+            description,
+            &columns,
+        )
+        .map_err(|e| ToolError {
+            message: format!("failed to create table: {e}"),
+        })?;
+
+        let result = serde_json::json!({
+            "table_name": full_name,
+            "columns_created": columns.len(),
+            "note": "Columns 'id' (TEXT PK) and 'created_at' (TEXT) are added automatically."
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(result),
+        })
+    }
+}
+
+/// Adds or drops columns on an agent-owned table.
+pub struct AlterTableTool;
+
+#[async_trait]
+impl Tool for AlterTableTool {
+    fn name(&self) -> &str {
+        "alter_table"
+    }
+
+    fn description(&self) -> &str {
+        "Add or drop columns on a table owned by this agent. Use operation 'add_column' or 'drop_column'."
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Caution
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "table_name": {
+                    "type": "string",
+                    "description": "Full table name (including agent prefix)"
+                },
+                "operation": {
+                    "type": "string",
+                    "enum": ["add_column", "drop_column"],
+                    "description": "The alteration to perform"
+                },
+                "column": {
+                    "type": "object",
+                    "description": "Column definition for add_column: {name, type?, nullable?, description?}. For drop_column: {name}.",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "type": { "type": "string" },
+                        "nullable": { "type": "boolean" },
+                        "description": { "type": "string" }
+                    },
+                    "required": ["name"]
+                }
+            },
+            "required": ["table_name", "operation", "column"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let db = require_db(ctx)?;
+
+        let table_name = params
+            .get("table_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'table_name' parameter".into(),
+            })?;
+        let operation = params
+            .get("operation")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'operation' parameter".into(),
+            })?;
+        let column = params.get("column").ok_or_else(|| ToolError {
+            message: "missing 'column' parameter".into(),
+        })?;
+
+        let col_name = column
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "column missing 'name' field".into(),
+            })?;
+
+        // Verify ownership via hippocampus
+        let entry = ironclad_db::hippocampus::get_table(db, table_name)
+            .map_err(|e| ToolError {
+                message: format!("failed to look up table: {e}"),
+            })?
+            .ok_or_else(|| ToolError {
+                message: format!("table '{table_name}' not found in hippocampus"),
+            })?;
+
+        if !entry.agent_owned || entry.created_by != ctx.agent_id {
+            return Err(ToolError {
+                message: format!("table '{table_name}' is not owned by this agent"),
+            });
+        }
+
+        match operation {
+            "add_column" => {
+                if RESERVED_COL_NAMES.contains(&col_name.to_lowercase().as_str()) {
+                    return Err(ToolError {
+                        message: format!("column '{col_name}' is reserved"),
+                    });
+                }
+
+                let col_type = column
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("TEXT")
+                    .to_uppercase();
+
+                if !ALLOWED_COL_TYPES.contains(&col_type.as_str()) {
+                    return Err(ToolError {
+                        message: format!("type '{col_type}' not allowed"),
+                    });
+                }
+
+                let nullable = column
+                    .get("nullable")
+                    .and_then(|n| n.as_bool())
+                    .unwrap_or(true);
+
+                // Validate identifier safety
+                if !col_name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    || col_name.is_empty()
+                {
+                    return Err(ToolError {
+                        message: format!("invalid column name: '{col_name}'"),
+                    });
+                }
+
+                let null_clause = if nullable { "" } else { " NOT NULL DEFAULT ''" };
+                let sql = format!(
+                    "ALTER TABLE \"{}\" ADD COLUMN {} {}{}",
+                    table_name, col_name, col_type, null_clause
+                );
+                let conn = db.conn();
+                conn.execute(&sql, []).map_err(|e| ToolError {
+                    message: format!("ALTER TABLE failed: {e}"),
+                })?;
+
+                // Re-introspect and update hippocampus
+                let description = column
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .map(String::from);
+                let mut new_columns = entry.columns.clone();
+                new_columns.push(ironclad_db::hippocampus::ColumnDef {
+                    name: col_name.into(),
+                    col_type: col_type.clone(),
+                    nullable,
+                    description,
+                });
+                drop(conn);
+                ironclad_db::hippocampus::register_table(
+                    db,
+                    table_name,
+                    &entry.description,
+                    &new_columns,
+                    &entry.created_by,
+                    true,
+                    &entry.access_level,
+                    entry.row_count,
+                )
+                .map_err(|e| ToolError {
+                    message: format!("failed to update hippocampus: {e}"),
+                })?;
+
+                let result = serde_json::json!({
+                    "table_name": table_name,
+                    "operation": "add_column",
+                    "column_name": col_name,
+                    "column_type": col_type,
+                });
+                Ok(ToolResult {
+                    output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+                    metadata: Some(result),
+                })
+            }
+            "drop_column" => {
+                if RESERVED_COL_NAMES.contains(&col_name.to_lowercase().as_str()) {
+                    return Err(ToolError {
+                        message: format!("cannot drop reserved column '{col_name}'"),
+                    });
+                }
+
+                let sql = format!("ALTER TABLE \"{}\" DROP COLUMN {}", table_name, col_name);
+                let conn = db.conn();
+                conn.execute(&sql, []).map_err(|e| ToolError {
+                    message: format!("ALTER TABLE DROP COLUMN failed: {e}"),
+                })?;
+
+                // Update hippocampus entry
+                let new_columns: Vec<_> = entry
+                    .columns
+                    .iter()
+                    .filter(|c| c.name != col_name)
+                    .cloned()
+                    .collect();
+                drop(conn);
+                ironclad_db::hippocampus::register_table(
+                    db,
+                    table_name,
+                    &entry.description,
+                    &new_columns,
+                    &entry.created_by,
+                    true,
+                    &entry.access_level,
+                    entry.row_count,
+                )
+                .map_err(|e| ToolError {
+                    message: format!("failed to update hippocampus: {e}"),
+                })?;
+
+                let result = serde_json::json!({
+                    "table_name": table_name,
+                    "operation": "drop_column",
+                    "column_name": col_name,
+                });
+                Ok(ToolResult {
+                    output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+                    metadata: Some(result),
+                })
+            }
+            other => Err(ToolError {
+                message: format!("unknown operation '{other}' (use 'add_column' or 'drop_column')"),
+            }),
+        }
+    }
+}
+
+/// Drops an agent-owned table and removes it from the hippocampus.
+pub struct DropTableTool;
+
+#[async_trait]
+impl Tool for DropTableTool {
+    fn name(&self) -> &str {
+        "drop_table"
+    }
+
+    fn description(&self) -> &str {
+        "Drop a table owned by this agent. The table and all its data are permanently deleted."
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Caution
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "table_name": {
+                    "type": "string",
+                    "description": "Full table name (including agent prefix) to drop"
+                }
+            },
+            "required": ["table_name"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let db = require_db(ctx)?;
+
+        let table_name = params
+            .get("table_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'table_name' parameter".into(),
+            })?;
+
+        ironclad_db::hippocampus::drop_agent_table(db, &ctx.agent_id, table_name).map_err(
+            |e| ToolError {
+                message: format!("failed to drop table: {e}"),
+            },
+        )?;
+
+        let result = serde_json::json!({
+            "table_name": table_name,
+            "status": "dropped",
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(result),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2106,5 +2580,210 @@ mod tests {
         // Priority DESC, so "Fix bug" (priority 2) comes first
         assert_eq!(v["tasks"][0]["title"], "Fix bug");
         assert_eq!(v["tasks"][1]["title"], "Write docs");
+    }
+
+    // ── Data tools tests ───────────────────────────────────────────────
+
+    fn test_ctx_with_db() -> ToolContext {
+        let db = ironclad_db::Database::new(":memory:").expect("in-memory db");
+        ToolContext {
+            session_id: "test-session".into(),
+            agent_id: "testagent".into(), // no hyphens — SQL identifiers
+            authority: InputAuthority::Creator,
+            workspace_root: std::env::current_dir().unwrap(),
+            channel: None,
+            db: Some(db),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_table_basic() {
+        let ctx = test_ctx_with_db();
+        let tool = CreateTableTool;
+        let params = serde_json::json!({
+            "name": "notes",
+            "description": "Agent scratchpad",
+            "columns": [
+                {"name": "title", "type": "TEXT"},
+                {"name": "body", "type": "TEXT"},
+            ]
+        });
+        let result = tool.execute(params, &ctx).await.unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(v["table_name"], "testagent_notes");
+        assert_eq!(v["columns_created"], 2);
+    }
+
+    #[tokio::test]
+    async fn create_table_rejects_reserved_column() {
+        let ctx = test_ctx_with_db();
+        let tool = CreateTableTool;
+        let params = serde_json::json!({
+            "name": "bad",
+            "description": "test",
+            "columns": [{"name": "rowid", "type": "INTEGER"}]
+        });
+        let err = tool.execute(params, &ctx).await.unwrap_err();
+        assert!(err.message.contains("reserved"), "got: {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn create_table_rejects_invalid_type() {
+        let ctx = test_ctx_with_db();
+        let tool = CreateTableTool;
+        let params = serde_json::json!({
+            "name": "bad",
+            "description": "test",
+            "columns": [{"name": "val", "type": "JSON"}]
+        });
+        let err = tool.execute(params, &ctx).await.unwrap_err();
+        assert!(err.message.contains("type"), "got: {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn create_table_enforces_max_columns() {
+        let ctx = test_ctx_with_db();
+        let tool = CreateTableTool;
+        let cols: Vec<Value> = (0..MAX_COLUMNS_PER_TABLE + 1)
+            .map(|i| serde_json::json!({"name": format!("c{i}"), "type": "TEXT"}))
+            .collect();
+        let params = serde_json::json!({
+            "name": "wide",
+            "description": "too many columns",
+            "columns": cols
+        });
+        let err = tool.execute(params, &ctx).await.unwrap_err();
+        assert!(err.message.contains("columns"), "got: {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn alter_table_add_and_drop_column() {
+        let ctx = test_ctx_with_db();
+        // First create a table
+        CreateTableTool
+            .execute(
+                serde_json::json!({
+                    "name": "tasks",
+                    "description": "task list",
+                    "columns": [{"name": "title", "type": "TEXT"}]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let alter = AlterTableTool;
+        // Add a column
+        let result = alter
+            .execute(
+                serde_json::json!({
+                    "table_name": "testagent_tasks",
+                    "operation": "add_column",
+                    "column": {"name": "priority", "type": "INTEGER"}
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(v["operation"], "add_column");
+        assert_eq!(v["column_name"], "priority");
+
+        // Drop a column
+        let result = alter
+            .execute(
+                serde_json::json!({
+                    "table_name": "testagent_tasks",
+                    "operation": "drop_column",
+                    "column": {"name": "priority"}
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(v["operation"], "drop_column");
+        assert_eq!(v["column_name"], "priority");
+    }
+
+    #[tokio::test]
+    async fn alter_table_rejects_non_owned_table() {
+        let ctx = test_ctx_with_db();
+        let alter = AlterTableTool;
+        let err = alter
+            .execute(
+                serde_json::json!({
+                    "table_name": "sessions",
+                    "operation": "add_column",
+                    "column": {"name": "hack", "type": "TEXT"}
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("not owned") || err.message.contains("not found"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_table_basic() {
+        let ctx = test_ctx_with_db();
+        CreateTableTool
+            .execute(
+                serde_json::json!({
+                    "name": "temp",
+                    "description": "throwaway",
+                    "columns": [{"name": "data", "type": "BLOB"}]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let drop = DropTableTool;
+        let result = drop
+            .execute(
+                serde_json::json!({"table_name": "testagent_temp"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(v["status"], "dropped");
+    }
+
+    #[tokio::test]
+    async fn drop_table_rejects_system_table() {
+        let ctx = test_ctx_with_db();
+        let drop = DropTableTool;
+        let err = drop
+            .execute(serde_json::json!({"table_name": "sessions"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("not owned") || err.message.contains("drop"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn data_tools_require_db() {
+        let ctx = test_ctx(); // no db
+        let err = CreateTableTool
+            .execute(
+                serde_json::json!({
+                    "name": "x",
+                    "description": "y",
+                    "columns": [{"name": "a", "type": "TEXT"}]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("database"), "got: {}", err.message);
     }
 }
