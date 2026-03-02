@@ -160,6 +160,15 @@ enum Commands {
     #[command(next_help_heading = "Data")]
     #[command(subcommand)]
     Memory(MemoryCmd),
+    /// Ingest documents into the knowledge system
+    #[command(next_help_heading = "Data")]
+    Ingest {
+        /// File or directory path to ingest
+        path: String,
+        /// Emit machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage skills
     #[command(next_help_heading = "Data")]
     #[command(subcommand)]
@@ -825,6 +834,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cli::cmd_memory(url, "search", None, Some(query.as_str()), limit).await
             }
         },
+        Some(Commands::Ingest { path, json }) => cmd_ingest(&path, json, config_flag.as_deref()),
         Some(Commands::Skills(sub)) => match sub {
             SkillsCmd::List => cli::cmd_skills_list(url).await,
             SkillsCmd::Show { id } => cli::cmd_skill_detail(url, &id).await,
@@ -2105,6 +2115,60 @@ fn cmd_version(json: bool) {
     tw(&format!("  target:     {}", std::env::consts::ARCH));
     tw(&format!("  os:         {}", std::env::consts::OS));
     eprintln!();
+}
+
+fn cmd_ingest(
+    path: &str,
+    json: bool,
+    config_path: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use ironclad_agent::ingest::{ingest_directory, ingest_file};
+
+    let cfg = match resolve_config_path(config_path) {
+        Some(p) => IroncladConfig::from_file(&p)?,
+        None => IroncladConfig::from_str(FALLBACK_CONFIG)?,
+    };
+
+    let db_path = cfg.database.path.to_string_lossy();
+    let db = ironclad_db::Database::new(&db_path)?;
+
+    let target = std::path::Path::new(path);
+
+    let results = if target.is_dir() {
+        ingest_directory(&db, target)?
+    } else if target.is_file() {
+        vec![ingest_file(&db, target)?]
+    } else {
+        return Err(format!("{path} does not exist or is not accessible").into());
+    };
+
+    if json {
+        let out = serde_json::to_string_pretty(&results)?;
+        std::io::Write::write_all(&mut std::io::stdout(), out.as_bytes())?;
+        std::io::Write::write_all(&mut std::io::stdout(), b"\n")?;
+    } else {
+        if results.is_empty() {
+            eprintln!("No supported files found.");
+            return Ok(());
+        }
+        for r in &results {
+            eprintln!(
+                "  ✓ {} — {} ({} chunks, {} chars)",
+                r.file_path,
+                r.file_type.label(),
+                r.chunks_stored,
+                r.total_chars
+            );
+        }
+        let total_chunks: usize = results.iter().map(|r| r.chunks_stored).sum();
+        eprintln!(
+            "\nIngested {} file(s), {} total chunks.",
+            results.len(),
+            total_chunks
+        );
+    }
+
+    Ok(())
 }
 
 fn cmd_web(config_path: Option<&str>, cli_url: &str) -> Result<(), Box<dyn std::error::Error>> {

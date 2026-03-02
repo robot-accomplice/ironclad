@@ -50,6 +50,7 @@ pub mod device;
 pub mod digest;
 pub mod discovery;
 pub mod governor;
+pub mod ingest;
 pub mod injection;
 pub mod interview;
 pub mod knowledge;

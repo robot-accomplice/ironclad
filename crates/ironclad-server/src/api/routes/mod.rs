@@ -472,7 +472,7 @@ pub fn build_router(state: AppState) -> Router {
     use health::{get_logs, health};
     use memory::{
         get_episodic_memory, get_semantic_categories, get_semantic_memory, get_semantic_memory_all,
-        get_working_memory, get_working_memory_all, memory_search,
+        get_working_memory, get_working_memory_all, knowledge_ingest, memory_search,
     };
     use sessions::{
         analyze_session, analyze_turn, backfill_nicknames, create_session, get_session,
@@ -535,6 +535,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/memory/semantic/{category}", get(get_semantic_memory))
         .route("/api/memory/search", get(memory_search))
+        .route("/api/knowledge/ingest", post(knowledge_ingest))
         .route("/api/cron/jobs", get(list_cron_jobs).post(create_cron_job))
         .route("/api/cron/runs", get(list_cron_runs))
         .route(
