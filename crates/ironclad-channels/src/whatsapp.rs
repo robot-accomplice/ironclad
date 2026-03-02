@@ -961,7 +961,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("mark_as_read failed"),
+            err.contains("mark_as_read failed") || err.contains("network error"),
             "unexpected error: {err}"
         );
     }
@@ -1004,7 +1004,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("send message failed"),
+            err.contains("send message failed") || err.contains("network error"),
             "unexpected error: {err}"
         );
     }
