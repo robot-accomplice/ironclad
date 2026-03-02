@@ -248,7 +248,8 @@ impl WhatsAppAdapter {
             "message_id": message_id,
         });
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .bearer_auth(&self.token)
             .json(&body)
