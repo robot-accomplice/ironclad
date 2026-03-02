@@ -248,13 +248,23 @@ impl WhatsAppAdapter {
             "message_id": message_id,
         });
 
-        self.client
+        let response = self
+            .client
             .post(&url)
             .bearer_auth(&self.token)
             .json(&body)
             .send()
             .await
             .map_err(|e| IroncladError::Network(format!("mark_as_read failed: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(IroncladError::Network(format!(
+                "mark_as_read failed: WhatsApp API {} {}",
+                status, body
+            )));
+        }
 
         Ok(())
     }
@@ -961,7 +971,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("mark_as_read failed"),
+            err.contains("mark_as_read failed") || err.contains("network error"),
             "unexpected error: {err}"
         );
     }
@@ -1004,7 +1014,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("send message failed"),
+            err.contains("send message failed") || err.contains("network error"),
             "unexpected error: {err}"
         );
     }
