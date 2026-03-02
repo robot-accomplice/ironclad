@@ -528,120 +528,120 @@ jobs:
             --input <(echo "$dispatch")
 
   # ── Publish: Homebrew tap formula ──────────────────────
-  update-homebrew:
-    name: Update Homebrew Tap
-    needs: [preflight, release]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download SHA256SUMS from release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          gh release download "v${VERSION}" \
-            --repo robot-accomplice/ironclad \
-            --pattern "SHA256SUMS.txt" \
-            --dir .
+  # update-homebrew:
+  #   name: Update Homebrew Tap
+  #   needs: [preflight, release]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Download SHA256SUMS from release
+  #       env:
+  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         VERSION: ${{ needs.preflight.outputs.version }}
+  #       run: |
+  #         gh release download "v${VERSION}" \
+  #           --repo robot-accomplice/ironclad \
+  #           --pattern "SHA256SUMS.txt" \
+  #           --dir .
 
-      - name: Extract checksums
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          extract_sha() {
-            grep "$1" SHA256SUMS.txt | awk '{print $1}'
-          }
-          {
-            echo "SHA_X86_64_DARWIN=$(extract_sha "ironclad-${VERSION}-x86_64-darwin.tar.gz")"
-            echo "SHA_AARCH64_DARWIN=$(extract_sha "ironclad-${VERSION}-aarch64-darwin.tar.gz")"
-            echo "SHA_X86_64_LINUX=$(extract_sha "ironclad-${VERSION}-x86_64-linux.tar.gz")"
-            echo "SHA_AARCH64_LINUX=$(extract_sha "ironclad-${VERSION}-aarch64-linux.tar.gz")"
-          } >> "$GITHUB_ENV"
+  #     - name: Extract checksums
+  #       env:
+  #         VERSION: ${{ needs.preflight.outputs.version }}
+  #       run: |
+  #         extract_sha() {
+  #           grep "$1" SHA256SUMS.txt | awk '{print $1}'
+  #         }
+  #         {
+  #           echo "SHA_X86_64_DARWIN=$(extract_sha "ironclad-${VERSION}-x86_64-darwin.tar.gz")"
+  #           echo "SHA_AARCH64_DARWIN=$(extract_sha "ironclad-${VERSION}-aarch64-darwin.tar.gz")"
+  #           echo "SHA_X86_64_LINUX=$(extract_sha "ironclad-${VERSION}-x86_64-linux.tar.gz")"
+  #           echo "SHA_AARCH64_LINUX=$(extract_sha "ironclad-${VERSION}-aarch64-linux.tar.gz")"
+  #         } >> "$GITHUB_ENV"
 
-      - name: Checkout homebrew-ironclad tap
-        uses: actions/checkout@v4
-        with:
-          repository: robot-accomplice/homebrew-ironclad
-          token: ${{ secrets.HOMEBREW_TAP_PAT }}
-          path: homebrew-tap
+  #     - name: Checkout homebrew-ironclad tap
+  #       uses: actions/checkout@v4
+  #       with:
+  #         repository: robot-accomplice/homebrew-ironclad
+  #         token: ${{ secrets.HOMEBREW_TAP_PAT }}
+  #         path: homebrew-tap
 
-      - name: Update formula
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          cat > homebrew-tap/Formula/ironclad.rb << 'STATIC_EOF'
-          # typed: false
-          # frozen_string_literal: true
+  #     - name: Update formula
+  #       env:
+  #         VERSION: ${{ needs.preflight.outputs.version }}
+  #       run: |
+  #         cat > homebrew-tap/Formula/ironclad.rb << 'STATIC_EOF'
+  #         # typed: false
+  #         # frozen_string_literal: true
 
-          class Ironclad < Formula
-            desc "Autonomous agent runtime — single binary, streaming LLM, semantic caching, zero-trust A2A"
-            homepage "https://roboticus.ai"
-            license "Apache-2.0"
-          STATIC_EOF
+  #         class Ironclad < Formula
+  #           desc "Autonomous agent runtime — single binary, streaming LLM, semantic caching, zero-trust A2A"
+  #           homepage "https://roboticus.ai"
+  #           license "Apache-2.0"
+  #         STATIC_EOF
 
-          cat >> homebrew-tap/Formula/ironclad.rb << EOF
-            version "${VERSION}"
+  #         cat >> homebrew-tap/Formula/ironclad.rb << EOF
+  #           version "${VERSION}"
 
-            on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-darwin.tar.gz"
-                sha256 "${SHA_AARCH64_DARWIN}"
-              else
-                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-darwin.tar.gz"
-                sha256 "${SHA_X86_64_DARWIN}"
-              end
-            end
+  #           on_macos do
+  #             if Hardware::CPU.arm?
+  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-darwin.tar.gz"
+  #               sha256 "${SHA_AARCH64_DARWIN}"
+  #             else
+  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-darwin.tar.gz"
+  #               sha256 "${SHA_X86_64_DARWIN}"
+  #             end
+  #           end
 
-            on_linux do
-              if Hardware::CPU.arm?
-                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-linux.tar.gz"
-                sha256 "${SHA_AARCH64_LINUX}"
-              else
-                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-linux.tar.gz"
-                sha256 "${SHA_X86_64_LINUX}"
-              end
-            end
+  #           on_linux do
+  #             if Hardware::CPU.arm?
+  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-linux.tar.gz"
+  #               sha256 "${SHA_AARCH64_LINUX}"
+  #             else
+  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-linux.tar.gz"
+  #               sha256 "${SHA_X86_64_LINUX}"
+  #             end
+  #           end
 
-            def install
-              bin.install "ironclad"
-            end
+  #           def install
+  #             bin.install "ironclad"
+  #           end
 
-            test do
-              assert_match version.to_s, shell_output("#{bin}/ironclad version")
-            end
-          end
-          EOF
+  #           test do
+  #             assert_match version.to_s, shell_output("#{bin}/ironclad version")
+  #           end
+  #         end
+  #         EOF
 
-      - name: Commit and push formula
-        working-directory: homebrew-tap
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/ironclad.rb
-          git diff --cached --quiet && echo "Formula unchanged" && exit 0
-          git commit -m "ironclad ${VERSION}"
-          git push
+  #     - name: Commit and push formula
+  #       working-directory: homebrew-tap
+  #       env:
+  #         VERSION: ${{ needs.preflight.outputs.version }}
+  #       run: |
+  #         git config user.name "github-actions[bot]"
+  #         git config user.email "github-actions[bot]@users.noreply.github.com"
+  #         git add Formula/ironclad.rb
+  #         git diff --cached --quiet && echo "Formula unchanged" && exit 0
+  #         git commit -m "ironclad ${VERSION}"
+  #         git push
 
   # ── Publish: Winget manifest ───────────────────────────
-  update-winget:
-    name: Update Winget Manifest
-    needs: [preflight, release]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Submit to winget-pkgs
-        uses: vedantmgoyal9/winget-releaser@v2
-        with:
-          identifier: RobotAccomplice.Ironclad
-          version: ${{ needs.preflight.outputs.version }}
-          installers-regex: '\.zip$'
-          token: ${{ secrets.WINGET_TOKEN }}
-          max-versions-to-keep: 5
+  # update-winget:
+  #   name: Update Winget Manifest
+  #   needs: [preflight, release]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Submit to winget-pkgs
+  #       uses: vedantmgoyal9/winget-releaser@v2
+  #       with:
+  #         identifier: RobotAccomplice.Ironclad
+  #         version: ${{ needs.preflight.outputs.version }}
+  #         installers-regex: '\.zip$'
+  #         token: ${{ secrets.WINGET_TOKEN }}
+  #         max-versions-to-keep: 5
 
   # ── Notify: release completion notification ───────────
   notify:
     name: Release Notification
-    needs: [preflight, build, publish, release, sync-site, update-homebrew, update-winget]
+    needs: [preflight, build, publish, release, sync-site] #, update-homebrew, update-winget]
     if: always()
     runs-on: ubuntu-latest
     env:
@@ -653,9 +653,7 @@ jobs:
         run: |
           if [ "${{ needs.publish.result }}" = "success" ] && \
              [ "${{ needs.release.result }}" = "success" ] && \
-             [ "${{ needs.sync-site.result }}" = "success" ] && \
-             [ "${{ needs.update-homebrew.result }}" = "success" ] && \
-             [ "${{ needs.update-winget.result }}" = "success" ]; then
+             [ "${{ needs.sync-site.result }}" = "success" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "emoji=✅" >> "$GITHUB_OUTPUT"
             echo "summary=All release stages completed successfully." >> "$GITHUB_OUTPUT"
@@ -708,8 +706,6 @@ jobs:
                 <tr style="background: #f6f8fa;"><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Crates.io Live</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ steps.verify-crates.outputs.crates_live == 'true' && '✅ Verified' || '⚠️ Not confirmed' }}</td></tr>
                 <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>GitHub Release</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.release.result }}</td></tr>
                 <tr style="background: #f6f8fa;"><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Site Sync</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.sync-site.result }}</td></tr>
-                <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Homebrew Tap</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.update-homebrew.result }}</td></tr>
-                <tr style="background: #f6f8fa;"><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Winget Manifest</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.update-winget.result }}</td></tr>
                 <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Build Matrix</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.build.result }}</td></tr>
               </table>
               <p style="margin: 16px 0 0 0; font-size: 14px;">
@@ -737,8 +733,6 @@ jobs:
             --arg publish "${{ needs.publish.result }}" \
             --arg gh_release "${{ needs.release.result }}" \
             --arg site "${{ needs.sync-site.result }}" \
-            --arg homebrew "${{ needs.update-homebrew.result }}" \
-            --arg winget "${{ needs.update-winget.result }}" \
             '{
               embeds: [{
                 title: $title,
@@ -748,9 +742,7 @@ jobs:
                 fields: [
                   { name: "Crates.io", value: $publish, inline: true },
                   { name: "GitHub Release", value: $gh_release, inline: true },
-                  { name: "Site Sync", value: $site, inline: true },
-                  { name: "Homebrew", value: $homebrew, inline: true },
-                  { name: "Winget", value: $winget, inline: true }
+                  { name: "Site Sync", value: $site, inline: true }
                 ],
                 footer: { text: "Workflow run" },
                 timestamp: (now | todate)
@@ -771,8 +763,6 @@ jobs:
           | Crates.io Publish | ${{ needs.publish.result }} |
           | GitHub Release | ${{ needs.release.result }} |
           | Site Sync | ${{ needs.sync-site.result }} |
-          | Homebrew Tap | ${{ needs.update-homebrew.result }} |
-          | Winget Manifest | ${{ needs.update-winget.result }} |
           | Build Matrix | ${{ needs.build.result }} |
 
           **Links:**
