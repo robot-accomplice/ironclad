@@ -507,6 +507,131 @@ pub(super) fn build_delegation_tool_definitions() -> Vec<ironclad_llm::format::T
     ]
 }
 
+/// Build tool definitions for virtual orchestration tools (manage subagent roster).
+///
+/// These are the "admin" counterpart to the delegation tools above — they let
+/// the orchestrator inspect and modify its subagent fleet at runtime.
+fn build_orchestration_tool_definitions() -> Vec<ironclad_llm::format::ToolDefinition> {
+    use ironclad_llm::format::ToolDefinition;
+
+    vec![
+        ToolDefinition {
+            name: "list-subagent-roster".into(),
+            description:
+                "List all configured subagents with their skills, models, runtime state, \
+                 and taskability. Use this before delegating to understand your available workforce."
+                    .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+            }),
+        },
+        ToolDefinition {
+            name: "list-available-skills".into(),
+            description:
+                "List skills registered in the workspace skill catalog. \
+                 Optionally filter by keyword."
+                    .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "Optional keyword to filter skills"
+                    }
+                },
+            }),
+        },
+        ToolDefinition {
+            name: "update-subagent-skills".into(),
+            description:
+                "Update the skill list for an existing subagent. \
+                 Can replace or append skills."
+                    .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Name of the subagent to update" },
+                    "skills": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "New skill/capability keywords"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["replace", "append"],
+                        "description": "Whether to replace all skills or append to existing (default: replace)"
+                    }
+                },
+                "required": ["name", "skills"]
+            }),
+        },
+        ToolDefinition {
+            name: "remove-subagent".into(),
+            description:
+                "Remove a subagent from the roster. Stops the runtime and deletes the DB record."
+                    .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Name of the subagent to remove" }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDefinition {
+            name: "assign-tasks".into(),
+            description:
+                "Delegate a single task to the best-matching running subagent. \
+                 Returns the subagent's response."
+                    .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "The task description to delegate" },
+                    "subagent": { "type": "string", "description": "Optional: specific subagent name" }
+                },
+                "required": ["task"]
+            }),
+        },
+        ToolDefinition {
+            name: "delegate-subagent".into(),
+            description:
+                "Delegate a task to a specific or best-matching subagent. \
+                 Supports multiple subtasks in a single call."
+                    .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "Primary task description" },
+                    "subtasks": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional: list of subtask strings"
+                    },
+                    "subagent": { "type": "string", "description": "Optional: specific subagent name" }
+                },
+                "required": ["task"]
+            }),
+        },
+        ToolDefinition {
+            name: "select-subagent-model".into(),
+            description:
+                "Select the best subagent and resolve its runtime model for a given task. \
+                 Does not execute the task — returns the selection decision."
+                    .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "Task description for matching" },
+                    "subagent": { "type": "string", "description": "Optional: prefer specific subagent" }
+                },
+                "required": ["task"]
+            }),
+        },
+    ]
+}
+
 /// Build tool definitions from the ToolRegistry (registered tools) plus virtual tools.
 ///
 /// This is the single source of truth for all tool definitions sent to the LLM provider.
@@ -516,6 +641,7 @@ pub(super) fn build_all_tool_definitions(
     use ironclad_llm::format::ToolDefinition;
 
     let mut defs = build_delegation_tool_definitions();
+    defs.extend(build_orchestration_tool_definitions());
 
     for tool in registry.list() {
         defs.push(ToolDefinition {

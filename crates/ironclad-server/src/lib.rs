@@ -32,6 +32,7 @@
 //! 5. Spawn background daemons (heartbeat, cron, cache flush, ANN rebuild)
 //! 6. Build axum router with auth + CORS + rate limiting
 
+pub mod abuse;
 pub mod api;
 pub mod auth;
 pub mod cli;

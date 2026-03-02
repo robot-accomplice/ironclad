@@ -191,13 +191,22 @@ pub(super) async fn prepare_inference(
     } else {
         system_prompt
     };
+    // Build tool definitions early so we can embed a text-based tool summary in the
+    // system prompt. This ensures models without native function-calling support can
+    // still discover and invoke tools via the text-embedded JSON format.
+    let tools = super::decomposition::build_all_tool_definitions(&state.tools);
+    let tool_summary: Vec<(String, String)> = tools
+        .iter()
+        .map(|t| (t.name.clone(), t.description.clone()))
+        .collect();
     let system_prompt = format!(
-        "{system_prompt}{}",
+        "{system_prompt}{}{}",
         ironclad_agent::prompt::runtime_metadata_block(
             env!("CARGO_PKG_VERSION"),
             &input.primary_model,
             &model,
-        )
+        ),
+        ironclad_agent::prompt::tool_use_instructions(&tool_summary),
     );
     let system_prompt =
         ironclad_agent::prompt::inject_hmac_boundary(&system_prompt, state.hmac_secret.as_ref());
@@ -307,9 +316,6 @@ pub(super) async fn prepare_inference(
     }
 
     ironclad_llm::tier::adapt_for_tier(tier, &mut messages, &input.tier_adapt);
-
-    // Build tool definitions from registry + virtual delegation tools
-    let tools = super::decomposition::build_all_tool_definitions(&state.tools);
 
     let request = ironclad_llm::format::UnifiedRequest {
         model: model_for_api.clone(),
