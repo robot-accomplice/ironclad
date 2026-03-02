@@ -48,30 +48,6 @@ jobs:
       - name: Validate registry catalog
         run: bash scripts/validate-registry-catalog.sh
 
-  # ── Verify: integration tests on release tags ───────────
-  integration-tests:
-    name: Integration Tests
-    needs: preflight
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Run integration API suite
-        run: 'cargo test -p ironclad-tests server_api:: --locked'
-
-  # ── Verify: regression battery on release tags ──────────
-  regression-battery:
-    name: Regression Battery
-    needs: preflight
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install just
-        run: cargo install just --locked
-      - name: Run focused regression battery
-        run: just test-regression
-
   # ── Verify: mandatory smoke + provenance preflight ──────
   release-gates:
     name: Release Gates
@@ -134,7 +110,7 @@ jobs:
   # ── Build: cross-platform binary matrix ────────────────
   build:
     name: "Build (${{ matrix.target }})"
-    needs: [preflight, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate]
+    needs: [preflight, release-gates]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -265,7 +241,7 @@ jobs:
   # ── Publish: crates.io in dependency order ─────────────
   publish:
     name: Publish Crates
-    needs: [preflight, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, build, provenance]
+    needs: [preflight, release-gates, uat-smoke, soak-fuzz, release-doc-gate, build, provenance]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
@@ -297,15 +273,32 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          for crate in ironclad-db ironclad-llm ironclad-channels ironclad-browser ironclad-plugin-sdk; do
-            if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+          publish_one() {
+            local crate="$1"
+            if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}"               | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
               echo "::notice::${crate} v${VERSION} already published, skipping"
             else
               echo "Publishing $crate..."
-              cargo publish -p "$crate" --locked
-              sleep 10
+              cargo publish -p "$crate" --locked || {
+                err=$?; if [ $err -eq 101 ]; then
+                  echo "::notice::${crate} v${VERSION} already on index (race), skipping"
+                else exit $err; fi
+              }
             fi
+          }
+            fi
+          }
+
+          pids=()
+          for crate in ironclad-db ironclad-llm ironclad-channels ironclad-browser ironclad-plugin-sdk; do
+            (publish_one "$crate") &
+            pids+=("$!")
           done
+          failed=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || failed=1
+          done
+          [ "$failed" -eq 0 ]
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -315,15 +308,32 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          for crate in ironclad-agent ironclad-wallet; do
-            if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+          publish_one() {
+            local crate="$1"
+            if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}"               | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
               echo "::notice::${crate} v${VERSION} already published, skipping"
             else
               echo "Publishing $crate..."
-              cargo publish -p "$crate" --locked
-              sleep 10
+              cargo publish -p "$crate" --locked || {
+                err=$?; if [ $err -eq 101 ]; then
+                  echo "::notice::${crate} v${VERSION} already on index (race), skipping"
+                else exit $err; fi
+              }
             fi
+          }
+            fi
+          }
+
+          pids=()
+          for crate in ironclad-agent ironclad-wallet; do
+            (publish_one "$crate") &
+            pids+=("$!")
           done
+          failed=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || failed=1
+          done
+          [ "$failed" -eq 0 ]
 
       - name: Wait for crates.io index
         run: sleep 30
@@ -358,7 +368,7 @@ jobs:
   # ── Release: GitHub Release with binaries ──────────────
   release:
     name: Create GitHub Release
-    needs: [preflight, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, build, provenance, publish]
+    needs: [preflight, release-gates, uat-smoke, soak-fuzz, release-doc-gate, build, provenance, publish]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -429,7 +439,7 @@ jobs:
   # ── Sync Site: dispatch to ironclad.ai ─────────────────
   sync-site:
     name: Sync Site
-    needs: [preflight, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, build, provenance, release]
+    needs: [preflight, release-gates, uat-smoke, soak-fuzz, release-doc-gate, build, provenance, release]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

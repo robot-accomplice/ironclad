@@ -335,6 +335,100 @@ ci-test:
         fi
     }
 
+    run_stage_parallel() {
+        local name="$1"; shift
+        local tmpdir
+        local failed=0
+        local -a pids=()
+        local -a labels=()
+        local -a logs=()
+
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  Stage: $name"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        tmpdir=$(mktemp -d)
+
+        while [ "$#" -gt 1 ]; do
+            local label="$1"; shift
+            local cmd="$1"; shift
+            local safe_label
+            safe_label=$(echo "$label" | tr -c 'A-Za-z0-9_-' '_')
+            local log="$tmpdir/${safe_label}.log"
+            (bash -lc "$cmd" >"$log" 2>&1) &
+            pids+=("$!")
+            labels+=("$label")
+            logs+=("$log")
+        done
+
+        for idx in "${!pids[@]}"; do
+            if wait "${pids[$idx]}"; then
+                echo "  ✔ ${labels[$idx]} passed"
+            else
+                echo "  ✘ ${labels[$idx]} FAILED"
+                failed=1
+                sed -n '1,160p' "${logs[$idx]}" || true
+            fi
+        done
+
+        rm -rf "$tmpdir"
+
+        if [ "$failed" -eq 0 ]; then
+            PASS=$((PASS + 1))
+            STAGES+=("✔ $name")
+        else
+            FAIL=$((FAIL + 1))
+            STAGES+=("✘ $name")
+        fi
+    }
+
+    parallel_crate_tests() {
+        local parallelism="${CI_TEST_PARALLELISM:-4}"
+        local tmpdir
+        local failed=0
+        local -a pids=()
+        local -a names=()
+        local total i j end_idx
+
+        tmpdir=$(mktemp -d)
+        echo "  Running ${#CRATES[@]} crates with parallelism=${parallelism}"
+        total=${#CRATES[@]}
+
+        for ((i = 0; i < total; i += parallelism)); do
+            pids=()
+            names=()
+            end_idx=$((i + parallelism - 1))
+            if [ "$end_idx" -ge "$total" ]; then
+                end_idx=$((total - 1))
+            fi
+
+            for ((j = i; j <= end_idx; j++)); do
+                crate="${CRATES[$j]}"
+                (
+                    cargo test -p "$crate" --verbose --locked >"$tmpdir/$crate.log" 2>&1
+                ) &
+                pids+=("$!")
+                names+=("$crate")
+            done
+
+            for idx in "${!pids[@]}"; do
+                pid="${pids[$idx]}"
+                crate="${names[$idx]}"
+                if wait "$pid"; then
+                    echo "  ✔ $crate passed"
+                else
+                    echo "  ✘ $crate FAILED"
+                    failed=1
+                    sed -n '1,160p' "$tmpdir/$crate.log" || true
+                fi
+            done
+        done
+
+        rm -rf "$tmpdir"
+        return "$failed"
+    }
+
     CRATES=(
         ironclad-core
         ironclad-db
@@ -359,11 +453,22 @@ ci-test:
     # Stage 2: Lint
     run_stage "Lint" cargo clippy --workspace --all-targets -- -D warnings
 
+<<<<<<< HEAD
     # Stage 3: Test (per-crate)
     for crate in "${CRATES[@]}"; do
         run_stage "Test ($crate)" cargo test -p "$crate" --verbose
     done
 
+=======
+    # Stage 3: Test (per-crate, parallelized)
+    run_stage "Test (per-crate parallel)" parallel_crate_tests
+
+    # Stage 3h: Harness quick (API surface smoke, parallelized)
+    run_stage_parallel "Harness Quick" \
+        "Harness Quick (unit)" "cargo test -p ironclad-harness --lib --locked -- --test-threads=4" \
+        "Harness Quick (API)" "cargo test -p ironclad-harness --test api_smoke --test api_sessions --test api_memory --test api_domain --test dashboard --locked -- --test-threads=4"
+
+>>>>>>> f40a6b6a (chore: parallelize CI workflow and local ci-test runtime)
     # Stage 4: Coverage gate (80% floor + no regression)
     COVERAGE_PCT=""
 
@@ -407,6 +512,7 @@ ci-test:
         STAGES+=("⊘ Coverage (skipped)")
     fi
 
+<<<<<<< HEAD
     # Stage 5: Build (debug)
     run_stage "Build (debug)" cargo build --bin ironclad
 
@@ -414,6 +520,15 @@ ci-test:
     run_stage "Build (release)" cargo build --release --bin ironclad
 
     # Stage 7: Security Audit
+=======
+    # Stage 5-7: Build + docs (parallelized)
+    run_stage_parallel "Build + Docs" \
+        "Build (debug)" "cargo build --bin ironclad --locked" \
+        "Build (release)" "cargo build --release --bin ironclad --locked" \
+        "Docs" "env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items"
+
+    # Stage 8: Security Audit
+>>>>>>> f40a6b6a (chore: parallelize CI workflow and local ci-test runtime)
     if command -v cargo-audit &>/dev/null; then
         run_stage "Security Audit" cargo audit
     else
@@ -422,9 +537,12 @@ ci-test:
         STAGES+=("⊘ Security Audit (skipped)")
     fi
 
+<<<<<<< HEAD
     # Stage 8: Docs
     run_stage "Docs" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
+=======
+>>>>>>> f40a6b6a (chore: parallelize CI workflow and local ci-test runtime)
     # Summary
     echo ""
     echo "╔══════════════════════════════════════════════════════╗"
