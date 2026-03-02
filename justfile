@@ -49,7 +49,7 @@ test-regression:
     cargo test -p ironclad-db retrieve_working_is_session_isolated
     cargo test -p ironclad-tests memory_retrieval_excludes_turn_summary_echoes
     cargo test -p ironclad-tests scoped_sessions_remain_isolated_between_peer_and_group
-    cargo test -p ironclad-tests router_falls_through_multiple_blocked_candidates
+    cargo test -p ironclad-server fallback_candidates_preserve_primary_and_dedup_primary_from_fallbacks
     cargo test -p ironclad-tests cron_schedule_rejects_invalid_timestamps
     cargo test -p ironclad-tests cron_schedule_rejects_invalid_expressions
     cargo test -p ironclad-server webhook_telegram_non_message_update_advances_offset
@@ -474,7 +474,47 @@ ci-test:
         "Harness Quick (unit)" "cargo test -p ironclad-harness --lib --locked -- --test-threads=4" \
         "Harness Quick (API)" "cargo test -p ironclad-harness --test api_smoke --test api_sessions --test api_memory --test api_domain --test dashboard --locked -- --test-threads=4"
 
-    # Stage 4: Coverage gate (80% floor + no regression)
+    # Stage 4: Wiring regression tripwires
+    wiring_tripwires() {
+        local agent_dir="crates/ironclad-server/src/api/routes/agent"
+        local handlers="$agent_dir/handlers.rs"
+        local channel="$agent_dir/channel_message.rs"
+        local core="$agent_dir/core.rs"
+
+        echo "  Checking for hardcoded empty tool-result ingestion..."
+        local empty_calls
+        empty_calls=$(rg -n 'post_turn_ingest\(.*&\[\]' "$agent_dir" || true)
+        if [ -n "$empty_calls" ]; then
+            echo "  FAIL: Found hardcoded empty tool_results passed to post_turn_ingest:"
+            echo "$empty_calls"
+            return 1
+        fi
+
+        echo "  Checking unified inference pipeline wiring (API + channel)..."
+        rg -q 'execute_inference_pipeline\(' "$handlers" || {
+            echo "  FAIL: API handler bypasses execute_inference_pipeline"
+            return 1
+        }
+        rg -q 'execute_inference_pipeline\(' "$channel" || {
+            echo "  FAIL: Channel handler bypasses execute_inference_pipeline"
+            return 1
+        }
+
+        echo "  Checking gate note + multi-tool parser wiring..."
+        rg -q 'build_gate_system_note\(' "$handlers" || {
+            echo "  FAIL: API path missing build_gate_system_note"
+            return 1
+        }
+        rg -q 'parse_tool_calls\(' "$core" || {
+            echo "  FAIL: ReAct loop missing parse_tool_calls"
+            return 1
+        }
+
+        return 0
+    }
+    run_stage "Wiring Tripwires" wiring_tripwires
+
+    # Stage 5: Coverage gate (80% floor + no regression)
     COVERAGE_PCT=""
 
     coverage_gate() {
@@ -517,13 +557,13 @@ ci-test:
         STAGES+=("⊘ Coverage (skipped)")
     fi
 
-    # Stage 5-7: Build + docs (parallelized)
+    # Stage 6-8: Build + docs (parallelized)
     run_stage_parallel "Build + Docs" \
         "Build (debug)" "cargo build --bin ironclad --locked" \
         "Build (release)" "cargo build --release --bin ironclad --locked" \
         "Docs" "env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items"
 
-    # Stage 8: Security Audit
+    # Stage 9: Security Audit
     if command -v cargo-audit &>/dev/null; then
         run_stage "Security Audit" cargo audit
     else

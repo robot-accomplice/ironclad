@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use ironclad_core::config::{DigestConfig, SessionConfig};
 use ironclad_db::Database;
 use ironclad_llm::format::UnifiedMessage;
@@ -47,6 +48,9 @@ impl SessionGovernor {
                 continue;
             }
             expired += 1;
+        }
+        if let Err(e) = self.decay_episodic_importance(db) {
+            tracing::warn!(error = %e, "episodic importance decay failed during governor tick");
         }
         Ok(expired)
     }
@@ -115,6 +119,54 @@ impl SessionGovernor {
         );
         ironclad_db::sessions::append_message(db, session_id, "system", &digest)?;
         Ok(())
+    }
+
+    fn decay_episodic_importance(&self, db: &Database) -> ironclad_core::Result<usize> {
+        let half_life_days = self.digest_config.decay_half_life_days as f64;
+        if half_life_days <= 0.0 {
+            return Ok(0);
+        }
+
+        let now = Utc::now();
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT id, importance, created_at FROM episodic_memory")
+            .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let importance: i32 = row.get(1)?;
+                let created_at: String = row.get(2)?;
+                Ok((id, importance, created_at))
+            })
+            .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+
+        let mut updates: Vec<(String, i32)> = Vec::new();
+        for row in rows {
+            let (id, importance, created_at) =
+                row.map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+            if let Ok(created_dt) = DateTime::parse_from_rfc3339(&created_at) {
+                let age_days = (now - created_dt.with_timezone(&Utc))
+                    .to_std()
+                    .map(|d| d.as_secs_f64() / 86_400.0)
+                    .unwrap_or(0.0);
+                let decayed = crate::digest::decay_importance(importance, age_days, half_life_days);
+                if decayed != importance {
+                    updates.push((id, decayed));
+                }
+            }
+        }
+        drop(stmt);
+
+        for (id, new_importance) in &updates {
+            conn.execute(
+                "UPDATE episodic_memory SET importance = ?1 WHERE id = ?2",
+                (&new_importance, id),
+            )
+            .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+        }
+
+        Ok(updates.len())
     }
 }
 

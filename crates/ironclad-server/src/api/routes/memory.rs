@@ -201,7 +201,7 @@ pub async fn knowledge_ingest(
     } else if target.is_file() {
         match ingest_file(&state.db, target) {
             Ok(r) => vec![r],
-            Err(e) => return Err(bad_request(&format!("{e}"))),
+            Err(e) => return Err(bad_request(format!("{e}"))),
         }
     } else {
         return Err(bad_request("path does not exist or is not accessible"));

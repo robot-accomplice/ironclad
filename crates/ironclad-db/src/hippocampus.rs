@@ -27,6 +27,7 @@ pub struct ColumnDef {
 }
 
 /// Register a table in the hippocampus.
+#[allow(clippy::too_many_arguments)]
 pub fn register_table(
     db: &Database,
     table_name: &str,
@@ -77,7 +78,9 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<SchemaEntry> {
         agent_owned: row.get::<_, i32>(4)? != 0,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
-        access_level: row.get::<_, Option<String>>(7)?.unwrap_or_else(|| "internal".into()),
+        access_level: row
+            .get::<_, Option<String>>(7)?
+            .unwrap_or_else(|| "internal".into()),
         row_count: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
     })
 }
@@ -443,21 +446,21 @@ pub fn bootstrap_hippocampus(db: &Database) -> Result<()> {
         let (description, access_level) = system_table_metadata(name);
 
         // Preserve existing agent-owned entries — only upsert system tables
-        if let Some(existing) = get_table(db, name)? {
-            if existing.agent_owned {
-                // Update row_count only for agent-owned tables, keep their metadata
-                register_table(
-                    db,
-                    name,
-                    &existing.description,
-                    columns,
-                    &existing.created_by,
-                    true,
-                    &existing.access_level,
-                    *row_count,
-                )?;
-                continue;
-            }
+        if let Some(existing) = get_table(db, name)?
+            && existing.agent_owned
+        {
+            // Update row_count only for agent-owned tables, keep their metadata
+            register_table(
+                db,
+                name,
+                &existing.description,
+                columns,
+                &existing.created_by,
+                true,
+                &existing.access_level,
+                *row_count,
+            )?;
+            continue;
         }
 
         register_table(
@@ -656,7 +659,17 @@ mod tests {
                 description: None,
             },
         ];
-        register_table(&db, "users", "User records", &cols, "system", false, "read", 0).unwrap();
+        register_table(
+            &db,
+            "users",
+            "User records",
+            &cols,
+            "system",
+            false,
+            "read",
+            0,
+        )
+        .unwrap();
 
         let entry = get_table(&db, "users").unwrap().unwrap();
         assert_eq!(entry.table_name, "users");
@@ -689,8 +702,28 @@ mod tests {
     fn list_tables_grows_with_registration() {
         let db = test_db();
         let before = list_tables(&db).unwrap().len();
-        register_table(&db, "custom_a", "Table A", &[], "test", false, "internal", 0).unwrap();
-        register_table(&db, "custom_b", "Table B", &[], "test", false, "internal", 0).unwrap();
+        register_table(
+            &db,
+            "custom_a",
+            "Table A",
+            &[],
+            "test",
+            false,
+            "internal",
+            0,
+        )
+        .unwrap();
+        register_table(
+            &db,
+            "custom_b",
+            "Table B",
+            &[],
+            "test",
+            false,
+            "internal",
+            0,
+        )
+        .unwrap();
         let after = list_tables(&db).unwrap().len();
         assert_eq!(after, before + 2);
     }
@@ -834,7 +867,17 @@ mod tests {
     #[test]
     fn register_table_upsert() {
         let db = test_db();
-        register_table(&db, "test", "Version 1", &[], "system", false, "internal", 0).unwrap();
+        register_table(
+            &db,
+            "test",
+            "Version 1",
+            &[],
+            "system",
+            false,
+            "internal",
+            0,
+        )
+        .unwrap();
         register_table(&db, "test", "Version 2", &[], "system", false, "read", 42).unwrap();
 
         let entry = get_table(&db, "test").unwrap().unwrap();
@@ -978,8 +1021,17 @@ mod tests {
             nullable: false,
             description: None,
         }];
-        register_table(&db, "metrics", "Metric values", &cols, "system", false, "internal", 0)
-            .unwrap();
+        register_table(
+            &db,
+            "metrics",
+            "Metric values",
+            &cols,
+            "system",
+            false,
+            "internal",
+            0,
+        )
+        .unwrap();
 
         let summary = schema_summary(&db).unwrap();
         assert!(summary.contains("`val` (REAL)"));

@@ -11,8 +11,8 @@ use ironclad_core::InputAuthority;
 
 use super::core;
 use super::decomposition::{
-    DecompositionOutcome, DelegationProvenance, apply_decomposition_decision,
-    evaluate_decomposition_gate,
+    DecompositionDecision, DecompositionOutcome, DelegationProvenance,
+    apply_decomposition_decision, build_gate_system_note, evaluate_decomposition_gate,
 };
 use super::resolve_web_scope;
 use super::{AgentMessageRequest, AppState};
@@ -196,6 +196,51 @@ pub async fn agent_message(
         DecompositionOutcome::Delegated { workflow_note } => Some(workflow_note),
     };
 
+    // ── Gate system note & delegated execution ─────────────────────
+    let gate_system_note =
+        build_gate_system_note(&gate_decision, delegation_workflow_note.as_deref());
+
+    let authority = if reduced_authority {
+        InputAuthority::External
+    } else {
+        InputAuthority::Creator
+    };
+    let mut delegation_provenance = DelegationProvenance::default();
+    let delegated_execution_note = if let DecompositionDecision::Delegated(plan) = &gate_decision {
+        let delegated_params = serde_json::json!({
+            "task": user_content,
+            "subtasks": plan.subtasks,
+        });
+        match super::execute_tool_call(
+            &state,
+            "orchestrate-subagents",
+            &delegated_params,
+            &turn_id,
+            authority,
+            Some("api"),
+        )
+        .await
+        {
+            Ok(output) => {
+                delegation_provenance.subagent_task_started = true;
+                delegation_provenance.subagent_task_completed = true;
+                delegation_provenance.subagent_result_attached = !output.trim().is_empty();
+                Some(format!(
+                    "Delegated subagent execution completed this turn. Verified output:\n{}",
+                    output
+                ))
+            }
+            Err(err) => {
+                delegation_provenance.subagent_task_started = true;
+                Some(format!(
+                    "Delegation was attempted this turn but failed: {err}"
+                ))
+            }
+        }
+    } else {
+        None
+    };
+
     // ── Prepare inference via core ───────────────────────────────────
     let config = state.config.read().await;
     let agent_name = config.agent.name.clone();
@@ -221,8 +266,8 @@ pub async fn agent_message(
         tier_adapt,
         delegation_workflow_note,
         inject_diagnostics: true,
-        gate_system_note: None,
-        delegated_execution_note: None,
+        gate_system_note: Some(gate_system_note),
+        delegated_execution_note,
     };
 
     let prepared = match core::prepare_inference(&input).await {
@@ -238,129 +283,30 @@ pub async fn agent_message(
         }
     };
 
-    // ── Cache check ──────────────────────────────────────────────────
-    let cached_response = core::check_cache(
-        &state,
-        &user_content,
-        &prepared.cache_hash,
-        prepared.query_embedding.as_deref(),
-    )
-    .await;
-
-    if let Some(cached) = cached_response {
-        let asst_id = match ironclad_db::sessions::append_message(
-            &state.db,
-            &session_id,
-            "assistant",
-            &cached.content,
-        ) {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to store cached response");
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-                drop(llm);
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    axum::Json(json!({"error": "internal server error"})),
-                ));
-            }
-        };
-
-        core::record_cost(
-            &state,
-            &cached.model,
-            &prepared.provider_prefix,
-            0,
-            0,
-            0.0,
-            Some("cached"),
-            true,
-            Some(0), // cache hit — zero latency
-            None,
-            false,
-        );
-
-        {
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-        }
-
-        return Ok(axum::Json(json!({
-            "session_id": session_id,
-            "nickname": session_nickname,
-            "user_message_id": user_msg_id,
-            "assistant_message_id": asst_id,
-            "content": cached.content,
-            "model": cached.model,
-            "cached": true,
-            "tokens_saved": cached.tokens_saved,
-        })));
-    }
-
-    // ── Inference + ReAct loop ───────────────────────────────────────
-    let authority = if reduced_authority {
-        InputAuthority::External
-    } else {
-        InputAuthority::Creator
-    };
-    let mut delegation_provenance = DelegationProvenance::default();
-    let inference = core::run_inference_and_react(
+    // ── Unified inference pipeline (cache → inference → post-turn) ──
+    let result = match core::execute_inference_pipeline(
         &state,
         &prepared,
+        &session_id,
+        &user_content,
         &turn_id,
         authority,
         Some("api"),
         &mut delegation_provenance,
     )
-    .await;
-    let assistant_content = inference.content;
-
-    // ── Post-turn: store, cost, ingest, cache ────────────────────────
-    let asst_id = match ironclad_db::sessions::append_message(
-        &state.db,
-        &session_id,
-        "assistant",
-        &assistant_content,
-    ) {
-        Ok(id) => id,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to store assistant response");
+    .await
+    {
+        Ok(r) => r,
+        Err(msg) => {
             let mut llm = state.llm.write().await;
             llm.dedup.release(&dedup_fp);
             drop(llm);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": "internal server error"})),
+                axum::Json(json!({"error": msg})),
             ));
         }
     };
-
-    core::record_cost(
-        &state,
-        &inference.model,
-        &prepared.provider_prefix,
-        inference.tokens_in,
-        inference.tokens_out,
-        inference.cost,
-        None,
-        false,
-        Some(inference.latency_ms as i64),
-        Some(inference.quality_score),
-        inference.escalated,
-    );
-
-    core::post_turn_ingest(&state, &session_id, &user_content, &assistant_content);
-
-    core::store_in_cache(
-        &state,
-        &prepared.cache_hash,
-        &user_content,
-        &assistant_content,
-        &inference.model,
-        inference.tokens_out,
-    )
-    .await;
 
     // Release dedup tracking so subsequent identical requests are allowed
     {
@@ -396,16 +342,17 @@ pub async fn agent_message(
         "session_id": session_id,
         "nickname": session_nickname,
         "user_message_id": user_msg_id,
-        "assistant_message_id": asst_id,
-        "content": assistant_content,
-        "model": inference.model,
-        "cached": false,
-        "tokens_in": inference.tokens_in,
-        "tokens_out": inference.tokens_out,
-        "cost": inference.cost,
+        "assistant_message_id": result.assistant_message_id,
+        "content": result.content,
+        "model": result.model,
+        "cached": result.cached,
+        "tokens_saved": result.tokens_saved,
+        "tokens_in": result.tokens_in,
+        "tokens_out": result.tokens_out,
+        "cost": result.cost,
         "threat_score": threat.value(),
         "reduced_authority": reduced_authority,
-        "react_turns": inference.react_turns,
+        "react_turns": result.react_turns,
     })))
 }
 
@@ -487,6 +434,7 @@ pub(super) async fn refine_session_nickname(
         temperature: Some(0.3),
         system: None,
         quality_target: None,
+        tools: vec![],
     };
 
     let body = ironclad_llm::format::translate_request(&req, format)?;

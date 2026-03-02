@@ -116,6 +116,7 @@ pub async fn interview_turn(
         temperature: None,
         system: None,
         quality_target: None,
+        tools: vec![],
     };
     match super::agent::infer_content_with_fallback(&state, &req, &model).await {
         Ok(content) => {

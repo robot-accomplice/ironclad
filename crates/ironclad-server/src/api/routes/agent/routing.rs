@@ -222,21 +222,52 @@ pub(super) async fn select_routed_model_with_audit(
             &llm_read.breakers,
         );
 
+        // Tiered feedback: adjust local/cloud preference from observed escalation behavior.
+        // If local acceptance is low, penalize local candidates and favor cloud candidates.
+        // If local acceptance is high, bias in the opposite direction.
+        let local_total = llm_read.escalation.local_accepted + llm_read.escalation.local_escalated;
+        let local_acceptance = llm_read.escalation.local_acceptance_rate();
+        let escalation_bias = if local_total >= 5 {
+            // Map [0,1] acceptance -> [-0.10, +0.10] score delta.
+            ((local_acceptance - 0.5) * 0.2).clamp(-0.10, 0.10)
+        } else {
+            0.0
+        };
+
         // Build audit entries for all profiled candidates.
+        let mut best_selection: Option<(String, ironclad_llm::MetascoreBreakdown, f64)> = None;
         for profile in &profiles {
-            let breakdown = profile.metascore(complexity, cost_aware);
+            let mut breakdown = profile.metascore(complexity, cost_aware);
+            if escalation_bias != 0.0 {
+                let delta = if profile.is_local {
+                    escalation_bias
+                } else {
+                    -escalation_bias
+                };
+                breakdown.final_score = (breakdown.final_score + delta).clamp(0.0, 1.0);
+            }
             let mut c = evaluate(&profile.model_name, "metascore_candidate");
             c.metascore = Some(breakdown.final_score);
             candidates.push(c);
+
+            match &best_selection {
+                Some((_, _, best_score)) if breakdown.final_score <= *best_score => {}
+                _ => {
+                    best_selection = Some((
+                        profile.model_name.clone(),
+                        breakdown.clone(),
+                        breakdown.final_score,
+                    ));
+                }
+            }
         }
 
-        if let Some((selected, breakdown)) =
-            ironclad_llm::select_by_metascore(&profiles, complexity, cost_aware)
-        {
+        if let Some((selected, breakdown, _)) = best_selection {
             let strategy = format!(
-                "metascore_{:.3}_c{complexity:.2}{}",
+                "metascore_{:.3}_c{complexity:.2}{}{}",
                 breakdown.final_score,
-                if cost_aware { "_cost" } else { "" }
+                if cost_aware { "_cost" } else { "" },
+                if escalation_bias != 0.0 { "_esc" } else { "" }
             );
             tracing::debug!(
                 model = selected.as_str(),
@@ -248,6 +279,9 @@ pub(super) async fn select_routed_model_with_audit(
                 availability = breakdown.availability,
                 locality = breakdown.locality,
                 confidence = breakdown.confidence,
+                escalation_bias,
+                local_acceptance,
+                local_total,
                 "metascore routing selected model"
             );
             return ModelSelectionAudit {
@@ -376,7 +410,11 @@ pub(super) async fn infer_with_fallback(
     let escalation_budget_ms = config.models.tiered_inference.escalation_latency_budget_ms;
     drop(config);
 
-    let confidence_eval = ironclad_llm::ConfidenceEvaluator::new(confidence_floor);
+    // Use the shared ConfidenceEvaluator from LlmService rather than constructing a local copy.
+    let confidence_eval = {
+        let llm = state.llm.read().await;
+        llm.confidence.clone()
+    };
     let mut fallback_result: Option<InferenceResult> = None;
     let mut last_error = String::new();
 
@@ -448,16 +486,20 @@ pub(super) async fn infer_with_fallback(
                     estimate_cost_from_provider(resolved.cost_in, resolved.cost_out, tin, tout);
                 let total_tokens = tin.max(0) as u64 + tout.max(0) as u64;
 
-                // Evaluate confidence before acquiring write lock (pure computation).
+                // Evaluate confidence for ALL models (feeds quality tracker).
+                // Escalation is only considered for local models when tiered inference is on.
                 let latency_ms = inference_start.elapsed().as_millis() as u64;
-                let (should_escalate, confidence) = if tiered_enabled && resolved.is_local {
-                    let conf = confidence_eval.evaluate(&unified_resp.content, latency_ms);
-                    (
-                        conf < confidence_floor && latency_ms < escalation_budget_ms,
-                        conf,
-                    )
+                let confidence = confidence_eval.evaluate(&unified_resp.content, latency_ms);
+                let should_escalate = tiered_enabled
+                    && resolved.is_local
+                    && confidence < confidence_floor
+                    && latency_ms < escalation_budget_ms;
+
+                // Quality score: use actual confidence rather than binary 0.5/1.0.
+                let quality_score = if unified_resp.content.trim().is_empty() {
+                    0.0
                 } else {
-                    (false, 1.0)
+                    confidence
                 };
 
                 // Single write lock for all recording: breakers, capacity, quality, escalation.
@@ -467,11 +509,6 @@ pub(super) async fn infer_with_fallback(
                 let pressured = llm.capacity.is_sustained_hot(&resolved.provider_prefix);
                 llm.breakers
                     .set_capacity_pressure(&resolved.provider_prefix, pressured);
-                let quality_score = if unified_resp.content.trim().is_empty() {
-                    0.5
-                } else {
-                    1.0
-                };
                 llm.quality.record(model, quality_score);
                 if tiered_enabled {
                     if resolved.is_local {

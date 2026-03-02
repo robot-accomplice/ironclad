@@ -44,7 +44,7 @@ pub mod rate_limit;
 pub mod ws;
 pub mod ws_ticket;
 
-pub use api::{AppState, PersonalityState, build_public_router, build_router};
+pub use api::{AppState, PersonalityState, build_mcp_router, build_public_router, build_router};
 pub use dashboard::{build_dashboard_html, dashboard_handler};
 pub use ws::{EventBus, ws_route};
 pub use ws_ticket::TicketStore;
@@ -229,7 +229,14 @@ pub async fn bootstrap_with_config_path(
         Ok(n) => tracing::info!(count = n, "Backfilled session nicknames"),
         Err(e) => tracing::warn!(error = %e, "Failed to backfill session nicknames"),
     }
-    let llm = LlmService::new(&config)?;
+    let mut llm = LlmService::new(&config)?;
+    // Seed quality tracker with recent observations so metascore routing
+    // has a warm start instead of assuming 0.8 for every model.
+    match ironclad_db::metrics::recent_quality_scores(&db, 200) {
+        Ok(scores) if !scores.is_empty() => llm.quality.seed_from_history(&scores),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "failed to seed quality tracker from history"),
+    }
     let wallet = WalletService::new(&config).await?;
     let a2a = A2aProtocol::new(config.a2a.clone());
     let plugin_registry = plugins::init_plugin_registry(&config.plugins).await;
@@ -1053,10 +1060,16 @@ pub async fn bootstrap_with_config_path(
         ),
     );
 
+    // MCP protocol endpoint uses bearer token auth (same API key).
+    // Lives outside the main API-key middleware because the MCP transport
+    // service (StreamableHttpService) needs its own route handling.
+    let mcp_routes = build_mcp_router(&state, config.server.api_key.clone());
+
     let public_routes = build_public_router(state);
 
     let app = authed_routes
         .merge(ws_routes)
+        .merge(mcp_routes)
         .merge(public_routes)
         .layer(cors)
         .layer(rate_limiter);

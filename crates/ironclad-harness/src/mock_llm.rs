@@ -19,8 +19,9 @@
 //! ```
 
 use serde_json::Value;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 /// A WireMock-backed server that impersonates an LLM provider.
 pub struct MockLlmServer {
@@ -135,6 +136,40 @@ impl MockLlmServer {
             .await;
     }
 
+    /// Mount a sequenced responder that returns different responses for
+    /// successive requests. The first request gets `responses[0]`, the second
+    /// gets `responses[1]`, etc. After the list is exhausted, the last
+    /// response is repeated for any overflow (background tasks, etc.).
+    ///
+    /// This is essential for ReAct-loop testing where the first LLM call
+    /// must return a tool_call and subsequent calls return text.
+    ///
+    /// NOTE: WireMock's `expect(n)` is verification-only — it does NOT
+    /// deactivate a mock after `n` matches. A single mock with a stateful
+    /// responder is the correct way to serve different responses in order.
+    pub async fn enqueue_sequence(&self, responses: Vec<Value>) {
+        assert!(
+            !responses.is_empty(),
+            "enqueue_sequence requires at least one response"
+        );
+        let templates: Vec<ResponseTemplate> = responses
+            .into_iter()
+            .map(|body| {
+                ResponseTemplate::new(200)
+                    .set_body_json(&body)
+                    .insert_header("content-type", "application/json")
+            })
+            .collect();
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(SequencedResponder {
+                responses: templates,
+                counter: AtomicUsize::new(0),
+            })
+            .mount(&self.server)
+            .await;
+    }
+
     /// Verify all expected requests were received.
     /// Panics if any enqueued mock was not consumed.
     pub async fn verify(&self) {
@@ -150,6 +185,24 @@ impl MockLlmServer {
             .await
             .unwrap_or_default()
             .len()
+    }
+}
+
+/// Stateful responder that serves different responses in sequence.
+///
+/// Returns `responses[0]` for the first request, `responses[1]` for the second,
+/// etc. After the list is exhausted, the last response repeats indefinitely.
+struct SequencedResponder {
+    responses: Vec<ResponseTemplate>,
+    counter: AtomicUsize,
+}
+
+impl Respond for SequencedResponder {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        let idx = self.counter.fetch_add(1, Ordering::SeqCst);
+        // Clamp to the last response for overflow
+        let effective = idx.min(self.responses.len() - 1);
+        self.responses[effective].clone()
     }
 }
 

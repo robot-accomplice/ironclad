@@ -20,7 +20,7 @@ use super::guards::{enforce_non_repetition, enforce_subagent_claim_guard};
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
 };
-use super::tools::{execute_tool_call, parse_tool_call};
+use super::tools::{execute_tool_call, parse_tool_call, parse_tool_calls};
 
 /// Caller-supplied context that differs across the three entry points.
 pub(super) struct InferenceInput<'a> {
@@ -70,6 +70,8 @@ pub(super) struct InferenceOutput {
     pub latency_ms: u64,
     pub quality_score: f64,
     pub escalated: bool,
+    /// Tool calls executed during the ReAct loop: (tool_name, result_text).
+    pub tool_results: Vec<(String, String)>,
 }
 
 /// Build a `PreparedInference` from the caller's `InferenceInput`.
@@ -212,6 +214,35 @@ pub(super) async fn prepare_inference(
         &history,
     );
 
+    // Session checkpoint restore: inject most recent checkpoint context on resume.
+    match ironclad_db::checkpoint::load_checkpoint(&state.db, input.session_id) {
+        Ok(Some(cp)) => {
+            let mut checkpoint_note = format!(
+                "Session checkpoint restore (turn_count={}): {}",
+                cp.turn_count, cp.memory_summary
+            );
+            if let Some(active_tasks) = cp.active_tasks
+                && !active_tasks.trim().is_empty()
+            {
+                checkpoint_note.push_str("\nActive tasks: ");
+                checkpoint_note.push_str(&active_tasks);
+            }
+            if let Some(digest) = cp.conversation_digest
+                && !digest.trim().is_empty()
+            {
+                checkpoint_note.push_str("\nConversation digest: ");
+                checkpoint_note.push_str(&digest);
+            }
+            messages.push(ironclad_llm::format::UnifiedMessage {
+                role: "system".into(),
+                content: checkpoint_note,
+                parts: None,
+            });
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "failed to load context checkpoint"),
+    }
+
     // Hippocampus context: compact table summary for ambient storage awareness
     match ironclad_db::hippocampus::compact_summary(&state.db) {
         Ok(summary) if !summary.is_empty() => {
@@ -277,6 +308,9 @@ pub(super) async fn prepare_inference(
 
     ironclad_llm::tier::adapt_for_tier(tier, &mut messages, &input.tier_adapt);
 
+    // Build tool definitions from registry + virtual delegation tools
+    let tools = super::decomposition::build_all_tool_definitions(&state.tools);
+
     let request = ironclad_llm::format::UnifiedRequest {
         model: model_for_api.clone(),
         messages,
@@ -284,6 +318,7 @@ pub(super) async fn prepare_inference(
         temperature: None,
         system: None,
         quality_target: None,
+        tools,
     };
 
     Ok(PreparedInference {
@@ -329,35 +364,51 @@ pub(super) async fn run_inference_and_react(
     delegation_provenance: &mut DelegationProvenance,
 ) -> InferenceOutput {
     // Initial inference
-    let (initial_content, mut total_in, mut total_out, mut total_cost, latency_ms, quality_score, escalated) =
-        match infer_with_fallback(state, &prepared.request, &prepared.model).await {
-            Ok(result) => (
-                result.content,
-                result.tokens_in,
-                result.tokens_out,
-                result.cost,
-                result.latency_ms,
-                result.quality_score,
-                result.escalated,
-            ),
-            Err(last_error) => (
-                super::tools::provider_failure_user_message(&last_error.to_string(), true),
-                0,
-                0,
-                0.0,
-                0,
-                0.0,
-                false,
-            ),
-        };
+    let (
+        initial_content,
+        mut total_in,
+        mut total_out,
+        mut total_cost,
+        latency_ms,
+        quality_score,
+        escalated,
+    ) = match infer_with_fallback(state, &prepared.request, &prepared.model).await {
+        Ok(result) => (
+            result.content,
+            result.tokens_in,
+            result.tokens_out,
+            result.cost,
+            result.latency_ms,
+            result.quality_score,
+            result.escalated,
+        ),
+        Err(last_error) => (
+            super::tools::provider_failure_user_message(&last_error.to_string(), true),
+            0,
+            0,
+            0.0,
+            0,
+            0.0,
+            false,
+        ),
+    };
 
     let initial_content = sanitize_model_output(initial_content, state.hmac_secret.as_ref());
 
-    // ReAct loop
+    // ReAct loop — supports multiple tool calls per LLM turn
     let mut react_loop = AgentLoop::new(10);
     let mut final_content = initial_content.clone();
+    let mut tool_results_acc: Vec<(String, String)> = Vec::new();
 
-    if let Some((tool_name, tool_params)) = parse_tool_call(&initial_content) {
+    let mut pending_calls = parse_tool_calls(&initial_content);
+    // Fall back to single-parse for edge cases (e.g. embedded JSON)
+    if pending_calls.is_empty()
+        && let Some(single) = parse_tool_call(&initial_content)
+    {
+        pending_calls.push(single);
+    }
+
+    if !pending_calls.is_empty() {
         react_loop.transition(ReactAction::Think);
         let mut react_messages = prepared.request.messages.clone();
         react_messages.push(ironclad_llm::format::UnifiedMessage {
@@ -366,61 +417,80 @@ pub(super) async fn run_inference_and_react(
             parts: None,
         });
 
-        let mut current_tool = Some((tool_name, tool_params));
+        while !pending_calls.is_empty() {
+            let mut observations = Vec::new();
+            let mut batch_aborted = false;
 
-        while let Some((ref tn, ref tp)) = current_tool {
-            // Loop detection: break if the same tool+params repeats consecutively
-            if react_loop.is_looping(tn, &tp.to_string()) {
-                tracing::warn!(
-                    tool = tn.as_str(),
-                    "ReAct loop detected — same tool+params repeated"
-                );
-                break;
-            }
-
-            // Track delegation provenance for channel claim guard
-            if tn.to_ascii_lowercase().contains("subagent")
-                || tn.to_ascii_lowercase().contains("delegate")
-            {
-                delegation_provenance.subagent_task_started = true;
-            }
-
-            react_loop.transition(ReactAction::Act {
-                tool_name: tn.clone(),
-                params: tp.to_string(),
-            });
-            if react_loop.state == ReactState::Done {
-                break;
-            }
-
-            let tool_result =
-                execute_tool_call(state, tn, tp, turn_id, authority, channel_label).await;
-            let observation = match tool_result {
-                Ok(ref out) => {
-                    if tn.to_ascii_lowercase().contains("subagent")
-                        || tn.to_ascii_lowercase().contains("delegate")
-                    {
-                        delegation_provenance.subagent_task_completed = true;
-                        delegation_provenance.subagent_result_attached = !out.trim().is_empty();
-                    }
-                    format!("[Tool {tn} succeeded]: {out}")
+            for (tn, tp) in &pending_calls {
+                // Loop detection: break if the same tool+params repeats consecutively
+                if react_loop.is_looping(tn, &tp.to_string()) {
+                    tracing::warn!(
+                        tool = tn.as_str(),
+                        "ReAct loop detected — same tool+params repeated"
+                    );
+                    batch_aborted = true;
+                    break;
                 }
-                Err(ref err) => format!("[Tool {tn} failed]: {err}"),
-            };
-            let observation = if ironclad_agent::injection::scan_output(&observation) {
-                tracing::warn!(
-                    tool = tn.as_str(),
-                    "tool result flagged by output scan, sanitizing"
-                );
-                format!("[Tool {tn} result blocked by safety filter]")
-            } else {
-                observation
-            };
+
+                // Track delegation provenance for channel claim guard
+                if tn.to_ascii_lowercase().contains("subagent")
+                    || tn.to_ascii_lowercase().contains("delegate")
+                {
+                    delegation_provenance.subagent_task_started = true;
+                }
+
+                react_loop.transition(ReactAction::Act {
+                    tool_name: tn.clone(),
+                    params: tp.to_string(),
+                });
+                if react_loop.state == ReactState::Done {
+                    batch_aborted = true;
+                    break;
+                }
+
+                let tool_result =
+                    execute_tool_call(state, tn, tp, turn_id, authority, channel_label).await;
+                let observation = match tool_result {
+                    Ok(ref out) => {
+                        if tn.to_ascii_lowercase().contains("subagent")
+                            || tn.to_ascii_lowercase().contains("delegate")
+                        {
+                            delegation_provenance.subagent_task_completed = true;
+                            delegation_provenance.subagent_result_attached = !out.trim().is_empty();
+                        }
+                        format!("[Tool {tn} succeeded]: {out}")
+                    }
+                    Err(ref err) => format!("[Tool {tn} failed]: {err}"),
+                };
+                // Accumulate tool results for memory ingestion
+                let result_text = match &tool_result {
+                    Ok(out) => out.clone(),
+                    Err(err) => format!("error: {err}"),
+                };
+                tool_results_acc.push((tn.clone(), result_text));
+
+                let observation = if ironclad_agent::injection::scan_output(&observation) {
+                    tracing::warn!(
+                        tool = tn.as_str(),
+                        "tool result flagged by output scan, sanitizing"
+                    );
+                    format!("[Tool {tn} result blocked by safety filter]")
+                } else {
+                    observation
+                };
+
+                observations.push(observation);
+            }
+
+            if batch_aborted && observations.is_empty() {
+                break;
+            }
 
             react_loop.transition(ReactAction::Observe);
+            let combined_observation = observations.join("\n\n");
             react_messages.push(ironclad_llm::format::UnifiedMessage {
                 role: "user".into(),
-                content: observation,
+                content: combined_observation,
                 parts: None,
             });
 
@@ -435,6 +505,7 @@ pub(super) async fn run_inference_and_react(
                 temperature: None,
                 system: None,
                 quality_target: None,
+                tools: prepared.request.tools.clone(),
             };
 
             let follow_content =
@@ -456,8 +527,13 @@ pub(super) async fn run_inference_and_react(
 
             let follow_content = sanitize_model_output(follow_content, state.hmac_secret.as_ref());
 
-            current_tool = parse_tool_call(&follow_content);
-            if current_tool.is_none() {
+            pending_calls = parse_tool_calls(&follow_content);
+            if pending_calls.is_empty()
+                && let Some(single) = parse_tool_call(&follow_content)
+            {
+                pending_calls.push(single);
+            }
+            if pending_calls.is_empty() {
                 react_loop.transition(ReactAction::Finish);
                 final_content = follow_content;
             }
@@ -479,6 +555,7 @@ pub(super) async fn run_inference_and_react(
         latency_ms,
         quality_score,
         escalated,
+        tool_results: tool_results_acc,
     }
 }
 
@@ -529,15 +606,17 @@ pub(super) fn post_turn_ingest(
     session_id: &str,
     user_content: &str,
     assistant_content: &str,
+    tool_results: &[(String, String)],
 ) {
     let db = state.db.clone();
     let config = Arc::clone(&state.config);
     let session = session_id.to_string();
     let user = user_content.to_string();
     let assistant = assistant_content.to_string();
+    let tools = tool_results.to_vec();
     let llm = Arc::clone(&state.llm);
     tokio::spawn(async move {
-        ironclad_agent::memory::ingest_turn(&db, &session, &user, &assistant, &[]);
+        ironclad_agent::memory::ingest_turn(&db, &session, &user, &assistant, &tools);
 
         // Periodic context checkpoint
         let ctx_cfg = &config.read().await.context;
@@ -591,6 +670,163 @@ pub(super) fn post_turn_ingest(
             }
         }
     });
+}
+
+#[allow(dead_code)] // all fields used by various callers (API, streaming, channel)
+/// Result of the unified inference pipeline (cache check → inference → post-turn ops).
+pub(super) struct PipelineResult {
+    pub content: String,
+    pub model: String,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub cost: f64,
+    pub react_turns: usize,
+    pub latency_ms: u64,
+    pub quality_score: f64,
+    pub escalated: bool,
+    pub cached: bool,
+    pub tokens_saved: u32,
+    pub assistant_message_id: String,
+    /// Tool calls executed during inference: (tool_name, result_text).
+    pub tool_results: Vec<(String, String)>,
+}
+
+/// Unified post-prepare pipeline used by all entry points (API, streaming, channel).
+///
+/// Handles: cache check → inference + ReAct → store assistant message → record cost →
+/// background ingest → cache store. Callers only need to handle session setup,
+/// input validation, and formatting the final response.
+#[allow(clippy::too_many_arguments)] // central pipeline requires full request context
+pub(super) async fn execute_inference_pipeline(
+    state: &AppState,
+    prepared: &PreparedInference,
+    session_id: &str,
+    user_content: &str,
+    turn_id: &str,
+    authority: InputAuthority,
+    channel_label: Option<&str>,
+    delegation_provenance: &mut DelegationProvenance,
+) -> Result<PipelineResult, String> {
+    // 1. Cache check
+    let cached = check_cache(
+        state,
+        user_content,
+        &prepared.cache_hash,
+        prepared.query_embedding.as_deref(),
+    )
+    .await;
+
+    if let Some(cached) = cached {
+        let guarded_cached_content =
+            enforce_non_repetition(cached.content, prepared.previous_assistant.as_deref());
+        record_cost(
+            state,
+            &cached.model,
+            &prepared.provider_prefix,
+            0,
+            0,
+            0.0,
+            Some("cached"),
+            true,
+            Some(0),
+            None,
+            false,
+        );
+        let asst_id = ironclad_db::sessions::append_message(
+            &state.db,
+            session_id,
+            "assistant",
+            &guarded_cached_content,
+        )
+        .map_err(|e| format!("failed to store cached response: {e}"))?;
+
+        return Ok(PipelineResult {
+            content: guarded_cached_content,
+            model: cached.model,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost: 0.0,
+            react_turns: 0,
+            latency_ms: 0,
+            quality_score: 0.0,
+            escalated: false,
+            cached: true,
+            tokens_saved: cached.tokens_saved,
+            assistant_message_id: asst_id,
+            tool_results: vec![],
+        });
+    }
+
+    // 2. Inference + ReAct loop
+    let inference = run_inference_and_react(
+        state,
+        prepared,
+        turn_id,
+        authority,
+        channel_label,
+        delegation_provenance,
+    )
+    .await;
+
+    // 3. Store assistant message
+    let asst_id = ironclad_db::sessions::append_message(
+        &state.db,
+        session_id,
+        "assistant",
+        &inference.content,
+    )
+    .map_err(|e| format!("failed to store assistant response: {e}"))?;
+
+    // 4. Record cost
+    record_cost(
+        state,
+        &inference.model,
+        &prepared.provider_prefix,
+        inference.tokens_in,
+        inference.tokens_out,
+        inference.cost,
+        None,
+        false,
+        Some(inference.latency_ms as i64),
+        Some(inference.quality_score),
+        inference.escalated,
+    );
+
+    // 5. Post-turn ingest (spawns background task)
+    post_turn_ingest(
+        state,
+        session_id,
+        user_content,
+        &inference.content,
+        &inference.tool_results,
+    );
+
+    // 6. Cache store
+    store_in_cache(
+        state,
+        &prepared.cache_hash,
+        user_content,
+        &inference.content,
+        &inference.model,
+        inference.tokens_out,
+    )
+    .await;
+
+    Ok(PipelineResult {
+        content: inference.content,
+        model: inference.model,
+        tokens_in: inference.tokens_in,
+        tokens_out: inference.tokens_out,
+        cost: inference.cost,
+        react_turns: inference.react_turns,
+        latency_ms: inference.latency_ms,
+        quality_score: inference.quality_score,
+        escalated: inference.escalated,
+        cached: false,
+        tokens_saved: 0,
+        assistant_message_id: asst_id,
+        tool_results: inference.tool_results,
+    })
 }
 
 /// Record inference cost metrics.

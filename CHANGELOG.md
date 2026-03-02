@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-03-02
+
+### Added
+
+- **Wiring Remediation (Phase 0)**: Comprehensive Tier 1–3 wiring audit remediation. 14 gates cleared — all functional wires verified against code. See `docs/audit/wiring-audit-v0.9.md` for the full re-audit.
+- **Unified Request Pipeline**: API (`agent_message`) and channel (`process_channel_message`) paths now share `prepare_inference` + `execute_inference_pipeline` in `core.rs`, eliminating 6+ behavioral asymmetries between entry points.
+- **Multi-Tool Parsing**: `parse_tool_calls` (plural) correctly parses multiple tool invocations from a single LLM response across all four provider formats.
+- **OpenAI Responses + Google Tool Wiring**: Bidirectional tool support for OpenAI Responses API and Google Generative AI — tool definitions translated into requests, structured tool calls parsed from responses with `{"tool_call": ...}` shim.
+- **Quality Warm Start**: `QualityTracker` is seeded from `inference_costs` on startup, eliminating cold-start assumptions for metascore routing.
+- **Escalation Read Feedback**: `EscalationTracker` acceptance history now feeds routing weight adjustments via `escalation_bias`, closing the feedback loop.
+- **Approval Resume**: Blocked tool calls are re-executed asynchronously after approval via `execute_tool_call_after_approval`.
+- **Hippocampus (2.13)**: Self-describing schema map with auto-discovery of all system tables. Agent-created tables (`ag_<id>_*`) with access levels, row counts, and guardrails. Compact summary injected into system prompt (~200 tokens) for ambient storage awareness.
+- **Agent Data Tools**: `CreateTable`, `AlterTable`, `DropTable` registered in ToolRegistry with hippocampus auto-registration, size limits, and reserved-name enforcement.
+- **Document Ingestion Pipeline (3.5.5)**: `ironclad ingest <path>` CLI and `POST /api/knowledge/ingest` API. Supports `.md`, `.txt`, `.rs`, `.py`, `.js`, `.ts`, `.pdf` files. Parse → chunk (512 tokens, 64-token overlap) → embed → store in memory system.
+- **IANA Timezone Support (1.18)**: Cron scheduler evaluates session reset schedules using IANA timezone identifiers. Conformance tests for DST transitions, sub-minute cron, timezone-prefixed expressions.
+- **Inference Costs Extension**: `latency_ms` (INTEGER), `quality_score` (REAL), `escalation` (BOOLEAN) columns added to `inference_costs` table. All inference calls now record latency and escalation state.
+- **MCP Server Gateway**: First plugin release. `IroncladMcpHandler` bridges rmcp's `ServerHandler` to the ToolRegistry. External MCP clients (Claude Desktop, Cursor, VS Code) connect via StreamableHTTP, discover tools through `tools/list`, invoke through `tools/call`. All MCP tool calls run with `InputAuthority::External`.
+- **Golden Test Fixtures**: Deterministic golden files for delegation, delegation follow-up, echo follow-up, and echo tool-call pathways.
+- **Tool-Call Shim Tests**: Harness integration tests verifying the full structured tool_call → parse → execute → observation → follow-up pipeline.
+
+### Changed
+
+- **`post_turn_ingest` Tool Results**: All call sites now pass actual tool call name + result from the ReAct loop instead of `&[]`. Episodic memory captures tool-use context, improving digest quality.
+- **Gate System Note**: `build_gate_system_note` now wired in both API and channel paths (previously channel-only).
+- **Shared Confidence Evaluator**: `infer_with_fallback` uses the shared `LlmService.confidence` instance instead of creating a local copy.
+- **Context Pruning**: `needs_pruning()` → `soft_trim()` wired in `build_context` when assembled context exceeds the token budget.
+- **Checkpoint Load**: `load_checkpoint` called during inference preparation for session resume (previously write-only).
+- **Importance Decay**: `decay_importance` called from `SessionGovernor.tick()` after digest, preventing stale context accumulation.
+- **CI Pipeline**: Parallelized per-crate test execution and harness quick-test stages for faster CI runtime.
+
+### Removed
+
+- **`SpawnManager`**: Dead module removed (`spawning.rs` deleted, zero references). Virtual delegation tool pattern replaced it.
+- **Dead Routing Surfaces**: `uniroute.rs` (ModelVector, QueryRequirements, ModelVectorRegistry) deleted. Dead selector functions (`select_for_complexity`, `select_cheapest_qualified`, `select_for_quality_target`) removed. `ModelRouter` retained as active runtime override/fallback router.
+- **`router_integration.rs`**: Dead test module removed (tested deleted routing code).
+- **`skills-roadmap-2026.md`**: Superseded by `capabilities-roadmap-2026.md`.
+
 ## [0.9.1] - 2026-03-01
 
 ### Added

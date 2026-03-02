@@ -88,10 +88,7 @@ pub fn extract_text(path: &Path, file_type: FileType) -> Result<String> {
 
 fn extract_pdf_text(path: &Path) -> Result<String> {
     let bytes = std::fs::read(path).map_err(|e| {
-        ironclad_core::IroncladError::Config(format!(
-            "failed to read PDF {}: {e}",
-            path.display()
-        ))
+        ironclad_core::IroncladError::Config(format!("failed to read PDF {}: {e}", path.display()))
     })?;
     let text = pdf_extract::extract_text_from_mem(&bytes).map_err(|e| {
         ironclad_core::IroncladError::Config(format!(
@@ -130,10 +127,7 @@ const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 pub fn ingest_file(db: &ironclad_db::Database, path: &Path) -> Result<IngestResult> {
     // Validate
     let metadata = std::fs::metadata(path).map_err(|e| {
-        ironclad_core::IroncladError::Config(format!(
-            "cannot access {}: {e}",
-            path.display()
-        ))
+        ironclad_core::IroncladError::Config(format!("cannot access {}: {e}", path.display()))
     })?;
 
     if !metadata.is_file() {
@@ -153,10 +147,7 @@ pub fn ingest_file(db: &ironclad_db::Database, path: &Path) -> Result<IngestResu
     }
 
     let file_type = FileType::from_path(path).ok_or_else(|| {
-        ironclad_core::IroncladError::Config(format!(
-            "unsupported file type: {}",
-            path.display()
-        ))
+        ironclad_core::IroncladError::Config(format!("unsupported file type: {}", path.display()))
     })?;
 
     // Extract text
@@ -175,9 +166,7 @@ pub fn ingest_file(db: &ironclad_db::Database, path: &Path) -> Result<IngestResu
     let chunks = chunk_text(&text, &config);
 
     // Generate a stable source ID from the file path
-    let canonical = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let source_id = format!(
         "ingest:{}",
         canonical.to_string_lossy().replace(['/', '\\'], ":")
@@ -206,9 +195,7 @@ pub fn ingest_file(db: &ironclad_db::Database, path: &Path) -> Result<IngestResu
         };
         let key = format!("{}:{}", file_name, chunk.index);
 
-        if let Err(e) =
-            ironclad_db::memory::store_semantic(db, category, &key, &chunk.text, 0.8)
-        {
+        if let Err(e) = ironclad_db::memory::store_semantic(db, category, &key, &chunk.text, 0.8) {
             warn!(error = %e, chunk = chunk.index, "failed to store semantic memory for chunk");
             continue;
         }
@@ -244,10 +231,10 @@ pub fn ingest_file(db: &ironclad_db::Database, path: &Path) -> Result<IngestResu
         db,
         &format!("knowledge:{}", file_name),
         &description,
-        &[],        // no column schema — knowledge sources aren't relational tables
-        "system",   // created_by
-        false,      // not agent-owned — system knowledge
-        "read",     // access_level
+        &[],      // no column schema — knowledge sources aren't relational tables
+        "system", // created_by
+        false,    // not agent-owned — system knowledge
+        "read",   // access_level
         stored as i64,
     ) {
         warn!(error = %e, "failed to register ingested document in hippocampus");
@@ -263,10 +250,7 @@ pub fn ingest_file(db: &ironclad_db::Database, path: &Path) -> Result<IngestResu
 }
 
 /// Ingest all supported files in a directory (non-recursive).
-pub fn ingest_directory(
-    db: &ironclad_db::Database,
-    dir: &Path,
-) -> Result<Vec<IngestResult>> {
+pub fn ingest_directory(db: &ironclad_db::Database, dir: &Path) -> Result<Vec<IngestResult>> {
     if !dir.is_dir() {
         return Err(ironclad_core::IroncladError::Config(format!(
             "{} is not a directory",
@@ -343,8 +327,16 @@ mod tests {
         let file_path = dir.path().join("test.md");
         {
             let mut f = std::fs::File::create(&file_path).unwrap();
-            writeln!(f, "# Test Document\n\nThis is a test document with enough content to be meaningful.").unwrap();
-            writeln!(f, "\n## Section Two\n\nMore content here for the chunker to work with.").unwrap();
+            writeln!(
+                f,
+                "# Test Document\n\nThis is a test document with enough content to be meaningful."
+            )
+            .unwrap();
+            writeln!(
+                f,
+                "\n## Section Two\n\nMore content here for the chunker to work with."
+            )
+            .unwrap();
         }
 
         let result = ingest_file(&db, &file_path).unwrap();
@@ -428,6 +420,9 @@ mod tests {
         // Verify hippocampus has the entry
         let tables = ironclad_db::hippocampus::list_tables(&db).unwrap();
         let found = tables.iter().any(|t| t.table_name == "knowledge:notes.md");
-        assert!(found, "ingested document should be registered in hippocampus");
+        assert!(
+            found,
+            "ingested document should be registered in hippocampus"
+        );
     }
 }

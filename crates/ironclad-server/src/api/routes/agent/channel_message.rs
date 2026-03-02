@@ -304,27 +304,33 @@ pub async fn process_channel_message(
         }
     }
 
-    // ── Inference + ReAct loop via core ──────────────────────────────
+    // ── Unified inference pipeline (cache → inference → post-turn) ──
     let mut delegation_provenance = precomputed_delegation_provenance;
-    let inference = core::run_inference_and_react(
+    let result = match core::execute_inference_pipeline(
         state,
         &prepared,
+        &session_id,
+        &user_content,
         &channel_turn_id,
         channel_authority,
         Some(&platform),
         &mut delegation_provenance,
     )
-    .await;
-    let response_content = inference.content;
+    .await
+    {
+        Ok(r) => r,
+        Err(msg) => {
+            let mut llm = state.llm.write().await;
+            llm.dedup.release(&dedup_fp);
+            drop(llm);
+            return Err(msg);
+        }
+    };
 
-    // ── Post-turn: store, send, cost, ingest ────────────────────────
-    ironclad_db::sessions::append_message(&state.db, &session_id, "assistant", &response_content)
-        .inspect_err(|e| tracing::warn!(error = %e, "failed to store channel assistant message"))
-        .ok();
-
+    // Send reply to channel
     if let Err(e) = state
         .channel_router
-        .send_reply(&platform, &chat_id, response_content.clone())
+        .send_reply(&platform, &chat_id, result.content.clone())
         .await
     {
         let mut llm = state.llm.write().await;
@@ -332,22 +338,6 @@ pub async fn process_channel_message(
         drop(llm);
         return Err(e.to_string());
     }
-
-    core::record_cost(
-        state,
-        &inference.model,
-        &prepared.provider_prefix,
-        inference.tokens_in,
-        inference.tokens_out,
-        inference.cost,
-        None,
-        false,
-        Some(inference.latency_ms as i64),
-        Some(inference.quality_score),
-        inference.escalated,
-    );
-
-    core::post_turn_ingest(state, &session_id, &user_content, &response_content);
 
     // Release dedup tracking
     {

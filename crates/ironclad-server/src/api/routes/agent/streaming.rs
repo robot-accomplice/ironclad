@@ -471,8 +471,21 @@ pub async fn agent_message_stream(
             unified_resp.tokens_out as i64,
         ).await;
 
-        // Background memory ingestion
-        core::post_turn_ingest(&state_clone, &session_id_clone, &user_content_clone, &assistant_content);
+        // Background memory ingestion.
+        // Streaming currently does not execute a ReAct tool loop, but it may still emit
+        // tool-call intents in provider output; persist those intents so episodic memory
+        // is not blind on the streaming path.
+        let streamed_tool_results: Vec<(String, String)> = super::tools::parse_tool_calls(&assistant_content)
+            .into_iter()
+            .map(|(name, params)| (name, format!("unexecuted_streaming_tool_call: {params}")))
+            .collect();
+        core::post_turn_ingest(
+            &state_clone,
+            &session_id_clone,
+            &user_content_clone,
+            &assistant_content,
+            &streamed_tool_results,
+        );
 
         let done_event = json!({
             "type": "stream_chunk",

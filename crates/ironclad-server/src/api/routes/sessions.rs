@@ -676,6 +676,7 @@ async fn run_llm_analysis(
                 .into(),
         ),
         quality_target: None,
+        tools: vec![],
     };
 
     let llm = state.llm.read().await;

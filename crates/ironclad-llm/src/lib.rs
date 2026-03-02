@@ -9,7 +9,7 @@
 //!
 //! - [`LlmService`] -- Top-level facade composing all pipeline stages
 //! - [`SemanticCache`] -- 3-level cache (exact hash, tool TTL, semantic cosine)
-//! - [`ModelRouter`] -- Heuristic complexity classification and model selection
+//! - [`ModelRouter`] -- Runtime model selection and override control
 //! - [`LlmClient`] -- HTTP/2 client pool with streaming support
 //! - [`EmbeddingClient`] -- Multi-provider embedding client with n-gram fallback
 //! - [`SseChunkStream`] -- SSE byte stream to parsed `StreamChunk` adapter
@@ -19,7 +19,6 @@
 //! - `cache` -- Semantic cache with HashMap + SQLite persistence
 //! - `router` -- Heuristic model router (feature extraction, complexity scoring)
 //! - `ml_router` -- Logistic regression backend + preference learning
-//! - `uniroute` -- Unified routing via model capability vectors
 //! - `tiered` -- Tiered inference with confidence evaluation and escalation
 //! - `cascade` -- Cascade optimizer (cheapest-first, fallback chain)
 //! - `circuit` -- Per-provider circuit breaker with exponential backoff
@@ -31,7 +30,7 @@
 //! - `provider` -- Provider definitions and registry
 //! - `embedding` -- Multi-provider embedding client
 //! - `capacity` -- TPM/RPM sliding-window capacity tracking
-//! - `accuracy` -- Per-model quality tracking and quality-target selection
+//! - `accuracy` -- Per-model quality tracking
 //! - `oauth` -- OAuth2 token management and refresh
 //! - `transform` -- Request/response transform pipeline
 
@@ -52,9 +51,8 @@ pub mod provider;
 pub mod router;
 pub mod tier;
 pub mod tiered;
-pub mod uniroute;
 
-pub use accuracy::{QualityTracker, select_for_quality_target};
+pub use accuracy::QualityTracker;
 pub use cache::{CachedResponse, ExportedCacheEntry, SemanticCache};
 pub use capacity::CapacityTracker;
 pub use cascade::{CascadeOptimizer, CascadeOutcome, CascadeStrategy};
@@ -68,8 +66,7 @@ pub use oauth::OAuthManager;
 pub use profile::{MetascoreBreakdown, ModelProfile, build_model_profiles, select_by_metascore};
 pub use provider::{Provider, ProviderRegistry};
 pub use router::{ModelRouter, classify_complexity, extract_features};
-pub use tiered::{ConfidenceEvaluator, EscalationTracker, InferenceTier, TieredResult};
-pub use uniroute::{ModelVector, ModelVectorRegistry, QueryRequirements};
+pub use tiered::{ConfidenceEvaluator, EscalationTracker, InferenceTier};
 
 pub use format::StreamChunk;
 

@@ -181,7 +181,78 @@ pub async fn approve_request(
         None => default_decided_by(),
     };
     match state.approvals.approve(&id, &decided_by) {
-        Ok(req) => Ok(Json(json!(req))),
+        Ok(req) => {
+            if let Some(decided_at) = req.decided_at {
+                ironclad_db::approvals::record_approval_decision(
+                    &state.db,
+                    &req.id,
+                    "approved",
+                    req.decided_by.as_deref().unwrap_or(&decided_by),
+                    &decided_at.to_rfc3339(),
+                )
+                .inspect_err(|e| tracing::warn!(error = %e, "failed to persist approval decision"))
+                .ok();
+            }
+
+            let replay_req = req.clone();
+            let replay_state = state.clone();
+            tokio::spawn(async move {
+                let params: serde_json::Value = serde_json::from_str(&replay_req.tool_input)
+                    .unwrap_or_else(|_| json!({ "raw_input": replay_req.tool_input }));
+                let replay_turn_id = replay_req
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| replay_req.id.clone());
+
+                replay_state.event_bus.publish(
+                    json!({
+                        "type": "approval_replay_started",
+                        "request_id": replay_req.id,
+                        "tool": replay_req.tool_name,
+                        "turn_id": replay_turn_id,
+                    })
+                    .to_string(),
+                );
+
+                let replay_result = super::agent::execute_tool_call_after_approval(
+                    &replay_state,
+                    &replay_req.tool_name,
+                    &params,
+                    &replay_turn_id,
+                    InputAuthority::Creator,
+                    None,
+                )
+                .await;
+
+                match replay_result {
+                    Ok(output) => replay_state.event_bus.publish(
+                        json!({
+                            "type": "approval_replay_succeeded",
+                            "request_id": replay_req.id,
+                            "tool": replay_req.tool_name,
+                            "turn_id": replay_turn_id,
+                            "output": output,
+                        })
+                        .to_string(),
+                    ),
+                    Err(error) => replay_state.event_bus.publish(
+                        json!({
+                            "type": "approval_replay_failed",
+                            "request_id": replay_req.id,
+                            "tool": replay_req.tool_name,
+                            "turn_id": replay_turn_id,
+                            "error": error,
+                        })
+                        .to_string(),
+                    ),
+                }
+            });
+
+            Ok(Json(json!({
+                "approval": req,
+                "replay_queued": true,
+            })))
+        }
         Err(e) => Err(not_found(e.to_string())),
     }
 }
@@ -2146,6 +2217,7 @@ async fn run_llm_recommendation_analysis(
         temperature: Some(0.2),
         system: None,
         quality_target: None,
+        tools: vec![],
     };
 
     let llm = state.llm.read().await;

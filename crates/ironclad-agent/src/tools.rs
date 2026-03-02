@@ -1284,9 +1284,11 @@ impl Tool for CreateTableTool {
         }
 
         // Enforce per-agent table limit
-        let existing = ironclad_db::hippocampus::list_agent_tables(db, &ctx.agent_id)
-            .map_err(|e| ToolError {
-                message: format!("failed to check existing tables: {e}"),
+        let existing =
+            ironclad_db::hippocampus::list_agent_tables(db, &ctx.agent_id).map_err(|e| {
+                ToolError {
+                    message: format!("failed to check existing tables: {e}"),
+                }
             })?;
         if existing.len() >= MAX_AGENT_TABLES {
             return Err(ToolError {
@@ -1592,11 +1594,11 @@ impl Tool for DropTableTool {
                 message: "missing 'table_name' parameter".into(),
             })?;
 
-        ironclad_db::hippocampus::drop_agent_table(db, &ctx.agent_id, table_name).map_err(
-            |e| ToolError {
+        ironclad_db::hippocampus::drop_agent_table(db, &ctx.agent_id, table_name).map_err(|e| {
+            ToolError {
                 message: format!("failed to drop table: {e}"),
-            },
-        )?;
+            }
+        })?;
 
         let result = serde_json::json!({
             "table_name": table_name,
@@ -2745,10 +2747,7 @@ mod tests {
 
         let drop = DropTableTool;
         let result = drop
-            .execute(
-                serde_json::json!({"table_name": "testagent_temp"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"table_name": "testagent_temp"}), &ctx)
             .await
             .unwrap();
         let v: Value = serde_json::from_str(&result.output).unwrap();

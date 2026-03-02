@@ -32,6 +32,32 @@ impl Golden {
         serde_json::from_str(include_str!("../fixtures/golden/error_500.json"))
             .expect("error_500.json is invalid JSON")
     }
+
+    /// Delegation tool call — assistant invokes `orchestrate-subagents`.
+    pub fn chat_delegation() -> Value {
+        serde_json::from_str(include_str!("../fixtures/golden/chat_delegation.json"))
+            .expect("chat_delegation.json is invalid JSON")
+    }
+
+    /// Delegation follow-up — assistant summarizes after tool execution.
+    pub fn chat_delegation_followup() -> Value {
+        serde_json::from_str(include_str!(
+            "../fixtures/golden/chat_delegation_followup.json"
+        ))
+        .expect("chat_delegation_followup.json is invalid JSON")
+    }
+
+    /// Echo tool call — LLM invokes the `echo` tool (always registered, Safe risk).
+    pub fn chat_echo_tool_call() -> Value {
+        serde_json::from_str(include_str!("../fixtures/golden/chat_echo_tool_call.json"))
+            .expect("chat_echo_tool_call.json is invalid JSON")
+    }
+
+    /// Echo follow-up — assistant text response after echo tool execution.
+    pub fn chat_echo_followup() -> Value {
+        serde_json::from_str(include_str!("../fixtures/golden/chat_echo_followup.json"))
+            .expect("chat_echo_followup.json is invalid JSON")
+    }
 }
 
 #[cfg(test)]
@@ -58,5 +84,30 @@ mod tests {
 
         let e500 = Golden::error_500();
         assert!(e500["error"]["message"].is_string());
+
+        let deleg = Golden::chat_delegation();
+        assert_eq!(
+            deleg["choices"][0]["message"]["tool_calls"][0]["function"]["name"].as_str(),
+            Some("orchestrate-subagents")
+        );
+
+        let followup = Golden::chat_delegation_followup();
+        assert_eq!(
+            followup["choices"][0]["finish_reason"].as_str(),
+            Some("stop")
+        );
+        assert!(followup["choices"][0]["message"]["content"].is_string());
+
+        let echo_tc = Golden::chat_echo_tool_call();
+        assert_eq!(
+            echo_tc["choices"][0]["message"]["tool_calls"][0]["function"]["name"].as_str(),
+            Some("echo")
+        );
+
+        let echo_fu = Golden::chat_echo_followup();
+        assert_eq!(
+            echo_fu["choices"][0]["finish_reason"].as_str(),
+            Some("stop")
+        );
     }
 }

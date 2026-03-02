@@ -86,6 +86,17 @@ pub fn build_context(
         messages.push(msg.clone());
     }
 
+    // Wire pruning path: if assembled context exceeds budget, soft-trim oldest
+    // non-system messages while preserving recency.
+    let prune_cfg = PruningConfig {
+        max_tokens: budget,
+        soft_trim_ratio: 1.0,
+        ..PruningConfig::default()
+    };
+    if needs_pruning(&messages, &prune_cfg) {
+        return soft_trim(&messages, &prune_cfg).messages;
+    }
+
     messages
 }
 

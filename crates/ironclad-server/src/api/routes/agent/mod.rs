@@ -52,7 +52,9 @@ use self::routing::infer_with_fallback;
 use self::routing::{estimate_cost_from_provider, fallback_candidates, summarize_user_excerpt};
 pub(crate) use self::routing::{infer_content_with_fallback, select_routed_model};
 pub use self::streaming::agent_message_stream;
-pub(crate) use self::tools::{check_tool_policy, classify_provider_error, execute_tool_call};
+pub(crate) use self::tools::{
+    check_tool_policy, classify_provider_error, execute_tool_call, execute_tool_call_after_approval,
+};
 #[cfg(test)]
 use self::tools::{parse_tool_call, provider_failure_user_message};
 use super::AppState;

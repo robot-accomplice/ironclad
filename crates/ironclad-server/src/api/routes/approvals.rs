@@ -3,6 +3,9 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
+use serde_json::json;
+
+use ironclad_core::InputAuthority;
 
 use super::AppState;
 
@@ -89,8 +92,71 @@ pub async fn approve_approval(
                     return super::internal_err(&e).into_response();
                 }
             }
-            match serde_json::to_value(req) {
-                Ok(v) => Json(v).into_response(),
+            let replay_req = req.clone();
+            let replay_state = state.clone();
+            tokio::spawn(async move {
+                let params: serde_json::Value = serde_json::from_str(&replay_req.tool_input)
+                    .unwrap_or_else(|_| json!({ "raw_input": replay_req.tool_input }));
+                let replay_turn_id = replay_req
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| replay_req.id.clone());
+
+                replay_state.event_bus.publish(
+                    json!({
+                        "type": "approval_replay_started",
+                        "request_id": replay_req.id,
+                        "tool": replay_req.tool_name,
+                        "turn_id": replay_turn_id,
+                    })
+                    .to_string(),
+                );
+
+                let replay_result = super::agent::execute_tool_call_after_approval(
+                    &replay_state,
+                    &replay_req.tool_name,
+                    &params,
+                    &replay_turn_id,
+                    InputAuthority::Creator,
+                    None,
+                )
+                .await;
+
+                match replay_result {
+                    Ok(output) => {
+                        replay_state.event_bus.publish(
+                            json!({
+                                "type": "approval_replay_succeeded",
+                                "request_id": replay_req.id,
+                                "tool": replay_req.tool_name,
+                                "turn_id": replay_turn_id,
+                                "output": output,
+                            })
+                            .to_string(),
+                        );
+                    }
+                    Err(error) => {
+                        replay_state.event_bus.publish(
+                            json!({
+                                "type": "approval_replay_failed",
+                                "request_id": replay_req.id,
+                                "tool": replay_req.tool_name,
+                                "turn_id": replay_turn_id,
+                                "error": error,
+                            })
+                            .to_string(),
+                        );
+                    }
+                }
+            });
+
+            match serde_json::to_value(&req) {
+                Ok(mut v) => {
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("replay_queued".to_string(), json!(true));
+                    }
+                    Json(v).into_response()
+                }
                 Err(e) => super::internal_err(&e).into_response(),
             }
         }

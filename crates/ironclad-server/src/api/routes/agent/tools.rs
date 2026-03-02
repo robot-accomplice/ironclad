@@ -47,6 +47,75 @@ pub(super) fn parse_tool_call(response: &str) -> Option<(String, serde_json::Val
     None
 }
 
+/// Extract **all** tool calls from the LLM's text response.
+///
+/// Scans forward through the text for `{"tool_call": {"name": "...", "params": {...}}}`
+/// blocks and returns them in order. This handles the case where the LLM (or the shim)
+/// emits multiple tool calls separated by newlines.
+pub(super) fn parse_tool_calls(response: &str) -> Vec<(String, serde_json::Value)> {
+    let mut results = Vec::new();
+    let mut search_start = 0;
+    while search_start < response.len() {
+        let Some(rel) = response[search_start..].find(r#""tool_call""#) else {
+            break;
+        };
+        let abs_pos = search_start + rel;
+        // Walk backwards to find the opening brace
+        let Some(brace_start) = response[..abs_pos].rfind('{') else {
+            search_start = abs_pos + 1;
+            continue;
+        };
+        // But only accept it if there's no intervening closing brace (this brace
+        // belongs to the tool_call, not a prior JSON object).
+        if response[brace_start + 1..abs_pos].contains('}') {
+            // The opening brace belongs to an earlier JSON — try the next `{` forward
+            let fallback_start = response[abs_pos..].find('{').map(|i| abs_pos + i);
+            if let Some(fb) = fallback_start
+                && fb < abs_pos
+            {
+                search_start = abs_pos + 1;
+                continue;
+            }
+            search_start = abs_pos + 1;
+            continue;
+        }
+
+        // Find the matching closing brace
+        let mut depth = 0;
+        let mut end = brace_start;
+        let mut found_end = false;
+        for (i, ch) in response[brace_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = brace_start + i + 1;
+                        found_end = true;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !found_end {
+            // Unterminated JSON object; stop scanning to avoid looping forever.
+            break;
+        }
+
+        let json_str = &response[brace_start..end];
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str)
+            && let Some(tool_call) = parsed.get("tool_call")
+            && let Some(name) = tool_call.get("name").and_then(|n| n.as_str())
+        {
+            let params = tool_call.get("params").cloned().unwrap_or(json!({}));
+            results.push((name.to_string(), params));
+        }
+        search_start = end;
+    }
+    results
+}
+
 pub(crate) fn classify_provider_error(raw: &str) -> &'static str {
     let lower = raw.to_ascii_lowercase();
     if lower.contains("circuit breaker") {
@@ -103,6 +172,33 @@ pub(crate) async fn execute_tool_call(
     turn_id: &str,
     authority: InputAuthority,
     channel: Option<&str>,
+) -> Result<String, String> {
+    execute_tool_call_internal(state, tool_name, params, turn_id, authority, channel, true).await
+}
+
+/// Replay a previously approved tool call.
+///
+/// This bypasses the approval gate (already satisfied) but still enforces policy and
+/// records tool execution/audit trails exactly like normal execution.
+pub(crate) async fn execute_tool_call_after_approval(
+    state: &AppState,
+    tool_name: &str,
+    params: &serde_json::Value,
+    turn_id: &str,
+    authority: InputAuthority,
+    channel: Option<&str>,
+) -> Result<String, String> {
+    execute_tool_call_internal(state, tool_name, params, turn_id, authority, channel, false).await
+}
+
+async fn execute_tool_call_internal(
+    state: &AppState,
+    tool_name: &str,
+    params: &serde_json::Value,
+    turn_id: &str,
+    authority: InputAuthority,
+    channel: Option<&str>,
+    enforce_approval_gate: bool,
 ) -> Result<String, String> {
     fn parse_risk_level(raw: &str) -> Result<ironclad_core::RiskLevel, String> {
         match raw.to_ascii_lowercase().as_str() {
@@ -284,41 +380,43 @@ pub(crate) async fn execute_tool_call(
         return Err(format!("Policy denied: {msg}"));
     }
 
-    // Approval gate: block gated tools until a human approves
-    match state.approvals.check_tool(tool_name) {
-        Ok(ironclad_agent::approvals::ToolClassification::Gated) => {
-            let request = state
-                .approvals
-                .request_approval(tool_name, &params.to_string(), Some(turn_id))
-                .map_err(|e| format!("Approval error: {e}"))?;
-            ironclad_db::approvals::record_approval_request(
-                &state.db,
-                &request.id,
-                &request.tool_name,
-                &request.tool_input,
-                request.session_id.as_deref(),
-                "pending",
-                &request.timeout_at.to_rfc3339(),
-            )
-            .inspect_err(|e| tracing::warn!(error = %e, "failed to persist approval request"))
-            .ok();
-            state.event_bus.publish(
-                serde_json::json!({
-                    "type": "pending_approval",
-                    "tool": tool_name,
-                    "request_id": request.id,
-                })
-                .to_string(),
-            );
-            return Err(format!(
-                "Tool '{tool_name}' requires approval (request: {})",
-                request.id
-            ));
+    if enforce_approval_gate {
+        // Approval gate: block gated tools until a human approves
+        match state.approvals.check_tool(tool_name) {
+            Ok(ironclad_agent::approvals::ToolClassification::Gated) => {
+                let request = state
+                    .approvals
+                    .request_approval(tool_name, &params.to_string(), Some(turn_id))
+                    .map_err(|e| format!("Approval error: {e}"))?;
+                ironclad_db::approvals::record_approval_request(
+                    &state.db,
+                    &request.id,
+                    &request.tool_name,
+                    &request.tool_input,
+                    request.session_id.as_deref(),
+                    "pending",
+                    &request.timeout_at.to_rfc3339(),
+                )
+                .inspect_err(|e| tracing::warn!(error = %e, "failed to persist approval request"))
+                .ok();
+                state.event_bus.publish(
+                    serde_json::json!({
+                        "type": "pending_approval",
+                        "tool": tool_name,
+                        "request_id": request.id,
+                    })
+                    .to_string(),
+                );
+                return Err(format!(
+                    "Tool '{tool_name}' requires approval (request: {})",
+                    request.id
+                ));
+            }
+            Err(e) => {
+                return Err(format!("Tool blocked: {e}"));
+            }
+            Ok(_) => {}
         }
-        Err(e) => {
-            return Err(format!("Tool blocked: {e}"));
-        }
-        Ok(_) => {}
     }
 
     let workspace_root = {
@@ -463,5 +561,61 @@ pub(crate) fn check_tool_policy(
                 format!("Policy denied: {reason}"),
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_tool_calls_single() {
+        let input = r#"{"tool_call": {"name": "echo", "params": {"message": "hi"}}}"#;
+        let calls = parse_tool_calls(input);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "echo");
+    }
+
+    #[test]
+    fn parse_tool_calls_multiple() {
+        let input = r#"{"tool_call": {"name": "echo", "params": {"message": "hi"}}}
+{"tool_call": {"name": "web-search", "params": {"query": "rust"}}}"#;
+        let calls = parse_tool_calls(input);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "echo");
+        assert_eq!(calls[1].0, "web-search");
+    }
+
+    #[test]
+    fn parse_tool_calls_with_surrounding_text() {
+        let input = r#"Let me help you with that.
+{"tool_call": {"name": "echo", "params": {"message": "test"}}}
+I will also search:
+{"tool_call": {"name": "web-search", "params": {"query": "rust lang"}}}"#;
+        let calls = parse_tool_calls(input);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "echo");
+        assert_eq!(calls[1].0, "web-search");
+    }
+
+    #[test]
+    fn parse_tool_calls_empty() {
+        let calls = parse_tool_calls("No tool calls here");
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn parse_tool_calls_unterminated_json_stops_cleanly() {
+        let input = r#"{"tool_call": {"name": "echo", "params": {"message": "hi"}}"#;
+        let calls = parse_tool_calls(input);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn parse_tool_call_backward_compat() {
+        let input = r#"Some text {"tool_call": {"name": "echo", "params": {"message": "hi"}}}"#;
+        let single = parse_tool_call(input);
+        assert!(single.is_some());
+        assert_eq!(single.unwrap().0, "echo");
     }
 }

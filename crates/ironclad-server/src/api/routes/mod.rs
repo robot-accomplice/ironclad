@@ -678,6 +678,53 @@ pub fn build_public_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+// ── MCP Gateway (P.1) ─────────────────────────────────────────
+
+/// Builds an axum `Router` that serves the MCP protocol endpoint.
+///
+/// The returned router should be merged at the top level — it handles
+/// its own transport (POST for JSON-RPC, GET for SSE, DELETE for sessions)
+/// under the `/mcp` prefix via rmcp's `StreamableHttpService`.
+///
+/// Auth: MCP clients authenticate via `Authorization: Bearer <api_key>`.
+/// The same API key used for the REST API is accepted here.
+pub fn build_mcp_router(state: &AppState, api_key: Option<String>) -> Router {
+    use crate::auth::ApiKeyLayer;
+    use ironclad_agent::mcp_handler::{IroncladMcpHandler, McpToolContext};
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    };
+    use std::time::Duration;
+
+    let mcp_ctx = McpToolContext {
+        agent_id: "ironclad-mcp-gateway".to_string(),
+        workspace_root: state
+            .config
+            .try_read()
+            .map(|c| c.agent.workspace.clone())
+            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        db: Some(state.db.clone()),
+    };
+
+    let handler = IroncladMcpHandler::new(state.tools.clone(), mcp_ctx);
+
+    let config = StreamableHttpServerConfig {
+        sse_keep_alive: Some(Duration::from_secs(15)),
+        stateful_mode: true,
+        ..Default::default()
+    };
+
+    let service = StreamableHttpService::new(
+        move || Ok(handler.clone()),
+        Arc::new(LocalSessionManager::default()),
+        config,
+    );
+
+    Router::new()
+        .nest_service("/mcp", service)
+        .layer(ApiKeyLayer::new(api_key))
+}
+
 // ── Re-exports for api.rs and lib.rs ────────────────────────────
 
 pub use agent::{discord_poll_loop, email_poll_loop, signal_poll_loop, telegram_poll_loop};
@@ -5675,7 +5722,17 @@ params = { path = "README.md" }
         let state = test_state();
         // Seed some inference cost data so the report has something to aggregate
         ironclad_db::metrics::record_inference_cost(
-            &state.db, "gpt-4", "openai", 1000, 500, 0.05, None, false, Some(200), Some(0.90), false,
+            &state.db,
+            "gpt-4",
+            "openai",
+            1000,
+            500,
+            0.05,
+            None,
+            false,
+            Some(200),
+            Some(0.90),
+            false,
         )
         .unwrap();
 

@@ -448,3 +448,82 @@ pub(super) fn build_gate_system_note(
         }
     }
 }
+
+/// Build tool definitions for virtual delegation and orchestration tools.
+///
+/// These tools are not in the ToolRegistry (they're handled by special-case dispatch
+/// in `execute_tool_call`), so their schemas must be defined statically here.
+/// Combined with registry-sourced definitions in `build_all_tool_definitions`.
+pub(super) fn build_delegation_tool_definitions() -> Vec<ironclad_llm::format::ToolDefinition> {
+    use ironclad_llm::format::ToolDefinition;
+
+    vec![
+        ToolDefinition {
+            name: "orchestrate-subagents".into(),
+            description: "Delegate one or more subtasks to existing specialist subagents. \
+                Each subtask is assigned to the best-matching subagent based on its skills."
+                .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "subtasks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "task": { "type": "string", "description": "The subtask description" },
+                                "subagent": { "type": "string", "description": "Optional: specific subagent name to assign to" }
+                            },
+                            "required": ["task"]
+                        },
+                        "description": "List of subtasks to delegate"
+                    }
+                },
+                "required": ["subtasks"]
+            }),
+        },
+        ToolDefinition {
+            name: "compose-subagent".into(),
+            description:
+                "Create a new specialist subagent with a specific name, skills, and model. \
+                Use when no existing subagent matches the required capability."
+                    .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Unique name for the new subagent" },
+                    "display_name": { "type": "string", "description": "Human-readable display name" },
+                    "description": { "type": "string", "description": "What this subagent specialises in" },
+                    "skills": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "List of skill/capability keywords"
+                    },
+                    "model": { "type": "string", "description": "Optional: preferred model for this subagent" }
+                },
+                "required": ["name", "description", "skills"]
+            }),
+        },
+    ]
+}
+
+/// Build tool definitions from the ToolRegistry (registered tools) plus virtual tools.
+///
+/// This is the single source of truth for all tool definitions sent to the LLM provider.
+pub(super) fn build_all_tool_definitions(
+    registry: &ironclad_agent::tools::ToolRegistry,
+) -> Vec<ironclad_llm::format::ToolDefinition> {
+    use ironclad_llm::format::ToolDefinition;
+
+    let mut defs = build_delegation_tool_definitions();
+
+    for tool in registry.list() {
+        defs.push(ToolDefinition {
+            name: tool.name().to_string(),
+            description: tool.description().to_string(),
+            parameters: tool.parameters_schema(),
+        });
+    }
+
+    defs
+}

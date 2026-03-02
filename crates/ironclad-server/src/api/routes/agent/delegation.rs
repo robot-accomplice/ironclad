@@ -297,6 +297,7 @@ pub(super) async fn execute_virtual_subagent_tool_call(
             temperature: None,
             system: None,
             quality_target: None,
+            tools: vec![],
         };
         let result = super::infer_with_fallback(state, &req, &model).await?;
         outputs.push(format!(

@@ -1,0 +1,31 @@
+{
+  "id": "chatcmpl-harness-deleg-001",
+  "object": "chat.completion",
+  "created": 1700000010,
+  "model": "mock-model-v1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_deleg_001",
+            "type": "function",
+            "function": {
+              "name": "orchestrate-subagents",
+              "arguments": "{\"task_description\": \"Research recent developments in Rust async ecosystem\", \"subtasks\": [\"Survey recent tokio releases\", \"Check async-std status\"], \"strategy\": \"parallel\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 120,
+    "completion_tokens": 48,
+    "total_tokens": 168
+  }
+}
