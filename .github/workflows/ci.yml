@@ -302,7 +302,7 @@ jobs:
   build:
     name: "Build (${{ matrix.profile }})"
     runs-on: ubuntu-latest
-    needs: [test, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, harness-quick]
+    needs: [test, integration-tests, regression-battery, release-gates, harness-quick]
     strategy:
       matrix:
         profile: [debug, release]
