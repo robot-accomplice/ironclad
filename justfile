@@ -453,22 +453,8 @@ ci-test:
     # Stage 2: Lint
     run_stage "Lint" cargo clippy --workspace --all-targets -- -D warnings
 
-<<<<<<< HEAD
-    # Stage 3: Test (per-crate)
-    for crate in "${CRATES[@]}"; do
-        run_stage "Test ($crate)" cargo test -p "$crate" --verbose
-    done
-
-=======
     # Stage 3: Test (per-crate, parallelized)
     run_stage "Test (per-crate parallel)" parallel_crate_tests
-
-    # Stage 3h: Harness quick (API surface smoke, parallelized)
-    run_stage_parallel "Harness Quick" \
-        "Harness Quick (unit)" "cargo test -p ironclad-harness --lib --locked -- --test-threads=4" \
-        "Harness Quick (API)" "cargo test -p ironclad-harness --test api_smoke --test api_sessions --test api_memory --test api_domain --test dashboard --locked -- --test-threads=4"
-
->>>>>>> f40a6b6a (chore: parallelize CI workflow and local ci-test runtime)
     # Stage 4: Coverage gate (80% floor + no regression)
     COVERAGE_PCT=""
 
@@ -512,23 +498,13 @@ ci-test:
         STAGES+=("⊘ Coverage (skipped)")
     fi
 
-<<<<<<< HEAD
-    # Stage 5: Build (debug)
-    run_stage "Build (debug)" cargo build --bin ironclad
-
-    # Stage 6: Build (release)
-    run_stage "Build (release)" cargo build --release --bin ironclad
-
-    # Stage 7: Security Audit
-=======
     # Stage 5-7: Build + docs (parallelized)
     run_stage_parallel "Build + Docs" \
-        "Build (debug)" "cargo build --bin ironclad --locked" \
-        "Build (release)" "cargo build --release --bin ironclad --locked" \
-        "Docs" "env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items"
+        "Build (debug)" "cargo build --bin ironclad" \
+        "Build (release)" "cargo build --release --bin ironclad" \
+        "Docs" "env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps"
 
     # Stage 8: Security Audit
->>>>>>> f40a6b6a (chore: parallelize CI workflow and local ci-test runtime)
     if command -v cargo-audit &>/dev/null; then
         run_stage "Security Audit" cargo audit
     else
@@ -537,12 +513,6 @@ ci-test:
         STAGES+=("⊘ Security Audit (skipped)")
     fi
 
-<<<<<<< HEAD
-    # Stage 8: Docs
-    run_stage "Docs" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-
-=======
->>>>>>> f40a6b6a (chore: parallelize CI workflow and local ci-test runtime)
     # Summary
     echo ""
     echo "╔══════════════════════════════════════════════════════╗"
