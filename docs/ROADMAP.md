@@ -305,6 +305,7 @@ Both skills: register as tools in the `ToolRegistry` so the agent can invoke the
 
 ---
 
+
 ## Tier 2 — New Capabilities
 
 Features that require significant new code but have clear implementation paths. Medium-to-high effort.
