@@ -177,14 +177,25 @@ fn normalize_schema_safe(state_db_path: &Path) -> Result<bool, Box<dyn std::erro
         return Ok(false);
     }
     let conn = rusqlite::Connection::open(state_db_path)?;
-    conn.execute_batch(
-        "BEGIN;
-         UPDATE sub_agents SET role='subagent' WHERE lower(trim(role))='specialist';
-         UPDATE sub_agents SET role='orchestrator' WHERE lower(trim(role))='commander';
-         UPDATE sub_agents SET skills_json='[]' WHERE skills_json IS NULL;
-         COMMIT;",
+    let mut total_changes = 0u64;
+    conn.execute_batch("BEGIN;")?;
+    conn.execute(
+        "UPDATE sub_agents SET role='subagent' WHERE lower(trim(role))='specialist'",
+        [],
     )?;
-    Ok(true)
+    total_changes += conn.changes() as u64;
+    conn.execute(
+        "UPDATE sub_agents SET role='orchestrator' WHERE lower(trim(role))='commander'",
+        [],
+    )?;
+    total_changes += conn.changes() as u64;
+    conn.execute(
+        "UPDATE sub_agents SET skills_json='[]' WHERE skills_json IS NULL",
+        [],
+    )?;
+    total_changes += conn.changes() as u64;
+    conn.execute_batch("COMMIT;")?;
+    Ok(total_changes > 0)
 }
 
 async fn cmd_mechanic_json(
@@ -2416,8 +2427,8 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        // Running on already-normalized data should succeed without error
-        assert!(normalize_schema_safe(&db_path).unwrap());
+        // Already-normalized data: nothing to fix → returns false
+        assert!(!normalize_schema_safe(&db_path).unwrap());
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let role: String = conn
             .query_row("SELECT role FROM sub_agents LIMIT 1", [], |r| r.get(0))
