@@ -66,13 +66,6 @@ impl QualityTracker {
     }
 }
 
-/// Compute the Lagrangian cost function: cost + lambda * max(0, target - quality).
-/// This penalizes models that fall below the quality target.
-pub fn lagrangian_cost(cost: f64, quality: f64, target: f64, lambda: f64) -> f64 {
-    let constraint_violation = (target - quality).max(0.0);
-    cost + lambda * constraint_violation
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,25 +104,6 @@ mod tests {
         tracker.record("m", 1.5);
         tracker.record("m", -0.5);
         assert!((tracker.estimated_quality("m").unwrap() - 0.5).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn lagrangian_no_violation() {
-        let cost = lagrangian_cost(1.0, 0.9, 0.8, 10.0);
-        assert!(
-            (cost - 1.0).abs() < f64::EPSILON,
-            "no violation, cost unchanged"
-        );
-    }
-
-    #[test]
-    fn lagrangian_with_violation() {
-        let cost = lagrangian_cost(1.0, 0.5, 0.8, 10.0);
-        let expected = 1.0 + 10.0 * 0.3;
-        assert!(
-            (cost - expected).abs() < f64::EPSILON,
-            "violation penalty applied"
-        );
     }
 
     #[test]
