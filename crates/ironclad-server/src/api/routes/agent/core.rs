@@ -212,6 +212,21 @@ pub(super) async fn prepare_inference(
         &history,
     );
 
+    // Hippocampus context: compact table summary for ambient storage awareness
+    match ironclad_db::hippocampus::compact_summary(&state.db) {
+        Ok(summary) if !summary.is_empty() => {
+            messages.push(ironclad_llm::format::UnifiedMessage {
+                role: "system".into(),
+                content: summary,
+                parts: None,
+            });
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to generate hippocampus summary");
+        }
+        _ => {}
+    }
+
     // Optional: runtime diagnostics (API paths inject; channels deliberately skip)
     if input.inject_diagnostics {
         let runtime_diag = collect_runtime_diagnostics(state).await;

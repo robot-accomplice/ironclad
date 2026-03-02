@@ -287,6 +287,63 @@ pub fn schema_summary(db: &Database) -> Result<String> {
     Ok(summary)
 }
 
+/// Compact hippocampus summary for context injection (~200 tokens).
+///
+/// Prioritizes agent-owned tables (fully listed), then a concise list of
+/// system table names. Fits within ~800 chars.
+pub fn compact_summary(db: &Database) -> Result<String> {
+    let tables = list_tables(db)?;
+    if tables.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut system_names = Vec::new();
+    let mut agent_lines = Vec::new();
+
+    for entry in &tables {
+        if entry.agent_owned {
+            agent_lines.push(format!(
+                "- {} ({} rows) — {}",
+                entry.table_name, entry.row_count, entry.description
+            ));
+        } else {
+            system_names.push(entry.table_name.as_str());
+        }
+    }
+
+    let mut summary = String::from("[Database]\n");
+
+    if !agent_lines.is_empty() {
+        summary.push_str("Your tables:\n");
+        for line in &agent_lines {
+            summary.push_str(line);
+            summary.push('\n');
+        }
+    }
+
+    if !system_names.is_empty() {
+        summary.push_str(&format!(
+            "System tables ({}): {}\n",
+            system_names.len(),
+            system_names.join(", ")
+        ));
+    }
+
+    summary.push_str("Use create_table/alter_table/drop_table tools to manage your tables. ");
+    summary.push_str("Use get_runtime_context for full schema details.");
+
+    // Hard truncation safety net
+    if summary.len() > 800 {
+        summary.truncate(800);
+        if let Some(last_nl) = summary.rfind('\n') {
+            summary.truncate(last_nl);
+        }
+        summary.push_str("\n...(use introspection tools for details)\n");
+    }
+
+    Ok(summary)
+}
+
 /// Return (description, access_level) for known system tables.
 fn system_table_metadata(table_name: &str) -> (&'static str, &'static str) {
     match table_name {
@@ -714,6 +771,43 @@ mod tests {
         // Bootstrap runs at init, so summary is never empty
         assert!(summary.contains("## Database Schema Map"));
         assert!(summary.contains("sessions"));
+    }
+
+    #[test]
+    fn compact_summary_includes_system_and_agent_tables() {
+        let db = test_db();
+        // Create an agent-owned table
+        create_agent_table(
+            &db,
+            "agent1",
+            "notes",
+            "Agent scratchpad",
+            &[ColumnDef {
+                name: "body".into(),
+                col_type: "TEXT".into(),
+                nullable: true,
+                description: None,
+            }],
+        )
+        .unwrap();
+
+        let summary = compact_summary(&db).unwrap();
+        assert!(summary.contains("[Database]"), "missing header");
+        assert!(summary.contains("System tables ("), "missing system count");
+        assert!(summary.contains("Your tables:"), "missing agent section");
+        assert!(summary.contains("agent1_notes"), "missing agent table");
+    }
+
+    #[test]
+    fn compact_summary_fits_token_budget() {
+        let db = test_db();
+        let summary = compact_summary(&db).unwrap();
+        // ~200 tokens ≈ ~800 chars
+        assert!(
+            summary.len() <= 900,
+            "compact_summary too long: {} chars",
+            summary.len()
+        );
     }
 
     #[test]
