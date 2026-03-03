@@ -2137,48 +2137,51 @@ fn compute_subagent_assignment_efficacy(
     db: &ironclad_db::Database,
     period: &str,
 ) -> Result<serde_json::Value, IroncladError> {
-    let conn = db.conn();
     let window = efficiency_window(period);
-    let mut rows: Vec<(String, String, Option<i64>, Option<String>)> = Vec::new();
+    let rows: Vec<(String, String, Option<i64>, Option<String>)> = {
+        let conn = db.conn();
+        let mut rows: Vec<(String, String, Option<i64>, Option<String>)> = Vec::new();
 
-    if let Some(w) = window.as_deref() {
-        let mut stmt = conn
-            .prepare(
-                "SELECT tool_name, status, duration_ms, output FROM tool_calls
-                 WHERE tool_name IN ('assign-tasks','delegate-subagent','orchestrate-subagents')
-                   AND created_at >= datetime('now', ?1)",
-            )
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
-        let mapped = stmt
-            .query_map([w], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<i64>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            })
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
-        rows.extend(mapped.filter_map(std::result::Result::ok));
-    } else {
-        let mut stmt = conn
-            .prepare(
-                "SELECT tool_name, status, duration_ms, output FROM tool_calls
-                 WHERE tool_name IN ('assign-tasks','delegate-subagent','orchestrate-subagents')",
-            )
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
-        let mapped = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<i64>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            })
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
-        rows.extend(mapped.filter_map(std::result::Result::ok));
-    }
+        if let Some(w) = window.as_deref() {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT tool_name, status, duration_ms, output FROM tool_calls
+                     WHERE tool_name IN ('assign-tasks','delegate-subagent','orchestrate-subagents')
+                       AND created_at >= datetime('now', ?1)",
+                )
+                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            let mapped = stmt
+                .query_map([w], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            rows.extend(mapped.filter_map(std::result::Result::ok));
+        } else {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT tool_name, status, duration_ms, output FROM tool_calls
+                     WHERE tool_name IN ('assign-tasks','delegate-subagent','orchestrate-subagents')",
+                )
+                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            let mapped = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            rows.extend(mapped.filter_map(std::result::Result::ok));
+        }
+        rows
+    };
 
     #[derive(Default)]
     struct Stats {
