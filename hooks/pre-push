@@ -23,10 +23,18 @@ if [ ! -f ".coverage-baseline" ]; then
     exit 1
 fi
 
-echo "Running: just ci-test"
+MODE="${IRONCLAD_PREPUSH_MODE:-fast}"
+if [ "$MODE" = "full" ]; then
+    GATE_CMD="just ci-test"
+else
+    GATE_CMD="just ci-test-fast"
+fi
+
+echo "Mode: ${MODE}"
+echo "Running: ${GATE_CMD}"
 echo ""
 
-if just ci-test; then
+if eval "$GATE_CMD"; then
     echo ""
     echo "✔ Pre-push gate passed — pushing."
 else
@@ -34,5 +42,6 @@ else
     echo "✘ Pre-push gate FAILED — push blocked."
     echo "  Fix the failures above and try again."
     echo "  To bypass (emergency only): git push --no-verify"
+    echo "  To run full local gate explicitly: IRONCLAD_PREPUSH_MODE=full git push"
     exit 1
 fi
