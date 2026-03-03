@@ -26,7 +26,8 @@ fn normalized_fallback_models_json(raw: Option<&str>) -> String {
 
 pub fn upsert_sub_agent(db: &Database, agent: &SubAgentRow) -> Result<()> {
     let conn = db.conn();
-    let fallback_models_json = normalized_fallback_models_json(agent.fallback_models_json.as_deref());
+    let fallback_models_json =
+        normalized_fallback_models_json(agent.fallback_models_json.as_deref());
     conn.execute(
         "INSERT INTO sub_agents (id, name, display_name, model, fallback_models_json, role, description, skills_json, enabled, session_count)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
