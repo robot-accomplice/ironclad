@@ -166,10 +166,10 @@ impl FinancialRule {
         let obj = params.as_object()?;
         // Explicit cent-denominated keys.
         for key in ["amount_cents", "cents", "value_cents"] {
-            if let Some(v) = obj.get(key) {
-                if let Some(n) = v.as_i64() {
-                    return Some(n);
-                }
+            if let Some(v) = obj.get(key)
+                && let Some(n) = v.as_i64()
+            {
+                return Some(n);
             }
         }
         // "amount" is dollar-denominated; accept either integer or float JSON.
