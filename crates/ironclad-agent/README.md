@@ -33,7 +33,6 @@ Agent core for the [Ironclad](https://github.com/robot-accomplice/ironclad) runt
 | `device` | Device context and hardware info |
 | `workspace` | Workspace state manager (file tree, git, metadata) |
 | `orchestration` | Multi-agent task decomposition |
-| `spawning` | Subagent lifecycle management |
 | `governor` | Rate governor and concurrency limits |
 | `typestate` | Compile-time valid state machine transitions |
 | `speculative` | Speculative parallel branch evaluation |

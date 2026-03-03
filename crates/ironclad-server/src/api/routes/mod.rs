@@ -41,6 +41,7 @@ use ironclad_agent::obsidian::ObsidianVault;
 use ironclad_agent::tools::ToolRegistry;
 use ironclad_channels::discord::DiscordAdapter;
 use ironclad_channels::email::EmailAdapter;
+use ironclad_channels::media::MediaService;
 use ironclad_channels::signal::SignalAdapter;
 use ironclad_channels::voice::VoicePipeline;
 
@@ -330,6 +331,7 @@ pub struct AppState {
     pub signal: Option<Arc<SignalAdapter>>,
     pub email: Option<Arc<EmailAdapter>>,
     pub voice: Option<Arc<RwLock<VoicePipeline>>>,
+    pub media_service: Option<Arc<MediaService>>,
     pub discovery: Arc<RwLock<ironclad_agent::discovery::DiscoveryRegistry>>,
     pub devices: Arc<RwLock<ironclad_agent::device::DeviceManager>>,
     pub mcp_clients: Arc<RwLock<ironclad_agent::mcp::McpClientManager>>,
@@ -342,6 +344,7 @@ pub struct AppState {
     pub config_apply_status: Arc<RwLock<ConfigApplyStatus>>,
     pub pending_specialist_proposals: Arc<RwLock<HashMap<String, serde_json::Value>>>,
     pub ws_tickets: crate::ws_ticket::TicketStore,
+    pub rate_limiter: crate::rate_limit::GlobalRateLimitLayer,
 }
 
 impl AppState {
@@ -456,9 +459,9 @@ pub fn build_router(state: AppState) -> Router {
         generate_deep_analysis, get_agents, get_available_models, get_cache_stats,
         get_capacity_stats, get_config, get_config_apply_status, get_config_capabilities,
         get_costs, get_efficiency, get_mcp_runtime, get_overview_timeseries, get_plugins,
-        get_recommendations, get_runtime_surfaces, get_transactions, list_discovered_agents,
-        list_paired_devices, mcp_client_disconnect, mcp_client_discover, pair_device,
-        register_discovered_agent, roster, set_provider_key, start_agent, stop_agent,
+        get_recommendations, get_runtime_surfaces, get_throttle_stats, get_transactions,
+        list_discovered_agents, list_paired_devices, mcp_client_disconnect, mcp_client_discover,
+        pair_device, register_discovered_agent, roster, set_provider_key, start_agent, stop_agent,
         toggle_plugin, unpair_device, update_config, verify_discovered_agent, verify_paired_device,
         wallet_address, wallet_balance, workspace_state,
     };
@@ -471,7 +474,7 @@ pub fn build_router(state: AppState) -> Router {
     use health::{get_logs, health};
     use memory::{
         get_episodic_memory, get_semantic_categories, get_semantic_memory, get_semantic_memory_all,
-        get_working_memory, get_working_memory_all, memory_search,
+        get_working_memory, get_working_memory_all, knowledge_ingest, memory_search,
     };
     use sessions::{
         analyze_session, analyze_turn, backfill_nicknames, create_session, get_session,
@@ -534,6 +537,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/memory/semantic/{category}", get(get_semantic_memory))
         .route("/api/memory/search", get(memory_search))
+        .route("/api/knowledge/ingest", post(knowledge_ingest))
         .route("/api/cron/jobs", get(list_cron_jobs).post(create_cron_job))
         .route("/api/cron/runs", get(list_cron_runs))
         .route(
@@ -549,6 +553,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/stats/transactions", get(get_transactions))
         .route("/api/stats/cache", get(get_cache_stats))
         .route("/api/stats/capacity", get(get_capacity_stats))
+        .route("/api/stats/throttle", get(get_throttle_stats))
         .route("/api/models/available", get(get_available_models))
         .route("/api/breaker/status", get(breaker_status))
         .route("/api/breaker/reset/{provider}", post(breaker_reset))
@@ -673,6 +678,53 @@ pub fn build_public_router(state: AppState) -> Router {
         )
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB — match auth router
         .with_state(state)
+}
+
+// ── MCP Gateway (P.1) ─────────────────────────────────────────
+
+/// Builds an axum `Router` that serves the MCP protocol endpoint.
+///
+/// The returned router should be merged at the top level — it handles
+/// its own transport (POST for JSON-RPC, GET for SSE, DELETE for sessions)
+/// under the `/mcp` prefix via rmcp's `StreamableHttpService`.
+///
+/// Auth: MCP clients authenticate via `Authorization: Bearer <api_key>`.
+/// The same API key used for the REST API is accepted here.
+pub fn build_mcp_router(state: &AppState, api_key: Option<String>) -> Router {
+    use crate::auth::ApiKeyLayer;
+    use ironclad_agent::mcp_handler::{IroncladMcpHandler, McpToolContext};
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    };
+    use std::time::Duration;
+
+    let mcp_ctx = McpToolContext {
+        agent_id: "ironclad-mcp-gateway".to_string(),
+        workspace_root: state
+            .config
+            .try_read()
+            .map(|c| c.agent.workspace.clone())
+            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        db: Some(state.db.clone()),
+    };
+
+    let handler = IroncladMcpHandler::new(state.tools.clone(), mcp_ctx);
+
+    let config = StreamableHttpServerConfig {
+        sse_keep_alive: Some(Duration::from_secs(15)),
+        stateful_mode: true,
+        ..Default::default()
+    };
+
+    let service = StreamableHttpService::new(
+        move || Ok(handler.clone()),
+        Arc::new(LocalSessionManager::default()),
+        config,
+    );
+
+    Router::new()
+        .nest_service("/mcp", service)
+        .layer(ApiKeyLayer::new(api_key))
 }
 
 // ── Re-exports for api.rs and lib.rs ────────────────────────────
@@ -821,6 +873,11 @@ primary = "ollama/qwen3:8b"
             config_apply_status: Arc::new(RwLock::new(ConfigApplyStatus::new(&config_path))),
             pending_specialist_proposals: Arc::new(RwLock::new(HashMap::new())),
             ws_tickets: crate::ws_ticket::TicketStore::new(),
+            rate_limiter: crate::rate_limit::GlobalRateLimitLayer::new(
+                100,
+                std::time::Duration::from_secs(60),
+            ),
+            media_service: None,
         }
     }
 
@@ -832,6 +889,7 @@ primary = "ollama/qwen3:8b"
             30,
             vec![],
             Some(secret.to_string()),
+            false,
         );
         state.telegram = Some(Arc::new(adapter));
         state
@@ -846,6 +904,7 @@ primary = "ollama/qwen3:8b"
             "verify-token".into(),
             vec![],
             Some(secret.to_string()),
+            false,
         )
         .unwrap();
         state.whatsapp = Some(Arc::new(adapter));
@@ -854,10 +913,6 @@ primary = "ollama/qwen3:8b"
 
     fn full_app(state: AppState) -> Router {
         build_router(state.clone()).merge(build_public_router(state))
-    }
-
-    fn expected_loopback_status() -> &'static str {
-        "legacy_proxy_unsupported"
     }
 
     async fn json_body(resp: axum::http::Response<Body>) -> serde_json::Value {
@@ -1373,6 +1428,9 @@ primary = "ollama/qwen3:8b"
             20,
             0.001,
             Some("default"),
+            false,
+            Some(100),
+            Some(0.85),
             false,
         )
         .unwrap();
@@ -2363,6 +2421,7 @@ params = { path = "README.md" }
             &serde_json::json!({ "path": "protected.sh" }),
             &turn_id,
             InputAuthority::External,
+            None,
         )
         .await;
 
@@ -2382,6 +2441,7 @@ params = { path = "README.md" }
             name: "geo-specialist".to_string(),
             display_name: Some("Geopolitical Specialist".to_string()),
             model: "auto".to_string(),
+            fallback_models_json: Some("[]".to_string()),
             role: "subagent".to_string(),
             description: Some("Tracks geopolitical risk".to_string()),
             skills_json: Some(r#"["geopolitics","risk-analysis"]"#.to_string()),
@@ -2417,6 +2477,7 @@ params = { path = "README.md" }
             }),
             &turn_id,
             InputAuthority::Creator,
+            None,
         )
         .await
         .unwrap();
@@ -2476,6 +2537,7 @@ params = { path = "README.md" }
             name: "geo-specialist".to_string(),
             display_name: Some("Geopolitical Specialist".to_string()),
             model: "mock/subagent".to_string(),
+            fallback_models_json: Some("[]".to_string()),
             role: "subagent".to_string(),
             description: Some("Tracks geopolitical risk".to_string()),
             skills_json: Some(r#"["geopolitics","risk-analysis"]"#.to_string()),
@@ -2511,6 +2573,7 @@ params = { path = "README.md" }
             }),
             &turn_id,
             InputAuthority::Creator,
+            None,
         )
         .await
         .unwrap();
@@ -2570,6 +2633,7 @@ params = { path = "README.md" }
             &serde_json::json!({ "path": "deny-external.sh" }),
             &turn_id,
             InputAuthority::External,
+            None,
         )
         .await;
 
@@ -2630,6 +2694,7 @@ params = { path = "README.md" }
             &serde_json::json!({ "path": "invalid-risk.sh" }),
             &turn_id,
             InputAuthority::Creator,
+            None,
         )
         .await;
 
@@ -2692,6 +2757,7 @@ params = { path = "README.md" }
             &serde_json::json!({ "path": "disabled.sh" }),
             &turn_id,
             InputAuthority::Creator,
+            None,
         )
         .await;
 
@@ -2749,6 +2815,7 @@ params = { path = "README.md" }
             &serde_json::json!({ "path": "malformed.sh" }),
             &turn_id,
             InputAuthority::Creator,
+            None,
         )
         .await;
 
@@ -2860,12 +2927,12 @@ params = { path = "README.md" }
         assert!(body["roster"].is_array());
         let roster = body["roster"].as_array().unwrap();
         assert!(!roster.is_empty(), "roster should include the main agent");
-        assert_eq!(roster[0]["role"], "commander");
+        assert_eq!(roster[0]["role"], "orchestrator");
         assert!(roster[0]["skills"].is_array());
     }
 
     #[tokio::test]
-    async fn change_commander_model() {
+    async fn change_orchestrator_model() {
         let state = test_state();
         let app = build_router(state);
         let resp = app
@@ -2888,7 +2955,7 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
-    async fn change_commander_model_and_order() {
+    async fn change_orchestrator_model_and_order() {
         let state = test_state();
         let app = build_router(state);
         let resp = app
@@ -3145,7 +3212,6 @@ params = { path = "README.md" }
         let body = json_body(resp).await;
         assert_eq!(body["providers"]["google"]["status"], "ok");
         assert_eq!(body["proxy"]["mode"], "in_process");
-        assert_eq!(body["proxy"]["legacy_loopback_support"], "removed_v0_8");
         assert!(
             body["models"]
                 .as_array()
@@ -3167,7 +3233,7 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
-    async fn models_available_reports_proxy_unreachable_for_local_proxy_refusal() {
+    async fn models_available_reports_unreachable_on_connection_refused() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener); // ensure immediate connection refusal on this port
@@ -3197,20 +3263,11 @@ params = { path = "README.md" }
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
-        assert_eq!(
-            body["providers"]["anthropic"]["status"],
-            expected_loopback_status()
-        );
-        assert!(
-            body["providers"]["anthropic"]["hint"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("providers.anthropic.url")
-        );
+        assert_eq!(body["providers"]["anthropic"]["status"], "unreachable");
     }
 
     #[tokio::test]
-    async fn models_available_reports_proxy_misconfigured_for_non_models_payload() {
+    async fn models_available_reports_error_for_non_models_payload() {
         let mock = Router::new().route(
             "/anthropic/v1/models",
             get(|| async move { (StatusCode::OK, "not a models payload") }),
@@ -3245,16 +3302,7 @@ params = { path = "README.md" }
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
-        assert_eq!(
-            body["providers"]["anthropic"]["status"],
-            "legacy_proxy_unsupported"
-        );
-        assert!(
-            body["providers"]["anthropic"]["hint"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("unsupported in v0.8.0+")
-        );
+        assert_eq!(body["providers"]["anthropic"]["status"], "error");
         mock_task.abort();
     }
 
@@ -4296,6 +4344,7 @@ params = { path = "README.md" }
             name: "econ-analyst".to_string(),
             display_name: Some("Economic Analyst".to_string()),
             model: "ollama/qwen3:8b".to_string(),
+            fallback_models_json: Some("[]".to_string()),
             role: "subagent".to_string(),
             description: Some("Economic monitoring".to_string()),
             skills_json: Some(r#"["macro","markets"]"#.to_string()),
@@ -4307,6 +4356,7 @@ params = { path = "README.md" }
             name: "geopolitical-specialist".to_string(),
             display_name: Some("Geopolitical Specialist".to_string()),
             model: "ollama/qwen3:8b".to_string(),
+            fallback_models_json: Some("[]".to_string()),
             role: "subagent".to_string(),
             description: Some("Geopolitical monitoring".to_string()),
             skills_json: Some(r#"["geopolitics"]"#.to_string()),
@@ -5681,7 +5731,17 @@ params = { path = "README.md" }
         let state = test_state();
         // Seed some inference cost data so the report has something to aggregate
         ironclad_db::metrics::record_inference_cost(
-            &state.db, "gpt-4", "openai", 1000, 500, 0.05, None, false,
+            &state.db,
+            "gpt-4",
+            "openai",
+            1000,
+            500,
+            0.05,
+            None,
+            false,
+            Some(200),
+            Some(0.90),
+            false,
         )
         .unwrap();
 

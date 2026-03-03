@@ -9,6 +9,7 @@ pub struct SubAgentRow {
     pub name: String,
     pub display_name: Option<String>,
     pub model: String,
+    pub fallback_models_json: Option<String>,
     pub role: String,
     pub description: Option<String>,
     pub skills_json: Option<String>,
@@ -16,14 +17,24 @@ pub struct SubAgentRow {
     pub session_count: i64,
 }
 
+fn normalized_fallback_models_json(raw: Option<&str>) -> String {
+    match raw.map(str::trim) {
+        Some(v) if !v.is_empty() => v.to_string(),
+        _ => "[]".to_string(),
+    }
+}
+
 pub fn upsert_sub_agent(db: &Database, agent: &SubAgentRow) -> Result<()> {
     let conn = db.conn();
+    let fallback_models_json =
+        normalized_fallback_models_json(agent.fallback_models_json.as_deref());
     conn.execute(
-        "INSERT INTO sub_agents (id, name, display_name, model, role, description, skills_json, enabled, session_count)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO sub_agents (id, name, display_name, model, fallback_models_json, role, description, skills_json, enabled, session_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(name) DO UPDATE SET
            display_name = excluded.display_name,
            model = excluded.model,
+           fallback_models_json = excluded.fallback_models_json,
            role = excluded.role,
            description = excluded.description,
            skills_json = excluded.skills_json,
@@ -34,6 +45,7 @@ pub fn upsert_sub_agent(db: &Database, agent: &SubAgentRow) -> Result<()> {
             agent.name,
             agent.display_name,
             agent.model,
+            fallback_models_json,
             agent.role,
             agent.description,
             agent.skills_json,
@@ -49,7 +61,7 @@ pub fn list_sub_agents(db: &Database) -> Result<Vec<SubAgentRow>> {
     let conn = db.conn();
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, display_name, model, role, description, skills_json, enabled, session_count
+            "SELECT id, name, display_name, model, fallback_models_json, role, description, skills_json, enabled, session_count
              FROM sub_agents ORDER BY name",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -61,11 +73,14 @@ pub fn list_sub_agents(db: &Database) -> Result<Vec<SubAgentRow>> {
                 name: row.get(1)?,
                 display_name: row.get(2)?,
                 model: row.get(3)?,
-                role: row.get(4)?,
-                description: row.get(5)?,
-                skills_json: row.get(6)?,
-                enabled: row.get::<_, i32>(7)? != 0,
-                session_count: row.get(8)?,
+                fallback_models_json: Some(normalized_fallback_models_json(
+                    row.get::<_, Option<String>>(4)?.as_deref(),
+                )),
+                role: row.get(5)?,
+                description: row.get(6)?,
+                skills_json: row.get(7)?,
+                enabled: row.get::<_, i32>(8)? != 0,
+                session_count: row.get(9)?,
             })
         })
         .map_err(|e| IroncladError::Database(e.to_string()))?
@@ -124,6 +139,7 @@ mod tests {
             name: name.to_string(),
             display_name: Some(name.replace('-', " ")),
             model: "test-model".into(),
+            fallback_models_json: Some("[]".into()),
             role: "specialist".into(),
             description: Some("Test agent".into()),
             skills_json: None,
@@ -204,5 +220,19 @@ mod tests {
         let counts = list_session_counts_by_agent(&db).unwrap();
         assert_eq!(counts.get("alpha"), Some(&2));
         assert_eq!(counts.get("bravo"), Some(&1));
+    }
+
+    #[test]
+    fn upsert_normalizes_missing_fallback_models() {
+        let db = test_db();
+        let mut agent = sample_agent("fallback-default");
+        agent.fallback_models_json = None;
+        upsert_sub_agent(&db, &agent).unwrap();
+        let stored = list_sub_agents(&db).unwrap();
+        assert_eq!(
+            stored[0].fallback_models_json.as_deref(),
+            Some("[]"),
+            "missing fallback models should normalize to JSON empty array"
+        );
     }
 }

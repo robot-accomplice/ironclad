@@ -13,10 +13,8 @@ pub struct PluginManifest {
     #[serde(default)]
     pub author: String,
     /// Declared permissions for this plugin (e.g., "network", "filesystem").
-    /// NOTE: These are parsed and stored but NOT yet enforced at runtime.
-    /// Consumers should treat this as informational metadata until enforcement
-    /// is implemented.
-    // TODO: enforce permissions before plugin execution
+    /// Runtime currently enforces allow-list policy and input capability checks,
+    /// but does not yet provide full syscall-level sandbox guarantees.
     #[serde(default)]
     pub permissions: Vec<String>,
     #[serde(default)]
@@ -29,6 +27,9 @@ pub struct ManifestToolDef {
     pub description: String,
     #[serde(default)]
     pub dangerous: bool,
+    /// Optional per-tool permissions. If omitted, plugin-level permissions apply.
+    #[serde(default)]
+    pub permissions: Vec<String>,
 }
 
 impl PluginManifest {
@@ -48,8 +49,14 @@ impl PluginManifest {
     pub fn validate(&self) -> Result<()> {
         Self::validate_plugin_name(&self.name)?;
         Self::validate_plugin_version(&self.version)?;
+        for perm in &self.permissions {
+            Self::validate_permission_name(perm)?;
+        }
         for tool in &self.tools {
             Self::validate_tool_name(&tool.name)?;
+            for perm in &tool.permissions {
+                Self::validate_permission_name(perm)?;
+            }
         }
         Ok(())
     }
@@ -129,6 +136,15 @@ impl PluginManifest {
             )));
         }
         Ok(())
+    }
+
+    fn validate_permission_name(name: &str) -> Result<()> {
+        match name.to_ascii_lowercase().as_str() {
+            "filesystem" | "network" | "process" | "environment" => Ok(()),
+            other => Err(IroncladError::Config(format!(
+                "unsupported permission '{other}' (allowed: filesystem, network, process, environment)"
+            ))),
+        }
     }
 }
 

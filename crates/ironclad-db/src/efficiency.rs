@@ -701,6 +701,9 @@ mod tests {
             0.015,
             Some("T1"),
             false,
+            None,
+            None,
+            false,
         )
         .unwrap();
         record_inference_cost(
@@ -712,6 +715,9 @@ mod tests {
             0.025,
             Some("T1"),
             true,
+            None,
+            None,
+            false,
         )
         .unwrap();
 
@@ -727,8 +733,24 @@ mod tests {
     #[test]
     fn model_filter_works() {
         let db = test_db();
-        record_inference_cost(&db, "claude-4", "anthropic", 100, 50, 0.01, None, false).unwrap();
-        record_inference_cost(&db, "gpt-4", "openai", 200, 100, 0.02, None, false).unwrap();
+        record_inference_cost(
+            &db,
+            "claude-4",
+            "anthropic",
+            100,
+            50,
+            0.01,
+            None,
+            false,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        record_inference_cost(
+            &db, "gpt-4", "openai", 200, 100, 0.02, None, false, None, None, false,
+        )
+        .unwrap();
 
         let report = compute_efficiency(&db, "all", Some("gpt-4")).unwrap();
         assert_eq!(report.models.len(), 1);
@@ -738,8 +760,24 @@ mod tests {
     #[test]
     fn multiple_models_totals() {
         let db = test_db();
-        record_inference_cost(&db, "claude-4", "anthropic", 100, 50, 0.01, None, false).unwrap();
-        record_inference_cost(&db, "gpt-4", "openai", 200, 100, 0.02, None, false).unwrap();
+        record_inference_cost(
+            &db,
+            "claude-4",
+            "anthropic",
+            100,
+            50,
+            0.01,
+            None,
+            false,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        record_inference_cost(
+            &db, "gpt-4", "openai", 200, 100, 0.02, None, false, None, None, false,
+        )
+        .unwrap();
 
         let report = compute_efficiency(&db, "all", None).unwrap();
         assert_eq!(report.totals.total_turns, 2);
@@ -750,7 +788,20 @@ mod tests {
     #[test]
     fn time_series_has_entries() {
         let db = test_db();
-        record_inference_cost(&db, "claude-4", "anthropic", 100, 50, 0.01, None, false).unwrap();
+        record_inference_cost(
+            &db,
+            "claude-4",
+            "anthropic",
+            100,
+            50,
+            0.01,
+            None,
+            false,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
 
         let report = compute_efficiency(&db, "all", None).unwrap();
         assert!(!report.time_series.is_empty());
@@ -768,8 +819,14 @@ mod tests {
     #[test]
     fn all_cached_full_rate() {
         let db = test_db();
-        record_inference_cost(&db, "m1", "p1", 100, 50, 0.01, None, true).unwrap();
-        record_inference_cost(&db, "m1", "p1", 100, 50, 0.01, None, true).unwrap();
+        record_inference_cost(
+            &db, "m1", "p1", 100, 50, 0.01, None, true, None, None, false,
+        )
+        .unwrap();
+        record_inference_cost(
+            &db, "m1", "p1", 100, 50, 0.01, None, true, None, None, false,
+        )
+        .unwrap();
 
         let report = compute_efficiency(&db, "all", None).unwrap();
         assert_eq!(report.models["m1"].cache_hit_rate, 1.0);
@@ -785,7 +842,8 @@ mod tests {
     #[test]
     fn zero_tokens_in_no_division_by_zero() {
         let db = test_db();
-        record_inference_cost(&db, "m1", "p1", 0, 50, 0.01, None, false).unwrap();
+        record_inference_cost(&db, "m1", "p1", 0, 50, 0.01, None, false, None, None, false)
+            .unwrap();
 
         let report = compute_efficiency(&db, "all", None).unwrap();
         let m = &report.models["m1"];
@@ -826,7 +884,10 @@ mod tests {
     #[test]
     fn zero_tokens_out_no_division_by_zero() {
         let db = test_db();
-        record_inference_cost(&db, "m1", "p1", 1000, 0, 0.01, None, false).unwrap();
+        record_inference_cost(
+            &db, "m1", "p1", 1000, 0, 0.01, None, false, None, None, false,
+        )
+        .unwrap();
 
         let report = compute_efficiency(&db, "all", None).unwrap();
         let m = &report.models["m1"];
@@ -837,8 +898,14 @@ mod tests {
     #[test]
     fn no_cached_zero_rate() {
         let db = test_db();
-        record_inference_cost(&db, "m1", "p1", 100, 50, 0.01, None, false).unwrap();
-        record_inference_cost(&db, "m1", "p1", 100, 50, 0.01, None, false).unwrap();
+        record_inference_cost(
+            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false,
+        )
+        .unwrap();
+        record_inference_cost(
+            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false,
+        )
+        .unwrap();
 
         let report = compute_efficiency(&db, "all", None).unwrap();
         assert_eq!(report.models["m1"].cache_hit_rate, 0.0);
@@ -848,9 +915,15 @@ mod tests {
     fn multiple_models_identifies_most_efficient() {
         let db = test_db();
         // m1: 1000 in, 500 out -> density ~0.5
-        record_inference_cost(&db, "m1", "p1", 1000, 500, 0.01, None, false).unwrap();
+        record_inference_cost(
+            &db, "m1", "p1", 1000, 500, 0.01, None, false, None, None, false,
+        )
+        .unwrap();
         // m2: 100 in, 200 out -> density ~2.0  (more efficient)
-        record_inference_cost(&db, "m2", "p2", 100, 200, 0.005, None, false).unwrap();
+        record_inference_cost(
+            &db, "m2", "p2", 100, 200, 0.005, None, false, None, None, false,
+        )
+        .unwrap();
 
         let report = compute_efficiency(&db, "all", None).unwrap();
         assert_eq!(
@@ -939,6 +1012,9 @@ mod tests {
             0.015,
             Some("T1"),
             false,
+            None,
+            None,
+            false,
         )
         .unwrap();
         record_inference_cost(
@@ -950,9 +1026,15 @@ mod tests {
             0.025,
             Some("T1"),
             true,
+            None,
+            None,
+            false,
         )
         .unwrap();
-        record_inference_cost(&db, "gpt-4", "openai", 500, 200, 0.01, None, false).unwrap();
+        record_inference_cost(
+            &db, "gpt-4", "openai", 500, 200, 0.01, None, false, None, None, false,
+        )
+        .unwrap();
 
         // Add a tool call
         {
@@ -1004,8 +1086,14 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        record_inference_cost(&db, "m1", "p1", 100, 50, 0.01, None, false).unwrap();
-        record_inference_cost(&db, "m1", "p1", 100, 50, 0.01, None, false).unwrap();
+        record_inference_cost(
+            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false,
+        )
+        .unwrap();
+        record_inference_cost(
+            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false,
+        )
+        .unwrap();
 
         let profile = build_user_profile(&db, "all").unwrap();
         assert!(profile.avg_quality.is_some());
@@ -1120,7 +1208,10 @@ mod tests {
     #[test]
     fn report_cost_attribution_all_history() {
         let db = test_db();
-        record_inference_cost(&db, "m1", "p1", 1000, 500, 0.03, None, false).unwrap();
+        record_inference_cost(
+            &db, "m1", "p1", 1000, 500, 0.03, None, false, None, None, false,
+        )
+        .unwrap();
 
         let report = compute_efficiency(&db, "all", None).unwrap();
         let m = &report.models["m1"];

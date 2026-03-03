@@ -14,14 +14,17 @@ if [[ -z "${workspace_version}" ]]; then
 fi
 version="${RELEASE_TARGET_VERSION:-${workspace_version}}"
 
-echo "Release docs gate for v${version}"
+# Strip semver build metadata (+...) for doc/file lookups — 0.9.2+hotfix.1 → 0.9.2
+version_base="${version%%+*}"
+
+echo "Release docs gate for v${version} (base: ${version_base})"
 
 echo "1) changelog entry exists for target release version"
-grep -qE "^## \[${version}\]|^## \[Unreleased\]" CHANGELOG.md
+grep -qF "## [${version_base}]" CHANGELOG.md || grep -qF "## [Unreleased]" CHANGELOG.md
 
 echo "2) release notes exist"
-test -f "docs/releases/v${version}.md"
-grep -qE "v${version}|Release|Gate|Checklist" "docs/releases/v${version}.md"
+test -f "docs/releases/v${version_base}.md"
+grep -qE "v${version_base}|Release|Gate|Checklist" "docs/releases/v${version_base}.md"
 
 echo "3) README references release rigor"
 grep -qE "test-regression|ci-test|release|coverage" README.md

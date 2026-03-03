@@ -23,13 +23,29 @@ pub fn record_inference_cost(
     cost: f64,
     tier: Option<&str>,
     cached: bool,
+    latency_ms: Option<i64>,
+    quality_score: Option<f64>,
+    escalation: bool,
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO inference_costs (id, model, provider, tokens_in, tokens_out, cost, tier, cached) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        rusqlite::params![id, model, provider, tokens_in, tokens_out, cost, tier, cached as i32],
+        "INSERT INTO inference_costs \
+         (id, model, provider, tokens_in, tokens_out, cost, tier, cached, latency_ms, quality_score, escalation) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![
+            id,
+            model,
+            provider,
+            tokens_in,
+            tokens_out,
+            cost,
+            tier,
+            cached as i32,
+            latency_ms,
+            quality_score,
+            escalation as i32
+        ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
@@ -88,6 +104,32 @@ pub fn query_transactions(db: &Database, hours: i64) -> Result<Vec<TransactionRe
         .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
+/// Return the most recent quality observations from `inference_costs`, ordered
+/// oldest-first so that the caller can feed them into a ring buffer in chronological
+/// order. Each row is `(model, quality_score)`.
+pub fn recent_quality_scores(db: &Database, limit: i64) -> Result<Vec<(String, f64)>> {
+    let limit = limit.max(1);
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT model, quality_score FROM inference_costs \
+             WHERE quality_score IS NOT NULL \
+             ORDER BY created_at DESC, rowid DESC LIMIT ?1",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows: Vec<(String, f64)> = stmt
+        .query_map(rusqlite::params![limit], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect();
+    // Reverse so oldest comes first (ring buffer insertion order).
+    let mut rows = rows;
+    rows.reverse();
+    Ok(rows)
+}
+
 pub fn record_metric_snapshot(db: &Database, metrics_json: &str) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
@@ -118,6 +160,9 @@ mod tests {
             500,
             0.015,
             Some("T1"),
+            false,
+            Some(150),
+            Some(0.92),
             false,
         )
         .unwrap();
@@ -162,7 +207,10 @@ mod tests {
     #[test]
     fn record_inference_cost_cached() {
         let db = test_db();
-        let id = record_inference_cost(&db, "gpt-4", "openai", 100, 50, 0.005, None, true).unwrap();
+        let id = record_inference_cost(
+            &db, "gpt-4", "openai", 100, 50, 0.005, None, true, None, None, false,
+        )
+        .unwrap();
         assert!(!id.is_empty());
     }
 
@@ -185,5 +233,115 @@ mod tests {
         let id1 = record_metric_snapshot(&db, r#"{"cpu":0.1}"#).unwrap();
         let id2 = record_metric_snapshot(&db, r#"{"cpu":0.9}"#).unwrap();
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn recent_quality_scores_empty() {
+        let db = test_db();
+        let scores = recent_quality_scores(&db, 10).unwrap();
+        assert!(scores.is_empty());
+    }
+
+    #[test]
+    fn recent_quality_scores_returns_oldest_first() {
+        let db = test_db();
+        // Insert three rows with quality scores.
+        record_inference_cost(
+            &db,
+            "model-a",
+            "prov",
+            100,
+            50,
+            0.01,
+            None,
+            false,
+            Some(100),
+            Some(0.7),
+            false,
+        )
+        .unwrap();
+        record_inference_cost(
+            &db,
+            "model-b",
+            "prov",
+            200,
+            100,
+            0.02,
+            None,
+            false,
+            Some(200),
+            Some(0.9),
+            false,
+        )
+        .unwrap();
+        record_inference_cost(
+            &db,
+            "model-a",
+            "prov",
+            150,
+            75,
+            0.015,
+            None,
+            false,
+            Some(150),
+            Some(0.85),
+            false,
+        )
+        .unwrap();
+
+        let scores = recent_quality_scores(&db, 10).unwrap();
+        assert_eq!(scores.len(), 3);
+        // Oldest first means first inserted row comes first.
+        assert_eq!(scores[0].0, "model-a");
+        assert!((scores[0].1 - 0.7).abs() < f64::EPSILON);
+        assert_eq!(scores[2].0, "model-a");
+        assert!((scores[2].1 - 0.85).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn recent_quality_scores_skips_null() {
+        let db = test_db();
+        record_inference_cost(
+            &db,
+            "m",
+            "p",
+            100,
+            50,
+            0.01,
+            None,
+            false,
+            None,
+            Some(0.8),
+            false,
+        )
+        .unwrap();
+        // Insert a row with NULL quality_score.
+        record_inference_cost(&db, "m", "p", 100, 50, 0.01, None, true, None, None, false).unwrap();
+        let scores = recent_quality_scores(&db, 10).unwrap();
+        assert_eq!(scores.len(), 1);
+        assert!((scores[0].1 - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn recent_quality_scores_respects_limit() {
+        let db = test_db();
+        for i in 0..5 {
+            record_inference_cost(
+                &db,
+                "m",
+                "p",
+                100,
+                50,
+                0.01,
+                None,
+                false,
+                None,
+                Some(i as f64 * 0.2),
+                false,
+            )
+            .unwrap();
+        }
+        let scores = recent_quality_scores(&db, 3).unwrap();
+        assert_eq!(scores.len(), 3);
     }
 }

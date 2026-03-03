@@ -36,7 +36,8 @@
         "skill-creation.md": "36f7970c8438ae716375ebee44c674ab86bdf58c5f6a2164f3edd984fa10278b",
         "summarize.md": "cd11b2ecb572628bc2c2cb5b84f8f2e2f4c31babb72247cdb27cf12e0be0bda1",
         "update-and-rollback.md": "fe5c3f7fcdd1cce2b6892fdc32063e9dbd04ebac0adee3174d461fc18e085023",
-        "typescript.md": "a57f29acdefd72698d3b1894342a1bb61ec663c862bee0406b9f5e83e98b101a"
+        "typescript.md": "a57f29acdefd72698d3b1894342a1bb61ec663c862bee0406b9f5e83e98b101a",
+        "workflow-design.md": "54adba76569fe2ea573c2b909b403d0342ab685b7e195edaf73202b9e606426f"
       }
     }
   }

@@ -2,144 +2,112 @@
 
 ## Scope
 
-This roadmap tracks one year of skill delivery, aligned to actual runtime/registry state and the core project roadmap.
+This roadmap schedules at least 12 months of skill delivery with quarterly review gates.
 
 Cadence:
 
-- Monthly releases (target: 0-2 net-new skills/month, plus quality updates)
-- Quarterly re-ranking based on telemetry and support demand
-
-## Current Baseline (Already in Code/Registry)
-
-From `registry/builtin-skills.json` and `registry/manifest.json`:
-
-- Built-in now: `install-setup-assistant`, `runtime-diagnostics`, `provider-auth-troubleshooter`
-- Optional now: `update-and-rollback`, `session-operator`, `skill-creation`, `model-routing-tuner`, `code-analysis-bug-hunting`
-
-From runtime/CLI:
-
-- Catalog surfaces exist in API and CLI (`/api/skills/catalog*`, `ironclad skills catalog *`)
-- Skill install/activate/reload/list flows are already wired
-
-This means Q1 is no longer a pure "future plan"; it is mostly shipped and should focus on quality and adoption.
-
-## Alignment Constraints from Project Roadmap
-
-- `v0.8.x` remains reliability-first (durable delivery, abuse protection, cron-conformant rotation, skills catalog UX hardening)
-- Skills that depend on future platform work (for example deep plugin diagnostics, broad orchestration, advanced cost telemetry) should be discovery/spec-first until required runtime surfaces are stable
-- Built-in promotion should lag at least one quarter behind optional rollout unless the workflow is outage-critical
+- Monthly releases (target: 2-3 skills/month)
+- Quarterly re-ranking based on telemetry/support demand
 
 ## Quarterly Plan
 
-### Q1 2026 - Delivered Baseline + Trigger Quality Hardening
+### Q1 2026 - Onboarding and Reliability Foundations
 
-Focus: consolidate what is already shipped and raise activation quality.
+Focus: reduce setup friction and failure-to-resolution time.
 
-- `install-setup-assistant` (built-in) - shipped
-- `runtime-diagnostics` (built-in) - shipped
-- `provider-auth-troubleshooter` (built-in) - shipped
-- `update-and-rollback` (optional) - shipped
-- `session-operator` (optional) - shipped
-- `skill-creation` (optional) - shipped
-- `model-routing-tuner` (optional) - shipped
-- `code-analysis-bug-hunting` (optional) - shipped
+- `install-setup-assistant` (built-in)
+- `runtime-diagnostics` (built-in)
+- `provider-auth-troubleshooter` (built-in)
+- `update-and-rollback` (optional)
+- `session-operator` (optional)
+- `skill-creation` (optional)
 
 Exit criteria:
 
-- Trigger precision/recall measured and tuned for all shipped Wave 1 skills
-- Reduced setup/auth/runtime support friction versus prior quarter
-- No duplicate skill identities across built-in and optional catalogs
+- Median setup completion time reduced
+- Support tickets for auth/setup/runtime startup down quarter-over-quarter
+- All above skills pass trigger quality checks and regression tests
 
-### Q2 2026 - Operator Productivity and Day-2 Workflows
+### Q2 2026 - Productivity and Control Plane Workflows
 
-Focus: improve routine operations while `v0.8.x` reliability work stabilizes.
+Focus: improve day-2 operations and tuning.
 
+- `model-routing-tuner`
 - `prompt-quality-auditor`
 - `workflow-planner` (multi-step runbook generation)
-- `config-drift-checker` (expected vs runtime behavior checks)
+- `config-drift-checker` (compare expected vs runtime config behavior)
 - `session-hygiene-manager` (archive/cleanup/export cadence)
-- `release-readiness-assistant` (safe release preflight)
-
-Dependency notes:
-
-- Favor CLI-first where dashboard/runtime surfaces are still evolving
-- Keep guardrail-sensitive skills conservative until abuse-protection and rotation semantics are stable in production
+- `release-readiness-assistant` (safe release preflight for operators)
 
 Exit criteria:
 
-- Reduced time-to-tune for routing/prompt adjustments
-- Fewer manual config/release errors in operator workflows
-- At least two day-2 workflows usable end-to-end from skill invocation
+- Reduced time-to-tune for model routing changes
+- Fewer manual config mistakes in support channels
+- At least two workflows fully automatable end-to-end
 
-### Q3 2026 - Quality and Security Skill Pack
+### Q3 2026 - Quality, Security, and Testing Skills
 
-Focus: pre-merge defect detection and safer remediation loops.
+Focus: harden code and operational safety.
 
+- `code-analysis-bug-hunting`
 - `fix-validation` (verify bugfixes against regression tests)
 - `security-misconfig-hunter` (fail-open and insecure defaults)
 - `test-gap-analyzer` (coverage + missing-case recommendations)
 - `incident-retrospective-writer`
 - `dependency-risk-reviewer`
-- `code-analysis-bug-hunting` v2 (quality pass, not a new ID)
 
 Exit criteria:
 
-- Higher pre-merge defect interception rate
-- Better regression coverage for production issue classes
-- Downward trend in security-misconfiguration recurrence
+- Increased pre-merge defect detection
+- Improved regression test coverage for production issues
+- Security-related misconfiguration findings trend down
 
-### Q4 2026 - Integrations and Control-Plane Specialization
+### Q4 2026 - Advanced Orchestration and Integrations
 
-Focus: skills that support ecosystem expansion and policy-heavy operations.
+Focus: ecosystem expansion and autonomous operations.
 
 - `mcp-integration-helper`
 - `plugin-troubleshooter`
-- `cross-channel-operator` (telegram/discord/signal/email support)
+- `cross-channel-operator` (telegram/discord/signal/email workflow support)
 - `policy-guardrail-designer`
-- `cost-anomaly-investigator`
-- `knowledge-workflow-curator`
-
-Dependency notes:
-
-- Promote from discovery to implementation only when required runtime surfaces are stable (`v0.9.x` track)
-- Keep high-autonomy orchestration skills optional until sustained stability data is available
+- `cost-anomaly-investigator` (inference cost spikes)
+- `knowledge-workflow-curator` (capture/index/retrieval hygiene)
 
 Exit criteria:
 
-- Faster integration setup and troubleshooting cycles
-- Lower plugin/channel setup failure rate
-- Clear operator-facing explanations for policy/guardrail recommendations
+- Faster integration time for external systems
+- Reduced plugin/channel setup failures
+- Measurable improvement in operator confidence on guardrails
 
 ## Month-by-Month Release Skeleton
 
-- Jan: shipped baseline built-ins (`install-setup-assistant`, `runtime-diagnostics`)
-- Feb: shipped `provider-auth-troubleshooter`, `update-and-rollback`
-- Mar: shipped `session-operator`, `skill-creation`, `model-routing-tuner`, `code-analysis-bug-hunting`
-- Apr: `prompt-quality-auditor`
-- May: `workflow-planner`
-- Jun: `config-drift-checker`, `session-hygiene-manager`
-- Jul: `release-readiness-assistant`, `fix-validation`
-- Aug: `security-misconfig-hunter`
-- Sep: `test-gap-analyzer`, `incident-retrospective-writer`
-- Oct: `dependency-risk-reviewer`, `mcp-integration-helper`
-- Nov: `plugin-troubleshooter`, `policy-guardrail-designer`
-- Dec: `cross-channel-operator`, `cost-anomaly-investigator` (or `knowledge-workflow-curator` if dependency gates are not met)
+- Jan: install-setup-assistant, runtime-diagnostics
+- Feb: provider-auth-troubleshooter, update-and-rollback
+- Mar: session-operator, skill-creation
+- Apr: model-routing-tuner, prompt-quality-auditor
+- May: workflow-planner, config-drift-checker
+- Jun: session-hygiene-manager, release-readiness-assistant
+- Jul: code-analysis-bug-hunting, fix-validation
+- Aug: security-misconfig-hunter, test-gap-analyzer
+- Sep: incident-retrospective-writer, dependency-risk-reviewer
+- Oct: mcp-integration-helper, plugin-troubleshooter
+- Nov: cross-channel-operator, policy-guardrail-designer
+- Dec: cost-anomaly-investigator, knowledge-workflow-curator
 
 ## Governance
 
 Each quarter:
 
-1. Review adoption, trigger-hit rates, and false-trigger rates
-2. Re-score roadmap items by impact, implementation cost, and dependency readiness
+1. Review adoption and trigger-hit rates
+2. Re-score roadmap items by impact and implementation cost
 3. Promote/demote built-in candidates based on stability and reach
-4. Publish roadmap deltas in release notes and docs
+4. Publish roadmap delta in release notes and docs
 
 ## Promotion Path (Optional to Built-in)
 
 A skill is eligible for built-in promotion if:
 
 - Triggered by majority user cohorts
-- Demonstrates stable behavior for at least one quarter
-- Has low false-trigger rate and high completion quality
+- Demonstrates stable behavior over at least one quarter
+- Has low false-trigger rate and high task completion quality
 - Addresses a high-risk workflow where mistakes are expensive
-- Depends only on stable runtime APIs (not planning-only roadmap items)

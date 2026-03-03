@@ -18,6 +18,9 @@ pub struct SignalAdapter {
     pub daemon_url: String,
     pub client: reqwest::Client,
     pub allowed_numbers: Vec<String>,
+    /// When `true`, an empty `allowed_numbers` list denies all messages (secure default).
+    /// When `false`, an empty list allows all messages (legacy behavior).
+    pub deny_on_empty: bool,
     message_buffer: Arc<Mutex<VecDeque<InboundMessage>>>,
 }
 
@@ -31,6 +34,7 @@ impl SignalAdapter {
                 .build()
                 .unwrap_or_default(),
             allowed_numbers: Vec::new(),
+            deny_on_empty: false,
             message_buffer: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
@@ -39,15 +43,20 @@ impl SignalAdapter {
         phone_number: String,
         daemon_url: String,
         allowed_numbers: Vec<String>,
+        deny_on_empty: bool,
     ) -> Self {
         Self {
             allowed_numbers,
+            deny_on_empty,
             ..Self::new(phone_number, daemon_url)
         }
     }
 
     fn is_sender_allowed(&self, sender: &str) -> bool {
-        self.allowed_numbers.is_empty() || self.allowed_numbers.iter().any(|n| n == sender)
+        if self.allowed_numbers.is_empty() {
+            return !self.deny_on_empty;
+        }
+        self.allowed_numbers.iter().any(|n| n == sender)
     }
 
     fn rpc_url(&self) -> &str {
@@ -228,14 +237,25 @@ mod tests {
             "+1555".into(),
             "http://localhost:9090".into(),
             vec!["+1666".into()],
+            false,
         );
         assert_eq!(adapter.allowed_numbers, vec!["+1666"]);
+        assert!(!adapter.deny_on_empty);
     }
 
     #[test]
-    fn sender_allowed_empty_means_all() {
+    fn sender_allowed_empty_legacy_allows_all() {
+        // deny_on_empty=false (legacy): empty list allows everyone
         let adapter = SignalAdapter::new("+1".into(), "http://localhost:8080".into());
         assert!(adapter.is_sender_allowed("+any_number"));
+    }
+
+    #[test]
+    fn sender_allowed_empty_secure_denies_all() {
+        // deny_on_empty=true (secure default): empty list denies everyone
+        let adapter =
+            SignalAdapter::with_config("+1".into(), "http://localhost:8080".into(), vec![], true);
+        assert!(!adapter.is_sender_allowed("+any_number"));
     }
 
     #[test]
@@ -244,6 +264,7 @@ mod tests {
             "+1".into(),
             "http://localhost:8080".into(),
             vec!["+111".into(), "+222".into()],
+            false,
         );
         assert!(adapter.is_sender_allowed("+111"));
         assert!(!adapter.is_sender_allowed("+333"));
@@ -288,6 +309,7 @@ mod tests {
             "+1".into(),
             "http://localhost:8080".into(),
             vec!["+allowed".into()],
+            false,
         );
         let envelope = json!({
             "sourceNumber": "+not_allowed",
@@ -305,6 +327,7 @@ mod tests {
             "+1".into(),
             "http://localhost:8080".into(),
             vec!["+allowed".into()],
+            false,
         );
         let envelope = json!({
             "sourceNumber": "+allowed",
@@ -481,6 +504,7 @@ mod tests {
             "+1".into(),
             "http://localhost:8080".into(),
             vec!["+111".into(), "+222".into(), "+333".into()],
+            false,
         );
         assert!(adapter.is_sender_allowed("+111"));
         assert!(adapter.is_sender_allowed("+222"));

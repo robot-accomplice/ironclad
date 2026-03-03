@@ -17,6 +17,9 @@ pub struct TelegramAdapter {
     pub poll_timeout: u64,
     pub allowed_chat_ids: Vec<i64>,
     pub webhook_secret: Option<String>,
+    /// When `true`, an empty `allowed_chat_ids` list denies all messages (secure default).
+    /// When `false`, an empty list allows all messages (legacy behavior).
+    pub deny_on_empty: bool,
     message_buffer: Arc<Mutex<VecDeque<InboundMessage>>>,
 }
 
@@ -32,6 +35,7 @@ impl TelegramAdapter {
             poll_timeout: 30,
             allowed_chat_ids: Vec::new(),
             webhook_secret: None,
+            deny_on_empty: false,
             message_buffer: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
@@ -41,11 +45,13 @@ impl TelegramAdapter {
         poll_timeout: u64,
         allowed_chat_ids: Vec<i64>,
         webhook_secret: Option<String>,
+        deny_on_empty: bool,
     ) -> Self {
         Self {
             poll_timeout,
             allowed_chat_ids,
             webhook_secret,
+            deny_on_empty,
             ..Self::new(token)
         }
     }
@@ -55,7 +61,10 @@ impl TelegramAdapter {
     }
 
     fn is_chat_allowed(&self, chat_id: i64) -> bool {
-        self.allowed_chat_ids.is_empty() || self.allowed_chat_ids.contains(&chat_id)
+        if self.allowed_chat_ids.is_empty() {
+            return !self.deny_on_empty;
+        }
+        self.allowed_chat_ids.contains(&chat_id)
     }
 
     pub fn parse_inbound(update: &Value) -> Result<InboundMessage> {
@@ -469,21 +478,39 @@ mod tests {
 
     #[test]
     fn with_config_sets_fields() {
-        let adapter = TelegramAdapter::with_config("tok".into(), 60, vec![111, 222], None);
+        let adapter = TelegramAdapter::with_config("tok".into(), 60, vec![111, 222], None, false);
         assert_eq!(adapter.poll_timeout, 60);
         assert_eq!(adapter.allowed_chat_ids, vec![111, 222]);
         assert!(adapter.webhook_secret.is_none());
+        assert!(!adapter.deny_on_empty);
     }
 
     #[test]
-    fn chat_allowed_empty_means_all() {
+    fn chat_allowed_empty_legacy_allows_all() {
+        // deny_on_empty=false (legacy): empty list allows everyone
         let adapter = TelegramAdapter::new("tok".into());
         assert!(adapter.is_chat_allowed(12345));
     }
 
     #[test]
+    fn chat_allowed_empty_secure_denies_all() {
+        // deny_on_empty=true (secure default): empty list denies everyone
+        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![], None, true);
+        assert!(!adapter.is_chat_allowed(12345));
+    }
+
+    #[test]
     fn chat_allowed_filters() {
-        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![100, 200], None);
+        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![100, 200], None, false);
+        assert!(adapter.is_chat_allowed(100));
+        assert!(adapter.is_chat_allowed(200));
+        assert!(!adapter.is_chat_allowed(300));
+    }
+
+    #[test]
+    fn chat_allowed_filters_with_deny_on_empty() {
+        // deny_on_empty doesn't affect non-empty lists
+        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![100, 200], None, true);
         assert!(adapter.is_chat_allowed(100));
         assert!(adapter.is_chat_allowed(200));
         assert!(!adapter.is_chat_allowed(300));
@@ -516,7 +543,7 @@ mod tests {
 
     #[test]
     fn process_webhook_update_disallowed_chat() {
-        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![100], None);
+        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![100], None, false);
         let update = json!({
             "update_id": 101,
             "message": {
@@ -629,7 +656,7 @@ mod tests {
     #[test]
     fn with_config_webhook_secret() {
         let adapter =
-            TelegramAdapter::with_config("tok".into(), 30, vec![], Some("secret123".into()));
+            TelegramAdapter::with_config("tok".into(), 30, vec![], Some("secret123".into()), false);
         assert_eq!(adapter.webhook_secret.unwrap(), "secret123");
     }
 
@@ -703,7 +730,7 @@ mod tests {
 
     #[test]
     fn process_webhook_update_allowed_chat_passes() {
-        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![42], None);
+        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![42], None, false);
         let update = json!({
             "update_id": 500,
             "message": {
@@ -726,7 +753,7 @@ mod tests {
 
     #[test]
     fn with_config_inherits_client() {
-        let adapter = TelegramAdapter::with_config("tok".into(), 45, vec![1, 2, 3], None);
+        let adapter = TelegramAdapter::with_config("tok".into(), 45, vec![1, 2, 3], None, false);
         assert_eq!(adapter.poll_timeout, 45);
         assert_eq!(adapter.allowed_chat_ids, vec![1, 2, 3]);
         // token inherited from Self::new

@@ -50,6 +50,7 @@ fn session_message_and_llm_format_roundtrip() {
         temperature: Some(0.7),
         system: Some("You are a helpful programming assistant.".into()),
         quality_target: None,
+        tools: vec![],
     };
 
     let anthropic_body = translate_request(&unified, ApiFormat::AnthropicMessages).unwrap();
@@ -95,6 +96,9 @@ fn session_message_and_llm_format_roundtrip() {
         cost,
         Some("T3"),
         false,
+        None,
+        None,
+        false,
     )
     .unwrap();
 
@@ -128,6 +132,7 @@ fn multi_format_translation_consistency() {
         temperature: None,
         system: Some("Be brief.".into()),
         quality_target: None,
+        tools: vec![],
     };
 
     for format in [

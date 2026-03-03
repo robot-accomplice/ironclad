@@ -9,7 +9,7 @@
 //!
 //! - [`LlmService`] -- Top-level facade composing all pipeline stages
 //! - [`SemanticCache`] -- 3-level cache (exact hash, tool TTL, semantic cosine)
-//! - [`ModelRouter`] -- Heuristic complexity classification and model selection
+//! - [`ModelRouter`] -- Runtime model selection and override control
 //! - [`LlmClient`] -- HTTP/2 client pool with streaming support
 //! - [`EmbeddingClient`] -- Multi-provider embedding client with n-gram fallback
 //! - [`SseChunkStream`] -- SSE byte stream to parsed `StreamChunk` adapter
@@ -19,7 +19,6 @@
 //! - `cache` -- Semantic cache with HashMap + SQLite persistence
 //! - `router` -- Heuristic model router (feature extraction, complexity scoring)
 //! - `ml_router` -- Logistic regression backend + preference learning
-//! - `uniroute` -- Unified routing via model capability vectors
 //! - `tiered` -- Tiered inference with confidence evaluation and escalation
 //! - `cascade` -- Cascade optimizer (cheapest-first, fallback chain)
 //! - `circuit` -- Per-provider circuit breaker with exponential backoff
@@ -31,7 +30,7 @@
 //! - `provider` -- Provider definitions and registry
 //! - `embedding` -- Multi-provider embedding client
 //! - `capacity` -- TPM/RPM sliding-window capacity tracking
-//! - `accuracy` -- Per-model quality tracking and quality-target selection
+//! - `accuracy` -- Per-model quality tracking
 //! - `oauth` -- OAuth2 token management and refresh
 //! - `transform` -- Request/response transform pipeline
 
@@ -47,13 +46,13 @@ pub mod embedding;
 pub mod format;
 pub mod ml_router;
 pub mod oauth;
+pub mod profile;
 pub mod provider;
 pub mod router;
 pub mod tier;
 pub mod tiered;
-pub mod uniroute;
 
-pub use accuracy::{QualityTracker, select_for_quality_target};
+pub use accuracy::QualityTracker;
 pub use cache::{CachedResponse, ExportedCacheEntry, SemanticCache};
 pub use capacity::CapacityTracker;
 pub use cascade::{CascadeOptimizer, CascadeOutcome, CascadeStrategy};
@@ -64,10 +63,10 @@ pub use dedup::DedupTracker;
 pub use embedding::{EmbeddingClient, EmbeddingConfig};
 pub use ml_router::{LogisticBackend, PreferenceCollector, PreferenceRecord};
 pub use oauth::OAuthManager;
+pub use profile::{MetascoreBreakdown, ModelProfile, build_model_profiles, select_by_metascore};
 pub use provider::{Provider, ProviderRegistry};
 pub use router::{ModelRouter, classify_complexity, extract_features};
-pub use tiered::{ConfidenceEvaluator, EscalationTracker, InferenceTier, TieredResult};
-pub use uniroute::{ModelVector, ModelVectorRegistry, QueryRequirements};
+pub use tiered::{ConfidenceEvaluator, EscalationTracker, InferenceTier};
 
 pub use format::StreamChunk;
 
@@ -88,6 +87,9 @@ pub struct LlmService {
     pub client: LlmClient,
     pub providers: ProviderRegistry,
     pub capacity: CapacityTracker,
+    pub quality: QualityTracker,
+    pub confidence: ConfidenceEvaluator,
+    pub escalation: EscalationTracker,
     pub embedding: EmbeddingClient,
 }
 
@@ -122,6 +124,10 @@ impl LlmService {
             capacity.register(&provider.name, provider.tpm_limit, provider.rpm_limit);
         }
 
+        let quality = QualityTracker::new(100);
+        let confidence = ConfidenceEvaluator::new(config.models.tiered_inference.confidence_floor);
+        let escalation = EscalationTracker::default();
+
         let embedding_config = Self::resolve_embedding_config(&config.memory, &providers);
         let embedding = EmbeddingClient::new(embedding_config)?;
 
@@ -133,6 +139,9 @@ impl LlmService {
             client,
             providers,
             capacity,
+            quality,
+            confidence,
+            escalation,
             embedding,
         })
     }

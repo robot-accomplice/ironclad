@@ -1,0 +1,31 @@
+{
+  "id": "chatcmpl-harness-echo-001",
+  "object": "chat.completion",
+  "created": 1700000020,
+  "model": "mock-model-v1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_echo_001",
+            "type": "function",
+            "function": {
+              "name": "echo",
+              "arguments": "{\"message\": \"Hello from the tool shim!\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 85,
+    "completion_tokens": 22,
+    "total_tokens": 107
+  }
+}

@@ -29,12 +29,12 @@ toml = "0.8"
 serde_yaml = "0.9"
 unicode-normalization = "0.1"
 k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa"] }
-sha3 = "0.10"
 rand = "0.8"
-zeroize = { version = "1", features = ["derive"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 wasmer = "7"
 urlencoding = "2"
+rmcp = { workspace = true, features = ["server", "client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+pdf-extract = "0.7"
 notify = { version = "7", optional = true }
 
 [features]

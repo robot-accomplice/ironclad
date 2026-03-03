@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -55,12 +56,19 @@ pub fn ws_route(
     let handler =
         move |ws: WebSocketUpgrade,
               headers: axum::http::HeaderMap,
+              axum::extract::ConnectInfo(peer_addr): axum::extract::ConnectInfo<SocketAddr>,
               axum::extract::Query(query): axum::extract::Query<WsQuery>| {
             let bus = bus.clone();
             let tickets = tickets.clone();
             let api_key = api_key.clone();
             async move {
-                if !ws_authenticate(&headers, &query, &tickets, api_key.as_deref()) {
+                if !ws_authenticate(
+                    &headers,
+                    &query,
+                    &tickets,
+                    api_key.as_deref(),
+                    Some(peer_addr),
+                ) {
                     return (StatusCode::UNAUTHORIZED, "Valid API key or ticket required")
                         .into_response();
                 }
@@ -77,10 +85,12 @@ fn ws_authenticate(
     query: &WsQuery,
     tickets: &TicketStore,
     api_key: Option<&str>,
+    peer_addr: Option<SocketAddr>,
 ) -> bool {
-    // If no API key is configured, allow all connections (local dev mode)
+    // If no API key is configured, mirror HTTP auth middleware behavior:
+    // allow loopback-only access, reject remote clients.
     let Some(expected) = api_key else {
-        return true;
+        return peer_addr.is_some_and(|addr| addr.ip().is_loopback());
     };
 
     // 1. Check x-api-key header
@@ -376,11 +386,15 @@ mod tests {
     // ── WebSocket authentication tests ────────────────────────────
 
     #[test]
-    fn ws_auth_no_key_configured_allows_all() {
+    fn ws_auth_no_key_configured_allows_loopback_only() {
         let headers = axum::http::HeaderMap::new();
         let query = WsQuery { ticket: None };
         let tickets = TicketStore::new();
-        assert!(ws_authenticate(&headers, &query, &tickets, None));
+        let loopback = Some("127.0.0.1:9000".parse::<SocketAddr>().unwrap());
+        let remote = Some("203.0.113.10:9000".parse::<SocketAddr>().unwrap());
+        assert!(ws_authenticate(&headers, &query, &tickets, None, loopback));
+        assert!(!ws_authenticate(&headers, &query, &tickets, None, remote));
+        assert!(!ws_authenticate(&headers, &query, &tickets, None, None));
     }
 
     #[test]
@@ -393,7 +407,8 @@ mod tests {
             &headers,
             &query,
             &tickets,
-            Some("test-key")
+            Some("test-key"),
+            None,
         ));
     }
 
@@ -407,7 +422,8 @@ mod tests {
             &headers,
             &query,
             &tickets,
-            Some("test-key")
+            Some("test-key"),
+            None,
         ));
     }
 
@@ -423,7 +439,8 @@ mod tests {
             &headers,
             &query,
             &tickets,
-            Some("test-key")
+            Some("test-key"),
+            None,
         ));
     }
 
@@ -438,7 +455,8 @@ mod tests {
             &headers,
             &query,
             &tickets,
-            Some("test-key")
+            Some("test-key"),
+            None,
         ));
     }
 
@@ -451,7 +469,8 @@ mod tests {
             &headers,
             &query,
             &tickets,
-            Some("test-key")
+            Some("test-key"),
+            None,
         ));
     }
 
@@ -465,7 +484,8 @@ mod tests {
             &headers,
             &query,
             &tickets,
-            Some("test-key")
+            Some("test-key"),
+            None,
         ));
     }
 
@@ -481,7 +501,8 @@ mod tests {
             &headers,
             &query1,
             &tickets,
-            Some("test-key")
+            Some("test-key"),
+            None,
         ));
         let query2 = WsQuery {
             ticket: Some(ticket),
@@ -490,7 +511,8 @@ mod tests {
             &headers,
             &query2,
             &tickets,
-            Some("test-key")
+            Some("test-key"),
+            None,
         ));
     }
 }

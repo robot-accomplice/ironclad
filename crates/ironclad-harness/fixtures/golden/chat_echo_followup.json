@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-harness-echo-002",
+  "object": "chat.completion",
+  "created": 1700000021,
+  "model": "mock-model-v1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The echo tool confirmed the message: Hello from the tool shim!"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 140,
+    "completion_tokens": 18,
+    "total_tokens": 158
+  }
+}

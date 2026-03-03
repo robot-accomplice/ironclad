@@ -61,6 +61,6 @@
   },
   {
     "name": "supervisor-protocol",
-    "description": "Supervisor and delegation protocol for specialist execution."
+    "description": "Supervisor and delegation protocol for subagent execution."
   }
 ]

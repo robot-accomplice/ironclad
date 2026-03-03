@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-harness-deleg-002",
+  "object": "chat.completion",
+  "created": 1700000011,
+  "model": "mock-model-v1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Based on the delegation results, here is a summary of recent Rust async developments: Tokio continues to be the dominant async runtime with recent performance improvements and new utilities. The ecosystem is maturing with better error handling patterns and improved documentation."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 250,
+    "completion_tokens": 52,
+    "total_tokens": 302
+  }
+}

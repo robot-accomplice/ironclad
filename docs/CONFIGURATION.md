@@ -53,9 +53,9 @@ Core agent identity.
 | `delegation_enabled` | `bool` | `true` | Enable decomposition-gate evaluation and delegation policies |
 | `delegation_min_complexity` | `f64` | `0.35` | Minimum complexity score before decomposition is considered |
 | `delegation_min_utility_margin` | `f64` | `0.15` | Minimum delegation utility margin required to prefer subtask delegation over centralized execution |
-| `specialist_creation_requires_approval` | `bool` | `true` | Require explicit user approval before creating a new specialist when no existing specialist fits |
+| `specialist_creation_requires_approval` | `bool` | `true` | Legacy key name; requires explicit user approval before creating a new subagent when no existing subagent fits |
 
-When specialist creation approval is required, operators can request an explicit configuration preview before approving creation (review-first flow).
+When subagent creation approval is required, operators can request an explicit configuration preview before approving creation (review-first flow).
 
 ---
 
@@ -277,13 +277,33 @@ Skill execution engine.
 
 ---
 
+## `[security]`
+
+Claim-based RBAC security policy. Controls how inbound messages are resolved to authority levels. See [architecture/security-rbac.md](architecture/security-rbac.md) for full documentation including data flows and sequence diagrams.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `deny_on_empty_allowlist` | `bool` | `true` | When `true`, channels with empty allow-lists reject all messages (secure default). Set to `false` for legacy "empty = allow all" behavior |
+| `allowlist_authority` | `InputAuthority` | `Peer` | Authority granted when sender passes a channel's allow-list. Options: `External`, `Peer`, `SelfGenerated`, `Creator` |
+| `trusted_authority` | `InputAuthority` | `Creator` | Authority granted when sender is in `channels.trusted_sender_ids`. Options: `External`, `Peer`, `SelfGenerated`, `Creator` |
+| `api_authority` | `InputAuthority` | `Creator` | Authority for HTTP API and WebSocket requests. Options: `External`, `Peer`, `SelfGenerated`, `Creator` |
+| `threat_caution_ceiling` | `InputAuthority` | `External` | Maximum authority when the threat scanner flags input as Caution. Must be below `Creator`. Options: `External`, `Peer`, `SelfGenerated` |
+
+**Validation rules:**
+- `allowlist_authority` must be &le; `trusted_authority`
+- `threat_caution_ceiling` must be &lt; `Creator`
+
+**Authority resolution:** `effective = min(max(positive_grants...), min(negative_ceilings...))`
+
+---
+
 ## `[channels]`
 
 Communication channel configuration.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `trusted_sender_ids` | `Vec<String>` | `[]` | Sender IDs with Creator-level authority. Empty = all senders get External authority |
+| `trusted_sender_ids` | `Vec<String>` | `[]` | Sender IDs with trusted authority (default: Creator). Matches against sender_id and chat_id. Empty = no Creator-level users |
 | `thinking_threshold_seconds` | `u64` | `30` | Latency threshold before sending a thinking indicator |
 
 ### `[channels.telegram]`
@@ -497,8 +517,15 @@ Multimodal (vision, audio) capabilities.
 | `enabled` | `bool` | `false` | Enable multimodal processing |
 | `media_dir` | `PathBuf?` | `None` | Directory for storing media files |
 | `max_image_size_bytes` | `usize` | `10485760` | Maximum image size (10 MB) |
+| `max_audio_size_bytes` | `usize` | `26214400` | Maximum audio size (25 MB) |
+| `max_video_size_bytes` | `usize` | `52428800` | Maximum video size (50 MB) |
 | `vision_model` | `String?` | `None` | Model to use for vision tasks |
 | `transcription_model` | `String?` | `None` | Model to use for audio transcription |
+| `auto_transcribe_audio` | `bool` | `false` | Automatically transcribe audio attachments |
+| `auto_describe_images` | `bool` | `false` | Add image-attachment descriptions to prompt context |
+
+Security note:
+- Remote attachment downloads only allow `http`/`https` URLs and reject localhost/private-IP targets to reduce SSRF risk.
 
 ---
 

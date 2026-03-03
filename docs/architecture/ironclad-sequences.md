@@ -877,6 +877,150 @@ sequenceDiagram
 
 ---
 
+## 14. Context Checkpoint: Save and Restore
+<!-- last_updated: 2026-03-01, version: 0.9.0 -->
+
+Periodic checkpointing captures compiled context state. On session start, a warm checkpoint provides instant readiness while full retrieval runs in the background.
+
+```mermaid
+sequenceDiagram
+    participant TL as TurnLoop
+    participant CTX as ContextAssembly
+    participant DB as SQLite
+    participant GOV as SessionGovernor
+
+    Note over TL: Every N turns (configurable)
+    TL->>CTX: compile_context_snapshot()
+    CTX->>CTX: hash(system_prompt)
+    CTX->>CTX: summarize_top_k_memory()
+    CTX->>DB: INSERT INTO context_checkpoints
+    DB-->>CTX: checkpoint_id
+
+    Note over TL: Session start (boot or reconnect)
+    TL->>DB: SELECT latest checkpoint for session
+    DB-->>TL: CheckpointRow (or None)
+    alt Checkpoint found and version valid
+        TL->>CTX: warm_from_checkpoint(row)
+        CTX-->>TL: Instant context ready
+        TL->>CTX: background_full_retrieval()
+    else No checkpoint or stale version
+        TL->>CTX: full_cold_retrieval()
+    end
+
+    Note over GOV: Session expiry
+    GOV->>DB: DELETE FROM context_checkpoints WHERE session_id = ?
+```
+
+---
+
+## 15. Episodic Digest: Session Close
+<!-- last_updated: 2026-03-01, version: 0.9.0 -->
+
+When a session closes (TTL expiry, rotation, or explicit archive), the governor triggers LLM-based summarization. The resulting digest is stored as high-priority episodic memory.
+
+```mermaid
+sequenceDiagram
+    participant GOV as SessionGovernor
+    participant DB as SQLite
+    participant LLM as LLMService
+    participant MEM as EpisodicMemory
+
+    GOV->>DB: list_messages(session_id, limit 50)
+    DB-->>GOV: Messages
+    GOV->>LLM: digest_on_close(messages, config)
+    LLM-->>GOV: EpisodicDigest with summary, decisions, unresolved_tasks, facts
+    GOV->>MEM: store_digest(session_id, digest)
+    MEM->>DB: INSERT INTO episodic_memory (digest flag, elevated priority)
+
+    Note over GOV: On next session start
+    GOV->>DB: hybrid_search(query, decay_weighted)
+    DB-->>GOV: Recent digests surface with high relevance
+```
+
+---
+
+## 16. Introspection Tool Execution
+<!-- last_updated: 2026-03-01, version: 0.9.0 -->
+
+Introspection tools are invoked during the ReAct loop when the agent needs self-awareness. The ToolContext carries channel and database references, enabling tools to query runtime state without system prompt injection.
+
+```mermaid
+sequenceDiagram
+    participant USER as User
+    participant API as EntryPoint
+    participant REACT as ReActLoop
+    participant EXEC as ExecuteToolCall
+    participant TOOL as IntrospectionTool
+    participant DB as SQLite
+
+    USER->>API: What subagents do I have?
+    API->>REACT: run_inference_and_react(channel_label)
+    REACT->>REACT: LLM decides to call get_subagent_status
+    REACT->>EXEC: execute_tool_call(get_subagent_status, channel)
+    EXEC->>EXEC: Build ToolContext with db and channel
+    EXEC->>TOOL: tool.execute(params, ctx)
+    TOOL->>DB: SELECT FROM sub_agents
+    DB-->>TOOL: SubAgentRows
+    TOOL->>DB: SELECT FROM tasks WHERE status IN pending, in_progress
+    DB-->>TOOL: TaskRows
+    TOOL-->>EXEC: ToolResult JSON with subagents and tasks
+    EXEC-->>REACT: tool output JSON
+    REACT->>REACT: LLM synthesizes response
+    REACT-->>API: You have 2 subagents...
+```
+
+---
+
+## 17. Metascore Routing + Tiered Inference
+<!-- added: 2026-03-01, version: 0.9.1 -->
+
+The intelligent routing pipeline that replaced availability-first model selection. Shows the full path from user content through feature extraction, metascore computation, model selection, and optional confidence-based escalation.
+
+```mermaid
+sequenceDiagram
+    participant H as Handler<br/>(routing.rs)
+    participant R as Router<br/>(router.rs)
+    participant P as Profile<br/>(profile.rs)
+    participant Q as QualityTracker
+    participant C as CapacityTracker
+    participant B as CircuitBreakerRegistry
+    participant L as LlmService<br/>(infer_with_fallback)
+    participant CE as ConfidenceEvaluator
+    participant ET as EscalationTracker
+
+    H->>R: extract_features(user_content)
+    R-->>H: FeatureVector
+    H->>R: classify_complexity(features)
+    R-->>H: complexity: f64
+
+    H->>P: build_model_profiles(router, providers, quality, capacity, breakers)
+    P->>Q: estimated_quality(model) for each candidate
+    P->>C: headroom(provider) for each candidate
+    P->>B: is_blocked(provider) for each candidate
+    P-->>H: Vec<ModelProfile>
+
+    H->>P: select_by_metascore(profiles, complexity, cost_aware)
+    note right of P: Filter blocked → score each →<br/>rank by final_score →<br/>return best with breakdown
+    P-->>H: (model_name, MetascoreBreakdown)
+
+    H->>L: infer_with_fallback(selected_model, prompt)
+    L->>L: Call local/cloud model
+    L->>CE: evaluate(response)
+    alt confidence >= floor
+        CE-->>L: Pass
+        L->>Q: record(model, quality_signal)
+        L-->>H: LlmResponse + audit
+    else confidence < floor (local model)
+        CE-->>L: Below threshold
+        L->>ET: record(model, complexity, reason)
+        L->>L: Escalate → next fallback model
+        L->>Q: record(escalated_model, quality_signal)
+        L-->>H: LlmResponse + audit (with escalation note)
+    end
+```
+
+---
+
 ## Cross-Reference Matrix
 
 | Sequence | Related Dataflow Diagrams | Related C4 Docs | Key Tables |
@@ -894,6 +1038,10 @@ sequenceDiagram
 | 11. Outcome Grading | Diagram 16 (Context Observatory) | ironclad-c4-server, ironclad-c4-db | turn_feedback, metric_snapshots |
 | 12. Network Binding | (infrastructure; no dataflow diagram) | ironclad-c4-server | (no tables; network layer) |
 | 13. Browser Tool CDP | Diagram 11 (Browser Tool Execution) | ironclad-c4-agent | (no tables; session state in-memory) |
+| 14. Context Checkpoint | Diagram 20 (Context Checkpoint) | ironclad-c4-db, ironclad-c4-agent | context_checkpoints |
+| 15. Episodic Digest | Diagram 22 (Episodic Digest) | ironclad-c4-agent, ironclad-c4-db | episodic_memory |
+| 16. Introspection Tool | Diagram 24 (Introspection Tool Architecture) | ironclad-c4-agent | sub_agents, tasks |
+| 17. Metascore + Tiered Inference | Diagram 3 (Metascore Router) | ironclad-c4-llm, ironclad-c4-server | inference_costs, model_selection events |
 
 ### Embedded Sequences in C4 Docs (not duplicated here)
 

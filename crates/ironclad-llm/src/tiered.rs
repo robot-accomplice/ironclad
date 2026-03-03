@@ -1,7 +1,7 @@
 use tracing::debug;
 
 /// Evaluates whether a local model's response is confident enough to skip cloud escalation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConfidenceEvaluator {
     floor: f64,
 }
@@ -105,15 +105,6 @@ impl ConfidenceEvaluator {
     pub fn floor(&self) -> f64 {
         self.floor
     }
-}
-
-/// Outcome of a tiered inference attempt.
-#[derive(Debug, Clone)]
-pub struct TieredResult {
-    pub response: String,
-    pub tier_used: InferenceTier,
-    pub confidence: f64,
-    pub escalated: bool,
 }
 
 /// Which tier produced the final response.

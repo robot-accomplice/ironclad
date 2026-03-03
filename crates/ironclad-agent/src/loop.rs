@@ -57,16 +57,18 @@ impl AgentLoop {
             }
             ReactAction::Act { tool_name, params } => {
                 self.idle_count = 0;
-                self.recent_calls
-                    .push_back((tool_name.clone(), params.clone()));
-                if self.recent_calls.len() > LOOP_DETECTION_WINDOW {
-                    self.recent_calls.pop_front();
-                }
+                // Evaluate against prior calls only; this avoids counting the
+                // current call inside the detection window.
                 if self.is_looping(&tool_name, &params) {
                     tracing::warn!(tool = %tool_name, "agent loop detected, forcing Done");
                     self.state = ReactState::Done;
                 } else {
                     self.state = ReactState::Acting;
+                }
+                self.recent_calls
+                    .push_back((tool_name.clone(), params.clone()));
+                if self.recent_calls.len() > LOOP_DETECTION_WINDOW {
+                    self.recent_calls.pop_front();
                 }
             }
             ReactAction::Observe => {
@@ -158,15 +160,22 @@ mod tests {
         let mut agent = AgentLoop::new(100);
 
         for _ in 0..3 {
-            agent.transition(ReactAction::Act {
+            let s = agent.transition(ReactAction::Act {
                 tool_name: "echo".into(),
                 params: r#"{"msg":"hi"}"#.into(),
             });
+            assert_eq!(s, ReactState::Acting);
         }
 
         assert!(agent.is_looping("echo", r#"{"msg":"hi"}"#));
         assert!(!agent.is_looping("echo", r#"{"msg":"bye"}"#));
         assert!(!agent.is_looping("other", r#"{"msg":"hi"}"#));
+
+        let s = agent.transition(ReactAction::Act {
+            tool_name: "echo".into(),
+            params: r#"{"msg":"hi"}"#.into(),
+        });
+        assert_eq!(s, ReactState::Done);
 
         agent.transition(ReactAction::Act {
             tool_name: "read".into(),

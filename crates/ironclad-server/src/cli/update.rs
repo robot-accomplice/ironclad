@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use ironclad_core::config::IroncladConfig;
 use ironclad_core::home_dir;
+use ironclad_llm::oauth::check_and_repair_oauth_storage;
 
 use super::{colors, heading, icons};
 use crate::cli::{CRT_DRAW_MS, theme};
@@ -201,6 +203,47 @@ fn http_client() -> Result<reqwest::Client, Box<dyn std::error::Error>> {
         .timeout(std::time::Duration::from_secs(15))
         .user_agent(format!("ironclad/{}", env!("CARGO_PKG_VERSION")))
         .build()?)
+}
+
+fn run_oauth_storage_maintenance() {
+    let (OK, _, WARN, DETAIL, _) = icons();
+    let oauth_health = check_and_repair_oauth_storage(true);
+    if oauth_health.needs_attention() {
+        if oauth_health.repaired {
+            println!("    {OK} OAuth token storage repaired/migrated");
+        } else if !oauth_health.keystore_available {
+            println!("    {WARN} OAuth migration check skipped (keystore unavailable)");
+            println!("    {DETAIL} Run `ironclad mechanic --repair` after fixing keystore access.");
+        } else {
+            println!("    {WARN} OAuth token storage requires manual attention");
+            println!("    {DETAIL} Run `ironclad mechanic --repair` to attempt recovery.");
+        }
+    } else {
+        println!("    {OK} OAuth token storage is healthy");
+    }
+}
+
+fn run_mechanic_checks_maintenance(config_path: &str) {
+    let (OK, _, WARN, DETAIL, _) = icons();
+    let state_db = IroncladConfig::from_file(Path::new(config_path))
+        .map(|cfg| cfg.database.path)
+        .unwrap_or_else(|_| home_dir().join(".ironclad").join("state.db"));
+    match crate::state_hygiene::run_state_hygiene(&state_db) {
+        Ok(report) if report.changed => {
+            println!(
+                "    {OK} Mechanic checks repaired {} row(s) (subagents={}, cron_payloads={}, invalid_cron_disabled={})",
+                report.changed_rows,
+                report.subagent_rows_normalized,
+                report.cron_payload_rows_repaired,
+                report.cron_jobs_disabled_invalid_expr
+            );
+        }
+        Ok(_) => println!("    {OK} Mechanic checks found no repairs needed"),
+        Err(e) => {
+            println!("    {WARN} Mechanic checks failed: {e}");
+            println!("    {DETAIL} Run `ironclad mechanic --repair` for detailed diagnostics.");
+        }
+    }
 }
 
 // ── Version comparison ───────────────────────────────────────
@@ -1167,6 +1210,15 @@ pub async fn cmd_update_all(
     let registry_url = resolve_registry_url(registry_url_override, config_path);
     apply_providers_update(yes, &registry_url, config_path).await?;
     apply_skills_update(yes, &registry_url, config_path).await?;
+    run_oauth_storage_maintenance();
+    run_mechanic_checks_maintenance(config_path);
+
+    // ── Post-upgrade security config migration ─────────────────────
+    // Detect pre-RBAC configs (no [security] section) and warn about
+    // the breaking change: empty allow-lists now deny all messages.
+    if let Err(e) = apply_security_config_migration(config_path) {
+        println!("    {WARN} Security config migration skipped: {e}");
+    }
 
     // Restart the daemon if a binary update was applied and --no-restart was not passed.
     if binary_updated && !no_restart && crate::daemon::is_installed() {
@@ -1194,6 +1246,10 @@ pub async fn cmd_update_binary(
 ) -> Result<(), Box<dyn std::error::Error>> {
     heading("Ironclad Binary Update");
     apply_binary_update(yes, method).await?;
+    run_oauth_storage_maintenance();
+    let config_path = ironclad_core::config::resolve_config_path(None)
+        .unwrap_or_else(|| home_dir().join(".ironclad").join("ironclad.toml"));
+    run_mechanic_checks_maintenance(&config_path.to_string_lossy());
     println!();
     Ok(())
 }
@@ -1206,6 +1262,8 @@ pub async fn cmd_update_providers(
     heading("Provider Config Update");
     let registry_url = resolve_registry_url(registry_url_override, config_path);
     apply_providers_update(yes, &registry_url, config_path).await?;
+    run_oauth_storage_maintenance();
+    run_mechanic_checks_maintenance(config_path);
     println!();
     Ok(())
 }
@@ -1218,8 +1276,158 @@ pub async fn cmd_update_skills(
     heading("Skills Update");
     let registry_url = resolve_registry_url(registry_url_override, config_path);
     apply_skills_update(yes, &registry_url, config_path).await?;
+    run_oauth_storage_maintenance();
+    run_mechanic_checks_maintenance(config_path);
     println!();
     Ok(())
+}
+
+// ── Security config migration ────────────────────────────────
+
+/// Detect pre-RBAC config files (missing `[security]` section) and auto-append
+/// the section with explicit defaults. Also prints a breaking-change warning
+/// about the new deny-by-default behavior for empty channel allow-lists.
+fn apply_security_config_migration(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(config_path);
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let raw = std::fs::read_to_string(path)?;
+    // Normalize line endings for reliable section detection.
+    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+
+    // Check if [security] section already exists (line-anchored, not substring).
+    let has_security = normalized.lines().any(|line| line.trim() == "[security]");
+
+    if has_security {
+        return Ok(());
+    }
+
+    // ── Breaking change warning ──────────────────────────────
+    let (_, BOLD, _, _, _, _, _, RESET, _) = super::colors();
+    let (_, ERR, WARN, DETAIL, _) = super::icons();
+
+    println!();
+    println!("  {ERR} {BOLD}SECURITY MODEL CHANGE{RESET}");
+    println!();
+    println!(
+        "    Empty channel allow-lists now {BOLD}DENY all messages{RESET} (previously allowed all)."
+    );
+    println!(
+        "    This is a critical security fix — your agent was previously open to the internet."
+    );
+    println!();
+
+    // Parse the config to show per-channel status.
+    if let Ok(config) = ironclad_core::IroncladConfig::from_file(path) {
+        let channels_status = describe_channel_allowlists(&config);
+        if !channels_status.is_empty() {
+            println!("    Your current configuration:");
+            for line in &channels_status {
+                println!("      {line}");
+            }
+            println!();
+        }
+
+        if config.channels.trusted_sender_ids.is_empty() {
+            println!("    {WARN} trusted_sender_ids = [] (no Creator-level users configured)");
+            println!();
+        }
+    }
+
+    println!("    Run {BOLD}ironclad mechanic --repair{RESET} for guided security setup.");
+    println!();
+
+    // ── Auto-append [security] section with explicit defaults ─
+    let security_section = r#"
+# Security: Claim-based RBAC authority resolution.
+# See `ironclad mechanic` for guided configuration.
+[security]
+deny_on_empty_allowlist = true  # empty allow-lists deny all messages (secure default)
+allowlist_authority = "Peer"     # allow-listed senders get Peer authority
+trusted_authority = "Creator"    # trusted_sender_ids get Creator authority
+api_authority = "Creator"        # HTTP API callers get Creator authority
+threat_caution_ceiling = "External"  # threat-flagged inputs are capped at External
+"#;
+
+    // Backup before modifying.
+    let backup = path.with_extension("toml.bak");
+    if !backup.exists() {
+        std::fs::copy(path, &backup)?;
+    }
+
+    let mut content = normalized;
+    content.push_str(security_section);
+
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, &content)?;
+    std::fs::rename(&tmp, path)?;
+
+    println!("    {DETAIL} Added [security] section to {config_path} (backup: .toml.bak)");
+    println!();
+
+    Ok(())
+}
+
+/// Produce human-readable status lines for each configured channel's allow-list.
+fn describe_channel_allowlists(config: &ironclad_core::IroncladConfig) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    if let Some(ref tg) = config.channels.telegram {
+        if tg.allowed_chat_ids.is_empty() {
+            lines.push("Telegram: allowed_chat_ids = [] (was: open to all → now: deny all)".into());
+        } else {
+            lines.push(format!(
+                "Telegram: {} chat ID(s) configured",
+                tg.allowed_chat_ids.len()
+            ));
+        }
+    }
+
+    if let Some(ref dc) = config.channels.discord {
+        if dc.allowed_guild_ids.is_empty() {
+            lines.push("Discord: allowed_guild_ids = [] (was: open to all → now: deny all)".into());
+        } else {
+            lines.push(format!(
+                "Discord: {} guild ID(s) configured",
+                dc.allowed_guild_ids.len()
+            ));
+        }
+    }
+
+    if let Some(ref wa) = config.channels.whatsapp {
+        if wa.allowed_numbers.is_empty() {
+            lines.push("WhatsApp: allowed_numbers = [] (was: open to all → now: deny all)".into());
+        } else {
+            lines.push(format!(
+                "WhatsApp: {} number(s) configured",
+                wa.allowed_numbers.len()
+            ));
+        }
+    }
+
+    if let Some(ref sig) = config.channels.signal {
+        if sig.allowed_numbers.is_empty() {
+            lines.push("Signal: allowed_numbers = [] (was: open to all → now: deny all)".into());
+        } else {
+            lines.push(format!(
+                "Signal: {} number(s) configured",
+                sig.allowed_numbers.len()
+            ));
+        }
+    }
+
+    if !config.channels.email.allowed_senders.is_empty() {
+        lines.push(format!(
+            "Email: {} sender(s) configured",
+            config.channels.email.allowed_senders.len()
+        ));
+    } else if config.channels.email.enabled {
+        lines.push("Email: allowed_senders = [] (was: open to all → now: deny all)".into());
+    }
+
+    lines
 }
 
 // ── Tests ────────────────────────────────────────────────────
