@@ -724,7 +724,9 @@ mod tests {
         assert!(DurableScheduler::is_valid_cron_expression(
             "TZ=Europe/Zurich 0 * * * *"
         ));
-        assert!(!DurableScheduler::is_valid_cron_expression("NOT_VALID_CRON"));
+        assert!(!DurableScheduler::is_valid_cron_expression(
+            "NOT_VALID_CRON"
+        ));
     }
 
     #[test]

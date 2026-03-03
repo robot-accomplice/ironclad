@@ -212,9 +212,7 @@ fn cleanup_legacy_windows_service() {
         .map(|s| s.success())
         .unwrap_or(false);
     if !is_admin {
-        tracing::warn!(
-            "legacy Windows service cleanup skipped: Administrator privileges required"
-        );
+        tracing::warn!("legacy Windows service cleanup skipped: Administrator privileges required");
         return;
     }
 
@@ -882,7 +880,9 @@ mod tests {
     #[test]
     fn sc_output_not_found_detection() {
         assert!(sc_output_is_not_found("OpenService FAILED 1060"));
-        assert!(sc_output_is_not_found("The specified service does not exist as an installed service."));
+        assert!(sc_output_is_not_found(
+            "The specified service does not exist as an installed service."
+        ));
         assert!(!sc_output_is_not_found("SERVICE_NAME: IroncladAgent"));
     }
 

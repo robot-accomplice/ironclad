@@ -935,7 +935,8 @@ pub async fn bootstrap_with_config_path(
                             changed_rows = report.changed_rows,
                             subagent_rows_normalized = report.subagent_rows_normalized,
                             cron_payload_rows_repaired = report.cron_payload_rows_repaired,
-                            cron_jobs_disabled_invalid_expr = report.cron_jobs_disabled_invalid_expr,
+                            cron_jobs_disabled_invalid_expr =
+                                report.cron_jobs_disabled_invalid_expr,
                             "periodic mechanic checks applied"
                         );
                     }

@@ -166,7 +166,10 @@ pub(crate) fn normalize_cron_payload_json(raw: &str) -> Option<String> {
         );
         changed = true;
     }
-    let action = obj.get("action").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let action = obj
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     if matches!(
         action,
         "log" | "metric_snapshot" | "expire_sessions" | "record_transaction" | "noop"

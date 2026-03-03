@@ -2856,7 +2856,8 @@ mod tests {
 
     #[test]
     fn normalize_cron_payload_json_repairs_invalid_and_unknown_actions() {
-        let repaired_invalid = crate::state_hygiene::normalize_cron_payload_json("not-json").unwrap();
+        let repaired_invalid =
+            crate::state_hygiene::normalize_cron_payload_json("not-json").unwrap();
         assert_eq!(repaired_invalid, r#"{"action":"noop"}"#);
 
         let repaired_unknown =
@@ -2897,21 +2898,27 @@ mod tests {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
 
         let payload_j1: String = conn
-            .query_row("SELECT payload_json FROM cron_jobs WHERE id='j1'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT payload_json FROM cron_jobs WHERE id='j1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(payload_j1, r#"{"action":"noop"}"#);
 
         let payload_j2: String = conn
-            .query_row("SELECT payload_json FROM cron_jobs WHERE id='j2'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT payload_json FROM cron_jobs WHERE id='j2'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(payload_j2.contains(r#""action":"metric_snapshot""#));
 
         let enabled_j3: i64 = conn
-            .query_row("SELECT enabled FROM cron_jobs WHERE id='j3'", [], |r| r.get(0))
+            .query_row("SELECT enabled FROM cron_jobs WHERE id='j3'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(enabled_j3, 0);
     }
