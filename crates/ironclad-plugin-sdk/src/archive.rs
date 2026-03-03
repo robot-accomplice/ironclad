@@ -157,7 +157,8 @@ pub fn unpack_bytes(
             return Err(ArchiveError::PathTraversal(name));
         }
 
-        if name == "plugin.toml" || name.ends_with("/plugin.toml") && name.matches('/').count() == 1
+        if name == "plugin.toml"
+            || (name.ends_with("/plugin.toml") && name.matches('/').count() == 1)
         {
             has_manifest = true;
         }
@@ -181,7 +182,22 @@ pub fn unpack_bytes(
     }
     std::fs::create_dir_all(&temp_dir)?;
 
-    // Extract all files with boundary check
+    // Run extraction in a helper so we can clean up temp_dir on ANY error
+    let result = extract_and_finalize(&temp_dir, &mut archive, dest_dir, sha256);
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+    result
+}
+
+/// Inner helper for `unpack_bytes` — extracted so the caller can guarantee
+/// temp dir cleanup on any error path (IO, manifest parse, rename, etc.).
+fn extract_and_finalize(
+    temp_dir: &Path,
+    archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>,
+    dest_dir: &Path,
+    sha256: String,
+) -> Result<UnpackResult, ArchiveError> {
     let canonical_temp = temp_dir.canonicalize()?;
     let mut file_count = 0;
     for i in 0..archive.len() {
@@ -200,8 +216,6 @@ pub fn unpack_bytes(
                 .ok_or_else(|| std::io::Error::other("no parent"))
         }) && !canonical.starts_with(&canonical_temp)
         {
-            // Clean up and reject
-            let _ = std::fs::remove_dir_all(&temp_dir);
             return Err(ArchiveError::PathTraversal(name));
         }
 
@@ -227,7 +241,7 @@ pub fn unpack_bytes(
     if final_dir.exists() {
         std::fs::remove_dir_all(&final_dir)?;
     }
-    std::fs::rename(&temp_dir, &final_dir)?;
+    std::fs::rename(temp_dir, &final_dir)?;
 
     Ok(UnpackResult {
         dest_dir: final_dir,
@@ -263,6 +277,19 @@ pub fn verify_bytes_checksum(data: &[u8], expected_sha256: &str) -> Result<bool,
 
 // ── Helpers ──────────────────────────────────────────────────
 
+/// Directories excluded from archive packing (not meaningful to plugin runtime).
+const EXCLUDED_DIRS: &[&str] = &[
+    ".git",
+    ".svn",
+    ".hg",
+    "node_modules",
+    "target",
+    "__pycache__",
+];
+
+/// Individual files excluded from archive packing.
+const EXCLUDED_FILES: &[&str] = &[".DS_Store", "Thumbs.db", ".env"];
+
 fn collect_files(
     base: &Path,
     dir: &Path,
@@ -271,9 +298,17 @@ fn collect_files(
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        let name_str = entry.file_name().to_string_lossy().to_string();
+
         if path.is_dir() {
+            if EXCLUDED_DIRS.contains(&name_str.as_str()) {
+                continue;
+            }
             collect_files(base, &path, out)?;
         } else {
+            if EXCLUDED_FILES.contains(&name_str.as_str()) {
+                continue;
+            }
             let rel = path.strip_prefix(base).unwrap_or(&path).to_path_buf();
             out.push((path, rel));
         }

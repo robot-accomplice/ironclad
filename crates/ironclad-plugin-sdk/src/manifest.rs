@@ -180,6 +180,12 @@ impl PluginManifest {
         if name.is_empty() {
             return Err(IroncladError::Config("tool name cannot be empty".into()));
         }
+        if name.len() > 64 {
+            return Err(IroncladError::Config(format!(
+                "tool name exceeds 64 characters (got {})",
+                name.len()
+            )));
+        }
         if name.contains('/') || name.contains('\\') || name.contains('\0') || name.contains("..") {
             return Err(IroncladError::Config(format!(
                 "tool name '{name}' contains forbidden characters"
@@ -316,7 +322,8 @@ impl PluginManifest {
         for tool in &self.tools {
             let has_script = script_extensions
                 .iter()
-                .any(|ext| plugin_dir.join(format!("{}.{}", tool.name, ext)).exists());
+                .any(|ext| plugin_dir.join(format!("{}.{}", tool.name, ext)).exists())
+                || plugin_dir.join(&tool.name).exists(); // extensionless shebang script
             if !has_script {
                 report.warnings.push(format!(
                     "no script file found for tool '{}' (checked: {})",
@@ -443,6 +450,16 @@ name = "../../../etc/passwd"
 description = "path traversal"
 "#;
         let result = PluginManifest::from_str(toml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tool_name_too_long_rejected() {
+        let long_tool = "a".repeat(65);
+        let toml = format!(
+            "name = \"test\"\nversion = \"1.0.0\"\n[[tools]]\nname = \"{long_tool}\"\ndescription = \"too long\"\n"
+        );
+        let result = PluginManifest::from_str(&toml);
         assert!(result.is_err());
     }
 

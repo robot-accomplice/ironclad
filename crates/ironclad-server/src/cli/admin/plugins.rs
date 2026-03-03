@@ -288,11 +288,20 @@ fn print_plugin_summary(manifest: &PluginManifest, source_label: &str) {
 }
 
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max - 1])
+    if max == 0 {
+        return String::new();
     }
+    if s.len() <= max {
+        return s.to_string();
+    }
+    // Walk char boundaries to find the last safe index within budget
+    let end = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .take(max)
+        .last()
+        .unwrap_or(0);
+    format!("{}…", &s[..end])
 }
 
 fn prompt_yes_no(prompt: &str) -> bool {
@@ -319,6 +328,9 @@ pub async fn cmd_plugin_install(source: &str) -> Result<(), Box<dyn std::error::
 // ── Install from local directory (dev mode) ─────────────────
 
 fn install_from_directory(source_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dim, _bold, _accent, _green, _yellow, _red, _cyan, _reset, _mono) = colors();
+    let (_ok, _action, warn, _detail, err_icon) = icons();
+
     if !source_path.exists() {
         eprintln!("  Source not found: {}", source_path.display());
         return Ok(());
@@ -332,6 +344,19 @@ fn install_from_directory(source_path: &std::path::Path) -> Result<(), Box<dyn s
 
     let manifest = PluginManifest::from_file(&manifest_path)
         .map_err(|e| format!("Invalid plugin.toml: {e}"))?;
+
+    // Vet the plugin before installing (same gate as pack and server startup)
+    let report = manifest.vet(source_path);
+    for w in &report.warnings {
+        eprintln!("    {warn} {w}");
+    }
+    if !report.is_ok() {
+        for e in &report.errors {
+            eprintln!("    {err_icon} {e}");
+        }
+        eprintln!("\n  {err_icon} Plugin failed vetting. Fix errors above before installing.\n");
+        return Ok(());
+    }
 
     if !check_requirements(&manifest) {
         return Ok(());
