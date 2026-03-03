@@ -228,7 +228,7 @@ companion_skills = ["skills/claude-code.md"]
 
 The path is relative to the plugin root. On installation, companion skills are:
 
-1. Copied to `~/.ironclad/skills/` with a namespaced filename: `plugin--<plugin-name>--<original-name>`
+1. Copied to `~/.ironclad/skills/` with a namespaced filename: `<plugin-name>--<original-name>`
 2. Automatically removed when the plugin is uninstalled
 
 ### Skill File Format

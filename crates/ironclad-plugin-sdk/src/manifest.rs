@@ -60,6 +60,30 @@ pub struct ManifestToolDef {
     pub permissions: Vec<String>,
 }
 
+/// Cross-platform check for whether a command is available on PATH.
+#[cfg(unix)]
+fn is_command_available(command: &str) -> bool {
+    std::process::Command::new("sh")
+        .args(["-c", &format!("command -v {}", command)])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Cross-platform check for whether a command is available on PATH.
+#[cfg(windows)]
+fn is_command_available(command: &str) -> bool {
+    std::process::Command::new("where.exe")
+        .arg(command)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 impl PluginManifest {
     pub fn from_file(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)?;
@@ -232,13 +256,7 @@ impl PluginManifest {
         self.requirements
             .iter()
             .map(|req| {
-                let found = std::process::Command::new("sh")
-                    .args(["-c", &format!("command -v {}", req.command)])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
+                let found = is_command_available(&req.command);
                 (req, found)
             })
             .collect()

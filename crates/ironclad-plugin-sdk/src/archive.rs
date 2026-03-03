@@ -148,8 +148,12 @@ pub fn unpack_bytes(
         let entry = archive.by_index(i)?;
         let name = entry.name().to_string();
 
-        // Security: reject path traversal attempts
-        if name.contains("..") || name.starts_with('/') || name.starts_with('\\') {
+        // Security: reject path traversal attempts (covers Unix and Windows patterns)
+        if name.contains("..")
+            || name.starts_with('/')
+            || name.starts_with('\\')
+            || name.chars().nth(1) == Some(':')
+        {
             return Err(ArchiveError::PathTraversal(name));
         }
 
@@ -163,22 +167,43 @@ pub fn unpack_bytes(
         return Err(ArchiveError::MissingManifest);
     }
 
-    // Create a temp extraction dir, then move to final location after validation
+    // Create a uniquely-named temp extraction dir to avoid races on concurrent installs
     std::fs::create_dir_all(dest_dir)?;
 
-    let temp_dir = dest_dir.join(".unpack_tmp");
+    let temp_suffix: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+        ^ std::process::id() as u64;
+    let temp_dir = dest_dir.join(format!(".unpack_{temp_suffix:x}"));
     if temp_dir.exists() {
         std::fs::remove_dir_all(&temp_dir)?;
     }
     std::fs::create_dir_all(&temp_dir)?;
 
-    // Extract all files
+    // Extract all files with boundary check
+    let canonical_temp = temp_dir.canonicalize()?;
     let mut file_count = 0;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         let name = entry.name().to_string();
 
         let out_path = temp_dir.join(&name);
+
+        // Defense-in-depth: verify joined path stays inside temp_dir
+        if let Ok(canonical) = out_path.canonicalize().or_else(|_| {
+            // Path doesn't exist yet; canonicalize parent and append filename
+            out_path
+                .parent()
+                .and_then(|p| p.canonicalize().ok())
+                .map(|p| p.join(out_path.file_name().unwrap_or_default()))
+                .ok_or_else(|| std::io::Error::other("no parent"))
+        }) && !canonical.starts_with(&canonical_temp)
+        {
+            // Clean up and reject
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(ArchiveError::PathTraversal(name));
+        }
 
         if entry.is_dir() {
             std::fs::create_dir_all(&out_path)?;

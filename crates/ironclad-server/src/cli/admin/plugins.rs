@@ -165,7 +165,7 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     Ok(())
 }
 
-fn companion_skill_install_name(plugin_name: &str, skill_rel: &str) -> String {
+pub(crate) fn companion_skill_install_name(plugin_name: &str, skill_rel: &str) -> String {
     let skill_filename = std::path::Path::new(skill_rel)
         .file_name()
         .unwrap_or_default()
@@ -507,6 +507,22 @@ async fn install_from_catalog(name: &str) -> Result<(), Box<dyn std::error::Erro
 
     let result = archive::unpack_bytes(&bytes, &staging_dir, entry.sha256.clone())
         .map_err(|e| format!("Failed to unpack archive: {e}"))?;
+
+    // Identity check: manifest name must match catalog entry name
+    if result.manifest.name != entry.name {
+        eprintln!(
+            "  {err_icon} Identity mismatch: catalog says '{}' but archive contains '{}'",
+            entry.name, result.manifest.name
+        );
+        let _ = std::fs::remove_dir_all(&result.dest_dir);
+        return Ok(());
+    }
+
+    // Re-check "already installed" against manifest name (authoritative identity)
+    if check_not_installed(&result.manifest.name).is_err() {
+        let _ = std::fs::remove_dir_all(&result.dest_dir);
+        return Ok(());
+    }
 
     // Requirements check
     if !check_requirements(&result.manifest) {

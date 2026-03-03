@@ -753,10 +753,11 @@ async fn cmd_mechanic_json(
                             let skills_dir = ironclad_dir.join("skills");
                             for skill_rel in &manifest.companion_skills {
                                 let src = path.join(skill_rel);
-                                let skill_filename = std::path::Path::new(skill_rel)
-                                    .file_name()
-                                    .unwrap_or_default();
-                                let dest = skills_dir.join(skill_filename);
+                                let installed_name = super::plugins::companion_skill_install_name(
+                                    &manifest.name,
+                                    skill_rel,
+                                );
+                                let dest = skills_dir.join(&installed_name);
                                 if src.exists() && !dest.exists() {
                                     std::fs::create_dir_all(&skills_dir).ok();
                                     if std::fs::copy(&src, &dest).is_ok() {
@@ -765,8 +766,7 @@ async fn cmd_mechanic_json(
                                                 "info",
                                                 1.0,
                                                 format!(
-                                                    "Re-deployed companion skill: {}",
-                                                    skill_filename.to_string_lossy()
+                                                    "Re-deployed companion skill: {installed_name}",
                                                 ),
                                                 format!(
                                                     "Plugin '{}' companion skill was missing from skills directory.",
@@ -1714,21 +1714,20 @@ pub async fn cmd_mechanic(
                         if repair {
                             for skill_rel in &manifest.companion_skills {
                                 let src = plugin_dir.join(skill_rel);
-                                let skill_filename = std::path::Path::new(skill_rel)
-                                    .file_name()
-                                    .unwrap_or_default();
-                                let dest = skills_dir.join(skill_filename);
+                                let installed_name = super::plugins::companion_skill_install_name(
+                                    &manifest.name,
+                                    skill_rel,
+                                );
+                                let dest = skills_dir.join(&installed_name);
                                 if src.exists() && !dest.exists() {
                                     std::fs::create_dir_all(&skills_dir).ok();
                                     if let Err(e) = std::fs::copy(&src, &dest) {
                                         println!(
-                                            "  {ERR} Failed to re-deploy companion skill {}: {e}",
-                                            skill_filename.to_string_lossy()
+                                            "  {ERR} Failed to re-deploy companion skill {installed_name}: {e}",
                                         );
                                     } else {
                                         println!(
-                                            "  {ACTION} Re-deployed missing companion skill: {}",
-                                            skill_filename.to_string_lossy()
+                                            "  {ACTION} Re-deployed missing companion skill: {installed_name}",
                                         );
                                         fixed += 1;
                                     }

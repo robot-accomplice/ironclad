@@ -50,8 +50,20 @@ fi
 WORKING_DIR=$(printf '%s' "$INPUT" | jq -r '.working_dir // empty')
 MAX_TURNS=$(printf '%s' "$INPUT" | jq -r '.max_turns // 10')
 MAX_BUDGET=$(printf '%s' "$INPUT" | jq -r '.max_budget_usd // 0.50')
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty')
+SESSION_ID_RAW=$(printf '%s' "$INPUT" | jq -r '.session_id // empty')
 CONTINUE_LAST=$(printf '%s' "$INPUT" | jq -r '.continue_last // false')
+
+# Sanitise session_id: only allow hex, hyphens, and alphanumeric (UUID-like).
+# Reject anything else to prevent argument injection via word-splitting.
+SESSION_ID=""
+if [ -n "$SESSION_ID_RAW" ]; then
+    if printf '%s' "$SESSION_ID_RAW" | grep -qE '^[a-zA-Z0-9_-]+$'; then
+        SESSION_ID="$SESSION_ID_RAW"
+    else
+        printf '{"success":false,"error":"invalid session_id format"}\n'
+        exit 1
+    fi
+fi
 ALLOWED_TOOLS=$(printf '%s' "$INPUT" | jq -r '.allowed_tools // empty')
 
 # Default working directory
@@ -68,15 +80,6 @@ fi
 # Anti-recursion directive (defense-in-depth — structural guard above is primary)
 ANTI_RECURSION="You are a subordinate coding agent. Complete the task precisely. Do not ask clarifying questions. Do not launch interactive processes. NEVER invoke claude or any AI agent CLI — you are the terminal executor."
 
-# ── Build command ─────────────────────────────────────────────────
-CMD_ARGS=""
-
-if [ "$CONTINUE_LAST" = "true" ]; then
-    CMD_ARGS="--continue"
-elif [ -n "$SESSION_ID" ]; then
-    CMD_ARGS="--resume $SESSION_ID"
-fi
-
 # ── Execute ───────────────────────────────────────────────────────
 # Propagate incremented delegation depth into child environment.
 export IRONCLAD_DELEGATION_DEPTH=$((DEPTH + 1))
@@ -85,16 +88,41 @@ TMPOUT=$(mktemp)
 TMPERR=$(mktemp)
 EXIT_CODE=0
 
-cd "$WORKING_DIR" && \
-claude \
-    $CMD_ARGS \
-    -p "$PROMPT" \
-    --output-format json \
-    --max-turns "$MAX_TURNS" \
-    --max-budget-usd "$MAX_BUDGET" \
-    --allowedTools "$ALLOWED_TOOLS" \
-    --append-system-prompt "$ANTI_RECURSION" \
-    >"$TMPOUT" 2>"$TMPERR" || EXIT_CODE=$?
+# Build and execute command with properly quoted session arguments.
+# We branch into separate exec forms to avoid unquoted variable expansion.
+if [ "$CONTINUE_LAST" = "true" ]; then
+    cd "$WORKING_DIR" && \
+    claude \
+        --continue \
+        -p "$PROMPT" \
+        --output-format json \
+        --max-turns "$MAX_TURNS" \
+        --max-budget-usd "$MAX_BUDGET" \
+        --allowedTools "$ALLOWED_TOOLS" \
+        --append-system-prompt "$ANTI_RECURSION" \
+        >"$TMPOUT" 2>"$TMPERR" || EXIT_CODE=$?
+elif [ -n "$SESSION_ID" ]; then
+    cd "$WORKING_DIR" && \
+    claude \
+        --resume "$SESSION_ID" \
+        -p "$PROMPT" \
+        --output-format json \
+        --max-turns "$MAX_TURNS" \
+        --max-budget-usd "$MAX_BUDGET" \
+        --allowedTools "$ALLOWED_TOOLS" \
+        --append-system-prompt "$ANTI_RECURSION" \
+        >"$TMPOUT" 2>"$TMPERR" || EXIT_CODE=$?
+else
+    cd "$WORKING_DIR" && \
+    claude \
+        -p "$PROMPT" \
+        --output-format json \
+        --max-turns "$MAX_TURNS" \
+        --max-budget-usd "$MAX_BUDGET" \
+        --allowedTools "$ALLOWED_TOOLS" \
+        --append-system-prompt "$ANTI_RECURSION" \
+        >"$TMPOUT" 2>"$TMPERR" || EXIT_CODE=$?
+fi
 
 STDOUT=$(cat "$TMPOUT")
 STDERR=$(cat "$TMPERR")
