@@ -12,11 +12,12 @@ members = [
     "crates/ironclad-plugin-sdk",
     "crates/ironclad-browser",
     "crates/ironclad-tests",
+    "crates/ironclad-harness",
 ]
 exclude = ["crates/ironclad-agent/fuzz"]
 
 [workspace.package]
-version = "0.8.1"
+version = "0.9.3"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -26,15 +27,15 @@ keywords = ["agent", "llm", "autonomous", "ai", "runtime"]
 categories = ["command-line-utilities", "network-programming"]
 
 [workspace.dependencies]
-ironclad-core = { path = "crates/ironclad-core", version = "0.8.1" }
-ironclad-db = { path = "crates/ironclad-db", version = "0.8.1" }
-ironclad-llm = { path = "crates/ironclad-llm", version = "0.8.1" }
-ironclad-agent = { path = "crates/ironclad-agent", version = "0.8.1" }
-ironclad-wallet = { path = "crates/ironclad-wallet", version = "0.8.1" }
-ironclad-schedule = { path = "crates/ironclad-schedule", version = "0.8.1" }
-ironclad-channels = { path = "crates/ironclad-channels", version = "0.8.1" }
-ironclad-plugin-sdk = { path = "crates/ironclad-plugin-sdk", version = "0.8.1" }
-ironclad-browser = { path = "crates/ironclad-browser", version = "0.8.1" }
+ironclad-core = { path = "crates/ironclad-core", version = "0.9.0" }
+ironclad-db = { path = "crates/ironclad-db", version = "0.9.0" }
+ironclad-llm = { path = "crates/ironclad-llm", version = "0.9.0" }
+ironclad-agent = { path = "crates/ironclad-agent", version = "0.9.0" }
+ironclad-wallet = { path = "crates/ironclad-wallet", version = "0.9.0" }
+ironclad-schedule = { path = "crates/ironclad-schedule", version = "0.9.0" }
+ironclad-channels = { path = "crates/ironclad-channels", version = "0.9.0" }
+ironclad-plugin-sdk = { path = "crates/ironclad-plugin-sdk", version = "0.9.0" }
+ironclad-browser = { path = "crates/ironclad-browser", version = "0.9.0" }
 
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
@@ -44,7 +45,43 @@ bytes = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 tracing = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 subtle = "2"
 proptest = "1"
+rmcp = { version = "0.17", default-features = false }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+
+# ── Build acceleration ──────────────────────────────────────────
+# See: https://corrode.dev/blog/tips-for-faster-rust-compile-times/
+
+[profile.dev]
+# Line-tables-only: keep file:line in backtraces but skip variable
+# debug info.  Cuts debug-info generation and link size dramatically.
+debug = "line-tables-only"
+# macOS: emit debug info as separate .o files instead of one fat
+# dSYM bundle.  Up to 70% faster incremental linking.
+split-debuginfo = "unpacked"
+# Incremental is on by default for dev, but be explicit.
+incremental = true
+
+[profile.dev.build-override]
+# Compile build-scripts and proc-macros (serde_derive, thiserror-impl,
+# derive_more-impl) with full optimisation.  They run at compile time
+# so faster execution → faster builds.  One-time cost, cached after.
+opt-level = 3
+
+[profile.test]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+incremental = true
+
+[profile.test.build-override]
+opt-level = 3
+
+[profile.release]
+# Strip symbols from release binary — smaller binary, faster link.
+strip = "symbols"
+lto = "thin"

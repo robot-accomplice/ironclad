@@ -19,7 +19,6 @@ flowchart TB
         CLIENT["client.rs<br/>HTTP Client Pool"]
         PROVIDER["provider.rs<br/>Provider Definitions"]
         EMBEDDING["embedding.rs<br/>Multi-Provider Embedding Client"]
-        UNIROUTE["uniroute.rs<br/>Unified Routing<br/>(ModelVector + QueryRequirements)"]
         TIERED["tiered.rs<br/>Tiered Inference<br/>(ConfidenceEvaluator + Escalation)"]
         ML_ROUTER["ml_router.rs<br/>Logistic Backend +<br/>Preference Collector"]
         CASCADE["cascade.rs<br/>Cascade Optimizer<br/>(CascadeStrategy)"]
@@ -51,7 +50,7 @@ flowchart TB
     subgraph RouterDetail ["router.rs"]
         FEATURES["extract_features()<br/>msg len, tool_calls, depth"]
         HEURISTIC["HeuristicBackend<br/>classify_complexity → 0.0–1.0"]
-        SELECT["select_for_complexity()<br/>local_first + confidence_threshold"]
+        SELECT["select_model()<br/>override + runtime fallback order"]
         FALLBACK["advance_fallback() / reset()"]
         FEATURES --> HEURISTIC --> SELECT
     end
@@ -92,16 +91,10 @@ flowchart TB
         ADAPT_T3T4["T3/T4: passthrough"]
     end
 
-    subgraph UnirouteDetail ["uniroute.rs — Unified Model Selection"]
-        MODEL_VEC["ModelVector:<br/>capability dimensions per model"]
-        VEC_REG["ModelVectorRegistry:<br/>register, score, rank models"]
-        QUERY_REQ["QueryRequirements:<br/>context length, tool support,<br/>quality target"]
-    end
-
     subgraph TieredDetail ["tiered.rs — Tiered Inference"]
         CONF_EVAL["ConfidenceEvaluator:<br/>score response quality"]
         ESCALATION["EscalationTracker:<br/>promote to higher tier<br/>on low confidence"]
-        INF_TIER["InferenceTier:<br/>Fast, Standard, Premium"]
+        INF_TIER["InferenceTier:<br/>Cache, Local, Cloud"]
     end
 
     subgraph CascadeDetail ["cascade.rs — Cascade Optimizer"]
@@ -117,7 +110,6 @@ flowchart TB
 
     subgraph AccuracyDetail ["accuracy.rs"]
         QUAL_TRACK["QualityTracker:<br/>per-model EMA scoring"]
-        QUAL_SELECT["select_for_quality_target():<br/>pick model meeting accuracy floor"]
     end
 
     subgraph CompressionDetail ["compression.rs"]
@@ -127,8 +119,7 @@ flowchart TB
 
     CACHE -.->|"hit"| CLIENT
     CACHE -.->|"miss"| ROUTER
-    ROUTER --> UNIROUTE
-    UNIROUTE --> TIERED
+    ROUTER --> TIERED
     TIERED --> CASCADE
     CASCADE --> CIRCUIT
     CIRCUIT --> DEDUP
@@ -146,7 +137,7 @@ flowchart TB
 ## Request Pipeline (in order)
 
 1. **Cache check** (`cache.rs`) — 3-level lookup (exact hash → tool TTL → semantic cosine), return on hit
-2. **Routing** (`router.rs`) — heuristic `classify_complexity(features)`; `select_for_complexity()` with optional `ProviderRegistry` for `is_local`
+2. **Routing** (`router.rs` + server routing layer) — heuristic `classify_complexity(features)` and runtime override/fallback state in `ModelRouter`; production selection is metascore-based in server routing
 3. **Circuit breaker** (`circuit.rs`) — per-provider state (Closed/Open/HalfOpen), configurable threshold/window/cooldown
 4. **Dedup** (`dedup.rs`) — in-flight duplicate detection
 5. **Format translation** (`format.rs`) — `translate_request(UnifiedRequest, ApiFormat)`, `translate_response(Value, ApiFormat)` → `UnifiedResponse`

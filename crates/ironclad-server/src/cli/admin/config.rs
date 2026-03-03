@@ -170,7 +170,25 @@ fn parse_toml_value(s: &str) -> toml::Value {
     toml::Value::String(s.trim_matches('"').to_string())
 }
 
-pub fn cmd_config_get(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_config_get(url: &str, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Try live API first — shows actual runtime config
+    if let Ok(client) = crate::cli::IroncladClient::new(url)
+        && let Ok(live) = client.get("/api/config").await
+    {
+        let value = navigate_json(&live, path);
+        match value {
+            Some(v) => {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            None => {
+                eprintln!("  Key not found: {path}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Fall back to on-disk TOML when server is not running
     let config_path = find_config_file()?;
     let contents = std::fs::read_to_string(&config_path)?;
     let table: toml::Value = contents.parse()?;
@@ -186,6 +204,16 @@ pub fn cmd_config_get(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+/// Navigate a serde_json::Value by dot-separated path
+fn navigate_json<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut current = value;
+    for part in parts {
+        current = current.get(part)?;
+    }
+    Some(current)
 }
 
 pub fn cmd_config_set(

@@ -13,6 +13,8 @@ pub struct SchemaEntry {
     pub agent_owned: bool,
     pub created_at: String,
     pub updated_at: String,
+    pub access_level: String,
+    pub row_count: i64,
 }
 
 /// Column definition within a schema entry.
@@ -25,6 +27,7 @@ pub struct ColumnDef {
 }
 
 /// Register a table in the hippocampus.
+#[allow(clippy::too_many_arguments)]
 pub fn register_table(
     db: &Database,
     table_name: &str,
@@ -32,45 +35,63 @@ pub fn register_table(
     columns: &[ColumnDef],
     created_by: &str,
     agent_owned: bool,
+    access_level: &str,
+    row_count: i64,
 ) -> Result<()> {
     let conn = db.conn();
     let columns_json =
         serde_json::to_string(columns).map_err(|e| IroncladError::Database(e.to_string()))?;
 
     conn.execute(
-        "INSERT OR REPLACE INTO hippocampus (table_name, description, columns_json, created_by, agent_owned, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
-        rusqlite::params![table_name, description, columns_json, created_by, agent_owned as i32],
+        "INSERT OR REPLACE INTO hippocampus \
+         (table_name, description, columns_json, created_by, agent_owned, access_level, row_count, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
+        rusqlite::params![
+            table_name,
+            description,
+            columns_json,
+            created_by,
+            agent_owned as i32,
+            access_level,
+            row_count
+        ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     Ok(())
 }
 
+const SELECT_COLS: &str = "table_name, description, columns_json, created_by, agent_owned, \
+                           created_at, updated_at, access_level, row_count";
+
+fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<SchemaEntry> {
+    let columns_json: String = row.get(2)?;
+    let columns: Vec<ColumnDef> = serde_json::from_str(&columns_json).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "failed to deserialize column definitions, using empty list");
+        Vec::new()
+    });
+    Ok(SchemaEntry {
+        table_name: row.get(0)?,
+        description: row.get(1)?,
+        columns,
+        created_by: row.get(3)?,
+        agent_owned: row.get::<_, i32>(4)? != 0,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+        access_level: row
+            .get::<_, Option<String>>(7)?
+            .unwrap_or_else(|| "internal".into()),
+        row_count: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
+    })
+}
+
 /// Look up a table's schema entry.
 pub fn get_table(db: &Database, table_name: &str) -> Result<Option<SchemaEntry>> {
     let conn = db.conn();
     conn.query_row(
-        "SELECT table_name, description, columns_json, created_by, agent_owned, created_at, updated_at \
-         FROM hippocampus WHERE table_name = ?1",
+        &format!("SELECT {SELECT_COLS} FROM hippocampus WHERE table_name = ?1"),
         [table_name],
-        |row| {
-            let columns_json: String = row.get(2)?;
-            let columns: Vec<ColumnDef> =
-                serde_json::from_str(&columns_json).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "failed to deserialize column definitions, using empty list");
-                    Vec::new()
-                });
-            Ok(SchemaEntry {
-                table_name: row.get(0)?,
-                description: row.get(1)?,
-                columns,
-                created_by: row.get(3)?,
-                agent_owned: row.get::<_, i32>(4)? != 0,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        },
+        row_to_entry,
     )
     .optional()
     .map_err(|e| IroncladError::Database(e.to_string()))
@@ -80,30 +101,13 @@ pub fn get_table(db: &Database, table_name: &str) -> Result<Option<SchemaEntry>>
 pub fn list_tables(db: &Database) -> Result<Vec<SchemaEntry>> {
     let conn = db.conn();
     let mut stmt = conn
-        .prepare(
-            "SELECT table_name, description, columns_json, created_by, agent_owned, created_at, updated_at \
-             FROM hippocampus ORDER BY table_name",
-        )
+        .prepare(&format!(
+            "SELECT {SELECT_COLS} FROM hippocampus ORDER BY table_name"
+        ))
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     let rows = stmt
-        .query_map([], |row| {
-            let columns_json: String = row.get(2)?;
-            let columns: Vec<ColumnDef> =
-                serde_json::from_str(&columns_json).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "failed to deserialize column definitions, using empty list");
-                    Vec::new()
-                });
-            Ok(SchemaEntry {
-                table_name: row.get(0)?,
-                description: row.get(1)?,
-                columns,
-                created_by: row.get(3)?,
-                agent_owned: row.get::<_, i32>(4)? != 0,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        })
+        .query_map([], row_to_entry)
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -114,30 +118,13 @@ pub fn list_tables(db: &Database) -> Result<Vec<SchemaEntry>> {
 pub fn list_agent_tables(db: &Database, agent_id: &str) -> Result<Vec<SchemaEntry>> {
     let conn = db.conn();
     let mut stmt = conn
-        .prepare(
-            "SELECT table_name, description, columns_json, created_by, agent_owned, created_at, updated_at \
-             FROM hippocampus WHERE agent_owned = 1 AND created_by = ?1 ORDER BY table_name",
-        )
+        .prepare(&format!(
+            "SELECT {SELECT_COLS} FROM hippocampus WHERE agent_owned = 1 AND created_by = ?1 ORDER BY table_name"
+        ))
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     let rows = stmt
-        .query_map([agent_id], |row| {
-            let columns_json: String = row.get(2)?;
-            let columns: Vec<ColumnDef> =
-                serde_json::from_str(&columns_json).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "failed to deserialize column definitions, using empty list");
-                    Vec::new()
-                });
-            Ok(SchemaEntry {
-                table_name: row.get(0)?,
-                description: row.get(1)?,
-                columns,
-                created_by: row.get(3)?,
-                agent_owned: row.get::<_, i32>(4)? != 0,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        })
+        .query_map([agent_id], row_to_entry)
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -145,9 +132,12 @@ pub fn list_agent_tables(db: &Database, agent_id: &str) -> Result<Vec<SchemaEntr
 }
 
 fn validate_identifier(s: &str) -> Result<()> {
-    if s.is_empty() || !s.chars().all(|c| c.is_alphanumeric() || c == '_') {
+    if s.is_empty()
+        || s.chars().next().is_some_and(|c| c.is_ascii_digit())
+        || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
         return Err(IroncladError::Database(format!(
-            "identifier contains invalid characters: {s}"
+            "invalid SQL identifier: {s}"
         )));
     }
     Ok(())
@@ -164,7 +154,10 @@ pub fn create_agent_table(
 ) -> Result<String> {
     let table_name = format!("{agent_id}_{table_suffix}");
 
-    if !table_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+    if !table_name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
         return Err(IroncladError::Database(
             "table name contains invalid characters".into(),
         ));
@@ -200,31 +193,60 @@ pub fn create_agent_table(
             .map_err(|e| IroncladError::Database(e.to_string()))?;
     }
 
-    register_table(db, &table_name, description, columns, agent_id, true)?;
+    register_table(
+        db,
+        &table_name,
+        description,
+        columns,
+        agent_id,
+        true,
+        "readwrite",
+        0,
+    )?;
 
     Ok(table_name)
 }
 
 /// Drop an agent-owned table. Only tables created by the specified agent can be dropped.
+/// Auth check + DROP + registry DELETE are performed in a single transaction to prevent TOCTOU.
 pub fn drop_agent_table(db: &Database, agent_id: &str, table_name: &str) -> Result<()> {
-    let entry = get_table(db, table_name)?.ok_or_else(|| {
-        IroncladError::Database(format!("table {table_name} not found in hippocampus"))
-    })?;
+    validate_identifier(table_name)?;
 
-    if !entry.agent_owned || entry.created_by != agent_id {
+    let conn = db.conn();
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    // Atomic check: verify ownership inside the transaction
+    let owned: bool = tx
+        .query_row(
+            "SELECT agent_owned AND created_by = ?2 FROM hippocampus WHERE table_name = ?1",
+            rusqlite::params![table_name, agent_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                IroncladError::Database(format!("table {table_name} not found in hippocampus"))
+            }
+            other => IroncladError::Database(other.to_string()),
+        })?;
+
+    if !owned {
         return Err(IroncladError::Database(
             "cannot drop: table not owned by this agent".into(),
         ));
     }
 
-    let conn = db.conn();
-    conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), [])
+    tx.execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), [])
         .map_err(|e| IroncladError::Database(e.to_string()))?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM hippocampus WHERE table_name = ?1",
         [table_name],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    tx.commit()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     Ok(())
 }
@@ -243,7 +265,10 @@ pub fn schema_summary(db: &Database) -> Result<String> {
         } else {
             " (system)".to_string()
         };
-        summary.push_str(&format!("### {}{}\n", entry.table_name, owner));
+        summary.push_str(&format!(
+            "### {}{} [{}, {} rows]\n",
+            entry.table_name, owner, entry.access_level, entry.row_count
+        ));
         summary.push_str(&format!("{}\n", entry.description));
         for col in &entry.columns {
             let null_str = if col.nullable { ", nullable" } else { "" };
@@ -265,7 +290,219 @@ pub fn schema_summary(db: &Database) -> Result<String> {
     Ok(summary)
 }
 
-/// Seed the hippocampus with entries for all built-in system tables.
+/// Compact hippocampus summary for context injection (~200 tokens).
+///
+/// Prioritizes agent-owned tables (fully listed), then a concise list of
+/// system table names. Fits within ~800 chars.
+pub fn compact_summary(db: &Database) -> Result<String> {
+    let tables = list_tables(db)?;
+    if tables.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut system_names = Vec::new();
+    let mut agent_lines = Vec::new();
+
+    for entry in &tables {
+        if entry.agent_owned {
+            agent_lines.push(format!(
+                "- {} ({} rows) — {}",
+                entry.table_name, entry.row_count, entry.description
+            ));
+        } else {
+            system_names.push(entry.table_name.as_str());
+        }
+    }
+
+    let mut summary = String::from("[Database]\n");
+
+    if !agent_lines.is_empty() {
+        summary.push_str("Your tables:\n");
+        for line in &agent_lines {
+            summary.push_str(line);
+            summary.push('\n');
+        }
+    }
+
+    if !system_names.is_empty() {
+        summary.push_str(&format!(
+            "System tables ({}): {}\n",
+            system_names.len(),
+            system_names.join(", ")
+        ));
+    }
+
+    summary.push_str("Use create_table/alter_table/drop_table tools to manage your tables. ");
+    summary.push_str("Use get_runtime_context for full schema details.");
+
+    // Hard truncation safety net
+    if summary.len() > 800 {
+        summary.truncate(800);
+        if let Some(last_nl) = summary.rfind('\n') {
+            summary.truncate(last_nl);
+        }
+        summary.push_str("\n...(use introspection tools for details)\n");
+    }
+
+    Ok(summary)
+}
+
+/// Return (description, access_level) for known system tables.
+fn system_table_metadata(table_name: &str) -> (&'static str, &'static str) {
+    match table_name {
+        "schema_version" => ("Schema migration version tracking", "internal"),
+        "sessions" => ("User conversation sessions", "read"),
+        "session_messages" => ("Messages within sessions", "read"),
+        "turns" => ("Conversation turn tracking", "internal"),
+        "tool_calls" => ("Tool invocation log", "read"),
+        "policy_decisions" => ("Policy evaluation results", "internal"),
+        "working_memory" => ("Session-scoped working memory", "read"),
+        "episodic_memory" => ("Long-term event memory", "read"),
+        "semantic_memory" => ("Factual knowledge store", "read"),
+        "procedural_memory" => ("Learned procedure memory", "read"),
+        "relationship_memory" => ("Entity relationship memory", "read"),
+        "tasks" => ("Task queue for agent work items", "read"),
+        "cron_jobs" => ("Scheduled cron jobs", "read"),
+        "cron_runs" => ("Cron job execution history", "read"),
+        "transactions" => ("Wallet transaction log", "internal"),
+        "inference_costs" => ("LLM inference cost tracking", "internal"),
+        "proxy_stats" => ("API proxy statistics", "internal"),
+        "semantic_cache" => ("Semantic response cache", "internal"),
+        "identity" => ("Agent identity and credentials", "internal"),
+        "soul_history" => ("Agent personality evolution log", "internal"),
+        "metric_snapshots" => ("System metric snapshots", "internal"),
+        "discovered_agents" => ("Discovered peer agents", "read"),
+        "skills" => ("Registered agent skills", "read"),
+        "delivery_queue" => ("Durable message delivery queue", "internal"),
+        "approval_requests" => ("Pending human approval requests", "read"),
+        "plugins" => ("Installed plugins", "read"),
+        "embeddings" => ("Vector embeddings store", "internal"),
+        "sub_agents" => ("Spawned sub-agent registry", "read"),
+        "context_checkpoints" => ("Context checkpoint snapshots", "internal"),
+        "hippocampus" => ("Schema map (this table)", "internal"),
+        _ => ("Agent-managed table", "readwrite"),
+    }
+}
+
+/// Introspect columns of a table via `PRAGMA table_info`.
+fn introspect_columns(
+    conn: &rusqlite::Connection,
+    table_name: &str,
+) -> std::result::Result<Vec<ColumnDef>, rusqlite::Error> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info(\"{}\")", table_name))?;
+    let cols = stmt.query_map([], |row| {
+        let name: String = row.get(1)?;
+        let col_type: String = row.get(2)?;
+        let notnull: i32 = row.get(3)?;
+        Ok(ColumnDef {
+            name,
+            col_type,
+            nullable: notnull == 0,
+            description: None,
+        })
+    })?;
+    cols.collect()
+}
+
+/// Bootstrap the hippocampus by auto-discovering all tables in the database,
+/// introspecting their columns, and registering them. Also runs a consistency
+/// check to remove stale entries for tables that no longer exist.
+pub fn bootstrap_hippocampus(db: &Database) -> Result<()> {
+    // Phase 1: Discover all tables and collect metadata
+    let table_data: Vec<(String, Vec<ColumnDef>, i64)> = {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master \
+                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
+                 ORDER BY name",
+            )
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+        let table_names: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| IroncladError::Database(e.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+        let mut data = Vec::with_capacity(table_names.len());
+        for name in table_names {
+            let columns = introspect_columns(&conn, &name)
+                .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+            let row_count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM \"{}\"", name), [], |row| {
+                    row.get(0)
+                })
+                .unwrap_or(0);
+
+            data.push((name, columns, row_count));
+        }
+        data
+    };
+
+    // Phase 2: Register each table (connection released, register_table acquires its own)
+    for (name, columns, row_count) in &table_data {
+        let (description, access_level) = system_table_metadata(name);
+
+        // Preserve existing agent-owned entries — only upsert system tables
+        if let Some(existing) = get_table(db, name)?
+            && existing.agent_owned
+        {
+            // Update row_count only for agent-owned tables, keep their metadata
+            register_table(
+                db,
+                name,
+                &existing.description,
+                columns,
+                &existing.created_by,
+                true,
+                &existing.access_level,
+                *row_count,
+            )?;
+            continue;
+        }
+
+        register_table(
+            db,
+            name,
+            description,
+            columns,
+            "system",
+            false,
+            access_level,
+            *row_count,
+        )?;
+    }
+
+    // Phase 3: Consistency check — remove stale entries for non-existent tables
+    let registered = list_tables(db)?;
+    let existing_names: std::collections::HashSet<&str> =
+        table_data.iter().map(|(n, _, _)| n.as_str()).collect();
+
+    for entry in &registered {
+        if !existing_names.contains(entry.table_name.as_str()) {
+            tracing::warn!(
+                table = %entry.table_name,
+                "hippocampus entry for missing table, removing"
+            );
+            let conn = db.conn();
+            conn.execute(
+                "DELETE FROM hippocampus WHERE table_name = ?1",
+                [&entry.table_name],
+            )
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        }
+    }
+
+    tracing::info!(
+        tables = table_data.len(),
+        "hippocampus bootstrapped with schema map"
+    );
+    Ok(())
+}
+
+/// Seed the hippocampus with entries for core system tables (legacy helper).
 pub fn seed_system_tables(db: &Database) -> Result<()> {
     let system_tables = vec![
         (
@@ -391,7 +628,7 @@ pub fn seed_system_tables(db: &Database) -> Result<()> {
     ];
 
     for (name, desc, cols) in system_tables {
-        register_table(db, name, desc, &cols, "system", false)?;
+        register_table(db, name, desc, &cols, "system", false, "read", 0)?;
     }
 
     Ok(())
@@ -422,13 +659,25 @@ mod tests {
                 description: None,
             },
         ];
-        register_table(&db, "users", "User records", &cols, "system", false).unwrap();
+        register_table(
+            &db,
+            "users",
+            "User records",
+            &cols,
+            "system",
+            false,
+            "read",
+            0,
+        )
+        .unwrap();
 
         let entry = get_table(&db, "users").unwrap().unwrap();
         assert_eq!(entry.table_name, "users");
         assert_eq!(entry.description, "User records");
         assert_eq!(entry.columns.len(), 2);
         assert!(!entry.agent_owned);
+        assert_eq!(entry.access_level, "read");
+        assert_eq!(entry.row_count, 0);
     }
 
     #[test]
@@ -438,18 +687,45 @@ mod tests {
     }
 
     #[test]
-    fn list_tables_empty() {
+    fn list_tables_includes_bootstrap() {
         let db = test_db();
-        assert!(list_tables(&db).unwrap().is_empty());
+        // Database::new runs bootstrap_hippocampus, so system tables are already registered
+        let tables = list_tables(&db).unwrap();
+        assert!(
+            tables.len() >= 20,
+            "bootstrap should register system tables, got {}",
+            tables.len()
+        );
     }
 
     #[test]
-    fn list_tables_multiple() {
+    fn list_tables_grows_with_registration() {
         let db = test_db();
-        register_table(&db, "a", "Table A", &[], "system", false).unwrap();
-        register_table(&db, "b", "Table B", &[], "system", false).unwrap();
-        let tables = list_tables(&db).unwrap();
-        assert_eq!(tables.len(), 2);
+        let before = list_tables(&db).unwrap().len();
+        register_table(
+            &db,
+            "custom_a",
+            "Table A",
+            &[],
+            "test",
+            false,
+            "internal",
+            0,
+        )
+        .unwrap();
+        register_table(
+            &db,
+            "custom_b",
+            "Table B",
+            &[],
+            "test",
+            false,
+            "internal",
+            0,
+        )
+        .unwrap();
+        let after = list_tables(&db).unwrap().len();
+        assert_eq!(after, before + 2);
     }
 
     #[test]
@@ -475,6 +751,7 @@ mod tests {
         let entry = get_table(&db, "agent42_notes").unwrap().unwrap();
         assert!(entry.agent_owned);
         assert_eq!(entry.created_by, "agent42");
+        assert_eq!(entry.access_level, "readwrite");
     }
 
     #[test]
@@ -503,7 +780,7 @@ mod tests {
     #[test]
     fn drop_system_table_fails() {
         let db = test_db();
-        register_table(&db, "sessions", "Sessions", &[], "system", false).unwrap();
+        register_table(&db, "sessions", "Sessions", &[], "system", false, "read", 0).unwrap();
         let result = drop_agent_table(&db, "agent1", "sessions");
         assert!(result.is_err());
     }
@@ -511,7 +788,7 @@ mod tests {
     #[test]
     fn list_agent_tables_filters() {
         let db = test_db();
-        register_table(&db, "sessions", "System", &[], "system", false).unwrap();
+        register_table(&db, "sessions", "System", &[], "system", false, "read", 0).unwrap();
         create_agent_table(&db, "agent1", "notes", "Notes", &[]).unwrap();
         create_agent_table(&db, "agent2", "data", "Data", &[]).unwrap();
 
@@ -521,10 +798,49 @@ mod tests {
     }
 
     #[test]
-    fn schema_summary_empty() {
+    fn schema_summary_after_bootstrap() {
         let db = test_db();
         let summary = schema_summary(&db).unwrap();
-        assert!(summary.contains("No tables"));
+        // Bootstrap runs at init, so summary is never empty
+        assert!(summary.contains("## Database Schema Map"));
+        assert!(summary.contains("sessions"));
+    }
+
+    #[test]
+    fn compact_summary_includes_system_and_agent_tables() {
+        let db = test_db();
+        // Create an agent-owned table
+        create_agent_table(
+            &db,
+            "agent1",
+            "notes",
+            "Agent scratchpad",
+            &[ColumnDef {
+                name: "body".into(),
+                col_type: "TEXT".into(),
+                nullable: true,
+                description: None,
+            }],
+        )
+        .unwrap();
+
+        let summary = compact_summary(&db).unwrap();
+        assert!(summary.contains("[Database]"), "missing header");
+        assert!(summary.contains("System tables ("), "missing system count");
+        assert!(summary.contains("Your tables:"), "missing agent section");
+        assert!(summary.contains("agent1_notes"), "missing agent table");
+    }
+
+    #[test]
+    fn compact_summary_fits_token_budget() {
+        let db = test_db();
+        let summary = compact_summary(&db).unwrap();
+        // ~200 tokens ≈ ~800 chars
+        assert!(
+            summary.len() <= 900,
+            "compact_summary too long: {} chars",
+            summary.len()
+        );
     }
 
     #[test]
@@ -535,24 +851,39 @@ mod tests {
         assert!(summary.contains("sessions"));
         assert!(summary.contains("episodic_memory"));
         assert!(summary.contains("(system)"));
+        assert!(summary.contains("[read, 0 rows]"));
     }
 
     #[test]
-    fn seed_system_tables_creates_entries() {
+    fn seed_system_tables_upserts_over_bootstrap() {
         let db = test_db();
+        let before = list_tables(&db).unwrap().len();
         seed_system_tables(&db).unwrap();
-        let tables = list_tables(&db).unwrap();
-        assert_eq!(tables.len(), 4);
+        let after = list_tables(&db).unwrap().len();
+        // seed_system_tables covers 4 tables already registered by bootstrap — no new entries
+        assert_eq!(before, after, "seed should upsert, not add duplicates");
     }
 
     #[test]
     fn register_table_upsert() {
         let db = test_db();
-        register_table(&db, "test", "Version 1", &[], "system", false).unwrap();
-        register_table(&db, "test", "Version 2", &[], "system", false).unwrap();
+        register_table(
+            &db,
+            "test",
+            "Version 1",
+            &[],
+            "system",
+            false,
+            "internal",
+            0,
+        )
+        .unwrap();
+        register_table(&db, "test", "Version 2", &[], "system", false, "read", 42).unwrap();
 
         let entry = get_table(&db, "test").unwrap().unwrap();
         assert_eq!(entry.description, "Version 2");
+        assert_eq!(entry.access_level, "read");
+        assert_eq!(entry.row_count, 42);
     }
 
     #[test]
@@ -675,6 +1006,10 @@ mod tests {
             summary.contains("The note content"),
             "column descriptions should appear"
         );
+        assert!(
+            summary.contains("[readwrite, 0 rows]"),
+            "summary should show access level and row count"
+        );
     }
 
     #[test]
@@ -686,7 +1021,17 @@ mod tests {
             nullable: false,
             description: None,
         }];
-        register_table(&db, "metrics", "Metric values", &cols, "system", false).unwrap();
+        register_table(
+            &db,
+            "metrics",
+            "Metric values",
+            &cols,
+            "system",
+            false,
+            "internal",
+            0,
+        )
+        .unwrap();
 
         let summary = schema_summary(&db).unwrap();
         assert!(summary.contains("`val` (REAL)"));
@@ -703,13 +1048,171 @@ mod tests {
     #[test]
     fn seed_system_tables_idempotent() {
         let db = test_db();
+        let baseline = list_tables(&db).unwrap().len();
         seed_system_tables(&db).unwrap();
         seed_system_tables(&db).unwrap();
-        let tables = list_tables(&db).unwrap();
+        let after = list_tables(&db).unwrap().len();
         assert_eq!(
-            tables.len(),
-            4,
+            baseline, after,
             "seeding twice should not create duplicates"
         );
+    }
+
+    #[test]
+    fn bootstrap_discovers_all_system_tables() {
+        let db = test_db();
+        bootstrap_hippocampus(&db).unwrap();
+
+        let tables = list_tables(&db).unwrap();
+        // The :memory: database created via Database::new runs initialize_db which creates
+        // all system tables. bootstrap_hippocampus should discover them all.
+        assert!(
+            tables.len() >= 20,
+            "expected at least 20 system tables, got {}",
+            tables.len()
+        );
+
+        // Check specific known tables
+        let names: Vec<&str> = tables.iter().map(|t| t.table_name.as_str()).collect();
+        assert!(names.contains(&"sessions"), "missing sessions table");
+        assert!(
+            names.contains(&"inference_costs"),
+            "missing inference_costs table"
+        );
+        assert!(
+            names.contains(&"hippocampus"),
+            "missing hippocampus table itself"
+        );
+    }
+
+    #[test]
+    fn bootstrap_introspects_columns() {
+        let db = test_db();
+        bootstrap_hippocampus(&db).unwrap();
+
+        let entry = get_table(&db, "sessions").unwrap().unwrap();
+        assert!(
+            !entry.columns.is_empty(),
+            "sessions should have introspected columns"
+        );
+        let col_names: Vec<&str> = entry.columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(col_names.contains(&"id"), "sessions should have id column");
+        assert!(
+            col_names.contains(&"agent_id"),
+            "sessions should have agent_id column"
+        );
+    }
+
+    #[test]
+    fn bootstrap_sets_access_levels() {
+        let db = test_db();
+        bootstrap_hippocampus(&db).unwrap();
+
+        let sessions = get_table(&db, "sessions").unwrap().unwrap();
+        assert_eq!(sessions.access_level, "read");
+
+        let inference = get_table(&db, "inference_costs").unwrap().unwrap();
+        assert_eq!(inference.access_level, "internal");
+    }
+
+    #[test]
+    fn bootstrap_preserves_agent_tables() {
+        let db = test_db();
+        create_agent_table(&db, "agent1", "notes", "My notes", &[]).unwrap();
+        bootstrap_hippocampus(&db).unwrap();
+
+        let entry = get_table(&db, "agent1_notes").unwrap().unwrap();
+        assert!(entry.agent_owned);
+        assert_eq!(entry.created_by, "agent1");
+        assert_eq!(entry.description, "My notes");
+        assert_eq!(entry.access_level, "readwrite");
+    }
+
+    #[test]
+    fn bootstrap_idempotent() {
+        let db = test_db();
+        bootstrap_hippocampus(&db).unwrap();
+        let count1 = list_tables(&db).unwrap().len();
+        bootstrap_hippocampus(&db).unwrap();
+        let count2 = list_tables(&db).unwrap().len();
+        assert_eq!(count1, count2, "bootstrap should be idempotent");
+    }
+
+    #[test]
+    fn bootstrap_consistency_removes_stale_entries() {
+        let db = test_db();
+        // Register a fake table that doesn't actually exist
+        register_table(
+            &db,
+            "phantom_table",
+            "Does not exist",
+            &[],
+            "system",
+            false,
+            "internal",
+            0,
+        )
+        .unwrap();
+        assert!(get_table(&db, "phantom_table").unwrap().is_some());
+
+        // Bootstrap should remove it
+        bootstrap_hippocampus(&db).unwrap();
+        assert!(
+            get_table(&db, "phantom_table").unwrap().is_none(),
+            "stale entry should be removed by consistency check"
+        );
+    }
+
+    #[test]
+    fn bootstrap_counts_rows() {
+        let db = test_db();
+
+        // Insert some data into sessions (unique on agent_id + scope_key)
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES ('s1', 'test', 'scope_a', 'active')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES ('s2', 'test', 'scope_b', 'active')",
+                [],
+            )
+            .unwrap();
+        }
+
+        bootstrap_hippocampus(&db).unwrap();
+
+        let entry = get_table(&db, "sessions").unwrap().unwrap();
+        assert_eq!(entry.row_count, 2, "should count existing rows");
+    }
+
+    #[test]
+    fn system_table_metadata_known_tables() {
+        let (desc, level) = system_table_metadata("sessions");
+        assert_eq!(desc, "User conversation sessions");
+        assert_eq!(level, "read");
+
+        let (desc, level) = system_table_metadata("inference_costs");
+        assert_eq!(desc, "LLM inference cost tracking");
+        assert_eq!(level, "internal");
+    }
+
+    #[test]
+    fn system_table_metadata_unknown_table() {
+        let (desc, level) = system_table_metadata("unknown_custom_table");
+        assert_eq!(desc, "Agent-managed table");
+        assert_eq!(level, "readwrite");
+    }
+
+    #[test]
+    fn access_level_and_row_count_round_trip() {
+        let db = test_db();
+        register_table(&db, "test", "Test", &[], "system", false, "read", 99).unwrap();
+
+        let entry = get_table(&db, "test").unwrap().unwrap();
+        assert_eq!(entry.access_level, "read");
+        assert_eq!(entry.row_count, 99);
     }
 }

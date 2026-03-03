@@ -29,7 +29,6 @@
 //! - `device` -- Device context and hardware info
 //! - `workspace` -- Workspace state (file tree, git status, project metadata)
 //! - `orchestration` -- Multi-agent task decomposition
-//! - `spawning` -- Subagent lifecycle management
 //! - `governor` -- Rate governor and concurrency limits
 //! - `typestate` -- Compile-time valid state transitions
 //! - `speculative` -- Parallel branch evaluation with best-result selection
@@ -50,11 +49,13 @@ pub mod device;
 pub mod digest;
 pub mod discovery;
 pub mod governor;
+pub mod ingest;
 pub mod injection;
 pub mod interview;
 pub mod knowledge;
 pub mod manifest;
 pub mod mcp;
+pub mod mcp_handler;
 pub mod memory;
 pub mod obsidian;
 pub mod obsidian_tools;
@@ -66,7 +67,6 @@ pub mod retrieval;
 pub mod script_runner;
 pub mod services;
 pub mod skills;
-pub mod spawning;
 pub mod speculative;
 pub mod subagents;
 pub mod tools;

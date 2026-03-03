@@ -601,13 +601,24 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
         .default(false)
         .interact()?;
 
-    let telegram_token = if enable_telegram {
+    let (telegram_token, telegram_chat_ids) = if enable_telegram {
         let token: String = Input::new()
             .with_prompt("  Telegram bot token")
             .interact_text()?;
-        Some(token)
+        println!("  Tip: to find your Telegram chat ID, message @userinfobot on Telegram.");
+        let chat_ids_raw: String = Input::new()
+            .with_prompt("  Allowed Telegram chat IDs (comma-separated, or empty to allow all)")
+            .default(String::new())
+            .allow_empty(true)
+            .interact_text()?;
+        let chat_ids: Vec<String> = chat_ids_raw
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        (Some(token), chat_ids)
     } else {
-        None
+        (None, Vec::new())
     };
 
     let enable_discord = Confirm::new()
@@ -697,7 +708,19 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(ref token) = telegram_token {
         config.push_str("[channels.telegram]\n");
-        config.push_str(&format!("token = \"{token}\"\n\n"));
+        config.push_str(&format!("token = \"{token}\"\n"));
+        if telegram_chat_ids.is_empty() {
+            config.push_str("# allowed_chat_ids = []  # Tip: message @userinfobot on Telegram to find your chat ID\n\n");
+        } else {
+            config.push_str(&format!(
+                "allowed_chat_ids = [{}]\n\n",
+                telegram_chat_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
     }
 
     if let Some(ref token) = discord_token {
@@ -788,7 +811,7 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
                 domains[domain_idx],
             );
             std::fs::write(ws_path.join("OS.toml"), &starter_os)?;
-            ironclad_core::personality::write_defaults(ws_path).ok();
+            ironclad_core::personality::write_defaults(ws_path)?;
 
             println!();
             println!("  {OK} Starter personality written.");

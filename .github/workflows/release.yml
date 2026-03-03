@@ -1,5 +1,16 @@
 name: Release
 
+# Notification secrets (optional — notifications are skipped if not configured):
+#   Email (via Resend SMTP or any SMTP provider):
+#     SMTP_SERVER          e.g. smtp.resend.com
+#     SMTP_PORT            e.g. 465
+#     SMTP_USERNAME        e.g. resend
+#     SMTP_PASSWORD        e.g. re_YOUR_API_KEY
+#     RELEASE_NOTIFY_EMAIL recipient address
+#     RELEASE_FROM_EMAIL   (optional) sender address, must match verified domain
+#   Discord:
+#     DISCORD_RELEASE_WEBHOOK
+
 on:
   push:
     tags: ["v*"]
@@ -29,16 +40,20 @@ jobs:
           tag="${GITHUB_REF#refs/tags/v}"
           ws_ver=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
+          # Strip semver build metadata (+...) for comparison — 0.9.2+hotfix.1 == 0.9.2
+          tag_base="${tag%%+*}"
+
           echo "Tag version:       $tag"
+          echo "Tag base version:  $tag_base"
           echo "Workspace version: $ws_ver"
 
-          if [ "$tag" != "$ws_ver" ]; then
-            echo "::error::Tag v$tag does not match workspace version $ws_ver"
+          if [ "$tag_base" != "$ws_ver" ]; then
+            echo "::error::Tag v$tag (base: $tag_base) does not match workspace version $ws_ver"
             exit 1
           fi
 
-          if ! grep -q "## \[$tag\]" CHANGELOG.md; then
-            echo "::error::No CHANGELOG.md entry for version $tag"
+          if ! grep -q "## \[$tag_base\]" CHANGELOG.md; then
+            echo "::error::No CHANGELOG.md entry for version $tag_base"
             exit 1
           fi
 
@@ -180,6 +195,10 @@ jobs:
           size=$(ls -l "${artifact}.tar.gz" | awk '{print $5}')
           mb=$(echo "scale=1; $size / 1048576" | bc)
           echo "${mb} MB" > "${artifact}.tar.gz.size"
+          # Raw binary size (for site metrics display)
+          raw_size=$(ls -l "target/${TARGET}/release/ironclad" | awk '{print $5}')
+          raw_mb=$(echo "scale=0; $raw_size / 1048576" | bc)
+          echo "~${raw_mb}MB" > "${artifact}.tar.gz.binsize"
           echo "ARTIFACT=${artifact}.tar.gz" >> "$GITHUB_ENV"
 
       - name: Package artifact (windows)
@@ -259,14 +278,19 @@ jobs:
         run: |
           set -euo pipefail
           crate="ironclad-core"
-          if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+          if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}" \
+            | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
             echo "::notice::${crate} v${VERSION} already published, skipping"
           else
-            cargo publish -p "${crate}" --locked
+            cargo publish -p "${crate}" --locked || {
+              err=$?; if [ $err -eq 101 ]; then
+                echo "::notice::${crate} v${VERSION} already on index (race), skipping"
+              else exit $err; fi
+            }
           fi
 
       - name: Wait for crates.io index
-        run: sleep 30
+        run: sleep 45
 
       - name: Publish level 1
         env:
@@ -275,7 +299,8 @@ jobs:
           set -euo pipefail
           publish_one() {
             local crate="$1"
-            if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}"               | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
+            if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}" \
+              | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
               echo "::notice::${crate} v${VERSION} already published, skipping"
             else
               echo "Publishing $crate..."
@@ -286,11 +311,9 @@ jobs:
               }
             fi
           }
-            fi
-          }
 
           pids=()
-          for crate in ironclad-db ironclad-llm ironclad-channels ironclad-browser ironclad-plugin-sdk; do
+          for crate in ironclad-db ironclad-llm ironclad-plugin-sdk ironclad-browser ironclad-wallet; do
             (publish_one "$crate") &
             pids+=("$!")
           done
@@ -301,7 +324,7 @@ jobs:
           [ "$failed" -eq 0 ]
 
       - name: Wait for crates.io index
-        run: sleep 30
+        run: sleep 45
 
       - name: Publish level 2
         env:
@@ -310,7 +333,8 @@ jobs:
           set -euo pipefail
           publish_one() {
             local crate="$1"
-            if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}"               | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
+            if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}" \
+              | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
               echo "::notice::${crate} v${VERSION} already published, skipping"
             else
               echo "Publishing $crate..."
@@ -321,11 +345,9 @@ jobs:
               }
             fi
           }
-            fi
-          }
 
           pids=()
-          for crate in ironclad-agent ironclad-wallet; do
+          for crate in ironclad-channels ironclad-agent; do
             (publish_one "$crate") &
             pids+=("$!")
           done
@@ -336,7 +358,7 @@ jobs:
           [ "$failed" -eq 0 ]
 
       - name: Wait for crates.io index
-        run: sleep 30
+        run: sleep 45
 
       - name: Publish level 3
         env:
@@ -344,14 +366,19 @@ jobs:
         run: |
           set -euo pipefail
           crate="ironclad-schedule"
-          if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+          if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}" \
+            | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
             echo "::notice::${crate} v${VERSION} already published, skipping"
           else
-            cargo publish -p "${crate}" --locked
+            cargo publish -p "${crate}" --locked || {
+              err=$?; if [ $err -eq 101 ]; then
+                echo "::notice::${crate} v${VERSION} already on index (race), skipping"
+              else exit $err; fi
+            }
           fi
 
       - name: Wait for crates.io index
-        run: sleep 30
+        run: sleep 45
 
       - name: Publish level 4
         env:
@@ -359,10 +386,15 @@ jobs:
         run: |
           set -euo pipefail
           crate="ironclad-server"
-          if curl -fsSL "https://crates.io/api/v1/crates/${crate}" | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null; then
+          if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/${crate}" \
+            | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' >/dev/null 2>&1; then
             echo "::notice::${crate} v${VERSION} already published, skipping"
           else
-            cargo publish -p "${crate}" --locked
+            cargo publish -p "${crate}" --locked || {
+              err=$?; if [ $err -eq 101 ]; then
+                echo "::notice::${crate} v${VERSION} already on index (race), skipping"
+              else exit $err; fi
+            }
           fi
 
   # ── Release: GitHub Release with binaries ──────────────
@@ -470,11 +502,19 @@ jobs:
               '. + {($k): {"sha256": $s, "size": $sz}}')
           done
 
+          # Extract reference binary size (linux x86_64) for site metrics
+          binary_size="unknown"
+          ref_binsize="artifacts/binary-linux-x86_64/ironclad-${VERSION}-x86_64-linux.tar.gz.binsize"
+          if [ -f "$ref_binsize" ]; then
+            binary_size=$(cat "$ref_binsize")
+          fi
+
           payload=$(jq -n \
             --arg version "$VERSION" \
             --arg date "$DATE" \
+            --arg binary_size "$binary_size" \
             --argjson binaries "$binaries" \
-            '{version: $version, date: $date, binaries: $binaries}')
+            '{version: $version, date: $date, binary_size: $binary_size, binaries: $binaries}')
 
           echo "$payload" | jq .
 
@@ -488,120 +528,120 @@ jobs:
             --input <(echo "$dispatch")
 
   # ── Publish: Homebrew tap formula ──────────────────────
-  update-homebrew:
-    name: Update Homebrew Tap
-    needs: [preflight, release]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download SHA256SUMS from release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          gh release download "v${VERSION}" \
-            --repo robot-accomplice/ironclad \
-            --pattern "SHA256SUMS.txt" \
-            --dir .
+  # update-homebrew:
+  #   name: Update Homebrew Tap
+  #   needs: [preflight, release]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Download SHA256SUMS from release
+  #       env:
+  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         VERSION: ${{ needs.preflight.outputs.version }}
+  #       run: |
+  #         gh release download "v${VERSION}" \
+  #           --repo robot-accomplice/ironclad \
+  #           --pattern "SHA256SUMS.txt" \
+  #           --dir .
 
-      - name: Extract checksums
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          extract_sha() {
-            grep "$1" SHA256SUMS.txt | awk '{print $1}'
-          }
-          {
-            echo "SHA_X86_64_DARWIN=$(extract_sha "ironclad-${VERSION}-x86_64-darwin.tar.gz")"
-            echo "SHA_AARCH64_DARWIN=$(extract_sha "ironclad-${VERSION}-aarch64-darwin.tar.gz")"
-            echo "SHA_X86_64_LINUX=$(extract_sha "ironclad-${VERSION}-x86_64-linux.tar.gz")"
-            echo "SHA_AARCH64_LINUX=$(extract_sha "ironclad-${VERSION}-aarch64-linux.tar.gz")"
-          } >> "$GITHUB_ENV"
+  #     - name: Extract checksums
+  #       env:
+  #         VERSION: ${{ needs.preflight.outputs.version }}
+  #       run: |
+  #         extract_sha() {
+  #           grep "$1" SHA256SUMS.txt | awk '{print $1}'
+  #         }
+  #         {
+  #           echo "SHA_X86_64_DARWIN=$(extract_sha "ironclad-${VERSION}-x86_64-darwin.tar.gz")"
+  #           echo "SHA_AARCH64_DARWIN=$(extract_sha "ironclad-${VERSION}-aarch64-darwin.tar.gz")"
+  #           echo "SHA_X86_64_LINUX=$(extract_sha "ironclad-${VERSION}-x86_64-linux.tar.gz")"
+  #           echo "SHA_AARCH64_LINUX=$(extract_sha "ironclad-${VERSION}-aarch64-linux.tar.gz")"
+  #         } >> "$GITHUB_ENV"
 
-      - name: Checkout homebrew-ironclad tap
-        uses: actions/checkout@v4
-        with:
-          repository: robot-accomplice/homebrew-ironclad
-          token: ${{ secrets.HOMEBREW_TAP_PAT }}
-          path: homebrew-tap
+  #     - name: Checkout homebrew-ironclad tap
+  #       uses: actions/checkout@v4
+  #       with:
+  #         repository: robot-accomplice/homebrew-ironclad
+  #         token: ${{ secrets.HOMEBREW_TAP_PAT }}
+  #         path: homebrew-tap
 
-      - name: Update formula
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          cat > homebrew-tap/Formula/ironclad.rb << 'STATIC_EOF'
-          # typed: false
-          # frozen_string_literal: true
+  #     - name: Update formula
+  #       env:
+  #         VERSION: ${{ needs.preflight.outputs.version }}
+  #       run: |
+  #         cat > homebrew-tap/Formula/ironclad.rb << 'STATIC_EOF'
+  #         # typed: false
+  #         # frozen_string_literal: true
 
-          class Ironclad < Formula
-            desc "Autonomous agent runtime — single binary, streaming LLM, semantic caching, zero-trust A2A"
-            homepage "https://roboticus.ai"
-            license "Apache-2.0"
-          STATIC_EOF
+  #         class Ironclad < Formula
+  #           desc "Autonomous agent runtime — single binary, streaming LLM, semantic caching, zero-trust A2A"
+  #           homepage "https://roboticus.ai"
+  #           license "Apache-2.0"
+  #         STATIC_EOF
 
-          cat >> homebrew-tap/Formula/ironclad.rb << EOF
-            version "${VERSION}"
+  #         cat >> homebrew-tap/Formula/ironclad.rb << EOF
+  #           version "${VERSION}"
 
-            on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-darwin.tar.gz"
-                sha256 "${SHA_AARCH64_DARWIN}"
-              else
-                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-darwin.tar.gz"
-                sha256 "${SHA_X86_64_DARWIN}"
-              end
-            end
+  #           on_macos do
+  #             if Hardware::CPU.arm?
+  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-darwin.tar.gz"
+  #               sha256 "${SHA_AARCH64_DARWIN}"
+  #             else
+  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-darwin.tar.gz"
+  #               sha256 "${SHA_X86_64_DARWIN}"
+  #             end
+  #           end
 
-            on_linux do
-              if Hardware::CPU.arm?
-                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-linux.tar.gz"
-                sha256 "${SHA_AARCH64_LINUX}"
-              else
-                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-linux.tar.gz"
-                sha256 "${SHA_X86_64_LINUX}"
-              end
-            end
+  #           on_linux do
+  #             if Hardware::CPU.arm?
+  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-linux.tar.gz"
+  #               sha256 "${SHA_AARCH64_LINUX}"
+  #             else
+  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-linux.tar.gz"
+  #               sha256 "${SHA_X86_64_LINUX}"
+  #             end
+  #           end
 
-            def install
-              bin.install "ironclad"
-            end
+  #           def install
+  #             bin.install "ironclad"
+  #           end
 
-            test do
-              assert_match version.to_s, shell_output("#{bin}/ironclad version")
-            end
-          end
-          EOF
+  #           test do
+  #             assert_match version.to_s, shell_output("#{bin}/ironclad version")
+  #           end
+  #         end
+  #         EOF
 
-      - name: Commit and push formula
-        working-directory: homebrew-tap
-        env:
-          VERSION: ${{ needs.preflight.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/ironclad.rb
-          git diff --cached --quiet && echo "Formula unchanged" && exit 0
-          git commit -m "ironclad ${VERSION}"
-          git push
+  #     - name: Commit and push formula
+  #       working-directory: homebrew-tap
+  #       env:
+  #         VERSION: ${{ needs.preflight.outputs.version }}
+  #       run: |
+  #         git config user.name "github-actions[bot]"
+  #         git config user.email "github-actions[bot]@users.noreply.github.com"
+  #         git add Formula/ironclad.rb
+  #         git diff --cached --quiet && echo "Formula unchanged" && exit 0
+  #         git commit -m "ironclad ${VERSION}"
+  #         git push
 
   # ── Publish: Winget manifest ───────────────────────────
-  update-winget:
-    name: Update Winget Manifest
-    needs: [preflight, release]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Submit to winget-pkgs
-        uses: vedantmgoyal9/winget-releaser@v2
-        with:
-          identifier: RobotAccomplice.Ironclad
-          version: ${{ needs.preflight.outputs.version }}
-          installers-regex: '\.zip$'
-          token: ${{ secrets.WINGET_TOKEN }}
-          max-versions-to-keep: 5
+  # update-winget:
+  #   name: Update Winget Manifest
+  #   needs: [preflight, release]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Submit to winget-pkgs
+  #       uses: vedantmgoyal9/winget-releaser@v2
+  #       with:
+  #         identifier: RobotAccomplice.Ironclad
+  #         version: ${{ needs.preflight.outputs.version }}
+  #         installers-regex: '\.zip$'
+  #         token: ${{ secrets.WINGET_TOKEN }}
+  #         max-versions-to-keep: 5
 
   # ── Notify: release completion notification ───────────
   notify:
     name: Release Notification
-    needs: [preflight, build, publish, release, sync-site, update-homebrew, update-winget]
+    needs: [preflight, build, publish, release, sync-site] #, update-homebrew, update-winget]
     if: always()
     runs-on: ubuntu-latest
     env:
@@ -613,9 +653,7 @@ jobs:
         run: |
           if [ "${{ needs.publish.result }}" = "success" ] && \
              [ "${{ needs.release.result }}" = "success" ] && \
-             [ "${{ needs.sync-site.result }}" = "success" ] && \
-             [ "${{ needs.update-homebrew.result }}" = "success" ] && \
-             [ "${{ needs.update-winget.result }}" = "success" ]; then
+             [ "${{ needs.sync-site.result }}" = "success" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "emoji=✅" >> "$GITHUB_OUTPUT"
             echo "summary=All release stages completed successfully." >> "$GITHUB_OUTPUT"
@@ -624,6 +662,23 @@ jobs:
             echo "emoji=❌" >> "$GITHUB_OUTPUT"
             echo "summary=One or more release stages failed. Check the workflow run for details." >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify crates.io availability
+        id: verify-crates
+        run: |
+          VERSION="${{ needs.preflight.outputs.version }}"
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL -H "User-Agent: ironclad-release/1.0" "https://crates.io/api/v1/crates/ironclad-server" \
+              | jq -e --arg v "$VERSION" '.versions[] | select(.num == $v)' > /dev/null 2>&1; then
+              echo "crates_live=true" >> "$GITHUB_OUTPUT"
+              echo "Verified: ironclad-server v${VERSION} is live on crates.io"
+              exit 0
+            fi
+            echo "Attempt $attempt: v${VERSION} not yet visible, waiting 30s..."
+            sleep 30
+          done
+          echo "crates_live=false" >> "$GITHUB_OUTPUT"
+          echo "WARNING: v${VERSION} not confirmed on crates.io after 5 attempts"
 
       - name: Send email notification
         if: env.SMTP_SERVER != ''
@@ -637,25 +692,28 @@ jobs:
           password: ${{ secrets.SMTP_PASSWORD }}
           subject: "${{ steps.status.outputs.emoji }} Ironclad v${{ env.VERSION }} release ${{ steps.status.outputs.outcome }}"
           to: ${{ secrets.RELEASE_NOTIFY_EMAIL }}
-          from: "Ironclad CI <ci@roboticus.ai>"
-          content_type: text/html
-          body: |
-            <h2>${{ steps.status.outputs.emoji }} Ironclad v${{ env.VERSION }} — Release ${{ steps.status.outputs.outcome }}</h2>
-            <p>${{ steps.status.outputs.summary }}</p>
-            <table>
-              <tr><td><strong>Version</strong></td><td>v${{ env.VERSION }}</td></tr>
-              <tr><td><strong>Date</strong></td><td>${{ env.DATE }}</td></tr>
-              <tr><td><strong>Crates.io</strong></td><td>${{ needs.publish.result }}</td></tr>
-              <tr><td><strong>GitHub Release</strong></td><td>${{ needs.release.result }}</td></tr>
-              <tr><td><strong>Site Sync</strong></td><td>${{ needs.sync-site.result }}</td></tr>
-              <tr><td><strong>Homebrew Tap</strong></td><td>${{ needs.update-homebrew.result }}</td></tr>
-              <tr><td><strong>Winget Manifest</strong></td><td>${{ needs.update-winget.result }}</td></tr>
-              <tr><td><strong>Build Matrix</strong></td><td>${{ needs.build.result }}</td></tr>
-            </table>
-            <p>
-              <a href="https://github.com/robot-accomplice/ironclad/releases/tag/v${{ env.VERSION }}">View Release</a> |
-              <a href="https://github.com/robot-accomplice/ironclad/actions/runs/${{ github.run_id }}">View Workflow Run</a>
-            </p>
+          from: ${{ secrets.RELEASE_FROM_EMAIL || 'Ironclad CI <ci@roboticus.ai>' }}
+          html_body: |
+            <!DOCTYPE html>
+            <html>
+            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color: #24292f; max-width: 600px; margin: 0 auto; padding: 20px;">
+              <h2 style="margin: 0 0 8px 0; font-size: 20px;">${{ steps.status.outputs.emoji }} Ironclad v${{ env.VERSION }} — Release ${{ steps.status.outputs.outcome }}</h2>
+              <p style="color: #57606a; margin: 0 0 16px 0;">${{ steps.status.outputs.summary }}</p>
+              <table style="border-collapse: collapse; width: 100%; font-size: 14px;">
+                <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Version</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">v${{ env.VERSION }}</td></tr>
+                <tr style="background: #f6f8fa;"><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Date</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ env.DATE }}</td></tr>
+                <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Crates.io Publish</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.publish.result }}</td></tr>
+                <tr style="background: #f6f8fa;"><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Crates.io Live</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ steps.verify-crates.outputs.crates_live == 'true' && '✅ Verified' || '⚠️ Not confirmed' }}</td></tr>
+                <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>GitHub Release</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.release.result }}</td></tr>
+                <tr style="background: #f6f8fa;"><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Site Sync</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.sync-site.result }}</td></tr>
+                <tr><td style="padding: 8px 12px; border: 1px solid #d0d7de;"><strong>Build Matrix</strong></td><td style="padding: 8px 12px; border: 1px solid #d0d7de;">${{ needs.build.result }}</td></tr>
+              </table>
+              <p style="margin: 16px 0 0 0; font-size: 14px;">
+                <a href="https://github.com/robot-accomplice/ironclad/releases/tag/v${{ env.VERSION }}" style="color: #0969da; text-decoration: none;">View Release</a> &middot;
+                <a href="https://github.com/robot-accomplice/ironclad/actions/runs/${{ github.run_id }}" style="color: #0969da; text-decoration: none;">View Workflow Run</a>
+              </p>
+            </body>
+            </html>
 
       - name: Send Discord notification
         if: env.DISCORD_WEBHOOK != ''
@@ -675,8 +733,6 @@ jobs:
             --arg publish "${{ needs.publish.result }}" \
             --arg gh_release "${{ needs.release.result }}" \
             --arg site "${{ needs.sync-site.result }}" \
-            --arg homebrew "${{ needs.update-homebrew.result }}" \
-            --arg winget "${{ needs.update-winget.result }}" \
             '{
               embeds: [{
                 title: $title,
@@ -686,9 +742,7 @@ jobs:
                 fields: [
                   { name: "Crates.io", value: $publish, inline: true },
                   { name: "GitHub Release", value: $gh_release, inline: true },
-                  { name: "Site Sync", value: $site, inline: true },
-                  { name: "Homebrew", value: $homebrew, inline: true },
-                  { name: "Winget", value: $winget, inline: true }
+                  { name: "Site Sync", value: $site, inline: true }
                 ],
                 footer: { text: "Workflow run" },
                 timestamp: (now | todate)
@@ -709,8 +763,6 @@ jobs:
           | Crates.io Publish | ${{ needs.publish.result }} |
           | GitHub Release | ${{ needs.release.result }} |
           | Site Sync | ${{ needs.sync-site.result }} |
-          | Homebrew Tap | ${{ needs.update-homebrew.result }} |
-          | Winget Manifest | ${{ needs.update-winget.result }} |
           | Build Matrix | ${{ needs.build.result }} |
 
           **Links:**

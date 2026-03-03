@@ -53,14 +53,37 @@ impl ScriptRunner {
 
         let timeout_dur = std::time::Duration::from_secs(self.config.script_timeout_seconds);
         let start = std::time::Instant::now();
+        let max = self.config.script_max_output_bytes;
+        let max_capture = (max as u64).saturating_add(1);
 
-        let child = cmd.spawn().map_err(|e| IroncladError::Tool {
+        let mut child = cmd.spawn().map_err(|e| IroncladError::Tool {
             tool: "script_runner".into(),
             message: format!("failed to spawn {interpreter}: {e}"),
         })?;
 
-        let output = match tokio::time::timeout(timeout_dur, child.wait_with_output()).await {
-            Ok(Ok(output)) => output,
+        let stdout = child.stdout.take().ok_or_else(|| IroncladError::Tool {
+            tool: "script_runner".into(),
+            message: "failed to capture script stdout".into(),
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| IroncladError::Tool {
+            tool: "script_runner".into(),
+            message: "failed to capture script stderr".into(),
+        })?;
+        let stdout_task = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = Vec::new();
+            let _ = stdout.take(max_capture).read_to_end(&mut buf).await;
+            buf
+        });
+        let stderr_task = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = Vec::new();
+            let _ = stderr.take(max_capture).read_to_end(&mut buf).await;
+            buf
+        });
+
+        let status = match tokio::time::timeout(timeout_dur, child.wait()).await {
+            Ok(Ok(status)) => status,
             Ok(Err(e)) => {
                 return Err(IroncladError::Tool {
                     tool: "script_runner".into(),
@@ -68,6 +91,8 @@ impl ScriptRunner {
                 });
             }
             Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
                 return Err(IroncladError::Tool {
                     tool: "script_runner".into(),
                     message: format!(
@@ -79,10 +104,10 @@ impl ScriptRunner {
         };
 
         let duration_ms = start.elapsed().as_millis() as u64;
-        let max = self.config.script_max_output_bytes;
-
-        let stdout_raw = String::from_utf8_lossy(&output.stdout);
-        let stderr_raw = String::from_utf8_lossy(&output.stderr);
+        let stdout_bytes = stdout_task.await.unwrap_or_default();
+        let stderr_bytes = stderr_task.await.unwrap_or_default();
+        let stdout_raw = String::from_utf8_lossy(&stdout_bytes);
+        let stderr_raw = String::from_utf8_lossy(&stderr_bytes);
 
         let stdout = truncate_str(&stdout_raw, max);
         let stderr = truncate_str(&stderr_raw, max);
@@ -90,7 +115,7 @@ impl ScriptRunner {
         Ok(ScriptResult {
             stdout,
             stderr,
-            exit_code: output.status.code().unwrap_or(-1),
+            exit_code: status.code().unwrap_or(-1),
             duration_ms,
         })
     }
@@ -191,9 +216,12 @@ fn default_python_interpreter() -> &'static str {
 /// Determines the interpreter for a script by reading its shebang line
 /// or inferring from the file extension, then checks against the whitelist.
 pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<String> {
-    if let Ok(content) = std::fs::read_to_string(script_path)
-        && let Some(first_line) = content.lines().next()
-        && first_line.starts_with("#!")
+    if let Ok(first_line) = std::fs::File::open(script_path).and_then(|f| {
+        use std::io::{BufRead, Read};
+        let mut line = String::new();
+        std::io::BufReader::new(f.take(512)).read_line(&mut line)?;
+        Ok(line)
+    }) && first_line.starts_with("#!")
     {
         let shebang = first_line[2..].trim();
         let interpreter = shebang

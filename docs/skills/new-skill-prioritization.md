@@ -17,7 +17,9 @@ Scoring dimensions:
 - **Frequency**: how often users repeat the workflow
 - **Risk**: severity when users make mistakes manually
 
-## Wave 1 (implemented/planned now)
+## Wave 1 (Shipped Baseline)
+
+Wave 1 is now present in code/registry and should be treated as adoption + quality-hardening scope (not net-new delivery scope).
 
 ### Built-in skills (always available)
 
@@ -45,7 +47,7 @@ Scoring dimensions:
      - Distinguishes auth errors vs transport/model errors
      - Recommends least-risk credential fix
 
-### Downloadable/optional skills
+### Downloadable/optional skills (shipped)
 
 1. `skill-creation`
    - Problem: users struggle to author well-triggered custom skills
@@ -83,13 +85,28 @@ Scoring dimensions:
      - Explains impact and minimal fix path
      - Notes highest-value missing tests
 
-## Backlog Candidates (next waves)
+## Next-Wave Candidates (Prioritized)
+
+These are ordered to match the updated 2026 roadmap and current platform sequencing.
 
 - `prompt-quality-auditor` (prompt robustness and ambiguity checks)
+- `workflow-planner` (multi-step runbook generation)
+- `config-drift-checker` (expected vs runtime behavior checks)
+- `session-hygiene-manager` (session lifecycle cleanup/export hygiene)
+- `release-readiness-assistant` (operator preflight and rollback discipline)
+- `fix-validation` (regression-proof bugfix verification)
+- `security-misconfig-hunter` (fail-open and insecure-default detection)
+- `test-gap-analyzer` (coverage + missing-case recommendations)
 - `plugin-troubleshooter` (plugin loading/permissions diagnosis)
 - `policy-guardrail-designer` (approval/policy strategy authoring)
 - `mcp-integration-helper` (external tool/service MCP integration)
 - `incident-retrospective-writer` (post-incident synthesis)
+
+## Dependency/Sequencing Notes
+
+- Prioritize skills that can ship against stable `v0.8.x` reliability surfaces first.
+- For skills depending on broader `v0.9.x` platform work (for example deeper orchestration or advanced telemetry), run discovery/spec-first and defer built-in promotion.
+- Prefer CLI-first delivery where dashboard/runtime surfaces are still in flux.
 
 ## Built-in vs Optional Policy
 
@@ -99,6 +116,7 @@ Promote a skill to built-in when all are true:
 2. Reach is broad (majority users)
 3. Incorrect manual handling causes high-impact failures
 4. Behavior is stable enough to avoid rapid churn
+5. Runtime dependencies are stable (not planning-only roadmap items)
 
 Keep optional when:
 

@@ -1,12 +1,22 @@
 use std::str::FromStr;
 
-use chrono::{DateTime, Duration, FixedOffset, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDateTime, Offset, Utc};
+use chrono_tz::Tz;
 
 /// Pure-function scheduler for cron, interval, and at-style schedule evaluation.
 /// No DB dependency — all state is passed in as arguments.
 pub struct DurableScheduler;
 
 impl DurableScheduler {
+    /// Returns true if a cron expression is syntactically valid.
+    /// Accepts 5-field expressions with optional `TZ=` / `CRON_TZ=` prefixes.
+    pub fn is_valid_cron_expression(cron_expr: &str) -> bool {
+        let now_utc = Utc::now();
+        let (_tz, expr) = split_schedule_timezone_at(cron_expr, now_utc);
+        let full_expr = format!("0 {expr} *");
+        cron::Schedule::from_str(&full_expr).is_ok()
+    }
+
     /// Evaluates whether a cron expression matches the current time.
     /// Uses standard 5-field cron syntax with full support for ranges, lists, and steps.
     pub fn evaluate_cron(cron_expr: &str, last_run: Option<&str>, now: &str) -> bool {
@@ -15,11 +25,15 @@ impl DurableScheduler {
             None => return false,
         };
 
-        let (tz, expr) = split_schedule_timezone(cron_expr);
+        let now_utc = now_dt.with_timezone(&Utc);
+        let (tz, expr) = split_schedule_timezone_at(cron_expr, now_utc);
         let full_expr = format!("0 {expr} *");
         let schedule = match cron::Schedule::from_str(&full_expr) {
             Ok(s) => s,
-            Err(_) => return false,
+            Err(e) => {
+                tracing::warn!(cron_expr, error = %e, "invalid cron expression, schedule will never fire");
+                return false;
+            }
         };
 
         let now_in_tz = now_dt.with_timezone(&tz);
@@ -99,10 +113,10 @@ impl DurableScheduler {
             }
             "cron" => {
                 let expr = schedule_expr?;
-                let (tz, expr) = split_schedule_timezone(expr);
+                let now_utc = now_dt.and_utc();
+                let (tz, expr) = split_schedule_timezone_at(expr, now_utc);
                 let full_expr = format!("0 {expr} *");
                 let schedule = cron::Schedule::from_str(&full_expr).ok()?;
-                let now_utc = now_dt.and_utc();
                 let now_in_tz = now_utc.with_timezone(&tz);
                 schedule
                     .after(&now_in_tz)
@@ -125,20 +139,34 @@ fn parse_iso(s: &str) -> Option<NaiveDateTime> {
         .or_else(|| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok())
 }
 
+#[allow(dead_code)] // convenience wrapper — will be used when cron scheduler is wired
 fn split_schedule_timezone(schedule: &str) -> (FixedOffset, &str) {
+    split_schedule_timezone_at(schedule, Utc::now())
+}
+
+fn split_schedule_timezone_at(schedule: &str, at: DateTime<Utc>) -> (FixedOffset, &str) {
     let schedule = schedule.trim();
     for prefix in ["CRON_TZ=", "TZ="] {
         if let Some(rest) = schedule.strip_prefix(prefix)
             && let Some((tz_raw, expr)) = rest.split_once(' ')
         {
-            let tz = parse_timezone(tz_raw).unwrap_or_else(zero_offset);
+            let tz = parse_timezone_at(tz_raw, at).unwrap_or_else(zero_offset);
             return (tz, expr.trim());
         }
     }
     (zero_offset(), schedule)
 }
 
+#[allow(dead_code)] // convenience wrapper — will be used when cron scheduler is wired
 fn parse_timezone(raw: &str) -> Option<FixedOffset> {
+    parse_timezone_at(raw, Utc::now())
+}
+
+/// Resolves a timezone string to a `FixedOffset` at a specific instant.
+/// Supports UTC/Z literals, UTC±HH:MM offsets, and IANA timezone names
+/// (e.g. "America/New_York"). IANA names are resolved at the given instant
+/// to account for DST transitions.
+fn parse_timezone_at(raw: &str, at: DateTime<Utc>) -> Option<FixedOffset> {
     let tz = raw.trim();
     if tz.eq_ignore_ascii_case("UTC") || tz.eq_ignore_ascii_case("Z") {
         return Some(zero_offset());
@@ -148,7 +176,18 @@ fn parse_timezone(raw: &str) -> Option<FixedOffset> {
         .strip_prefix("UTC")
         .or_else(|| tz.strip_prefix("utc"))
         .unwrap_or(tz);
-    parse_offset(cleaned)
+
+    // Try numeric offset first (e.g. +05:30, -08:00)
+    if let Some(offset) = parse_offset(cleaned) {
+        return Some(offset);
+    }
+
+    // Try IANA timezone name (e.g. America/New_York, Europe/London)
+    if let Ok(iana) = tz.parse::<Tz>() {
+        return Some(at.with_timezone(&iana).offset().fix());
+    }
+
+    None
 }
 
 fn parse_offset(raw: &str) -> Option<FixedOffset> {
@@ -607,10 +646,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_timezone_iana_name_resolves() {
+        assert!(parse_timezone("America/New_York").is_some());
+        assert!(parse_timezone("Europe/London").is_some());
+        assert!(parse_timezone("Asia/Tokyo").is_some());
+        assert_eq!(
+            parse_timezone("Asia/Tokyo").unwrap(),
+            FixedOffset::east_opt(9 * 3600).unwrap()
+        );
+    }
+
+    #[test]
     fn parse_timezone_invalid_returns_none() {
-        assert!(parse_timezone("America/New_York").is_none());
         assert!(parse_timezone("PST").is_none());
         assert!(parse_timezone("foobar").is_none());
+        assert!(parse_timezone("Not/A_Zone").is_none());
     }
 
     // ── split_schedule_timezone coverage ────────────────────────────────
@@ -637,9 +687,16 @@ mod tests {
     }
 
     #[test]
+    fn split_schedule_timezone_iana_name_resolves() {
+        let (tz, expr) = split_schedule_timezone("CRON_TZ=Asia/Tokyo 0 12 * * *");
+        assert_eq!(tz, FixedOffset::east_opt(9 * 3600).unwrap());
+        assert_eq!(expr, "0 12 * * *");
+    }
+
+    #[test]
     fn split_schedule_timezone_invalid_tz_falls_back_to_zero() {
-        let (tz, expr) = split_schedule_timezone("CRON_TZ=America/Chicago 0 12 * * *");
-        assert_eq!(tz, zero_offset()); // IANA names not supported, fallback to zero
+        let (tz, expr) = split_schedule_timezone("CRON_TZ=NotAZone 0 12 * * *");
+        assert_eq!(tz, zero_offset());
         assert_eq!(expr, "0 12 * * *");
     }
 
@@ -658,6 +715,17 @@ mod tests {
             "0 12 * * *",
             None,
             "garbage"
+        ));
+    }
+
+    #[test]
+    fn is_valid_cron_expression_detects_invalid_inputs() {
+        assert!(DurableScheduler::is_valid_cron_expression("* * * * *"));
+        assert!(DurableScheduler::is_valid_cron_expression(
+            "TZ=Europe/Zurich 0 * * * *"
+        ));
+        assert!(!DurableScheduler::is_valid_cron_expression(
+            "NOT_VALID_CRON"
         ));
     }
 
@@ -756,5 +824,115 @@ mod tests {
             "2025-01-01T10:00:00+00:00",
         );
         assert!(result.is_some());
+    }
+
+    // ── IANA timezone integration tests ─────────────────────────────────
+
+    #[test]
+    fn cron_with_iana_timezone_fires_at_local_time() {
+        // Asia/Tokyo is UTC+9. "0 9 * * *" in Tokyo = 00:00 UTC.
+        assert!(DurableScheduler::evaluate_cron(
+            "CRON_TZ=Asia/Tokyo 0 9 * * *",
+            None,
+            "2025-06-15T00:00:00+00:00"
+        ));
+        // At 09:00 UTC, it's 18:00 in Tokyo — should NOT fire.
+        assert!(!DurableScheduler::evaluate_cron(
+            "CRON_TZ=Asia/Tokyo 0 9 * * *",
+            None,
+            "2025-06-15T09:00:00+00:00"
+        ));
+    }
+
+    #[test]
+    fn next_run_with_iana_timezone() {
+        let result = DurableScheduler::calculate_next_run(
+            "cron",
+            Some("CRON_TZ=Asia/Tokyo 0 9 * * *"),
+            None,
+            "2025-06-15T01:00:00+00:00",
+        );
+        assert!(result.is_some());
+        let next = result.unwrap();
+        // Next 09:00 Tokyo after 2025-06-15T01:00Z (= 10:00 Tokyo)
+        // should be 2025-06-16T00:00Z (= 09:00 Tokyo next day)
+        assert!(next.contains("2025-06-16T00:00:00"));
+    }
+
+    // ── DST transition conformance ──────────────────────────────────────
+
+    #[test]
+    fn parse_timezone_at_dst_winter_vs_summer() {
+        use chrono::TimeZone;
+        let winter = Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap();
+        let summer = Utc.with_ymd_and_hms(2025, 7, 15, 12, 0, 0).unwrap();
+
+        let winter_offset = parse_timezone_at("America/New_York", winter).unwrap();
+        let summer_offset = parse_timezone_at("America/New_York", summer).unwrap();
+
+        // EST = UTC-5, EDT = UTC-4
+        assert_eq!(winter_offset, FixedOffset::west_opt(5 * 3600).unwrap());
+        assert_eq!(summer_offset, FixedOffset::west_opt(4 * 3600).unwrap());
+    }
+
+    #[test]
+    fn cron_spring_forward_gap_does_not_double_fire() {
+        // 2025-03-09: US spring forward. 2:00 AM becomes 3:00 AM.
+        // "30 2 * * *" in America/New_York — 2:30 AM doesn't exist on this day.
+        // At 07:30 UTC (would be 2:30 EST, but clock jumps to 3:30 EDT),
+        // the cron should NOT fire since 2:30 AM doesn't exist.
+        assert!(!DurableScheduler::evaluate_cron(
+            "CRON_TZ=America/New_York 30 2 * * *",
+            None,
+            "2025-03-09T07:30:00+00:00"
+        ));
+    }
+
+    #[test]
+    fn cron_fall_back_does_not_miss() {
+        // 2025-11-02: US fall back. 2:00 AM EDT becomes 1:00 AM EST.
+        // "30 1 * * *" should fire at 1:30 AM local. First occurrence
+        // is 1:30 AM EDT = 05:30 UTC.
+        assert!(DurableScheduler::evaluate_cron(
+            "CRON_TZ=America/New_York 30 1 * * *",
+            None,
+            "2025-11-02T05:30:00+00:00"
+        ));
+    }
+
+    // ── Sub-minute cron validation ──────────────────────────────────────
+
+    #[test]
+    fn cron_every_minute_fires_correctly() {
+        // "* * * * *" should fire every minute
+        assert!(DurableScheduler::evaluate_cron(
+            "* * * * *",
+            None,
+            "2025-06-15T14:37:15+00:00" // 15s after :37:00 slot
+        ));
+    }
+
+    #[test]
+    fn cron_step_expression_every_5_minutes() {
+        assert!(DurableScheduler::evaluate_cron(
+            "*/5 * * * *",
+            None,
+            "2025-06-15T14:35:00+00:00"
+        ));
+        assert!(!DurableScheduler::evaluate_cron(
+            "*/5 * * * *",
+            None,
+            "2025-06-15T14:37:00+00:00"
+        ));
+    }
+
+    #[test]
+    fn cron_dedup_prevents_double_fire_within_60s_window() {
+        // If last_run was 20s ago in the same slot, should NOT re-fire
+        assert!(!DurableScheduler::evaluate_cron(
+            "0 12 * * *",
+            Some("2025-01-01T12:00:10+00:00"),
+            "2025-01-01T12:00:30+00:00"
+        ));
     }
 }

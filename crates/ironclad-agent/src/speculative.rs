@@ -12,20 +12,20 @@ pub struct ToolPrediction {
 }
 
 /// Cache key for speculative results.
+/// Uses the full JSON string for exact matching — no hash collisions and
+/// no dependency on DefaultHasher stability across Rust versions.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SpeculationKey {
     pub tool_name: String,
-    pub params_hash: u64,
+    pub params_json: String,
 }
 
 impl SpeculationKey {
+    #[must_use]
     pub fn new(tool_name: &str, params: &serde_json::Value) -> Self {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        params.to_string().hash(&mut hasher);
         Self {
             tool_name: tool_name.to_string(),
-            params_hash: hasher.finish(),
+            params_json: params.to_string(),
         }
     }
 }
@@ -48,6 +48,7 @@ pub struct SpeculationCache {
 }
 
 impl SpeculationCache {
+    #[must_use]
     pub fn new(max_concurrent: usize) -> Self {
         Self {
             cache: Arc::new(Mutex::new(HashMap::new())),
@@ -96,17 +97,17 @@ impl SpeculationCache {
 
     /// Whether we can spawn another speculative task.
     pub fn can_speculate(&self) -> bool {
-        self.active_count.load(std::sync::atomic::Ordering::Relaxed) < self.max_concurrent
+        self.active_count.load(std::sync::atomic::Ordering::Acquire) < self.max_concurrent
     }
 
     /// Try to reserve a speculation slot. Returns true if the slot was acquired.
     pub fn start_speculation(&self) -> bool {
         let prev = self
             .active_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         if prev >= self.max_concurrent {
             self.active_count
-                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             false
         } else {
             true
@@ -116,11 +117,11 @@ impl SpeculationCache {
     /// Release a speculation slot.
     pub fn end_speculation(&self) {
         self.active_count
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 
     pub fn active_count(&self) -> usize {
-        self.active_count.load(std::sync::atomic::Ordering::Relaxed)
+        self.active_count.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -130,6 +131,7 @@ pub struct ToolPredictor {
 }
 
 impl ToolPredictor {
+    #[must_use]
     pub fn new(min_confidence: f64) -> Self {
         Self { min_confidence }
     }

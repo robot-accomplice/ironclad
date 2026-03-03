@@ -49,7 +49,7 @@ test-regression:
     cargo test -p ironclad-db retrieve_working_is_session_isolated
     cargo test -p ironclad-tests memory_retrieval_excludes_turn_summary_echoes
     cargo test -p ironclad-tests scoped_sessions_remain_isolated_between_peer_and_group
-    cargo test -p ironclad-tests router_falls_through_multiple_blocked_candidates
+    cargo test -p ironclad-server fallback_candidates_preserve_primary_and_dedup_primary_from_fallbacks
     cargo test -p ironclad-tests cron_schedule_rejects_invalid_timestamps
     cargo test -p ironclad-tests cron_schedule_rejects_invalid_expressions
     cargo test -p ironclad-server webhook_telegram_non_message_update_advances_offset
@@ -110,6 +110,19 @@ test-filter filter:
 # Run tests with output shown
 test-verbose:
     cargo test --workspace -- --nocapture
+
+# Run parallel harness tests — full local preflight (all tests incl. CLI, WS, agent pathways)
+test-harness:
+    cargo test -p ironclad-harness -- --test-threads=8
+
+# Run lightweight harness tests — CI-safe (unit + API tests only, no CLI/WS/agent)
+test-harness-quick:
+    cargo test -p ironclad-harness --lib -- --test-threads=4
+    cargo test -p ironclad-harness --test api_smoke --test api_sessions --test api_memory --test api_domain --test dashboard -- --test-threads=4
+
+# Run harness in full-process mode (real binary, highest fidelity, slowest)
+test-harness-process:
+    cargo test -p ironclad-harness --features full-process --test process_mode -- --test-threads=2
 
 # ── Quality ────────────────────────────────────────────
 
@@ -455,7 +468,53 @@ ci-test:
 
     # Stage 3: Test (per-crate, parallelized)
     run_stage "Test (per-crate parallel)" parallel_crate_tests
-    # Stage 4: Coverage gate (80% floor + no regression)
+
+    # Stage 3h: Harness quick (API surface smoke, parallelized)
+    run_stage_parallel "Harness Quick" \
+        "Harness Quick (unit)" "cargo test -p ironclad-harness --lib --locked -- --test-threads=4" \
+        "Harness Quick (API)" "cargo test -p ironclad-harness --test api_smoke --test api_sessions --test api_memory --test api_domain --test dashboard --locked -- --test-threads=4"
+
+    # Stage 4: Wiring regression tripwires
+    wiring_tripwires() {
+        local agent_dir="crates/ironclad-server/src/api/routes/agent"
+        local handlers="$agent_dir/handlers.rs"
+        local channel="$agent_dir/channel_message.rs"
+        local core="$agent_dir/core.rs"
+
+        echo "  Checking for hardcoded empty tool-result ingestion..."
+        local empty_calls
+        empty_calls=$(rg -n 'post_turn_ingest\(.*&\[\]' "$agent_dir" || true)
+        if [ -n "$empty_calls" ]; then
+            echo "  FAIL: Found hardcoded empty tool_results passed to post_turn_ingest:"
+            echo "$empty_calls"
+            return 1
+        fi
+
+        echo "  Checking unified inference pipeline wiring (API + channel)..."
+        rg -q 'execute_inference_pipeline\(' "$handlers" || {
+            echo "  FAIL: API handler bypasses execute_inference_pipeline"
+            return 1
+        }
+        rg -q 'execute_inference_pipeline\(' "$channel" || {
+            echo "  FAIL: Channel handler bypasses execute_inference_pipeline"
+            return 1
+        }
+
+        echo "  Checking gate note + multi-tool parser wiring..."
+        rg -q 'build_gate_system_note\(' "$handlers" || {
+            echo "  FAIL: API path missing build_gate_system_note"
+            return 1
+        }
+        rg -q 'parse_tool_calls\(' "$core" || {
+            echo "  FAIL: ReAct loop missing parse_tool_calls"
+            return 1
+        }
+
+        return 0
+    }
+    run_stage "Wiring Tripwires" wiring_tripwires
+
+    # Stage 5: Coverage gate (80% floor + no regression)
     COVERAGE_PCT=""
 
     coverage_gate() {
@@ -498,13 +557,13 @@ ci-test:
         STAGES+=("⊘ Coverage (skipped)")
     fi
 
-    # Stage 5-7: Build + docs (parallelized)
-    run_stage_parallel "Build + Docs" \
-        "Build (debug)" "cargo build --bin ironclad" \
-        "Build (release)" "cargo build --release --bin ironclad" \
-        "Docs" "env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps"
+    # Stage 6-8: Build + docs (parallelized)
+    run_stage_parallel "Check + Docs" \
+        "Build (debug)" "cargo check --bin ironclad --locked" \
+        "Build (release)" "cargo check --release --bin ironclad --locked" \
+        "Docs" "env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items"
 
-    # Stage 8: Security Audit
+    # Stage 9: Security Audit
     if command -v cargo-audit &>/dev/null; then
         run_stage "Security Audit" cargo audit
     else
@@ -594,14 +653,19 @@ release-preflight:
     echo "  Run: just release-tag"
 
 # Create and push a release tag (triggers the release workflow)
-release-tag:
+# Pass confirm="y" to skip the interactive prompt (e.g. `just release-tag confirm=y`)
+release-tag confirm="":
     #!/usr/bin/env bash
     set -euo pipefail
     ver=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     just release-preflight
     echo ""
-    read -p "Tag and push v$ver? [y/N] " -n 1 -r
-    echo
+    if [ "{{confirm}}" = "y" ] || [ "{{confirm}}" = "Y" ]; then
+        REPLY="y"
+    else
+        read -p "Tag and push v$ver? [y/N] " -n 1 -r
+        echo
+    fi
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Aborted."
         exit 0
@@ -626,7 +690,142 @@ install-hooks:
 
 # Install recommended cargo tools + gosh scripting engine
 install-tools: install-gosh install-hooks
-    cargo install cargo-watch cargo-llvm-cov cargo-outdated cargo-audit
+    cargo install cargo-watch cargo-llvm-cov cargo-outdated cargo-audit cargo-machete
+
+# ── Build Acceleration (macOS) ─────────────────────────
+
+# Show build acceleration status and recommendations
+build-doctor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║         Ironclad Build Acceleration Doctor           ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+    echo ""
+
+    # 1. Toolchain
+    echo "── Toolchain ──"
+    rustc --version
+    echo ""
+
+    # 2. Linker
+    echo "── Linker ──"
+    if command -v lld &>/dev/null; then
+        echo "  ✔ lld available at $(which lld)"
+    elif [ -f /opt/homebrew/opt/llvm/bin/lld ]; then
+        echo "  ✔ lld available at /opt/homebrew/opt/llvm/bin/lld"
+    else
+        echo "  ✘ lld not found (install: brew install llvm)"
+    fi
+    echo ""
+
+    # 3. .cargo/config.toml
+    echo "── .cargo/config.toml ──"
+    if [ -f .cargo/config.toml ]; then
+        echo "  ✔ exists"
+    else
+        echo "  ✘ missing — no build optimizations configured"
+    fi
+    echo ""
+
+    # 4. Cargo.toml profiles
+    echo "── Cargo.toml profiles ──"
+    if grep -q 'split-debuginfo' Cargo.toml 2>/dev/null; then
+        echo "  ✔ split-debuginfo configured"
+    else
+        echo "  ✘ split-debuginfo not set (up to 70% faster incremental linking)"
+    fi
+    if grep -q 'build-override' Cargo.toml 2>/dev/null; then
+        echo "  ✔ build-override opt-level configured"
+    else
+        echo "  ✘ proc-macro build-override not set"
+    fi
+    echo ""
+
+    # 5. macOS Gatekeeper
+    echo "── macOS Gatekeeper ──"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        status=$(spctl --status 2>&1 || true)
+        if echo "$status" | grep -q "assessments enabled"; then
+            echo "  ⚠ Gatekeeper assessments ENABLED — scanning every binary"
+            echo "    Fix: sudo spctl developer-mode enable-terminal"
+            echo "    Then add your terminal to System Settings > Privacy > Developer Tools"
+        else
+            echo "  ✔ Gatekeeper developer mode active"
+        fi
+    else
+        echo "  ⊘ Not macOS"
+    fi
+    echo ""
+
+    # 6. Spotlight
+    echo "── Spotlight ──"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        if [[ -f "$(pwd)/target/.metadata_never_index" ]]; then
+            echo "  ✔ target/ has .metadata_never_index — Spotlight excluded"
+        else
+            echo "  ✘ target/ is NOT excluded from Spotlight indexing"
+            echo "    Fix: just spotlight-exclude"
+        fi
+    fi
+    echo ""
+
+    # 7. Duplicate deps
+    echo "── Duplicate Dependencies ──"
+    dupes=$(cargo tree --duplicate 2>&1 | grep -cE '^\w' || true)
+    if [ "$dupes" -gt 0 ]; then
+        echo "  ⚠ $dupes duplicate crate versions detected"
+        echo "    Run: cargo tree --duplicate | grep -E '^\w' | sort -u"
+    else
+        echo "  ✔ No duplicate dependencies"
+    fi
+    echo ""
+
+    # 8. sccache
+    echo "── Build Cache ──"
+    if command -v sccache &>/dev/null; then
+        echo "  ✔ sccache available"
+    else
+        echo "  ⊘ sccache not installed (optional: cargo install sccache)"
+    fi
+    echo ""
+
+# Exclude target/ from Spotlight indexing (macOS)
+spotlight-exclude:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname)" != "Darwin" ]]; then
+        echo "Not macOS — skipping"
+        exit 0
+    fi
+    target="$(pwd)/target"
+    mkdir -p "$target"
+    # Method 1: .metadata_never_index marker (same approach Xcode uses for DerivedData)
+    touch "$target/.metadata_never_index"
+    echo "✔ Created $target/.metadata_never_index"
+    # Method 2: Exclude from Time Machine too (build artifacts are reproducible)
+    tmutil addexclusion "$target" 2>/dev/null || true
+    echo "✔ Added Time Machine exclusion for $target"
+    echo ""
+    echo "Spotlight will stop indexing target/ contents."
+    echo "If it's already been indexed, force re-evaluation:"
+    echo "  mdimport -d1 $target"
+
+# Enable terminal as developer tool (skips Gatekeeper for compiled binaries)
+gatekeeper-dev-mode:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname)" != "Darwin" ]]; then
+        echo "Not macOS — skipping"
+        exit 0
+    fi
+    echo "Enabling developer mode for terminal..."
+    echo "This adds your terminal to the Developer Tools list,"
+    echo "bypassing Gatekeeper binary scanning for builds."
+    sudo spctl developer-mode enable-terminal
+    echo ""
+    echo "✔ Done. Also ensure your terminal app appears in:"
+    echo "   System Settings > Privacy & Security > Developer Tools"
 
 # Check for Go toolchain (prerequisite for gosh)
 check-go:

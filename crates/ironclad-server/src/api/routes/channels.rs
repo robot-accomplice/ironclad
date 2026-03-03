@@ -170,8 +170,15 @@ pub async fn webhook_whatsapp(
     let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes())
         .expect("HMAC accepts any key size");
     mac.update(&bytes);
-    let computed = hex::encode(mac.finalize().into_bytes());
-    if !bool::from(computed.as_bytes().ct_eq(expected.as_bytes())) {
+    let computed = mac.finalize().into_bytes();
+    let Ok(expected_bytes) = hex::decode(expected) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "invalid webhook signature (bad hex)"})),
+        )
+            .into_response();
+    };
+    if !bool::from(computed.ct_eq(expected_bytes.as_slice())) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"ok": false, "error": "invalid webhook signature"})),
@@ -229,6 +236,15 @@ pub async fn get_channels_status(State(state): State<AppState>) -> impl IntoResp
             "messages_sent": s.messages_sent,
             "last_error": s.last_error,
             "last_activity": s.last_activity,
+        }));
+    }
+    // Include A2A protocol status
+    {
+        let a2a = state.a2a.read().await;
+        result.push(json!({
+            "name": "a2a",
+            "connected": a2a.config.enabled,
+            "sessions_active": a2a.session_count(),
         }));
     }
     Json(json!(result))

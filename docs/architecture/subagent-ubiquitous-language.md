@@ -15,7 +15,7 @@ A **model-proxy** is not a subagent. It is a routing/proxy record and is exclude
 - `role` values were loosely enforced (`specialist`, `model-proxy`, etc.), allowing semantic drift.
 - subagent create/update APIs had no first-class `skills` payload, so ownership frequently appeared empty.
 - unknown fields were silently accepted, so persona-like payload keys could be sent without rejection.
-- roster payload assigned global enabled skills to commander, making ownership appear concentrated on the primary agent.
+- roster payload assigned global enabled skills to orchestrator, making ownership appear concentrated on the primary agent.
 - `/status` and diagnostics used generic `subagents` wording, which blurred taskable subagents and proxies.
 
 ## Enforced Contract (Post-Fix)
@@ -29,7 +29,7 @@ A **model-proxy** is not a subagent. It is a routing/proxy record and is exclude
 - taskable subagent model supports three modes:
   - fixed provider/model (for example `openai/gpt-4o-mini`),
   - `auto` (Ironclad router chooses),
-  - `commander` (primary agent-selected model at assignment time).
+  - `orchestrator` (primary agent-selected model at assignment time).
 
 ## Assignment-Time Model Selection
 
@@ -39,22 +39,22 @@ flowchart TD
     ROLE["role"]
     MODEL["configured model value"]
     TASK["task content / intent"]
-    CMD["commander current model"]
+    CMD["orchestrator current model"]
   end
 
   subgraph Validation["Contract Validation"]
     V1["role must be subagent or model-proxy"]
     V2["model cannot be empty"]
-    V3["model-proxy cannot use auto/commander"]
+    V3["model-proxy cannot use auto/orchestrator"]
   end
 
   subgraph Decision["Model Resolution"]
     D1{"role == model-proxy?"}
     D2{"model == auto?"}
-    D3{"model == commander?"}
+    D3{"model == orchestrator?"}
     FIXED["use configured provider/model"]
     AUTO["use Ironclad router result\n(select_routed_model(task))"]
-    COMMANDER["use commander-selected active model"]
+    ORCHESTRATOR["use orchestrator-selected active model"]
   end
 
   subgraph Outputs["Resolved Assignment Model"]
@@ -74,15 +74,15 @@ flowchart TD
   D1 -->|no| D2
   D2 -->|yes| AUTO
   D2 -->|no| D3
-  D3 -->|yes| COMMANDER
+  D3 -->|yes| ORCHESTRATOR
   D3 -->|no| FIXED
 
   TASK --> AUTO
-  CMD --> COMMANDER
+  CMD --> ORCHESTRATOR
 
   FIXED --> OUT
   AUTO --> OUT
-  COMMANDER --> OUT
+  ORCHESTRATOR --> OUT
 ```
 
 ## Live Forensics Pipeline
@@ -145,7 +145,7 @@ flowchart TD
 
   subgraph Runtime["Runtime + Presentation"]
     REGISTRY["Subagent registry\n(taskable only)"]
-    ROSTER_VIEW["Roster response\n(commander + taskable subagents)"]
+    ROSTER_VIEW["Roster response\n(orchestrator + taskable subagents)"]
     STATUS_VIEW["Runtime diagnostics\n(taskable_subagents_*)"]
   end
 

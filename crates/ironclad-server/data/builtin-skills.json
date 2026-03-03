@@ -1,0 +1,66 @@
+[
+  {
+    "name": "install-setup-assistant",
+    "description": "Guide first-run installation, workspace init, and setup wizard flow."
+  },
+  {
+    "name": "runtime-diagnostics",
+    "description": "Diagnose runtime health, logs, and breaker state with recovery actions."
+  },
+  {
+    "name": "provider-auth-troubleshooter",
+    "description": "Resolve provider authentication, key precedence, and credential setup issues."
+  },
+  {
+    "name": "context-continuity",
+    "description": "Preserve continuity across sessions and long-running workflows."
+  },
+  {
+    "name": "conway-security",
+    "description": "Security guardrails for high-impact infrastructure workflows."
+  },
+  {
+    "name": "ethereum-funding",
+    "description": "Operational treasury and Ethereum funding workflows."
+  },
+  {
+    "name": "himalaya-email",
+    "description": "CLI-based email operations through a local mail bridge."
+  },
+  {
+    "name": "knowledge-management",
+    "description": "Knowledge capture, curation, and retrieval conventions."
+  },
+  {
+    "name": "local-subagents",
+    "description": "Subagent orchestration for parallelized task execution."
+  },
+  {
+    "name": "model-management",
+    "description": "Model routing and fallback strategy management."
+  },
+  {
+    "name": "obsidian-vault",
+    "description": "Obsidian-backed knowledge workflows and synchronization."
+  },
+  {
+    "name": "search-management",
+    "description": "Search and retrieval strategy management for investigations."
+  },
+  {
+    "name": "self-diagnostics",
+    "description": "Runtime diagnostics and self-healing operational checks."
+  },
+  {
+    "name": "self-funding",
+    "description": "Autonomous funding and sustainability operational workflows."
+  },
+  {
+    "name": "session-bloat-prevention",
+    "description": "Context-budget controls to prevent session bloat."
+  },
+  {
+    "name": "supervisor-protocol",
+    "description": "Supervisor and delegation protocol for subagent execution."
+  }
+]

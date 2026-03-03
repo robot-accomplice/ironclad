@@ -40,9 +40,9 @@ impl ChannelRouter {
         }
     }
 
-    pub fn with_store(store: Database) -> Self {
+    pub async fn with_store(store: Database) -> Self {
         let delivery_queue = DeliveryQueue::with_store(store);
-        delivery_queue.recover_from_store();
+        delivery_queue.recover_from_store().await;
         Self {
             channels: Mutex::new(HashMap::new()),
             delivery_queue,
@@ -271,7 +271,7 @@ impl ChannelRouter {
 
     pub async fn replay_dead_letter(&self, id: &str) -> bool {
         if self.delivery_queue.replay_dead_letter_in_store(id) {
-            self.delivery_queue.recover_from_store();
+            self.delivery_queue.recover_from_store().await;
             return true;
         }
         self.delivery_queue.replay_dead_letter_in_memory(id).await
@@ -470,7 +470,7 @@ mod tests {
     #[tokio::test]
     async fn with_store_recovers_queue_state() {
         let db = Database::new(":memory:").expect("db");
-        let router = ChannelRouter::with_store(db.clone());
+        let router = ChannelRouter::with_store(db.clone()).await;
         let msg = OutboundMessage {
             content: "queued".into(),
             recipient_id: "r1".into(),
@@ -481,7 +481,7 @@ mod tests {
             .enqueue("telegram".into(), msg)
             .await;
 
-        let recovered = ChannelRouter::with_store(db);
+        let recovered = ChannelRouter::with_store(db).await;
         assert_eq!(recovered.delivery_queue().queue_size().await, 1);
     }
 

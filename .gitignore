@@ -28,6 +28,13 @@ ironclad.db-shm
 *.log
 .tmp_audit_results.json
 
+# Fuzz artifacts
+crates/ironclad-agent/fuzz/corpus/
+crates/ironclad-agent/fuzz/target/
+
+# Local tooling
+.serena/
+
 # Phantom files (do not exist, stop recreating them)
 registry/CNAME
 .github/workflows/deploy-registry.yml

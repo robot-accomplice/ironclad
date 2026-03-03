@@ -62,7 +62,14 @@ fn test_state() -> AppState {
         treasury,
         yield_engine,
     };
-    let plugins = Arc::new(PluginRegistry::new(vec![], vec![]));
+    let plugins = Arc::new(PluginRegistry::new(
+        vec![],
+        vec![],
+        ironclad_plugin_sdk::registry::PermissionPolicy {
+            strict: false,
+            allowed: vec![],
+        },
+    ));
     let browser = Arc::new(Browser::new(ironclad_core::config::BrowserConfig::default()));
     let registry = Arc::new(SubagentRegistry::new(4, vec![]));
     let event_bus = EventBus::new(16);
@@ -118,12 +125,18 @@ fn test_state() -> AppState {
         config_path: Arc::new(config_path.clone()),
         config_apply_status: Arc::new(RwLock::new(ConfigApplyStatus::new(&config_path))),
         pending_specialist_proposals: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        ws_tickets: ironclad_server::TicketStore::new(),
+        rate_limiter: ironclad_server::rate_limit::GlobalRateLimitLayer::new(
+            100,
+            std::time::Duration::from_secs(60),
+        ),
         policy_engine: {
             let mut engine = ironclad_agent::policy::PolicyEngine::new();
             engine.add_rule(Box::new(ironclad_agent::policy::AuthorityRule));
             engine.add_rule(Box::new(ironclad_agent::policy::CommandSafetyRule));
             Arc::new(engine)
         },
+        media_service: None,
     }
 }
 

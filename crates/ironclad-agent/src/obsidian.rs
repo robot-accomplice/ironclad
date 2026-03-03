@@ -1,9 +1,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 use regex::Regex;
+
+static TAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|\s)#([a-zA-Z][\w/-]*)").expect("valid regex"));
+static WIKILINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+)\]\]").expect("valid regex"));
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing;
@@ -156,9 +161,28 @@ impl ObsidianVault {
     }
 
     fn parse_note(&self, path: &Path) -> Result<ObsidianNote> {
-        let raw = std::fs::read_to_string(path).map_err(|e| {
-            IroncladError::Config(format!("failed to read {}: {e}", path.display()))
-        })?;
+        // Cap note reads at 5 MB to prevent OOM during vault scan.
+        const MAX_NOTE_BYTES: u64 = 5 * 1024 * 1024;
+        let raw = {
+            use std::io::Read;
+            let file = std::fs::File::open(path).map_err(|e| {
+                IroncladError::Config(format!("failed to open {}: {e}", path.display()))
+            })?;
+            if file.metadata().map(|m| m.len()).unwrap_or(0) > MAX_NOTE_BYTES {
+                return Err(IroncladError::Config(format!(
+                    "note too large (>{} bytes): {}",
+                    MAX_NOTE_BYTES,
+                    path.display()
+                )));
+            }
+            let mut buf = String::new();
+            file.take(MAX_NOTE_BYTES)
+                .read_to_string(&mut buf)
+                .map_err(|e| {
+                    IroncladError::Config(format!("failed to read {}: {e}", path.display()))
+                })?;
+            buf
+        };
 
         let (frontmatter, content) = parse_frontmatter(&raw);
         let tags = extract_tags(&frontmatter, content);
@@ -595,8 +619,7 @@ fn extract_tags(frontmatter: &Option<serde_yaml::Value>, content: &str) -> Vec<S
     }
 
     // Inline #tags from content
-    let tag_re = Regex::new(r"(?:^|\s)#([a-zA-Z][\w/-]*)").expect("valid regex");
-    for cap in tag_re.captures_iter(content) {
+    for cap in TAG_RE.captures_iter(content) {
         if let Some(m) = cap.get(1) {
             let tag = m.as_str().to_string();
             if !tags.contains(&tag) {
@@ -610,10 +633,9 @@ fn extract_tags(frontmatter: &Option<serde_yaml::Value>, content: &str) -> Vec<S
 
 /// Parse all wikilink targets from content (just the target names, not display text).
 fn parse_wikilink_targets(content: &str) -> Vec<String> {
-    let link_re = Regex::new(r"\[\[([^\]]+)\]\]").expect("valid regex");
     let mut targets = Vec::new();
 
-    for cap in link_re.captures_iter(content) {
+    for cap in WIKILINK_RE.captures_iter(content) {
         if let Some(inner) = cap.get(1) {
             let raw = inner.as_str();
             let target = raw.split('|').next().unwrap_or(raw);
@@ -700,7 +722,9 @@ impl KnowledgeSource for ObsidianSource {
                 });
 
                 if let Some(ref fm) = note.frontmatter {
-                    metadata["frontmatter"] = serde_json::to_value(fm).unwrap_or_default();
+                    metadata["frontmatter"] = serde_json::to_value(fm)
+                        .inspect_err(|e| tracing::warn!(error = %e, "failed to serialize obsidian frontmatter"))
+                        .unwrap_or_default();
                 }
 
                 let backlink_count = vault.backlinks_for(key).len();

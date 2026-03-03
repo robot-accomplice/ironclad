@@ -11,7 +11,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Percent-encode a string for safe inclusion as a URL query parameter value.
 /// Encodes all bytes outside the unreserved set (RFC 3986 section 2.3).
-fn pct_encode_query_value(s: &str) -> String {
+pub(crate) fn pct_encode_query_value(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -136,17 +136,25 @@ impl LlmClient {
     > {
         debug!(url, auth_header, "forwarding streaming request to provider");
 
-        let auth_value = if auth_header.eq_ignore_ascii_case("authorization") {
-            format!("Bearer {api_key}")
+        let effective_url;
+        let mut request = if let Some(param_name) = auth_header.strip_prefix("query:") {
+            let separator = if url.contains('?') { '&' } else { '?' };
+            let encoded_key = pct_encode_query_value(api_key);
+            effective_url = format!("{url}{separator}{param_name}={encoded_key}");
+            self.http
+                .post(&effective_url)
+                .header("Content-Type", "application/json")
         } else {
-            api_key.to_string()
+            let auth_value = if auth_header.eq_ignore_ascii_case("authorization") {
+                format!("Bearer {api_key}")
+            } else {
+                api_key.to_string()
+            };
+            self.http
+                .post(url)
+                .header(auth_header, &auth_value)
+                .header("Content-Type", "application/json")
         };
-
-        let mut request = self
-            .http
-            .post(url)
-            .header(auth_header, &auth_value)
-            .header("Content-Type", "application/json");
 
         for (key, value) in extra_headers {
             request = request.header(key.as_str(), value.as_str());

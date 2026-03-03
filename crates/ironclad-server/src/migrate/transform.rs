@@ -194,6 +194,7 @@ impl OpenClawJSONLMessage {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
+    let ks_path = ic_root.join("keystore.enc");
     let config_path = oc_root.join("openclaw.json");
     if !config_path.exists() {
         return err(
@@ -295,7 +296,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
         .and_then(|v| v.as_str())
         && !token.is_empty()
     {
-        match store_in_keystore("gateway_auth_token", token) {
+        match store_in_keystore("gateway_auth_token", token, &ks_path) {
             Ok(()) => {
                 toml.push(format!(
                     "api_key_ref = {}",
@@ -485,7 +486,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
                 && api_key != "not-needed"
             {
                 let ks_name = format!("{prov_name}_api_key");
-                match store_in_keystore(&ks_name, api_key) {
+                match store_in_keystore(&ks_name, api_key, &ks_path) {
                     Ok(()) => {
                         toml.push(format!(
                             "api_key_ref = {}",
@@ -517,7 +518,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
         }
         if let Some(api_key) = &oc_cfg.api_key {
             let ks_name = format!("{}_api_key", key);
-            match store_in_keystore(&ks_name, api_key) {
+            match store_in_keystore(&ks_name, api_key, &ks_path) {
                 Ok(()) => {
                     toml.push(format!(
                         "api_key_ref = {}",
@@ -545,7 +546,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
             toml.push("[channels.telegram]".into());
             toml.push(format!("enabled = {}", tg.enabled.unwrap_or(false)));
             if let Some(token) = &tg.token {
-                match store_in_keystore("telegram_bot_token", token) {
+                match store_in_keystore("telegram_bot_token", token, &ks_path) {
                     Ok(()) => {
                         toml.push("token_ref = \"keystore:telegram_bot_token\"".into());
                         warnings.push(
@@ -570,7 +571,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
             toml.push("[channels.whatsapp]".into());
             toml.push(format!("enabled = {}", wa.enabled.unwrap_or(false)));
             if let Some(token) = &wa.token {
-                match store_in_keystore("whatsapp_token", token) {
+                match store_in_keystore("whatsapp_token", token, &ks_path) {
                     Ok(()) => {
                         toml.push("token_ref = \"keystore:whatsapp_token\"".into());
                         warnings.push(
@@ -616,6 +617,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
 }
 
 pub(crate) fn export_config(ic_root: &Path, oc_root: &Path) -> AreaResult {
+    let ks_path = ic_root.join("keystore.enc");
     let config_path = ic_root.join("ironclad.toml");
     if !config_path.exists() {
         return err(MigrationArea::Config, "ironclad.toml not found".into());
@@ -671,7 +673,7 @@ pub(crate) fn export_config(ic_root: &Path, oc_root: &Path) -> AreaResult {
         if let Some(key_ref) = prov.get("api_key_ref").and_then(|v| v.as_str())
             && let Some(ks_name) = key_ref.strip_prefix("keystore:")
         {
-            if let Some(val) = read_from_keystore(ks_name) {
+            if let Some(val) = read_from_keystore(ks_name, &ks_path) {
                 oc.insert("api_key".into(), serde_json::Value::String(val));
                 key_resolved = true;
             } else {
@@ -709,7 +711,15 @@ pub(crate) fn export_config(ic_root: &Path, oc_root: &Path) -> AreaResult {
             format!("Failed to create output dir: {e}"),
         );
     }
-    let json = serde_json::to_string_pretty(&merged).unwrap_or_default();
+    let json = match serde_json::to_string_pretty(&merged) {
+        Ok(s) => s,
+        Err(e) => {
+            return err(
+                MigrationArea::Config,
+                format!("Failed to serialize config: {e}"),
+            );
+        }
+    };
     if let Err(e) = fs::write(&oc_config_path, &json) {
         return err(
             MigrationArea::Config,
@@ -1103,10 +1113,12 @@ pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path, no_safety_check: boo
                             registered += 1;
                             if !enabled {
                                 let conn = db.conn();
-                                let _ = conn.execute(
+                                if let Err(e) = conn.execute(
                                     "UPDATE skills SET enabled = 0 WHERE id = ?1",
                                     rusqlite::params![id],
-                                );
+                                ) {
+                                    warnings.push(format!("Failed to disable skill {name}: {e}"));
+                                }
                                 disabled_count += 1;
                             }
                         }
@@ -1355,10 +1367,12 @@ pub(crate) fn import_sessions(oc_root: &Path, ic_root: &Path) -> AreaResult {
                 let role = msg.role.as_deref().unwrap_or("user");
                 let content = msg.content.as_deref().unwrap_or("");
                 let ts = msg.timestamp.as_deref().unwrap_or(created);
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "INSERT OR IGNORE INTO session_messages (id, session_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                     rusqlite::params![mid, sid, role, content, ts],
-                );
+                ) {
+                    warnings.push(format!("Failed to import message for session {sid}: {e}"));
+                }
             }
         }
         items += 1;
@@ -1454,10 +1468,16 @@ pub(crate) fn export_sessions(ic_root: &Path, oc_root: &Path) -> AreaResult {
             format!("Failed to create output dir: {e}"),
         );
     }
-    if let Err(e) = fs::write(
-        oc_root.join("sessions.json"),
-        serde_json::to_string_pretty(&all).unwrap_or_default(),
-    ) {
+    let sessions_json = match serde_json::to_string_pretty(&all) {
+        Ok(s) => s,
+        Err(e) => {
+            return err(
+                MigrationArea::Sessions,
+                format!("Failed to serialize sessions.json: {e}"),
+            );
+        }
+    };
+    if let Err(e) = fs::write(oc_root.join("sessions.json"), &sessions_json) {
         return err(
             MigrationArea::Sessions,
             format!("Failed to write sessions.json: {e}"),
@@ -1576,10 +1596,12 @@ pub(crate) fn import_cron(oc_root: &Path, ic_root: &Path) -> AreaResult {
             .unwrap_or_else(|| "{}".to_string());
 
         // Delete any existing job with the same name to avoid duplicates on re-import
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             "DELETE FROM cron_jobs WHERE name = ?1",
             rusqlite::params![name],
-        );
+        ) {
+            warnings.push(format!("Failed to clean existing cron job {name}: {e}"));
+        }
 
         match conn.execute(
             "INSERT INTO cron_jobs (id, name, enabled, schedule_kind, schedule_expr, agent_id, payload_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1646,7 +1668,10 @@ pub(crate) fn export_cron(ic_root: &Path, oc_root: &Path) -> AreaResult {
             }))
         })
         .map(|iter| iter.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to iterate cron job rows during export");
+            vec![]
+        });
 
     if let Err(e) = fs::create_dir_all(oc_root) {
         return err(
@@ -1654,10 +1679,16 @@ pub(crate) fn export_cron(ic_root: &Path, oc_root: &Path) -> AreaResult {
             format!("Failed to create output dir: {e}"),
         );
     }
-    if let Err(e) = fs::write(
-        oc_root.join("jobs.json"),
-        serde_json::to_string_pretty(&jobs).unwrap_or_default(),
-    ) {
+    let jobs_json = match serde_json::to_string_pretty(&jobs) {
+        Ok(s) => s,
+        Err(e) => {
+            return err(
+                MigrationArea::Cron,
+                format!("Failed to serialize jobs.json: {e}"),
+            );
+        }
+    };
+    if let Err(e) = fs::write(oc_root.join("jobs.json"), &jobs_json) {
         return err(
             MigrationArea::Cron,
             format!("Failed to write jobs.json: {e}"),
@@ -1678,6 +1709,7 @@ pub(crate) fn export_cron(ic_root: &Path, oc_root: &Path) -> AreaResult {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
+    let ks_path = ic_root.join("keystore.enc");
     let config_path = oc_root.join("openclaw.json");
     if !config_path.exists() {
         return AreaResult {
@@ -1717,7 +1749,7 @@ pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
             lines.push("[channels.telegram]".into());
             lines.push(format!("enabled = {}", tg.enabled.unwrap_or(false)));
             if let Some(token) = &tg.token {
-                match store_in_keystore("telegram_bot_token", token) {
+                match store_in_keystore("telegram_bot_token", token, &ks_path) {
                     Ok(()) => {
                         lines.push("token_ref = \"keystore:telegram_bot_token\"".into());
                         warnings.push(
@@ -1740,7 +1772,7 @@ pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
             lines.push("[channels.whatsapp]".into());
             lines.push(format!("enabled = {}", wa.enabled.unwrap_or(false)));
             if let Some(token) = &wa.token {
-                match store_in_keystore("whatsapp_token", token) {
+                match store_in_keystore("whatsapp_token", token, &ks_path) {
                     Ok(()) => {
                         lines.push("token_ref = \"keystore:whatsapp_token\"".into());
                         warnings.push(
@@ -1796,14 +1828,31 @@ pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
 }
 
 pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
+    let ks_path = ic_root.join("keystore.enc");
     let channels_path = ic_root.join("channels.toml");
     let config_path = ic_root.join("ironclad.toml");
     let mut warnings = Vec::new();
 
     let channel_toml = if channels_path.exists() {
-        fs::read_to_string(&channels_path).unwrap_or_default()
+        match fs::read_to_string(&channels_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return err(
+                    MigrationArea::Channels,
+                    format!("Failed to read channels.toml: {e}"),
+                );
+            }
+        }
     } else if config_path.exists() {
-        fs::read_to_string(&config_path).unwrap_or_default()
+        match fs::read_to_string(&config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return err(
+                    MigrationArea::Channels,
+                    format!("Failed to read ironclad.toml: {e}"),
+                );
+            }
+        }
     } else {
         return AreaResult {
             area: MigrationArea::Channels,
@@ -1836,7 +1885,8 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
             if let Some(e) = tg.get("enabled").and_then(|v| v.as_bool()) {
                 obj.insert("enabled".into(), serde_json::Value::Bool(e));
             }
-            if !resolve_channel_token_for_export(tg, &mut obj, &mut warnings, "telegram") {
+            if !resolve_channel_token_for_export(tg, &mut obj, &mut warnings, "telegram", &ks_path)
+            {
                 // no token resolved
             }
             oc_channels.insert("telegram".into(), serde_json::Value::Object(obj));
@@ -1847,7 +1897,8 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
             if let Some(e) = wa.get("enabled").and_then(|v| v.as_bool()) {
                 obj.insert("enabled".into(), serde_json::Value::Bool(e));
             }
-            if !resolve_channel_token_for_export(wa, &mut obj, &mut warnings, "whatsapp") {
+            if !resolve_channel_token_for_export(wa, &mut obj, &mut warnings, "whatsapp", &ks_path)
+            {
                 // no token resolved
             }
             if let Some(phone) = wa.get("phone_id").and_then(|v| v.as_str()) {
@@ -1871,10 +1922,23 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
     // Merge into existing openclaw.json
     let oc_config_path = oc_root.join("openclaw.json");
     let mut oc_config: serde_json::Map<String, serde_json::Value> = if oc_config_path.exists() {
-        fs::read_to_string(&oc_config_path)
-            .ok()
-            .and_then(|c| serde_json::from_str(&c).ok())
-            .unwrap_or_default()
+        match fs::read_to_string(&oc_config_path) {
+            Ok(c) => match serde_json::from_str(&c) {
+                Ok(map) => map,
+                Err(e) => {
+                    warnings.push(format!(
+                        "Could not parse existing openclaw.json: {e}; starting fresh"
+                    ));
+                    serde_json::Map::new()
+                }
+            },
+            Err(e) => {
+                warnings.push(format!(
+                    "Could not read existing openclaw.json: {e}; starting fresh"
+                ));
+                serde_json::Map::new()
+            }
+        }
     } else {
         serde_json::Map::new()
     };
@@ -1886,10 +1950,16 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
             format!("Failed to create output dir: {e}"),
         );
     }
-    if let Err(e) = fs::write(
-        &oc_config_path,
-        serde_json::to_string_pretty(&oc_config).unwrap_or_default(),
-    ) {
+    let serialized = match serde_json::to_string_pretty(&oc_config) {
+        Ok(s) => s,
+        Err(e) => {
+            return err(
+                MigrationArea::Channels,
+                format!("Failed to serialize openclaw.json: {e}"),
+            );
+        }
+    };
+    if let Err(e) = fs::write(&oc_config_path, &serialized) {
         return err(
             MigrationArea::Channels,
             format!("Failed to write openclaw.json: {e}"),
@@ -2030,6 +2100,7 @@ pub(crate) fn import_agents(oc_root: &Path, ic_root: &Path) -> AreaResult {
             name: name.clone(),
             display_name: Some(display_name),
             model,
+            fallback_models_json: Some("[]".to_string()),
             role: role.to_string(),
             description: None,
             skills_json: None,
@@ -2074,7 +2145,12 @@ pub(crate) fn export_agents(ic_root: &Path, _oc_root: &Path) -> AreaResult {
         }
     };
 
-    let agents = ironclad_db::agents::list_sub_agents(&db).unwrap_or_default();
+    let agents = match ironclad_db::agents::list_sub_agents(&db) {
+        Ok(a) => a,
+        Err(e) => {
+            return err(MigrationArea::Agents, format!("Failed to list agents: {e}"));
+        }
+    };
 
     AreaResult {
         area: MigrationArea::Agents,
@@ -2114,17 +2190,18 @@ fn err(area: MigrationArea, msg: String) -> AreaResult {
 
 /// Store a credential in the encrypted keystore during migration.
 /// Creates and auto-unlocks the keystore if it doesn't exist yet.
-fn store_in_keystore(key: &str, value: &str) -> Result<(), String> {
-    let ks =
-        ironclad_core::keystore::Keystore::new(ironclad_core::keystore::Keystore::default_path());
+/// The `ks_path` should be derived from the Ironclad root directory
+/// (e.g., `ic_root.join("keystore.enc")`) to ensure test isolation.
+fn store_in_keystore(key: &str, value: &str, ks_path: &Path) -> Result<(), String> {
+    let ks = ironclad_core::keystore::Keystore::new(ks_path.to_path_buf());
     ks.unlock_machine().map_err(|e| e.to_string())?;
     ks.set(key, value).map_err(|e| e.to_string())
 }
 
 /// Read a credential from the keystore (for export back to OpenClaw format).
-fn read_from_keystore(key: &str) -> Option<String> {
-    let ks =
-        ironclad_core::keystore::Keystore::new(ironclad_core::keystore::Keystore::default_path());
+/// The `ks_path` should be derived from the Ironclad root directory.
+fn read_from_keystore(key: &str, ks_path: &Path) -> Option<String> {
+    let ks = ironclad_core::keystore::Keystore::new(ks_path.to_path_buf());
     if ks.unlock_machine().is_err() {
         return None;
     }
@@ -2138,11 +2215,12 @@ fn resolve_channel_token_for_export(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     warnings: &mut Vec<String>,
     channel_name: &str,
+    ks_path: &Path,
 ) -> bool {
     if let Some(token_ref) = channel_table.get("token_ref").and_then(|v| v.as_str())
         && let Some(ks_name) = token_ref.strip_prefix("keystore:")
     {
-        if let Some(val) = read_from_keystore(ks_name) {
+        if let Some(val) = read_from_keystore(ks_name, ks_path) {
             obj.insert("token".into(), serde_json::Value::String(val));
             return true;
         }

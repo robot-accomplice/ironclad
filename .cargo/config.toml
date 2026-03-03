@@ -1,0 +1,18 @@
+# ── Build acceleration ──────────────────────────────────────────
+# See: https://corrode.dev/blog/tips-for-faster-rust-compile-times/
+
+[build]
+# Use all available cores for parallel codegen within a single crate.
+# On Apple M4 (10-core), this is aggressive but effective for large crates
+# like ironclad-server.
+jobs = 10
+
+[target.aarch64-apple-darwin]
+# NOTE: lld (22.1.0) and mold (2.40.4) both fail with Rust 1.93 on macOS
+# aarch64 due to "unhandled file type" / unsupported Mach-O sections.
+# Using Apple's ld_prime (Xcode 15+) which is the fastest working option.
+# Revisit when lld catches up with Rust's object format.
+# rustflags = ["-C", "link-arg=-fuse-ld=/opt/homebrew/opt/lld/bin/ld64.lld"]
+
+[registries.crates-io]
+protocol = "sparse"

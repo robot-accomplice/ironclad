@@ -10,6 +10,12 @@ use ironclad_core::{IroncladError, Result};
 
 use crate::{Plugin, PluginStatus, ToolDef, ToolResult};
 
+/// Controls how undeclared plugin permissions are handled at runtime.
+pub struct PermissionPolicy {
+    pub strict: bool,
+    pub allowed: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginInfo {
     pub name: String,
@@ -52,14 +58,28 @@ pub struct PluginRegistry {
     plugins: Mutex<HashMap<String, PluginEntry>>,
     allow_list: Vec<String>,
     deny_list: Vec<String>,
+    permission_policy: PermissionPolicy,
 }
 
 impl PluginRegistry {
-    pub fn new(allow_list: Vec<String>, deny_list: Vec<String>) -> Self {
+    pub fn new(
+        allow_list: Vec<String>,
+        deny_list: Vec<String>,
+        permission_policy: PermissionPolicy,
+    ) -> Self {
+        let normalized_allowed: Vec<String> = permission_policy
+            .allowed
+            .into_iter()
+            .map(|p| p.to_ascii_lowercase())
+            .collect();
         Self {
             plugins: Mutex::new(HashMap::new()),
             allow_list,
             deny_list,
+            permission_policy: PermissionPolicy {
+                strict: permission_policy.strict,
+                allowed: normalized_allowed,
+            },
         }
     }
 
@@ -80,6 +100,25 @@ impl PluginRegistry {
             return Err(IroncladError::Config(format!(
                 "plugin '{name}' is not allowed by policy"
             )));
+        }
+
+        if self.permission_policy.strict {
+            for tool in plugin.tools() {
+                for perm in tool.permissions {
+                    let normalized = perm.to_ascii_lowercase();
+                    if !self
+                        .permission_policy
+                        .allowed
+                        .iter()
+                        .any(|p| p == &normalized)
+                    {
+                        return Err(IroncladError::Config(format!(
+                            "plugin '{name}' tool '{}' declares permission '{perm}' not in allowed_permissions",
+                            tool.name
+                        )));
+                    }
+                }
+            }
         }
 
         debug!(name = %name, version = %plugin.version(), "registering plugin");
@@ -134,16 +173,50 @@ impl PluginRegistry {
             found
         };
 
-        match plugin_arc {
-            Some(p) => {
-                let plugin = p.lock().await;
-                plugin.execute_tool(tool_name, input).await
+        let plugin_arc = match plugin_arc {
+            Some(p) => p,
+            None => {
+                return Err(IroncladError::Tool {
+                    tool: tool_name.to_string(),
+                    message: "no plugin provides this tool".into(),
+                });
             }
-            None => Err(IroncladError::Tool {
-                tool: tool_name.to_string(),
-                message: "no plugin provides this tool".into(),
-            }),
+        };
+
+        // Check permission policy before executing.
+        let plugin = plugin_arc.lock().await;
+        let tool_permissions: Vec<String> = plugin
+            .tools()
+            .iter()
+            .find(|t| t.name == tool_name)
+            .map(|t| t.permissions.clone())
+            .unwrap_or_default();
+
+        for perm in &tool_permissions {
+            let normalized = perm.to_ascii_lowercase();
+            if !self
+                .permission_policy
+                .allowed
+                .iter()
+                .any(|p| p == &normalized)
+            {
+                if self.permission_policy.strict {
+                    return Err(IroncladError::Tool {
+                        tool: tool_name.to_string(),
+                        message: format!(
+                            "permission '{perm}' is not allowed by policy (strict mode)"
+                        ),
+                    });
+                }
+                warn!(
+                    tool = %tool_name,
+                    permission = %perm,
+                    "tool requires permission not in allowed list (permissive mode)"
+                );
+            }
         }
+
+        plugin.execute_tool(tool_name, input).await
     }
 
     pub async fn shutdown_all(&self) {
@@ -312,18 +385,39 @@ mod tests {
 
     #[test]
     fn allow_deny_lists() {
-        let reg = PluginRegistry::new(vec![], vec!["blocked".into()]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec!["blocked".into()],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         assert!(reg.is_allowed("anything"));
         assert!(!reg.is_allowed("blocked"));
 
-        let reg2 = PluginRegistry::new(vec!["only_this".into()], vec![]);
+        let reg2 = PluginRegistry::new(
+            vec!["only_this".into()],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         assert!(reg2.is_allowed("only_this"));
         assert!(!reg2.is_allowed("other"));
     }
 
     #[tokio::test]
     async fn register_and_list() {
-        let reg = PluginRegistry::new(vec![], vec![]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         reg.register(Box::new(MockPlugin::new("test")))
             .await
             .unwrap();
@@ -335,14 +429,28 @@ mod tests {
 
     #[tokio::test]
     async fn register_denied_fails() {
-        let reg = PluginRegistry::new(vec![], vec!["bad".into()]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec!["bad".into()],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         let result = reg.register(Box::new(MockPlugin::new("bad"))).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn init_all_activates() {
-        let reg = PluginRegistry::new(vec![], vec![]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         reg.register(Box::new(MockPlugin::new("p1"))).await.unwrap();
         let errors = reg.init_all().await;
         assert!(errors.is_empty());
@@ -352,7 +460,14 @@ mod tests {
 
     #[tokio::test]
     async fn init_failure_marks_error() {
-        let reg = PluginRegistry::new(vec![], vec![]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         reg.register(Box::new(MockPlugin::failing("bad")))
             .await
             .unwrap();
@@ -364,7 +479,14 @@ mod tests {
 
     #[tokio::test]
     async fn execute_tool_found() {
-        let reg = PluginRegistry::new(vec![], vec![]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         reg.register(Box::new(MockPlugin::new("p1"))).await.unwrap();
         reg.init_all().await;
         let result = reg
@@ -377,7 +499,14 @@ mod tests {
 
     #[tokio::test]
     async fn execute_tool_not_found() {
-        let reg = PluginRegistry::new(vec![], vec![]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         let result = reg
             .execute_tool("nonexistent", &serde_json::json!({}))
             .await;
@@ -386,7 +515,14 @@ mod tests {
 
     #[tokio::test]
     async fn find_tool() {
-        let reg = PluginRegistry::new(vec![], vec![]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         reg.register(Box::new(MockPlugin::new("alpha")))
             .await
             .unwrap();
@@ -400,7 +536,14 @@ mod tests {
 
     #[tokio::test]
     async fn disable_enable_plugin() {
-        let reg = PluginRegistry::new(vec![], vec![]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         reg.register(Box::new(MockPlugin::new("p"))).await.unwrap();
         reg.init_all().await;
 
@@ -418,7 +561,14 @@ mod tests {
 
     #[tokio::test]
     async fn unregister_removes_plugin() {
-        let reg = PluginRegistry::new(vec![], vec![]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         reg.register(Box::new(MockPlugin::new("removable")))
             .await
             .unwrap();
@@ -430,14 +580,28 @@ mod tests {
 
     #[tokio::test]
     async fn unregister_nonexistent_fails() {
-        let reg = PluginRegistry::new(vec![], vec![]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         let result = reg.unregister("ghost").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn unregister_makes_tool_unavailable() {
-        let reg = PluginRegistry::new(vec![], vec![]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         reg.register(Box::new(MockPlugin::new("p1"))).await.unwrap();
         reg.init_all().await;
 
@@ -454,11 +618,133 @@ mod tests {
 
     #[tokio::test]
     async fn list_all_tools() {
-        let reg = PluginRegistry::new(vec![], vec![]);
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
         reg.register(Box::new(MockPlugin::new("a"))).await.unwrap();
         reg.register(Box::new(MockPlugin::new("b"))).await.unwrap();
         reg.init_all().await;
         let tools = reg.list_all_tools().await;
         assert_eq!(tools.len(), 2);
+    }
+
+    /// A mock plugin whose tool declares specific permissions.
+    struct PermissionMockPlugin {
+        name: String,
+        permissions: Vec<String>,
+    }
+
+    impl PermissionMockPlugin {
+        fn new(name: &str, permissions: Vec<String>) -> Self {
+            Self {
+                name: name.into(),
+                permissions,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Plugin for PermissionMockPlugin {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn version(&self) -> &str {
+            "1.0.0"
+        }
+        fn tools(&self) -> Vec<ToolDef> {
+            vec![ToolDef {
+                name: format!("{}_tool", self.name),
+                description: "mock tool with permissions".into(),
+                parameters: serde_json::json!({}),
+                risk_level: ironclad_core::RiskLevel::Safe,
+                permissions: self.permissions.clone(),
+            }]
+        }
+        async fn init(&mut self) -> Result<()> {
+            Ok(())
+        }
+        async fn execute_tool(&self, tool_name: &str, _input: &Value) -> Result<ToolResult> {
+            Ok(ToolResult {
+                success: true,
+                output: format!("executed {tool_name}"),
+                metadata: None,
+            })
+        }
+        async fn shutdown(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn strict_mode_blocks_unauthorized_plugin() {
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: true,
+                allowed: vec![],
+            },
+        );
+        // Strict mode now rejects unauthorized plugins at registration time (fail-fast)
+        let result = reg
+            .register(Box::new(PermissionMockPlugin::new(
+                "net",
+                vec!["network".into()],
+            )))
+            .await;
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("permission"));
+    }
+
+    #[tokio::test]
+    async fn permissive_mode_allows_unauthorized_plugin() {
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: false,
+                allowed: vec![],
+            },
+        );
+        reg.register(Box::new(PermissionMockPlugin::new(
+            "net",
+            vec!["network".into()],
+        )))
+        .await
+        .unwrap();
+        reg.init_all().await;
+
+        let result = reg.execute_tool("net_tool", &serde_json::json!({})).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().success);
+    }
+
+    #[tokio::test]
+    async fn allowed_permissions_pass_strict_check() {
+        let reg = PluginRegistry::new(
+            vec![],
+            vec![],
+            PermissionPolicy {
+                strict: true,
+                allowed: vec!["network".into()],
+            },
+        );
+        reg.register(Box::new(PermissionMockPlugin::new(
+            "net",
+            vec!["network".into()],
+        )))
+        .await
+        .unwrap();
+        reg.init_all().await;
+
+        let result = reg.execute_tool("net_tool", &serde_json::json!({})).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().success);
     }
 }

@@ -48,7 +48,7 @@ pub async fn run_cron_worker(db: ironclad_db::Database, instance_id: String) {
             }
         };
 
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
         for job in &jobs {
             if !job.enabled {

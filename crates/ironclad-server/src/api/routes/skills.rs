@@ -53,7 +53,7 @@ struct BuiltinSkillRecord {
     description: String,
 }
 
-const BUILTIN_SKILLS_JSON: &str = include_str!("../../../../../registry/builtin-skills.json");
+const BUILTIN_SKILLS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/builtin-skills.json"));
 
 fn builtin_skills() -> &'static Vec<BuiltinSkillRecord> {
     static BUILTIN_SKILLS: OnceLock<Vec<BuiltinSkillRecord>> = OnceLock::new();
@@ -203,6 +203,7 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
 
     let existing_by_name: std::collections::HashMap<String, ironclad_db::skills::SkillRecord> =
         ironclad_db::skills::list_skills(&state.db)
+            .inspect_err(|e| tracing::error!(error = %e, "failed to list skills during sync"))
             .unwrap_or_default()
             .into_iter()
             .map(|s| (s.name.clone(), s))
@@ -290,7 +291,7 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
                 || existing.source_path != source
                 || existing.risk_level != risk_level
             {
-                if let Err(e) = ironclad_db::skills::update_skill_full(
+                match ironclad_db::skills::update_skill_full(
                     &state.db,
                     &existing.id,
                     hash,
@@ -301,12 +302,14 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
                     &source,
                     &risk_level,
                 ) {
-                    tracing::warn!(error = %e, skill = name, "skill sync: update_skill failed");
+                    Ok(_) => updated += 1,
+                    Err(e) => {
+                        tracing::warn!(error = %e, skill = name, "skill sync: update_skill failed");
+                    }
                 }
-                updated += 1;
             }
         } else {
-            if let Err(e) = ironclad_db::skills::register_skill_full(
+            match ironclad_db::skills::register_skill_full(
                 &state.db,
                 name,
                 kind,
@@ -319,9 +322,11 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
                 script_path.as_deref(),
                 &risk_level,
             ) {
-                tracing::warn!(error = %e, skill = name, "skill sync: register_skill failed");
+                Ok(_) => added += 1,
+                Err(e) => {
+                    tracing::warn!(error = %e, skill = name, "skill sync: register_skill failed");
+                }
             }
-            added += 1;
         }
     }
 
@@ -532,10 +537,14 @@ pub async fn catalog_install(
         if actual_hash != *expected_hash {
             // Roll back any files already touched.
             for (path, old) in rollback_existing.drain(..) {
-                let _ = std::fs::write(path, old);
+                if let Err(e) = std::fs::write(&path, old) {
+                    tracing::warn!(error = %e, path = %path.display(), "failed to restore file during skill install rollback");
+                }
             }
             for path in rollback_new.drain(..) {
-                let _ = std::fs::remove_file(path);
+                if let Err(e) = std::fs::remove_file(&path) {
+                    tracing::warn!(error = %e, path = %path.display(), "failed to remove file during skill install rollback");
+                }
             }
             return Err(bad_request(format!("checksum mismatch for {filename}")));
         }
@@ -550,10 +559,14 @@ pub async fn catalog_install(
         {
             // Roll back any files already touched.
             for (path, old) in rollback_existing.drain(..) {
-                let _ = std::fs::write(path, old);
+                if let Err(e) = std::fs::write(&path, old) {
+                    tracing::warn!(error = %e, path = %path.display(), "failed to restore file during skill install rollback");
+                }
             }
             for path in rollback_new.drain(..) {
-                let _ = std::fs::remove_file(path);
+                if let Err(e) = std::fs::remove_file(&path) {
+                    tracing::warn!(error = %e, path = %path.display(), "failed to remove file during skill install rollback");
+                }
             }
             return Err(bad_request(format!(
                 "invalid filename rejected: {filename}"
@@ -598,10 +611,14 @@ pub async fn catalog_install(
             Err(e) => {
                 // Roll back all file writes if activation failed.
                 for (path, old) in rollback_existing {
-                    let _ = std::fs::write(path, old);
+                    if let Err(e) = std::fs::write(&path, old) {
+                        tracing::error!(error = %e, path = %path.display(), "rollback: failed to restore file");
+                    }
                 }
                 for path in rollback_new {
-                    let _ = std::fs::remove_file(path);
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        tracing::error!(error = %e, path = %path.display(), "rollback: failed to remove file");
+                    }
                 }
                 return Err(e);
             }

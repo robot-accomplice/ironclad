@@ -168,25 +168,39 @@ impl Wallet {
                 })
             } else {
                 None
-            }
-            .or_else(|| {
-                std::env::var("IRONCLAD_WALLET_PASSPHRASE")
-                    .ok()
-                    .filter(|p| !p.is_empty())
-                    .and_then(|passphrase| {
-                        decrypt_wallet_data(&raw, &passphrase)
-                            .ok()
-                            .and_then(|decrypted| {
-                                serde_json::from_slice::<WalletFile>(&decrypted).ok()
-                            })
-                    })
-            })
-            .or_else(|| {
-                let machine_pass = Self::machine_passphrase();
-                decrypt_wallet_data(&raw, &machine_pass)
-                    .ok()
-                    .and_then(|decrypted| serde_json::from_slice::<WalletFile>(&decrypted).ok())
-            });
+            };
+
+            // If no plaintext wallet, try decryption. Explicit passphrase failures
+            // are hard errors — silently falling through could regenerate (and
+            // overwrite) a wallet the user intended to unlock.
+            let wallet_file = if wallet_file.is_none() {
+                if let Ok(passphrase) = std::env::var("IRONCLAD_WALLET_PASSPHRASE") {
+                    if !passphrase.is_empty() {
+                        let decrypted = decrypt_wallet_data(&raw, &passphrase).map_err(|e| {
+                            IroncladError::Wallet(format!(
+                                "IRONCLAD_WALLET_PASSPHRASE set but decryption failed: {e}"
+                            ))
+                        })?;
+                        Some(
+                            serde_json::from_slice::<WalletFile>(&decrypted).map_err(|e| {
+                                IroncladError::Wallet(format!(
+                                    "wallet decrypted but JSON invalid: {e}"
+                                ))
+                            })?,
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    // No explicit passphrase — try machine passphrase (best-effort)
+                    let machine_pass = Self::machine_passphrase();
+                    decrypt_wallet_data(&raw, &machine_pass)
+                        .ok()
+                        .and_then(|decrypted| serde_json::from_slice::<WalletFile>(&decrypted).ok())
+                }
+            } else {
+                wallet_file
+            };
 
             if let Some(wallet_file) = wallet_file {
                 let key_bytes = hex::decode(&wallet_file.private_key_hex)
@@ -294,10 +308,12 @@ impl Wallet {
         data.extend_from_slice(message.as_bytes());
         let digest = Keccak256::digest(&data);
 
-        let (sig, _recid): (k256::ecdsa::Signature, k256::ecdsa::RecoveryId) = signing_key
+        let (sig, recid): (k256::ecdsa::Signature, k256::ecdsa::RecoveryId) = signing_key
             .sign_prehash_recoverable(&digest)
             .map_err(|e| IroncladError::Wallet(format!("signing failed: {e}")))?;
-        Ok(format!("0x{}", hex::encode(sig.to_bytes())))
+        let mut sig_bytes = sig.to_bytes().to_vec();
+        sig_bytes.push(recid.to_byte() + 27); // EIP-191 v byte
+        Ok(format!("0x{}", hex::encode(&sig_bytes)))
     }
 
     /// Query the USDC ERC-20 balance via eth_call to the configured RPC endpoint.
@@ -662,7 +678,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sign_message_produces_valid_ecdsa_signature() {
+    async fn sign_message_produces_valid_eip191_signature() {
         let dir = TempDir::new().unwrap();
         let config = test_config(&dir);
         let wallet = Wallet::load_or_generate(&config).await.unwrap();
@@ -671,10 +687,28 @@ mod tests {
         let sig2 = wallet.sign_message("hello").await.unwrap();
         assert_eq!(sig1, sig2);
         assert!(sig1.starts_with("0x"));
-        assert_eq!(sig1.len(), 2 + 128);
+        // 65-byte EIP-191 signature: r(32) + s(32) + v(1) = 130 hex chars + "0x" prefix
+        assert_eq!(
+            sig1.len(),
+            2 + 130,
+            "signature must be 65 bytes (130 hex chars)"
+        );
 
         let sig3 = wallet.sign_message("different").await.unwrap();
         assert_ne!(sig1, sig3);
+    }
+
+    #[tokio::test]
+    async fn sign_message_recovery_byte_is_27_or_28() {
+        let dir = TempDir::new().unwrap();
+        let config = test_config(&dir);
+        let wallet = Wallet::load_or_generate(&config).await.unwrap();
+
+        let sig = wallet.sign_message("test recovery id").await.unwrap();
+        let sig_bytes = hex::decode(&sig[2..]).unwrap();
+        assert_eq!(sig_bytes.len(), 65);
+        let v = sig_bytes[64];
+        assert!(v == 27 || v == 28, "v byte must be 27 or 28, got {v}");
     }
 
     #[tokio::test]

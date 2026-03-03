@@ -32,6 +32,7 @@
 //! 5. Spawn background daemons (heartbeat, cron, cache flush, ANN rebuild)
 //! 6. Build axum router with auth + CORS + rate limiting
 
+pub mod abuse;
 pub mod api;
 pub mod auth;
 pub mod cli;
@@ -41,11 +42,14 @@ pub mod dashboard;
 pub mod migrate;
 pub mod plugins;
 pub mod rate_limit;
+pub mod state_hygiene;
 pub mod ws;
+pub mod ws_ticket;
 
-pub use api::{AppState, PersonalityState, build_public_router, build_router};
+pub use api::{AppState, PersonalityState, build_mcp_router, build_public_router, build_router};
 pub use dashboard::{build_dashboard_html, dashboard_handler};
 pub use ws::{EventBus, ws_route};
+pub use ws_ticket::TicketStore;
 
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -77,8 +81,8 @@ use ironclad_agent::approvals::ApprovalManager;
 use ironclad_agent::obsidian::ObsidianVault;
 use ironclad_agent::obsidian_tools::{ObsidianReadTool, ObsidianSearchTool, ObsidianWriteTool};
 use ironclad_agent::tools::{
-    EchoTool, EditFileTool, GlobFilesTool, ListDirectoryTool, ReadFileTool, ScriptRunnerTool,
-    SearchFilesTool, ToolRegistry, WriteFileTool,
+    BashTool, EchoTool, EditFileTool, GlobFilesTool, ListDirectoryTool, ReadFileTool,
+    ScriptRunnerTool, SearchFilesTool, ToolRegistry, WriteFileTool,
 };
 use ironclad_channels::discord::DiscordAdapter;
 use ironclad_channels::email::EmailAdapter;
@@ -182,7 +186,17 @@ fn resolve_token(
         tracing::warn!(key = %name, "keystore reference not found, falling back to env var");
     }
     if !token_env.is_empty() {
-        return std::env::var(token_env).unwrap_or_default();
+        return match std::env::var(token_env) {
+            Ok(val) if !val.is_empty() => val,
+            Ok(_) => {
+                tracing::warn!(env_var = %token_env, "API key env var is set but empty");
+                String::new()
+            }
+            Err(_) => {
+                tracing::warn!(env_var = %token_env, "API key env var is not set");
+                String::new()
+            }
+        };
     }
     String::new()
 }
@@ -212,12 +226,32 @@ pub async fn bootstrap_with_config_path(
 
     let db_path = config.database.path.to_string_lossy().to_string();
     let db = Database::new(&db_path)?;
+    match crate::state_hygiene::run_state_hygiene(&config.database.path) {
+        Ok(report) if report.changed => {
+            tracing::info!(
+                changed_rows = report.changed_rows,
+                subagent_rows_normalized = report.subagent_rows_normalized,
+                cron_payload_rows_repaired = report.cron_payload_rows_repaired,
+                cron_jobs_disabled_invalid_expr = report.cron_jobs_disabled_invalid_expr,
+                "applied startup mechanic checks"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "startup mechanic checks failed"),
+    }
     match ironclad_db::sessions::backfill_nicknames(&db) {
         Ok(0) => {}
         Ok(n) => tracing::info!(count = n, "Backfilled session nicknames"),
         Err(e) => tracing::warn!(error = %e, "Failed to backfill session nicknames"),
     }
-    let llm = LlmService::new(&config)?;
+    let mut llm = LlmService::new(&config)?;
+    // Seed quality tracker with recent observations so metascore routing
+    // has a warm start instead of assuming 0.8 for every model.
+    match ironclad_db::metrics::recent_quality_scores(&db, 200) {
+        Ok(scores) if !scores.is_empty() => llm.quality.seed_from_history(&scores),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "failed to seed quality tracker from history"),
+    }
     let wallet = WalletService::new(&config).await?;
     let a2a = A2aProtocol::new(config.a2a.clone());
     let plugin_registry = plugins::init_plugin_registry(&config.plugins).await;
@@ -240,7 +274,7 @@ pub async fn bootstrap_with_config_path(
                 continue;
             }
             let resolved_model = match sa.model.trim().to_ascii_lowercase().as_str() {
-                "auto" | "commander" => llm.router.select_model().to_string(),
+                "auto" | "orchestrator" => llm.router.select_model().to_string(),
                 _ => sa.model.clone(),
             };
             let fixed_skills = sa
@@ -279,7 +313,7 @@ pub async fn bootstrap_with_config_path(
     }
     let keystore = Arc::new(keystore);
 
-    let channel_router = Arc::new(ChannelRouter::with_store(db.clone()));
+    let channel_router = Arc::new(ChannelRouter::with_store(db.clone()).await);
     let telegram: Option<Arc<TelegramAdapter>> =
         if let Some(ref tg_config) = config.channels.telegram {
             if tg_config.enabled {
@@ -290,6 +324,7 @@ pub async fn bootstrap_with_config_path(
                         tg_config.poll_timeout_seconds,
                         tg_config.allowed_chat_ids.clone(),
                         tg_config.webhook_secret.clone(),
+                        config.security.deny_on_empty_allowlist,
                     ));
                     channel_router
                         .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
@@ -326,7 +361,8 @@ pub async fn bootstrap_with_config_path(
                         wa_config.verify_token.clone(),
                         wa_config.allowed_numbers.clone(),
                         wa_config.app_secret.clone(),
-                    ));
+                        config.security.deny_on_empty_allowlist,
+                    )?);
                     channel_router
                         .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
                         .await;
@@ -356,11 +392,16 @@ pub async fn bootstrap_with_config_path(
                 let adapter = Arc::new(DiscordAdapter::with_config(
                     token,
                     dc_config.allowed_guild_ids.clone(),
+                    config.security.deny_on_empty_allowlist,
                 ));
                 channel_router
                     .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
                     .await;
-                tracing::info!("Discord adapter registered");
+                // Start WebSocket gateway for real-time event reception
+                if let Err(e) = adapter.connect_gateway().await {
+                    tracing::error!(error = %e, "Failed to connect Discord gateway");
+                }
+                tracing::info!("Discord adapter registered with gateway");
                 Some(adapter)
             } else {
                 tracing::warn!(
@@ -383,6 +424,7 @@ pub async fn bootstrap_with_config_path(
                     sig_config.phone_number.clone(),
                     sig_config.daemon_url.clone(),
                     sig_config.allowed_numbers.clone(),
+                    config.security.deny_on_empty_allowlist,
                 ));
                 channel_router
                     .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
@@ -405,7 +447,13 @@ pub async fn bootstrap_with_config_path(
         let password = if email_cfg.password_env.is_empty() {
             String::new()
         } else {
-            std::env::var(&email_cfg.password_env).unwrap_or_default()
+            match std::env::var(&email_cfg.password_env) {
+                Ok(val) => val,
+                Err(_) => {
+                    tracing::warn!(env_var = %email_cfg.password_env, "email password env var is not set");
+                    String::new()
+                }
+            }
         };
         if email_cfg.smtp_host.is_empty()
             || email_cfg.username.is_empty()
@@ -415,23 +463,52 @@ pub async fn bootstrap_with_config_path(
             tracing::warn!("Email enabled but SMTP credentials are incomplete");
             None
         } else {
-            let adapter = Arc::new(
-                EmailAdapter::new(
-                    email_cfg.from_address.clone(),
-                    email_cfg.smtp_host.clone(),
-                    email_cfg.smtp_port,
-                    email_cfg.imap_host.clone(),
-                    email_cfg.imap_port,
-                    email_cfg.username.clone(),
-                    password,
-                )
-                .with_allowed_senders(email_cfg.allowed_senders.clone()),
-            );
-            channel_router
-                .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
-                .await;
-            tracing::info!("Email adapter registered");
-            Some(adapter)
+            match EmailAdapter::new(
+                email_cfg.from_address.clone(),
+                email_cfg.smtp_host.clone(),
+                email_cfg.smtp_port,
+                email_cfg.imap_host.clone(),
+                email_cfg.imap_port,
+                email_cfg.username.clone(),
+                password,
+            ) {
+                Ok(email_adapter) => {
+                    // Resolve OAuth2 token from env if configured
+                    let oauth2_token =
+                        if email_cfg.use_oauth2 && !email_cfg.oauth2_token_env.is_empty() {
+                            std::env::var(&email_cfg.oauth2_token_env).ok()
+                        } else {
+                            None
+                        };
+                    let adapter = Arc::new(
+                        email_adapter
+                            .with_allowed_senders(email_cfg.allowed_senders.clone())
+                            .with_deny_on_empty(config.security.deny_on_empty_allowlist)
+                            .with_poll_interval(std::time::Duration::from_secs(
+                                email_cfg.poll_interval_seconds,
+                            ))
+                            .with_oauth2_token(oauth2_token)
+                            .with_imap_idle_enabled(email_cfg.imap_idle_enabled),
+                    );
+                    channel_router
+                        .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
+                        .await;
+                    tracing::info!("Email adapter registered");
+
+                    // Start background IMAP listener if IMAP is configured
+                    if !email_cfg.imap_host.is_empty()
+                        && let Err(e) = adapter.start_imap_listener().await
+                    {
+                        tracing::error!(error = %e, "Failed to start email IMAP listener");
+                    }
+
+                    Some(adapter)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create email adapter");
+                    None
+                }
+            }
         }
     } else {
         None
@@ -472,6 +549,7 @@ pub async fn bootstrap_with_config_path(
 
     let mut tool_registry = ToolRegistry::new();
     tool_registry.register(Box::new(EchoTool));
+    tool_registry.register(Box::new(BashTool));
     tool_registry.register(Box::new(ScriptRunnerTool::new(config.skills.clone())));
     tool_registry.register(Box::new(ReadFileTool));
     tool_registry.register(Box::new(WriteFileTool));
@@ -479,6 +557,21 @@ pub async fn bootstrap_with_config_path(
     tool_registry.register(Box::new(ListDirectoryTool));
     tool_registry.register(Box::new(GlobFilesTool));
     tool_registry.register(Box::new(SearchFilesTool));
+
+    // Introspection tools — read-only runtime probes for agent self-awareness
+    use ironclad_agent::tools::{
+        GetChannelHealthTool, GetMemoryStatsTool, GetRuntimeContextTool, GetSubagentStatusTool,
+    };
+    tool_registry.register(Box::new(GetRuntimeContextTool));
+    tool_registry.register(Box::new(GetMemoryStatsTool));
+    tool_registry.register(Box::new(GetChannelHealthTool));
+    tool_registry.register(Box::new(GetSubagentStatusTool));
+
+    // Data tools — agent-managed tables via hippocampus
+    use ironclad_agent::tools::{AlterTableTool, CreateTableTool, DropTableTool};
+    tool_registry.register(Box::new(CreateTableTool));
+    tool_registry.register(Box::new(AlterTableTool));
+    tool_registry.register(Box::new(DropTableTool));
 
     // Obsidian vault integration
     let obsidian_vault: Option<Arc<RwLock<ObsidianVault>>> = if config.obsidian.enabled {
@@ -532,7 +625,9 @@ pub async fn bootstrap_with_config_path(
     let mut mcp_clients = ironclad_agent::mcp::McpClientManager::new();
     for c in &config.mcp.clients {
         let mut conn = ironclad_agent::mcp::McpClientConnection::new(c.name.clone(), c.url.clone());
-        let _ = conn.discover();
+        if let Err(e) = conn.discover() {
+            tracing::warn!(mcp_name = %c.name, error = %e, "MCP client discovery failed at startup");
+        }
         mcp_clients.add_connection(conn);
     }
     let mcp_clients = Arc::new(RwLock::new(mcp_clients));
@@ -588,8 +683,38 @@ pub async fn bootstrap_with_config_path(
         }
     }
 
+    // Initialize media service for multimodal attachment handling
+    let media_service = if config.multimodal.enabled {
+        match ironclad_channels::media::MediaService::new(&config.multimodal) {
+            Ok(svc) => {
+                tracing::info!(
+                    media_dir = ?config.multimodal.media_dir,
+                    "Media service initialized"
+                );
+                Some(Arc::new(svc))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to initialize media service");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let resolved_config_path =
         config_path.unwrap_or_else(crate::config_runtime::resolve_default_config_path);
+
+    // Build rate limiter once — AppState and the middleware layer share the same
+    // Arc<Mutex<…>> so admin observability sees live counters.
+    let rate_limiter = GlobalRateLimitLayer::new(
+        u64::from(config.server.rate_limit_requests),
+        Duration::from_secs(config.server.rate_limit_window_secs),
+    )
+    .with_per_ip_capacity(u64::from(config.server.per_ip_rate_limit_requests))
+    .with_per_actor_capacity(u64::from(config.server.per_actor_rate_limit_requests))
+    .with_trusted_proxy_cidrs(&config.server.trusted_proxy_cidrs);
+
     let state = AppState {
         db,
         config: Arc::new(RwLock::new(config.clone())),
@@ -615,6 +740,7 @@ pub async fn bootstrap_with_config_path(
         signal,
         email,
         voice,
+        media_service,
         discovery: discovery_registry,
         devices: device_manager,
         mcp_clients,
@@ -626,6 +752,8 @@ pub async fn bootstrap_with_config_path(
         config_path: Arc::new(resolved_config_path.clone()),
         config_apply_status: crate::config_runtime::status_for_path(&resolved_config_path),
         pending_specialist_proposals: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        ws_tickets: ws_ticket::TicketStore::new(),
+        rate_limiter: rate_limiter.clone(),
     };
 
     // Periodic ANN index rebuild (every 10 minutes)
@@ -652,7 +780,9 @@ pub async fn bootstrap_with_config_path(
 
     // Load persisted semantic cache
     {
-        let loaded = ironclad_db::cache::load_cache_entries(&state.db).unwrap_or_default();
+        let loaded = ironclad_db::cache::load_cache_entries(&state.db)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load semantic cache entries"))
+            .unwrap_or_default();
         if !loaded.is_empty() {
             let imported: Vec<(String, ironclad_llm::ExportedCacheEntry)> = loaded
                 .into_iter()
@@ -744,11 +874,19 @@ pub async fn bootstrap_with_config_path(
         let hb_wallet = Arc::clone(&state.wallet);
         let hb_db = state.db.clone();
         let hb_session_cfg = config.session.clone();
+        let hb_digest_cfg = config.digest.clone();
         let hb_agent_id = config.agent.id.clone();
         let daemon = ironclad_schedule::HeartbeatDaemon::new(60_000);
         tokio::spawn(async move {
-            ironclad_schedule::run_heartbeat(daemon, hb_wallet, hb_db, hb_session_cfg, hb_agent_id)
-                .await;
+            ironclad_schedule::run_heartbeat(
+                daemon,
+                hb_wallet,
+                hb_db,
+                hb_session_cfg,
+                hb_digest_cfg,
+                hb_agent_id,
+            )
+            .await;
         });
         tracing::info!("Heartbeat daemon spawned (60s interval)");
     }
@@ -775,6 +913,39 @@ pub async fn bootstrap_with_config_path(
             ironclad_schedule::run_cron_worker(cron_db, instance_id).await;
         });
         tracing::info!("Cron worker spawned");
+    }
+
+    // Periodic mechanic-check sweep (default 6h, per-instance).
+    {
+        let db_path = config.database.path.clone();
+        let interval_secs = std::env::var("IRONCLAD_MECHANIC_CHECK_INTERVAL_SECS")
+            .ok()
+            .or_else(|| std::env::var("IRONCLAD_STATE_HYGIENE_INTERVAL_SECS").ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v >= 300)
+            .unwrap_or(21_600);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                match crate::state_hygiene::run_state_hygiene(&db_path) {
+                    Ok(report) if report.changed => {
+                        tracing::info!(
+                            changed_rows = report.changed_rows,
+                            subagent_rows_normalized = report.subagent_rows_normalized,
+                            cron_payload_rows_repaired = report.cron_payload_rows_repaired,
+                            cron_jobs_disabled_invalid_expr =
+                                report.cron_jobs_disabled_invalid_expr,
+                            "periodic mechanic checks applied"
+                        );
+                    }
+                    Ok(_) => tracing::debug!("periodic mechanic checks: no changes"),
+                    Err(e) => tracing::warn!(error = %e, "periodic mechanic checks failed"),
+                }
+            }
+        });
+        tracing::info!(interval_secs, "Mechanic checks daemon spawned");
     }
 
     {
@@ -975,21 +1146,32 @@ pub async fn bootstrap_with_config_path(
             axum::http::header::AUTHORIZATION,
             axum::http::HeaderName::from_static("x-api-key"),
         ]);
-    let authed_routes = build_router(state.clone())
-        .route("/ws", ws_route(event_bus.clone()))
-        .layer(auth_layer);
+    let authed_routes = build_router(state.clone()).layer(auth_layer);
+
+    // WebSocket route handles its own auth (header OR ticket) so it
+    // lives outside the API-key middleware layer.
+    let ws_routes = axum::Router::new().route(
+        "/ws",
+        ws_route(
+            event_bus.clone(),
+            state.ws_tickets.clone(),
+            config.server.api_key.clone(),
+        ),
+    );
+
+    // MCP protocol endpoint uses bearer token auth (same API key).
+    // Lives outside the main API-key middleware because the MCP transport
+    // service (StreamableHttpService) needs its own route handling.
+    let mcp_routes = build_mcp_router(&state, config.server.api_key.clone());
 
     let public_routes = build_public_router(state);
 
-    let app = authed_routes.merge(public_routes).layer(cors).layer(
-        GlobalRateLimitLayer::new(
-            u64::from(config.server.rate_limit_requests),
-            Duration::from_secs(config.server.rate_limit_window_secs),
-        )
-        .with_per_ip_capacity(u64::from(config.server.per_ip_rate_limit_requests))
-        .with_per_actor_capacity(u64::from(config.server.per_actor_rate_limit_requests))
-        .with_trusted_proxy_cidrs(&config.server.trusted_proxy_cidrs),
-    );
+    let app = authed_routes
+        .merge(ws_routes)
+        .merge(mcp_routes)
+        .merge(public_routes)
+        .layer(cors)
+        .layer(rate_limiter);
     Ok(app)
 }
 

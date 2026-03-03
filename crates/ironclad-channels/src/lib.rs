@@ -29,6 +29,7 @@ pub mod delivery;
 pub mod discord;
 pub mod email;
 pub mod filter;
+pub mod media;
 pub mod router;
 pub mod signal;
 pub mod telegram;
@@ -36,11 +37,61 @@ pub mod voice;
 pub mod web;
 pub mod whatsapp;
 
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use ironclad_core::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+// ── Multimodal attachment types ─────────────────────────────────────────
+
+/// Classification of a media attachment received from any channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaType {
+    Image,
+    Audio,
+    Video,
+    Document,
+}
+
+impl MediaType {
+    /// Infer media type from a MIME content-type string.
+    pub fn from_content_type(ct: &str) -> Self {
+        let ct_lower = ct.to_ascii_lowercase();
+        if ct_lower.starts_with("image/") {
+            Self::Image
+        } else if ct_lower.starts_with("audio/") {
+            Self::Audio
+        } else if ct_lower.starts_with("video/") {
+            Self::Video
+        } else {
+            Self::Document
+        }
+    }
+}
+
+/// A media attachment received from a channel adapter.
+///
+/// Stored as JSON inside `InboundMessage.metadata["attachments"]` for full
+/// backward compatibility — no changes to trait signatures or struct fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaAttachment {
+    pub media_type: MediaType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    pub content_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+}
 
 /// Maximum allowed length for the `platform` field on [`InboundMessage`].
 const MAX_PLATFORM_LEN: usize = 64;
@@ -54,7 +105,12 @@ pub fn sanitize_platform(raw: &str) -> String {
     if cleaned.len() <= MAX_PLATFORM_LEN {
         cleaned
     } else {
-        cleaned.chars().take(MAX_PLATFORM_LEN).collect()
+        // Truncate to MAX_PLATFORM_LEN bytes at a char boundary
+        let mut end = MAX_PLATFORM_LEN;
+        while end > 0 && !cleaned.is_char_boundary(end) {
+            end -= 1;
+        }
+        cleaned[..end].to_string()
     }
 }
 

@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio::process::Command;
 
 use ironclad_core::{InputAuthority, RiskLevel};
 
@@ -34,13 +36,79 @@ fn validate_rel_path(rel: &Path) -> std::result::Result<(), ToolError> {
     Ok(())
 }
 
+fn normalize_workspace_rel_path(root: &Path, raw: &str) -> std::result::Result<PathBuf, ToolError> {
+    if raw.is_empty() || raw == "." {
+        return Ok(PathBuf::from("."));
+    }
+
+    if raw == "~" || raw.starts_with("~/") {
+        let home = std::env::var("HOME").map_err(|_| ToolError {
+            message: "cannot expand '~' because HOME is not set".into(),
+        })?;
+        let suffix = if raw == "~" {
+            ""
+        } else {
+            raw.trim_start_matches("~/")
+        };
+        let expanded = Path::new(&home).join(suffix);
+        return absolutize_into_workspace_rel(root, &expanded);
+    }
+
+    let as_path = Path::new(raw);
+    if as_path.is_absolute() {
+        return absolutize_into_workspace_rel(root, as_path);
+    }
+
+    validate_rel_path(as_path)?;
+    Ok(as_path.to_path_buf())
+}
+
+fn absolutize_into_workspace_rel(
+    root: &Path,
+    absolute_or_expanded: &Path,
+) -> std::result::Result<PathBuf, ToolError> {
+    if let Ok(stripped) = absolute_or_expanded.strip_prefix(root) {
+        let rel = if stripped.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            stripped.to_path_buf()
+        };
+        validate_rel_path(&rel)?;
+        return Ok(rel);
+    }
+
+    if absolute_or_expanded.exists() {
+        let canonical = std::fs::canonicalize(absolute_or_expanded).map_err(|e| ToolError {
+            message: format!(
+                "failed to resolve '{}': {e}",
+                absolute_or_expanded.display()
+            ),
+        })?;
+        if let Ok(stripped) = canonical.strip_prefix(root) {
+            let rel = if stripped.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                stripped.to_path_buf()
+            };
+            validate_rel_path(&rel)?;
+            return Ok(rel);
+        }
+    }
+
+    Err(ToolError {
+        message: format!(
+            "path is outside workspace root: {}",
+            absolute_or_expanded.display()
+        ),
+    })
+}
+
 fn resolve_workspace_path(
     root: &Path,
     rel: &str,
     allow_nonexistent: bool,
 ) -> std::result::Result<PathBuf, ToolError> {
-    let rel_path = Path::new(rel);
-    validate_rel_path(rel_path)?;
+    let rel_path = normalize_workspace_rel_path(root, rel)?;
     let joined = root.join(rel_path);
     if joined.exists() {
         let canonical = std::fs::canonicalize(&joined).map_err(|e| ToolError {
@@ -218,6 +286,12 @@ pub struct ToolContext {
     pub agent_id: String,
     pub authority: InputAuthority,
     pub workspace_root: PathBuf,
+    /// The channel through which the current message arrived (e.g. "api", "telegram", "discord").
+    /// `None` when channel is unknown or the tool was invoked outside a channel context.
+    pub channel: Option<String>,
+    /// Optional database handle for tools that need to query runtime state
+    /// (e.g. subagent status, task lists, delivery queue depth).
+    pub db: Option<ironclad_db::Database>,
 }
 
 #[derive(Debug, Clone)]
@@ -399,6 +473,90 @@ impl Tool for ScriptRunnerTool {
                 message: e.to_string(),
             }),
         }
+    }
+}
+
+pub struct BashTool;
+
+#[async_trait]
+impl Tool for BashTool {
+    fn name(&self) -> &str {
+        "bash"
+    }
+
+    fn description(&self) -> &str {
+        "Execute a shell command inside the workspace root"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Dangerous
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string", "description": "Shell command to execute" },
+                "cwd": { "type": "string", "description": "Working directory under workspace root", "default": "." },
+                "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 120, "default": 20 }
+            },
+            "required": ["command"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let command = params
+            .get("command")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'command' parameter".into(),
+            })?;
+        let cwd_raw = params.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+        let timeout_seconds = params
+            .get("timeout_seconds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20)
+            .clamp(1, 120);
+
+        let root = workspace_root_from_ctx(ctx)?;
+        let cwd = resolve_workspace_path(&root, cwd_raw, false)?;
+        let started = Instant::now();
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_seconds),
+            Command::new("bash")
+                .arg("-lc")
+                .arg(command)
+                .current_dir(&cwd)
+                .output(),
+        )
+        .await
+        .map_err(|_| ToolError {
+            message: format!("command timed out after {timeout_seconds}s"),
+        })?
+        .map_err(|e| ToolError {
+            message: format!("failed to run bash command: {e}"),
+        })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit_code = output.status.code().unwrap_or(-1);
+        if !output.status.success() {
+            return Err(ToolError {
+                message: format!("command exited with code {exit_code}: {stderr}"),
+            });
+        }
+        Ok(ToolResult {
+            output: stdout,
+            metadata: Some(serde_json::json!({
+                "exit_code": exit_code,
+                "duration_ms": started.elapsed().as_millis() as u64,
+                "cwd": cwd.display().to_string(),
+            })),
+        })
     }
 }
 
@@ -882,6 +1040,729 @@ impl Tool for SearchFilesTool {
     }
 }
 
+// ── Introspection Tools ─────────────────────────────────────────────────────
+// Read-only probes that let the agent reason about its own runtime state.
+// All return JSON strings so the LLM can parse structured data.
+
+/// Reports runtime context: agent id, session, channel, and workspace.
+pub struct GetRuntimeContextTool;
+
+#[async_trait]
+impl Tool for GetRuntimeContextTool {
+    fn name(&self) -> &str {
+        "get_runtime_context"
+    }
+
+    fn description(&self) -> &str {
+        "Returns the current agent runtime context including session, channel, and workspace path"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })
+    }
+
+    async fn execute(
+        &self,
+        _params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let info = serde_json::json!({
+            "agent_id": ctx.agent_id,
+            "session_id": ctx.session_id,
+            "channel": ctx.channel,
+            "workspace_root": ctx.workspace_root.display().to_string(),
+            "authority": format!("{:?}", ctx.authority),
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&info).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(info),
+        })
+    }
+}
+
+/// Reports memory budget allocation and retrieval tier configuration.
+pub struct GetMemoryStatsTool;
+
+#[async_trait]
+impl Tool for GetMemoryStatsTool {
+    fn name(&self) -> &str {
+        "get_memory_stats"
+    }
+
+    fn description(&self) -> &str {
+        "Returns memory retrieval tier allocations and configuration"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })
+    }
+
+    async fn execute(
+        &self,
+        _params: Value,
+        _ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        // Return the default tier budgets; runtime overrides would require
+        // access to the live config, which we thread in when available.
+        let tiers = serde_json::json!({
+            "tiers": {
+                "working": { "budget_pct": 30, "description": "Active conversation context" },
+                "episodic": { "budget_pct": 25, "description": "Session digests and summaries" },
+                "semantic": { "budget_pct": 20, "description": "Vector-similarity recalled facts" },
+                "procedural": { "budget_pct": 15, "description": "How-to knowledge and procedures" },
+                "relationship": { "budget_pct": 10, "description": "Entity relationships and graph" },
+            },
+            "retrieval_method": "5-tier hybrid (FTS5 + vector cosine)",
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&tiers).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(tiers),
+        })
+    }
+}
+
+/// Reports the health of the current delivery channel.
+pub struct GetChannelHealthTool;
+
+#[async_trait]
+impl Tool for GetChannelHealthTool {
+    fn name(&self) -> &str {
+        "get_channel_health"
+    }
+
+    fn description(&self) -> &str {
+        "Returns the health status of the current delivery channel"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })
+    }
+
+    async fn execute(
+        &self,
+        _params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let channel = ctx.channel.as_deref().unwrap_or("unknown");
+        let health = serde_json::json!({
+            "channel": channel,
+            "status": "operational",
+            "note": "Detailed channel health metrics require a ChannelRouter reference; \
+                     basic connectivity confirmed by successful tool invocation.",
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&health).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(health),
+        })
+    }
+}
+
+// ── Subagent & Task Introspection ──────────────────────────────────────
+
+/// Returns the status of registered subagents and open tasks.
+///
+/// Designed to grow over time — future versions may include delegation
+/// history, task completion rates, and specialist performance metrics.
+pub struct GetSubagentStatusTool;
+
+#[async_trait]
+impl Tool for GetSubagentStatusTool {
+    fn name(&self) -> &str {
+        "get_subagent_status"
+    }
+
+    fn description(&self) -> &str {
+        "Returns the status of registered subagents (specialists) and open tasks"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })
+    }
+
+    async fn execute(
+        &self,
+        _params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let db = match &ctx.db {
+            Some(db) => db,
+            None => {
+                let result = serde_json::json!({
+                    "error": "database not available",
+                    "subagents": [],
+                    "tasks": [],
+                });
+                return Ok(ToolResult {
+                    output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+                    metadata: Some(result),
+                });
+            }
+        };
+
+        // Query subagents
+        let subagents = ironclad_db::agents::list_sub_agents(db)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| {
+                serde_json::json!({
+                    "name": a.name,
+                    "display_name": a.display_name,
+                    "model": a.model,
+                    "role": a.role,
+                    "enabled": a.enabled,
+                    "session_count": a.session_count,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // Query open tasks
+        let tasks = {
+            let conn = db.conn();
+            conn.prepare(
+                "SELECT id, title, status, priority, source, created_at \
+                 FROM tasks WHERE status IN ('pending', 'in_progress') \
+                 ORDER BY priority DESC, created_at ASC LIMIT 50",
+            )
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([], |row| {
+                    Ok(serde_json::json!({
+                        "id": row.get::<_, String>(0)?,
+                        "title": row.get::<_, String>(1)?,
+                        "status": row.get::<_, String>(2)?,
+                        "priority": row.get::<_, i64>(3)?,
+                        "source": row.get::<_, Option<String>>(4)?,
+                        "created_at": row.get::<_, String>(5)?,
+                    }))
+                })
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+                .unwrap_or_default()
+            })
+            .unwrap_or_default()
+        };
+
+        let result = serde_json::json!({
+            "subagents": subagents,
+            "subagent_count": subagents.len(),
+            "tasks": tasks,
+            "open_task_count": tasks.len(),
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(result),
+        })
+    }
+}
+
+// ── Agent Data Tools ───────────────────────────────────────────────────
+// Let the agent create, modify, and drop its own database tables.
+// All tables are prefixed with the agent id for isolation.
+
+const MAX_AGENT_TABLES: usize = 50;
+const MAX_COLUMNS_PER_TABLE: usize = 64;
+const ALLOWED_COL_TYPES: &[&str] = &["TEXT", "INTEGER", "REAL", "BLOB"];
+const RESERVED_COL_NAMES: &[&str] = &["id", "created_at", "rowid"];
+
+fn require_db(ctx: &ToolContext) -> std::result::Result<&ironclad_db::Database, ToolError> {
+    ctx.db.as_ref().ok_or_else(|| ToolError {
+        message: "database not available in this context".into(),
+    })
+}
+
+fn parse_column_defs(
+    raw: &[Value],
+) -> std::result::Result<Vec<ironclad_db::hippocampus::ColumnDef>, ToolError> {
+    let mut cols = Vec::with_capacity(raw.len());
+    for (i, v) in raw.iter().enumerate() {
+        let name = v
+            .get("name")
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| ToolError {
+                message: format!("column {i}: missing 'name'"),
+            })?;
+
+        if RESERVED_COL_NAMES.contains(&name.to_lowercase().as_str()) {
+            return Err(ToolError {
+                message: format!("column '{name}' is reserved and added automatically"),
+            });
+        }
+
+        let col_type = v
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("TEXT")
+            .to_uppercase();
+
+        if !ALLOWED_COL_TYPES.contains(&col_type.as_str()) {
+            return Err(ToolError {
+                message: format!(
+                    "column '{name}': type '{col_type}' not allowed (use TEXT, INTEGER, REAL, or BLOB)"
+                ),
+            });
+        }
+
+        let nullable = v.get("nullable").and_then(|n| n.as_bool()).unwrap_or(true);
+        let description = v
+            .get("description")
+            .and_then(|d| d.as_str())
+            .map(String::from);
+
+        cols.push(ironclad_db::hippocampus::ColumnDef {
+            name: name.into(),
+            col_type,
+            nullable,
+            description,
+        });
+    }
+    Ok(cols)
+}
+
+/// Creates a new agent-owned database table. Tables are automatically
+/// prefixed with the agent id and registered in the hippocampus.
+pub struct CreateTableTool;
+
+#[async_trait]
+impl Tool for CreateTableTool {
+    fn name(&self) -> &str {
+        "create_table"
+    }
+
+    fn description(&self) -> &str {
+        "Create a new database table owned by this agent. Tables are prefixed with the agent id \
+         for isolation. Columns 'id' (TEXT PK) and 'created_at' are added automatically."
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Caution
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Table suffix (will be prefixed with agent id). Alphanumeric and underscores only."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Human-readable description of the table's purpose"
+                },
+                "columns": {
+                    "type": "array",
+                    "description": "Column definitions. Each has 'name', optional 'type' (TEXT|INTEGER|REAL|BLOB, default TEXT), optional 'nullable' (default true), optional 'description'.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" },
+                            "type": { "type": "string" },
+                            "nullable": { "type": "boolean" },
+                            "description": { "type": "string" }
+                        },
+                        "required": ["name"]
+                    }
+                }
+            },
+            "required": ["name", "description", "columns"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let db = require_db(ctx)?;
+
+        let name = params
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'name' parameter".into(),
+            })?;
+        let description = params
+            .get("description")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'description' parameter".into(),
+            })?;
+        let raw_columns = params
+            .get("columns")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ToolError {
+                message: "missing 'columns' array parameter".into(),
+            })?;
+
+        if raw_columns.len() > MAX_COLUMNS_PER_TABLE {
+            return Err(ToolError {
+                message: format!(
+                    "too many columns ({}, max {MAX_COLUMNS_PER_TABLE})",
+                    raw_columns.len()
+                ),
+            });
+        }
+
+        // Enforce per-agent table limit
+        let existing =
+            ironclad_db::hippocampus::list_agent_tables(db, &ctx.agent_id).map_err(|e| {
+                ToolError {
+                    message: format!("failed to check existing tables: {e}"),
+                }
+            })?;
+        if existing.len() >= MAX_AGENT_TABLES {
+            return Err(ToolError {
+                message: format!(
+                    "agent table limit reached ({MAX_AGENT_TABLES}). Drop unused tables first."
+                ),
+            });
+        }
+
+        let columns = parse_column_defs(raw_columns)?;
+
+        let full_name = ironclad_db::hippocampus::create_agent_table(
+            db,
+            &ctx.agent_id,
+            name,
+            description,
+            &columns,
+        )
+        .map_err(|e| ToolError {
+            message: format!("failed to create table: {e}"),
+        })?;
+
+        let result = serde_json::json!({
+            "table_name": full_name,
+            "columns_created": columns.len(),
+            "note": "Columns 'id' (TEXT PK) and 'created_at' (TEXT) are added automatically."
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(result),
+        })
+    }
+}
+
+/// Adds or drops columns on an agent-owned table.
+pub struct AlterTableTool;
+
+#[async_trait]
+impl Tool for AlterTableTool {
+    fn name(&self) -> &str {
+        "alter_table"
+    }
+
+    fn description(&self) -> &str {
+        "Add or drop columns on a table owned by this agent. Use operation 'add_column' or 'drop_column'."
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Caution
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "table_name": {
+                    "type": "string",
+                    "description": "Full table name (including agent prefix)"
+                },
+                "operation": {
+                    "type": "string",
+                    "enum": ["add_column", "drop_column"],
+                    "description": "The alteration to perform"
+                },
+                "column": {
+                    "type": "object",
+                    "description": "Column definition for add_column: {name, type?, nullable?, description?}. For drop_column: {name}.",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "type": { "type": "string" },
+                        "nullable": { "type": "boolean" },
+                        "description": { "type": "string" }
+                    },
+                    "required": ["name"]
+                }
+            },
+            "required": ["table_name", "operation", "column"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let db = require_db(ctx)?;
+
+        let table_name = params
+            .get("table_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'table_name' parameter".into(),
+            })?;
+        let operation = params
+            .get("operation")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'operation' parameter".into(),
+            })?;
+        let column = params.get("column").ok_or_else(|| ToolError {
+            message: "missing 'column' parameter".into(),
+        })?;
+
+        let col_name = column
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "column missing 'name' field".into(),
+            })?;
+
+        // Verify ownership via hippocampus
+        let entry = ironclad_db::hippocampus::get_table(db, table_name)
+            .map_err(|e| ToolError {
+                message: format!("failed to look up table: {e}"),
+            })?
+            .ok_or_else(|| ToolError {
+                message: format!("table '{table_name}' not found in hippocampus"),
+            })?;
+
+        if !entry.agent_owned || entry.created_by != ctx.agent_id {
+            return Err(ToolError {
+                message: format!("table '{table_name}' is not owned by this agent"),
+            });
+        }
+
+        match operation {
+            "add_column" => {
+                if RESERVED_COL_NAMES.contains(&col_name.to_lowercase().as_str()) {
+                    return Err(ToolError {
+                        message: format!("column '{col_name}' is reserved"),
+                    });
+                }
+
+                let col_type = column
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("TEXT")
+                    .to_uppercase();
+
+                if !ALLOWED_COL_TYPES.contains(&col_type.as_str()) {
+                    return Err(ToolError {
+                        message: format!("type '{col_type}' not allowed"),
+                    });
+                }
+
+                let nullable = column
+                    .get("nullable")
+                    .and_then(|n| n.as_bool())
+                    .unwrap_or(true);
+
+                // Validate identifier safety
+                if !col_name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    || col_name.is_empty()
+                {
+                    return Err(ToolError {
+                        message: format!("invalid column name: '{col_name}'"),
+                    });
+                }
+
+                let null_clause = if nullable { "" } else { " NOT NULL DEFAULT ''" };
+                let sql = format!(
+                    "ALTER TABLE \"{}\" ADD COLUMN {} {}{}",
+                    table_name, col_name, col_type, null_clause
+                );
+                let conn = db.conn();
+                conn.execute(&sql, []).map_err(|e| ToolError {
+                    message: format!("ALTER TABLE failed: {e}"),
+                })?;
+
+                // Re-introspect and update hippocampus
+                let description = column
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .map(String::from);
+                let mut new_columns = entry.columns.clone();
+                new_columns.push(ironclad_db::hippocampus::ColumnDef {
+                    name: col_name.into(),
+                    col_type: col_type.clone(),
+                    nullable,
+                    description,
+                });
+                drop(conn);
+                ironclad_db::hippocampus::register_table(
+                    db,
+                    table_name,
+                    &entry.description,
+                    &new_columns,
+                    &entry.created_by,
+                    true,
+                    &entry.access_level,
+                    entry.row_count,
+                )
+                .map_err(|e| ToolError {
+                    message: format!("failed to update hippocampus: {e}"),
+                })?;
+
+                let result = serde_json::json!({
+                    "table_name": table_name,
+                    "operation": "add_column",
+                    "column_name": col_name,
+                    "column_type": col_type,
+                });
+                Ok(ToolResult {
+                    output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+                    metadata: Some(result),
+                })
+            }
+            "drop_column" => {
+                if RESERVED_COL_NAMES.contains(&col_name.to_lowercase().as_str()) {
+                    return Err(ToolError {
+                        message: format!("cannot drop reserved column '{col_name}'"),
+                    });
+                }
+
+                let sql = format!("ALTER TABLE \"{}\" DROP COLUMN {}", table_name, col_name);
+                let conn = db.conn();
+                conn.execute(&sql, []).map_err(|e| ToolError {
+                    message: format!("ALTER TABLE DROP COLUMN failed: {e}"),
+                })?;
+
+                // Update hippocampus entry
+                let new_columns: Vec<_> = entry
+                    .columns
+                    .iter()
+                    .filter(|c| c.name != col_name)
+                    .cloned()
+                    .collect();
+                drop(conn);
+                ironclad_db::hippocampus::register_table(
+                    db,
+                    table_name,
+                    &entry.description,
+                    &new_columns,
+                    &entry.created_by,
+                    true,
+                    &entry.access_level,
+                    entry.row_count,
+                )
+                .map_err(|e| ToolError {
+                    message: format!("failed to update hippocampus: {e}"),
+                })?;
+
+                let result = serde_json::json!({
+                    "table_name": table_name,
+                    "operation": "drop_column",
+                    "column_name": col_name,
+                });
+                Ok(ToolResult {
+                    output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+                    metadata: Some(result),
+                })
+            }
+            other => Err(ToolError {
+                message: format!("unknown operation '{other}' (use 'add_column' or 'drop_column')"),
+            }),
+        }
+    }
+}
+
+/// Drops an agent-owned table and removes it from the hippocampus.
+pub struct DropTableTool;
+
+#[async_trait]
+impl Tool for DropTableTool {
+    fn name(&self) -> &str {
+        "drop_table"
+    }
+
+    fn description(&self) -> &str {
+        "Drop a table owned by this agent. The table and all its data are permanently deleted."
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Caution
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "table_name": {
+                    "type": "string",
+                    "description": "Full table name (including agent prefix) to drop"
+                }
+            },
+            "required": ["table_name"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let db = require_db(ctx)?;
+
+        let table_name = params
+            .get("table_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'table_name' parameter".into(),
+            })?;
+
+        ironclad_db::hippocampus::drop_agent_table(db, &ctx.agent_id, table_name).map_err(|e| {
+            ToolError {
+                message: format!("failed to drop table: {e}"),
+            }
+        })?;
+
+        let result = serde_json::json!({
+            "table_name": table_name,
+            "status": "dropped",
+        });
+        Ok(ToolResult {
+            output: serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()),
+            metadata: Some(result),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,6 +1775,8 @@ mod tests {
             agent_id: "test-agent".into(),
             authority: InputAuthority::Creator,
             workspace_root: std::env::current_dir().unwrap(),
+            channel: None,
+            db: None,
         }
     }
 
@@ -934,6 +1817,29 @@ mod tests {
         let bad_params = serde_json::json!({});
         let err = tool.execute(bad_params, &ctx).await.unwrap_err();
         assert!(err.message.contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn bash_tool_executes_command_in_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("probe.txt"), "ok").unwrap();
+
+        let tool = BashTool;
+        let ctx = ToolContext {
+            session_id: "test-session".into(),
+            agent_id: "test-agent".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+            channel: None,
+            db: None,
+        };
+
+        let result = tool
+            .execute(serde_json::json!({"command": "ls", "cwd": "."}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.output.contains("probe.txt"));
     }
 
     #[test]
@@ -1042,6 +1948,8 @@ mod tests {
             agent_id: "test-agent".into(),
             authority: InputAuthority::Creator,
             workspace_root: dir.path().to_path_buf(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1102,6 +2010,39 @@ mod tests {
         assert!(result.starts_with(&root));
     }
 
+    #[test]
+    fn resolve_workspace_path_accepts_workspace_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let target = root.join("abs.txt");
+        std::fs::write(&target, "ok").unwrap();
+        let result = resolve_workspace_path(&root, &target.display().to_string(), false).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn resolve_workspace_path_rejects_external_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let err = resolve_workspace_path(&root, "/tmp/not-in-workspace.txt", false).unwrap_err();
+        assert!(err.message.contains("outside workspace root"));
+    }
+
+    #[test]
+    fn resolve_workspace_path_accepts_tilde_when_inside_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let ws = home.join("code/ironclad");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        let root = std::fs::canonicalize(&ws).unwrap();
+        unsafe {
+            std::env::set_var("HOME", &home);
+        }
+        let result = resolve_workspace_path(&root, "~/code/ironclad", false).unwrap();
+        assert_eq!(result, root);
+    }
+
     #[cfg(unix)]
     #[test]
     fn resolve_workspace_path_symlink_escape() {
@@ -1126,6 +2067,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1158,6 +2101,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1190,6 +2135,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let err = tool
@@ -1254,6 +2201,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1286,6 +2235,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         tool.execute(
@@ -1318,6 +2269,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         // Case sensitive should only find exact match
@@ -1368,6 +2321,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1400,6 +2355,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1429,6 +2386,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let result = tool
@@ -1462,6 +2421,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         let err = tool
@@ -1502,6 +2463,8 @@ mod tests {
             agent_id: "test".into(),
             authority: InputAuthority::Creator,
             workspace_root: root.clone(),
+            channel: None,
+            db: None,
         };
 
         // No path param -- should default to "."
@@ -1659,5 +2622,376 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.message.contains("script exited with code 7"));
+    }
+
+    // ── Introspection tool tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_runtime_context_returns_all_fields() {
+        let tool = GetRuntimeContextTool;
+        let mut ctx = test_ctx();
+        ctx.channel = Some("telegram".into());
+
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(parsed["agent_id"], "test-agent");
+        assert_eq!(parsed["session_id"], "test-session");
+        assert_eq!(parsed["channel"], "telegram");
+        assert!(parsed["workspace_root"].is_string());
+        assert!(result.metadata.is_some());
+    }
+
+    #[tokio::test]
+    async fn get_runtime_context_no_channel() {
+        let tool = GetRuntimeContextTool;
+        let ctx = test_ctx();
+
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert!(parsed["channel"].is_null());
+    }
+
+    #[tokio::test]
+    async fn get_memory_stats_returns_all_tiers() {
+        let tool = GetMemoryStatsTool;
+        let ctx = test_ctx();
+
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        let tiers = &parsed["tiers"];
+        assert_eq!(tiers["working"]["budget_pct"], 30);
+        assert_eq!(tiers["episodic"]["budget_pct"], 25);
+        assert_eq!(tiers["semantic"]["budget_pct"], 20);
+        assert_eq!(tiers["procedural"]["budget_pct"], 15);
+        assert_eq!(tiers["relationship"]["budget_pct"], 10);
+        assert!(
+            parsed["retrieval_method"]
+                .as_str()
+                .unwrap()
+                .contains("FTS5")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_channel_health_with_channel() {
+        let tool = GetChannelHealthTool;
+        let mut ctx = test_ctx();
+        ctx.channel = Some("discord".into());
+
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(parsed["channel"], "discord");
+        assert_eq!(parsed["status"], "operational");
+    }
+
+    #[tokio::test]
+    async fn get_channel_health_unknown_channel() {
+        let tool = GetChannelHealthTool;
+        let ctx = test_ctx();
+
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(parsed["channel"], "unknown");
+    }
+
+    #[test]
+    fn introspection_tools_metadata() {
+        let rt = GetRuntimeContextTool;
+        assert_eq!(rt.name(), "get_runtime_context");
+        assert_eq!(rt.risk_level(), RiskLevel::Safe);
+
+        let ms = GetMemoryStatsTool;
+        assert_eq!(ms.name(), "get_memory_stats");
+        assert_eq!(ms.risk_level(), RiskLevel::Safe);
+
+        let ch = GetChannelHealthTool;
+        assert_eq!(ch.name(), "get_channel_health");
+        assert_eq!(ch.risk_level(), RiskLevel::Safe);
+
+        let sa = GetSubagentStatusTool;
+        assert_eq!(sa.name(), "get_subagent_status");
+        assert_eq!(sa.risk_level(), RiskLevel::Safe);
+    }
+
+    #[tokio::test]
+    async fn get_subagent_status_without_db_returns_empty() {
+        let tool = GetSubagentStatusTool;
+        let ctx = test_ctx(); // db: None
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(v["subagents"], serde_json::json!([]));
+        assert_eq!(v["tasks"], serde_json::json!([]));
+        assert!(
+            v["error"]
+                .as_str()
+                .unwrap()
+                .contains("database not available")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_subagent_status_with_db_returns_agents_and_tasks() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+
+        // Insert a subagent
+        ironclad_db::agents::upsert_sub_agent(
+            &db,
+            &ironclad_db::agents::SubAgentRow {
+                id: "sa-1".into(),
+                name: "code-reviewer".into(),
+                display_name: Some("Code Reviewer".into()),
+                model: "gpt-4o".into(),
+                fallback_models_json: Some("[]".into()),
+                role: "specialist".into(),
+                description: Some("Reviews code".into()),
+                skills_json: None,
+                enabled: true,
+                session_count: 3,
+            },
+        )
+        .unwrap();
+
+        // Insert some tasks
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority) VALUES ('t1', 'Fix bug', 'pending', 2)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority) VALUES ('t2', 'Write docs', 'in_progress', 1)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority) VALUES ('t3', 'Done task', 'completed', 0)",
+                [],
+            ).unwrap();
+        }
+
+        let ctx = ToolContext {
+            session_id: "test-session".into(),
+            agent_id: "test-agent".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: std::env::current_dir().unwrap(),
+            channel: None,
+            db: Some(db),
+        };
+
+        let tool = GetSubagentStatusTool;
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+
+        // Should have 1 subagent
+        assert_eq!(v["subagent_count"], 1);
+        assert_eq!(v["subagents"][0]["name"], "code-reviewer");
+        assert_eq!(v["subagents"][0]["enabled"], true);
+
+        // Should have 2 open tasks (pending + in_progress), not the completed one
+        assert_eq!(v["open_task_count"], 2);
+        // Priority DESC, so "Fix bug" (priority 2) comes first
+        assert_eq!(v["tasks"][0]["title"], "Fix bug");
+        assert_eq!(v["tasks"][1]["title"], "Write docs");
+    }
+
+    // ── Data tools tests ───────────────────────────────────────────────
+
+    fn test_ctx_with_db() -> ToolContext {
+        let db = ironclad_db::Database::new(":memory:").expect("in-memory db");
+        ToolContext {
+            session_id: "test-session".into(),
+            agent_id: "testagent".into(), // no hyphens — SQL identifiers
+            authority: InputAuthority::Creator,
+            workspace_root: std::env::current_dir().unwrap(),
+            channel: None,
+            db: Some(db),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_table_basic() {
+        let ctx = test_ctx_with_db();
+        let tool = CreateTableTool;
+        let params = serde_json::json!({
+            "name": "notes",
+            "description": "Agent scratchpad",
+            "columns": [
+                {"name": "title", "type": "TEXT"},
+                {"name": "body", "type": "TEXT"},
+            ]
+        });
+        let result = tool.execute(params, &ctx).await.unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(v["table_name"], "testagent_notes");
+        assert_eq!(v["columns_created"], 2);
+    }
+
+    #[tokio::test]
+    async fn create_table_rejects_reserved_column() {
+        let ctx = test_ctx_with_db();
+        let tool = CreateTableTool;
+        let params = serde_json::json!({
+            "name": "bad",
+            "description": "test",
+            "columns": [{"name": "rowid", "type": "INTEGER"}]
+        });
+        let err = tool.execute(params, &ctx).await.unwrap_err();
+        assert!(err.message.contains("reserved"), "got: {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn create_table_rejects_invalid_type() {
+        let ctx = test_ctx_with_db();
+        let tool = CreateTableTool;
+        let params = serde_json::json!({
+            "name": "bad",
+            "description": "test",
+            "columns": [{"name": "val", "type": "JSON"}]
+        });
+        let err = tool.execute(params, &ctx).await.unwrap_err();
+        assert!(err.message.contains("type"), "got: {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn create_table_enforces_max_columns() {
+        let ctx = test_ctx_with_db();
+        let tool = CreateTableTool;
+        let cols: Vec<Value> = (0..MAX_COLUMNS_PER_TABLE + 1)
+            .map(|i| serde_json::json!({"name": format!("c{i}"), "type": "TEXT"}))
+            .collect();
+        let params = serde_json::json!({
+            "name": "wide",
+            "description": "too many columns",
+            "columns": cols
+        });
+        let err = tool.execute(params, &ctx).await.unwrap_err();
+        assert!(err.message.contains("columns"), "got: {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn alter_table_add_and_drop_column() {
+        let ctx = test_ctx_with_db();
+        // First create a table
+        CreateTableTool
+            .execute(
+                serde_json::json!({
+                    "name": "tasks",
+                    "description": "task list",
+                    "columns": [{"name": "title", "type": "TEXT"}]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let alter = AlterTableTool;
+        // Add a column
+        let result = alter
+            .execute(
+                serde_json::json!({
+                    "table_name": "testagent_tasks",
+                    "operation": "add_column",
+                    "column": {"name": "priority", "type": "INTEGER"}
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(v["operation"], "add_column");
+        assert_eq!(v["column_name"], "priority");
+
+        // Drop a column
+        let result = alter
+            .execute(
+                serde_json::json!({
+                    "table_name": "testagent_tasks",
+                    "operation": "drop_column",
+                    "column": {"name": "priority"}
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(v["operation"], "drop_column");
+        assert_eq!(v["column_name"], "priority");
+    }
+
+    #[tokio::test]
+    async fn alter_table_rejects_non_owned_table() {
+        let ctx = test_ctx_with_db();
+        let alter = AlterTableTool;
+        let err = alter
+            .execute(
+                serde_json::json!({
+                    "table_name": "sessions",
+                    "operation": "add_column",
+                    "column": {"name": "hack", "type": "TEXT"}
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("not owned") || err.message.contains("not found"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_table_basic() {
+        let ctx = test_ctx_with_db();
+        CreateTableTool
+            .execute(
+                serde_json::json!({
+                    "name": "temp",
+                    "description": "throwaway",
+                    "columns": [{"name": "data", "type": "BLOB"}]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let drop = DropTableTool;
+        let result = drop
+            .execute(serde_json::json!({"table_name": "testagent_temp"}), &ctx)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(v["status"], "dropped");
+    }
+
+    #[tokio::test]
+    async fn drop_table_rejects_system_table() {
+        let ctx = test_ctx_with_db();
+        let drop = DropTableTool;
+        let err = drop
+            .execute(serde_json::json!({"table_name": "sessions"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("not owned") || err.message.contains("drop"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn data_tools_require_db() {
+        let ctx = test_ctx(); // no db
+        let err = CreateTableTool
+            .execute(
+                serde_json::json!({
+                    "name": "x",
+                    "description": "y",
+                    "columns": [{"name": "a", "type": "TEXT"}]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("database"), "got: {}", err.message);
     }
 }

@@ -1,7 +1,7 @@
 //! Global API rate limiting (fixed window, Clone-friendly for axum Router).
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,6 +11,12 @@ use axum::http::{Request, Response, StatusCode};
 use futures_util::future::BoxFuture;
 use tokio::sync::Mutex;
 use tower::{Layer, Service};
+
+/// Hard cap on distinct tracked IPs/actors within a window.
+/// Requests from new IPs beyond this limit are immediately rate-limited
+/// to prevent unbounded memory growth during distributed floods.
+const MAX_DISTINCT_IPS: usize = 10_000;
+const MAX_DISTINCT_ACTORS: usize = 5_000;
 
 /// Fixed-window rate limit state: at most `capacity` requests per `window`.
 #[derive(Clone)]
@@ -85,6 +91,58 @@ impl GlobalRateLimitLayer {
         let now = Instant::now();
         counter.retain(|_, (_, start)| now.duration_since(*start) < window);
     }
+
+    /// Snapshot current throttle statistics for admin observability.
+    ///
+    /// Returns counts of throttled requests per-IP, per-actor, and globally
+    /// within the current window, plus top offenders (up to 10 each).
+    pub async fn snapshot(&self) -> ThrottleSnapshot {
+        let guard = self.state.lock().await;
+
+        let mut top_ips: Vec<_> = guard
+            .throttled_per_ip
+            .iter()
+            .map(|(ip, &count)| (ip.to_string(), count))
+            .collect();
+        top_ips.sort_by(|a, b| b.1.cmp(&a.1));
+        top_ips.truncate(10);
+
+        let mut top_actors: Vec<_> = guard
+            .throttled_per_actor
+            .iter()
+            .map(|(actor, &count)| (actor.clone(), count))
+            .collect();
+        top_actors.sort_by(|a, b| b.1.cmp(&a.1));
+        top_actors.truncate(10);
+
+        ThrottleSnapshot {
+            window_secs: self.window.as_secs(),
+            global_count: guard.count,
+            global_capacity: self.capacity,
+            per_ip_capacity: self.per_ip_capacity,
+            per_actor_capacity: self.per_actor_capacity,
+            throttled_global: guard.throttled_global,
+            active_ips: guard.per_ip.len(),
+            active_actors: guard.per_actor.len(),
+            top_throttled_ips: top_ips,
+            top_throttled_actors: top_actors,
+        }
+    }
+}
+
+/// Snapshot of current throttle counters for observability.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ThrottleSnapshot {
+    pub window_secs: u64,
+    pub global_count: u64,
+    pub global_capacity: u64,
+    pub per_ip_capacity: u64,
+    pub per_actor_capacity: u64,
+    pub throttled_global: u64,
+    pub active_ips: usize,
+    pub active_actors: usize,
+    pub top_throttled_ips: Vec<(String, u64)>,
+    pub top_throttled_actors: Vec<(String, u64)>,
 }
 
 impl<S> Layer<S> for GlobalRateLimitLayer {
@@ -129,9 +187,11 @@ fn too_many_requests_response() -> Response<Body> {
 }
 
 fn stable_token_fingerprint(raw: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    raw.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(raw.as_bytes());
+    // 8 bytes (64 bits) is plenty for rate-limit dedup — collision-resistant
+    // enough for bucket identity while keeping map keys small.
+    hex::encode(&hash[..8])
 }
 
 fn extract_actor_id(req: &Request<Body>) -> Option<String> {
@@ -149,12 +209,8 @@ fn extract_actor_id(req: &Request<Body>) -> Option<String> {
     {
         return Some(format!("bearer:{}", stable_token_fingerprint(token)));
     }
-    if let Some(v) = req.headers().get("x-user-id")
-        && let Ok(raw) = v.to_str()
-        && !raw.is_empty()
-    {
-        return Some(format!("user:{raw}"));
-    }
+    // x-user-id header is intentionally NOT used as an actor identity here.
+    // It is unauthenticated and would allow rate-limit bypass by cycling IDs.
     principal
 }
 
@@ -197,7 +253,15 @@ fn resolve_client_ip(req: &Request<Body>, trusted_proxy_cidrs: &[IpCidr]) -> IpA
         return proxy_ip;
     }
 
-    IpAddr::from([127, 0, 0, 1])
+    // Fall back to the actual TCP peer address from ConnectInfo rather than
+    // hardcoding 127.0.0.1, which would lump all headerless clients into
+    // a single rate-limit bucket.
+    use axum::extract::ConnectInfo;
+    use std::net::SocketAddr;
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip())
+        .unwrap_or(IpAddr::from([127, 0, 0, 1]))
 }
 
 impl IpCidr {
@@ -286,14 +350,20 @@ where
                 guard.count = 0;
                 GlobalRateLimitLayer::evict_stale(&mut guard.per_ip, window);
                 GlobalRateLimitLayer::evict_stale(&mut guard.per_actor, window);
+                guard.throttled_per_ip.clear();
+                guard.throttled_per_actor.clear();
+                guard.throttled_global = 0;
             }
             if guard.count >= capacity {
                 guard.throttled_global += 1;
                 return Ok(too_many_requests_response());
             }
-            guard.count += 1;
 
+            // Check per-IP limit.
             let per_ip_cap = per_ip_capacity;
+            if !guard.per_ip.contains_key(&ip) && guard.per_ip.len() >= MAX_DISTINCT_IPS {
+                return Ok(too_many_requests_response());
+            }
             let ip_entry = guard.per_ip.entry(ip).or_insert((0, now));
             if now.duration_since(ip_entry.1) >= window {
                 *ip_entry = (0, now);
@@ -304,17 +374,29 @@ where
             }
             ip_entry.0 += 1;
 
-            if let Some(actor_id) = actor {
+            // Check per-actor limit.
+            if let Some(ref actor_id) = actor {
+                if !guard.per_actor.contains_key(actor_id)
+                    && guard.per_actor.len() >= MAX_DISTINCT_ACTORS
+                {
+                    return Ok(too_many_requests_response());
+                }
                 let actor_entry = guard.per_actor.entry(actor_id.clone()).or_insert((0, now));
                 if now.duration_since(actor_entry.1) >= window {
                     *actor_entry = (0, now);
                 }
                 if actor_entry.0 >= per_actor_capacity {
-                    *guard.throttled_per_actor.entry(actor_id).or_insert(0) += 1;
+                    *guard
+                        .throttled_per_actor
+                        .entry(actor_id.clone())
+                        .or_insert(0) += 1;
                     return Ok(too_many_requests_response());
                 }
                 actor_entry.0 += 1;
             }
+
+            // All per-IP/per-actor checks passed — now increment global counter.
+            guard.count += 1;
 
             drop(guard);
 
@@ -464,5 +546,30 @@ mod tests {
             .unwrap();
         let resp = svc.ready().await.unwrap().call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn snapshot_reflects_throttle_state() {
+        let layer = GlobalRateLimitLayer::new(2, Duration::from_secs(60));
+        let mut svc = layer.layer(dummy_service().into_service());
+
+        // Exhaust global capacity.
+        for _ in 0..2 {
+            let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+            let _ = svc.ready().await.unwrap().call(req).await.unwrap();
+        }
+        // This should be throttled.
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let resp = svc.ready().await.unwrap().call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let snap = layer.snapshot().await;
+        assert_eq!(snap.global_count, 2);
+        assert_eq!(snap.global_capacity, 2);
+        assert!(
+            snap.throttled_global >= 1,
+            "should record ≥1 throttled global"
+        );
+        assert_eq!(snap.window_secs, 60);
     }
 }

@@ -188,7 +188,7 @@ impl DeliveryQueue {
         }
     }
 
-    pub fn recover_from_store(&self) {
+    pub async fn recover_from_store(&self) {
         let Some(db) = &self.store else {
             return;
         };
@@ -201,13 +201,10 @@ impl DeliveryQueue {
                     .into_iter()
                     .map(DeliveryItem::from_record)
                     .collect::<VecDeque<_>>();
-                if let Ok(mut items) = self.items.try_lock() {
-                    *items = recovered;
-                    debug!(
-                        count = items.len(),
-                        "recovered delivery queue items from database"
-                    );
-                }
+                let mut items = self.items.lock().await;
+                let count = recovered.len();
+                *items = recovered;
+                debug!(count, "recovered delivery queue items from database");
             }
             Err(e) => warn!(error = %e, "failed to recover delivery queue from database"),
         }
@@ -295,6 +292,7 @@ impl DeliveryQueue {
             return Vec::new();
         };
         dq_store::list_dead_letters(db, max_items)
+            .inspect_err(|e| warn!(error = %e, "failed to load dead letters from store"))
             .map(|rows| rows.into_iter().map(DeliveryItem::from_record).collect())
             .unwrap_or_default()
     }
@@ -311,11 +309,11 @@ impl DeliveryQueue {
         if let Some(pos) = dead.iter().position(|item| item.id == id)
             && let Some(mut item) = dead.get(pos).cloned()
         {
+            // Hold both locks to avoid the item existing in neither collection
+            let mut items = self.items.lock().await;
             dead.remove(pos);
             item.status = DeliveryStatus::Pending;
             item.next_retry_at = Utc::now();
-            drop(dead);
-            let mut items = self.items.lock().await;
             items.push_back(item);
             return true;
         }
@@ -480,7 +478,7 @@ mod tests {
         assert!(!id.is_empty());
 
         let recovered = DeliveryQueue::with_store(db);
-        recovered.recover_from_store();
+        recovered.recover_from_store().await;
         assert_eq!(recovered.queue_size().await, 1);
         let item = recovered.next_ready().await.expect("recovered item");
         assert_eq!(item.content, "persist");
@@ -726,11 +724,11 @@ mod tests {
         q.persist_item(&item);
     }
 
-    #[test]
-    fn recover_from_store_without_store_is_noop() {
+    #[tokio::test]
+    async fn recover_from_store_without_store_is_noop() {
         let q = DeliveryQueue::new();
         // Should not panic
-        q.recover_from_store();
+        q.recover_from_store().await;
     }
 
     #[tokio::test]

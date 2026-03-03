@@ -1,5 +1,16 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use serde::Deserialize;
+use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
+use tokio::time::{Instant, interval};
+
+use crate::ws_ticket::TicketStore;
 
 #[derive(Clone)]
 pub struct EventBus {
@@ -13,7 +24,9 @@ impl EventBus {
     }
 
     pub fn publish(&self, event: String) {
-        let _ = self.tx.send(event);
+        if let Err(e) = self.tx.send(event) {
+            tracing::debug!(error = %e, "EventBus publish: no active subscribers");
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
@@ -21,20 +34,95 @@ impl EventBus {
     }
 }
 
-/// Returns an axum GET route handler that upgrades the connection to WebSocket and
-/// forwards EventBus events to the client. The handler captures `bus` by value (clone).
-pub fn ws_route(bus: EventBus) -> axum::routing::MethodRouter {
-    let handler = move |ws: WebSocketUpgrade| {
-        let bus = bus.clone();
-        async move { ws.on_upgrade(move |socket| handle_socket(socket, bus)) }
-    };
+#[derive(Deserialize)]
+struct WsQuery {
+    ticket: Option<String>,
+}
+
+/// Returns an axum GET route handler that upgrades the connection to WebSocket.
+///
+/// Authentication is handled inside this handler (not by the global API-key
+/// middleware) because the `/ws` route lives outside the authed router group.
+/// Accepts either:
+///   - `x-api-key` / `Authorization: Bearer …` header (programmatic clients)
+///   - `?ticket=wst_…` query param (short-lived, single-use ticket from `POST /api/ws-ticket`)
+pub fn ws_route(
+    bus: EventBus,
+    tickets: TicketStore,
+    api_key: Option<String>,
+) -> axum::routing::MethodRouter {
+    let api_key: Option<Arc<str>> = api_key.map(|k| Arc::from(k.as_str()));
+
+    let handler =
+        move |ws: WebSocketUpgrade,
+              headers: axum::http::HeaderMap,
+              axum::extract::ConnectInfo(peer_addr): axum::extract::ConnectInfo<SocketAddr>,
+              axum::extract::Query(query): axum::extract::Query<WsQuery>| {
+            let bus = bus.clone();
+            let tickets = tickets.clone();
+            let api_key = api_key.clone();
+            async move {
+                if !ws_authenticate(
+                    &headers,
+                    &query,
+                    &tickets,
+                    api_key.as_deref(),
+                    Some(peer_addr),
+                ) {
+                    return (StatusCode::UNAUTHORIZED, "Valid API key or ticket required")
+                        .into_response();
+                }
+                ws.on_upgrade(move |socket| handle_socket(socket, bus))
+                    .into_response()
+            }
+        };
     axum::routing::get(handler)
 }
 
-// WebSocket connections are intentionally unauthenticated here because:
-// 1. The dashboard SPA is served behind the API key layer
-// 2. WebSocket upgrade requests cannot easily carry Authorization headers
-// 3. The /ws route only broadcasts events, it doesn't accept commands
+/// Check WebSocket auth: header first, then ticket, then reject.
+fn ws_authenticate(
+    headers: &axum::http::HeaderMap,
+    query: &WsQuery,
+    tickets: &TicketStore,
+    api_key: Option<&str>,
+    peer_addr: Option<SocketAddr>,
+) -> bool {
+    // If no API key is configured, mirror HTTP auth middleware behavior:
+    // allow loopback-only access, reject remote clients.
+    let Some(expected) = api_key else {
+        return peer_addr.is_some_and(|addr| addr.ip().is_loopback());
+    };
+
+    // 1. Check x-api-key header
+    if let Some(val) = headers.get("x-api-key")
+        && let Ok(provided) = val.to_str()
+        && bool::from(provided.as_bytes().ct_eq(expected.as_bytes()))
+    {
+        return true;
+    }
+
+    // 2. Check Authorization: Bearer header
+    if let Some(val) = headers.get("authorization")
+        && let Ok(s) = val.to_str()
+        && let Some(token) = s.strip_prefix("Bearer ")
+        && bool::from(token.as_bytes().ct_eq(expected.as_bytes()))
+    {
+        return true;
+    }
+
+    // 3. Check ticket query param (single-use, short-lived)
+    if let Some(ref ticket) = query.ticket
+        && tickets.redeem(ticket)
+    {
+        return true;
+    }
+
+    false
+}
+
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
 async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
     let mut rx = bus.subscribe();
 
@@ -49,6 +137,10 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
         return;
     }
 
+    let mut ping_timer = interval(PING_INTERVAL);
+    ping_timer.tick().await; // consume the immediate first tick
+    let mut last_activity = Instant::now();
+
     // Forward events from the bus to the WebSocket client
     loop {
         tokio::select! {
@@ -58,6 +150,7 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
                         if socket.send(Message::Text(event.into())).await.is_err() {
                             break; // client disconnected
                         }
+                        last_activity = Instant::now();
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(skipped = n, "WebSocket subscriber lagged, skipping lost events");
@@ -69,25 +162,41 @@ async fn handle_socket(mut socket: WebSocket, bus: EventBus) {
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        // Echo back or handle client messages
-                        let received: String = text.to_string();
-                        let resp = serde_json::json!({
-                            "type": "ack",
-                            "received": received,
-                        });
+                        last_activity = Instant::now();
+                        // Limit inbound message size to prevent memory amplification
+                        if text.len() > 4096 {
+                            tracing::warn!(len = text.len(), "WebSocket message exceeds 4KiB limit, closing");
+                            break;
+                        }
+                        let resp = serde_json::json!({ "type": "ack" });
                         if let Err(e) = socket.send(Message::Text(resp.to_string().into())).await {
                             tracing::debug!(error = %e, "WebSocket ack send failed");
                             break;
                         }
                     }
                     Some(Ok(Message::Ping(data))) => {
+                        last_activity = Instant::now();
                         if let Err(e) = socket.send(Message::Pong(data)).await {
                             tracing::debug!(error = %e, "WebSocket pong send failed");
                             break;
                         }
                     }
+                    Some(Ok(Message::Pong(_))) => {
+                        last_activity = Instant::now();
+                    }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
+                }
+            }
+            _ = ping_timer.tick() => {
+                if last_activity.elapsed() > IDLE_TIMEOUT {
+                    tracing::info!("WebSocket idle timeout, closing connection");
+                    let _ = socket.send(Message::Close(None)).await;
+                    break;
+                }
+                if let Err(e) = socket.send(Message::Ping(vec![].into())).await {
+                    tracing::debug!(error = %e, "WebSocket ping send failed");
+                    break;
                 }
             }
         }
@@ -147,7 +256,8 @@ mod tests {
     #[test]
     fn ws_route_returns_method_router() {
         let bus = EventBus::new(256);
-        let _router = super::ws_route(bus);
+        let tickets = TicketStore::new();
+        let _router = super::ws_route(bus, tickets, None);
     }
 
     #[tokio::test]
@@ -268,7 +378,141 @@ mod tests {
     #[test]
     fn ws_route_builds_without_panic() {
         let bus = EventBus::new(4);
-        let router = axum::Router::new().route("/ws", super::ws_route(bus));
+        let tickets = TicketStore::new();
+        let router = axum::Router::new().route("/ws", super::ws_route(bus, tickets, None));
         let _app = router.into_make_service();
+    }
+
+    // ── WebSocket authentication tests ────────────────────────────
+
+    #[test]
+    fn ws_auth_no_key_configured_allows_loopback_only() {
+        let headers = axum::http::HeaderMap::new();
+        let query = WsQuery { ticket: None };
+        let tickets = TicketStore::new();
+        let loopback = Some("127.0.0.1:9000".parse::<SocketAddr>().unwrap());
+        let remote = Some("203.0.113.10:9000".parse::<SocketAddr>().unwrap());
+        assert!(ws_authenticate(&headers, &query, &tickets, None, loopback));
+        assert!(!ws_authenticate(&headers, &query, &tickets, None, remote));
+        assert!(!ws_authenticate(&headers, &query, &tickets, None, None));
+    }
+
+    #[test]
+    fn ws_auth_header_x_api_key() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-api-key", "test-key".parse().unwrap());
+        let query = WsQuery { ticket: None };
+        let tickets = TicketStore::new();
+        assert!(ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key"),
+            None,
+        ));
+    }
+
+    #[test]
+    fn ws_auth_header_bearer() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer test-key".parse().unwrap());
+        let query = WsQuery { ticket: None };
+        let tickets = TicketStore::new();
+        assert!(ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key"),
+            None,
+        ));
+    }
+
+    #[test]
+    fn ws_auth_valid_ticket() {
+        let headers = axum::http::HeaderMap::new();
+        let tickets = TicketStore::new();
+        let ticket = tickets.issue();
+        let query = WsQuery {
+            ticket: Some(ticket),
+        };
+        assert!(ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key"),
+            None,
+        ));
+    }
+
+    #[test]
+    fn ws_auth_invalid_ticket_rejected() {
+        let headers = axum::http::HeaderMap::new();
+        let tickets = TicketStore::new();
+        let query = WsQuery {
+            ticket: Some("wst_invalid".to_string()),
+        };
+        assert!(!ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key"),
+            None,
+        ));
+    }
+
+    #[test]
+    fn ws_auth_no_credentials_rejected() {
+        let headers = axum::http::HeaderMap::new();
+        let query = WsQuery { ticket: None };
+        let tickets = TicketStore::new();
+        assert!(!ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key"),
+            None,
+        ));
+    }
+
+    #[test]
+    fn ws_auth_wrong_key_rejected() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-api-key", "wrong-key".parse().unwrap());
+        let query = WsQuery { ticket: None };
+        let tickets = TicketStore::new();
+        assert!(!ws_authenticate(
+            &headers,
+            &query,
+            &tickets,
+            Some("test-key"),
+            None,
+        ));
+    }
+
+    #[test]
+    fn ws_auth_ticket_single_use() {
+        let headers = axum::http::HeaderMap::new();
+        let tickets = TicketStore::new();
+        let ticket = tickets.issue();
+        let query1 = WsQuery {
+            ticket: Some(ticket.clone()),
+        };
+        assert!(ws_authenticate(
+            &headers,
+            &query1,
+            &tickets,
+            Some("test-key"),
+            None,
+        ));
+        let query2 = WsQuery {
+            ticket: Some(ticket),
+        };
+        assert!(!ws_authenticate(
+            &headers,
+            &query2,
+            &tickets,
+            Some("test-key"),
+            None,
+        ));
     }
 }

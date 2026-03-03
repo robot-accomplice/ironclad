@@ -1,16 +1,24 @@
 //! Fixed-point money type (cents) for treasury and financial logic.
 
+use ironclad_core::{IroncladError, Result};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Money(i64); // cents
 
 impl Money {
-    pub fn from_dollars(dollars: f64) -> Self {
+    pub fn from_dollars(dollars: f64) -> Result<Self> {
+        if !dollars.is_finite() {
+            return Err(IroncladError::Wallet(format!(
+                "non-finite dollar amount: {dollars}"
+            )));
+        }
         let cents = (dollars * 100.0).round();
-        assert!(
-            cents >= i64::MIN as f64 && cents <= i64::MAX as f64,
-            "dollar amount out of representable range"
-        );
-        Money(cents as i64)
+        if cents < i64::MIN as f64 || cents > i64::MAX as f64 {
+            return Err(IroncladError::Wallet(format!(
+                "dollar amount out of representable range: {dollars}"
+            )));
+        }
+        Ok(Money(cents as i64))
     }
 
     pub fn dollars(&self) -> f64 {
@@ -64,25 +72,25 @@ mod tests {
 
     #[test]
     fn from_dollars_roundtrip() {
-        assert_eq!(Money::from_dollars(0.0).cents(), 0);
-        assert_eq!(Money::from_dollars(1.0).cents(), 100);
-        assert_eq!(Money::from_dollars(10.50).cents(), 1050);
-        assert_eq!(Money::from_dollars(99.99).cents(), 9999);
-        assert_eq!(Money::from_dollars(99.99).dollars(), 99.99);
-        assert!((Money::from_dollars(33.33).dollars() - 33.33).abs() < 0.001);
+        assert_eq!(Money::from_dollars(0.0).unwrap().cents(), 0);
+        assert_eq!(Money::from_dollars(1.0).unwrap().cents(), 100);
+        assert_eq!(Money::from_dollars(10.50).unwrap().cents(), 1050);
+        assert_eq!(Money::from_dollars(99.99).unwrap().cents(), 9999);
+        assert_eq!(Money::from_dollars(99.99).unwrap().dollars(), 99.99);
+        assert!((Money::from_dollars(33.33).unwrap().dollars() - 33.33).abs() < 0.001);
     }
 
     #[test]
     fn display_format() {
-        assert_eq!(Money::from_dollars(0.0).to_string(), "$0.00");
-        assert_eq!(Money::from_dollars(1.5).to_string(), "$1.50");
-        assert_eq!(Money::from_dollars(100.0).to_string(), "$100.00");
+        assert_eq!(Money::from_dollars(0.0).unwrap().to_string(), "$0.00");
+        assert_eq!(Money::from_dollars(1.5).unwrap().to_string(), "$1.50");
+        assert_eq!(Money::from_dollars(100.0).unwrap().to_string(), "$100.00");
     }
 
     #[test]
     fn arithmetic() {
-        let a = Money::from_dollars(10.00);
-        let b = Money::from_dollars(5.50);
+        let a = Money::from_dollars(10.00).unwrap();
+        let b = Money::from_dollars(5.50).unwrap();
         assert_eq!((a + b).dollars(), 15.50);
         assert_eq!((a - b).dollars(), 4.50);
         assert_eq!(Money::zero() + a, a);
@@ -100,8 +108,8 @@ mod tests {
 
     #[test]
     fn checked_arithmetic() {
-        let a = Money::from_dollars(10.00);
-        let b = Money::from_dollars(5.50);
+        let a = Money::from_dollars(10.00).unwrap();
+        let b = Money::from_dollars(5.50).unwrap();
         assert_eq!(a.checked_add(b).unwrap().dollars(), 15.50);
         assert_eq!(a.checked_sub(b).unwrap().dollars(), 4.50);
         assert!(Money(i64::MAX).checked_add(Money(1)).is_none());
@@ -139,14 +147,23 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "out of representable range")]
     fn from_dollars_rejects_extreme_positive() {
-        Money::from_dollars(f64::MAX);
+        assert!(Money::from_dollars(f64::MAX).is_err());
     }
 
     #[test]
-    #[should_panic(expected = "out of representable range")]
     fn from_dollars_rejects_extreme_negative() {
-        Money::from_dollars(f64::MIN);
+        assert!(Money::from_dollars(f64::MIN).is_err());
+    }
+
+    #[test]
+    fn from_dollars_rejects_nan() {
+        assert!(Money::from_dollars(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn from_dollars_rejects_infinity() {
+        assert!(Money::from_dollars(f64::INFINITY).is_err());
+        assert!(Money::from_dollars(f64::NEG_INFINITY).is_err());
     }
 }

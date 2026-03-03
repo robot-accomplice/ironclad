@@ -42,6 +42,7 @@ pub struct A2aProtocol {
     pub config: A2aConfig,
     sessions: HashMap<String, A2aSession>,
     rate_windows: HashMap<String, VecDeque<Instant>>,
+    seen_nonces: HashMap<String, Instant>,
 }
 
 impl A2aProtocol {
@@ -50,6 +51,7 @@ impl A2aProtocol {
             config,
             sessions: HashMap::new(),
             rate_windows: HashMap::new(),
+            seen_nonces: HashMap::new(),
         }
     }
 
@@ -139,6 +141,30 @@ impl A2aProtocol {
         }
 
         timestamps.push_back(now);
+        Ok(())
+    }
+
+    /// Reject duplicate nonces to prevent replay attacks.
+    /// Evicts expired entries before checking.
+    pub fn register_nonce(&mut self, nonce: &str) -> Result<()> {
+        let now = Instant::now();
+        let ttl_seconds = if self.config.nonce_ttl_seconds > 0 {
+            self.config.nonce_ttl_seconds
+        } else {
+            2 * self.config.session_timeout_seconds
+        };
+        let ttl = std::time::Duration::from_secs(ttl_seconds);
+
+        self.seen_nonces
+            .retain(|_, inserted_at| now.duration_since(*inserted_at) < ttl);
+
+        if self.seen_nonces.contains_key(nonce) {
+            return Err(IroncladError::A2a(
+                "duplicate nonce: replay rejected".into(),
+            ));
+        }
+
+        self.seen_nonces.insert(nonce.to_string(), now);
         Ok(())
     }
 
@@ -625,5 +651,38 @@ mod tests {
         let err = proto.validate_message_size(&[0u8; 10]).unwrap_err();
         assert!(err.to_string().contains("10"));
         assert!(err.to_string().contains("5"));
+    }
+
+    #[test]
+    fn nonce_replay_rejected() {
+        let mut proto = A2aProtocol::new(A2aConfig::default());
+        assert!(proto.register_nonce("nonce-abc").is_ok());
+        let err = proto.register_nonce("nonce-abc").unwrap_err();
+        assert!(err.to_string().contains("duplicate nonce: replay rejected"));
+    }
+
+    #[test]
+    fn nonce_accepted_after_manual_expiry() {
+        let mut proto = A2aProtocol::new(A2aConfig::default());
+        assert!(proto.register_nonce("nonce-xyz").is_ok());
+        proto.seen_nonces.clear();
+        assert!(proto.register_nonce("nonce-xyz").is_ok());
+    }
+
+    #[test]
+    fn nonce_eviction_bounds_memory() {
+        let mut proto = A2aProtocol::new(A2aConfig {
+            nonce_ttl_seconds: 0,
+            session_timeout_seconds: 0,
+            ..Default::default()
+        });
+        for i in 0..500 {
+            let _ = proto.register_nonce(&format!("n-{i}"));
+        }
+        // With a TTL of 0, eviction runs on every call and removes expired
+        // entries. After one more call the map should contain at most 1 entry
+        // (the freshly inserted one).
+        let _ = proto.register_nonce("final");
+        assert!(proto.seen_nonces.len() <= 1);
     }
 }

@@ -53,16 +53,19 @@ fn init_creates_config_file() {
 #[test]
 fn check_without_config_returns_error() {
     let dir = tempfile::tempdir().unwrap();
+    // Isolate HOME so resolve_config_path won't find the developer's real config
+    let fake_home = dir.path().join("home");
+    std::fs::create_dir_all(&fake_home).unwrap();
     let output = ironclad_cmd()
         .arg("check")
+        .env("HOME", &fake_home)
         .current_dir(dir.path())
         .output()
         .expect("failed to run check");
     // Should fail gracefully when no config exists
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !output.status.success() || stderr.contains("not found") || stdout.contains("not found")
+        !output.status.success(),
+        "check without config should exit non-zero"
     );
 }
 

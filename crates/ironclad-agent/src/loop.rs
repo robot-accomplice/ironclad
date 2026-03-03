@@ -43,25 +43,33 @@ impl AgentLoop {
     }
 
     pub fn transition(&mut self, action: ReactAction) -> ReactState {
-        self.turn_count += 1;
-
-        if self.turn_count > self.max_turns {
-            self.state = ReactState::Done;
-            return self.state;
-        }
-
         match action {
             ReactAction::Think => {
+                // Only count logical turns (Think phase starts a new turn).
+                // Previously every transition incremented, inflating count 2-3x.
+                self.turn_count += 1;
+                if self.turn_count > self.max_turns {
+                    self.state = ReactState::Done;
+                    return self.state;
+                }
                 self.idle_count = 0;
                 self.state = ReactState::Thinking;
             }
             ReactAction::Act { tool_name, params } => {
                 self.idle_count = 0;
-                self.recent_calls.push_back((tool_name, params));
+                // Evaluate against prior calls only; this avoids counting the
+                // current call inside the detection window.
+                if self.is_looping(&tool_name, &params) {
+                    tracing::warn!(tool = %tool_name, "agent loop detected, forcing Done");
+                    self.state = ReactState::Done;
+                } else {
+                    self.state = ReactState::Acting;
+                }
+                self.recent_calls
+                    .push_back((tool_name.clone(), params.clone()));
                 if self.recent_calls.len() > LOOP_DETECTION_WINDOW {
                     self.recent_calls.pop_front();
                 }
-                self.state = ReactState::Acting;
             }
             ReactAction::Observe => {
                 self.idle_count = 0;
@@ -152,15 +160,22 @@ mod tests {
         let mut agent = AgentLoop::new(100);
 
         for _ in 0..3 {
-            agent.transition(ReactAction::Act {
+            let s = agent.transition(ReactAction::Act {
                 tool_name: "echo".into(),
                 params: r#"{"msg":"hi"}"#.into(),
             });
+            assert_eq!(s, ReactState::Acting);
         }
 
         assert!(agent.is_looping("echo", r#"{"msg":"hi"}"#));
         assert!(!agent.is_looping("echo", r#"{"msg":"bye"}"#));
         assert!(!agent.is_looping("other", r#"{"msg":"hi"}"#));
+
+        let s = agent.transition(ReactAction::Act {
+            tool_name: "echo".into(),
+            params: r#"{"msg":"hi"}"#.into(),
+        });
+        assert_eq!(s, ReactState::Done);
 
         agent.transition(ReactAction::Act {
             tool_name: "read".into(),
@@ -174,7 +189,18 @@ mod tests {
         let mut agent = AgentLoop::new(2);
 
         agent.transition(ReactAction::Think);
+        // Non-Think transitions don't inflate the turn count
+        agent.transition(ReactAction::Act {
+            tool_name: "echo".into(),
+            params: "{}".into(),
+        });
+        agent.transition(ReactAction::Observe);
+        assert_eq!(agent.turn_count, 1);
+
         agent.transition(ReactAction::Think);
+        assert_eq!(agent.turn_count, 2);
+
+        // Third Think exceeds max_turns=2
         let s = agent.transition(ReactAction::Think);
         assert_eq!(s, ReactState::Done);
     }

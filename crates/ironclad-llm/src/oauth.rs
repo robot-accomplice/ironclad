@@ -7,11 +7,13 @@ use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use tracing::{debug, error, warn};
 
+use ironclad_core::keystore::Keystore;
 use ironclad_core::{IroncladError, Result};
 
 const ANTHROPIC_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 const ANTHROPIC_TOKEN_URL: &str = "https://claude.ai/oauth/token";
 const CALLBACK_PORT: u16 = 18791;
+const OAUTH_KEY_PREFIX: &str = "oauth_tokens:";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredTokens {
@@ -28,10 +30,27 @@ struct TokenFile {
     tokens: Vec<StoredTokens>,
 }
 
-// SECURITY TODO: encrypt tokens at rest using the Keystore.
-// Tokens are currently stored as plaintext JSON in ~/.ironclad/oauth_tokens.json.
-// This is acceptable only as a temporary measure; a future release must use
-// OS-level keychain integration or an encrypted envelope before GA.
+#[derive(Debug, Clone)]
+pub struct OAuthStorageHealth {
+    pub legacy_plaintext_exists: bool,
+    pub keystore_available: bool,
+    pub malformed_keystore_entries: usize,
+    pub migrated_entries: usize,
+    pub legacy_parse_failed: bool,
+    pub legacy_file_removed: bool,
+    pub repaired: bool,
+}
+
+impl OAuthStorageHealth {
+    pub fn needs_attention(&self) -> bool {
+        self.legacy_plaintext_exists
+            || !self.keystore_available
+            || self.malformed_keystore_entries > 0
+            || self.legacy_parse_failed
+    }
+}
+
+// Legacy plaintext path retained for one-time migration from older versions.
 fn token_file_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(home)
@@ -39,10 +58,110 @@ fn token_file_path() -> PathBuf {
         .join("oauth_tokens.json")
 }
 
-#[derive(Debug, Clone)]
+fn oauth_storage_key(provider: &str) -> String {
+    format!("{OAUTH_KEY_PREFIX}{provider}")
+}
+
+pub fn check_and_repair_oauth_storage(repair: bool) -> OAuthStorageHealth {
+    let legacy_path = token_file_path();
+    let mut health = OAuthStorageHealth {
+        legacy_plaintext_exists: legacy_path.exists(),
+        keystore_available: false,
+        malformed_keystore_entries: 0,
+        migrated_entries: 0,
+        legacy_parse_failed: false,
+        legacy_file_removed: false,
+        repaired: false,
+    };
+
+    let keystore = Keystore::new(Keystore::default_path());
+    if let Err(e) = keystore.unlock_machine() {
+        warn!(error = %e, "failed to unlock keystore for OAuth storage health check");
+        return health;
+    }
+    health.keystore_available = true;
+
+    let oauth_keys: Vec<String> = keystore
+        .list_keys()
+        .into_iter()
+        .filter(|k| k.starts_with(OAUTH_KEY_PREFIX))
+        .collect();
+
+    for key in oauth_keys {
+        let valid = keystore
+            .get(&key)
+            .and_then(|raw| serde_json::from_str::<StoredTokens>(&raw).ok())
+            .is_some();
+        if !valid {
+            health.malformed_keystore_entries += 1;
+            if repair {
+                match keystore.remove(&key) {
+                    Ok(true) => health.repaired = true,
+                    Ok(false) => {}
+                    Err(e) => {
+                        warn!(key = %key, error = %e, "failed removing malformed OAuth keystore entry")
+                    }
+                }
+            }
+        }
+    }
+
+    if health.legacy_plaintext_exists && repair {
+        match std::fs::read_to_string(&legacy_path) {
+            Ok(data) => match serde_json::from_str::<TokenFile>(&data) {
+                Ok(file) => {
+                    let had_any_legacy_tokens = !file.tokens.is_empty();
+                    for entry in file.tokens {
+                        if entry.provider.trim().is_empty() {
+                            continue;
+                        }
+                        match serde_json::to_string(&entry) {
+                            Ok(serialized) => match keystore
+                                .set(&oauth_storage_key(&entry.provider), &serialized)
+                            {
+                                Ok(()) => {
+                                    health.migrated_entries += 1;
+                                    health.repaired = true;
+                                }
+                                Err(e) => {
+                                    warn!(provider = %entry.provider, error = %e, "failed to migrate legacy OAuth token to keystore")
+                                }
+                            },
+                            Err(e) => {
+                                warn!(provider = %entry.provider, error = %e, "failed to serialize migrated OAuth token")
+                            }
+                        }
+                    }
+
+                    if (health.migrated_entries > 0 || !had_any_legacy_tokens)
+                        && std::fs::remove_file(&legacy_path).is_ok()
+                    {
+                        health.legacy_file_removed = true;
+                        health.repaired = true;
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, path = %legacy_path.display(), "failed to parse legacy OAuth token file");
+                    health.legacy_parse_failed = true;
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, path = %legacy_path.display(), "failed reading legacy OAuth token file");
+                health.legacy_parse_failed = true;
+            }
+        }
+    }
+
+    // Recompute in case repair removed legacy file.
+    health.legacy_plaintext_exists = legacy_path.exists();
+    health
+}
+
+#[derive(Clone)]
 pub struct OAuthManager {
     tokens: Arc<RwLock<HashMap<String, StoredTokens>>>,
     http: reqwest::Client,
+    keystore: Option<Keystore>,
 }
 
 impl OAuthManager {
@@ -52,18 +171,60 @@ impl OAuthManager {
             .build()
             .map_err(|e| IroncladError::Network(e.to_string()))?;
 
+        let keystore = {
+            let ks = Keystore::new(Keystore::default_path());
+            match ks.unlock_machine() {
+                Ok(()) => Some(ks),
+                Err(e) => {
+                    warn!(error = %e, "failed to unlock keystore for OAuth token persistence");
+                    None
+                }
+            }
+        };
+
         let mut map = HashMap::new();
-        if let Ok(data) = std::fs::read_to_string(token_file_path())
+        if let Some(ks) = &keystore {
+            for key in ks
+                .list_keys()
+                .into_iter()
+                .filter(|k| k.starts_with(OAUTH_KEY_PREFIX))
+            {
+                if let Some(raw) = ks.get(&key)
+                    && let Ok(entry) = serde_json::from_str::<StoredTokens>(&raw)
+                {
+                    map.insert(entry.provider.clone(), entry);
+                }
+            }
+        }
+
+        // One-time migration from legacy plaintext storage.
+        if map.is_empty()
+            && let Ok(data) = std::fs::read_to_string(token_file_path())
             && let Ok(file) = serde_json::from_str::<TokenFile>(&data)
         {
             for entry in file.tokens {
                 map.insert(entry.provider.clone(), entry);
+            }
+            if !map.is_empty()
+                && let Some(ks) = &keystore
+            {
+                for entry in map.values() {
+                    if let Ok(serialized) = serde_json::to_string(entry)
+                        && let Err(e) = ks.set(&oauth_storage_key(&entry.provider), &serialized)
+                    {
+                        warn!(provider = %entry.provider, error = %e, "failed to migrate OAuth token to keystore");
+                    }
+                }
+                if let Err(e) = std::fs::remove_file(token_file_path()) {
+                    debug!(error = %e, "legacy OAuth token file cleanup skipped");
+                }
             }
         }
 
         Ok(Self {
             tokens: Arc::new(RwLock::new(map)),
             http,
+            keystore,
         })
     }
 
@@ -208,36 +369,45 @@ impl OAuthManager {
     }
 
     async fn persist(&self) -> Result<()> {
+        let keystore = self
+            .keystore
+            .as_ref()
+            .ok_or_else(|| IroncladError::Config("OAuth keystore unavailable".into()))?;
         let tokens = self.tokens.read().await;
-        let file = TokenFile {
-            tokens: tokens.values().cloned().collect(),
-        };
-        let path = token_file_path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                IroncladError::Config(format!(
-                    "failed to create token directory {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
-        let json = serde_json::to_string_pretty(&file)
-            .map_err(|e| IroncladError::Config(format!("failed to serialize OAuth tokens: {e}")))?;
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &json).map_err(|e| {
-            IroncladError::Config(format!(
-                "failed to write OAuth token file {}: {e}",
-                tmp.display()
-            ))
-        })?;
-        #[cfg(unix)]
+        let current_providers: std::collections::HashSet<String> = tokens.keys().cloned().collect();
+        for key in keystore
+            .list_keys()
+            .into_iter()
+            .filter(|k| k.starts_with(OAUTH_KEY_PREFIX))
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            let provider = key.trim_start_matches(OAUTH_KEY_PREFIX).to_string();
+            if !current_providers.contains(&provider) {
+                keystore.remove(&key).map_err(|e| {
+                    IroncladError::Config(format!(
+                        "failed to remove stale OAuth token '{provider}' from keystore: {e}"
+                    ))
+                })?;
+            }
         }
-        std::fs::rename(&tmp, &path).map_err(|e| {
-            IroncladError::Config(format!("failed to rename OAuth token file into place: {e}"))
-        })?;
+
+        for entry in tokens.values() {
+            let serialized = serde_json::to_string(entry).map_err(|e| {
+                IroncladError::Config(format!("failed to serialize OAuth token: {e}"))
+            })?;
+            keystore
+                .set(&oauth_storage_key(&entry.provider), &serialized)
+                .map_err(|e| {
+                    IroncladError::Config(format!(
+                        "failed to persist OAuth token for provider '{}': {e}",
+                        entry.provider
+                    ))
+                })?;
+        }
+
+        // Ensure plaintext legacy artifact does not linger after encrypted writes.
+        if let Err(e) = std::fs::remove_file(token_file_path()) {
+            debug!(error = %e, "legacy OAuth token file cleanup skipped");
+        }
         Ok(())
     }
 }

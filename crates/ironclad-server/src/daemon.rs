@@ -211,10 +211,103 @@ fn cleanup_legacy_windows_service() {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    if is_admin {
-        let _ = run_cmd("sc.exe", &["stop", WINDOWS_DAEMON_NAME]);
-        let _ = run_cmd("sc.exe", &["delete", WINDOWS_DAEMON_NAME]);
+    if !is_admin {
+        tracing::warn!("legacy Windows service cleanup skipped: Administrator privileges required");
+        return;
     }
+
+    match legacy_windows_service_exists() {
+        Ok(false) => return,
+        Ok(true) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "unable to verify legacy Windows service presence");
+        }
+    }
+
+    for attempt in 1..=3 {
+        if let Err(e) = run_sc_best_effort("stop", WINDOWS_DAEMON_NAME) {
+            tracing::debug!(
+                error = %e,
+                attempt,
+                "legacy Windows service stop failed"
+            );
+        }
+        if let Err(e) = run_sc_best_effort("delete", WINDOWS_DAEMON_NAME) {
+            tracing::debug!(
+                error = %e,
+                attempt,
+                "legacy Windows service delete failed"
+            );
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(600));
+
+        match legacy_windows_service_exists() {
+            Ok(false) => {
+                tracing::info!("legacy Windows service cleanup complete");
+                return;
+            }
+            Ok(true) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to verify legacy Windows service cleanup");
+            }
+        }
+    }
+
+    tracing::warn!(
+        "legacy Windows service still present after cleanup attempts; remove with `sc.exe delete {WINDOWS_DAEMON_NAME}`"
+    );
+}
+
+fn run_sc_best_effort(action: &str, service: &str) -> Result<()> {
+    let out = command_output("sc.exe", &[action, service])?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    if sc_output_is_not_found(&combined) || sc_output_is_not_active(&combined) {
+        return Ok(());
+    }
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim().to_string()
+    } else {
+        stdout.trim().to_string()
+    };
+    Err(IroncladError::Config(format!(
+        "sc.exe {action} failed (exit {}): {}",
+        out.status.code().unwrap_or(-1),
+        detail
+    )))
+}
+
+fn legacy_windows_service_exists() -> Result<bool> {
+    let out = command_output("sc.exe", &["query", WINDOWS_DAEMON_NAME])?;
+    if out.status.success() {
+        return Ok(true);
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    if sc_output_is_not_found(&combined) {
+        return Ok(false);
+    }
+    Err(IroncladError::Config(format!(
+        "sc.exe query failed (exit {}): {}",
+        out.status.code().unwrap_or(-1),
+        combined.trim()
+    )))
+}
+
+fn sc_output_is_not_found(output: &str) -> bool {
+    let lowered = output.to_ascii_lowercase();
+    lowered.contains("1060") || lowered.contains("does not exist")
+}
+
+fn sc_output_is_not_active(output: &str) -> bool {
+    let lowered = output.to_ascii_lowercase();
+    lowered.contains("1062") || lowered.contains("has not been started")
 }
 
 fn install_daemon_to(
@@ -293,21 +386,31 @@ pub fn install_daemon(binary_path: &str, config_path: &str, port: u16) -> Result
             port = port,
         );
         let task_file = std::env::temp_dir().join("ironclad-task.xml");
-        if std::fs::write(&task_file, &task_xml).is_ok() {
-            // schtasks /Create works without admin for the current user
-            let _ = std::process::Command::new("schtasks")
-                .args([
-                    "/Create",
-                    "/TN",
-                    "IroncladAgent",
-                    "/XML",
-                    &task_file.to_string_lossy(),
-                    "/F",
-                ])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-            let _ = std::fs::remove_file(&task_file);
+        std::fs::write(&task_file, &task_xml).map_err(|e| {
+            IroncladError::Config(format!("failed to write task scheduler XML: {e}"))
+        })?;
+        let schtasks_out = std::process::Command::new("schtasks")
+            .args([
+                "/Create",
+                "/TN",
+                "IroncladAgent",
+                "/XML",
+                &task_file.to_string_lossy(),
+                "/F",
+            ])
+            .output()
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&task_file);
+                IroncladError::Config(format!("failed to run schtasks: {e}"))
+            })?;
+        let _ = std::fs::remove_file(&task_file);
+        if !schtasks_out.status.success() {
+            let stderr = String::from_utf8_lossy(&schtasks_out.stderr);
+            return Err(IroncladError::Config(format!(
+                "schtasks /Create failed (exit {}): {}",
+                schtasks_out.status.code().unwrap_or(-1),
+                stderr.trim()
+            )));
         }
     }
 
@@ -355,7 +458,17 @@ pub fn start_daemon() -> Result<()> {
             }
             let pid = spawn_windows_daemon_process(&install)?;
             install.pid = Some(pid);
-            write_windows_daemon_marker(&install)
+            write_windows_daemon_marker(&install)?;
+
+            // Verify the spawned process is still alive after a brief settle period.
+            // The process may crash immediately on startup (bad config, port conflict, etc.).
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if !windows_pid_running(pid)? {
+                return Err(IroncladError::Config(
+                    "daemon process exited immediately after spawn — check config and port availability".into(),
+                ));
+            }
+            Ok(())
         }
         other => Err(IroncladError::Config(format!(
             "daemon start not supported on {other}"
@@ -596,12 +709,25 @@ pub fn uninstall_daemon() -> Result<()> {
     }
     if std::env::consts::OS == "windows" {
         cleanup_legacy_windows_service();
-        // Remove the logon Task Scheduler entry if present
-        let _ = std::process::Command::new("schtasks")
+        // Remove the logon Task Scheduler entry if present (best-effort on uninstall)
+        let schtasks_del = std::process::Command::new("schtasks")
             .args(["/Delete", "/TN", "IroncladAgent", "/F"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+            .output();
+        if let Ok(out) = schtasks_del
+            && !out.status.success()
+        {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            // Ignore "task does not exist" — it may never have been registered
+            if !stderr.to_ascii_lowercase().contains("does not exist")
+                && !stderr.to_ascii_lowercase().contains("cannot find")
+            {
+                return Err(IroncladError::Config(format!(
+                    "schtasks /Delete failed (exit {}): {}",
+                    out.status.code().unwrap_or(-1),
+                    stderr.trim()
+                )));
+            }
+        }
         let marker = windows_service_marker_path();
         if marker.exists()
             && let Err(e) = std::fs::remove_file(&marker)
@@ -749,6 +875,22 @@ mod tests {
         assert!(unit.contains("[Install]"));
         assert!(unit.contains("ExecStart=/usr/bin/ironclad serve -c /etc/ironclad.toml -p 8080"));
         assert!(unit.contains("Type=simple"));
+    }
+
+    #[test]
+    fn sc_output_not_found_detection() {
+        assert!(sc_output_is_not_found("OpenService FAILED 1060"));
+        assert!(sc_output_is_not_found(
+            "The specified service does not exist as an installed service."
+        ));
+        assert!(!sc_output_is_not_found("SERVICE_NAME: IroncladAgent"));
+    }
+
+    #[test]
+    fn sc_output_not_active_detection() {
+        assert!(sc_output_is_not_active("ControlService FAILED 1062"));
+        assert!(sc_output_is_not_active("The service has not been started."));
+        assert!(!sc_output_is_not_active("STATE              : 4  RUNNING"));
     }
 
     #[test]

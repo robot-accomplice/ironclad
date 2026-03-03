@@ -107,7 +107,11 @@ impl MemoryRetriever {
             return None;
         }
 
-        let entries = ironclad_db::memory::retrieve_working(db, session_id).ok()?;
+        let entries = ironclad_db::memory::retrieve_working(db, session_id)
+            .inspect_err(
+                |e| tracing::warn!(error = %e, session_id, "working memory retrieval failed"),
+            )
+            .ok()?;
         if entries.is_empty() {
             return None;
         }

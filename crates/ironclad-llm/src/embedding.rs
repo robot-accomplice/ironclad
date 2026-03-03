@@ -68,7 +68,12 @@ impl EmbeddingClient {
         cfg: &EmbeddingConfig,
         texts: &[&str],
     ) -> Result<Vec<Vec<f32>>> {
-        let api_key = std::env::var(&cfg.api_key_env).unwrap_or_default();
+        let api_key = std::env::var(&cfg.api_key_env).map_err(|_| {
+            IroncladError::Llm(format!(
+                "embedding API key not found: set the {} environment variable",
+                cfg.api_key_env
+            ))
+        })?;
         let url = build_embedding_url(cfg, texts.len());
         let body = build_embedding_request(cfg, texts);
 
@@ -132,16 +137,21 @@ fn build_embedding_url(cfg: &EmbeddingConfig, count: usize) -> String {
 
     let mut url = format!("{}{}", cfg.base_url, path);
 
-    if cfg.format == ApiFormat::GoogleGenerativeAi && !cfg.api_key_env.is_empty() {
-        let key = std::env::var(&cfg.api_key_env).unwrap_or_default();
-        url = format!("{url}?key={key}");
-    }
-
     if cfg.auth_header.starts_with("query:") {
+        // query: auth mode handles the key as a URL query parameter
         let param = &cfg.auth_header["query:".len()..];
-        let key = std::env::var(&cfg.api_key_env).unwrap_or_default();
+        let key = std::env::var(&cfg.api_key_env)
+            .inspect_err(|e| tracing::warn!(error = %e, env_var = %cfg.api_key_env, "embedding API key env var not set"))
+            .unwrap_or_default();
+        let encoded_key = crate::client::pct_encode_query_value(&key);
         let sep = if url.contains('?') { '&' } else { '?' };
-        url = format!("{url}{sep}{param}={key}");
+        url = format!("{url}{sep}{param}={encoded_key}");
+    } else if cfg.format == ApiFormat::GoogleGenerativeAi && !cfg.api_key_env.is_empty() {
+        let key = std::env::var(&cfg.api_key_env)
+            .inspect_err(|e| tracing::warn!(error = %e, env_var = %cfg.api_key_env, "embedding API key env var not set"))
+            .unwrap_or_default();
+        let encoded_key = crate::client::pct_encode_query_value(&key);
+        url = format!("{url}?key={encoded_key}");
     }
 
     url
@@ -419,14 +429,18 @@ mod tests {
 
     #[test]
     fn build_embedding_url_google_substitutes_model() {
-        unsafe { std::env::set_var("TEST_GOOGLE_KEY", "fake-key") };
+        // SAFETY: this test runs single-threaded (cargo test default for unit tests)
+        // and uses a unique env var name to avoid conflicts with other tests.
+        unsafe {
+            std::env::set_var("IRONCLAD_TEST_GOOGLE_EMBED_KEY", "fake-key");
+        }
         let cfg = EmbeddingConfig {
             base_url: "https://generativelanguage.googleapis.com".into(),
             embedding_path: "/v1beta/models/{model}:embedContent".into(),
             model: "text-embedding-004".into(),
             dimensions: 768,
             format: ApiFormat::GoogleGenerativeAi,
-            api_key_env: "TEST_GOOGLE_KEY".into(),
+            api_key_env: "IRONCLAD_TEST_GOOGLE_EMBED_KEY".into(),
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
         };
@@ -434,7 +448,9 @@ mod tests {
         assert!(url.contains("text-embedding-004"));
         assert!(url.contains("key=fake-key"));
         assert!(url.contains(":embedContent"));
-        unsafe { std::env::remove_var("TEST_GOOGLE_KEY") };
+        unsafe {
+            std::env::remove_var("IRONCLAD_TEST_GOOGLE_EMBED_KEY");
+        }
     }
 
     #[test]

@@ -98,7 +98,9 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.11 Context Checkpoint
+### 1.11 Context Checkpoint ✅
+
+> **Status**: Shipped in v0.9.0. Config section `[context.checkpoint]` with `enabled` and `every_n_turns`. Saves/loads/clears via `context_checkpoints` table.
 
 **Current state**: The agent rebuilds its full context from the database on every boot — querying memory tiers, retrieving embeddings, assembling the system prompt. This cold-start path adds latency before the agent is responsive.
 
@@ -147,7 +149,9 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
-### 1.16 Durable Channel Delivery Queue
+### 1.16 Durable Channel Delivery Queue ✅
+
+> **Status**: Shipped in v0.9.0. `DeliveryQueue::with_store(db)` persists messages to `delivery_queue` table; `recover_from_store()` on startup.
 
 **Current state**: Channel retry handling is primarily process-memory based. Retries can be lost during crash/restart windows and operators lack a durable backlog for forensic replay.
 
@@ -160,6 +164,8 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 ---
 
 ### 1.17 Production-Grade Abuse Protection
+
+> **Status**: Shipped in v0.9.1. `GlobalRateLimitLayer` wired with per-IP, per-actor, and global limits. Trusted proxy CIDR resolution via X-Forwarded-For/X-Real-IP. Actor identity via API key/Bearer token fingerprinting. Throttle observability via `GET /api/stats/throttle`.
 
 **Current state**: Global rate limiting exists, but trusted proxy boundaries and distributed enforcement are not first-class across all deployment topologies.
 
@@ -213,6 +219,107 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ---
 
+### 1.21 Integrations Management (CLI + Dashboard)
+
+**Current state**: Channel integrations (Telegram, WhatsApp, Discord, email) are configured by manually editing `ironclad.toml` and the encrypted keystore. There is no unified CLI or dashboard surface for connecting, testing, inspecting status, or troubleshooting integrations. Operators must read logs to diagnose issues like expired tokens or misconfigured webhook secrets.
+
+**Target**: First-class integration management across CLI and dashboard — connect, test, inspect, and troubleshoot channel integrations without touching config files or logs directly.
+
+**Builds on**: `ironclad-channels` adapters, `ChannelRouter`, encrypted keystore, channel health metrics, dashboard SPA.
+
+**Scope**:
+
+- **CLI flows**: `ironclad integrations list` (status summary per channel), `ironclad integrations test <channel>` (send a health-check probe and report token validity, connectivity, and permissions), `ironclad integrations connect <channel>` (guided setup wizard — prompts for token, stores in keystore, writes config, runs test), `ironclad integrations disconnect <channel>` (removes token from keystore, disables in config).
+- **Dashboard UI**: Integrations panel showing per-channel health (connected/degraded/disconnected), last successful message timestamp, error counts, and one-click test button. Connection wizard with token input, validation feedback, and activation toggle.
+- **Channel metadata API**: `GET /api/integrations` returning per-channel status (enabled, healthy, last_error, last_message_at, config summary). `POST /api/integrations/<channel>/test` to run a live probe.
+- **Context awareness**: Expose active channel identity in the agent's runtime context so the agent knows which channel a message arrived on and can adapt its response format accordingly (e.g., markdown for Telegram, plain text for SMS).
+- **Diagnostic surface**: Surface recent channel errors and warnings inline (not buried in logs) — token expiry alerts, rate-limit warnings, webhook misconfiguration hints.
+
+**Release posture**: CLI-first; dashboard UI can follow in a subsequent release. Context awareness is a low-effort high-value sub-item that can ship independently.
+
+---
+
+### 1.22 Built-in Introspection Skill ✅
+
+> **Status**: Shipped in v0.9.0. Four tools: `get_runtime_context`, `get_memory_stats`, `get_channel_health`, `get_subagent_status`. `ToolContext` extended with `channel` and `db` fields.
+
+**Current state**: The agent has no way to query its own runtime state. Channel identity, session scope, memory budget usage, channel health, treasury balance, and active peer sessions are either baked into the system prompt (causing context bloat) or entirely invisible to the agent. The `ToolContext` struct carries only `session_id`, `agent_id`, `authority`, and `workspace_root` — no channel, no runtime metadata.
+
+**Target**: A built-in introspection skill that lets the agent query its own runtime state on demand, without any of that state consuming context tokens until the agent actually needs it. The design principle is **info on demand, not info by default** — the agent calls a tool when it needs context rather than having it pre-injected into every system prompt.
+
+**Builds on**: `Tool` trait, `ToolRegistry`, `ToolContext`, `SessionScope`, `ChannelRouter`, `AppState`.
+
+**Scope**:
+
+- **`get_runtime_context` tool**: Returns session channel (parsed from `scope_key`), session scope type (peer/group/agent), peer/group ID, agent name and ID, active channels list, and server uptime. This is the highest-priority sub-item — it directly addresses the channel awareness gap where the agent cannot determine which channel it's speaking over.
+- **`get_memory_stats` tool**: Returns memory budget usage per tier (working, episodic, semantic, procedural, relationship), total entry counts, and embedding store stats.
+- **`get_channel_health` tool**: Returns per-channel connection status, message counts, last error, last activity timestamp — surfacing the data from `ChannelRouter` health tracking.
+- **`get_treasury_status` tool**: Returns current balance, daily spend, budget remaining, and yield position if active.
+- **`get_active_peers` tool**: Returns current A2A peer sessions with connection state.
+- **`ToolContext` extension**: Add `channel: Option<String>` to `ToolContext` so any tool (not just introspection) can access the originating channel. Parse from `SessionScope::scope_key()` at context construction time in the agent message handler.
+- **Extensibility pattern**: Each introspection tool is a separate `Tool` impl registered in `ToolRegistry`, making it easy to add new introspection surfaces without modifying existing tools. The agent discovers available introspection tools through the standard tool discovery mechanism.
+
+**Design principle**: This pattern — lightweight, on-demand runtime queries — should be the default approach for any agent-visible metadata. Pre-injecting state into system prompts wastes context budget on information the agent may never need. Tools are zero-cost until called.
+
+**Release posture**: `get_runtime_context` is the minimum viable ship (solves channel awareness). Other introspection tools can follow incrementally. Low effort, high impact.
+
+---
+
+### 1.23 Context Budget Tuning
+
+**Current state**: `ComplexityLevel::L0` carries a 4,000-token budget. Duncan's soul (OS.toml + FIRMWARE.toml) consumes ~1,500 tokens of that, leaving only ~2,500 for memories and conversation history. All casual Telegram messages score complexity 0.04–0.06, which maps to L0 unconditionally. This causes personality degradation under sustained low-complexity chat — the soul is present but history is brutally truncated, so the agent loses conversational continuity and its responses feel generic.
+
+**Target**: Three adjustments to ensure the agent's personality and conversational quality survive low-complexity interactions:
+
+1. **Raise L0 token budget** (4,000 → 8,000) — simple constant change in `context.rs::token_budget()`. Doubles headroom for soul + history at minimal cost, since L0 conversations are short and the model can handle 8k easily.
+2. **Soul-size-aware complexity floor** — `build_context()` measures the system prompt token count and bumps the effective budget floor so the soul never consumes more than ~40% of the total context. Large personality files automatically get more room.
+3. **Channel conversation minimum L1** — Messages arriving via channel adapters (Telegram, Discord, WhatsApp) get a minimum of `ComplexityLevel::L1` (8,000 tokens), since channel conversations carry implicit context expectations. Only direct API calls can land on L0.
+
+**Builds on**: `context.rs` (`determine_level`, `token_budget`, `build_context`), `InboundMessage.platform`, complexity scorer.
+
+**Design note**: These are stopgap measures. The long-term fix is the introspection skill (1.22), which removes the need to pre-load state into the context at all. Once introspection tools are available, the agent can operate on smaller budgets by querying state on demand.
+
+**Release posture**: Parked for `v0.9.0`. Not part of the locked `v0.8.0` release gates.
+
+---
+
+### 1.24 Built-in CLI Agent Skills (Claude Code + Codex CLI)
+
+**Current state**: Ironclad's skill system supports user-created scripts in bash/python/node, loaded from the skills directory. There are no built-in skills that ship with the agent for delegating tasks to external CLI-based AI tools.
+
+**Target**: Ship built-in skills that let the agent delegate subtasks to Claude Code (`claude`) and OpenAI Codex CLI (`codex`) when they are installed on the host. These skills act as typed tool interfaces — the agent can invoke them with structured parameters (task description, working directory, file scope) and receive structured output, enabling Ironclad to orchestrate external AI tools as subagent-style subprocesses.
+
+**Builds on**: `SkillLoader`/`SkillRegistry`, existing skill manifest format, script execution sandbox (`skills.sandbox_env`), tool registry.
+
+**Scope**: Implement two built-in skills:
+
+1. **`claude-code`** — wraps `claude` CLI in non-interactive/headless mode. Parameters: task prompt, working directory, allowed tools, output format. Parses structured output (JSON/text) and returns it to the agent loop. Detects installation via `which claude` at skill load time; skill is unavailable (not errored) when not installed.
+
+2. **`codex-cli`** — wraps `codex` CLI similarly. Parameters: task prompt, working directory, approval mode. Parses output and returns structured result.
+
+Both skills: register as tools in the `ToolRegistry` so the agent can invoke them naturally during conversation. Respect `script_timeout_seconds` and `script_max_output_bytes` from skills config. Run in sandbox when `sandbox_env = true`. Gated behind `RiskLevel::Caution` in the policy engine (they execute arbitrary code via external tools). Include health checks (binary exists, version compatible) surfaced in `ironclad status`.
+
+**Non-goals**: Not a generic "run any CLI AI tool" framework. Each supported tool gets a purpose-built skill with typed parameters and output parsing. Additional tools (Aider, Cursor CLI, etc.) can be added as separate skills later.
+
+**Release posture**: Parked for `v0.9.0`. Depends on stable CLI interfaces from both tools.
+
+---
+
+### 1.25 OpenAPI + Swagger Endpoint
+
+**Current state**: The server exposes production API routes, but no machine-readable OpenAPI spec and no Swagger UI endpoint are published. Operators and integrators must discover payload shapes by reading source or ad hoc examples.
+
+**Target**: First-class API discoverability with a generated OpenAPI spec and an embedded Swagger UI endpoint for interactive exploration and contract validation.
+
+**Builds on**: Existing axum route tree, request/response structs in `crates/ironclad-server`, auth middleware, API docs in `docs/API.md`.
+
+**Scope**: Generate and serve OpenAPI JSON at `/openapi.json` and host Swagger UI at `/swagger-ui` (or `/docs`) with accurate schemas for authenticated endpoints. Include auth scheme documentation (API key + bearer), example requests/responses for core flows, and CI checks that fail on schema drift. Keep docs generation deterministic and versioned with releases.
+
+**Release posture**: High leverage for `v0.9.x`; unblock external integrations and reduce API contract drift.
+
+---
+
+
 ## Tier 2 — New Capabilities
 
 Features that require significant new code but have clear implementation paths. Medium-to-high effort.
@@ -242,6 +349,8 @@ Features that require significant new code but have clear implementation paths. 
 ---
 
 ### 2.3 Tiered Inference Pipeline
+
+> **Status**: Shipped in v0.9.1. `ConfidenceEvaluator` scores local model responses via token probability, response length, and self-reported uncertainty. `EscalationTracker` records escalation events. Wired into `infer_with_fallback()` — local model responses below confidence floor trigger cloud escalation.
 
 **Current state**: All queries go through the same path — cache check, then a single LLM call.
 
@@ -299,7 +408,9 @@ Features that require significant new code but have clear implementation paths. 
 
 ---
 
-### 2.8 Prompt Compression
+### 2.8 Prompt Compression ✅
+
+> **Status**: Shipped in v0.9.0. `PromptCompressor` gate in context assembly, controlled by `config.cache.prompt_compression`.
 
 **Current state**: Context assembly uses progressive loading (L0–L3) and structural dedup. No token-level pruning.
 
@@ -313,7 +424,7 @@ Features that require significant new code but have clear implementation paths. 
 
 ### 2.9 Declarative Agent Manifests ✅
 
-**Status**: Implemented. `ironclad-agent/src/manifest.rs` includes `ManifestLoader` with schema validation and hot-reload/hash tracking for TOML-defined specialist manifests.
+**Status**: Implemented. `ironclad-agent/src/manifest.rs` includes `ManifestLoader` with schema validation and hot-reload/hash tracking for TOML-defined subagent manifests.
 
 ---
 
@@ -329,7 +440,9 @@ Features that require significant new code but have clear implementation paths. 
 
 ---
 
-### 2.12 Episodic Digest System
+### 2.12 Episodic Digest System ✅
+
+> **Status**: Shipped in v0.9.0. `digest_on_close()` wired into `SessionGovernor` for session expiry and rotation. `DigestConfig` threaded from heartbeat scheduler.
 
 **Current state**: Memory tiers persist raw data (turns, facts, procedures, relationships). When a session ends or is compacted, the raw history is archived but no coherent summary is produced. On the next session start, the agent has no concise record of where it left off — it must re-derive context from scattered memory fragments.
 
@@ -337,7 +450,9 @@ Features that require significant new code but have clear implementation paths. 
 
 **Builds on**: `ironclad-agent/src/memory.rs` (turn classification), `ironclad-agent/src/context.rs` (compaction), `ironclad-agent/src/retrieval.rs` (hybrid retrieval), `episodic_memory` table.
 
-**Scope**: At session boundaries (close, compaction, TTL expiry), the compaction pipeline generates an `EpisodicDigest` — a structured summary of agent state, key decisions, unresolved tasks, and learned facts. Stored in the `episodic_memory` table with a `digest` flag and elevated retrieval priority. On next session start, `MemoryRetriever` automatically surfaces the most recent digest as high-priority context — no manual intervention required. Digests are decay-weighted: the most recent has maximum relevance, older digests fade unless their content matches the current query via the hybrid search. The agent doesn't need to "remember to save state" — the system does it automatically at every session boundary.
+**Observed problem**: The agent dredges up remarks and references from previous conversations that are no longer relevant to the current session. Persistent memory across restarts works — the agent *has* continuity — but it lacks a relevance gate to distinguish "still current" from "resolved and stale." The result is redundant, confusing commentary that makes the agent seem like it's stuck in the past. This is the core motivation for decay-weighted retrieval.
+
+**Scope**: At session boundaries (close, compaction, TTL expiry), the compaction pipeline generates an `EpisodicDigest` — a structured summary of agent state, key decisions, unresolved tasks, and learned facts. Stored in the `episodic_memory` table with a `digest` flag and elevated retrieval priority. On next session start, `MemoryRetriever` automatically surfaces the most recent digest as high-priority context — no manual intervention required. Digests are decay-weighted: the most recent has maximum relevance, older digests fade unless their content matches the current query via the hybrid search. The agent doesn't need to "remember to save state" — the system does it automatically at every session boundary. Critically, digests should mark resolved items (completed tasks, answered questions, fixed bugs) with a `resolved` flag so the retrieval system can suppress them unless explicitly queried — addressing the stale-context dredging problem directly.
 
 ---
 
@@ -408,13 +523,15 @@ On first boot, `initialize_db()` populates the hippocampus with all system table
 
 **Target**: A realistic, low-overhead self-funding system that helps agents maintain strong runtime capacity while remaining compliance-first. Include an adjustable taxation paradigm that applies to net realized profit per completed paid job and automatically redirects the taxed amount to the user's affiliated wallet.
 
-**Builds on**: `ServiceManager`, wallet/treasury (`ironclad-wallet`), `transactions` ledger, A2A/service endpoints, specialist routing and subagent capability matching.
+**Builds on**: `ServiceManager`, wallet/treasury (`ironclad-wallet`), `transactions` ledger, A2A/service endpoints, subagent routing and capability matching.
 
-**Scope**: Ship a curated self-funding catalog of legal, repeatable service archetypes (monitoring/alerts, recurring summaries, narrow specialist deliverables) with transparent pricing templates. Add profit accounting primitives: `net_realized_profit = earned_revenue - attributable_costs` (inference, fulfillment payouts, network/settlement fees) at job completion. Add config and controls for `self_funding.tax.enabled`, `self_funding.tax.rate` (0.0-1.0), `self_funding.tax.destination_wallet`, and per-service opt-in/out. On each completed paid job, compute tax from net realized profit, create an auditable settlement record, and transfer/allocate funds to the configured affiliated wallet. Enforce safety rails: max transfer caps, minimum reserve floor, invalid-address rejection, and explicit no-op behavior when profit <= 0. Expose dashboard/API observability for gross revenue, attributable costs, net profit, tax paid, after-tax retained earnings, and payout history.
+**Scope**: Ship a curated self-funding catalog of legal, repeatable service archetypes (monitoring/alerts, recurring summaries, narrow subagent deliverables) with transparent pricing templates. Add profit accounting primitives: `net_realized_profit = earned_revenue - attributable_costs` (inference, fulfillment payouts, network/settlement fees) at job completion. Add config and controls for `self_funding.tax.enabled`, `self_funding.tax.rate` (0.0-1.0), `self_funding.tax.destination_wallet`, and per-service opt-in/out. On each completed paid job, compute tax from net realized profit, create an auditable settlement record, and transfer/allocate funds to the configured affiliated wallet. Enforce safety rails: max transfer caps, minimum reserve floor, invalid-address rejection, and explicit no-op behavior when profit <= 0. Expose dashboard/API observability for gross revenue, attributable costs, net profit, tax paid, after-tax retained earnings, and payout history.
 
 ---
 
 ### 2.19 Model Metascore Routing Profiles
+
+> **Status**: Core shipped in v0.9.1. `ModelProfile` + `MetascoreBreakdown` with 5-dimension scoring (efficacy, cost, availability, locality, confidence). `build_model_profiles()` assembles live profiles from `QualityTracker`, `CapacityTracker`, `CircuitBreakerRegistry`. `select_by_metascore()` replaces availability-first routing in `select_routed_model_with_audit()`. Dashboard explainability panels and simulation mode deferred to v0.9.2.
 
 **Current state**: Routing decisions are spread across heuristics (complexity, fallback order, capacity, and partial pricing) without a unified per-model profile that can be matched against task-level requirements.
 
@@ -507,13 +624,13 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ### 3.3 Multi-Agent Orchestration (Partially Complete)
 
-**Current state**: Partially implemented in 0.7.0. Subagent role contracts (`subagent` vs `model-proxy`), roster semantics, model-assignment modes (`auto`/`commander`), and turn-linked model-selection forensics are live. Full workflow orchestration patterns are still pending.
+**Current state**: Partially implemented in 0.7.0. Subagent role contracts (`subagent` vs `model-proxy`), roster semantics, model-assignment modes (`auto`/`orchestrator`), and turn-linked model-selection forensics are live. Full workflow orchestration patterns are still pending.
 
-**Target**: Internal multi-agent patterns — specialist sub-agents for code review, research, financial analysis — orchestrated by a coordinator agent using graph-based workflows.
+**Target**: Internal multi-agent patterns — subagents for code review, research, financial analysis — orchestrated by a coordinator agent using graph-based workflows.
 
-**Prerequisite**: 2.9 (Declarative Agent Manifests). Orchestration patterns operate on manifest-declared capabilities rather than hardcoded specialist names — the coordinator matches subtask requirements to specialist capability declarations, so adding a new specialist is a config file, not a code change.
+**Prerequisite**: 2.9 (Declarative Agent Manifests). Orchestration patterns operate on manifest-declared capabilities rather than hardcoded subagent names — the coordinator matches subtask requirements to subagent capability declarations, so adding a new subagent is a config file, not a code change.
 
-**Scope**: Extend `SubagentRegistry` to manage actual agent instances (each with its own session, tools, and optionally its own wallet). Define orchestration patterns: sequential, parallel fan-out/fan-in, and handoff. Coordinator agent routes subtasks to specialists based on capability matching against manifest declarations. Specialist resolution is dynamic — the coordinator queries available manifests for capability overlap with the subtask requirements.
+**Scope**: Extend `SubagentRegistry` to manage actual agent instances (each with its own session, tools, and optionally its own wallet). Define orchestration patterns: sequential, parallel fan-out/fan-in, and handoff. Coordinator agent routes subtasks to subagents based on capability matching against manifest declarations. Subagent resolution is dynamic — the coordinator queries available manifests for capability overlap with the subtask requirements.
 
 ---
 
@@ -626,6 +743,29 @@ Ambitious capabilities that push the architecture into new territory. High effor
 **Builds on**: `3.12 Flexible Network Binding`, API auth/session routes, TLS support, existing policy and audit infrastructure.
 
 **Scope**: Add a dedicated remote access security layer with defense-in-depth: mandatory TLS (with optional mTLS for operator/admin roles), OIDC/SAML SSO + enforced MFA + short-lived tokens, device trust (key-bound sessions and optional passkey/WebAuthn), per-route RBAC for dashboard/API actions, IP reputation + geo-anomaly detection with adaptive challenge/deny, rate-limit and WAF hooks for auth surfaces, strict CSRF/CORS/cookie hardening, signed session rotation and revocation, comprehensive audit trails for auth/admin actions, and a "remote-lockdown" mode that defaults to deny-by-default except explicit allowlists. Ship with threat-model documentation, security runbooks, and hardened production presets.
+
+---
+
+### 3.14 GibberLink — Agent-to-Agent Voice Protocol
+
+**Current state**: All Ironclad communication channels (Discord, WhatsApp, Telegram, Email, WebSocket) are agent-to-human. There is no native protocol for two Ironclad agents (or an Ironclad agent and an external agent runtime) to communicate directly in a structured, low-latency voice channel.
+
+**Target**: Implement the GibberLink protocol — an audio-frequency agent-to-agent communication layer that encodes structured data (tool calls, context handoffs, negotiation frames) as modulated audio signals. Enables agents to "talk" to each other over voice channels (phone calls, WebRTC, voice rooms) without human intermediation.
+
+**Builds on**: `2.20 Voice Channels` (WebRTC + STT/TTS pipeline), `3.11 Agent Discovery Protocol` (peer discovery), `1.6 Multimodal Messages` (audio handling), `VoicePipeline` (existing Whisper STT + TTS infrastructure).
+
+**Scope**:
+
+- **GibberLink codec**: Define an audio modulation scheme for encoding structured JSON payloads (tool invocations, context fragments, negotiation frames) as audio-frequency signals. Support both in-band (embedded in voice stream) and sideband (parallel data channel) modes.
+- **Handshake protocol**: Agent identity verification via audio challenge-response using existing cryptographic identity infrastructure (3.10). Capability advertisement and negotiation during handshake.
+- **Session management**: Persistent voice sessions between paired agents with heartbeat, reconnection, and graceful teardown. Multiplex structured data alongside optional human-audible speech.
+- **Transport adapters**: Phone (PSTN via Twilio/SIP), WebRTC (dashboard-to-dashboard), Discord voice channels, and raw audio file exchange.
+- **Security**: End-to-end encryption of the data payload within the audio channel. Replay protection, session binding, and mutual authentication.
+- **Interop**: Define a minimal GibberLink specification for cross-runtime adoption — any agent framework can implement the codec to participate.
+
+**Phasing**: Ship codec + WebRTC transport first (lowest integration complexity). Phone/PSTN bridge second. Cross-runtime interop specification third.
+
+**Non-goals for v1**: Video-channel embedding, multi-party (>2 agent) sessions, real-time translation between different GibberLink codec versions.
 
 ---
 
@@ -797,7 +937,7 @@ Outcome-first autonomy as a coordinated **robot mission runtime**. This is a roa
 - Produce a deterministic mission DAG with retry/fallback semantics.
 - Persist mission state for restart-safe execution and auditability.
 
-### Subroutine F — Recursive Specialist Escalation Kernel
+### Subroutine F — Recursive Subagent Escalation Kernel
 
 **Current state**: subagent orchestration exists but recursive helper delegation is not a first-class policy-governed kernel primitive.
 
@@ -843,7 +983,7 @@ Outcome-first autonomy as a coordinated **robot mission runtime**. This is a roa
 ### Integration Mapping (No Scope Bloat)
 
 - `2.19` remains the model-selection substrate (metascore + explainability + simulation).
-- `3.3` remains the orchestration substrate (specialist delegation patterns).
+- `3.3` remains the orchestration substrate (subagent delegation patterns).
 - Scheduler/queues remain execution substrate (durability + long-horizon runs).
 - New subroutines define composition contracts between those existing layers; they do not imply immediate net-new feature execution.
 
@@ -881,7 +1021,7 @@ Targeting a **0.8.0 candidate slate** with a bias toward reliability, operabilit
 
 - **Strategic item**: `2.18 Compliance-First Self-Funding Portfolio + Profit Taxation`.
 - **Positioning**: Keep out of the locked `v0.8.0` reliability core, but run discovery/design in parallel so implementation can start in `v0.9.x` without blocking current release throughput.
-- **Execution intent**: Prioritize legal, low-overhead recurring service models first (monitoring, digests, narrow specialist deliverables), then layer adjustable per-job net-profit taxation redirected to the user's affiliated wallet.
+- **Execution intent**: Prioritize legal, low-overhead recurring service models first (monitoring, digests, narrow subagent deliverables), then layer adjustable per-job net-profit taxation redirected to the user's affiliated wallet.
 - **Readiness gates before implementation**: finalize taxable profit accounting contract (`net_realized_profit`), destination wallet validation rules, reserve-floor + transfer-cap safety policy, and payout audit surfaces.
 
 ---
@@ -964,6 +1104,11 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 1.17 | Production-grade abuse protection | 1 | rate limiter, auth, deployment config | Medium |
 | 1.18 | Cron-conformant session rotation | 1 | SessionGovernor, scheduler heartbeat | Medium |
 | 1.19 | `agent-browser` external runtime support | 1 | 1.3 Browser tool, policy engine, runtime config | Medium |
+| 1.20 | Homebrew & Winget package manager distribution | 1 | release.yml, GitHub Releases, SHA256 pipeline | Medium |
+| 1.21 | Integrations management (CLI + dashboard) | 1 | Channel adapters, keystore, channel health, dashboard SPA | Medium |
+| 1.22 | Built-in introspection skill | 1 | Tool trait, ToolRegistry, ToolContext, SessionScope, ChannelRouter | Low |
+| 1.23 | Context budget tuning | 1 | context.rs, token_budget, build_context, complexity scorer | Low |
+| 1.24 | Built-in CLI agent skills (Claude Code + Codex CLI) | 1 | SkillLoader, SkillRegistry, ToolRegistry, script sandbox, policy engine | Medium |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
 | 2.3 | Tiered inference pipeline | 2 | Fallback chain, local model config | Medium |
@@ -981,7 +1126,7 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 2.15 | Ops telemetry + release provenance gate | 2 | CI workflows, smoke tests, release pipeline | Medium |
 | 2.16 | Matrix channel adapter (E2EE day one) | 2 | ChannelAdapter, ChannelRouter, durable delivery queue | High |
 | 2.17 | Apertus native local onboarding (SGLang-first) | 2 | install scripts, setup wizard, local host detection, model discovery | Medium |
-| 2.18 | Compliance-first self-funding portfolio + profit taxation | 2 | ServiceManager, wallet/treasury, transactions ledger, specialist routing | High |
+| 2.18 | Compliance-first self-funding portfolio + profit taxation | 2 | ServiceManager, wallet/treasury, transactions ledger, subagent routing | High |
 | 2.19 | Model metascore routing profiles | 2 | ModelRouter, provider registry/config, cost/capacity telemetry, orchestration | High |
 | 2.20 | Voice channels (promoted from 3.6) | 2 | Channel adapters, whisper-rs, local TTS | High |
 | 2.21 | Skill registry protocol | 2 | SkillLoader, 2.14 skills catalog, skill manifests, wallet/ECDSA | Medium |

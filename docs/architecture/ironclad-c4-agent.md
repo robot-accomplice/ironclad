@@ -35,7 +35,6 @@ flowchart TB
         SERVICES["services.rs<br/>Service Locator +<br/>Dependency Wiring"]
         ORCHESTRATION["orchestration.rs<br/>Multi-Agent<br/>Orchestration"]
         MCP["mcp.rs<br/>Model Context Protocol<br/>Client"]
-        SPAWNING["spawning.rs<br/>Subagent Spawning +<br/>Lifecycle"]
         SPECULATIVE["speculative.rs<br/>Speculative Execution +<br/>Branch Evaluation"]
         TYPESTATE["typestate.rs<br/>Typed State Machine<br/>Transitions"]
         WASM["wasm.rs<br/>WASM Plugin Runtime"]
@@ -127,9 +126,8 @@ flowchart TB
         REC_ENGINE["RecommendationEngine:<br/>proactive suggestions from<br/>conversation + memory patterns"]
     end
 
-    subgraph OrchestrationDetail ["orchestration.rs + spawning.rs"]
+    subgraph OrchestrationDetail ["orchestration.rs"]
         ORCH_PLAN["OrchestrationPlan:<br/>decompose task into<br/>subagent assignments"]
-        SPAWN_MGR["SpawnManager:<br/>lifecycle, health checks,<br/>result aggregation"]
     end
 
     subgraph ExtensionDetail ["wasm.rs + mcp.rs"]
@@ -174,7 +172,6 @@ flowchart TB
     CONTEXT --> DEVICE
     CONTEXT --> WORKSPACE
     SUBAGENTS --> ORCHESTRATION
-    SUBAGENTS --> SPAWNING
     TOOLS --> MCP
     TOOLS --> WASM
     LOOP --> SERVICES

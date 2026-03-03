@@ -43,12 +43,13 @@ impl HeartbeatDaemon {
                     None
                 }
             }
-            _ => {
+            tier => {
                 let new = match tier {
                     SurvivalTier::LowCompute => self.interval_ms * 2,
                     SurvivalTier::Critical => self.interval_ms * 2,
                     SurvivalTier::Dead => self.interval_ms * 10,
-                    _ => unreachable!(),
+                    // Safe default for any future tier variants
+                    _ => self.interval_ms * 2,
                 };
                 let max = match tier {
                     SurvivalTier::Dead => MAX_HEARTBEAT_INTERVAL_MS,
@@ -104,6 +105,7 @@ pub async fn run(
     wallet: std::sync::Arc<ironclad_wallet::WalletService>,
     db: ironclad_db::Database,
     session_config: ironclad_core::config::SessionConfig,
+    digest_config: ironclad_core::config::DigestConfig,
     agent_id: String,
 ) {
     use crate::tasks::{HeartbeatTask, execute_task};
@@ -113,7 +115,8 @@ pub async fn run(
     let tasks = default_tasks();
     let mut interval = tokio::time::interval(Duration::from_millis(daemon.interval_ms));
     let mut last_atoken_balance: Option<f64> = None;
-    let governor = ironclad_agent::governor::SessionGovernor::new(session_config.clone());
+    let governor = ironclad_agent::governor::SessionGovernor::new(session_config.clone())
+        .with_digest(digest_config);
     let mut last_rotation_at: Option<String> = None;
 
     tracing::info!(interval_ms = daemon.interval_ms, "Heartbeat loop started");

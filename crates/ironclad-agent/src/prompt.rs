@@ -66,6 +66,36 @@ pub fn runtime_metadata_block(version: &str, primary_model: &str, active_model: 
     )
 }
 
+/// Generates tool-use instructions and a text-based tool summary.
+///
+/// Appended to the system prompt to ensure all models — including those
+/// without native function calling — know how to invoke tools.
+///
+/// The `tool_names` parameter is a list of `(name, description)` pairs.
+pub fn tool_use_instructions(tool_names: &[(String, String)]) -> String {
+    if tool_names.is_empty() {
+        return String::new();
+    }
+
+    let mut section = String::from(
+        "\n---\n## Tool Use\n\
+         You have access to the following tools. To invoke a tool, include a JSON block \
+         in your response with this exact format:\n\
+         ```\n{\"tool_call\": {\"name\": \"<tool-name>\", \"params\": {<parameters>}}}\n```\n\
+         You may invoke multiple tools in a single response. Always use the tool that \
+         best matches the task. If delegation tools are available, prefer delegating \
+         subtasks to specialist subagents rather than doing everything yourself.\n\n\
+         ### Available Tools\n",
+    );
+
+    for (name, desc) in tool_names {
+        section.push_str(&format!("- **{name}**: {desc}\n"));
+    }
+
+    section.push_str("---");
+    section
+}
+
 /// Wraps content with HMAC-SHA256 tagged trust boundary markers.
 pub fn inject_hmac_boundary(content: &str, secret: &[u8]) -> String {
     let tag = compute_hmac(content, secret);

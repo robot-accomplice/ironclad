@@ -3,6 +3,23 @@ use serde_json::Value;
 
 use ironclad_core::{ApiFormat, IroncladError, Result};
 
+/// Saturating cast from u64 to u32 — caps at u32::MAX instead of wrapping.
+fn saturating_u32(v: u64) -> u32 {
+    v.min(u32::MAX as u64) as u32
+}
+
+/// A tool definition that can be sent to an LLM provider.
+///
+/// Maps to Anthropic `tools[].input_schema`, OpenAI `tools[].function.parameters`,
+/// and Google `tools[].function_declarations[].parameters`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema for the tool's input parameters.
+    pub parameters: Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnifiedRequest {
     pub model: String,
@@ -12,6 +29,9 @@ pub struct UnifiedRequest {
     pub system: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality_target: Option<f64>,
+    /// Tool definitions to send to the provider. Empty = no tools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDefinition>,
 }
 
 /// Represents a content part in a multimodal message.
@@ -174,7 +194,11 @@ pub fn parse_sse_chunk(data: &str, format: &ApiFormat) -> Option<StreamChunk> {
             let choice = json.get("choices")?.get(0)?;
             let delta = choice.get("delta")?;
             Some(StreamChunk {
-                delta: delta.get("content")?.as_str()?.to_string(),
+                delta: delta
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 model: json
                     .get("model")
                     .and_then(|v| v.as_str())
@@ -187,12 +211,12 @@ pub fn parse_sse_chunk(data: &str, format: &ApiFormat) -> Option<StreamChunk> {
                     .get("usage")
                     .and_then(|u| u.get("prompt_tokens"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
                 tokens_out: json
                     .get("usage")
                     .and_then(|u| u.get("completion_tokens"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
             })
         }
         ApiFormat::AnthropicMessages => {
@@ -212,12 +236,12 @@ pub fn parse_sse_chunk(data: &str, format: &ApiFormat) -> Option<StreamChunk> {
                     .get("usage")
                     .and_then(|u| u.get("input_tokens"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
                 tokens_out: json
                     .get("usage")
                     .and_then(|u| u.get("output_tokens"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
             })
         }
         ApiFormat::GoogleGenerativeAi => {
@@ -239,12 +263,12 @@ pub fn parse_sse_chunk(data: &str, format: &ApiFormat) -> Option<StreamChunk> {
                     .get("usageMetadata")
                     .and_then(|u| u.get("promptTokenCount"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
                 tokens_out: json
                     .get("usageMetadata")
                     .and_then(|u| u.get("candidatesTokenCount"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
+                    .map(saturating_u32),
             })
         }
     }
@@ -294,6 +318,21 @@ fn translate_anthropic(req: &UnifiedRequest) -> Result<Value> {
         }
     }
 
+    if !req.tools.is_empty() {
+        let tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters,
+                })
+            })
+            .collect();
+        body["tools"] = serde_json::json!(tools);
+    }
+
     Ok(body)
 }
 
@@ -330,30 +369,90 @@ fn translate_openai_completions(req: &UnifiedRequest) -> Result<Value> {
         body["temperature"] = serde_json::json!(temp);
     }
 
+    if !req.tools.is_empty() {
+        let tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                })
+            })
+            .collect();
+        body["tools"] = serde_json::json!(tools);
+    }
+
     Ok(body)
 }
 
 fn translate_openai_responses(req: &UnifiedRequest) -> Result<Value> {
-    let input = req
-        .messages
-        .iter()
-        .map(|m| format!("{}: {}", m.role, m.content))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let mut input_items: Vec<Value> = Vec::new();
+
+    if let Some(sys) = &req.system {
+        input_items.push(serde_json::json!({
+            "role": "system",
+            "content": [{"type": "input_text", "text": sys}],
+        }));
+    }
+
+    for m in &req.messages {
+        let content = match &m.parts {
+            Some(parts) if m.is_multimodal() => parts_to_openai_responses(parts),
+            _ => vec![serde_json::json!({"type": "input_text", "text": m.content})],
+        };
+        input_items.push(serde_json::json!({
+            "role": m.role,
+            "content": content,
+        }));
+    }
 
     let mut body = serde_json::json!({
         "model": req.model,
-        "input": input,
+        "input": input_items,
     });
 
     if let Some(max) = req.max_tokens {
         body["max_output_tokens"] = serde_json::json!(max);
+    }
+    if let Some(temp) = req.temperature {
+        body["temperature"] = serde_json::json!(temp);
+    }
+    if !req.tools.is_empty() {
+        let tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                })
+            })
+            .collect();
+        body["tools"] = serde_json::json!(tools);
     }
 
     Ok(body)
 }
 
 fn translate_google(req: &UnifiedRequest) -> Result<Value> {
+    let mut system_lines = Vec::new();
+    if let Some(sys) = &req.system {
+        system_lines.push(sys.clone());
+    }
+    system_lines.extend(
+        req.messages
+            .iter()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.clone()),
+    );
+
     let contents: Vec<Value> = req
         .messages
         .iter()
@@ -361,11 +460,16 @@ fn translate_google(req: &UnifiedRequest) -> Result<Value> {
         .map(|m| {
             let role = match m.role.as_str() {
                 "assistant" => "model",
-                other => other,
+                "user" => "user",
+                _ => "user",
+            };
+            let parts = match &m.parts {
+                Some(parts) if m.is_multimodal() => parts_to_google(parts),
+                _ => vec![serde_json::json!({ "text": m.content })],
             };
             serde_json::json!({
                 "role": role,
-                "parts": [{"text": m.content}],
+                "parts": parts,
             })
         })
         .collect();
@@ -378,10 +482,33 @@ fn translate_google(req: &UnifiedRequest) -> Result<Value> {
         gen_config.insert("temperature".into(), serde_json::json!(temp));
     }
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "contents": contents,
         "generationConfig": gen_config,
     });
+
+    if !system_lines.is_empty() {
+        body["systemInstruction"] = serde_json::json!({
+            "parts": [{"text": system_lines.join("\n")}],
+        });
+    }
+
+    if !req.tools.is_empty() {
+        let declarations: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                })
+            })
+            .collect();
+        body["tools"] = serde_json::json!([{
+            "functionDeclarations": declarations
+        }]);
+    }
 
     Ok(body)
 }
@@ -450,6 +577,54 @@ pub fn parts_to_anthropic(parts: &[ContentPart]) -> Value {
     Value::Array(blocks)
 }
 
+fn parts_to_openai_responses(parts: &[ContentPart]) -> Vec<Value> {
+    parts
+        .iter()
+        .map(|p| match p {
+            ContentPart::Text { text } => serde_json::json!({
+                "type": "input_text",
+                "text": text,
+            }),
+            ContentPart::ImageUrl { url, detail } => serde_json::json!({
+                "type": "input_image",
+                "image_url": url,
+                "detail": detail.as_deref().unwrap_or("auto"),
+            }),
+            ContentPart::ImageBase64 { media_type, data } => serde_json::json!({
+                "type": "input_image",
+                "image_url": format!("data:{media_type};base64,{data}"),
+                "detail": "auto",
+            }),
+            ContentPart::AudioTranscription { text, .. } => serde_json::json!({
+                "type": "input_text",
+                "text": text,
+            }),
+        })
+        .collect()
+}
+
+fn parts_to_google(parts: &[ContentPart]) -> Vec<Value> {
+    parts
+        .iter()
+        .map(|p| match p {
+            ContentPart::Text { text } => serde_json::json!({ "text": text }),
+            ContentPart::ImageUrl { url, .. } => serde_json::json!({
+                "fileData": {
+                    "mimeType": "image/*",
+                    "fileUri": url,
+                }
+            }),
+            ContentPart::ImageBase64 { media_type, data } => serde_json::json!({
+                "inlineData": {
+                    "mimeType": media_type,
+                    "data": data,
+                }
+            }),
+            ContentPart::AudioTranscription { text, .. } => serde_json::json!({ "text": text }),
+        })
+        .collect()
+}
+
 pub fn translate_response(body: &Value, format: ApiFormat) -> Result<UnifiedResponse> {
     match format {
         ApiFormat::AnthropicMessages => parse_anthropic_response(body),
@@ -460,16 +635,40 @@ pub fn translate_response(body: &Value, format: ApiFormat) -> Result<UnifiedResp
 }
 
 fn parse_anthropic_response(body: &Value) -> Result<UnifiedResponse> {
-    let content = body["content"]
-        .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|block| block["text"].as_str())
-        .unwrap_or("")
-        .to_string();
+    let mut text_parts: Vec<String> = Vec::new();
+    let mut tool_call_parts: Vec<String> = Vec::new();
+
+    if let Some(blocks) = body["content"].as_array() {
+        for block in blocks {
+            match block["type"].as_str() {
+                Some("text") => {
+                    if let Some(t) = block["text"].as_str() {
+                        text_parts.push(t.to_string());
+                    }
+                }
+                Some("tool_use") => {
+                    let name = block["name"].as_str().unwrap_or("unknown");
+                    let input = &block["input"];
+                    let tc = serde_json::json!({"tool_call": {"name": name, "params": input}});
+                    tool_call_parts.push(tc.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Combine: text first, then tool calls (shim for ReAct loop)
+    let mut content = text_parts.join("\n");
+    for tc in tool_call_parts {
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&tc);
+    }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
-    let tokens_in = body["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32;
-    let tokens_out = body["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32;
+    let tokens_in = saturating_u32(body["usage"]["input_tokens"].as_u64().unwrap_or(0));
+    let tokens_out = saturating_u32(body["usage"]["output_tokens"].as_u64().unwrap_or(0));
     let finish_reason = body["stop_reason"].as_str().map(String::from);
 
     Ok(UnifiedResponse {
@@ -487,13 +686,32 @@ fn parse_openai_completions_response(body: &Value) -> Result<UnifiedResponse> {
         .and_then(|arr| arr.first())
         .ok_or_else(|| IroncladError::Llm("no choices in OpenAI response".into()))?;
 
-    let content = choice["message"]["content"]
+    let mut content = choice["message"]["content"]
         .as_str()
         .unwrap_or("")
         .to_string();
+
+    // Convert structured tool_calls into text format for the ReAct loop shim
+    if let Some(tool_calls) = choice["message"]["tool_calls"].as_array() {
+        for tc in tool_calls {
+            if let Some(func) = tc.get("function") {
+                let name = func["name"].as_str().unwrap_or("unknown");
+                let args: Value = func["arguments"]
+                    .as_str()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(serde_json::json!({}));
+                let tc_text = serde_json::json!({"tool_call": {"name": name, "params": args}});
+                if !content.is_empty() {
+                    content.push('\n');
+                }
+                content.push_str(&tc_text.to_string());
+            }
+        }
+    }
+
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
-    let tokens_in = body["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
-    let tokens_out = body["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
+    let tokens_in = saturating_u32(body["usage"]["prompt_tokens"].as_u64().unwrap_or(0));
+    let tokens_out = saturating_u32(body["usage"]["completion_tokens"].as_u64().unwrap_or(0));
     let finish_reason = choice["finish_reason"].as_str().map(String::from);
 
     Ok(UnifiedResponse {
@@ -506,18 +724,49 @@ fn parse_openai_completions_response(body: &Value) -> Result<UnifiedResponse> {
 }
 
 fn parse_openai_responses_response(body: &Value) -> Result<UnifiedResponse> {
-    let content = body["output"]
-        .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|item| item["content"].as_array())
-        .and_then(|parts| parts.first())
-        .and_then(|part| part["text"].as_str())
-        .unwrap_or("")
-        .to_string();
+    let mut text_parts: Vec<String> = Vec::new();
+    let mut tool_call_parts: Vec<String> = Vec::new();
+
+    if let Some(output_items) = body["output"].as_array() {
+        for item in output_items {
+            match item["type"].as_str() {
+                Some("message") => {
+                    if let Some(content_arr) = item["content"].as_array() {
+                        for part in content_arr {
+                            if part["type"].as_str() == Some("output_text")
+                                && let Some(t) = part["text"].as_str()
+                            {
+                                text_parts.push(t.to_string());
+                            }
+                        }
+                    }
+                }
+                Some("function_call") => {
+                    let name = item["name"].as_str().unwrap_or("unknown");
+                    let args: Value = item["arguments"]
+                        .as_str()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or(serde_json::json!({}));
+                    let tc = serde_json::json!({"tool_call": {"name": name, "params": args}});
+                    tool_call_parts.push(tc.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Combine: text first, then tool calls (shim for ReAct loop)
+    let mut content = text_parts.join("\n");
+    for tc in tool_call_parts {
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&tc);
+    }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
-    let tokens_in = body["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32;
-    let tokens_out = body["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32;
+    let tokens_in = saturating_u32(body["usage"]["input_tokens"].as_u64().unwrap_or(0));
+    let tokens_out = saturating_u32(body["usage"]["output_tokens"].as_u64().unwrap_or(0));
 
     Ok(UnifiedResponse {
         content,
@@ -529,25 +778,50 @@ fn parse_openai_responses_response(body: &Value) -> Result<UnifiedResponse> {
 }
 
 fn parse_google_response(body: &Value) -> Result<UnifiedResponse> {
-    let content = body["candidates"]
+    let mut text_parts: Vec<String> = Vec::new();
+    let mut tool_call_parts: Vec<String> = Vec::new();
+
+    if let Some(parts) = body["candidates"]
         .as_array()
         .and_then(|arr| arr.first())
         .and_then(|c| c["content"]["parts"].as_array())
-        .and_then(|parts| parts.first())
-        .and_then(|p| p["text"].as_str())
-        .unwrap_or("")
-        .to_string();
+    {
+        for part in parts {
+            if let Some(t) = part["text"].as_str() {
+                text_parts.push(t.to_string());
+            }
+            if let Some(fc) = part.get("functionCall") {
+                let name = fc["name"].as_str().unwrap_or("unknown");
+                let args = fc.get("args").cloned().unwrap_or(serde_json::json!({}));
+                let tc = serde_json::json!({"tool_call": {"name": name, "params": args}});
+                tool_call_parts.push(tc.to_string());
+            }
+        }
+    }
+
+    // Combine: text first, then tool calls (shim for ReAct loop)
+    let mut content = text_parts.join("\n");
+    for tc in tool_call_parts {
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&tc);
+    }
 
     let model = body["modelVersion"]
         .as_str()
         .unwrap_or("unknown")
         .to_string();
-    let tokens_in = body["usageMetadata"]["promptTokenCount"]
-        .as_u64()
-        .unwrap_or(0) as u32;
-    let tokens_out = body["usageMetadata"]["candidatesTokenCount"]
-        .as_u64()
-        .unwrap_or(0) as u32;
+    let tokens_in = saturating_u32(
+        body["usageMetadata"]["promptTokenCount"]
+            .as_u64()
+            .unwrap_or(0),
+    );
+    let tokens_out = saturating_u32(
+        body["usageMetadata"]["candidatesTokenCount"]
+            .as_u64()
+            .unwrap_or(0),
+    );
     let finish_reason = body["candidates"]
         .as_array()
         .and_then(|arr| arr.first())
@@ -591,6 +865,7 @@ mod tests {
             temperature: Some(0.7),
             system: Some("You are helpful.".into()),
             quality_target: None,
+            tools: vec![],
         }
     }
 
@@ -626,8 +901,13 @@ mod tests {
         let body = translate_request(&req, ApiFormat::OpenAiResponses).unwrap();
 
         assert_eq!(body["model"], "claude-sonnet-4-20250514");
-        assert!(body["input"].as_str().unwrap().contains("Hello"));
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input[0]["role"], "system");
+        assert_eq!(input[1]["role"], "user");
+        assert_eq!(input[1]["content"][0]["type"], "input_text");
+        assert_eq!(input[1]["content"][0]["text"], "Hello");
         assert_eq!(body["max_output_tokens"], 1024);
+        assert_eq!(body["temperature"], 0.7);
     }
 
     #[test]
@@ -987,9 +1267,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_sse_openai_missing_content_returns_none() {
+    fn parse_sse_openai_missing_content_returns_empty_delta() {
         let line = r#"data: {"id":"x","choices":[{"index":0,"delta":{},"finish_reason":null}]}"#;
-        assert!(parse_sse_chunk(line, &ApiFormat::OpenAiCompletions).is_none());
+        let chunk = parse_sse_chunk(line, &ApiFormat::OpenAiCompletions).unwrap();
+        assert_eq!(chunk.delta, "");
+    }
+
+    #[test]
+    fn parse_sse_openai_null_content_returns_empty_delta() {
+        let line = r#"data: {"id":"x","choices":[{"index":0,"delta":{"content":null},"finish_reason":null}]}"#;
+        let chunk = parse_sse_chunk(line, &ApiFormat::OpenAiCompletions).unwrap();
+        assert_eq!(chunk.delta, "");
     }
 
     #[test]
@@ -1018,6 +1306,7 @@ mod tests {
             temperature: None,
             system: None,
             quality_target: None,
+            tools: vec![],
         };
         let body = translate_request(&req, ApiFormat::AnthropicMessages).unwrap();
         let msgs = body["messages"].as_array().unwrap();
@@ -1042,6 +1331,7 @@ mod tests {
             temperature: None,
             system: None, // no explicit system field
             quality_target: None,
+            tools: vec![],
         };
         let body = translate_request(&req, ApiFormat::AnthropicMessages).unwrap();
         assert_eq!(body["system"], "Be concise.");
@@ -1059,6 +1349,7 @@ mod tests {
             temperature: None,
             system: None,
             quality_target: None,
+            tools: vec![],
         };
         let body = translate_request(&req, ApiFormat::AnthropicMessages).unwrap();
         assert!(body.get("max_tokens").is_none() || body["max_tokens"].is_null());
@@ -1081,6 +1372,7 @@ mod tests {
             temperature: Some(0.5),
             system: Some("You are an image analyzer".into()),
             quality_target: None,
+            tools: vec![],
         };
         let body = translate_request(&req, ApiFormat::OpenAiCompletions).unwrap();
         let msgs = body["messages"].as_array().unwrap();
@@ -1102,6 +1394,7 @@ mod tests {
             temperature: None,
             system: None,
             quality_target: None,
+            tools: vec![],
         };
         let body = translate_request(&req, ApiFormat::OpenAiCompletions).unwrap();
         assert!(body.get("max_tokens").is_none() || body["max_tokens"].is_null());
@@ -1121,6 +1414,7 @@ mod tests {
             temperature: None,
             system: None,
             quality_target: None,
+            tools: vec![],
         };
         let body = translate_request(&req, ApiFormat::OpenAiResponses).unwrap();
         assert!(body.get("max_output_tokens").is_none() || body["max_output_tokens"].is_null());
@@ -1137,6 +1431,7 @@ mod tests {
             temperature: None,
             system: None,
             quality_target: None,
+            tools: vec![],
         };
         let body = translate_request(&req, ApiFormat::GoogleGenerativeAi).unwrap();
         let gen_cfg = body["generationConfig"].as_object().unwrap();
@@ -1155,12 +1450,68 @@ mod tests {
             temperature: None,
             system: None,
             quality_target: None,
+            tools: vec![],
         };
         let body = translate_request(&req, ApiFormat::GoogleGenerativeAi).unwrap();
         let contents = body["contents"].as_array().unwrap();
         // system message should be filtered
         assert_eq!(contents.len(), 1);
         assert_eq!(contents[0]["role"], "user");
+        assert_eq!(body["systemInstruction"]["parts"][0]["text"], "Be helpful");
+    }
+
+    #[test]
+    fn translate_openai_responses_includes_tools() {
+        let req = UnifiedRequest {
+            model: "gpt-4o".into(),
+            messages: vec![UnifiedMessage::text("user", "Find docs")],
+            max_tokens: Some(300),
+            temperature: Some(0.2),
+            system: Some("Use tools when needed.".into()),
+            quality_target: None,
+            tools: vec![ToolDefinition {
+                name: "web-search".into(),
+                description: "Search the web".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]
+                }),
+            }],
+        };
+        let body = translate_request(&req, ApiFormat::OpenAiResponses).unwrap();
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["name"], "web-search");
+    }
+
+    #[test]
+    fn translate_google_includes_tools() {
+        let req = UnifiedRequest {
+            model: "gemini-2.5-flash".into(),
+            messages: vec![UnifiedMessage::text("user", "Find docs")],
+            max_tokens: None,
+            temperature: None,
+            system: Some("Prefer tool usage.".into()),
+            quality_target: None,
+            tools: vec![ToolDefinition {
+                name: "web-search".into(),
+                description: "Search the web".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]
+                }),
+            }],
+        };
+        let body = translate_request(&req, ApiFormat::GoogleGenerativeAi).unwrap();
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["name"],
+            "web-search"
+        );
+        assert_eq!(
+            body["systemInstruction"]["parts"][0]["text"],
+            "Prefer tool usage."
+        );
     }
 
     // ── Response parsing edge cases ──────────────────
@@ -1288,11 +1639,13 @@ mod tests {
             temperature: Some(0.5),
             system: Some("sys".into()),
             quality_target: Some(0.9),
+            tools: vec![],
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: UnifiedRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.model, "gpt-4o");
         assert_eq!(parsed.quality_target, Some(0.9));
+        assert!(parsed.tools.is_empty());
     }
 
     #[test]
@@ -1371,5 +1724,146 @@ mod tests {
         let result = parts_to_openai(&[part]);
         let arr = result.as_array().unwrap();
         assert_eq!(arr[0]["image_url"]["detail"], "high");
+    }
+
+    // ── Tool-call shim: OpenAI Responses ──────────────
+
+    #[test]
+    fn parse_openai_responses_with_function_call() {
+        let body = serde_json::json!({
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Let me check that."}]
+                },
+                {
+                    "type": "function_call",
+                    "name": "web-search",
+                    "arguments": r#"{"query":"rust async"}"#
+                }
+            ],
+            "model": "gpt-4o",
+            "usage": {"input_tokens": 20, "output_tokens": 15}
+        });
+        let resp = translate_response(&body, ApiFormat::OpenAiResponses).unwrap();
+        assert!(resp.content.contains("Let me check that."));
+        assert!(resp.content.contains(r#""tool_call""#));
+        assert!(resp.content.contains(r#""web-search""#));
+        assert!(resp.content.contains(r#""rust async""#));
+        assert_eq!(resp.tokens_in, 20);
+        assert_eq!(resp.tokens_out, 15);
+    }
+
+    #[test]
+    fn parse_openai_responses_function_call_only() {
+        let body = serde_json::json!({
+            "output": [{
+                "type": "function_call",
+                "name": "memory-recall",
+                "arguments": r#"{"topic":"project goals"}"#
+            }],
+            "model": "gpt-4o",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+        let resp = translate_response(&body, ApiFormat::OpenAiResponses).unwrap();
+        assert!(resp.content.starts_with(r#"{"tool_call""#));
+        assert!(resp.content.contains("memory-recall"));
+    }
+
+    #[test]
+    fn parse_openai_responses_multiple_function_calls() {
+        let body = serde_json::json!({
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "tool-a",
+                    "arguments": r#"{"x":1}"#
+                },
+                {
+                    "type": "function_call",
+                    "name": "tool-b",
+                    "arguments": r#"{"y":2}"#
+                }
+            ],
+            "model": "gpt-4o",
+            "usage": {"input_tokens": 5, "output_tokens": 3}
+        });
+        let resp = translate_response(&body, ApiFormat::OpenAiResponses).unwrap();
+        // Both tool calls should be present
+        assert!(resp.content.contains("tool-a"));
+        assert!(resp.content.contains("tool-b"));
+        // Content should have two separate JSON objects
+        let tc_count = resp.content.matches(r#""tool_call""#).count();
+        assert_eq!(tc_count, 2);
+    }
+
+    // ── Tool-call shim: Google ──────────────
+
+    #[test]
+    fn parse_google_response_with_function_call() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"text": "I'll look that up."},
+                        {"functionCall": {"name": "web-search", "args": {"query": "rust async"}}}
+                    ],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }],
+            "modelVersion": "gemini-2.5-flash",
+            "usageMetadata": {"promptTokenCount": 12, "candidatesTokenCount": 8}
+        });
+        let resp = translate_response(&body, ApiFormat::GoogleGenerativeAi).unwrap();
+        assert!(resp.content.contains("I'll look that up."));
+        assert!(resp.content.contains(r#""tool_call""#));
+        assert!(resp.content.contains("web-search"));
+        assert!(resp.content.contains("rust async"));
+        assert_eq!(resp.tokens_in, 12);
+        assert_eq!(resp.tokens_out, 8);
+    }
+
+    #[test]
+    fn parse_google_response_function_call_only() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "memory-recall", "args": {"topic": "goals"}}}
+                    ],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }],
+            "modelVersion": "gemini-2.5-flash",
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 3}
+        });
+        let resp = translate_response(&body, ApiFormat::GoogleGenerativeAi).unwrap();
+        assert!(resp.content.starts_with(r#"{"tool_call""#));
+        assert!(resp.content.contains("memory-recall"));
+    }
+
+    #[test]
+    fn parse_google_response_multiple_function_calls() {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "tool-a", "args": {"x": 1}}},
+                        {"functionCall": {"name": "tool-b", "args": {"y": 2}}}
+                    ],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }],
+            "modelVersion": "gemini-2.5-flash",
+            "usageMetadata": {"promptTokenCount": 4, "candidatesTokenCount": 2}
+        });
+        let resp = translate_response(&body, ApiFormat::GoogleGenerativeAi).unwrap();
+        assert!(resp.content.contains("tool-a"));
+        assert!(resp.content.contains("tool-b"));
+        let tc_count = resp.content.matches(r#""tool_call""#).count();
+        assert_eq!(tc_count, 2);
     }
 }

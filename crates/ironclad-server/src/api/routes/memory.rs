@@ -169,8 +169,48 @@ pub async fn memory_search(
     if query.is_empty() {
         return Err(bad_request("missing ?q= parameter"));
     }
+    if query.len() > 512 {
+        return Err(bad_request("search query too long (max 512 chars)"));
+    }
     match ironclad_db::memory::fts_search(&state.db, &query, 100) {
         Ok(results) => Ok(axum::Json(serde_json::json!({ "results": results }))),
         Err(e) => Err(internal_err(&e)),
     }
+}
+
+// ── Knowledge ingestion ────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct IngestRequest {
+    pub path: String,
+}
+
+pub async fn knowledge_ingest(
+    State(state): State<AppState>,
+    axum::Json(body): axum::Json<IngestRequest>,
+) -> impl IntoResponse {
+    use ironclad_agent::ingest::{ingest_directory, ingest_file};
+
+    let target = std::path::Path::new(&body.path);
+
+    let results = if target.is_dir() {
+        match ingest_directory(&state.db, target) {
+            Ok(r) => r,
+            Err(e) => return Err(internal_err(&e)),
+        }
+    } else if target.is_file() {
+        match ingest_file(&state.db, target) {
+            Ok(r) => vec![r],
+            Err(e) => return Err(bad_request(format!("{e}"))),
+        }
+    } else {
+        return Err(bad_request("path does not exist or is not accessible"));
+    };
+
+    let total_chunks: usize = results.iter().map(|r| r.chunks_stored).sum();
+    Ok(axum::Json(serde_json::json!({
+        "files_ingested": results.len(),
+        "total_chunks": total_chunks,
+        "results": results,
+    })))
 }

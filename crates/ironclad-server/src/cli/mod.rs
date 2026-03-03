@@ -22,6 +22,32 @@ macro_rules! eprintln {
 }
 
 static THEME: OnceLock<Theme> = OnceLock::new();
+static API_KEY: OnceLock<Option<String>> = OnceLock::new();
+
+pub fn init_api_key(key: Option<String>) {
+    let _ = API_KEY.set(key);
+}
+
+fn api_key() -> Option<&'static str> {
+    API_KEY.get().and_then(|k| k.as_deref())
+}
+
+/// Returns a `reqwest::Client` pre-configured with the API key header (if set).
+/// Use this instead of bare `reqwest::get()` / `reqwest::Client::new()` for
+/// any request to the Ironclad server.
+pub fn http_client() -> Result<Client, Box<dyn std::error::Error>> {
+    let mut builder = Client::builder().timeout(std::time::Duration::from_secs(10));
+    if let Some(key) = api_key() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "x-api-key",
+            reqwest::header::HeaderValue::from_str(key)
+                .map_err(|e| format!("invalid API key header value: {e}"))?,
+        );
+        builder = builder.default_headers(headers);
+    }
+    Ok(builder.build()?)
+}
 
 pub fn init_theme(color_flag: &str, theme_flag: &str, no_draw: bool, nerdmode: bool) {
     let t = Theme::from_flags(color_flag, theme_flag);
@@ -89,15 +115,22 @@ pub struct IroncladClient {
 
 impl IroncladClient {
     pub fn new(base_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()?;
+        let mut builder = Client::builder().timeout(std::time::Duration::from_secs(10));
+        if let Some(key) = api_key() {
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(
+                "x-api-key",
+                reqwest::header::HeaderValue::from_str(key)
+                    .map_err(|e| format!("invalid API key header value: {e}"))?,
+            );
+            builder = builder.default_headers(headers);
+        }
         Ok(Self {
-            client,
+            client: builder.build()?,
             base_url: base_url.trim_end_matches('/').to_string(),
         })
     }
-    async fn get(&self, path: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    pub(crate) async fn get(&self, path: &str) -> Result<Value, Box<dyn std::error::Error>> {
         let url = format!("{}{}", self.base_url, path);
         let resp = self.client.get(&url).send().await?;
         if !resp.status().is_success() {
@@ -383,6 +416,7 @@ pub(crate) fn which_binary(name: &str) -> Option<String> {
 }
 
 mod admin;
+pub mod defrag;
 mod memory;
 mod schedule;
 mod sessions;
@@ -391,6 +425,7 @@ mod update;
 mod wallet;
 
 pub use admin::*;
+pub use defrag::*;
 pub use memory::*;
 pub use schedule::*;
 pub use sessions::*;

@@ -261,6 +261,22 @@ jobs:
           fi
           echo "No coverage regression detected"
 
+  # ── Stage 3h: Harness Quick (API surface smoke) ────────
+  harness-quick:
+    name: "Harness Quick"
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harness-quick
+      - name: "Run harness unit tests"
+        run: cargo test -p ironclad-harness --lib --verbose --locked -- --test-threads=4
+      - name: "Run harness API surface tests"
+        run: cargo test -p ironclad-harness --test api_smoke --test api_sessions --test api_memory --test api_domain --test dashboard --verbose --locked -- --test-threads=4
+
   # ── Stage 3g: Cross-Platform Delta Tests ───────────────
   # Runs platform-specific tests (Task 36, v0.8.0 stabilization) on macOS,
   # Linux, and Windows to verify daemon paths, file permissions, tilde
@@ -286,7 +302,7 @@ jobs:
   build:
     name: "Build (${{ matrix.profile }})"
     runs-on: ubuntu-latest
-    needs: [test, integration-tests, regression-battery, release-gates]
+    needs: [test, integration-tests, regression-battery, release-gates, harness-quick]
     strategy:
       matrix:
         profile: [debug, release]
@@ -335,25 +351,12 @@ jobs:
           shared-key: docs
       - run: cargo doc --workspace --no-deps --document-private-items
 
-  # ── Stage 7: Docker ────────────────────────────────────
-  docker:
-    name: "Docker"
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-      - name: "Build Docker image"
-        env:
-          GIT_SHA: ${{ github.sha }}
-        run: docker build -t "ironclad:ci-${GIT_SHA}" .
-
   # ── Gate: All Passed ───────────────────────────────────
   ci-pass:
     name: "CI Pass"
     runs-on: ubuntu-latest
     if: always()
-    needs: [format, lint, test, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, coverage, build, audit, docs, cross-platform]
+    needs: [format, lint, test, integration-tests, regression-battery, release-gates, uat-smoke, soak-fuzz, release-doc-gate, harness-quick, coverage, build, audit, docs, cross-platform]
     steps:
       - name: "Verify all required jobs passed"
         env:
@@ -366,6 +369,7 @@ jobs:
           R_UAT: ${{ needs.uat-smoke.result }}
           R_SOAK_FUZZ: ${{ needs.soak-fuzz.result }}
           R_RELEASE_DOC_GATE: ${{ needs.release-doc-gate.result }}
+          R_HARNESS_QUICK: ${{ needs.harness-quick.result }}
           R_COVERAGE: ${{ needs.coverage.result }}
           R_BUILD: ${{ needs.build.result }}
           R_AUDIT: ${{ needs.audit.result }}
@@ -381,6 +385,7 @@ jobs:
           echo "uat-smoke: $R_UAT"
           echo "soak-fuzz: $R_SOAK_FUZZ"
           echo "release-doc-gate: $R_RELEASE_DOC_GATE"
+          echo "harness-quick: $R_HARNESS_QUICK"
           echo "coverage: $R_COVERAGE"
           echo "build:    $R_BUILD"
           echo "audit:    $R_AUDIT"
@@ -395,6 +400,7 @@ jobs:
              [ "$R_UAT" != "success" ] || \
              [ "$R_SOAK_FUZZ" != "success" ] || \
              [ "$R_RELEASE_DOC_GATE" != "success" ] || \
+             [ "$R_HARNESS_QUICK" != "success" ] || \
              [ "$R_COVERAGE" != "success" ] || \
              [ "$R_BUILD"    != "success" ] || \
              [ "$R_AUDIT"    != "success" ] || \

@@ -552,13 +552,22 @@ pub fn scan_directory_safety(dir: &Path) -> SkillSafetyReport {
 fn collect_findings_recursive(dir: &Path, findings: &mut Vec<SafetyFinding>, count: &mut usize) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
+            // Use entry.file_type() which does NOT follow symlinks, preventing
+            // a malicious skill package from tricking the scanner into reading
+            // files outside the skill directory.
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
             let p = entry.path();
-            if p.is_file() {
+            if ft.is_file() {
                 if let Ok(content) = fs::read_to_string(&p) {
                     *count += 1;
                     findings.extend(scan_file_patterns(&p, &content));
                 }
-            } else if p.is_dir() {
+            } else if ft.is_dir() {
                 collect_findings_recursive(&p, findings, count);
             }
         }

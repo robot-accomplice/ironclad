@@ -13,10 +13,22 @@ pub struct MultimodalConfig {
     pub media_dir: Option<PathBuf>,
     #[serde(default = "default_max_image_size")]
     pub max_image_size_bytes: usize,
+    #[serde(default = "default_max_audio_size")]
+    pub max_audio_size_bytes: usize,
+    #[serde(default = "default_max_video_size")]
+    pub max_video_size_bytes: usize,
+    #[serde(default = "default_max_document_size")]
+    pub max_document_size_bytes: usize,
     #[serde(default)]
     pub vision_model: Option<String>,
     #[serde(default)]
     pub transcription_model: Option<String>,
+    /// Automatically transcribe audio attachments via the voice pipeline.
+    #[serde(default)]
+    pub auto_transcribe_audio: bool,
+    /// Automatically describe images via the configured vision model.
+    #[serde(default)]
+    pub auto_describe_images: bool,
 }
 
 impl Default for MultimodalConfig {
@@ -25,14 +37,31 @@ impl Default for MultimodalConfig {
             enabled: false,
             media_dir: None,
             max_image_size_bytes: default_max_image_size(),
+            max_audio_size_bytes: default_max_audio_size(),
+            max_video_size_bytes: default_max_video_size(),
+            max_document_size_bytes: default_max_document_size(),
             vision_model: None,
             transcription_model: None,
+            auto_transcribe_audio: false,
+            auto_describe_images: false,
         }
     }
 }
 
 fn default_max_image_size() -> usize {
     10 * 1024 * 1024
+}
+
+fn default_max_audio_size() -> usize {
+    25 * 1024 * 1024 // 25 MB — Whisper API limit
+}
+
+fn default_max_video_size() -> usize {
+    50 * 1024 * 1024 // 50 MB
+}
+
+fn default_max_document_size() -> usize {
+    50 * 1024 * 1024 // 50 MB
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -157,6 +186,8 @@ pub struct IroncladConfig {
     pub discovery: DiscoveryConfig,
     #[serde(default)]
     pub obsidian: ObsidianConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +216,66 @@ impl Default for DiscoveryConfig {
             mdns: false,
             advertise: false,
             service_name: default_service_name(),
+        }
+    }
+}
+
+// ── Security / RBAC ─────────────────────────────────────────────────────────
+
+/// Claim-based RBAC configuration.
+///
+/// Controls how authentication layers compose into an effective authority.
+/// See `ironclad_core::security::resolve_claim` for the composition algorithm.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    /// When `true` (default), channels with empty allow-lists reject all
+    /// messages. When `false`, empty allow-lists permit everyone (legacy).
+    #[serde(default = "default_true")]
+    pub deny_on_empty_allowlist: bool,
+
+    /// Authority granted to senders who pass a channel's allow-list.
+    /// Default: `Peer` (can use Safe + Caution tools like filesystem access).
+    #[serde(default = "default_allowlist_authority")]
+    pub allowlist_authority: crate::types::InputAuthority,
+
+    /// Authority granted to senders in `channels.trusted_sender_ids`.
+    /// Default: `Creator` (full access).
+    #[serde(default = "default_trusted_authority")]
+    pub trusted_authority: crate::types::InputAuthority,
+
+    /// Authority granted to HTTP API / WebSocket callers.
+    /// Default: `Creator`.
+    #[serde(default = "default_api_authority")]
+    pub api_authority: crate::types::InputAuthority,
+
+    /// Maximum authority when the threat scanner returns Caution.
+    /// Effective authority is capped at this level.
+    /// Default: `External` (Safe tools only).
+    #[serde(default = "default_threat_ceiling")]
+    pub threat_caution_ceiling: crate::types::InputAuthority,
+}
+
+fn default_allowlist_authority() -> crate::types::InputAuthority {
+    crate::types::InputAuthority::Peer
+}
+fn default_trusted_authority() -> crate::types::InputAuthority {
+    crate::types::InputAuthority::Creator
+}
+fn default_api_authority() -> crate::types::InputAuthority {
+    crate::types::InputAuthority::Creator
+}
+fn default_threat_ceiling() -> crate::types::InputAuthority {
+    crate::types::InputAuthority::External
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            deny_on_empty_allowlist: true,
+            allowlist_authority: default_allowlist_authority(),
+            trusted_authority: default_trusted_authority(),
+            api_authority: default_api_authority(),
+            threat_caution_ceiling: default_threat_ceiling(),
         }
     }
 }
@@ -339,7 +430,8 @@ impl IroncladConfig {
     }
 
     fn merge_bundled_providers(&mut self) {
-        let bundled: BundledProviders = toml::from_str(BUNDLED_PROVIDERS_TOML).unwrap_or_default();
+        let bundled: BundledProviders = toml::from_str(BUNDLED_PROVIDERS_TOML)
+            .expect("bundled providers TOML must parse — this is a build-time error");
         for (name, bundled_cfg) in bundled.providers {
             self.providers.entry(name).or_insert(bundled_cfg);
         }
@@ -403,6 +495,27 @@ impl IroncladConfig {
             )));
         }
 
+        // ── Security validation ─────────────────────────────────
+        // Allow-list authority must not exceed trusted authority (the allow-list
+        // is a weaker authentication signal than trusted_sender_ids).
+        if self.security.allowlist_authority > self.security.trusted_authority {
+            return Err(IroncladError::Config(
+                "security.allowlist_authority must be ≤ security.trusted_authority \
+                 (allow-list is a weaker signal than trusted_sender_ids)"
+                    .into(),
+            ));
+        }
+
+        // Threat scanner ceiling must be below Creator. If the ceiling is Creator,
+        // the threat scanner can never actually restrict anything — it's a no-op.
+        if self.security.threat_caution_ceiling >= crate::types::InputAuthority::Creator {
+            return Err(IroncladError::Config(
+                "security.threat_caution_ceiling must be below Creator \
+                 (otherwise the threat scanner has no effect)"
+                    .into(),
+            ));
+        }
+
         Ok(())
     }
 }
@@ -461,6 +574,27 @@ pub fn home_dir() -> PathBuf {
         .or_else(|_| std::env::var("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir())
+}
+
+/// Resolves the configuration file path using a standard precedence chain:
+///
+/// 1. Explicit path (from `--config` flag or `IRONCLAD_CONFIG` env var)
+/// 2. `~/.ironclad/ironclad.toml` (if it exists)
+/// 3. `./ironclad.toml` in the current working directory (if it exists)
+/// 4. `None` — caller decides the fallback (e.g., built-in defaults or error)
+pub fn resolve_config_path(explicit: Option<&str>) -> Option<PathBuf> {
+    if let Some(p) = explicit {
+        return Some(PathBuf::from(p));
+    }
+    let home_config = home_dir().join(".ironclad").join("ironclad.toml");
+    if home_config.exists() {
+        return Some(home_config);
+    }
+    let cwd_config = PathBuf::from("ironclad.toml");
+    if cwd_config.exists() {
+        return Some(cwd_config);
+    }
+    None
 }
 
 /// Expands a leading `~` in `path` to the user's home directory; otherwise returns the path unchanged.
@@ -1038,6 +1172,8 @@ pub struct A2aConfig {
     pub session_timeout_seconds: u64,
     #[serde(default = "default_true")]
     pub require_on_chain_identity: bool,
+    #[serde(default = "default_a2a_nonce_ttl")]
+    pub nonce_ttl_seconds: u64,
 }
 
 impl Default for A2aConfig {
@@ -1048,6 +1184,7 @@ impl Default for A2aConfig {
             rate_limit_per_peer: default_a2a_rate_limit(),
             session_timeout_seconds: default_a2a_session_timeout(),
             require_on_chain_identity: true,
+            nonce_ttl_seconds: default_a2a_nonce_ttl(),
         }
     }
 }
@@ -1060,6 +1197,9 @@ fn default_a2a_rate_limit() -> u32 {
 }
 fn default_a2a_session_timeout() -> u64 {
     3600
+}
+fn default_a2a_nonce_ttl() -> u64 {
+    7200
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1310,6 +1450,19 @@ pub struct EmailConfig {
     pub allowed_senders: Vec<String>,
     #[serde(default = "default_poll_interval")]
     pub poll_interval_seconds: u64,
+    /// Environment variable name holding the OAuth2 access token (for Gmail XOAUTH2).
+    #[serde(default)]
+    pub oauth2_token_env: String,
+    /// Prefer XOAUTH2 authentication over password-based login.
+    #[serde(default)]
+    pub use_oauth2: bool,
+    /// Use IMAP IDLE for push notifications when the server supports it (default: true).
+    #[serde(default = "default_imap_idle_enabled")]
+    pub imap_idle_enabled: bool,
+}
+
+fn default_imap_idle_enabled() -> bool {
+    true
 }
 
 impl Default for EmailConfig {
@@ -1325,6 +1478,9 @@ impl Default for EmailConfig {
             from_address: String::new(),
             allowed_senders: Vec::new(),
             poll_interval_seconds: default_poll_interval(),
+            oauth2_token_env: String::new(),
+            use_oauth2: false,
+            imap_idle_enabled: default_imap_idle_enabled(),
         }
     }
 }
@@ -1424,6 +1580,10 @@ pub struct PluginsConfig {
     pub allow: Vec<String>,
     #[serde(default)]
     pub deny: Vec<String>,
+    #[serde(default)]
+    pub strict_permissions: bool,
+    #[serde(default)]
+    pub allowed_permissions: Vec<String>,
 }
 
 impl Default for PluginsConfig {
@@ -1432,6 +1592,8 @@ impl Default for PluginsConfig {
             dir: default_plugins_dir(),
             allow: Vec::new(),
             deny: Vec::new(),
+            strict_permissions: true,
+            allowed_permissions: Vec::new(),
         }
     }
 }
@@ -2398,6 +2560,9 @@ ignored_folders = [".obsidian", ".git"]
         assert_eq!(cfg.imap_port, 993);
         assert_eq!(cfg.smtp_port, 587);
         assert_eq!(cfg.poll_interval_seconds, 30);
+        assert!(cfg.oauth2_token_env.is_empty());
+        assert!(!cfg.use_oauth2);
+        assert!(cfg.imap_idle_enabled);
     }
 
     #[test]
@@ -2776,6 +2941,22 @@ per_payment_cap = 0.0
         assert!(d.to_str().unwrap().contains(".ironclad"));
     }
 
+    #[test]
+    fn resolve_config_path_explicit_overrides_all() {
+        let p = resolve_config_path(Some("/tmp/custom.toml"));
+        assert_eq!(p.unwrap(), std::path::PathBuf::from("/tmp/custom.toml"));
+    }
+
+    #[test]
+    fn resolve_config_path_explicit_even_if_nonexistent() {
+        // Explicit path is returned even if file doesn't exist — caller handles errors
+        let p = resolve_config_path(Some("/nonexistent/path/ironclad.toml"));
+        assert_eq!(
+            p.unwrap(),
+            std::path::PathBuf::from("/nonexistent/path/ironclad.toml")
+        );
+    }
+
     // ── KnowledgeConfig / WorkspaceConfig defaults ──────────────────────
 
     #[test]
@@ -2799,5 +2980,96 @@ per_payment_cap = 0.0
         assert!(cfg.stt_model.is_none());
         assert!(cfg.tts_model.is_none());
         assert!(cfg.tts_voice.is_none());
+    }
+
+    // ── Security validation ────────────────────────────────────────────
+
+    #[test]
+    fn validate_default_security_config_ok() {
+        // Default SecurityConfig should pass validation.
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+"#;
+        IroncladConfig::from_str(toml).unwrap();
+    }
+
+    #[test]
+    fn validate_allowlist_authority_exceeds_trusted_fails() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[security]
+allowlist_authority = "Creator"
+trusted_authority = "Peer"
+"#;
+        let err = IroncladConfig::from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("allowlist_authority"));
+    }
+
+    #[test]
+    fn validate_threat_ceiling_creator_fails() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[security]
+threat_caution_ceiling = "Creator"
+"#;
+        let err = IroncladConfig::from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("threat_caution_ceiling"));
+    }
+
+    #[test]
+    fn validate_security_peer_ceiling_ok() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[security]
+threat_caution_ceiling = "Peer"
+"#;
+        IroncladConfig::from_str(toml).unwrap();
     }
 }

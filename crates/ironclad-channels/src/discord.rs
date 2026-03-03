@@ -1,23 +1,45 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
 use ironclad_core::{IroncladError, Result};
+use rand::Rng;
 use serde_json::{Value, json};
-use tracing::{debug, error, warn};
+use tokio::net::TcpStream;
+use tokio::sync::Notify;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::{ChannelAdapter, InboundMessage, OutboundMessage};
 
 const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
 const MAX_MESSAGE_LEN: usize = 2000;
+const GATEWAY_VERSION: &str = "10";
+const GATEWAY_ENCODING: &str = "json";
+
+type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type WsSink = SplitSink<WsStream, WsMessage>;
+#[allow(dead_code)]
+type WsSource = SplitStream<WsStream>;
 
 pub struct DiscordAdapter {
     pub token: String,
     pub client: reqwest::Client,
     pub allowed_guild_ids: Vec<String>,
+    /// When `true`, an empty `allowed_guild_ids` list denies all messages (secure default).
+    /// When `false`, an empty list allows all messages (legacy behavior).
+    pub deny_on_empty: bool,
     message_buffer: Arc<Mutex<VecDeque<InboundMessage>>>,
+    gateway_connection: Arc<GatewayConnection>,
+    gateway_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    shutdown: Arc<Notify>,
 }
 
 impl DiscordAdapter {
@@ -29,13 +51,18 @@ impl DiscordAdapter {
                 .build()
                 .unwrap_or_default(),
             allowed_guild_ids: Vec::new(),
+            deny_on_empty: false,
             message_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            gateway_connection: Arc::new(GatewayConnection::new()),
+            gateway_handle: Mutex::new(None),
+            shutdown: Arc::new(Notify::new()),
         }
     }
 
-    pub fn with_config(token: String, allowed_guild_ids: Vec<String>) -> Self {
+    pub fn with_config(token: String, allowed_guild_ids: Vec<String>, deny_on_empty: bool) -> Self {
         Self {
             allowed_guild_ids,
+            deny_on_empty,
             ..Self::new(token)
         }
     }
@@ -45,7 +72,10 @@ impl DiscordAdapter {
     }
 
     fn is_guild_allowed(&self, guild_id: &str) -> bool {
-        self.allowed_guild_ids.is_empty() || self.allowed_guild_ids.iter().any(|g| g == guild_id)
+        if self.allowed_guild_ids.is_empty() {
+            return !self.deny_on_empty;
+        }
+        self.allowed_guild_ids.iter().any(|g| g == guild_id)
     }
 
     pub fn push_message(&self, msg: InboundMessage) {
@@ -100,6 +130,43 @@ impl DiscordAdapter {
             .unwrap_or("")
             .to_string();
 
+        // Extract Discord attachments into structured MediaAttachment objects
+        let attachments: Vec<super::MediaAttachment> = data
+            .get("attachments")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|att| {
+                        let url = att.get("url").and_then(|v| v.as_str())?;
+                        let ct = att
+                            .get("content_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("application/octet-stream");
+                        Some(super::MediaAttachment {
+                            media_type: super::MediaType::from_content_type(ct),
+                            source_url: Some(url.to_string()),
+                            local_path: None,
+                            filename: att
+                                .get("filename")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            content_type: ct.to_string(),
+                            size_bytes: att
+                                .get("size")
+                                .and_then(|v| v.as_u64())
+                                .map(|s| s as usize),
+                            caption: None,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut metadata = json!({ "channel_id": channel_id });
+        if !attachments.is_empty() {
+            metadata["attachments"] = serde_json::to_value(&attachments).unwrap_or_default();
+        }
+
         Ok(Some(InboundMessage {
             id: if message_id.is_empty() {
                 Uuid::new_v4().to_string()
@@ -110,7 +177,7 @@ impl DiscordAdapter {
             sender_id,
             content,
             timestamp: Utc::now(),
-            metadata: Some(json!({ "channel_id": channel_id })),
+            metadata: Some(metadata),
         }))
     }
 
@@ -134,12 +201,15 @@ impl DiscordAdapter {
     /// or until a message is sent. Best-effort; errors are silently ignored.
     pub async fn send_typing(&self, channel_id: &str) {
         let url = format!("{}/channels/{}/typing", DISCORD_API_BASE, channel_id);
-        let _ = self
+        if let Err(e) = self
             .client
             .post(&url)
             .header("Authorization", format!("Bot {}", self.token))
             .send()
-            .await;
+            .await
+        {
+            tracing::debug!(error = %e, "Discord typing indicator failed");
+        }
     }
 
     /// Send a short ephemeral message and return its message ID. Best-effort.
@@ -182,6 +252,20 @@ impl DiscordAdapter {
             }
 
             let safe_max = remaining.floor_char_boundary(max_len);
+
+            // Guard: if floor_char_boundary returned 0 (first char wider than max_len),
+            // force progress by advancing one char boundary to avoid an infinite loop.
+            if safe_max == 0 {
+                let next = remaining
+                    .char_indices()
+                    .nth(1)
+                    .map(|(i, _)| i)
+                    .unwrap_or(remaining.len());
+                chunks.push(remaining[..next].to_string());
+                remaining = &remaining[next..];
+                continue;
+            }
+
             let boundary = &remaining[..safe_max];
             let split_at = boundary
                 .rfind('\n')
@@ -189,7 +273,10 @@ impl DiscordAdapter {
                 .unwrap_or(safe_max);
 
             let (chunk, rest) = remaining.split_at(split_at);
-            chunks.push(chunk.to_string());
+            // Skip empty chunks (e.g. when message starts with a newline)
+            if !chunk.is_empty() {
+                chunks.push(chunk.to_string());
+            }
             remaining = rest.trim_start_matches('\n').trim_start();
         }
 
@@ -261,10 +348,11 @@ impl ChannelAdapter for DiscordAdapter {
 
 /// Discord WebSocket Gateway connection state.
 pub struct GatewayConnection {
-    _heartbeat_interval_ms: u64,
+    heartbeat_interval_ms: Mutex<u64>,
     sequence: Arc<Mutex<Option<u64>>>,
     session_id: Arc<Mutex<Option<String>>>,
-    _resume_gateway_url: Arc<Mutex<Option<String>>>,
+    resume_gateway_url: Mutex<Option<String>>,
+    heartbeat_acked: AtomicBool,
 }
 
 impl Default for GatewayConnection {
@@ -276,27 +364,75 @@ impl Default for GatewayConnection {
 impl GatewayConnection {
     pub fn new() -> Self {
         Self {
-            _heartbeat_interval_ms: 41250,
+            heartbeat_interval_ms: Mutex::new(41250),
             sequence: Arc::new(Mutex::new(None)),
             session_id: Arc::new(Mutex::new(None)),
-            _resume_gateway_url: Arc::new(Mutex::new(None)),
+            resume_gateway_url: Mutex::new(None),
+            heartbeat_acked: AtomicBool::new(true),
         }
     }
 
+    pub fn heartbeat_interval_ms(&self) -> u64 {
+        *self
+            .heartbeat_interval_ms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn set_heartbeat_interval_ms(&self, ms: u64) {
+        *self
+            .heartbeat_interval_ms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = ms;
+    }
+
     pub fn sequence(&self) -> Option<u64> {
-        *self.sequence.lock().expect("mutex poisoned")
+        *self.sequence.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn set_sequence(&self, seq: Option<u64>) {
-        *self.sequence.lock().expect("mutex poisoned") = seq;
+        *self.sequence.lock().unwrap_or_else(|e| e.into_inner()) = seq;
     }
 
     pub fn session_id(&self) -> Option<String> {
-        self.session_id.lock().expect("mutex poisoned").clone()
+        self.session_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn set_session_id(&self, id: String) {
-        *self.session_id.lock().expect("mutex poisoned") = Some(id);
+        *self.session_id.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
+    }
+
+    pub fn clear_session(&self) {
+        *self.session_id.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .resume_gateway_url
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    pub fn resume_gateway_url(&self) -> Option<String> {
+        self.resume_gateway_url
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn set_resume_gateway_url(&self, url: String) {
+        *self
+            .resume_gateway_url
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(url);
+    }
+
+    pub fn heartbeat_acked(&self) -> bool {
+        self.heartbeat_acked.load(Ordering::Acquire)
+    }
+
+    pub fn set_heartbeat_acked(&self, acked: bool) {
+        self.heartbeat_acked.store(acked, Ordering::Release);
     }
 }
 
@@ -344,7 +480,8 @@ impl DiscordAdapter {
     ) -> Option<(String, serde_json::Value)> {
         let event_name = payload.get("t")?.as_str()?.to_string();
         let data = payload.get("d")?.clone();
-        let _seq = payload.get("s").and_then(|v| v.as_u64());
+        // Sequence number is extracted separately by the caller (gateway_loop)
+        // to update GatewayConnection state before dispatch processing.
 
         Some((event_name, data))
     }
@@ -368,6 +505,362 @@ impl DiscordAdapter {
     pub fn is_fatal_close(code: u16) -> bool {
         matches!(code, 4004 | 4010 | 4011 | 4012 | 4013 | 4014)
     }
+
+    /// Connect to the Discord WebSocket Gateway for real-time event reception.
+    ///
+    /// Spawns a background task that maintains the gateway connection, handles
+    /// reconnection with exponential backoff, and pushes inbound messages to the
+    /// adapter's buffer (consumed by the existing poll loop).
+    pub async fn connect_gateway(self: &Arc<Self>) -> Result<()> {
+        let adapter = Arc::clone(self);
+        let handle = tokio::spawn(async move {
+            if let Err(e) = gateway_loop(adapter).await {
+                error!(error = %e, "Discord gateway loop terminated with error");
+            }
+        });
+
+        *self
+            .gateway_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+        info!("Discord gateway connection started");
+        Ok(())
+    }
+
+    /// Gracefully shut down the gateway connection.
+    pub async fn shutdown_gateway(&self) {
+        self.shutdown.notify_waiters();
+        let handle = self
+            .gateway_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            let _ = handle.await;
+        }
+    }
+}
+
+// ── Gateway WebSocket implementation ─────────────────────────────────
+
+/// Outcome of a single gateway session, used to decide reconnection strategy.
+enum GatewayAction {
+    /// Fresh reconnect (re-identify).
+    Reconnect,
+    /// Resume with existing session_id + sequence.
+    Resume,
+    /// Permanent shutdown (fatal close code or explicit shutdown signal).
+    Shutdown,
+}
+
+/// Outer reconnection loop. Runs until fatal error or shutdown signal.
+async fn gateway_loop(adapter: Arc<DiscordAdapter>) -> Result<()> {
+    let mut backoff_secs = 1u64;
+
+    loop {
+        // Determine connection URL: prefer resume_gateway_url if we have a session
+        let url = if let Some(resume_url) = adapter.gateway_connection.resume_gateway_url() {
+            format!(
+                "{}/?v={}&encoding={}",
+                resume_url, GATEWAY_VERSION, GATEWAY_ENCODING
+            )
+        } else {
+            match adapter.get_gateway_url().await {
+                Ok(base) => format!(
+                    "{}/?v={}&encoding={}",
+                    base, GATEWAY_VERSION, GATEWAY_ENCODING
+                ),
+                Err(e) => {
+                    warn!(error = %e, backoff = backoff_secs, "Failed to fetch gateway URL, retrying");
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    backoff_secs = (backoff_secs * 2).min(60);
+                    continue;
+                }
+            }
+        };
+
+        match run_gateway_session(&adapter, &url).await {
+            Ok(GatewayAction::Reconnect) => {
+                info!("Discord gateway reconnecting (fresh identify)");
+                backoff_secs = 1;
+            }
+            Ok(GatewayAction::Resume) => {
+                info!("Discord gateway reconnecting (resume)");
+                backoff_secs = 1;
+            }
+            Ok(GatewayAction::Shutdown) => {
+                info!("Discord gateway shutting down");
+                return Ok(());
+            }
+            Err(e) => {
+                error!(error = %e, backoff = backoff_secs, "Discord gateway error, retrying");
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
+                    _ = adapter.shutdown.notified() => return Ok(()),
+                }
+                backoff_secs = (backoff_secs * 2).min(60);
+            }
+        }
+    }
+}
+
+/// A single gateway session: connect, handshake, read events until disconnect.
+async fn run_gateway_session(adapter: &Arc<DiscordAdapter>, url: &str) -> Result<GatewayAction> {
+    debug!(url, "Connecting to Discord gateway");
+    let (ws_stream, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .map_err(|e| IroncladError::Network(format!("WebSocket connect failed: {e}")))?;
+
+    let (write, mut read) = ws_stream.split();
+    let write = Arc::new(tokio::sync::Mutex::new(write));
+    let conn = &adapter.gateway_connection;
+
+    // 1. Read Hello (op 10)
+    let hello_text = read_next_text(&mut read).await?;
+    let hello: Value = serde_json::from_str(&hello_text)
+        .map_err(|e| IroncladError::Network(format!("invalid Hello payload: {e}")))?;
+
+    let interval = DiscordAdapter::extract_heartbeat_interval(&hello)
+        .ok_or_else(|| IroncladError::Network("missing heartbeat_interval in Hello".into()))?;
+    conn.set_heartbeat_interval_ms(interval);
+    conn.set_heartbeat_acked(true);
+    debug!(interval_ms = interval, "Received Hello");
+
+    // 2. Spawn heartbeat task
+    let hb_conn = Arc::clone(&adapter.gateway_connection);
+    let hb_write = Arc::clone(&write);
+    let hb_shutdown = Arc::clone(&adapter.shutdown);
+    let heartbeat_handle = tokio::spawn(async move {
+        heartbeat_task(hb_conn, hb_write, hb_shutdown).await;
+    });
+
+    // 3. Send Identify or Resume
+    let payload = if let (Some(session_id), Some(seq)) = (conn.session_id(), conn.sequence()) {
+        info!(session_id, seq, "Resuming gateway session");
+        adapter.build_resume(&session_id, seq)
+    } else {
+        info!("Identifying with gateway");
+        adapter.build_identify()
+    };
+    send_json(&write, &payload).await?;
+
+    // 4. Event read loop
+    let action = loop {
+        tokio::select! {
+            msg = read.next() => {
+                match msg {
+                    Some(Ok(WsMessage::Text(text))) => {
+                        match handle_gateway_message(adapter, &text, &write).await {
+                            Ok(Some(action)) => break action,
+                            Ok(None) => continue,
+                            Err(e) => {
+                                warn!(error = %e, "Error handling gateway message");
+                                continue;
+                            }
+                        }
+                    }
+                    Some(Ok(WsMessage::Close(frame))) => {
+                        let code = frame
+                            .as_ref()
+                            .map(|f| u16::from(f.code))
+                            .unwrap_or(1000);
+                        info!(code, "Discord gateway WebSocket closed");
+                        if DiscordAdapter::is_fatal_close(code) {
+                            error!(code, "Fatal Discord close code");
+                            break GatewayAction::Shutdown;
+                        } else if DiscordAdapter::is_resumable_close(code) {
+                            break GatewayAction::Resume;
+                        } else {
+                            break GatewayAction::Reconnect;
+                        }
+                    }
+                    Some(Ok(_)) => continue,
+                    Some(Err(e)) => {
+                        warn!(error = %e, "WebSocket read error");
+                        break GatewayAction::Reconnect;
+                    }
+                    None => {
+                        info!("WebSocket stream ended");
+                        break GatewayAction::Reconnect;
+                    }
+                }
+            }
+            _ = adapter.shutdown.notified() => {
+                break GatewayAction::Shutdown;
+            }
+        }
+    };
+
+    heartbeat_handle.abort();
+    Ok(action)
+}
+
+/// Process a single gateway JSON message. Returns `Some(action)` if the
+/// read loop should break, `None` to continue reading.
+async fn handle_gateway_message(
+    adapter: &Arc<DiscordAdapter>,
+    text: &str,
+    write: &Arc<tokio::sync::Mutex<WsSink>>,
+) -> Result<Option<GatewayAction>> {
+    let payload: Value = serde_json::from_str(text)
+        .map_err(|e| IroncladError::Network(format!("invalid gateway JSON: {e}")))?;
+
+    let op = DiscordAdapter::gateway_opcode(&payload).unwrap_or(u64::MAX);
+    let conn = &adapter.gateway_connection;
+
+    match op {
+        // Dispatch (op 0) — the main event carrier
+        0 => {
+            // Extract and track sequence number before dispatching
+            if let Some(seq) = payload.get("s").and_then(|v| v.as_u64()) {
+                conn.set_sequence(Some(seq));
+            }
+
+            if let Some((event_name, data)) = adapter.parse_dispatch(&payload) {
+                match event_name.as_str() {
+                    "READY" => {
+                        if let Some(sid) = data.get("session_id").and_then(|v| v.as_str()) {
+                            conn.set_session_id(sid.to_string());
+                        }
+                        if let Some(url) = data.get("resume_gateway_url").and_then(|v| v.as_str()) {
+                            conn.set_resume_gateway_url(url.to_string());
+                        }
+                        info!("Discord gateway READY");
+                    }
+                    "RESUMED" => {
+                        info!("Discord gateway RESUMED successfully");
+                    }
+                    "MESSAGE_CREATE" => match adapter.parse_message_create(&data) {
+                        Ok(Some(msg)) => {
+                            debug!(id = %msg.id, sender = %msg.sender_id, "Gateway received message");
+                            adapter.push_message(msg);
+                        }
+                        Ok(None) => {} // filtered (bot, empty, wrong guild)
+                        Err(e) => warn!(error = %e, "Failed to parse MESSAGE_CREATE"),
+                    },
+                    _ => {
+                        debug!(event = %event_name, "Unhandled gateway dispatch event");
+                    }
+                }
+            }
+            Ok(None)
+        }
+        // Heartbeat request (op 1) — server wants an immediate heartbeat
+        1 => {
+            let hb = adapter.build_heartbeat(conn.sequence());
+            send_json(write, &hb).await?;
+            Ok(None)
+        }
+        // Reconnect (op 7) — server requests we reconnect and resume
+        7 => {
+            info!("Discord gateway requested reconnect (op 7)");
+            Ok(Some(GatewayAction::Resume))
+        }
+        // Invalid Session (op 9) — d=true means resumable, d=false means re-identify
+        9 => {
+            let resumable = payload.get("d").and_then(|v| v.as_bool()).unwrap_or(false);
+            if !resumable {
+                info!("Invalid session (not resumable), clearing state");
+                conn.clear_session();
+                conn.set_sequence(None);
+            }
+            // Discord docs: wait 1–5 seconds before reconnecting
+            let wait_ms = rand::thread_rng().gen_range(1000..5000);
+            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+            Ok(Some(if resumable {
+                GatewayAction::Resume
+            } else {
+                GatewayAction::Reconnect
+            }))
+        }
+        // Heartbeat ACK (op 11)
+        11 => {
+            conn.set_heartbeat_acked(true);
+            Ok(None)
+        }
+        _ => {
+            debug!(op, "Unknown gateway opcode");
+            Ok(None)
+        }
+    }
+}
+
+/// Background task that sends heartbeats at the gateway's requested interval.
+/// Detects zombie connections by tracking ACK receipt.
+async fn heartbeat_task(
+    conn: Arc<GatewayConnection>,
+    write: Arc<tokio::sync::Mutex<WsSink>>,
+    shutdown: Arc<Notify>,
+) {
+    let interval_ms = conn.heartbeat_interval_ms();
+
+    // Discord spec: first heartbeat should have random jitter (0..interval)
+    let jitter_ms = rand::thread_rng().gen_range(0..interval_ms);
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_millis(jitter_ms)) => {}
+        _ = shutdown.notified() => return,
+    }
+
+    let interval = Duration::from_millis(interval_ms);
+    loop {
+        // Check if previous heartbeat was acknowledged
+        if !conn.heartbeat_acked() {
+            warn!("Discord heartbeat not ACK'd — zombie connection, closing");
+            // Force-close the write side to trigger read-loop termination.
+            // Use a timeout to avoid blocking forever on a dead TCP connection.
+            let mut w = write.lock().await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), w.close()).await;
+            return;
+        }
+
+        conn.set_heartbeat_acked(false);
+        let hb = json!({ "op": 1, "d": conn.sequence() });
+        {
+            let mut w = write.lock().await;
+            if let Err(e) = w.send(WsMessage::Text(hb.to_string())).await {
+                warn!(error = %e, "Failed to send heartbeat");
+                return;
+            }
+        }
+
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {}
+            _ = shutdown.notified() => return,
+        }
+    }
+}
+
+/// Read the next text frame from the WebSocket, skipping non-text frames.
+async fn read_next_text(read: &mut SplitStream<WsStream>) -> Result<String> {
+    while let Some(msg) = read.next().await {
+        match msg {
+            Ok(WsMessage::Text(text)) => return Ok(text.to_string()),
+            Ok(WsMessage::Close(_)) => {
+                return Err(IroncladError::Network(
+                    "WebSocket closed during handshake".into(),
+                ));
+            }
+            Ok(_) => continue,
+            Err(e) => {
+                return Err(IroncladError::Network(format!("WebSocket read error: {e}")));
+            }
+        }
+    }
+    Err(IroncladError::Network(
+        "WebSocket stream ended during handshake".into(),
+    ))
+}
+
+/// Send a JSON payload over the gateway WebSocket.
+///
+/// SECURITY: `payload` may contain the bot token (e.g. in Identify).
+/// Never log `text` or `payload` — use opcode-level tracing only.
+async fn send_json(write: &Arc<tokio::sync::Mutex<WsSink>>, payload: &Value) -> Result<()> {
+    let text = payload.to_string();
+    let mut w = write.lock().await;
+    w.send(WsMessage::Text(text))
+        .await
+        .map_err(|e| IroncladError::Network(format!("WebSocket send failed: {e}")))
 }
 
 #[cfg(test)]
@@ -383,20 +876,40 @@ mod tests {
 
     #[test]
     fn with_config_sets_guilds() {
-        let adapter =
-            DiscordAdapter::with_config("tok".into(), vec!["guild1".into(), "guild2".into()]);
+        let adapter = DiscordAdapter::with_config(
+            "tok".into(),
+            vec!["guild1".into(), "guild2".into()],
+            false,
+        );
         assert_eq!(adapter.allowed_guild_ids.len(), 2);
+        assert!(!adapter.deny_on_empty);
     }
 
     #[test]
-    fn guild_allowed_empty_means_all() {
+    fn guild_allowed_empty_legacy_allows_all() {
+        // deny_on_empty=false (legacy): empty list allows everyone
         let adapter = DiscordAdapter::new("tok".into());
         assert!(adapter.is_guild_allowed("any_guild"));
     }
 
     #[test]
+    fn guild_allowed_empty_secure_denies_all() {
+        // deny_on_empty=true (secure default): empty list denies everyone
+        let adapter = DiscordAdapter::with_config("tok".into(), vec![], true);
+        assert!(!adapter.is_guild_allowed("any_guild"));
+    }
+
+    #[test]
     fn guild_allowed_filters() {
-        let adapter = DiscordAdapter::with_config("tok".into(), vec!["g1".into()]);
+        let adapter = DiscordAdapter::with_config("tok".into(), vec!["g1".into()], false);
+        assert!(adapter.is_guild_allowed("g1"));
+        assert!(!adapter.is_guild_allowed("g2"));
+    }
+
+    #[test]
+    fn guild_allowed_filters_with_deny_on_empty() {
+        // deny_on_empty doesn't affect non-empty lists
+        let adapter = DiscordAdapter::with_config("tok".into(), vec!["g1".into()], true);
         assert!(adapter.is_guild_allowed("g1"));
         assert!(!adapter.is_guild_allowed("g2"));
     }
@@ -448,7 +961,7 @@ mod tests {
 
     #[test]
     fn parse_message_create_filters_guild() {
-        let adapter = DiscordAdapter::with_config("tok".into(), vec!["allowed".into()]);
+        let adapter = DiscordAdapter::with_config("tok".into(), vec!["allowed".into()], false);
         let data = json!({
             "id": "msg1",
             "channel_id": "ch1",
@@ -543,7 +1056,7 @@ mod tests {
 
     #[test]
     fn parse_message_create_no_guild_id_passes_through() {
-        let adapter = DiscordAdapter::with_config("tok".into(), vec!["restricted".into()]);
+        let adapter = DiscordAdapter::with_config("tok".into(), vec!["restricted".into()], false);
         let data = json!({
             "id": "m1",
             "channel_id": "c1",
@@ -839,7 +1352,7 @@ mod tests {
 
     #[test]
     fn parse_message_create_allowed_guild() {
-        let adapter = DiscordAdapter::with_config("tok".into(), vec!["allowed_g".into()]);
+        let adapter = DiscordAdapter::with_config("tok".into(), vec!["allowed_g".into()], false);
         let data = json!({
             "id": "m1",
             "channel_id": "c1",
@@ -908,6 +1421,86 @@ mod tests {
         });
         let result = adapter.parse_message_create(&data).unwrap().unwrap();
         assert_eq!(result.sender_id, "unknown");
+    }
+
+    #[test]
+    fn parse_message_create_extracts_attachments() {
+        let adapter = DiscordAdapter::new("test-token".into());
+        let data = json!({
+            "id": "msg-attach-1",
+            "channel_id": "ch-99",
+            "author": { "id": "user-1" },
+            "content": "Check this out!",
+            "attachments": [
+                {
+                    "id": "att-1",
+                    "filename": "photo.png",
+                    "content_type": "image/png",
+                    "size": 123456,
+                    "url": "https://cdn.discordapp.com/attachments/123/456/photo.png"
+                },
+                {
+                    "id": "att-2",
+                    "filename": "report.pdf",
+                    "content_type": "application/pdf",
+                    "size": 54321,
+                    "url": "https://cdn.discordapp.com/attachments/123/456/report.pdf"
+                }
+            ]
+        });
+        let msg = adapter.parse_message_create(&data).unwrap().unwrap();
+        assert_eq!(msg.content, "Check this out!");
+
+        let meta = msg.metadata.unwrap();
+        let attachments = meta["attachments"].as_array().expect("attachments array");
+        assert_eq!(attachments.len(), 2);
+
+        // First attachment: image
+        assert_eq!(attachments[0]["media_type"], "image");
+        assert_eq!(attachments[0]["filename"], "photo.png");
+        assert_eq!(attachments[0]["content_type"], "image/png");
+        assert_eq!(attachments[0]["size_bytes"], 123456);
+        assert!(
+            attachments[0]["source_url"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://")
+        );
+
+        // Second attachment: document
+        assert_eq!(attachments[1]["media_type"], "document");
+        assert_eq!(attachments[1]["filename"], "report.pdf");
+    }
+
+    #[test]
+    fn parse_message_create_no_attachments_no_key() {
+        let adapter = DiscordAdapter::new("test-token".into());
+        let data = json!({
+            "id": "msg-no-att",
+            "channel_id": "ch-1",
+            "author": { "id": "user-1" },
+            "content": "plain text"
+        });
+        let msg = adapter.parse_message_create(&data).unwrap().unwrap();
+        let meta = msg.metadata.unwrap();
+        // When no attachments, the key should not be present
+        assert!(meta.get("attachments").is_none());
+    }
+
+    #[test]
+    fn parse_message_create_empty_attachments_array() {
+        let adapter = DiscordAdapter::new("test-token".into());
+        let data = json!({
+            "id": "msg-empty-att",
+            "channel_id": "ch-1",
+            "author": { "id": "user-1" },
+            "content": "text with empty attachments",
+            "attachments": []
+        });
+        let msg = adapter.parse_message_create(&data).unwrap().unwrap();
+        let meta = msg.metadata.unwrap();
+        // Empty attachments array should not produce an attachments key
+        assert!(meta.get("attachments").is_none());
     }
 
     // ── async method tests (exercise error paths via connection refusal) ──
@@ -1013,5 +1606,239 @@ mod tests {
         let result = adapter.recv().await.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().content, "buffered msg");
+    }
+
+    // ── Gateway connection state tests ──────────────────────────────
+
+    #[test]
+    fn gateway_connection_heartbeat_acked_tracking() {
+        let conn = GatewayConnection::new();
+        // Starts acked (true)
+        assert!(conn.heartbeat_acked());
+
+        conn.set_heartbeat_acked(false);
+        assert!(!conn.heartbeat_acked());
+
+        conn.set_heartbeat_acked(true);
+        assert!(conn.heartbeat_acked());
+    }
+
+    #[test]
+    fn gateway_connection_resume_url_storage() {
+        let conn = GatewayConnection::new();
+        assert!(conn.resume_gateway_url().is_none());
+
+        conn.set_resume_gateway_url("wss://gateway-resume.discord.gg".to_string());
+        assert_eq!(
+            conn.resume_gateway_url().as_deref(),
+            Some("wss://gateway-resume.discord.gg")
+        );
+    }
+
+    #[test]
+    fn gateway_connection_heartbeat_interval_get_set() {
+        let conn = GatewayConnection::new();
+        // Default is 41250
+        assert_eq!(conn.heartbeat_interval_ms(), 41250);
+
+        conn.set_heartbeat_interval_ms(45000);
+        assert_eq!(conn.heartbeat_interval_ms(), 45000);
+    }
+
+    #[test]
+    fn gateway_connection_clear_session_resets_all() {
+        let conn = GatewayConnection::new();
+        conn.set_session_id("sess-abc".to_string());
+        assert!(conn.session_id().is_some());
+
+        conn.clear_session();
+        assert!(conn.session_id().is_none());
+    }
+
+    // ── Gateway dispatch pipeline tests ─────────────────────────────
+
+    #[test]
+    fn dispatch_message_create_full_pipeline() {
+        // Simulates the full gateway dispatch path:
+        // raw JSON → extract sequence → parse_dispatch → parse_message_create → push → recv
+        let adapter = DiscordAdapter::new("tok".into());
+        let conn = &adapter.gateway_connection;
+
+        let raw = json!({
+            "op": 0,
+            "s": 42,
+            "t": "MESSAGE_CREATE",
+            "d": {
+                "id": "msg-gw-001",
+                "channel_id": "ch-123",
+                "guild_id": "g-456",
+                "author": {"id": "user-789", "username": "testuser"},
+                "content": "hello from gateway"
+            }
+        });
+
+        // Step 1: Extract sequence
+        if let Some(seq) = raw.get("s").and_then(|v| v.as_u64()) {
+            conn.set_sequence(Some(seq));
+        }
+        assert_eq!(conn.sequence(), Some(42));
+
+        // Step 2: Parse dispatch
+        let (event_name, data) = adapter.parse_dispatch(&raw).unwrap();
+        assert_eq!(event_name, "MESSAGE_CREATE");
+
+        // Step 3: Parse message and push
+        let msg = adapter.parse_message_create(&data).unwrap().unwrap();
+        assert_eq!(msg.id, "msg-gw-001");
+        assert_eq!(msg.sender_id, "user-789");
+        assert_eq!(msg.content, "hello from gateway");
+        adapter.push_message(msg);
+
+        // Step 4: Verify buffer
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let received = rt.block_on(adapter.recv()).unwrap().unwrap();
+        assert_eq!(received.content, "hello from gateway");
+    }
+
+    #[test]
+    fn dispatch_ready_extracts_session_and_resume_url() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let conn = &adapter.gateway_connection;
+
+        let raw = json!({
+            "op": 0,
+            "s": 1,
+            "t": "READY",
+            "d": {
+                "v": 10,
+                "session_id": "sess-ready-001",
+                "resume_gateway_url": "wss://gateway-us-east1-b.discord.gg",
+                "user": {"id": "bot-id", "username": "ironclad"}
+            }
+        });
+
+        // Extract sequence
+        if let Some(seq) = raw.get("s").and_then(|v| v.as_u64()) {
+            conn.set_sequence(Some(seq));
+        }
+
+        let (event_name, data) = adapter.parse_dispatch(&raw).unwrap();
+        assert_eq!(event_name, "READY");
+
+        // Extract session_id and resume_gateway_url (mirrors handle_gateway_message logic)
+        if let Some(sid) = data.get("session_id").and_then(|v| v.as_str()) {
+            conn.set_session_id(sid.to_string());
+        }
+        if let Some(url) = data.get("resume_gateway_url").and_then(|v| v.as_str()) {
+            conn.set_resume_gateway_url(url.to_string());
+        }
+
+        assert_eq!(conn.session_id().as_deref(), Some("sess-ready-001"));
+        assert_eq!(
+            conn.resume_gateway_url().as_deref(),
+            Some("wss://gateway-us-east1-b.discord.gg")
+        );
+    }
+
+    #[test]
+    fn dispatch_sequence_tracking_increments() {
+        let conn = GatewayConnection::new();
+        assert!(conn.sequence().is_none());
+
+        // Simulate receiving sequential dispatches
+        for seq in [1, 2, 3, 10, 42] {
+            conn.set_sequence(Some(seq));
+            assert_eq!(conn.sequence(), Some(seq));
+        }
+    }
+
+    #[test]
+    fn dispatch_bot_message_filtered_in_pipeline() {
+        let adapter = DiscordAdapter::new("tok".into());
+
+        let raw = json!({
+            "op": 0,
+            "s": 5,
+            "t": "MESSAGE_CREATE",
+            "d": {
+                "id": "bot-msg-001",
+                "channel_id": "ch-1",
+                "author": {"id": "bot-id", "bot": true},
+                "content": "I am a bot"
+            }
+        });
+
+        let (event_name, data) = adapter.parse_dispatch(&raw).unwrap();
+        assert_eq!(event_name, "MESSAGE_CREATE");
+
+        // Bot messages are filtered by parse_message_create
+        let result = adapter.parse_message_create(&data).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn identify_vs_resume_decision() {
+        let adapter = DiscordAdapter::new("tok".into());
+        let conn = &adapter.gateway_connection;
+
+        // No session → should identify (op 2)
+        let payload = adapter.build_identify();
+        assert_eq!(payload["op"], 2);
+
+        // With session → should resume (op 6)
+        conn.set_session_id("sess-001".to_string());
+        conn.set_sequence(Some(99));
+        let payload = adapter.build_resume(&conn.session_id().unwrap(), conn.sequence().unwrap());
+        assert_eq!(payload["op"], 6);
+        assert_eq!(payload["d"]["session_id"], "sess-001");
+        assert_eq!(payload["d"]["seq"], 99);
+    }
+
+    #[test]
+    fn invalid_session_non_resumable_clears_state() {
+        let conn = GatewayConnection::new();
+        conn.set_session_id("old-session".to_string());
+        conn.set_sequence(Some(500));
+
+        // Simulate op 9 with d=false (non-resumable)
+        let payload = json!({"op": 9, "d": false});
+        let resumable = payload.get("d").and_then(|v| v.as_bool()).unwrap_or(false);
+        assert!(!resumable);
+
+        // Non-resumable → clear state
+        conn.clear_session();
+        conn.set_sequence(None);
+        assert!(conn.session_id().is_none());
+        assert!(conn.sequence().is_none());
+    }
+
+    #[test]
+    fn invalid_session_resumable_preserves_state() {
+        let conn = GatewayConnection::new();
+        conn.set_session_id("keep-session".to_string());
+        conn.set_sequence(Some(200));
+
+        // Simulate op 9 with d=true (resumable)
+        let payload = json!({"op": 9, "d": true});
+        let resumable = payload.get("d").and_then(|v| v.as_bool()).unwrap_or(false);
+        assert!(resumable);
+
+        // Resumable → don't clear
+        assert_eq!(conn.session_id().as_deref(), Some("keep-session"));
+        assert_eq!(conn.sequence(), Some(200));
+    }
+
+    #[test]
+    fn close_code_classification_exhaustive() {
+        // Every code 1000-4020 should be classified as exactly one of:
+        // resumable, fatal, or neither (normal reconnect)
+        for code in 1000u16..=4020 {
+            let is_r = DiscordAdapter::is_resumable_close(code);
+            let is_f = DiscordAdapter::is_fatal_close(code);
+            assert!(
+                !(is_r && is_f),
+                "code {code} classified as both resumable and fatal"
+            );
+        }
     }
 }

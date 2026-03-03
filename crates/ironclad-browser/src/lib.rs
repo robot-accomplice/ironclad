@@ -78,7 +78,7 @@ impl Browser {
         let mut mgr = self.manager.write().await;
         mgr.start().await?;
 
-        let cdp = cdp::CdpClient::new(self.config.cdp_port);
+        let cdp = cdp::CdpClient::new(self.config.cdp_port)?;
 
         let mut attempts = 0;
         let targets = loop {

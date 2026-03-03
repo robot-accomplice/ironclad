@@ -4,14 +4,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio::io::AsyncReadExt;
 use tracing::{debug, warn};
 
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::{IroncladError, Result, input_capability_scan};
 
 use crate::manifest::PluginManifest;
 use crate::{Plugin, ToolDef, ToolResult};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum bytes to read from script stdout/stderr (10 MB).
+const MAX_SCRIPT_OUTPUT: u64 = 10 * 1024 * 1024;
 const SCRIPT_EXTENSIONS: &[&str] = &[
     "gosh", "go", "sh", "py", "rb", "js",
     // Empty string matches extensionless files (e.g., `tool_name` without `.sh`).
@@ -172,6 +175,43 @@ impl ScriptPlugin {
     pub fn manifest(&self) -> &PluginManifest {
         &self.manifest
     }
+
+    fn permissions_for_tool(&self, tool_name: &str) -> Vec<String> {
+        self.manifest
+            .tools
+            .iter()
+            .find(|t| t.name == tool_name)
+            .map(|t| {
+                if t.permissions.is_empty() {
+                    self.manifest.permissions.clone()
+                } else {
+                    t.permissions.clone()
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    fn enforce_runtime_permissions(&self, tool_name: &str, input: &Value) -> Result<()> {
+        let declared: Vec<String> = self
+            .permissions_for_tool(tool_name)
+            .into_iter()
+            .map(|p| p.to_ascii_lowercase())
+            .collect();
+        let scan = input_capability_scan::scan_input_capabilities(input);
+        if scan.requires_filesystem && !declared.iter().any(|p| p == "filesystem") {
+            return Err(IroncladError::Tool {
+                tool: tool_name.into(),
+                message: "tool input requires filesystem capability but plugin/tool did not declare 'filesystem' permission".into(),
+            });
+        }
+        if scan.requires_network && !declared.iter().any(|p| p == "network") {
+            return Err(IroncladError::Tool {
+                tool: tool_name.into(),
+                message: "tool input requires network capability but plugin/tool did not declare 'network' permission".into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -197,7 +237,11 @@ impl Plugin for ScriptPlugin {
                 } else {
                     ironclad_core::RiskLevel::Caution
                 },
-                permissions: self.manifest.permissions.clone(),
+                permissions: if t.permissions.is_empty() {
+                    self.manifest.permissions.clone()
+                } else {
+                    t.permissions.clone()
+                },
             })
             .collect()
     }
@@ -213,6 +257,7 @@ impl Plugin for ScriptPlugin {
     }
 
     async fn execute_tool(&self, tool_name: &str, input: &Value) -> Result<ToolResult> {
+        self.enforce_runtime_permissions(tool_name, input)?;
         let script_path = self
             .scripts
             .get(tool_name)
@@ -252,49 +297,103 @@ impl Plugin for ScriptPlugin {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        let child = cmd.spawn().map_err(|e| IroncladError::Tool {
+        let mut child = cmd.spawn().map_err(|e| IroncladError::Tool {
             tool: tool_name.into(),
             message: format!("failed to spawn script: {e}"),
         })?;
 
-        let output = tokio::time::timeout(self.timeout, child.wait_with_output())
-            .await
-            .map_err(|_| IroncladError::Tool {
-                tool: tool_name.into(),
-                message: format!("script timed out after {:?}", self.timeout),
-            })?
-            .map_err(|e| IroncladError::Tool {
-                tool: tool_name.into(),
-                message: format!("script execution failed: {e}"),
-            })?;
+        // Take stdout/stderr pipes for bounded reading.
+        let mut child_stdout = child.stdout.take();
+        let mut child_stderr = child.stderr.take();
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let timeout = self.timeout;
+        let tool = tool_name.to_string();
 
-        if output.status.success() {
-            Ok(ToolResult {
-                success: true,
-                output: stdout,
-                metadata: if stderr.is_empty() {
-                    None
+        let result = tokio::time::timeout(timeout, async {
+            // Read stdout and stderr concurrently, bounded to MAX_SCRIPT_OUTPUT.
+            let stdout_fut = async {
+                let mut buf = Vec::new();
+                if let Some(out) = child_stdout.take() {
+                    out.take(MAX_SCRIPT_OUTPUT)
+                        .read_to_end(&mut buf)
+                        .await
+                        .inspect_err(
+                            |e| tracing::debug!(error = %e, "failed to read script stdout"),
+                        )
+                        .ok();
+                }
+                // `out` dropped here — closes the pipe, which sends SIGPIPE
+                // to the child if it tries to write more.
+                buf
+            };
+            let stderr_fut = async {
+                let mut buf = Vec::new();
+                if let Some(err) = child_stderr.take() {
+                    err.take(MAX_SCRIPT_OUTPUT)
+                        .read_to_end(&mut buf)
+                        .await
+                        .inspect_err(
+                            |e| tracing::debug!(error = %e, "failed to read script stderr"),
+                        )
+                        .ok();
+                }
+                buf
+            };
+
+            let (stdout_bytes, stderr_bytes) = tokio::join!(stdout_fut, stderr_fut);
+
+            // If the child is still running (e.g. output exceeded the cap
+            // and the process hasn't received/handled SIGPIPE yet), kill it.
+            let _ = child.kill().await;
+            let status = child.wait().await;
+            (stdout_bytes, stderr_bytes, status)
+        })
+        .await;
+
+        match result {
+            Ok((stdout_bytes, stderr_bytes, status)) => {
+                let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+                let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+                let status = status.map_err(|e| IroncladError::Tool {
+                    tool: tool.clone(),
+                    message: format!("script execution failed: {e}"),
+                })?;
+
+                if status.success() {
+                    Ok(ToolResult {
+                        success: true,
+                        output: stdout,
+                        metadata: if stderr.is_empty() {
+                            None
+                        } else {
+                            Some(json!({ "stderr": stderr }))
+                        },
+                    })
                 } else {
-                    Some(json!({ "stderr": stderr }))
-                },
-            })
-        } else {
-            let code = output.status.code().unwrap_or(-1);
-            Ok(ToolResult {
-                success: false,
-                output: if stderr.is_empty() {
-                    format!("script exited with code {code}")
-                } else {
-                    stderr
-                },
-                metadata: Some(json!({
-                    "exit_code": code,
-                    "stdout": stdout,
-                })),
-            })
+                    let code = status.code().unwrap_or(-1);
+                    Ok(ToolResult {
+                        success: false,
+                        output: if stderr.is_empty() {
+                            format!("script exited with code {code}")
+                        } else {
+                            stderr
+                        },
+                        metadata: Some(json!({
+                            "exit_code": code,
+                            "stdout": stdout,
+                        })),
+                    })
+                }
+            }
+            Err(_) => {
+                // Timeout: kill the child process and reap it to prevent zombies.
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                Err(IroncladError::Tool {
+                    tool,
+                    message: format!("script timed out after {timeout:?}"),
+                })
+            }
         }
     }
 
@@ -323,6 +422,7 @@ mod tests {
                     name: n.into(),
                     description: d.into(),
                     dangerous: false,
+                    permissions: vec![],
                 })
                 .collect(),
         }
@@ -542,6 +642,7 @@ mod tests {
                     name: n.into(),
                     description: d.into(),
                     dangerous,
+                    permissions: vec![],
                 })
                 .collect(),
         }
@@ -753,6 +854,46 @@ mod tests {
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
         assert!(msg.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn execute_tool_output_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        // Script that writes ~12 MB of output (exceeds 10 MB limit)
+        fs::write(
+            dir.path().join("big.sh"),
+            "#!/bin/sh\nhead -c 12582912 /dev/zero | tr '\\0' 'A'",
+        )
+        .unwrap();
+
+        let manifest = test_manifest("test", vec![("big", "big output")]);
+        let plugin = ScriptPlugin::new(manifest, dir.path().to_path_buf())
+            .with_timeout(Duration::from_secs(30));
+        let result = plugin.execute_tool("big", &json!({})).await.unwrap();
+        // The process is killed after exceeding the output cap, so success
+        // may be false and stdout lands in metadata.stdout instead of output.
+        let captured = if result.success {
+            result.output.clone()
+        } else {
+            result
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("stdout"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        assert!(
+            captured.len() <= MAX_SCRIPT_OUTPUT as usize,
+            "output should be bounded to MAX_SCRIPT_OUTPUT, got {} bytes",
+            captured.len()
+        );
+        // Verify we actually read a non-trivial amount.
+        assert!(
+            captured.len() > 1_000_000,
+            "expected at least 1MB of output, got {} bytes",
+            captured.len()
+        );
     }
 
     // ── execute_tool spawn failure ──────────────────────────────────

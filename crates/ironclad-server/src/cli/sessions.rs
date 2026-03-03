@@ -116,13 +116,19 @@ pub async fn cmd_session_export(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    let resp = reqwest::get(format!("{base_url}/api/sessions/{session_id}")).await?;
+    let resp = super::http_client()?
+        .get(format!("{base_url}/api/sessions/{session_id}"))
+        .send()
+        .await?;
     if !resp.status().is_success() {
         eprintln!("  Session not found: {session_id}");
         return Ok(());
     }
     let session: serde_json::Value = resp.json().await?;
-    let resp2 = reqwest::get(format!("{base_url}/api/sessions/{session_id}/messages")).await?;
+    let resp2 = super::http_client()?
+        .get(format!("{base_url}/api/sessions/{session_id}/messages"))
+        .send()
+        .await?;
     let body: serde_json::Value = resp2.json().await.unwrap_or_default();
     let messages: Vec<serde_json::Value> = body
         .get("messages")

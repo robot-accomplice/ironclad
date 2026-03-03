@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- System font stack — no external Google Fonts dependency -->
   <title>Ironclad Dashboard</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='11' y='1' width='10' height='10.5' fill='%231e2030' stroke='%2322c55e' stroke-width='1.5'/%3E%3Ccircle cx='14' cy='5' r='2' fill='%2322c55e'/%3E%3Ccircle cx='14' cy='5' r='.8' fill='%231e2030'/%3E%3Ccircle cx='18' cy='5' r='2' fill='%2322c55e'/%3E%3Ccircle cx='18' cy='5' r='.8' fill='%231e2030'/%3E%3Crect x='13' y='8.5' width='6' height='1.5' fill='%2322c55e'/%3E%3Crect x='14.5' y='11.5' width='3' height='2.5' fill='%2322c55e' opacity='.6'/%3E%3Crect x='8' y='14' width='16' height='8.5' fill='%231e2030' stroke='%2322c55e' stroke-width='1.5'/%3E%3Crect x='12' y='15' width='8' height='6.5' fill='%2322c55e' opacity='.1'/%3E%3Crect x='.5' y='16' width='3' height='4' fill='%2322c55e' opacity='.85'/%3E%3Crect x='3.5' y='16.5' width='4.5' height='3' fill='%2322c55e' opacity='.45'/%3E%3Crect x='24' y='16.5' width='4.5' height='3' fill='%2322c55e' opacity='.45'/%3E%3Crect x='28.5' y='16' width='3' height='4' fill='%2322c55e' opacity='.85'/%3E%3Crect x='12.5' y='22.5' width='2.5' height='4' fill='%2322c55e' opacity='.6'/%3E%3Crect x='17' y='22.5' width='2.5' height='4' fill='%2322c55e' opacity='.6'/%3E%3Crect x='10.5' y='26.5' width='5' height='2' fill='%2322c55e'/%3E%3Crect x='16.5' y='26.5' width='5' height='2' fill='%2322c55e'/%3E%3C/svg%3E">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230a0a0f'/%3E%3Crect x='10' y='5' width='12' height='18' rx='0.8' fill='none' stroke='%2300ff88' stroke-width='2'/%3E%3Ccircle cx='13.6' cy='11.5' r='1.35' fill='%2300ff88'/%3E%3Ccircle cx='18.4' cy='11.5' r='1.35' fill='%2300ff88'/%3E%3Crect x='13.6' y='16.8' width='4.8' height='1.35' fill='%2300ff88'/%3E%3Crect x='15' y='23' width='2' height='4' fill='%2300ff88'/%3E%3C/svg%3E">
   <style>
     :root, [data-theme="ai-purple"] {
       --bg: #0a0b0f;
@@ -1316,7 +1316,7 @@
               context: { id: 'context-helper', text: 'Inspect context budgets, token allocation, and reasoning traces.' },
               memory: { id: 'memory-helper', text: 'Browse memory layers or search by query.' },
               skills: { id: 'skills-helper', text: 'Toggle and manage enabled runtime skills.' },
-              agents: { id: 'agents-helper', text: 'Monitor subordinate agents and their current state.' },
+              agents: { id: 'agents-helper', text: 'Monitor subagents and their current state.' },
               scheduler: { id: 'scheduler-helper', text: 'Manage recurring jobs and inspect run outcomes.' },
               metrics: { id: 'metrics-helper', text: 'Track costs, throughput, and provider capacity.' },
               efficiency: { id: 'efficiency-helper', text: 'Find prompt and token optimization opportunities.' },
@@ -2316,6 +2316,40 @@
           table += '</tbody></table></div></div>';
         }
 
+        var assignment = report.subagent_assignment || {};
+        var assignmentSection = '';
+        if (assignment.overall && assignment.by_subagent) {
+          var overall = assignment.overall || {};
+          var bySubagent = assignment.by_subagent || {};
+          var assignments = assignment.assignments || {};
+          var names = Object.keys(bySubagent).sort(function(a, b) {
+            return (bySubagent[b].total || 0) - (bySubagent[a].total || 0);
+          });
+          assignmentSection = '<div class="card" style="margin-bottom:1.25rem"><div style="font-weight:600;margin-bottom:0.75rem">Subagent Assignment Efficacy</div>';
+          assignmentSection += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.75rem;margin-bottom:0.75rem;font-size:0.8125rem">';
+          assignmentSection += '<div><span style="color:var(--muted)">Delegations</span><div style="font-weight:600">' + (overall.total || 0) + '</div></div>';
+          assignmentSection += '<div><span style="color:var(--muted)">Success Rate</span><div style="font-weight:600">' + (((overall.success_rate || 0) * 100).toFixed(1)) + '%</div></div>';
+          assignmentSection += '<div><span style="color:var(--muted)">Timeout-like</span><div style="font-weight:600;color:var(--warning)">' + (overall.timeout_like || 0) + '</div></div>';
+          assignmentSection += '<div><span style="color:var(--muted)">P95 Duration</span><div style="font-weight:600">' + (overall.p95_duration_ms || 0).toFixed(0) + ' ms</div></div>';
+          assignmentSection += '</div>';
+          assignmentSection += '<div class="table-wrap"><table><thead><tr><th>Subagent</th><th>Assigned Model</th><th>Fallbacks</th><th>Success %</th><th>Timeouts</th><th>Avg ms</th><th>P95 ms</th></tr></thead><tbody>';
+          names.forEach(function(name) {
+            var stat = bySubagent[name] || {};
+            var cfg = assignments[name] || {};
+            var fallbackList = cfg.fallback_models || [];
+            assignmentSection += '<tr>'
+              + '<td>' + esc(name) + '</td>'
+              + '<td class="card-mono">' + esc(cfg.configured_model || '—') + '</td>'
+              + '<td>' + esc((fallbackList && fallbackList.length) ? fallbackList.join(', ') : '—') + '</td>'
+              + '<td>' + (((stat.success_rate || 0) * 100).toFixed(1)) + '%</td>'
+              + '<td>' + (stat.timeout_like || 0) + '</td>'
+              + '<td>' + (stat.avg_duration_ms || 0).toFixed(0) + '</td>'
+              + '<td>' + (stat.p95_duration_ms || 0).toFixed(0) + '</td>'
+              + '</tr>';
+          });
+          assignmentSection += '</tbody></table></div></div>';
+        }
+
         // Cost optimization tips
         var tips = '<div class="card"><div style="font-weight:600;margin-bottom:0.75rem">\u26a1 Optimization Tips</div><div style="font-size:0.8125rem;color:var(--muted)">';
         var tipList = [];
@@ -2344,7 +2378,7 @@
         }
         tips += tipList.join('') + '</div></div>';
 
-        return periodBar + banner + cards + tsChart + table + tips;
+        return periodBar + banner + cards + tsChart + table + assignmentSection + tips;
       });
     },
 
@@ -2672,7 +2706,7 @@
 
       if (opts.includeControlModes) {
         entries.push({ value: 'auto', configured: false, identified: false, tag: 'mode', label: 'auto [mode]' });
-        entries.push({ value: 'commander', configured: false, identified: false, tag: 'mode', label: 'commander [mode]' });
+        entries.push({ value: 'orchestrator', configured: false, identified: false, tag: 'mode', label: 'orchestrator [mode]' });
       }
       return entries;
     },
@@ -2777,7 +2811,7 @@
         if (roster.length === 0) return '<p style="color:var(--muted)">No taskable agents found.</p>';
 
         var grid = roster.map(function(agent) {
-          var isCmd = agent.role === 'commander';
+          var isCmd = agent.role === 'orchestrator';
           var borderColor = agent.color || 'var(--accent)';
           var stateColor = agent.state === 'Running' ? '#22c55e' : (agent.state === 'Error' ? '#ef4444' : (agent.state === 'Disabled' ? '#71717a' : '#eab308'));
           var stateDot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + stateColor + ';margin-right:6px"></span>';
@@ -2787,7 +2821,7 @@
           var skillCount = agent.skills == null ? '\u2014' : agent.skills.length;
           var sessionCount = agent.session_count != null ? agent.session_count : '\u2014';
 
-          var roleLabel = isCmd ? 'COMMANDER' : 'SUBAGENT';
+          var roleLabel = isCmd ? 'ORCHESTRATOR' : 'SUBAGENT';
           var roleBg = isCmd ? 'rgba(234,179,8,0.15)' : 'rgba(99,102,241,0.15)';
           var roleColor = isCmd ? '#eab308' : borderColor;
 
@@ -2808,11 +2842,11 @@
           return card;
         }).join('');
 
-        var cmdCount = roster.filter(function(a) { return a.role === 'commander'; }).length;
+        var cmdCount = roster.filter(function(a) { return a.role === 'orchestrator'; }).length;
         var specCount = roster.filter(function(a) { return a.role === 'subagent'; }).length;
         var header = '<div style="display:flex;align-items:baseline;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">'
           + '<span style="font-size:0.8125rem;color:var(--muted)">' + roster.length + ' taskable agents</span>'
-          + '<span class="badge">' + cmdCount + ' commander</span>'
+          + '<span class="badge">' + cmdCount + ' orchestrator</span>'
           + '<span class="badge">' + specCount + ' subagents</span>'
           + '</div>';
 
@@ -2900,6 +2934,7 @@
 
           c += '<div style="display:flex;gap:1rem;margin-top:0.75rem;font-size:0.75rem;color:var(--muted)">';
           if (a.model) c += '<div><span style="color:var(--text-dim)">Model:</span> ' + esc(a.model) + '</div>';
+          if (a.fallback_models && a.fallback_models.length) c += '<div><span style="color:var(--text-dim)">Fallbacks:</span> ' + esc(a.fallback_models.join(', ')) + '</div>';
           if (a.model_mode && a.model_mode !== 'fixed') c += '<div><span style="color:var(--text-dim)">Mode:</span> ' + esc(a.model_mode) + '</div>';
           if (a.resolved_model) c += '<div><span style="color:var(--text-dim)">Resolved:</span> ' + esc(a.resolved_model) + '</div>';
           c += '<div><span style="color:var(--text-dim)">Fixed skills:</span> '
@@ -2907,6 +2942,7 @@
             + ' data-name="' + esc(a.name) + '"'
             + ' data-display="' + esc(a.display_name || '') + '"'
             + ' data-model="' + esc(a.model || '') + '"'
+            + ' data-fallbacks="' + esc((a.fallback_models || []).join(",")) + '"'
             + ' data-role="' + esc(a.role) + '"'
             + ' data-skills="' + esc((a.skills || []).join(",")) + '"'
             + ' data-desc="' + esc(a.description || '') + '"'
@@ -2920,7 +2956,7 @@
 
           c += '<div style="display:flex;gap:0.5rem;margin-top:0.75rem;border-top:1px solid var(--border);padding-top:0.6rem">';
           c += '<button class="btn secondary sa-toggle" data-name="' + esc(a.name) + '" style="font-size:0.6875rem;padding:0.25rem 0.6rem">' + (a.enabled ? 'Disable' : 'Enable') + '</button>';
-          c += '<button class="btn secondary sa-edit" data-name="' + esc(a.name) + '" data-display="' + esc(a.display_name || '') + '" data-model="' + esc(a.model || '') + '" data-role="' + esc(a.role) + '" data-skills="' + esc((a.skills || []).join(",")) + '" data-desc="' + esc(a.description || '') + '" style="font-size:0.6875rem;padding:0.25rem 0.6rem">Edit</button>';
+          c += '<button class="btn secondary sa-edit" data-name="' + esc(a.name) + '" data-display="' + esc(a.display_name || '') + '" data-model="' + esc(a.model || '') + '" data-fallbacks="' + esc((a.fallback_models || []).join(",")) + '" data-role="' + esc(a.role) + '" data-skills="' + esc((a.skills || []).join(",")) + '" data-desc="' + esc(a.description || '') + '" style="font-size:0.6875rem;padding:0.25rem 0.6rem">Edit</button>';
           c += '<button class="btn secondary sa-delete" data-name="' + esc(a.name) + '" style="font-size:0.6875rem;padding:0.25rem 0.6rem;color:var(--error)">Delete</button>';
           c += '</div>';
           c += '</div>';
@@ -2947,8 +2983,10 @@
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Display Name</label>';
         html += '<input class="settings-input" id="sa-m-display" placeholder="e.g. Data Analyst" style="margin-bottom:0.75rem">';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Model</label>';
-        html += '<input class="settings-input" id="sa-m-model" list="sa-model-options" placeholder="e.g. ollama/qwen3:8b | auto | commander" style="margin-bottom:0.75rem;font-family:var(--font-mono)">';
+        html += '<input class="settings-input" id="sa-m-model" list="sa-model-options" placeholder="e.g. ollama/qwen3:8b | auto | orchestrator" style="margin-bottom:0.75rem;font-family:var(--font-mono)">';
         html += '<datalist id="sa-model-options">' + modelOptions + '</datalist>';
+        html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Fallback Models (comma-separated)</label>';
+        html += '<input class="settings-input" id="sa-m-fallbacks" list="sa-model-options" placeholder="e.g. openrouter/openai/gpt-4o, moonshot/kimi-k2-turbo-preview" style="margin-bottom:0.75rem;font-family:var(--font-mono)">';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Role</label>';
         html += '<select class="settings-input" id="sa-m-role" style="margin-bottom:0.75rem"><option value="subagent">subagent</option><option value="model-proxy">model-proxy</option></select>';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Fixed Skills (comma-separated)</label>';
@@ -2990,6 +3028,7 @@
             if (nameInp) { nameInp.value = vals.name || ''; nameInp.disabled = !!vals.editing; }
             var d = document.getElementById('sa-m-display'); if (d) d.value = vals.display || '';
             var m = document.getElementById('sa-m-model'); if (m) m.value = vals.model || '';
+            var fb = document.getElementById('sa-m-fallbacks'); if (fb) fb.value = vals.fallbacks || '';
             var r = document.getElementById('sa-m-role'); if (r) r.value = vals.role || 'subagent';
             var sk = document.getElementById('sa-m-skills'); if (sk) sk.value = vals.skills || '';
             var desc = document.getElementById('sa-m-desc'); if (desc) desc.value = vals.desc || '';
@@ -3014,21 +3053,23 @@
             var nameVal = (document.getElementById('sa-m-name') || {}).value || '';
             var displayVal = (document.getElementById('sa-m-display') || {}).value || '';
             var modelVal = (document.getElementById('sa-m-model') || {}).value || '';
+            var fallbackVals = (document.getElementById('sa-m-fallbacks') || {}).value || '';
             var roleVal = (document.getElementById('sa-m-role') || {}).value || 'subagent';
             var skillsVal = (document.getElementById('sa-m-skills') || {}).value || '';
             var skills = skillsVal.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+            var fallbacks = fallbackVals.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
             var descVal = (document.getElementById('sa-m-desc') || {}).value || '';
             if (!nameVal && !editingName) { toast('Name is required'); return; }
 
             if (editingName) {
               api('/api/subagents/' + encodeURIComponent(editingName), {
                 method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json', 'Accept': 'application/json' }),
-                body: JSON.stringify({ display_name: displayVal || null, model: modelVal || null, role: roleVal, skills: skills, description: descVal || null })
+                body: JSON.stringify({ display_name: displayVal || null, model: modelVal || null, fallback_models: fallbacks, role: roleVal, skills: skills, description: descVal || null })
               }).then(function() { toast('Agent updated'); closeModal(); self.navigate('agents'); });
             } else {
               api('/api/subagents', {
                 method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json', 'Accept': 'application/json' }),
-                body: JSON.stringify({ name: nameVal, display_name: displayVal || null, model: modelVal, role: roleVal, skills: skills, description: descVal || null })
+                body: JSON.stringify({ name: nameVal, display_name: displayVal || null, model: modelVal, fallback_models: fallbacks, role: roleVal, skills: skills, description: descVal || null })
               }).then(function() { toast('Agent created'); closeModal(); self.navigate('agents'); });
             }
           };
@@ -3049,6 +3090,7 @@
                 name: n, editing: n,
                 display: this.getAttribute('data-display'),
                 model: this.getAttribute('data-model'),
+                fallbacks: this.getAttribute('data-fallbacks'),
                 role: this.getAttribute('data-role'),
                 skills: this.getAttribute('data-skills'),
                 desc: this.getAttribute('data-desc')
@@ -3063,6 +3105,7 @@
                 name: n, editing: n,
                 display: this.getAttribute('data-display'),
                 model: this.getAttribute('data-model'),
+                fallbacks: this.getAttribute('data-fallbacks'),
                 role: this.getAttribute('data-role'),
                 skills: this.getAttribute('data-skills'),
                 desc: this.getAttribute('data-desc')
@@ -3283,7 +3326,7 @@
           + '<div style="margin-top:0.6rem"><button class="btn secondary" id="hints-reset-dismissed" style="font-size:0.7rem;padding:0.25rem 0.55rem">Reset dismissed hints</button></div>'
           + '</div>';
 
-        var tabs = '<div class="tabs" style="margin-bottom:1rem"><button class="' + (mode === 'form' ? 'active' : '') + '" data-settings-mode="form">Form</button><button class="' + (mode === 'models' ? 'active' : '') + '" data-settings-mode="models">Model Order</button><button class="' + (mode === 'json' ? 'active' : '') + '" data-settings-mode="json">JSON</button></div>';
+        var tabs = '<div class="tabs" style="margin-bottom:1rem"><button class="' + (mode === 'form' ? 'active' : '') + '" data-settings-mode="form">Form</button><button class="' + (mode === 'models' ? 'active' : '') + '" data-settings-mode="models">Model Order</button><button class="' + (mode === 'access' ? 'active' : '') + '" data-settings-mode="access">Access Control</button><button class="' + (mode === 'json' ? 'active' : '') + '" data-settings-mode="json">JSON</button></div>';
         var actions = '<div class="settings-actions"><button class="btn" id="settings-save" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Save</button><button class="btn secondary" id="settings-apply" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Apply</button><button class="btn secondary" id="settings-cancel" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Cancel</button>' + dirtyDot + '</div>';
 
         if (mode === 'json') {
@@ -3333,12 +3376,87 @@
             + actions;
         }
 
+        if (mode === 'access') {
+          var sec = draft.security || {};
+          var authLevels = [['External','External \u2014 safe tools only'],['Peer','Peer \u2014 safe + caution'],['SelfGenerated','SelfGenerated \u2014 safe + caution + dangerous'],['Creator','Creator \u2014 full access']];
+          var ceilLevels = [['External','External \u2014 safe tools only'],['Peer','Peer \u2014 safe + caution'],['SelfGenerated','SelfGenerated \u2014 safe + caution + dangerous']];
+          var mkOpts = function(levels, cur) { return levels.map(function(l) { return '<option value="' + l[0] + '"' + (cur === l[0] ? ' selected' : '') + '>' + l[1] + '</option>'; }).join(''); };
+          var accHtml = '';
+          accHtml += '<div class="settings-section"><div class="settings-section-title">Authority Matrix</div>'
+            + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">What each authority level can do:</div>'
+            + '<table style="width:100%;font-size:0.72rem;border-collapse:collapse">'
+            + '<thead><tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:0.35rem 0.5rem">Level</th><th style="text-align:center;padding:0.35rem">Safe</th><th style="text-align:center;padding:0.35rem">Caution</th><th style="text-align:center;padding:0.35rem">Dangerous</th><th style="text-align:center;padding:0.35rem">Forbidden</th></tr></thead>'
+            + '<tbody>'
+            + '<tr style="border-bottom:1px solid var(--border)"><td style="padding:0.35rem 0.5rem"><strong>Creator</strong></td><td style="text-align:center">\u2705</td><td style="text-align:center">\u2705</td><td style="text-align:center">\u2705</td><td style="text-align:center">\u274c</td></tr>'
+            + '<tr style="border-bottom:1px solid var(--border)"><td style="padding:0.35rem 0.5rem"><strong>SelfGenerated</strong></td><td style="text-align:center">\u2705</td><td style="text-align:center">\u2705</td><td style="text-align:center">\u2705</td><td style="text-align:center">\u274c</td></tr>'
+            + '<tr style="border-bottom:1px solid var(--border)"><td style="padding:0.35rem 0.5rem"><strong>Peer</strong></td><td style="text-align:center">\u2705</td><td style="text-align:center">\u2705</td><td style="text-align:center">\u274c</td><td style="text-align:center">\u274c</td></tr>'
+            + '<tr><td style="padding:0.35rem 0.5rem"><strong>External</strong></td><td style="text-align:center">\u2705</td><td style="text-align:center">\u274c</td><td style="text-align:center">\u274c</td><td style="text-align:center">\u274c</td></tr>'
+            + '</tbody></table>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin-top:0.5rem">'
+            + '<strong>Safe:</strong> conversation, summarization, web search. '
+            + '<strong>Caution:</strong> read_file, write_file, delegation. '
+            + '<strong>Dangerous:</strong> run_script, shell execution.'
+            + '</div></div>';
+          accHtml += '<div class="settings-section"><div class="settings-section-title">Security Policy</div>'
+            + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">'
+            + 'Authority resolution: effective = min(max(positive grants\u2026), min(negative ceilings\u2026))'
+            + '</div>';
+          var denyEmpty = sec.deny_on_empty_allowlist !== false;
+          accHtml += '<div class="settings-row"><div class="settings-label">Deny on empty allow-list</div>'
+            + '<div class="settings-toggle-wrap"><label class="toggle">'
+            + '<input type="checkbox" data-settings-path="security.deny_on_empty_allowlist"' + (denyEmpty ? ' checked' : '') + '>'
+            + '<span class="toggle-track"></span></label>'
+            + '<span class="settings-toggle-label">' + (denyEmpty ? 'On' : 'Off') + '</span></div></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'When enabled, channels with no allow-list entries reject all messages (secure default). When disabled, empty allow-lists permit all senders.'
+            + '</div>';
+          var alAuth = sec.allowlist_authority || 'Peer';
+          accHtml += '<div class="settings-row"><div class="settings-label">Allow-list authority</div>'
+            + '<select class="settings-input" data-settings-path="security.allowlist_authority" style="max-width:280px">'
+            + mkOpts(authLevels, alAuth) + '</select></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Authority granted to senders who pass a channel\u2019s allow-list check.'
+            + '</div>';
+          var trAuth = sec.trusted_authority || 'Creator';
+          accHtml += '<div class="settings-row"><div class="settings-label">Trusted sender authority</div>'
+            + '<select class="settings-input" data-settings-path="security.trusted_authority" style="max-width:280px">'
+            + mkOpts(authLevels, trAuth) + '</select></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Authority granted to senders listed in channels.trusted_sender_ids.'
+            + '</div>';
+          var apiAuth = sec.api_authority || 'Creator';
+          accHtml += '<div class="settings-row"><div class="settings-label">API authority</div>'
+            + '<select class="settings-input" data-settings-path="security.api_authority" style="max-width:280px">'
+            + mkOpts(authLevels, apiAuth) + '</select></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Authority for HTTP API and WebSocket requests.'
+            + '</div>';
+          var threatCeil = sec.threat_caution_ceiling || 'External';
+          accHtml += '<div class="settings-row"><div class="settings-label">Threat scanner ceiling</div>'
+            + '<select class="settings-input" data-settings-path="security.threat_caution_ceiling" style="max-width:280px">'
+            + mkOpts(ceilLevels, threatCeil) + '</select></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Maximum authority when the threat scanner flags input as Caution. Must be below Creator.'
+            + '</div>';
+          accHtml += '</div>';
+          accHtml += '<div class="settings-section"><div class="settings-section-title">How Claims Are Resolved</div>'
+            + '<div style="font-size:0.72rem;line-height:1.6;color:var(--text)">'
+            + '<strong>Positive grants</strong> OR across layers \u2014 any layer can grant authority (best grant wins):<br>'
+            + '<span style="color:var(--muted)">\u2022 Channel allow-list \u2192 allow-list authority &nbsp;\u2022 trusted_sender_ids \u2192 trusted authority &nbsp;\u2022 API key \u2192 API authority</span><br><br>'
+            + '<strong>Negative ceilings</strong> AND across layers \u2014 strictest restriction wins:<br>'
+            + '<span style="color:var(--muted)">\u2022 Threat scanner (Caution) \u2192 threat ceiling</span><br><br>'
+            + '<strong>Final authority</strong> = min(best grant, strictest ceiling)'
+            + '</div></div>';
+          return tabs + hintSettings + '<div class="settings-form">' + accHtml + '</div>' + actions;
+        }
+
         var html = tabs + hintSettings + '<div class="settings-form">';
         var specialSections = ['models', 'providers', 'wallet'];
         var sections = Object.keys(draft);
         sections.forEach(function(section) {
           var sectionData = draft[section];
           if (typeof sectionData !== 'object' || sectionData === null) return;
+          if (section === 'security') return; // rendered in Access Control tab
           var isImmutableSection = !!immutableSet[section];
 
           if (isImmutableSection) {
@@ -4013,26 +4131,26 @@
         if (!agent) return;
         var modal = document.getElementById('roster-modal');
         if (!modal) return;
-        var isCmd = agent.role === 'commander';
+        var isCmd = agent.role === 'orchestrator';
         var color = agent.color || 'var(--accent)';
         var displayName = agent.display_name || agent.name;
         var stateColor = agent.state === 'Running' ? '#22c55e' : (agent.state === 'Error' ? '#ef4444' : (agent.state === 'Disabled' ? '#71717a' : '#eab308'));
-        var roleLabel = isCmd ? 'COMMANDER' : (agent.role === 'model-proxy' ? 'MODEL PROXY' : 'SUBAGENT');
-        var commanderOrder = [];
-        var commanderOrderState = [];
+        var roleLabel = isCmd ? 'ORCHESTRATOR' : (agent.role === 'model-proxy' ? 'MODEL PROXY' : 'SUBAGENT');
+        var orchestratorOrder = [];
+        var orchestratorOrderState = [];
         var rosterDragModelIndex = null;
-        function pushCommanderModel(v) {
+        function pushOrchestratorModel(v) {
           var s = String(v || '').trim();
           if (!s) return;
-          if (commanderOrder.indexOf(s) === -1) commanderOrder.push(s);
+          if (orchestratorOrder.indexOf(s) === -1) orchestratorOrder.push(s);
         }
         if (isCmd) {
-          pushCommanderModel(cfgModels.primary || agent.model);
-          (cfgModels.fallbacks || []).forEach(pushCommanderModel);
-          if (!commanderOrder.length) pushCommanderModel(agent.model);
-          commanderOrderState = commanderOrder.slice();
+          pushOrchestratorModel(cfgModels.primary || agent.model);
+          (cfgModels.fallbacks || []).forEach(pushOrchestratorModel);
+          if (!orchestratorOrder.length) pushOrchestratorModel(agent.model);
+          orchestratorOrderState = orchestratorOrder.slice();
         }
-        function renderCommanderOrderRows(order) {
+        function renderOrchestratorOrderRows(order) {
           if (!order.length) {
             return '<div class="card" style="padding:0.6rem;color:var(--muted)">No models added yet.</div>';
           }
@@ -4051,9 +4169,9 @@
               + '</div>';
           }).join('');
         }
-        function rerenderCommanderOrderList() {
+        function rerenderOrchestratorOrderList() {
           var listEl = document.getElementById('roster-model-order-list');
-          if (listEl) setHtml(listEl, renderCommanderOrderRows(commanderOrderState));
+          if (listEl) setHtml(listEl, renderOrchestratorOrderRows(orchestratorOrderState));
         }
 
         var voice = agent.voice || {};
@@ -4130,7 +4248,7 @@
           var s = agent.stats;
           statsHtml = '<div style="margin-top:1rem;display:grid;grid-template-columns:repeat(2,1fr);gap:0.5rem">';
           var statItems = [
-            { label: 'Subordinates', val: s.subordinate_count },
+            { label: 'Subagents', val: s.subordinate_count },
             { label: 'Running', val: s.running_subordinates },
             { label: 'Total Skills', val: s.total_skills },
             { label: 'Enabled Skills', val: s.enabled_skills }
@@ -4160,7 +4278,7 @@
         subordinates = subordinates.filter(function(sid) { return !proxyLookup[String(sid)]; });
         var subsHtml = '';
         if (subordinates.length > 0) {
-          subsHtml = '<div style="margin-top:1rem"><div style="font-size:0.75rem;font-weight:600;color:var(--muted);letter-spacing:0.05em;margin-bottom:0.5rem">SUBORDINATES (' + subordinates.length + ')</div>'
+          subsHtml = '<div style="margin-top:1rem"><div style="font-size:0.75rem;font-weight:600;color:var(--muted);letter-spacing:0.05em;margin-bottom:0.5rem">SUBAGENTS (' + subordinates.length + ')</div>'
             + '<div style="display:flex;flex-wrap:wrap;gap:4px">';
           subordinates.forEach(function(sid) {
             subsHtml += '<span class="badge" style="cursor:pointer" data-roster-sub="' + esc(sid) + '">' + esc(sid) + '</span>';
@@ -4187,12 +4305,12 @@
               discoveredModels: availableModels,
               roster: data.roster || [],
               config: { models: cfgModels },
-              selected: commanderOrderState.concat([agent.model || '']),
+              selected: orchestratorOrderState.concat([agent.model || '']),
               includeControlModes: false
             });
             if (isCmd) {
               return '<div style="font-size:0.6875rem;color:var(--muted);margin-bottom:0.375rem">Model order (top = primary, next = fallback sequence)</div>'
-                + '<div class="model-order-list" id="roster-model-order-list">' + renderCommanderOrderRows(commanderOrderState) + '</div>'
+                + '<div class="model-order-list" id="roster-model-order-list">' + renderOrchestratorOrderRows(orchestratorOrderState) + '</div>'
                 + '<div style="display:flex;gap:0.4rem;align-items:center;margin-top:6px">'
                 + '<select id="roster-model-select" style="flex:1;font-size:0.75rem;font-family:var(--mono);padding:4px 6px;border-radius:4px;background:var(--surface);color:var(--text);border:1px solid var(--border)">'
                 + '<option value="">-- quick add known model --</option>' + opts + '</select>'
@@ -4241,7 +4359,7 @@
         modal.style.alignItems = 'flex-start';
         modal.style.justifyContent = 'center';
         setHtml(modal, html);
-        if (isCmd) rerenderCommanderOrderList();
+        if (isCmd) rerenderOrchestratorOrderList();
         modal.onclick = function(ev) {
           if (ev.target === modal || ev.target.closest('#roster-modal-close')) {
             modal.style.display = 'none';
@@ -4270,27 +4388,27 @@
             var customAdd = document.getElementById('roster-model-custom');
             var toAdd = (customAdd && customAdd.value.trim()) || (selAdd && selAdd.value) || '';
             if (!toAdd) { toast('Select or enter a model'); return; }
-            if (commanderOrderState.indexOf(toAdd) !== -1) { toast('Model already listed'); return; }
-            commanderOrderState.push(toAdd);
-            rerenderCommanderOrderList();
+            if (orchestratorOrderState.indexOf(toAdd) !== -1) { toast('Model already listed'); return; }
+            orchestratorOrderState.push(toAdd);
+            rerenderOrchestratorOrderList();
             if (customAdd) customAdd.value = '';
             if (selAdd) selAdd.value = '';
           }
           var removeOrderBtn = ev.target.closest('[data-roster-model-order-remove]');
           if (removeOrderBtn) {
             var removeIdx = Number(removeOrderBtn.getAttribute('data-roster-model-order-remove'));
-            if (!isNaN(removeIdx) && removeIdx >= 0 && removeIdx < commanderOrderState.length) {
-              commanderOrderState.splice(removeIdx, 1);
-              rerenderCommanderOrderList();
+            if (!isNaN(removeIdx) && removeIdx >= 0 && removeIdx < orchestratorOrderState.length) {
+              orchestratorOrderState.splice(removeIdx, 1);
+              rerenderOrchestratorOrderList();
             }
           }
           var primaryOrderBtn = ev.target.closest('[data-roster-model-order-primary]');
           if (primaryOrderBtn) {
             var promoteIdx = Number(primaryOrderBtn.getAttribute('data-roster-model-order-primary'));
-            if (!isNaN(promoteIdx) && promoteIdx > 0 && promoteIdx < commanderOrderState.length) {
-              var promoted = commanderOrderState.splice(promoteIdx, 1)[0];
-              commanderOrderState.unshift(promoted);
-              rerenderCommanderOrderList();
+            if (!isNaN(promoteIdx) && promoteIdx > 0 && promoteIdx < orchestratorOrderState.length) {
+              var promoted = orchestratorOrderState.splice(promoteIdx, 1)[0];
+              orchestratorOrderState.unshift(promoted);
+              rerenderOrchestratorOrderList();
             }
           }
           if (ev.target.closest('#roster-model-save')) {
@@ -4299,8 +4417,8 @@
             var agentKey = agent.name || agent.id;
             var payload;
             if (isCmd) {
-              if (!commanderOrderState.length) { toast('Add at least one model in order list'); return; }
-              payload = { model: commanderOrderState[0], fallbacks: commanderOrderState.slice(1) };
+              if (!orchestratorOrderState.length) { toast('Add at least one model in order list'); return; }
+              payload = { model: orchestratorOrderState[0], fallbacks: orchestratorOrderState.slice(1) };
             } else {
               var newModel = (custom && custom.value.trim()) || (sel && sel.value) || '';
               if (!newModel) { toast('Select or enter a model'); return; }
@@ -4352,10 +4470,10 @@
           modal.querySelectorAll('.model-order-item.drop-target,.model-order-item.dragging').forEach(function(el) { el.classList.remove('drop-target'); el.classList.remove('dragging'); });
           var fromIdx = rosterDragModelIndex;
           rosterDragModelIndex = null;
-          if (isNaN(fromIdx) || isNaN(toIdx) || fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= commanderOrderState.length || toIdx >= commanderOrderState.length) return;
-          var moved = commanderOrderState.splice(fromIdx, 1)[0];
-          commanderOrderState.splice(toIdx, 0, moved);
-          rerenderCommanderOrderList();
+          if (isNaN(fromIdx) || isNaN(toIdx) || fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= orchestratorOrderState.length || toIdx >= orchestratorOrderState.length) return;
+          var moved = orchestratorOrderState.splice(fromIdx, 1)[0];
+          orchestratorOrderState.splice(toIdx, 0, moved);
+          rerenderOrchestratorOrderList();
         };
         modal.ondragend = function() {
           if (!isCmd) return;
@@ -4825,7 +4943,7 @@
       var nameEl = document.getElementById('cal-job-name'); var name = (nameEl && nameEl.value || '').trim();
       if (!name) { toast('Name is required'); return; }
       var sched = App._readSchedFromUI(); var cron = App._schedToCron(sched);
-      var jobData = { name: name, schedule_kind: cron.kind, schedule_expr: cron.expr, agent_id: 'ironclad' };
+      var jobData = { name: name, schedule_kind: cron.kind, schedule_expr: cron.expr, agent_id: App._activeAgentId || 'ironclad' };
       if (App._calModalMode === 'add') {
         api('/api/cron/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jobData) }).then(function() { toast('Added "' + name + '"'); App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Add failed'); });
       } else {
@@ -5955,60 +6073,84 @@
   };
 
   // BUG-002: WebSocket connection with exponential backoff reconnection.
+  // S-HIGH-2: Uses short-lived tickets instead of persistent API key in URL.
   App._wsReconnectDelay = 1000;
   App._wsReconnectTimer = null;
+  App._bindWsEvents = function(ws) {
+    ws.onopen = function() {
+      App._wsReconnectDelay = 1000;
+      var d = document.getElementById('ws-dot'); if (d) d.classList.remove('off');
+      var l = document.getElementById('ws-label'); if (l) l.textContent = 'Connected';
+    };
+    ws.onclose = function() {
+      var d = document.getElementById('ws-dot'); if (d) d.classList.add('off');
+      var l = document.getElementById('ws-label'); if (l) l.textContent = 'Reconnecting...';
+      clearTimeout(App._wsReconnectTimer);
+      App._wsReconnectTimer = setTimeout(function() { App._connectWs(); }, App._wsReconnectDelay);
+      App._wsReconnectDelay = Math.min(App._wsReconnectDelay * 2, 30000);
+    };
+    ws.onerror = function() {
+      var d = document.getElementById('ws-dot'); if (d) d.classList.add('off');
+    };
+    ws.onmessage = function(ev) {
+      try {
+        var event = JSON.parse(ev.data);
+        if (workspace && workspace.handleEvent) workspace.handleEvent(event);
+        if (event && event.type === 'stream_start') {
+          App._liveStreamTurn = {
+            turn_id: event.turn_id || '',
+            session_id: event.session_id || '',
+            model: event.model || ''
+          };
+          if (App.page === 'context') {
+            App.navigate('context');
+          }
+        } else if (event && event.type === 'stream_end') {
+          if (!event.turn_id || (App._liveStreamTurn && App._liveStreamTurn.turn_id === event.turn_id)) {
+            App._liveStreamTurn = null;
+            if (App.page === 'context') {
+              App.navigate('context');
+            }
+          }
+        }
+        if (event && event.type === 'model_selection') {
+          if (App.page === 'metrics') {
+            App.navigate('metrics');
+          } else if (App.page === 'context' && App._ctxActiveTurn && event.turn_id === App._ctxActiveTurn.id) {
+            App.navigate('context');
+          }
+        }
+      } catch(e) {}
+    };
+  };
   App._connectWs = function() {
     try {
       if (App.ws && (App.ws.readyState === WebSocket.CONNECTING || App.ws.readyState === WebSocket.OPEN)) return;
       var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       var wsUrl = proto + '//' + window.location.host + '/ws';
-      if (API_KEY) wsUrl += '?token=' + encodeURIComponent(API_KEY);
-      App.ws = new WebSocket(wsUrl);
-      App.ws.onopen = function() {
-        App._wsReconnectDelay = 1000;
-        var d = document.getElementById('ws-dot'); if (d) d.classList.remove('off');
-        var l = document.getElementById('ws-label'); if (l) l.textContent = 'Connected';
-      };
-      App.ws.onclose = function() {
+      if (!API_KEY) {
+        // No auth configured — connect directly
+        App.ws = new WebSocket(wsUrl);
+        App._bindWsEvents(App.ws);
+        return;
+      }
+      // Fetch a short-lived ticket, then connect with it
+      fetch(BASE + '/api/ws-ticket', {
+        method: 'POST',
+        headers: authHeaders({ 'Accept': 'application/json' })
+      }).then(function(r) {
+        if (!r.ok) throw new Error('ticket fetch failed: ' + r.status);
+        return r.json();
+      }).then(function(data) {
+        App.ws = new WebSocket(wsUrl + '?ticket=' + encodeURIComponent(data.ticket));
+        App._bindWsEvents(App.ws);
+      }).catch(function() {
         var d = document.getElementById('ws-dot'); if (d) d.classList.add('off');
         var l = document.getElementById('ws-label'); if (l) l.textContent = 'Reconnecting...';
         clearTimeout(App._wsReconnectTimer);
         App._wsReconnectTimer = setTimeout(function() { App._connectWs(); }, App._wsReconnectDelay);
         App._wsReconnectDelay = Math.min(App._wsReconnectDelay * 2, 30000);
-      };
-      App.ws.onerror = function() {
-        var d = document.getElementById('ws-dot'); if (d) d.classList.add('off');
-      };
-      App.ws.onmessage = function(ev) {
-        try {
-          var event = JSON.parse(ev.data);
-          if (workspace && workspace.handleEvent) workspace.handleEvent(event);
-          if (event && event.type === 'stream_start') {
-            App._liveStreamTurn = {
-              turn_id: event.turn_id || '',
-              session_id: event.session_id || '',
-              model: event.model || ''
-            };
-            if (App.page === 'context') {
-              App.navigate('context');
-            }
-          } else if (event && event.type === 'stream_end') {
-            if (!event.turn_id || (App._liveStreamTurn && App._liveStreamTurn.turn_id === event.turn_id)) {
-              App._liveStreamTurn = null;
-              if (App.page === 'context') {
-                App.navigate('context');
-              }
-            }
-          }
-          if (event && event.type === 'model_selection') {
-            if (App.page === 'metrics') {
-              App.navigate('metrics');
-            } else if (App.page === 'context' && App._ctxActiveTurn && event.turn_id === App._ctxActiveTurn.id) {
-              App.navigate('context');
-            }
-          }
-        } catch(e) {}
-      };
+      });
     } catch (err) { var d = document.getElementById('ws-dot'); if (d) d.classList.add('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'No WebSocket'; }
   };
   App._connectWs();

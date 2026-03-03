@@ -28,6 +28,7 @@
 //! - `policy` -- Policy decision records
 //! - `metrics` -- Inference cost tracking, proxy snapshots, transactions, turn feedback
 
+pub mod abuse;
 pub mod agents;
 pub mod ann;
 pub mod approvals;

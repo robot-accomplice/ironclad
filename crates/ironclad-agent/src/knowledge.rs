@@ -58,6 +58,7 @@ impl DirectorySource {
         }
     }
 
+    #[must_use]
     pub fn with_extensions(mut self, exts: Vec<String>) -> Self {
         self.extensions = exts;
         self
@@ -111,7 +112,19 @@ impl KnowledgeSource for DirectorySource {
         let chunks = tokio::task::spawn_blocking(move || {
             let mut chunks = Vec::new();
             for path in files {
-                if let Ok(content) = std::fs::read_to_string(&path) {
+                // Cap file reads at 10 MB to prevent OOM on huge files.
+                const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+                if let Ok(content) = (|| -> std::io::Result<String> {
+                    use std::io::Read;
+                    let file = std::fs::File::open(&path)?;
+                    let meta = file.metadata()?;
+                    if meta.len() > MAX_FILE_BYTES {
+                        return Err(std::io::Error::other("file too large for knowledge query"));
+                    }
+                    let mut buf = String::new();
+                    file.take(MAX_FILE_BYTES).read_to_string(&mut buf)?;
+                    Ok(buf)
+                })() {
                     let content_lower = content.to_lowercase();
                     if content_lower.contains(&query_lower) {
                         let relevance = content_lower.matches(&query_lower).count() as f64
@@ -206,18 +219,19 @@ pub struct VectorDbSource {
 }
 
 impl VectorDbSource {
-    pub fn new(name: &str, url: &str) -> Self {
-        Self {
+    pub fn new(name: &str, url: &str) -> Result<Self> {
+        Ok(Self {
             name: name.to_string(),
             url: url.to_string(),
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
-                .expect("HTTP client build"),
+                .map_err(|e| IroncladError::Config(format!("HTTP client build failed: {e}")))?,
             api_key: None,
-        }
+        })
     }
 
+    #[must_use]
     pub fn with_api_key(mut self, key: String) -> Self {
         self.api_key = Some(key);
         self
@@ -329,18 +343,19 @@ pub struct GraphSource {
 }
 
 impl GraphSource {
-    pub fn new(name: &str, url: &str) -> Self {
-        Self {
+    pub fn new(name: &str, url: &str) -> Result<Self> {
+        Ok(Self {
             name: name.to_string(),
             url: url.to_string(),
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
-                .expect("HTTP client build"),
+                .map_err(|e| IroncladError::Config(format!("HTTP client build failed: {e}")))?,
             api_key: None,
-        }
+        })
     }
 
+    #[must_use]
     pub fn with_api_key(mut self, key: String) -> Self {
         self.api_key = Some(key);
         self
@@ -601,35 +616,37 @@ mod tests {
 
     #[test]
     fn vector_db_source_available_with_url() {
-        let source = VectorDbSource::new("pinecone", "https://pinecone.io");
+        let source = VectorDbSource::new("pinecone", "https://pinecone.io").unwrap();
         assert!(source.is_available());
         assert_eq!(source.source_type(), "vector_db");
     }
 
     #[test]
     fn vector_db_source_not_available_empty_url() {
-        let source = VectorDbSource::new("empty", "");
+        let source = VectorDbSource::new("empty", "").unwrap();
         assert!(!source.is_available());
     }
 
     #[test]
     fn vector_db_source_with_api_key() {
         let source = VectorDbSource::new("pinecone", "https://pinecone.io")
+            .unwrap()
             .with_api_key("sk-test".to_string());
         assert!(source.api_key.is_some());
     }
 
     #[test]
     fn graph_source_available_with_url() {
-        let source = GraphSource::new("neo4j", "http://localhost:7474");
+        let source = GraphSource::new("neo4j", "http://localhost:7474").unwrap();
         assert!(source.is_available());
         assert_eq!(source.source_type(), "graph");
     }
 
     #[test]
     fn graph_source_with_api_key() {
-        let source =
-            GraphSource::new("neo4j", "http://localhost:7474").with_api_key("token".to_string());
+        let source = GraphSource::new("neo4j", "http://localhost:7474")
+            .unwrap()
+            .with_api_key("token".to_string());
         assert!(source.api_key.is_some());
     }
 
@@ -648,10 +665,9 @@ mod tests {
             "docs",
             dir.path().to_path_buf(),
         )));
-        reg.add(Box::new(VectorDbSource::new(
-            "pinecone",
-            "https://api.pinecone.io",
-        )));
+        reg.add(Box::new(
+            VectorDbSource::new("pinecone", "https://api.pinecone.io").unwrap(),
+        ));
 
         let list = reg.list();
         assert_eq!(list.len(), 2);

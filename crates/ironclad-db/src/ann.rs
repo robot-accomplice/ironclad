@@ -1,16 +1,24 @@
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use instant_distance::{Builder, HnswMap, Search};
+use tracing::warn;
 
 use crate::Database;
 use crate::embeddings::{blob_to_embedding, cosine_similarity};
 
 fn read_or_recover<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
-    lock.read().unwrap_or_else(|e| e.into_inner())
+    lock.read().unwrap_or_else(|e| {
+        warn!("ANN index RwLock poisoned on read, recovering with potentially stale data");
+        e.into_inner()
+    })
 }
 
-fn write_or_recover<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
-    lock.write().unwrap_or_else(|e| e.into_inner())
+fn write_or_poison_err<T>(lock: &RwLock<T>) -> ironclad_core::Result<RwLockWriteGuard<'_, T>> {
+    lock.write().map_err(|_| {
+        ironclad_core::IroncladError::Database(
+            "ANN index RwLock poisoned, cannot write; rebuild required".into(),
+        )
+    })
 }
 
 /// A point wrapper for the instant-distance HNSW index.
@@ -103,12 +111,24 @@ impl AnnIndex {
                 if !b.is_empty() {
                     blob_to_embedding(&b)
                 } else if !json_text.is_empty() {
-                    serde_json::from_str(&json_text).unwrap_or_default()
+                    match serde_json::from_str(&json_text) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(source_id = %source_id, error = %e, "corrupt embedding JSON, skipping");
+                            continue;
+                        }
+                    }
                 } else {
                     continue;
                 }
             } else if !json_text.is_empty() {
-                serde_json::from_str(&json_text).unwrap_or_default()
+                match serde_json::from_str(&json_text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(source_id = %source_id, error = %e, "corrupt embedding JSON, skipping");
+                        continue;
+                    }
+                }
             } else {
                 continue;
             };
@@ -129,12 +149,12 @@ impl AnnIndex {
 
         let count = points.len();
         if count < self.min_entries_for_index {
-            *write_or_recover(&self.inner) = None;
+            *write_or_poison_err(&self.inner)? = None;
             return Ok(count);
         }
 
         let hnsw = Builder::default().build(points, values);
-        *write_or_recover(&self.inner) = Some(IndexState { hnsw, entries });
+        *write_or_poison_err(&self.inner)? = Some(IndexState { hnsw, entries });
 
         Ok(count)
     }

@@ -2,6 +2,8 @@ use ironclad_core::{IroncladError, Result, input_capability_scan};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{debug, info, warn};
 
 /// Configuration for a WASM plugin.
@@ -23,6 +25,7 @@ fn default_memory_limit() -> u64 {
 fn default_execution_timeout_ms() -> u64 {
     30_000
 }
+const MAX_CONCURRENT_WASM_EXECUTIONS: usize = 32;
 
 /// Capabilities granted to a WASM plugin (deny-by-default).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +44,7 @@ pub struct WasmPlugin {
     pub last_error: Option<String>,
     engine: Option<wasmer::Engine>,
     module: Option<wasmer::Module>,
+    active_executions: Arc<AtomicUsize>,
 }
 
 impl std::fmt::Debug for WasmPlugin {
@@ -52,6 +56,10 @@ impl std::fmt::Debug for WasmPlugin {
             .field("last_error", &self.last_error)
             .field("has_engine", &self.engine.is_some())
             .field("has_module", &self.module.is_some())
+            .field(
+                "active_executions",
+                &self.active_executions.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -65,6 +73,7 @@ impl WasmPlugin {
             last_error: None,
             engine: None,
             module: None,
+            active_executions: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -111,6 +120,25 @@ impl WasmPlugin {
             "loaded WASM plugin"
         );
         Ok(())
+    }
+
+    fn acquire_execution_slot(&self) -> Result<()> {
+        loop {
+            let current = self.active_executions.load(Ordering::Relaxed);
+            if current >= MAX_CONCURRENT_WASM_EXECUTIONS {
+                return Err(IroncladError::Config(format!(
+                    "WASM plugin '{}' refused execution: concurrent execution limit ({MAX_CONCURRENT_WASM_EXECUTIONS}) reached",
+                    self.config.name
+                )));
+            }
+            if self
+                .active_executions
+                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
     }
 
     /// Execute the plugin with JSON input, returning JSON output.
@@ -166,26 +194,53 @@ impl WasmPlugin {
 
         let deadline = std::time::Duration::from_millis(self.config.execution_timeout_ms);
 
-        if let Ok(func) = instance.exports.get_function("process") {
-            let start = std::time::Instant::now();
-            let results = func
-                .call(&mut store, &[])
-                .map_err(|e| IroncladError::Config(format!("WASM execution failed: {e}")))?;
+        // Run WASM calls on a dedicated thread with a preemptive timeout.
+        // If the module loops forever, recv_timeout returns Err and we
+        // report failure instead of hanging the caller indefinitely.
+        // The orphaned thread continues (WASM is sandboxed — no host I/O),
+        // but the caller is immediately unblocked.
 
-            let elapsed = start.elapsed();
-            if elapsed > deadline {
-                warn!(
-                    plugin = %self.config.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    deadline_ms = self.config.execution_timeout_ms,
-                    "WASM execution exceeded configured timeout"
-                );
-            }
+        if let Ok(func) = instance.exports.get_function("process") {
+            self.acquire_execution_slot()?;
+            let func = func.clone();
+            let memory = instance.exports.get_memory("memory").ok().cloned();
+            let active = Arc::clone(&self.active_executions);
+
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            std::thread::spawn(move || {
+                struct ActiveGuard(Arc<AtomicUsize>);
+                impl Drop for ActiveGuard {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                let _guard = ActiveGuard(active);
+                let result = func.call(&mut store, &[]);
+                let _ = tx.send((result, store));
+            });
+
+            let (results, store) = match rx.recv_timeout(deadline) {
+                Ok((Ok(results), store)) => (results, store),
+                Ok((Err(e), _)) => {
+                    return Err(IroncladError::Config(format!("WASM execution failed: {e}")));
+                }
+                Err(_) => {
+                    warn!(
+                        plugin = %self.config.name,
+                        deadline_ms = self.config.execution_timeout_ms,
+                        "WASM execution timed out — orphan thread may still be running"
+                    );
+                    return Err(IroncladError::Config(format!(
+                        "WASM plugin '{}' timed out after {}ms",
+                        self.config.name, self.config.execution_timeout_ms,
+                    )));
+                }
+            };
 
             let result_values: Vec<serde_json::Value> =
                 results.iter().map(wasmer_value_to_json).collect();
 
-            if let Ok(memory) = instance.exports.get_memory("memory")
+            if let Some(ref memory) = memory
                 && result_values.len() == 2
                 && let Some(ptr) = result_values[0].as_i64().filter(|&v| v >= 0)
                 && let Some(len) = result_values[1]
@@ -234,23 +289,44 @@ impl WasmPlugin {
         }
 
         if let Ok(func) = instance.exports.get_function("_start") {
-            let start = std::time::Instant::now();
-            func.call(&mut store, &[])
-                .map_err(|e| IroncladError::Config(format!("WASM execution failed: {e}")))?;
+            self.acquire_execution_slot()?;
+            let func = func.clone();
+            let active = Arc::clone(&self.active_executions);
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            std::thread::spawn(move || {
+                struct ActiveGuard(Arc<AtomicUsize>);
+                impl Drop for ActiveGuard {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                let _guard = ActiveGuard(active);
+                let result = func.call(&mut store, &[]);
+                let _ = tx.send(result);
+            });
 
-            let elapsed = start.elapsed();
-            if elapsed > deadline {
-                warn!(
-                    plugin = %self.config.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    deadline_ms = self.config.execution_timeout_ms,
-                    "WASM execution exceeded configured timeout"
-                );
+            match rx.recv_timeout(deadline) {
+                Ok(Ok(_)) => {
+                    return Ok(serde_json::json!({
+                        "status": "executed",
+                        "plugin": self.config.name,
+                    }));
+                }
+                Ok(Err(e)) => {
+                    return Err(IroncladError::Config(format!("WASM execution failed: {e}")));
+                }
+                Err(_) => {
+                    warn!(
+                        plugin = %self.config.name,
+                        deadline_ms = self.config.execution_timeout_ms,
+                        "WASM execution timed out — orphan thread may still be running"
+                    );
+                    return Err(IroncladError::Config(format!(
+                        "WASM plugin '{}' timed out after {}ms",
+                        self.config.name, self.config.execution_timeout_ms,
+                    )));
+                }
             }
-            return Ok(serde_json::json!({
-                "status": "executed",
-                "plugin": self.config.name,
-            }));
         }
 
         let export_names: Vec<String> = instance
