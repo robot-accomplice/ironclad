@@ -1520,11 +1520,6 @@ primary = "ollama/qwen3:8b"
     #[tokio::test]
     async fn breaker_reset_returns_success() {
         let state = test_state();
-        // Register "ollama" as a known provider so the reset endpoint finds it
-        {
-            let mut llm = state.llm.write().await;
-            llm.breakers.record_credit_error("ollama");
-        }
         let app = build_router(state);
         let req = Request::builder()
             .method("POST")
@@ -1537,6 +1532,26 @@ primary = "ollama/qwen3:8b"
 
         let body = json_body(resp).await;
         assert_eq!(body["provider"], "ollama");
+        assert_eq!(body["state"], "closed");
+        assert_eq!(body["reset"], true);
+    }
+
+    #[tokio::test]
+    async fn breaker_reset_configured_provider_without_existing_state_returns_success() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/breaker/reset/openai")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["provider"], "openai");
         assert_eq!(body["state"], "closed");
         assert_eq!(body["reset"], true);
     }

@@ -376,7 +376,10 @@ enum CircuitCmd {
     /// Show circuit breaker status
     Status,
     /// Reset tripped circuit breakers
-    Reset,
+    Reset {
+        /// Reset only one provider breaker (e.g., openai)
+        provider: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -827,7 +830,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }) => cli::cmd_logs(url, lines, follow, &level).await,
         Some(Commands::Circuit(sub)) => match sub {
             CircuitCmd::Status => cli::cmd_circuit_status(url).await,
-            CircuitCmd::Reset => cli::cmd_circuit_reset(url).await,
+            CircuitCmd::Reset { provider } => {
+                cli::cmd_circuit_reset(url, provider.as_deref()).await
+            }
         },
 
         // ── Data ────────────────────────────────────────────
