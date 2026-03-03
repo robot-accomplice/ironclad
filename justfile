@@ -327,9 +327,24 @@ ci-test:
     #!/usr/bin/env bash
     set -euo pipefail
 
+    START_TS=$(date +%s)
+    MODE="${CI_TEST_MODE:-full}"
+    if [ "${CI_TEST_FAST:-0}" = "1" ] && [ "$MODE" = "full" ]; then
+        MODE="fast"
+    fi
+
     PASS=0
     FAIL=0
     STAGES=()
+
+    format_duration() {
+        local total="$1"
+        local h m s
+        h=$((total / 3600))
+        m=$(((total % 3600) / 60))
+        s=$((total % 60))
+        printf "%02dh:%02dm:%02ds" "$h" "$m" "$s"
+    }
 
     run_stage() {
         local name="$1"; shift
@@ -405,8 +420,8 @@ ci-test:
         local total i j end_idx
 
         tmpdir=$(mktemp -d)
-        echo "  Running ${#CRATES[@]} crates with parallelism=${parallelism}"
-        total=${#CRATES[@]}
+        echo "  Running ${#TEST_CRATES[@]} crates with parallelism=${parallelism}"
+        total=${#TEST_CRATES[@]}
 
         for ((i = 0; i < total; i += parallelism)); do
             pids=()
@@ -417,7 +432,7 @@ ci-test:
             fi
 
             for ((j = i; j <= end_idx; j++)); do
-                crate="${CRATES[$j]}"
+                crate="${TEST_CRATES[$j]}"
                 (
                     cargo test -p "$crate" --verbose --locked >"$tmpdir/$crate.log" 2>&1
                 ) &
@@ -455,10 +470,61 @@ ci-test:
         ironclad-browser
         ironclad-tests
     )
+    TEST_CRATES=("${CRATES[@]}")
+
+    if [ "$MODE" = "fast" ]; then
+        if [ -n "${CI_TEST_FAST_CRATES:-}" ]; then
+            IFS=',' read -r -a TEST_CRATES <<<"${CI_TEST_FAST_CRATES}"
+            echo "  Fast mode: using CI_TEST_FAST_CRATES override: ${TEST_CRATES[*]}"
+        elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            selected_raw=""
+            full_matrix=0
+            if git rev-parse --abbrev-ref --symbolic-full-name @{upstream} >/dev/null 2>&1; then
+                base_ref=$(git merge-base HEAD @{upstream})
+            else
+                base_ref=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+            fi
+            while IFS= read -r path; do
+                [ -z "$path" ] && continue
+                case "$path" in
+                    Cargo.toml|Cargo.lock|Justfile|hooks/*|scripts/*|.github/workflows/*)
+                        full_matrix=1
+                        ;;
+                    crates/*)
+                        crate_dir=$(echo "$path" | cut -d/ -f2)
+                        if [[ "$crate_dir" == ironclad-* ]]; then
+                            selected_raw+="${crate_dir}"$'\n'
+                        fi
+                        ;;
+                esac
+                if [ "$full_matrix" -eq 1 ]; then
+                    break
+                fi
+            done < <(git diff --name-only "${base_ref}...HEAD")
+
+            if [ "$full_matrix" -eq 0 ] && [ -n "$selected_raw" ]; then
+                TEST_CRATES=()
+                for crate in "${CRATES[@]}"; do
+                    if printf "%s" "$selected_raw" | grep -qx "$crate"; then
+                        TEST_CRATES+=("$crate")
+                    fi
+                done
+                if [ "${#TEST_CRATES[@]}" -gt 0 ]; then
+                    echo "  Fast mode: detected changed crates: ${TEST_CRATES[*]}"
+                else
+                    TEST_CRATES=("${CRATES[@]}")
+                    echo "  Fast mode: no mapped crate changes, using full crate matrix"
+                fi
+            else
+                echo "  Fast mode: using full crate matrix (infra/workflow changes or no crate diff)"
+            fi
+        fi
+    fi
 
     echo "╔══════════════════════════════════════════════════════╗"
     echo "║           Ironclad CI — Local Pipeline               ║"
     echo "╚══════════════════════════════════════════════════════╝"
+    echo "  Mode: ${MODE}"
 
     # Stage 1: Format
     run_stage "Format" cargo fmt --all -- --check
@@ -549,7 +615,11 @@ ci-test:
         return 0
     }
 
-    if command -v cargo-llvm-cov &>/dev/null; then
+    if [ "$MODE" = "fast" ]; then
+        echo ""
+        echo "  ⊘ Coverage skipped (fast mode)"
+        STAGES+=("⊘ Coverage (fast mode)")
+    elif command -v cargo-llvm-cov &>/dev/null; then
         run_stage "Coverage" coverage_gate
     else
         echo ""
@@ -558,13 +628,26 @@ ci-test:
     fi
 
     # Stage 6-8: Build + docs (parallelized)
-    run_stage_parallel "Check + Docs" \
-        "Build (debug)" "cargo check --bin ironclad --locked" \
-        "Build (release)" "cargo check --release --bin ironclad --locked" \
-        "Docs" "env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items"
+    if [ "$MODE" = "fast" ]; then
+        run_stage "Build (debug)" cargo check --bin ironclad --locked
+        echo ""
+        echo "  ⊘ Build (release) skipped (fast mode)"
+        STAGES+=("⊘ Build (release) (fast mode)")
+        echo "  ⊘ Docs skipped (fast mode)"
+        STAGES+=("⊘ Docs (fast mode)")
+    else
+        run_stage_parallel "Check + Docs" \
+            "Build (debug)" "cargo check --bin ironclad --locked" \
+            "Build (release)" "cargo check --release --bin ironclad --locked" \
+            "Docs" "env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items"
+    fi
 
     # Stage 9: Security Audit
-    if command -v cargo-audit &>/dev/null; then
+    if [ "$MODE" = "fast" ]; then
+        echo ""
+        echo "  ⊘ Security Audit skipped (fast mode)"
+        STAGES+=("⊘ Security Audit (fast mode)")
+    elif command -v cargo-audit &>/dev/null; then
         run_stage "Security Audit" cargo audit
     else
         echo ""
@@ -584,9 +667,15 @@ ci-test:
     echo "  Passed: $PASS   Failed: $FAIL"
     echo ""
     if [ "$FAIL" -gt 0 ]; then
+        END_TS=$(date +%s)
+        ELAPSED=$((END_TS - START_TS))
+        echo "  Duration: $(format_duration "$ELAPSED")"
         echo "  ✘ CI FAILED"
         exit 1
     else
+        END_TS=$(date +%s)
+        ELAPSED=$((END_TS - START_TS))
+        echo "  Duration: $(format_duration "$ELAPSED")"
         echo "  ✔ CI PASSED"
     fi
 
@@ -595,6 +684,10 @@ ci-test:
         echo "  Coverage: ${COVERAGE_PCT}% (baseline: ${old}%)"
         echo "  Note: baseline is CI-authoritative. Use 'just coverage-update-baseline' to update manually."
     fi
+
+# Run a fast local CI battery (default pre-push mode)
+ci-test-fast:
+    CI_TEST_MODE=fast just ci-test
 
 # ── Clean ──────────────────────────────────────────────
 

@@ -71,10 +71,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-gates
       - name: Install just
         run: cargo install just --locked
-      - name: Release-critical battery
-        run: just test-release-critical
+      - name: "Release-critical: Server smoke tests"
+        run: |
+          cargo test -p ironclad-server change_specialist_model_rejects_fallback_order --locked
+          cargo test -p ironclad-server change_orchestrator_model --locked
+          cargo test -p ironclad-server change_model_unknown_agent_404 --locked
+          cargo test -p ironclad-harness --test api_domain stats_efficiency_returns_json --locked
+      - name: "Release-critical: Server API integration"
+        run: 'cargo test -p ironclad-tests server_api:: --locked'
+      - name: "Release-critical: Regression battery"
+        run: just test-regression
       - name: Provenance generator self-test
         run: scripts/generate-provenance.sh --self-test
 
