@@ -1966,10 +1966,11 @@ pub async fn change_agent_model(
         let mut updated = existing.clone();
         updated.model = model.clone();
         if let Some(requested) = body.fallbacks {
-            let normalized =
-                crate::api::routes::subagents::normalize_fallback_models(&requested, &model);
-            updated.fallback_models_json =
-                Some(serde_json::to_string(&normalized).unwrap_or_else(|_| "[]".to_string()));
+            if !requested.is_empty() {
+                return Err(bad_request(
+                    "fallback order can only be changed for the orchestrator via this endpoint",
+                ));
+            }
         }
         ironclad_db::agents::upsert_sub_agent(&state.db, &updated).map_err(|e| internal_err(&e))?;
         Ok(axum::Json(json!({
