@@ -675,46 +675,45 @@ async fn cmd_mechanic_json(
         use ironclad_plugin_sdk::manifest::PluginManifest;
 
         let plugins_dir = ironclad_dir.join("plugins");
-        if plugins_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&plugins_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if !path.is_dir() {
-                        continue;
-                    }
-                    let dir_name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let manifest_path = path.join("plugin.toml");
+        if plugins_dir.exists()
+            && let Ok(entries) = std::fs::read_dir(&plugins_dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let dir_name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let manifest_path = path.join("plugin.toml");
 
-                    if !manifest_path.exists() {
-                        let mut f = finding(
-                            "plugin-orphan-directory",
-                            "medium",
-                            0.95,
-                            format!("Orphan plugin directory: {dir_name}"),
-                            "Plugin directory exists but contains no valid plugin.toml. Likely an aborted install.",
-                            "Remove orphan plugin directory.",
-                            vec![format!("rm -rf \"{}\"", path.display())],
-                            true,
-                            false,
-                        );
-                        if repair {
-                            if let Ok(()) = std::fs::remove_dir_all(&path) {
-                                f.auto_repaired = true;
-                            }
-                        }
-                        findings.push(f);
-                        continue;
+                if !manifest_path.exists() {
+                    let mut f = finding(
+                        "plugin-orphan-directory",
+                        "medium",
+                        0.95,
+                        format!("Orphan plugin directory: {dir_name}"),
+                        "Plugin directory exists but contains no valid plugin.toml. Likely an aborted install.",
+                        "Remove orphan plugin directory.",
+                        vec![format!("rm -rf \"{}\"", path.display())],
+                        true,
+                        false,
+                    );
+                    if repair && let Ok(()) = std::fs::remove_dir_all(&path) {
+                        f.auto_repaired = true;
                     }
+                    findings.push(f);
+                    continue;
+                }
 
-                    match PluginManifest::from_file(&manifest_path) {
-                        Ok(manifest) => {
-                            let report = manifest.vet(&path);
-                            for e in &report.errors {
-                                findings.push(finding(
+                match PluginManifest::from_file(&manifest_path) {
+                    Ok(manifest) => {
+                        let report = manifest.vet(&path);
+                        for e in &report.errors {
+                            findings.push(finding(
                                     "plugin-vet-error",
                                     "high",
                                     0.95,
@@ -731,37 +730,37 @@ async fn cmd_mechanic_json(
                                     false,
                                     true,
                                 ));
-                            }
-                            for w in &report.warnings {
-                                findings.push(finding(
-                                    "plugin-vet-warning",
-                                    "low",
-                                    0.90,
-                                    format!("Plugin '{}': {w}", manifest.name),
-                                    format!(
-                                        "Plugin '{}' v{} has a non-blocking issue.",
-                                        manifest.name, manifest.version
-                                    ),
-                                    "Review plugin configuration.",
-                                    vec![format!("ironclad plugins info {}", manifest.name)],
-                                    false,
-                                    false,
-                                ));
-                            }
+                        }
+                        for w in &report.warnings {
+                            findings.push(finding(
+                                "plugin-vet-warning",
+                                "low",
+                                0.90,
+                                format!("Plugin '{}': {w}", manifest.name),
+                                format!(
+                                    "Plugin '{}' v{} has a non-blocking issue.",
+                                    manifest.name, manifest.version
+                                ),
+                                "Review plugin configuration.",
+                                vec![format!("ironclad plugins info {}", manifest.name)],
+                                false,
+                                false,
+                            ));
+                        }
 
-                            // Repair: re-deploy missing companion skills
-                            if repair {
-                                let skills_dir = ironclad_dir.join("skills");
-                                for skill_rel in &manifest.companion_skills {
-                                    let src = path.join(skill_rel);
-                                    let skill_filename = std::path::Path::new(skill_rel)
-                                        .file_name()
-                                        .unwrap_or_default();
-                                    let dest = skills_dir.join(skill_filename);
-                                    if src.exists() && !dest.exists() {
-                                        std::fs::create_dir_all(&skills_dir).ok();
-                                        if std::fs::copy(&src, &dest).is_ok() {
-                                            findings.push(finding(
+                        // Repair: re-deploy missing companion skills
+                        if repair {
+                            let skills_dir = ironclad_dir.join("skills");
+                            for skill_rel in &manifest.companion_skills {
+                                let src = path.join(skill_rel);
+                                let skill_filename = std::path::Path::new(skill_rel)
+                                    .file_name()
+                                    .unwrap_or_default();
+                                let dest = skills_dir.join(skill_filename);
+                                if src.exists() && !dest.exists() {
+                                    std::fs::create_dir_all(&skills_dir).ok();
+                                    if std::fs::copy(&src, &dest).is_ok() {
+                                        findings.push(finding(
                                                 "plugin-companion-skill-redeployed",
                                                 "info",
                                                 1.0,
@@ -778,30 +777,27 @@ async fn cmd_mechanic_json(
                                                 true,
                                                 false,
                                             ));
-                                        }
                                     }
                                 }
                             }
                         }
-                        Err(_) => {
-                            let mut f = finding(
-                                "plugin-corrupt-manifest",
-                                "medium",
-                                0.95,
-                                format!("Corrupt plugin manifest: {dir_name}"),
-                                "Plugin directory has a plugin.toml that cannot be parsed.",
-                                "Remove corrupt plugin directory.",
-                                vec![format!("rm -rf \"{}\"", path.display())],
-                                true,
-                                false,
-                            );
-                            if repair {
-                                if let Ok(()) = std::fs::remove_dir_all(&path) {
-                                    f.auto_repaired = true;
-                                }
-                            }
-                            findings.push(f);
+                    }
+                    Err(_) => {
+                        let mut f = finding(
+                            "plugin-corrupt-manifest",
+                            "medium",
+                            0.95,
+                            format!("Corrupt plugin manifest: {dir_name}"),
+                            "Plugin directory has a plugin.toml that cannot be parsed.",
+                            "Remove corrupt plugin directory.",
+                            vec![format!("rm -rf \"{}\"", path.display())],
+                            true,
+                            false,
+                        );
+                        if repair && let Ok(()) = std::fs::remove_dir_all(&path) {
+                            f.auto_repaired = true;
                         }
+                        findings.push(f);
                     }
                 }
             }
