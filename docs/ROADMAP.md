@@ -287,7 +287,7 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 **Current state**: Ironclad's skill system supports user-created scripts in bash/python/node, loaded from the skills directory. There are no built-in skills that ship with the agent for delegating tasks to external CLI-based AI tools.
 
-**Target**: Ship built-in skills that let the agent delegate subtasks to Claude Code (`claude`) and OpenAI Codex CLI (`codex`) when they are installed on the host. These skills act as typed tool interfaces — the agent can invoke them with structured parameters (task description, working directory, file scope) and receive structured output, enabling Ironclad to orchestrate external AI tools as specialist sub-processes.
+**Target**: Ship built-in skills that let the agent delegate subtasks to Claude Code (`claude`) and OpenAI Codex CLI (`codex`) when they are installed on the host. These skills act as typed tool interfaces — the agent can invoke them with structured parameters (task description, working directory, file scope) and receive structured output, enabling Ironclad to orchestrate external AI tools as subagent-style subprocesses.
 
 **Builds on**: `SkillLoader`/`SkillRegistry`, existing skill manifest format, script execution sandbox (`skills.sandbox_env`), tool registry.
 
@@ -302,6 +302,20 @@ Both skills: register as tools in the `ToolRegistry` so the agent can invoke the
 **Non-goals**: Not a generic "run any CLI AI tool" framework. Each supported tool gets a purpose-built skill with typed parameters and output parsing. Additional tools (Aider, Cursor CLI, etc.) can be added as separate skills later.
 
 **Release posture**: Parked for `v0.9.0`. Depends on stable CLI interfaces from both tools.
+
+---
+
+### 1.25 OpenAPI + Swagger Endpoint
+
+**Current state**: The server exposes production API routes, but no machine-readable OpenAPI spec and no Swagger UI endpoint are published. Operators and integrators must discover payload shapes by reading source or ad hoc examples.
+
+**Target**: First-class API discoverability with a generated OpenAPI spec and an embedded Swagger UI endpoint for interactive exploration and contract validation.
+
+**Builds on**: Existing axum route tree, request/response structs in `crates/ironclad-server`, auth middleware, API docs in `docs/API.md`.
+
+**Scope**: Generate and serve OpenAPI JSON at `/openapi.json` and host Swagger UI at `/swagger-ui` (or `/docs`) with accurate schemas for authenticated endpoints. Include auth scheme documentation (API key + bearer), example requests/responses for core flows, and CI checks that fail on schema drift. Keep docs generation deterministic and versioned with releases.
+
+**Release posture**: High leverage for `v0.9.x`; unblock external integrations and reduce API contract drift.
 
 ---
 
@@ -410,7 +424,7 @@ Features that require significant new code but have clear implementation paths. 
 
 ### 2.9 Declarative Agent Manifests ✅
 
-**Status**: Implemented. `ironclad-agent/src/manifest.rs` includes `ManifestLoader` with schema validation and hot-reload/hash tracking for TOML-defined specialist manifests.
+**Status**: Implemented. `ironclad-agent/src/manifest.rs` includes `ManifestLoader` with schema validation and hot-reload/hash tracking for TOML-defined subagent manifests.
 
 ---
 
@@ -509,9 +523,9 @@ On first boot, `initialize_db()` populates the hippocampus with all system table
 
 **Target**: A realistic, low-overhead self-funding system that helps agents maintain strong runtime capacity while remaining compliance-first. Include an adjustable taxation paradigm that applies to net realized profit per completed paid job and automatically redirects the taxed amount to the user's affiliated wallet.
 
-**Builds on**: `ServiceManager`, wallet/treasury (`ironclad-wallet`), `transactions` ledger, A2A/service endpoints, specialist routing and subagent capability matching.
+**Builds on**: `ServiceManager`, wallet/treasury (`ironclad-wallet`), `transactions` ledger, A2A/service endpoints, subagent routing and capability matching.
 
-**Scope**: Ship a curated self-funding catalog of legal, repeatable service archetypes (monitoring/alerts, recurring summaries, narrow specialist deliverables) with transparent pricing templates. Add profit accounting primitives: `net_realized_profit = earned_revenue - attributable_costs` (inference, fulfillment payouts, network/settlement fees) at job completion. Add config and controls for `self_funding.tax.enabled`, `self_funding.tax.rate` (0.0-1.0), `self_funding.tax.destination_wallet`, and per-service opt-in/out. On each completed paid job, compute tax from net realized profit, create an auditable settlement record, and transfer/allocate funds to the configured affiliated wallet. Enforce safety rails: max transfer caps, minimum reserve floor, invalid-address rejection, and explicit no-op behavior when profit <= 0. Expose dashboard/API observability for gross revenue, attributable costs, net profit, tax paid, after-tax retained earnings, and payout history.
+**Scope**: Ship a curated self-funding catalog of legal, repeatable service archetypes (monitoring/alerts, recurring summaries, narrow subagent deliverables) with transparent pricing templates. Add profit accounting primitives: `net_realized_profit = earned_revenue - attributable_costs` (inference, fulfillment payouts, network/settlement fees) at job completion. Add config and controls for `self_funding.tax.enabled`, `self_funding.tax.rate` (0.0-1.0), `self_funding.tax.destination_wallet`, and per-service opt-in/out. On each completed paid job, compute tax from net realized profit, create an auditable settlement record, and transfer/allocate funds to the configured affiliated wallet. Enforce safety rails: max transfer caps, minimum reserve floor, invalid-address rejection, and explicit no-op behavior when profit <= 0. Expose dashboard/API observability for gross revenue, attributable costs, net profit, tax paid, after-tax retained earnings, and payout history.
 
 ---
 
@@ -612,11 +626,11 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 **Current state**: Partially implemented in 0.7.0. Subagent role contracts (`subagent` vs `model-proxy`), roster semantics, model-assignment modes (`auto`/`orchestrator`), and turn-linked model-selection forensics are live. Full workflow orchestration patterns are still pending.
 
-**Target**: Internal multi-agent patterns — specialist sub-agents for code review, research, financial analysis — orchestrated by a coordinator agent using graph-based workflows.
+**Target**: Internal multi-agent patterns — subagents for code review, research, financial analysis — orchestrated by a coordinator agent using graph-based workflows.
 
-**Prerequisite**: 2.9 (Declarative Agent Manifests). Orchestration patterns operate on manifest-declared capabilities rather than hardcoded specialist names — the coordinator matches subtask requirements to specialist capability declarations, so adding a new specialist is a config file, not a code change.
+**Prerequisite**: 2.9 (Declarative Agent Manifests). Orchestration patterns operate on manifest-declared capabilities rather than hardcoded subagent names — the coordinator matches subtask requirements to subagent capability declarations, so adding a new subagent is a config file, not a code change.
 
-**Scope**: Extend `SubagentRegistry` to manage actual agent instances (each with its own session, tools, and optionally its own wallet). Define orchestration patterns: sequential, parallel fan-out/fan-in, and handoff. Coordinator agent routes subtasks to specialists based on capability matching against manifest declarations. Specialist resolution is dynamic — the coordinator queries available manifests for capability overlap with the subtask requirements.
+**Scope**: Extend `SubagentRegistry` to manage actual agent instances (each with its own session, tools, and optionally its own wallet). Define orchestration patterns: sequential, parallel fan-out/fan-in, and handoff. Coordinator agent routes subtasks to subagents based on capability matching against manifest declarations. Subagent resolution is dynamic — the coordinator queries available manifests for capability overlap with the subtask requirements.
 
 ---
 
@@ -729,6 +743,29 @@ Ambitious capabilities that push the architecture into new territory. High effor
 **Builds on**: `3.12 Flexible Network Binding`, API auth/session routes, TLS support, existing policy and audit infrastructure.
 
 **Scope**: Add a dedicated remote access security layer with defense-in-depth: mandatory TLS (with optional mTLS for operator/admin roles), OIDC/SAML SSO + enforced MFA + short-lived tokens, device trust (key-bound sessions and optional passkey/WebAuthn), per-route RBAC for dashboard/API actions, IP reputation + geo-anomaly detection with adaptive challenge/deny, rate-limit and WAF hooks for auth surfaces, strict CSRF/CORS/cookie hardening, signed session rotation and revocation, comprehensive audit trails for auth/admin actions, and a "remote-lockdown" mode that defaults to deny-by-default except explicit allowlists. Ship with threat-model documentation, security runbooks, and hardened production presets.
+
+---
+
+### 3.14 GibberLink — Agent-to-Agent Voice Protocol
+
+**Current state**: All Ironclad communication channels (Discord, WhatsApp, Telegram, Email, WebSocket) are agent-to-human. There is no native protocol for two Ironclad agents (or an Ironclad agent and an external agent runtime) to communicate directly in a structured, low-latency voice channel.
+
+**Target**: Implement the GibberLink protocol — an audio-frequency agent-to-agent communication layer that encodes structured data (tool calls, context handoffs, negotiation frames) as modulated audio signals. Enables agents to "talk" to each other over voice channels (phone calls, WebRTC, voice rooms) without human intermediation.
+
+**Builds on**: `2.20 Voice Channels` (WebRTC + STT/TTS pipeline), `3.11 Agent Discovery Protocol` (peer discovery), `1.6 Multimodal Messages` (audio handling), `VoicePipeline` (existing Whisper STT + TTS infrastructure).
+
+**Scope**:
+
+- **GibberLink codec**: Define an audio modulation scheme for encoding structured JSON payloads (tool invocations, context fragments, negotiation frames) as audio-frequency signals. Support both in-band (embedded in voice stream) and sideband (parallel data channel) modes.
+- **Handshake protocol**: Agent identity verification via audio challenge-response using existing cryptographic identity infrastructure (3.10). Capability advertisement and negotiation during handshake.
+- **Session management**: Persistent voice sessions between paired agents with heartbeat, reconnection, and graceful teardown. Multiplex structured data alongside optional human-audible speech.
+- **Transport adapters**: Phone (PSTN via Twilio/SIP), WebRTC (dashboard-to-dashboard), Discord voice channels, and raw audio file exchange.
+- **Security**: End-to-end encryption of the data payload within the audio channel. Replay protection, session binding, and mutual authentication.
+- **Interop**: Define a minimal GibberLink specification for cross-runtime adoption — any agent framework can implement the codec to participate.
+
+**Phasing**: Ship codec + WebRTC transport first (lowest integration complexity). Phone/PSTN bridge second. Cross-runtime interop specification third.
+
+**Non-goals for v1**: Video-channel embedding, multi-party (>2 agent) sessions, real-time translation between different GibberLink codec versions.
 
 ---
 
@@ -900,7 +937,7 @@ Outcome-first autonomy as a coordinated **robot mission runtime**. This is a roa
 - Produce a deterministic mission DAG with retry/fallback semantics.
 - Persist mission state for restart-safe execution and auditability.
 
-### Subroutine F — Recursive Specialist Escalation Kernel
+### Subroutine F — Recursive Subagent Escalation Kernel
 
 **Current state**: subagent orchestration exists but recursive helper delegation is not a first-class policy-governed kernel primitive.
 
@@ -946,7 +983,7 @@ Outcome-first autonomy as a coordinated **robot mission runtime**. This is a roa
 ### Integration Mapping (No Scope Bloat)
 
 - `2.19` remains the model-selection substrate (metascore + explainability + simulation).
-- `3.3` remains the orchestration substrate (specialist delegation patterns).
+- `3.3` remains the orchestration substrate (subagent delegation patterns).
 - Scheduler/queues remain execution substrate (durability + long-horizon runs).
 - New subroutines define composition contracts between those existing layers; they do not imply immediate net-new feature execution.
 
@@ -984,7 +1021,7 @@ Targeting a **0.8.0 candidate slate** with a bias toward reliability, operabilit
 
 - **Strategic item**: `2.18 Compliance-First Self-Funding Portfolio + Profit Taxation`.
 - **Positioning**: Keep out of the locked `v0.8.0` reliability core, but run discovery/design in parallel so implementation can start in `v0.9.x` without blocking current release throughput.
-- **Execution intent**: Prioritize legal, low-overhead recurring service models first (monitoring, digests, narrow specialist deliverables), then layer adjustable per-job net-profit taxation redirected to the user's affiliated wallet.
+- **Execution intent**: Prioritize legal, low-overhead recurring service models first (monitoring, digests, narrow subagent deliverables), then layer adjustable per-job net-profit taxation redirected to the user's affiliated wallet.
 - **Readiness gates before implementation**: finalize taxable profit accounting contract (`net_realized_profit`), destination wallet validation rules, reserve-floor + transfer-cap safety policy, and payout audit surfaces.
 
 ---
@@ -1089,7 +1126,7 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 2.15 | Ops telemetry + release provenance gate | 2 | CI workflows, smoke tests, release pipeline | Medium |
 | 2.16 | Matrix channel adapter (E2EE day one) | 2 | ChannelAdapter, ChannelRouter, durable delivery queue | High |
 | 2.17 | Apertus native local onboarding (SGLang-first) | 2 | install scripts, setup wizard, local host detection, model discovery | Medium |
-| 2.18 | Compliance-first self-funding portfolio + profit taxation | 2 | ServiceManager, wallet/treasury, transactions ledger, specialist routing | High |
+| 2.18 | Compliance-first self-funding portfolio + profit taxation | 2 | ServiceManager, wallet/treasury, transactions ledger, subagent routing | High |
 | 2.19 | Model metascore routing profiles | 2 | ModelRouter, provider registry/config, cost/capacity telemetry, orchestration | High |
 | 2.20 | Voice channels (promoted from 3.6) | 2 | Channel adapters, whisper-rs, local TTS | High |
 | 2.21 | Skill registry protocol | 2 | SkillLoader, 2.14 skills catalog, skill manifests, wallet/ECDSA | Medium |

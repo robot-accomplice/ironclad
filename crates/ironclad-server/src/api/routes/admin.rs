@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use crate::config_runtime;
 use ironclad_agent::policy::{PolicyContext, ToolCallRequest};
 use ironclad_core::{
-    InputAuthority, IroncladConfig, PolicyDecision, SurvivalTier, input_capability_scan,
+    InputAuthority, IroncladConfig, IroncladError, PolicyDecision, SurvivalTier,
+    input_capability_scan,
 };
 
 use super::{
@@ -445,7 +446,7 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn get_config_capabilities() -> impl IntoResponse {
     axum::Json(json!({
         "immutable_sections": ["server", "treasury", "a2a", "wallet"],
-        "mutable_sections": ["agent", "server", "database", "models", "memory", "cache", "treasury", "yield", "wallet", "a2a", "skills", "channels", "circuit_breaker", "providers", "context", "approvals", "plugins", "browser", "daemon", "update", "tier_adapt", "personality", "session", "digest", "multimodal", "knowledge", "workspace_config", "mcp", "devices", "discovery", "obsidian"],
+        "mutable_sections": ["agent", "server", "database", "models", "memory", "cache", "treasury", "yield", "wallet", "a2a", "skills", "channels", "circuit_breaker", "providers", "context", "approvals", "plugins", "browser", "daemon", "update", "tier_adapt", "personality", "session", "digest", "multimodal", "knowledge", "workspace_config", "mcp", "devices", "discovery", "obsidian", "security"],
         "notes": {
             "runtime_reload": "all sections are accepted and persisted to ironclad.toml with validation",
             "deferred_apply_examples": ["server.bind", "server.port", "wallet", "treasury.policy_engine", "browser.runtime"],
@@ -1319,6 +1320,7 @@ pub async fn execute_plugin_tool(
             let ctx = PolicyContext {
                 authority: InputAuthority::External,
                 survival_tier: SurvivalTier::Normal,
+                claim: None,
             };
             let decision = state.policy_engine.evaluate_all(&call, &ctx);
             if !decision.is_allowed() {
@@ -1800,6 +1802,8 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
             _ => "fixed",
         };
         let color = WORKSPACE_PALETTE[(i + 1) % WORKSPACE_PALETTE.len()];
+        let fallback_models =
+            crate::api::routes::subagents::parse_fallback_models_json(sa.fallback_models_json.as_deref());
         // Merge per-agent skills with workspace-level enabled skills
         let mut agent_skills: Vec<String> = sa.skills_json.as_ref().map(|s| {
             serde_json::from_str::<Vec<String>>(s).unwrap_or_else(|e| {
@@ -1819,6 +1823,7 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
             "display_name": sa.display_name,
             "role": ROLE_SUBAGENT,
             "model": sa.model,
+            "fallback_models": fallback_models,
             "model_mode": model_mode,
             "resolved_model": runtime.map(|r| r.model.clone()),
             "enabled": sa.enabled,
@@ -1946,11 +1951,6 @@ pub async fn change_agent_model(
                 .collect::<Vec<_>>(),
         })))
     } else {
-        if body.fallbacks.is_some() {
-            return Err(bad_request(
-                "fallback ordering is only supported for the orchestrator agent",
-            ));
-        }
         let agents =
             ironclad_db::agents::list_sub_agents(&state.db).map_err(|e| internal_err(&e))?;
         let existing = agents
@@ -1965,13 +1965,22 @@ pub async fn change_agent_model(
         old_model = existing.model.clone();
         let mut updated = existing.clone();
         updated.model = model.clone();
+        if let Some(requested) = body.fallbacks {
+            let normalized =
+                crate::api::routes::subagents::normalize_fallback_models(&requested, &model);
+            updated.fallback_models_json =
+                Some(serde_json::to_string(&normalized).unwrap_or_else(|_| "[]".to_string()));
+        }
         ironclad_db::agents::upsert_sub_agent(&state.db, &updated).map_err(|e| internal_err(&e))?;
         Ok(axum::Json(json!({
             "updated": true,
             "agent": agent_name,
             "old_model": old_model,
             "new_model": model,
-            "scope": "specialist (persisted to database)",
+            "fallback_models": crate::api::routes::subagents::parse_fallback_models_json(
+                updated.fallback_models_json.as_deref()
+            ),
+            "scope": "subagent (persisted to database)",
         })))
     }
 }
@@ -2097,6 +2106,177 @@ pub struct EfficiencyParams {
     pub model: Option<String>,
 }
 
+fn efficiency_window(period: &str) -> Option<String> {
+    match period {
+        "24h" => Some("-24 hours".to_string()),
+        "7d" => Some("-7 days".to_string()),
+        "30d" => Some("-30 days".to_string()),
+        "all" => None,
+        _ => Some("-7 days".to_string()),
+    }
+}
+
+fn extract_delegated_subagent(output: Option<&str>) -> String {
+    let Some(out) = output else {
+        return "(none)".to_string();
+    };
+    let marker = "delegated_subagent=";
+    let Some(idx) = out.find(marker) else {
+        return "(none)".to_string();
+    };
+    let start = idx + marker.len();
+    let tail = &out[start..];
+    tail.split_whitespace()
+        .next()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("(none)")
+        .to_string()
+}
+
+fn compute_subagent_assignment_efficacy(
+    db: &ironclad_db::Database,
+    period: &str,
+) -> Result<serde_json::Value, IroncladError> {
+    let conn = db.conn();
+    let window = efficiency_window(period);
+    let mut rows: Vec<(String, String, Option<i64>, Option<String>)> = Vec::new();
+
+    if let Some(w) = window.as_deref() {
+        let mut stmt = conn
+            .prepare(
+                "SELECT tool_name, status, duration_ms, output FROM tool_calls
+                 WHERE tool_name IN ('assign-tasks','delegate-subagent','orchestrate-subagents')
+                   AND created_at >= datetime('now', ?1)",
+            )
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        let mapped = stmt
+            .query_map([w], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        rows.extend(mapped.filter_map(std::result::Result::ok));
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT tool_name, status, duration_ms, output FROM tool_calls
+                 WHERE tool_name IN ('assign-tasks','delegate-subagent','orchestrate-subagents')",
+            )
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        let mapped = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        rows.extend(mapped.filter_map(std::result::Result::ok));
+    }
+
+    #[derive(Default)]
+    struct Stats {
+        total: i64,
+        success: i64,
+        failed: i64,
+        timeout_like: i64,
+        durations: Vec<i64>,
+    }
+
+    let mut by_subagent: std::collections::HashMap<String, Stats> =
+        std::collections::HashMap::new();
+    let mut overall = Stats::default();
+    for (_tool, status, duration_ms, output) in rows {
+        let subagent = extract_delegated_subagent(output.as_deref());
+        let entry = by_subagent.entry(subagent).or_default();
+        entry.total += 1;
+        overall.total += 1;
+        if status.eq_ignore_ascii_case("success") {
+            entry.success += 1;
+            overall.success += 1;
+        } else {
+            entry.failed += 1;
+            overall.failed += 1;
+            let lowered = output.as_deref().unwrap_or_default().to_ascii_lowercase();
+            if lowered.contains("timeout") {
+                entry.timeout_like += 1;
+                overall.timeout_like += 1;
+            }
+        }
+        if let Some(ms) = duration_ms {
+            entry.durations.push(ms);
+            overall.durations.push(ms);
+        }
+    }
+
+    let mut assignment = serde_json::Map::new();
+    let agents = ironclad_db::agents::list_sub_agents(db)?;
+    for sa in agents {
+        if sa.role.eq_ignore_ascii_case("model-proxy") {
+            continue;
+        }
+        assignment.insert(
+            sa.name.clone(),
+            json!({
+                "configured_model": sa.model,
+                "fallback_models": crate::api::routes::subagents::parse_fallback_models_json(sa.fallback_models_json.as_deref()),
+                "model_mode": match sa.model.trim().to_ascii_lowercase().as_str() {
+                    "auto" => "auto",
+                    "orchestrator" => "orchestrator",
+                    _ => "fixed",
+                },
+            }),
+        );
+    }
+
+    let stats_json = |s: &mut Stats| {
+        s.durations.sort_unstable();
+        let avg_ms = if s.durations.is_empty() {
+            0.0
+        } else {
+            s.durations.iter().sum::<i64>() as f64 / s.durations.len() as f64
+        };
+        let p95_ms = if s.durations.is_empty() {
+            0.0
+        } else {
+            let idx = ((s.durations.len() as f64) * 0.95).floor() as usize;
+            s.durations[idx.min(s.durations.len() - 1)] as f64
+        };
+        let success_rate = if s.total > 0 {
+            s.success as f64 / s.total as f64
+        } else {
+            0.0
+        };
+        json!({
+            "total": s.total,
+            "success": s.success,
+            "failed": s.failed,
+            "timeout_like": s.timeout_like,
+            "success_rate": success_rate,
+            "avg_duration_ms": avg_ms,
+            "p95_duration_ms": p95_ms,
+        })
+    };
+
+    let mut by_subagent_json = serde_json::Map::new();
+    for (name, mut stats) in by_subagent {
+        by_subagent_json.insert(name, stats_json(&mut stats));
+    }
+
+    Ok(json!({
+        "period": period,
+        "overall": stats_json(&mut overall),
+        "by_subagent": by_subagent_json,
+        "assignments": assignment,
+    }))
+}
+
 pub async fn get_efficiency(
     State(state): State<AppState>,
     Query(params): Query<EfficiencyParams>,
@@ -2106,7 +2286,19 @@ pub async fn get_efficiency(
 
     match ironclad_db::efficiency::compute_efficiency(&state.db, period, model) {
         Ok(report) => match serde_json::to_value(report) {
-            Ok(v) => Json(v).into_response(),
+            Ok(mut v) => {
+                if let Some(obj) = v.as_object_mut() {
+                    match compute_subagent_assignment_efficacy(&state.db, period) {
+                        Ok(metrics) => {
+                            obj.insert("subagent_assignment".to_string(), metrics);
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to compute subagent assignment efficacy");
+                        }
+                    }
+                }
+                Json(v).into_response()
+            }
             Err(e) => {
                 tracing::error!(error = %e, "failed to serialize efficiency report");
                 (

@@ -1,7 +1,9 @@
 //! Model selection, inference fallback chain, and routing audit persistence.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
+use ironclad_core::IroncladError;
 use serde::Serialize;
 use serde_json::json;
 
@@ -127,9 +129,22 @@ pub(super) fn fallback_candidates(
     config: &ironclad_core::IroncladConfig,
     initial_model: &str,
 ) -> Vec<String> {
+    fallback_candidates_with_preferred(config, initial_model, &[])
+}
+
+pub(super) fn fallback_candidates_with_preferred(
+    config: &ironclad_core::IroncladConfig,
+    initial_model: &str,
+    preferred_fallbacks: &[String],
+) -> Vec<String> {
     let mut candidates = vec![initial_model.to_string()];
+    for fb in preferred_fallbacks {
+        if fb != initial_model && !candidates.iter().any(|c| c == fb) {
+            candidates.push(fb.clone());
+        }
+    }
     for fb in &config.models.fallbacks {
-        if fb != initial_model {
+        if fb != initial_model && !candidates.iter().any(|c| c == fb) {
             candidates.push(fb.clone());
         }
     }
@@ -390,6 +405,25 @@ pub(super) fn estimate_cost_from_provider(
     tokens_in as f64 * in_rate + tokens_out as f64 * out_rate
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct InferenceBudget {
+    pub max_fallback_attempts: usize,
+    pub max_total_inference_time: Duration,
+    pub per_provider_timeout: Duration,
+}
+
+pub(super) const INTERACTIVE_INFERENCE_BUDGET: InferenceBudget = InferenceBudget {
+    max_fallback_attempts: 4,
+    max_total_inference_time: Duration::from_secs(45),
+    per_provider_timeout: Duration::from_secs(25),
+};
+
+pub(super) const DELEGATED_INFERENCE_BUDGET: InferenceBudget = InferenceBudget {
+    max_fallback_attempts: 5,
+    max_total_inference_time: Duration::from_secs(80),
+    per_provider_timeout: Duration::from_secs(20),
+};
+
 /// Attempt inference on the selected model, falling back through the configured
 /// chain on transient errors. Updates circuit breakers on success/failure.
 ///
@@ -403,8 +437,35 @@ pub(super) async fn infer_with_fallback(
     unified_req: &ironclad_llm::format::UnifiedRequest,
     initial_model: &str,
 ) -> Result<InferenceResult, String> {
+    infer_with_fallback_with_budget(
+        state,
+        unified_req,
+        initial_model,
+        INTERACTIVE_INFERENCE_BUDGET,
+    )
+    .await
+}
+
+pub(super) async fn infer_with_fallback_with_budget(
+    state: &AppState,
+    unified_req: &ironclad_llm::format::UnifiedRequest,
+    initial_model: &str,
+    budget: InferenceBudget,
+) -> Result<InferenceResult, String> {
+    infer_with_fallback_with_budget_and_preferred(state, unified_req, initial_model, budget, &[])
+        .await
+}
+
+pub(super) async fn infer_with_fallback_with_budget_and_preferred(
+    state: &AppState,
+    unified_req: &ironclad_llm::format::UnifiedRequest,
+    initial_model: &str,
+    budget: InferenceBudget,
+    preferred_fallbacks: &[String],
+) -> Result<InferenceResult, String> {
     let config = state.config.read().await;
-    let candidates = fallback_candidates(&config, initial_model);
+    let candidates =
+        fallback_candidates_with_preferred(&config, initial_model, preferred_fallbacks);
     let tiered_enabled = config.models.tiered_inference.enabled;
     let confidence_floor = config.models.tiered_inference.confidence_floor;
     let escalation_budget_ms = config.models.tiered_inference.escalation_latency_budget_ms;
@@ -417,8 +478,43 @@ pub(super) async fn infer_with_fallback(
     };
     let mut fallback_result: Option<InferenceResult> = None;
     let mut last_error = String::new();
+    let infer_started = Instant::now();
 
-    for model in &candidates {
+    for (attempt_idx, model) in candidates.iter().enumerate() {
+        if attempt_idx >= budget.max_fallback_attempts {
+            tracing::warn!(
+                attempted = attempt_idx,
+                cap = budget.max_fallback_attempts,
+                "fallback attempt budget exhausted"
+            );
+            last_error = format!(
+                "fallback attempt budget exhausted ({})",
+                budget.max_fallback_attempts
+            );
+            break;
+        }
+        let elapsed = infer_started.elapsed();
+        if elapsed >= budget.max_total_inference_time {
+            tracing::warn!(
+                elapsed_ms = elapsed.as_millis() as u64,
+                cap_ms = budget.max_total_inference_time.as_millis() as u64,
+                "total inference timeout reached"
+            );
+            last_error = format!(
+                "inference timeout after {}s",
+                budget.max_total_inference_time.as_secs()
+            );
+            break;
+        }
+        let remaining_budget = budget.max_total_inference_time.saturating_sub(elapsed);
+        if remaining_budget.is_zero() {
+            last_error = format!(
+                "inference timeout after {}s",
+                budget.max_total_inference_time.as_secs()
+            );
+            break;
+        }
+
         // Skip if circuit breaker is open
         {
             let llm = state.llm.read().await;
@@ -458,16 +554,25 @@ pub(super) async fn infer_with_fallback(
 
         let inference_start = std::time::Instant::now();
         let llm = state.llm.read().await;
-        let result = llm
-            .client
-            .forward_with_provider(
+        let attempt_timeout = std::cmp::min(budget.per_provider_timeout, remaining_budget);
+        let result = match tokio::time::timeout(
+            attempt_timeout,
+            llm.client.forward_with_provider(
                 &resolved.url,
                 &resolved.api_key,
                 llm_body,
                 &resolved.auth_header,
                 &resolved.extra_headers,
-            )
-            .await;
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(IroncladError::Network(format!(
+                "request failed: timeout after {}s",
+                attempt_timeout.as_secs()
+            ))),
+        };
         drop(llm);
 
         match result {
@@ -548,9 +653,9 @@ pub(super) async fn infer_with_fallback(
 
                 if model != initial_model {
                     tracing::info!(
-                        primary = initial_model,
+                        initial_model = initial_model,
                         fallback = model.as_str(),
-                        "primary failed, succeeded on fallback"
+                        "initial model failed, succeeded on fallback"
                     );
                 }
 

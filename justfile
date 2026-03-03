@@ -690,7 +690,142 @@ install-hooks:
 
 # Install recommended cargo tools + gosh scripting engine
 install-tools: install-gosh install-hooks
-    cargo install cargo-watch cargo-llvm-cov cargo-outdated cargo-audit
+    cargo install cargo-watch cargo-llvm-cov cargo-outdated cargo-audit cargo-machete
+
+# ── Build Acceleration (macOS) ─────────────────────────
+
+# Show build acceleration status and recommendations
+build-doctor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║         Ironclad Build Acceleration Doctor           ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+    echo ""
+
+    # 1. Toolchain
+    echo "── Toolchain ──"
+    rustc --version
+    echo ""
+
+    # 2. Linker
+    echo "── Linker ──"
+    if command -v lld &>/dev/null; then
+        echo "  ✔ lld available at $(which lld)"
+    elif [ -f /opt/homebrew/opt/llvm/bin/lld ]; then
+        echo "  ✔ lld available at /opt/homebrew/opt/llvm/bin/lld"
+    else
+        echo "  ✘ lld not found (install: brew install llvm)"
+    fi
+    echo ""
+
+    # 3. .cargo/config.toml
+    echo "── .cargo/config.toml ──"
+    if [ -f .cargo/config.toml ]; then
+        echo "  ✔ exists"
+    else
+        echo "  ✘ missing — no build optimizations configured"
+    fi
+    echo ""
+
+    # 4. Cargo.toml profiles
+    echo "── Cargo.toml profiles ──"
+    if grep -q 'split-debuginfo' Cargo.toml 2>/dev/null; then
+        echo "  ✔ split-debuginfo configured"
+    else
+        echo "  ✘ split-debuginfo not set (up to 70% faster incremental linking)"
+    fi
+    if grep -q 'build-override' Cargo.toml 2>/dev/null; then
+        echo "  ✔ build-override opt-level configured"
+    else
+        echo "  ✘ proc-macro build-override not set"
+    fi
+    echo ""
+
+    # 5. macOS Gatekeeper
+    echo "── macOS Gatekeeper ──"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        status=$(spctl --status 2>&1 || true)
+        if echo "$status" | grep -q "assessments enabled"; then
+            echo "  ⚠ Gatekeeper assessments ENABLED — scanning every binary"
+            echo "    Fix: sudo spctl developer-mode enable-terminal"
+            echo "    Then add your terminal to System Settings > Privacy > Developer Tools"
+        else
+            echo "  ✔ Gatekeeper developer mode active"
+        fi
+    else
+        echo "  ⊘ Not macOS"
+    fi
+    echo ""
+
+    # 6. Spotlight
+    echo "── Spotlight ──"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        if [[ -f "$(pwd)/target/.metadata_never_index" ]]; then
+            echo "  ✔ target/ has .metadata_never_index — Spotlight excluded"
+        else
+            echo "  ✘ target/ is NOT excluded from Spotlight indexing"
+            echo "    Fix: just spotlight-exclude"
+        fi
+    fi
+    echo ""
+
+    # 7. Duplicate deps
+    echo "── Duplicate Dependencies ──"
+    dupes=$(cargo tree --duplicate 2>&1 | grep -cE '^\w' || true)
+    if [ "$dupes" -gt 0 ]; then
+        echo "  ⚠ $dupes duplicate crate versions detected"
+        echo "    Run: cargo tree --duplicate | grep -E '^\w' | sort -u"
+    else
+        echo "  ✔ No duplicate dependencies"
+    fi
+    echo ""
+
+    # 8. sccache
+    echo "── Build Cache ──"
+    if command -v sccache &>/dev/null; then
+        echo "  ✔ sccache available"
+    else
+        echo "  ⊘ sccache not installed (optional: cargo install sccache)"
+    fi
+    echo ""
+
+# Exclude target/ from Spotlight indexing (macOS)
+spotlight-exclude:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname)" != "Darwin" ]]; then
+        echo "Not macOS — skipping"
+        exit 0
+    fi
+    target="$(pwd)/target"
+    mkdir -p "$target"
+    # Method 1: .metadata_never_index marker (same approach Xcode uses for DerivedData)
+    touch "$target/.metadata_never_index"
+    echo "✔ Created $target/.metadata_never_index"
+    # Method 2: Exclude from Time Machine too (build artifacts are reproducible)
+    tmutil addexclusion "$target" 2>/dev/null || true
+    echo "✔ Added Time Machine exclusion for $target"
+    echo ""
+    echo "Spotlight will stop indexing target/ contents."
+    echo "If it's already been indexed, force re-evaluation:"
+    echo "  mdimport -d1 $target"
+
+# Enable terminal as developer tool (skips Gatekeeper for compiled binaries)
+gatekeeper-dev-mode:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname)" != "Darwin" ]]; then
+        echo "Not macOS — skipping"
+        exit 0
+    fi
+    echo "Enabling developer mode for terminal..."
+    echo "This adds your terminal to the Developer Tools list,"
+    echo "bypassing Gatekeeper binary scanning for builds."
+    sudo spctl developer-mode enable-terminal
+    echo ""
+    echo "✔ Done. Also ensure your terminal app appears in:"
+    echo "   System Settings > Privacy & Security > Developer Tools"
 
 # Check for Go toolchain (prerequisite for gosh)
 check-go:

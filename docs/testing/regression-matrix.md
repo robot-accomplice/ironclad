@@ -46,7 +46,7 @@ Legend:
 | --- | --- | --- | --- |
 | R-ORCH-01 | Decomposition gate chooses centralized vs delegated execution deterministically | `crates/ironclad-server/src/api/routes/agent.rs` | L1/L2 |
 | R-ORCH-02 | Delegation provenance must be verifiable before any live subagent claim is surfaced | `crates/ironclad-server/src/api/routes/agent.rs` | L1/L2 |
-| R-ORCH-03 | Specialist creation requires explicit user approval and supports review-first config preview | `crates/ironclad-server/src/api/routes/agent.rs`, `crates/ironclad-server/src/api/routes/subagents.rs` | L2 |
+| R-ORCH-03 | Subagent creation requires explicit user approval and supports review-first config preview | `crates/ironclad-server/src/api/routes/agent.rs`, `crates/ironclad-server/src/api/routes/subagents.rs` | L2 |
 | R-ORCH-04 | Delegated model suitability checks emit user-visible model-switch notices | `crates/ironclad-server/src/api/routes/agent.rs` | L1/L2 |
 
 ## R-UAT: Operator Experience (CLI + Web)

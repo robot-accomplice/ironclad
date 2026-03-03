@@ -67,11 +67,19 @@ impl PluginRegistry {
         deny_list: Vec<String>,
         permission_policy: PermissionPolicy,
     ) -> Self {
+        let normalized_allowed: Vec<String> = permission_policy
+            .allowed
+            .into_iter()
+            .map(|p| p.to_ascii_lowercase())
+            .collect();
         Self {
             plugins: Mutex::new(HashMap::new()),
             allow_list,
             deny_list,
-            permission_policy,
+            permission_policy: PermissionPolicy {
+                strict: permission_policy.strict,
+                allowed: normalized_allowed,
+            },
         }
     }
 
@@ -92,6 +100,25 @@ impl PluginRegistry {
             return Err(IroncladError::Config(format!(
                 "plugin '{name}' is not allowed by policy"
             )));
+        }
+
+        if self.permission_policy.strict {
+            for tool in plugin.tools() {
+                for perm in tool.permissions {
+                    let normalized = perm.to_ascii_lowercase();
+                    if !self
+                        .permission_policy
+                        .allowed
+                        .iter()
+                        .any(|p| p == &normalized)
+                    {
+                        return Err(IroncladError::Config(format!(
+                            "plugin '{name}' tool '{}' declares permission '{perm}' not in allowed_permissions",
+                            tool.name
+                        )));
+                    }
+                }
+            }
         }
 
         debug!(name = %name, version = %plugin.version(), "registering plugin");
@@ -166,7 +193,13 @@ impl PluginRegistry {
             .unwrap_or_default();
 
         for perm in &tool_permissions {
-            if !self.permission_policy.allowed.contains(perm) {
+            let normalized = perm.to_ascii_lowercase();
+            if !self
+                .permission_policy
+                .allowed
+                .iter()
+                .any(|p| p == &normalized)
+            {
                 if self.permission_policy.strict {
                     return Err(IroncladError::Tool {
                         tool: tool_name.to_string(),
@@ -657,15 +690,13 @@ mod tests {
                 allowed: vec![],
             },
         );
-        reg.register(Box::new(PermissionMockPlugin::new(
-            "net",
-            vec!["network".into()],
-        )))
-        .await
-        .unwrap();
-        reg.init_all().await;
-
-        let result = reg.execute_tool("net_tool", &serde_json::json!({})).await;
+        // Strict mode now rejects unauthorized plugins at registration time (fail-fast)
+        let result = reg
+            .register(Box::new(PermissionMockPlugin::new(
+                "net",
+                vec!["network".into()],
+            )))
+            .await;
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(err_msg.contains("permission"));

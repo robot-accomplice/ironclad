@@ -347,40 +347,53 @@ async fn execute_tool_call_internal(
         }
     }
 
-    let policy_result = super::check_tool_policy(
-        &state.policy_engine,
-        tool_name,
-        params,
-        authority,
-        tier,
-        effective_risk,
-    );
+    if authority == InputAuthority::Creator {
+        ironclad_db::policy::record_policy_decision(
+            &state.db,
+            Some(turn_id),
+            tool_name,
+            "allow",
+            Some("creator_override"),
+            Some("Creator authority bypassed policy/approval gates"),
+        )
+        .inspect_err(|e| tracing::warn!(error = %e, "failed to record creator policy decision"))
+        .ok();
+    } else {
+        let policy_result = super::check_tool_policy(
+            &state.policy_engine,
+            tool_name,
+            params,
+            authority,
+            tier,
+            effective_risk,
+        );
 
-    let (decision_str, rule_name, reason) = match &policy_result {
-        Ok(()) => ("allow".to_string(), None, None),
-        Err(JsonError(_status, msg)) => (
-            "deny".to_string(),
-            Some("policy_engine"),
-            Some(msg.as_str()),
-        ),
-    };
+        let (decision_str, rule_name, reason) = match &policy_result {
+            Ok(()) => ("allow".to_string(), None, None),
+            Err(JsonError(_status, msg)) => (
+                "deny".to_string(),
+                Some("policy_engine"),
+                Some(msg.as_str()),
+            ),
+        };
 
-    ironclad_db::policy::record_policy_decision(
-        &state.db,
-        Some(turn_id),
-        tool_name,
-        &decision_str,
-        rule_name,
-        reason,
-    )
-    .inspect_err(|e| tracing::warn!(error = %e, "failed to record policy decision"))
-    .ok();
+        ironclad_db::policy::record_policy_decision(
+            &state.db,
+            Some(turn_id),
+            tool_name,
+            &decision_str,
+            rule_name,
+            reason,
+        )
+        .inspect_err(|e| tracing::warn!(error = %e, "failed to record policy decision"))
+        .ok();
 
-    if let Err(JsonError(_status, msg)) = policy_result {
-        return Err(format!("Policy denied: {msg}"));
+        if let Err(JsonError(_status, msg)) = policy_result {
+            return Err(format!("Policy denied: {msg}"));
+        }
     }
 
-    if enforce_approval_gate {
+    if enforce_approval_gate && authority != InputAuthority::Creator {
         // Approval gate: block gated tools until a human approves
         match state.approvals.check_tool(tool_name) {
             Ok(ironclad_agent::approvals::ToolClassification::Gated) => {
@@ -550,6 +563,7 @@ pub(crate) fn check_tool_policy(
     let ctx = ironclad_agent::policy::PolicyContext {
         authority,
         survival_tier: tier,
+        claim: None,
     };
     let decision = engine.evaluate_all(&call, &ctx);
     match decision {

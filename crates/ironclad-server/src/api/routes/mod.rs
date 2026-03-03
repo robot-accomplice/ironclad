@@ -41,6 +41,7 @@ use ironclad_agent::obsidian::ObsidianVault;
 use ironclad_agent::tools::ToolRegistry;
 use ironclad_channels::discord::DiscordAdapter;
 use ironclad_channels::email::EmailAdapter;
+use ironclad_channels::media::MediaService;
 use ironclad_channels::signal::SignalAdapter;
 use ironclad_channels::voice::VoicePipeline;
 
@@ -330,6 +331,7 @@ pub struct AppState {
     pub signal: Option<Arc<SignalAdapter>>,
     pub email: Option<Arc<EmailAdapter>>,
     pub voice: Option<Arc<RwLock<VoicePipeline>>>,
+    pub media_service: Option<Arc<MediaService>>,
     pub discovery: Arc<RwLock<ironclad_agent::discovery::DiscoveryRegistry>>,
     pub devices: Arc<RwLock<ironclad_agent::device::DeviceManager>>,
     pub mcp_clients: Arc<RwLock<ironclad_agent::mcp::McpClientManager>>,
@@ -875,6 +877,7 @@ primary = "ollama/qwen3:8b"
                 100,
                 std::time::Duration::from_secs(60),
             ),
+            media_service: None,
         }
     }
 
@@ -886,6 +889,7 @@ primary = "ollama/qwen3:8b"
             30,
             vec![],
             Some(secret.to_string()),
+            false,
         );
         state.telegram = Some(Arc::new(adapter));
         state
@@ -900,6 +904,7 @@ primary = "ollama/qwen3:8b"
             "verify-token".into(),
             vec![],
             Some(secret.to_string()),
+            false,
         )
         .unwrap();
         state.whatsapp = Some(Arc::new(adapter));
@@ -2436,6 +2441,7 @@ params = { path = "README.md" }
             name: "geo-specialist".to_string(),
             display_name: Some("Geopolitical Specialist".to_string()),
             model: "auto".to_string(),
+            fallback_models_json: Some("[]".to_string()),
             role: "subagent".to_string(),
             description: Some("Tracks geopolitical risk".to_string()),
             skills_json: Some(r#"["geopolitics","risk-analysis"]"#.to_string()),
@@ -2531,6 +2537,7 @@ params = { path = "README.md" }
             name: "geo-specialist".to_string(),
             display_name: Some("Geopolitical Specialist".to_string()),
             model: "mock/subagent".to_string(),
+            fallback_models_json: Some("[]".to_string()),
             role: "subagent".to_string(),
             description: Some("Tracks geopolitical risk".to_string()),
             skills_json: Some(r#"["geopolitics","risk-analysis"]"#.to_string()),
@@ -4337,6 +4344,7 @@ params = { path = "README.md" }
             name: "econ-analyst".to_string(),
             display_name: Some("Economic Analyst".to_string()),
             model: "ollama/qwen3:8b".to_string(),
+            fallback_models_json: Some("[]".to_string()),
             role: "subagent".to_string(),
             description: Some("Economic monitoring".to_string()),
             skills_json: Some(r#"["macro","markets"]"#.to_string()),
@@ -4348,6 +4356,7 @@ params = { path = "README.md" }
             name: "geopolitical-specialist".to_string(),
             display_name: Some("Geopolitical Specialist".to_string()),
             model: "ollama/qwen3:8b".to_string(),
+            fallback_models_json: Some("[]".to_string()),
             role: "subagent".to_string(),
             description: Some("Geopolitical monitoring".to_string()),
             skills_json: Some(r#"["geopolitics"]"#.to_string()),

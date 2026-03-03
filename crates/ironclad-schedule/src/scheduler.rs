@@ -8,6 +8,15 @@ use chrono_tz::Tz;
 pub struct DurableScheduler;
 
 impl DurableScheduler {
+    /// Returns true if a cron expression is syntactically valid.
+    /// Accepts 5-field expressions with optional `TZ=` / `CRON_TZ=` prefixes.
+    pub fn is_valid_cron_expression(cron_expr: &str) -> bool {
+        let now_utc = Utc::now();
+        let (_tz, expr) = split_schedule_timezone_at(cron_expr, now_utc);
+        let full_expr = format!("0 {expr} *");
+        cron::Schedule::from_str(&full_expr).is_ok()
+    }
+
     /// Evaluates whether a cron expression matches the current time.
     /// Uses standard 5-field cron syntax with full support for ranges, lists, and steps.
     pub fn evaluate_cron(cron_expr: &str, last_run: Option<&str>, now: &str) -> bool {
@@ -707,6 +716,15 @@ mod tests {
             None,
             "garbage"
         ));
+    }
+
+    #[test]
+    fn is_valid_cron_expression_detects_invalid_inputs() {
+        assert!(DurableScheduler::is_valid_cron_expression("* * * * *"));
+        assert!(DurableScheduler::is_valid_cron_expression(
+            "TZ=Europe/Zurich 0 * * * *"
+        ));
+        assert!(!DurableScheduler::is_valid_cron_expression("NOT_VALID_CRON"));
     }
 
     #[test]

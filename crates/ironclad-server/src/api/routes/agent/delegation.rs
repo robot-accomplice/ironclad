@@ -94,6 +94,69 @@ fn pick_running_subagent<'a>(
         .or_else(|| running.first().copied())
 }
 
+fn timeout_like_error(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("timeout")
+        || e.contains("timed out")
+        || e.contains("no route to host")
+        || e.contains("error sending request")
+        || e.contains("connection refused")
+}
+
+async fn provider_breaker_blocked(state: &AppState, model: &str) -> bool {
+    let provider_prefix = model.split('/').next().unwrap_or("unknown");
+    let llm = state.llm.read().await;
+    llm.breakers.is_blocked(provider_prefix)
+}
+
+async fn select_cloud_rescue_model(
+    state: &AppState,
+    current_model: &str,
+    preferred_fallbacks: &[String],
+) -> Option<String> {
+    let config = state.config.read().await;
+    let mut candidates = Vec::new();
+    for m in preferred_fallbacks {
+        if !m.trim().is_empty() && !candidates.iter().any(|c: &String| c == m) {
+            candidates.push(m.clone());
+        }
+    }
+    for m in &config.models.fallbacks {
+        if !m.trim().is_empty() && !candidates.iter().any(|c: &String| c == m) {
+            candidates.push(m.clone());
+        }
+    }
+    if !config.models.primary.trim().is_empty()
+        && !candidates
+            .iter()
+            .any(|c: &String| c == &config.models.primary)
+    {
+        candidates.push(config.models.primary.clone());
+    }
+    drop(config);
+
+    let llm = state.llm.read().await;
+    for candidate in candidates {
+        if candidate.eq_ignore_ascii_case(current_model) {
+            continue;
+        }
+        let Some(provider) = llm.providers.get_by_model(&candidate) else {
+            continue;
+        };
+        if provider.is_local {
+            continue;
+        }
+        if llm
+            .breakers
+            .is_blocked(candidate.split('/').next().unwrap_or("unknown"))
+        {
+            continue;
+        }
+        return Some(candidate);
+    }
+    None
+}
+
 pub(super) async fn execute_virtual_subagent_tool_call(
     state: &AppState,
     tool_name: &str,
@@ -256,11 +319,26 @@ pub(super) async fn execute_virtual_subagent_tool_call(
         )
     })?;
     let model = resolve_subagent_runtime_model(state, chosen, &task).await;
-    let model_for_api = model
-        .split_once('/')
-        .map(|(_, m)| m)
-        .unwrap_or(&model)
-        .to_string();
+    let preferred_fallbacks = crate::api::routes::subagents::parse_fallback_models_json(
+        chosen.fallback_models_json.as_deref(),
+    );
+    let configured_is_fixed = {
+        let raw = chosen.model.trim().to_ascii_lowercase();
+        !raw.is_empty() && raw != "auto" && raw != "orchestrator"
+    };
+    let mut effective_model = model.clone();
+    let mut delegation_notes: Vec<String> = Vec::new();
+    if configured_is_fixed
+        && provider_breaker_blocked(state, &effective_model).await
+        && let Some(rescue) =
+            select_cloud_rescue_model(state, &effective_model, &preferred_fallbacks).await
+    {
+        delegation_notes.push(format!(
+            "breaker-open guardrail rerouted fixed model from {} to {}",
+            effective_model, rescue
+        ));
+        effective_model = rescue;
+    }
 
     let task_list = if subtasks.is_empty() {
         vec![task.clone()]
@@ -279,8 +357,13 @@ pub(super) async fn execute_virtual_subagent_tool_call(
                 skills.join(", ")
             }
         );
+        let model_for_api = effective_model
+            .split_once('/')
+            .map(|(_, m)| m)
+            .unwrap_or(&effective_model)
+            .to_string();
         let req = ironclad_llm::format::UnifiedRequest {
-            model: model_for_api.clone(),
+            model: model_for_api,
             messages: vec![
                 ironclad_llm::format::UnifiedMessage {
                     role: "system".into(),
@@ -299,7 +382,62 @@ pub(super) async fn execute_virtual_subagent_tool_call(
             quality_target: None,
             tools: vec![],
         };
-        let result = super::infer_with_fallback(state, &req, &model).await?;
+        let result = match super::infer_with_fallback_with_budget_and_preferred(
+            state,
+            &req,
+            &effective_model,
+            super::DELEGATED_INFERENCE_BUDGET,
+            &preferred_fallbacks,
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(err) => {
+                let retry_target = if timeout_like_error(&err) {
+                    select_cloud_rescue_model(state, &effective_model, &preferred_fallbacks).await
+                } else {
+                    None
+                };
+                if let Some(rescue_model) = retry_target {
+                    tracing::warn!(
+                        subagent = %chosen.name,
+                        from_model = %effective_model,
+                        to_model = %rescue_model,
+                        error = %err,
+                        "delegation timeout guardrail rerouting to cloud model"
+                    );
+                    delegation_notes.push(format!(
+                        "timeout guardrail rerouted delegated subtask from {} to {}",
+                        effective_model, rescue_model
+                    ));
+                    effective_model = rescue_model.clone();
+                    let retry_model_for_api = rescue_model
+                        .split_once('/')
+                        .map(|(_, m)| m)
+                        .unwrap_or(&rescue_model)
+                        .to_string();
+                    let retry_req = ironclad_llm::format::UnifiedRequest {
+                        model: retry_model_for_api,
+                        messages: req.messages.clone(),
+                        max_tokens: req.max_tokens,
+                        temperature: req.temperature,
+                        system: req.system.clone(),
+                        quality_target: req.quality_target,
+                        tools: req.tools.clone(),
+                    };
+                    super::infer_with_fallback_with_budget_and_preferred(
+                        state,
+                        &retry_req,
+                        &rescue_model,
+                        super::DELEGATED_INFERENCE_BUDGET,
+                        &preferred_fallbacks,
+                    )
+                    .await?
+                } else {
+                    return Err(err);
+                }
+            }
+        };
         outputs.push(format!(
             "subtask {} -> {}\n{}",
             idx + 1,
@@ -313,9 +451,15 @@ pub(super) async fn execute_virtual_subagent_tool_call(
     }
 
     Ok(format!(
-        "delegated_subagent={} model={}\n{}",
+        "delegated_subagent={} model={} fallback_models={}{}\n{}",
         chosen.name,
-        model,
+        effective_model,
+        serde_json::to_string(&preferred_fallbacks).unwrap_or_else(|_| "[]".to_string()),
+        if delegation_notes.is_empty() {
+            String::new()
+        } else {
+            format!("\nnotes={}", delegation_notes.join(" | "))
+        },
         outputs.join("\n\n")
     ))
 }

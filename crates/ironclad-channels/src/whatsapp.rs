@@ -20,6 +20,9 @@ pub struct WhatsAppAdapter {
     pub api_version: String,
     /// App secret for webhook X-Hub-Signature-256 verification (HMAC-SHA256).
     pub app_secret: Option<String>,
+    /// When `true`, an empty `allowed_numbers` list denies all messages (secure default).
+    /// When `false`, an empty list allows all messages (legacy behavior).
+    pub deny_on_empty: bool,
 }
 
 impl WhatsAppAdapter {
@@ -36,6 +39,7 @@ impl WhatsAppAdapter {
             allowed_numbers: Vec::new(),
             api_version: "v21.0".into(),
             app_secret: None,
+            deny_on_empty: false,
         })
     }
 
@@ -45,11 +49,13 @@ impl WhatsAppAdapter {
         verify_token: String,
         allowed_numbers: Vec<String>,
         app_secret: Option<String>,
+        deny_on_empty: bool,
     ) -> Result<Self> {
         Ok(Self {
             verify_token,
             allowed_numbers,
             app_secret,
+            deny_on_empty,
             ..Self::new(token, phone_number_id)?
         })
     }
@@ -62,7 +68,10 @@ impl WhatsAppAdapter {
     }
 
     fn is_sender_allowed(&self, sender: &str) -> bool {
-        self.allowed_numbers.is_empty() || self.allowed_numbers.iter().any(|n| n == sender)
+        if self.allowed_numbers.is_empty() {
+            return !self.deny_on_empty;
+        }
+        self.allowed_numbers.iter().any(|n| n == sender)
     }
 
     pub fn verify_webhook_challenge(
@@ -120,6 +129,8 @@ impl WhatsAppAdapter {
             .and_then(|v| v.as_str())
             .unwrap_or("text");
 
+        let mut media_attachments: Vec<super::MediaAttachment> = Vec::new();
+
         let content = match msg_type {
             "text" => messages
                 .get("text")
@@ -138,10 +149,43 @@ impl WhatsAppAdapter {
                     .and_then(|m| m.get("id"))
                     .and_then(|i| i.as_str())
                     .unwrap_or("unknown");
+                let mime_type = messages
+                    .get(msg_type)
+                    .and_then(|m| m.get("mime_type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("application/octet-stream");
+                let filename = messages
+                    .get(msg_type)
+                    .and_then(|m| m.get("filename"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                // Build structured attachment metadata
+                media_attachments.push(super::MediaAttachment {
+                    media_type: super::MediaType::from_content_type(mime_type),
+                    source_url: Some(format!("whatsapp://media/{media_id}")),
+                    local_path: None,
+                    filename,
+                    content_type: mime_type.to_string(),
+                    size_bytes: None,
+                    caption: if caption.is_empty() {
+                        None
+                    } else {
+                        Some(caption.to_string())
+                    },
+                });
+
+                // Keep backward-compatible text representation
                 format!("[{msg_type}:{media_id}] {caption}")
             }
             other => format!("[unsupported message type: {other}]"),
         };
+
+        // Merge structured attachments into webhook metadata
+        let mut metadata = webhook.clone();
+        if !media_attachments.is_empty() {
+            metadata["attachments"] = serde_json::to_value(&media_attachments).unwrap_or_default();
+        }
 
         Ok(InboundMessage {
             id: message_id,
@@ -149,7 +193,7 @@ impl WhatsAppAdapter {
             sender_id,
             content,
             timestamp: Utc::now(),
-            metadata: Some(webhook.clone()),
+            metadata: Some(metadata),
         })
     }
 
@@ -436,6 +480,7 @@ mod tests {
             "verify_secret".into(),
             vec!["15551234567".into()],
             None,
+            false,
         )
         .unwrap();
         assert_eq!(adapter.verify_token, "verify_secret");
@@ -450,6 +495,7 @@ mod tests {
             "my_verify".into(),
             vec![],
             None,
+            false,
         )
         .unwrap();
         let result = adapter.verify_webhook_challenge("subscribe", "my_verify", "challenge123");
@@ -464,6 +510,7 @@ mod tests {
             "my_verify".into(),
             vec![],
             None,
+            false,
         )
         .unwrap();
         let result = adapter.verify_webhook_challenge("unsubscribe", "my_verify", "c");
@@ -478,6 +525,7 @@ mod tests {
             "my_verify".into(),
             vec![],
             None,
+            false,
         )
         .unwrap();
         let result = adapter.verify_webhook_challenge("subscribe", "wrong", "c");
@@ -485,9 +533,19 @@ mod tests {
     }
 
     #[test]
-    fn sender_allowed_empty_means_all() {
+    fn sender_allowed_empty_legacy_allows_all() {
+        // deny_on_empty=false (legacy): empty list allows everyone
         let adapter = WhatsAppAdapter::new("tok".into(), "ph".into()).unwrap();
         assert!(adapter.is_sender_allowed("any_number"));
+    }
+
+    #[test]
+    fn sender_allowed_empty_secure_denies_all() {
+        // deny_on_empty=true (secure default): empty list denies everyone
+        let adapter =
+            WhatsAppAdapter::with_config("tok".into(), "ph".into(), "v".into(), vec![], None, true)
+                .unwrap();
+        assert!(!adapter.is_sender_allowed("any_number"));
     }
 
     #[test]
@@ -498,6 +556,7 @@ mod tests {
             "v".into(),
             vec!["111".into(), "222".into()],
             None,
+            false,
         )
         .unwrap();
         assert!(adapter.is_sender_allowed("111"));
@@ -541,6 +600,7 @@ mod tests {
             "v".into(),
             vec!["allowed_only".into()],
             None,
+            false,
         )
         .unwrap();
         let webhook = json!({
@@ -621,6 +681,7 @@ mod tests {
             "v".into(),
             vec![],
             Some("appsecret123".into()),
+            false,
         )
         .unwrap();
         assert_eq!(adapter.app_secret.unwrap(), "appsecret123");
@@ -793,6 +854,7 @@ mod tests {
             "v".into(),
             vec![],
             Some(secret.into()),
+            false,
         )
         .unwrap();
         let result = adapter.verify_webhook_signature(body, Some(&format!("sha256={sig}")));
@@ -807,6 +869,7 @@ mod tests {
             "v".into(),
             vec![],
             Some("real_secret".into()),
+            false,
         )
         .unwrap();
         let result = adapter.verify_webhook_signature(
@@ -824,6 +887,7 @@ mod tests {
             "v".into(),
             vec![],
             Some("secret".into()),
+            false,
         )
         .unwrap();
         let result = adapter.verify_webhook_signature(b"body", None);
@@ -845,6 +909,7 @@ mod tests {
             "v".into(),
             vec![],
             Some("".into()),
+            false,
         )
         .unwrap();
         let result = adapter.verify_webhook_signature(b"body", Some("sha256=aabb"));
@@ -860,6 +925,7 @@ mod tests {
             "v".into(),
             vec![],
             Some("secret".into()),
+            false,
         )
         .unwrap();
         let result = adapter.verify_webhook_signature(b"body", Some("no_prefix_here"));
@@ -875,6 +941,7 @@ mod tests {
             "v".into(),
             vec![],
             Some("secret".into()),
+            false,
         )
         .unwrap();
         let result = adapter.verify_webhook_signature(b"body", Some("sha256=NOT_VALID_HEX!!!"));
@@ -915,6 +982,7 @@ mod tests {
             "v".into(),
             vec!["allowed_num".into()],
             None,
+            false,
         )
         .unwrap();
         let webhook = json!({
@@ -955,6 +1023,7 @@ mod tests {
             "my_verify_token".into(),
             vec![],
             None,
+            false,
         )
         .unwrap();
         assert_eq!(adapter.verify_token, "my_verify_token");
@@ -970,6 +1039,102 @@ mod tests {
         let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
         // text.body missing should default to empty
         assert_eq!(msg.content, "");
+    }
+
+    // ── multimodal attachment tests ──────────────────────────────────
+
+    #[test]
+    fn parse_image_message_has_structured_attachment() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w2", "type": "image",
+                    "image": {"id": "img123", "mime_type": "image/jpeg", "caption": "look at this"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        let meta = msg.metadata.unwrap();
+        let attachments = meta["attachments"].as_array().expect("attachments key");
+        assert_eq!(attachments.len(), 1);
+        let att = &attachments[0];
+        assert_eq!(att["media_type"], "image");
+        assert_eq!(att["source_url"], "whatsapp://media/img123");
+        assert_eq!(att["content_type"], "image/jpeg");
+        assert_eq!(att["caption"], "look at this");
+        // filename not present for image without filename field
+        assert!(att.get("filename").is_none() || att["filename"].is_null());
+    }
+
+    #[test]
+    fn parse_audio_message_has_structured_attachment() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w4", "type": "audio",
+                    "audio": {"id": "aud789", "mime_type": "audio/ogg; codecs=opus"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        let meta = msg.metadata.unwrap();
+        let attachments = meta["attachments"].as_array().expect("attachments key");
+        assert_eq!(attachments.len(), 1);
+        let att = &attachments[0];
+        assert_eq!(att["media_type"], "audio");
+        assert_eq!(att["source_url"], "whatsapp://media/aud789");
+        assert_eq!(att["content_type"], "audio/ogg; codecs=opus");
+        // No caption on audio → skip_serializing_if omits it
+        assert!(att.get("caption").is_none() || att["caption"].is_null());
+    }
+
+    #[test]
+    fn parse_document_message_has_filename_and_attachment() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w5", "type": "document",
+                    "document": {"id": "doc000", "mime_type": "application/pdf",
+                        "filename": "report.pdf", "caption": "receipt"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        let meta = msg.metadata.unwrap();
+        let attachments = meta["attachments"].as_array().expect("attachments key");
+        assert_eq!(attachments.len(), 1);
+        let att = &attachments[0];
+        assert_eq!(att["media_type"], "document");
+        assert_eq!(att["filename"], "report.pdf");
+        assert_eq!(att["content_type"], "application/pdf");
+        assert_eq!(att["caption"], "receipt");
+    }
+
+    #[test]
+    fn parse_text_message_no_attachments_key() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w1", "type": "text",
+                    "text": {"body": "just text"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        let meta = msg.metadata.unwrap();
+        // Text messages should NOT have an "attachments" key
+        assert!(meta.get("attachments").is_none());
+    }
+
+    #[test]
+    fn parse_video_message_has_structured_attachment() {
+        let webhook = json!({
+            "entry": [{"changes": [{"value": {
+                "messages": [{"from": "555", "id": "w3", "type": "video",
+                    "video": {"id": "vid456", "mime_type": "video/mp4", "caption": "check this"}}]
+            }}]}]
+        });
+        let msg = WhatsAppAdapter::parse_inbound(&webhook).unwrap();
+        let meta = msg.metadata.unwrap();
+        let attachments = meta["attachments"].as_array().expect("attachments key");
+        assert_eq!(attachments.len(), 1);
+        let att = &attachments[0];
+        assert_eq!(att["media_type"], "video");
+        assert_eq!(att["source_url"], "whatsapp://media/vid456");
+        assert_eq!(att["content_type"], "video/mp4");
+        assert_eq!(att["caption"], "check this");
     }
 
     fn fast_fail_adapter() -> WhatsAppAdapter {

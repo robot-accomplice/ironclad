@@ -2,6 +2,8 @@ use ironclad_core::{IroncladError, Result, input_capability_scan};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{debug, info, warn};
 
 /// Configuration for a WASM plugin.
@@ -23,6 +25,7 @@ fn default_memory_limit() -> u64 {
 fn default_execution_timeout_ms() -> u64 {
     30_000
 }
+const MAX_CONCURRENT_WASM_EXECUTIONS: usize = 32;
 
 /// Capabilities granted to a WASM plugin (deny-by-default).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +44,7 @@ pub struct WasmPlugin {
     pub last_error: Option<String>,
     engine: Option<wasmer::Engine>,
     module: Option<wasmer::Module>,
+    active_executions: Arc<AtomicUsize>,
 }
 
 impl std::fmt::Debug for WasmPlugin {
@@ -52,6 +56,10 @@ impl std::fmt::Debug for WasmPlugin {
             .field("last_error", &self.last_error)
             .field("has_engine", &self.engine.is_some())
             .field("has_module", &self.module.is_some())
+            .field(
+                "active_executions",
+                &self.active_executions.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -65,6 +73,7 @@ impl WasmPlugin {
             last_error: None,
             engine: None,
             module: None,
+            active_executions: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -111,6 +120,25 @@ impl WasmPlugin {
             "loaded WASM plugin"
         );
         Ok(())
+    }
+
+    fn acquire_execution_slot(&self) -> Result<()> {
+        loop {
+            let current = self.active_executions.load(Ordering::Relaxed);
+            if current >= MAX_CONCURRENT_WASM_EXECUTIONS {
+                return Err(IroncladError::Config(format!(
+                    "WASM plugin '{}' refused execution: concurrent execution limit ({MAX_CONCURRENT_WASM_EXECUTIONS}) reached",
+                    self.config.name
+                )));
+            }
+            if self
+                .active_executions
+                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
     }
 
     /// Execute the plugin with JSON input, returning JSON output.
@@ -173,11 +201,20 @@ impl WasmPlugin {
         // but the caller is immediately unblocked.
 
         if let Ok(func) = instance.exports.get_function("process") {
+            self.acquire_execution_slot()?;
             let func = func.clone();
             let memory = instance.exports.get_memory("memory").ok().cloned();
+            let active = Arc::clone(&self.active_executions);
 
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
             std::thread::spawn(move || {
+                struct ActiveGuard(Arc<AtomicUsize>);
+                impl Drop for ActiveGuard {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                let _guard = ActiveGuard(active);
                 let result = func.call(&mut store, &[]);
                 let _ = tx.send((result, store));
             });
@@ -252,9 +289,18 @@ impl WasmPlugin {
         }
 
         if let Ok(func) = instance.exports.get_function("_start") {
+            self.acquire_execution_slot()?;
             let func = func.clone();
+            let active = Arc::clone(&self.active_executions);
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
             std::thread::spawn(move || {
+                struct ActiveGuard(Arc<AtomicUsize>);
+                impl Drop for ActiveGuard {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                let _guard = ActiveGuard(active);
                 let result = func.call(&mut store, &[]);
                 let _ = tx.send(result);
             });

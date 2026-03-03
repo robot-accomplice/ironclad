@@ -42,6 +42,7 @@ pub mod dashboard;
 pub mod migrate;
 pub mod plugins;
 pub mod rate_limit;
+pub mod state_hygiene;
 pub mod ws;
 pub mod ws_ticket;
 
@@ -80,8 +81,8 @@ use ironclad_agent::approvals::ApprovalManager;
 use ironclad_agent::obsidian::ObsidianVault;
 use ironclad_agent::obsidian_tools::{ObsidianReadTool, ObsidianSearchTool, ObsidianWriteTool};
 use ironclad_agent::tools::{
-    EchoTool, EditFileTool, GlobFilesTool, ListDirectoryTool, ReadFileTool, ScriptRunnerTool,
-    SearchFilesTool, ToolRegistry, WriteFileTool,
+    BashTool, EchoTool, EditFileTool, GlobFilesTool, ListDirectoryTool, ReadFileTool,
+    ScriptRunnerTool, SearchFilesTool, ToolRegistry, WriteFileTool,
 };
 use ironclad_channels::discord::DiscordAdapter;
 use ironclad_channels::email::EmailAdapter;
@@ -225,6 +226,19 @@ pub async fn bootstrap_with_config_path(
 
     let db_path = config.database.path.to_string_lossy().to_string();
     let db = Database::new(&db_path)?;
+    match crate::state_hygiene::run_state_hygiene(&config.database.path) {
+        Ok(report) if report.changed => {
+            tracing::info!(
+                changed_rows = report.changed_rows,
+                subagent_rows_normalized = report.subagent_rows_normalized,
+                cron_payload_rows_repaired = report.cron_payload_rows_repaired,
+                cron_jobs_disabled_invalid_expr = report.cron_jobs_disabled_invalid_expr,
+                "applied startup mechanic checks"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "startup mechanic checks failed"),
+    }
     match ironclad_db::sessions::backfill_nicknames(&db) {
         Ok(0) => {}
         Ok(n) => tracing::info!(count = n, "Backfilled session nicknames"),
@@ -310,6 +324,7 @@ pub async fn bootstrap_with_config_path(
                         tg_config.poll_timeout_seconds,
                         tg_config.allowed_chat_ids.clone(),
                         tg_config.webhook_secret.clone(),
+                        config.security.deny_on_empty_allowlist,
                     ));
                     channel_router
                         .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
@@ -346,6 +361,7 @@ pub async fn bootstrap_with_config_path(
                         wa_config.verify_token.clone(),
                         wa_config.allowed_numbers.clone(),
                         wa_config.app_secret.clone(),
+                        config.security.deny_on_empty_allowlist,
                     )?);
                     channel_router
                         .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
@@ -376,11 +392,16 @@ pub async fn bootstrap_with_config_path(
                 let adapter = Arc::new(DiscordAdapter::with_config(
                     token,
                     dc_config.allowed_guild_ids.clone(),
+                    config.security.deny_on_empty_allowlist,
                 ));
                 channel_router
                     .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
                     .await;
-                tracing::info!("Discord adapter registered");
+                // Start WebSocket gateway for real-time event reception
+                if let Err(e) = adapter.connect_gateway().await {
+                    tracing::error!(error = %e, "Failed to connect Discord gateway");
+                }
+                tracing::info!("Discord adapter registered with gateway");
                 Some(adapter)
             } else {
                 tracing::warn!(
@@ -403,6 +424,7 @@ pub async fn bootstrap_with_config_path(
                     sig_config.phone_number.clone(),
                     sig_config.daemon_url.clone(),
                     sig_config.allowed_numbers.clone(),
+                    config.security.deny_on_empty_allowlist,
                 ));
                 channel_router
                     .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
@@ -451,13 +473,35 @@ pub async fn bootstrap_with_config_path(
                 password,
             ) {
                 Ok(email_adapter) => {
+                    // Resolve OAuth2 token from env if configured
+                    let oauth2_token =
+                        if email_cfg.use_oauth2 && !email_cfg.oauth2_token_env.is_empty() {
+                            std::env::var(&email_cfg.oauth2_token_env).ok()
+                        } else {
+                            None
+                        };
                     let adapter = Arc::new(
-                        email_adapter.with_allowed_senders(email_cfg.allowed_senders.clone()),
+                        email_adapter
+                            .with_allowed_senders(email_cfg.allowed_senders.clone())
+                            .with_deny_on_empty(config.security.deny_on_empty_allowlist)
+                            .with_poll_interval(std::time::Duration::from_secs(
+                                email_cfg.poll_interval_seconds,
+                            ))
+                            .with_oauth2_token(oauth2_token)
+                            .with_imap_idle_enabled(email_cfg.imap_idle_enabled),
                     );
                     channel_router
                         .register(Arc::clone(&adapter) as Arc<dyn ChannelAdapter>)
                         .await;
                     tracing::info!("Email adapter registered");
+
+                    // Start background IMAP listener if IMAP is configured
+                    if !email_cfg.imap_host.is_empty()
+                        && let Err(e) = adapter.start_imap_listener().await
+                    {
+                        tracing::error!(error = %e, "Failed to start email IMAP listener");
+                    }
+
                     Some(adapter)
                 }
                 Err(e) => {
@@ -505,6 +549,7 @@ pub async fn bootstrap_with_config_path(
 
     let mut tool_registry = ToolRegistry::new();
     tool_registry.register(Box::new(EchoTool));
+    tool_registry.register(Box::new(BashTool));
     tool_registry.register(Box::new(ScriptRunnerTool::new(config.skills.clone())));
     tool_registry.register(Box::new(ReadFileTool));
     tool_registry.register(Box::new(WriteFileTool));
@@ -638,6 +683,25 @@ pub async fn bootstrap_with_config_path(
         }
     }
 
+    // Initialize media service for multimodal attachment handling
+    let media_service = if config.multimodal.enabled {
+        match ironclad_channels::media::MediaService::new(&config.multimodal) {
+            Ok(svc) => {
+                tracing::info!(
+                    media_dir = ?config.multimodal.media_dir,
+                    "Media service initialized"
+                );
+                Some(Arc::new(svc))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to initialize media service");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let resolved_config_path =
         config_path.unwrap_or_else(crate::config_runtime::resolve_default_config_path);
 
@@ -676,6 +740,7 @@ pub async fn bootstrap_with_config_path(
         signal,
         email,
         voice,
+        media_service,
         discovery: discovery_registry,
         devices: device_manager,
         mcp_clients,
@@ -848,6 +913,38 @@ pub async fn bootstrap_with_config_path(
             ironclad_schedule::run_cron_worker(cron_db, instance_id).await;
         });
         tracing::info!("Cron worker spawned");
+    }
+
+    // Periodic mechanic-check sweep (default 6h, per-instance).
+    {
+        let db_path = config.database.path.clone();
+        let interval_secs = std::env::var("IRONCLAD_MECHANIC_CHECK_INTERVAL_SECS")
+            .ok()
+            .or_else(|| std::env::var("IRONCLAD_STATE_HYGIENE_INTERVAL_SECS").ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v >= 300)
+            .unwrap_or(21_600);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                match crate::state_hygiene::run_state_hygiene(&db_path) {
+                    Ok(report) if report.changed => {
+                        tracing::info!(
+                            changed_rows = report.changed_rows,
+                            subagent_rows_normalized = report.subagent_rows_normalized,
+                            cron_payload_rows_repaired = report.cron_payload_rows_repaired,
+                            cron_jobs_disabled_invalid_expr = report.cron_jobs_disabled_invalid_expr,
+                            "periodic mechanic checks applied"
+                        );
+                    }
+                    Ok(_) => tracing::debug!("periodic mechanic checks: no changes"),
+                    Err(e) => tracing::warn!(error = %e, "periodic mechanic checks failed"),
+                }
+            }
+        });
+        tracing::info!(interval_secs, "Mechanic checks daemon spawned");
     }
 
     {

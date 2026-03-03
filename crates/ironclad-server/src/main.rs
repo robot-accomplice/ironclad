@@ -2089,6 +2089,98 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
+    // ── Security (RBAC) ──────────────────────────────────────
+    tw(&format!(
+        "  {ok} Security: deny_on_empty_allowlist={}, allowlist={:?}, trusted={:?}, api={:?}, threat_ceiling={:?}",
+        config.security.deny_on_empty_allowlist,
+        config.security.allowlist_authority,
+        config.security.trusted_authority,
+        config.security.api_authority,
+        config.security.threat_caution_ceiling,
+    ));
+    tw(&format!(
+        "  {ok} Trusted senders: {} configured",
+        config.channels.trusted_sender_ids.len()
+    ));
+
+    // Per-channel allow-list warnings
+    {
+        let mut any_channel_warn = false;
+        if let Some(ref tg) = config.channels.telegram {
+            if tg.allowed_chat_ids.is_empty() && config.security.deny_on_empty_allowlist {
+                tw(&format!(
+                    "  {warn} Telegram: allowed_chat_ids is empty (all messages will be rejected)"
+                ));
+                tw("         Hint: find your chat ID by messaging @userinfobot on Telegram");
+                any_channel_warn = true;
+            } else if !tg.allowed_chat_ids.is_empty() {
+                tw(&format!(
+                    "  {ok} Telegram: {} chat ID(s) configured",
+                    tg.allowed_chat_ids.len()
+                ));
+            }
+        }
+        if let Some(ref dc) = config.channels.discord {
+            if dc.allowed_guild_ids.is_empty() && config.security.deny_on_empty_allowlist {
+                tw(&format!(
+                    "  {warn} Discord: allowed_guild_ids is empty (all messages will be rejected)"
+                ));
+                any_channel_warn = true;
+            } else if !dc.allowed_guild_ids.is_empty() {
+                tw(&format!(
+                    "  {ok} Discord: {} guild ID(s) configured",
+                    dc.allowed_guild_ids.len()
+                ));
+            }
+        }
+        if let Some(ref wa) = config.channels.whatsapp {
+            if wa.allowed_numbers.is_empty() && config.security.deny_on_empty_allowlist {
+                tw(&format!(
+                    "  {warn} WhatsApp: allowed_numbers is empty (all messages will be rejected)"
+                ));
+                any_channel_warn = true;
+            } else if !wa.allowed_numbers.is_empty() {
+                tw(&format!(
+                    "  {ok} WhatsApp: {} number(s) configured",
+                    wa.allowed_numbers.len()
+                ));
+            }
+        }
+        if let Some(ref sig) = config.channels.signal {
+            if sig.allowed_numbers.is_empty() && config.security.deny_on_empty_allowlist {
+                tw(&format!(
+                    "  {warn} Signal: allowed_numbers is empty (all messages will be rejected)"
+                ));
+                any_channel_warn = true;
+            } else if !sig.allowed_numbers.is_empty() {
+                tw(&format!(
+                    "  {ok} Signal: {} number(s) configured",
+                    sig.allowed_numbers.len()
+                ));
+            }
+        }
+        if config.channels.email.enabled {
+            if config.channels.email.allowed_senders.is_empty()
+                && config.security.deny_on_empty_allowlist
+            {
+                tw(&format!(
+                    "  {warn} Email: allowed_senders is empty (all messages will be rejected)"
+                ));
+                any_channel_warn = true;
+            } else if !config.channels.email.allowed_senders.is_empty() {
+                tw(&format!(
+                    "  {ok} Email: {} sender(s) configured",
+                    config.channels.email.allowed_senders.len()
+                ));
+            }
+        }
+        if config.channels.trusted_sender_ids.is_empty() && !any_channel_warn {
+            tw(&format!(
+                "  {warn} No trusted senders — no user can reach Creator authority"
+            ));
+        }
+    }
+
     eprintln!();
     tw(&format!("  {ok} {s}All checks passed.{r}"));
     eprintln!();

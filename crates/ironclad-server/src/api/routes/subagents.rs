@@ -30,6 +30,8 @@ pub struct CreateSubAgentRequest {
     #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default)]
+    pub fallback_models: Vec<String>,
+    #[serde(default)]
     pub personality: Option<Value>,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -53,6 +55,7 @@ pub struct UpdateSubAgentRequest {
     pub role: Option<String>,
     pub description: Option<String>,
     pub skills: Option<Vec<String>>,
+    pub fallback_models: Option<Vec<String>>,
     #[serde(default)]
     pub personality: Option<Value>,
     pub enabled: Option<bool>,
@@ -102,6 +105,29 @@ pub(crate) fn normalize_skills(skills: &[String]) -> Vec<String> {
 
 pub(crate) fn normalize_model_input(model: &str) -> String {
     model.trim().to_string()
+}
+
+pub(crate) fn parse_fallback_models_json(raw: Option<&str>) -> Vec<String> {
+    raw.and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default()
+}
+
+pub(crate) fn normalize_fallback_models(models: &[String], primary_model: &str) -> Vec<String> {
+    let primary = primary_model.trim();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for m in models {
+        let trimmed = m.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case(primary) {
+            continue;
+        }
+        // Preserve caller order while de-duplicating case-insensitively.
+        let key = trimmed.to_ascii_lowercase();
+        if seen.insert(key) {
+            out.push(trimmed.to_string());
+        }
+    }
+    out
 }
 
 fn is_model_mode(model: &str) -> bool {
@@ -198,6 +224,8 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
                         .as_deref()
                         .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
                         .unwrap_or_default();
+                    let fallback_models =
+                        parse_fallback_models_json(a.fallback_models_json.as_deref());
                     let session_count = session_counts
                         .get(&a.name)
                         .copied()
@@ -228,6 +256,7 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
                         "role": normalized_role,
                         "description": a.description,
                         "skills": skills,
+                        "fallback_models": fallback_models,
                         "enabled": a.enabled,
                         "session_count": session_count,
                         "runtime_state": runtime_state,
@@ -275,6 +304,7 @@ pub async fn create_sub_agent(
         .to_string();
     let model = normalize_model_input(&body.model);
     let skills = normalize_skills(&body.skills);
+    let fallback_models = normalize_fallback_models(&body.fallback_models, &model);
     validate_subagent_contract(&role, &model, &skills, body.personality.as_ref())?;
     let agent = ironclad_db::agents::SubAgentRow {
         id: uuid::Uuid::new_v4().to_string(),
@@ -295,6 +325,9 @@ pub async fn create_sub_agent(
             )
         }),
         model,
+        fallback_models_json: Some(
+            serde_json::to_string(&fallback_models).unwrap_or_else(|_| "[]".to_string()),
+        ),
         role,
         description: body.description,
         skills_json: Some(serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string())),
@@ -380,6 +413,10 @@ pub async fn update_sub_agent(
         .map(normalize_model_input)
         .filter(|m| !m.is_empty())
         .unwrap_or_else(|| existing.model.clone());
+    let merged_fallback_models = body.fallback_models.as_deref().map_or_else(
+        || parse_fallback_models_json(existing.fallback_models_json.as_deref()),
+        |v| normalize_fallback_models(v, &merged_model),
+    );
     validate_subagent_contract(
         normalized_role,
         &merged_model,
@@ -392,6 +429,9 @@ pub async fn update_sub_agent(
         name: existing.name.clone(),
         display_name: body.display_name.or(existing.display_name.clone()),
         model: merged_model,
+        fallback_models_json: Some(
+            serde_json::to_string(&merged_fallback_models).unwrap_or_else(|_| "[]".to_string()),
+        ),
         role: normalized_role.to_string(),
         description: body.description.or(existing.description.clone()),
         skills_json: Some(
@@ -629,6 +669,31 @@ mod tests {
     #[test]
     fn normalize_skills_empty_input() {
         assert!(normalize_skills(&[]).is_empty());
+    }
+
+    #[test]
+    fn normalize_fallback_models_preserves_order() {
+        let models = vec![
+            "moonshot/kimi-k2-turbo-preview".to_string(),
+            "openrouter/openai/gpt-4o".to_string(),
+            "moonshot/kimi-k2-turbo-preview".to_string(),
+        ];
+        let out = normalize_fallback_models(&models, "openai/gpt-5.3-codex");
+        assert_eq!(
+            out,
+            vec!["moonshot/kimi-k2-turbo-preview", "openrouter/openai/gpt-4o"]
+        );
+    }
+
+    #[test]
+    fn normalize_fallback_models_drops_primary_case_insensitively() {
+        let models = vec![
+            "moonshot/kimi-k2-turbo-preview".to_string(),
+            "MOONSHOT/KIMI-K2-TURBO-PREVIEW".to_string(),
+            "openrouter/openai/gpt-4o".to_string(),
+        ];
+        let out = normalize_fallback_models(&models, "moonshot/kimi-k2-turbo-preview");
+        assert_eq!(out, vec!["openrouter/openai/gpt-4o"]);
     }
 
     // ── normalize_model_input ───────────────────────────────────

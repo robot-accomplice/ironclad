@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio::process::Command;
 
 use ironclad_core::{InputAuthority, RiskLevel};
 
@@ -34,13 +36,79 @@ fn validate_rel_path(rel: &Path) -> std::result::Result<(), ToolError> {
     Ok(())
 }
 
+fn normalize_workspace_rel_path(root: &Path, raw: &str) -> std::result::Result<PathBuf, ToolError> {
+    if raw.is_empty() || raw == "." {
+        return Ok(PathBuf::from("."));
+    }
+
+    if raw == "~" || raw.starts_with("~/") {
+        let home = std::env::var("HOME").map_err(|_| ToolError {
+            message: "cannot expand '~' because HOME is not set".into(),
+        })?;
+        let suffix = if raw == "~" {
+            ""
+        } else {
+            raw.trim_start_matches("~/")
+        };
+        let expanded = Path::new(&home).join(suffix);
+        return absolutize_into_workspace_rel(root, &expanded);
+    }
+
+    let as_path = Path::new(raw);
+    if as_path.is_absolute() {
+        return absolutize_into_workspace_rel(root, as_path);
+    }
+
+    validate_rel_path(as_path)?;
+    Ok(as_path.to_path_buf())
+}
+
+fn absolutize_into_workspace_rel(
+    root: &Path,
+    absolute_or_expanded: &Path,
+) -> std::result::Result<PathBuf, ToolError> {
+    if let Ok(stripped) = absolute_or_expanded.strip_prefix(root) {
+        let rel = if stripped.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            stripped.to_path_buf()
+        };
+        validate_rel_path(&rel)?;
+        return Ok(rel);
+    }
+
+    if absolute_or_expanded.exists() {
+        let canonical = std::fs::canonicalize(absolute_or_expanded).map_err(|e| ToolError {
+            message: format!(
+                "failed to resolve '{}': {e}",
+                absolute_or_expanded.display()
+            ),
+        })?;
+        if let Ok(stripped) = canonical.strip_prefix(root) {
+            let rel = if stripped.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                stripped.to_path_buf()
+            };
+            validate_rel_path(&rel)?;
+            return Ok(rel);
+        }
+    }
+
+    Err(ToolError {
+        message: format!(
+            "path is outside workspace root: {}",
+            absolute_or_expanded.display()
+        ),
+    })
+}
+
 fn resolve_workspace_path(
     root: &Path,
     rel: &str,
     allow_nonexistent: bool,
 ) -> std::result::Result<PathBuf, ToolError> {
-    let rel_path = Path::new(rel);
-    validate_rel_path(rel_path)?;
+    let rel_path = normalize_workspace_rel_path(root, rel)?;
     let joined = root.join(rel_path);
     if joined.exists() {
         let canonical = std::fs::canonicalize(&joined).map_err(|e| ToolError {
@@ -405,6 +473,90 @@ impl Tool for ScriptRunnerTool {
                 message: e.to_string(),
             }),
         }
+    }
+}
+
+pub struct BashTool;
+
+#[async_trait]
+impl Tool for BashTool {
+    fn name(&self) -> &str {
+        "bash"
+    }
+
+    fn description(&self) -> &str {
+        "Execute a shell command inside the workspace root"
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Dangerous
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string", "description": "Shell command to execute" },
+                "cwd": { "type": "string", "description": "Working directory under workspace root", "default": "." },
+                "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 120, "default": 20 }
+            },
+            "required": ["command"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: Value,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolResult, ToolError> {
+        let command = params
+            .get("command")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing 'command' parameter".into(),
+            })?;
+        let cwd_raw = params.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+        let timeout_seconds = params
+            .get("timeout_seconds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20)
+            .clamp(1, 120);
+
+        let root = workspace_root_from_ctx(ctx)?;
+        let cwd = resolve_workspace_path(&root, cwd_raw, false)?;
+        let started = Instant::now();
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_seconds),
+            Command::new("bash")
+                .arg("-lc")
+                .arg(command)
+                .current_dir(&cwd)
+                .output(),
+        )
+        .await
+        .map_err(|_| ToolError {
+            message: format!("command timed out after {timeout_seconds}s"),
+        })?
+        .map_err(|e| ToolError {
+            message: format!("failed to run bash command: {e}"),
+        })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit_code = output.status.code().unwrap_or(-1);
+        if !output.status.success() {
+            return Err(ToolError {
+                message: format!("command exited with code {exit_code}: {stderr}"),
+            });
+        }
+        Ok(ToolResult {
+            output: stdout,
+            metadata: Some(serde_json::json!({
+                "exit_code": exit_code,
+                "duration_ms": started.elapsed().as_millis() as u64,
+                "cwd": cwd.display().to_string(),
+            })),
+        })
     }
 }
 
@@ -1667,6 +1819,29 @@ mod tests {
         assert!(err.message.contains("missing"));
     }
 
+    #[tokio::test]
+    async fn bash_tool_executes_command_in_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("probe.txt"), "ok").unwrap();
+
+        let tool = BashTool;
+        let ctx = ToolContext {
+            session_id: "test-session".into(),
+            agent_id: "test-agent".into(),
+            authority: InputAuthority::Creator,
+            workspace_root: root.clone(),
+            channel: None,
+            db: None,
+        };
+
+        let result = tool
+            .execute(serde_json::json!({"command": "ls", "cwd": "."}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.output.contains("probe.txt"));
+    }
+
     #[test]
     fn wildcard_match_supports_star_and_question() {
         assert!(wildcard_match("src/*.rs", "src/main.rs"));
@@ -1833,6 +2008,39 @@ mod tests {
         std::fs::write(root.join("hello.txt"), "hi").unwrap();
         let result = resolve_workspace_path(&root, "hello.txt", false).unwrap();
         assert!(result.starts_with(&root));
+    }
+
+    #[test]
+    fn resolve_workspace_path_accepts_workspace_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let target = root.join("abs.txt");
+        std::fs::write(&target, "ok").unwrap();
+        let result = resolve_workspace_path(&root, &target.display().to_string(), false).unwrap();
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn resolve_workspace_path_rejects_external_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let err = resolve_workspace_path(&root, "/tmp/not-in-workspace.txt", false).unwrap_err();
+        assert!(err.message.contains("outside workspace root"));
+    }
+
+    #[test]
+    fn resolve_workspace_path_accepts_tilde_when_inside_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let ws = home.join("code/ironclad");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        let root = std::fs::canonicalize(&ws).unwrap();
+        unsafe {
+            std::env::set_var("HOME", &home);
+        }
+        let result = resolve_workspace_path(&root, "~/code/ironclad", false).unwrap();
+        assert_eq!(result, root);
     }
 
     #[cfg(unix)]
@@ -2533,6 +2741,7 @@ mod tests {
                 name: "code-reviewer".into(),
                 display_name: Some("Code Reviewer".into()),
                 model: "gpt-4o".into(),
+                fallback_models_json: Some("[]".into()),
                 role: "specialist".into(),
                 description: Some("Reviews code".into()),
                 skills_json: None,

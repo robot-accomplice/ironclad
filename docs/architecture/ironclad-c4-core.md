@@ -1,4 +1,4 @@
-<!-- last_updated: 2026-02-26, version: 0.8.0 -->
+<!-- last_updated: 2026-03-02, version: 0.9.2 -->
 # C4 Level 3: Component Diagram -- ironclad-core
 
 *Leaf crate with zero internal dependencies. Provides shared types, configuration parsing, and error definitions used by every other crate.*
@@ -17,6 +17,7 @@ flowchart TB
         STYLE["style.rs<br/>Theme, CRT, Typewriter"]
         KEYSTORE["keystore.rs<br/>Encrypted Credential<br/>Storage"]
         INPUT_CAP_SCAN["input_capability_scan.rs<br/>InputCapabilityScan:<br/>detect fs/network/env<br/>access in tool inputs"]
+        SECURITY["security.rs<br/>Claim-based RBAC<br/>resolve_channel_claim()<br/>resolve_api_claim()<br/>resolve_a2a_claim()"]
     end
 
     subgraph ConfigDetail ["config.rs internals"]
@@ -52,6 +53,11 @@ flowchart TB
             SKILLS_CFG["SkillsConfig<br/>skills_dir, interpreters,<br/>sandbox, hot_reload"]
         end
 
+        subgraph CfgSecurity["Security"]
+            direction LR
+            SECURITY_CFG["SecurityConfig<br/>deny_on_empty_allowlist,<br/>allowlist_authority,<br/>trusted_authority,<br/>api_authority,<br/>threat_caution_ceiling"]
+        end
+
         subgraph CfgAdditional["Additional (v0.8.0 — 18+ more structs)"]
             direction LR
             ADDL_NOTE["ContextConfig, ApprovalsConfig,<br/>PluginsConfig, BrowserConfig,<br/>DaemonConfig, McpConfig,<br/>MultimodalConfig, KnowledgeConfig,<br/>DiscoveryConfig, DeviceConfig,<br/>SessionConfig, UpdateConfig,<br/>TieredInferenceConfig, TierAdaptConfig,<br/>ModelOverride, WorkspaceConfig, ..."]
@@ -70,7 +76,9 @@ flowchart TB
             direction LR
             POLICY_DEC["PolicyDecision"]
             RISK["RiskLevel"]
-            INPUT_AUTH["InputAuthority"]
+            INPUT_AUTH["InputAuthority<br/>External &lt; Peer &lt;<br/>SelfGenerated &lt; Creator"]
+            SEC_CLAIM["SecurityClaim<br/>authority, sources,<br/>ceiling, threat_downgraded"]
+            CLAIM_SRC["ClaimSource<br/>ChannelAllowList,<br/>TrustedSenderId,<br/>ApiKey, A2aSession, ..."]
         end
         subgraph SkillTypes["Skills"]
             direction LR
@@ -91,7 +99,7 @@ flowchart TB
         KS_STORE["Keystore:<br/>encrypted JSON file on disk,<br/>machine-key auto-unlock"]
         KS_OPS["get(key), set(key, value),<br/>delete(key), list_keys()"]
         KS_UNLOCK["unlock_machine():<br/>derive key from OS<br/>machine identity"]
-        KS_PATH["default_path():<br/>~/.ironclad/keystore.json"]
+        KS_PATH["default_path():<br/>~/.ironclad/keystore.enc"]
     end
 
     CONFIG --> TOML_PARSE
@@ -99,6 +107,7 @@ flowchart TB
     TOML_PARSE --> CfgAI
     TOML_PARSE --> CfgFinancial
     TOML_PARSE --> CfgExtensions
+    TOML_PARSE --> CfgSecurity
     TOML_PARSE --> CfgAdditional
     KEYSTORE --> KS_STORE
 ```
@@ -108,7 +117,8 @@ flowchart TB
 | Module | Responsibility | Key Types |
 |--------|---------------|-----------|
 | `config.rs` | Parse `ironclad.toml` into strongly-typed config structs. **Tilde expansion** applied to `database.path`, `agent.workspace`, `server.log_dir`, `skills.skills_dir`, `wallet.path`, `plugins.dir`, `browser.profile_dir`, `daemon.pid_file`. Validates at load (e.g., memory budget percentages sum to 100, `treasury.per_payment_cap` > 0). | `IroncladConfig`, `AgentConfig`, `ModelsConfig`, `RoutingConfig` (default `mode = "heuristic"`), `TreasuryConfig`, `A2aConfig`, `SkillsConfig`, etc. |
-| `types.rs` | Domain enums and structs shared across crates. All enums are exhaustive — adding a variant is a compile-time breaking change. `SurvivalTier::from_balance(usd, hours_below_zero)` derives tier from balance. | `SurvivalTier`, `AgentState`, `ApiFormat`, `ModelTier`, `PolicyDecision`, `RiskLevel`, `SkillKind`, `SkillTrigger`, `SkillManifest`, `ToolChainStep`, `InstructionSkill`, `InputAuthority`, `ScheduleKind` |
+| `types.rs` | Domain enums and structs shared across crates. All enums are exhaustive — adding a variant is a compile-time breaking change. `SurvivalTier::from_balance(usd, hours_below_zero)` derives tier from balance. `InputAuthority` ordered enum: External < Peer < SelfGenerated < Creator, used with derived `Ord` for min/max composition. | `SurvivalTier`, `AgentState`, `ApiFormat`, `ModelTier`, `PolicyDecision`, `RiskLevel`, `SkillKind`, `SkillTrigger`, `SkillManifest`, `ToolChainStep`, `InstructionSkill`, `InputAuthority`, `SecurityClaim`, `ClaimSource`, `ScheduleKind` |
+| `security.rs` | Claim-based RBAC authority resolution. Single source of truth for all message entry points. Composes positive grants (OR across layers) and negative ceilings (AND across layers) into an immutable `SecurityClaim`. See [security-rbac.md](security-rbac.md) for full documentation. | `resolve_channel_claim()`, `resolve_api_claim()`, `resolve_a2a_claim()`, `ChannelContext` |
 | `error.rs` | Unified error type with `thiserror` derive. Each variant wraps crate-specific errors so the top-level binary can handle them uniformly. | `IroncladError` |
 | `personality.rs` | Load OS/soul/firmware/operator/directives from workspace; compose identity and firmware text. | `load_os`, `load_firmware`, `compose_identity_text` |
 | `style.rs` | Theme (CRT green/orange, terminal), typewriter effect, icons. | `Theme`, `sleep_ms`, `typewrite` |

@@ -489,6 +489,7 @@ pub(super) async fn run_inference_and_react(
             }
 
             if batch_aborted && observations.is_empty() {
+                final_content = "I stopped tool execution because the same tool call kept repeating without progress. Please rephrase or provide a more specific command.".to_string();
                 break;
             }
 
@@ -543,6 +544,12 @@ pub(super) async fn run_inference_and_react(
                 react_loop.transition(ReactAction::Finish);
                 final_content = follow_content;
             }
+        }
+
+        if !pending_calls.is_empty()
+            && (final_content.trim().is_empty() || final_content.contains("\"tool_call\""))
+        {
+            final_content = "I could not complete the requested tool workflow this turn. Please retry with a narrower command.".to_string();
         }
     }
 

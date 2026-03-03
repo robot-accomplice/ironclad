@@ -9,6 +9,7 @@ pub struct SubAgentRow {
     pub name: String,
     pub display_name: Option<String>,
     pub model: String,
+    pub fallback_models_json: Option<String>,
     pub role: String,
     pub description: Option<String>,
     pub skills_json: Option<String>,
@@ -19,11 +20,12 @@ pub struct SubAgentRow {
 pub fn upsert_sub_agent(db: &Database, agent: &SubAgentRow) -> Result<()> {
     let conn = db.conn();
     conn.execute(
-        "INSERT INTO sub_agents (id, name, display_name, model, role, description, skills_json, enabled, session_count)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO sub_agents (id, name, display_name, model, fallback_models_json, role, description, skills_json, enabled, session_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(name) DO UPDATE SET
            display_name = excluded.display_name,
            model = excluded.model,
+           fallback_models_json = excluded.fallback_models_json,
            role = excluded.role,
            description = excluded.description,
            skills_json = excluded.skills_json,
@@ -34,6 +36,7 @@ pub fn upsert_sub_agent(db: &Database, agent: &SubAgentRow) -> Result<()> {
             agent.name,
             agent.display_name,
             agent.model,
+            agent.fallback_models_json,
             agent.role,
             agent.description,
             agent.skills_json,
@@ -49,7 +52,7 @@ pub fn list_sub_agents(db: &Database) -> Result<Vec<SubAgentRow>> {
     let conn = db.conn();
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, display_name, model, role, description, skills_json, enabled, session_count
+            "SELECT id, name, display_name, model, fallback_models_json, role, description, skills_json, enabled, session_count
              FROM sub_agents ORDER BY name",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -61,11 +64,12 @@ pub fn list_sub_agents(db: &Database) -> Result<Vec<SubAgentRow>> {
                 name: row.get(1)?,
                 display_name: row.get(2)?,
                 model: row.get(3)?,
-                role: row.get(4)?,
-                description: row.get(5)?,
-                skills_json: row.get(6)?,
-                enabled: row.get::<_, i32>(7)? != 0,
-                session_count: row.get(8)?,
+                fallback_models_json: row.get(4)?,
+                role: row.get(5)?,
+                description: row.get(6)?,
+                skills_json: row.get(7)?,
+                enabled: row.get::<_, i32>(8)? != 0,
+                session_count: row.get(9)?,
             })
         })
         .map_err(|e| IroncladError::Database(e.to_string()))?
@@ -124,6 +128,7 @@ mod tests {
             name: name.to_string(),
             display_name: Some(name.replace('-', " ")),
             model: "test-model".into(),
+            fallback_models_json: Some("[]".into()),
             role: "specialist".into(),
             description: Some("Test agent".into()),
             skills_json: None,

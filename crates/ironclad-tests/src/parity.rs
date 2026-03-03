@@ -136,6 +136,7 @@ fn test_state() -> AppState {
             engine.add_rule(Box::new(ironclad_agent::policy::CommandSafetyRule));
             Arc::new(engine)
         },
+        media_service: None,
     }
 }
 

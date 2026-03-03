@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- System font stack — no external Google Fonts dependency -->
   <title>Ironclad Dashboard</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='11' y='1' width='10' height='10.5' fill='%231e2030' stroke='%2322c55e' stroke-width='1.5'/%3E%3Ccircle cx='14' cy='5' r='2' fill='%2322c55e'/%3E%3Ccircle cx='14' cy='5' r='.8' fill='%231e2030'/%3E%3Ccircle cx='18' cy='5' r='2' fill='%2322c55e'/%3E%3Ccircle cx='18' cy='5' r='.8' fill='%231e2030'/%3E%3Crect x='13' y='8.5' width='6' height='1.5' fill='%2322c55e'/%3E%3Crect x='14.5' y='11.5' width='3' height='2.5' fill='%2322c55e' opacity='.6'/%3E%3Crect x='8' y='14' width='16' height='8.5' fill='%231e2030' stroke='%2322c55e' stroke-width='1.5'/%3E%3Crect x='12' y='15' width='8' height='6.5' fill='%2322c55e' opacity='.1'/%3E%3Crect x='.5' y='16' width='3' height='4' fill='%2322c55e' opacity='.85'/%3E%3Crect x='3.5' y='16.5' width='4.5' height='3' fill='%2322c55e' opacity='.45'/%3E%3Crect x='24' y='16.5' width='4.5' height='3' fill='%2322c55e' opacity='.45'/%3E%3Crect x='28.5' y='16' width='3' height='4' fill='%2322c55e' opacity='.85'/%3E%3Crect x='12.5' y='22.5' width='2.5' height='4' fill='%2322c55e' opacity='.6'/%3E%3Crect x='17' y='22.5' width='2.5' height='4' fill='%2322c55e' opacity='.6'/%3E%3Crect x='10.5' y='26.5' width='5' height='2' fill='%2322c55e'/%3E%3Crect x='16.5' y='26.5' width='5' height='2' fill='%2322c55e'/%3E%3C/svg%3E">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230a0a0f'/%3E%3Crect x='10' y='5' width='12' height='18' rx='0.8' fill='none' stroke='%2300ff88' stroke-width='2'/%3E%3Ccircle cx='13.6' cy='11.5' r='1.35' fill='%2300ff88'/%3E%3Ccircle cx='18.4' cy='11.5' r='1.35' fill='%2300ff88'/%3E%3Crect x='13.6' y='16.8' width='4.8' height='1.35' fill='%2300ff88'/%3E%3Crect x='15' y='23' width='2' height='4' fill='%2300ff88'/%3E%3C/svg%3E">
   <style>
     :root, [data-theme="ai-purple"] {
       --bg: #0a0b0f;
@@ -1316,7 +1316,7 @@
               context: { id: 'context-helper', text: 'Inspect context budgets, token allocation, and reasoning traces.' },
               memory: { id: 'memory-helper', text: 'Browse memory layers or search by query.' },
               skills: { id: 'skills-helper', text: 'Toggle and manage enabled runtime skills.' },
-              agents: { id: 'agents-helper', text: 'Monitor subordinate agents and their current state.' },
+              agents: { id: 'agents-helper', text: 'Monitor subagents and their current state.' },
               scheduler: { id: 'scheduler-helper', text: 'Manage recurring jobs and inspect run outcomes.' },
               metrics: { id: 'metrics-helper', text: 'Track costs, throughput, and provider capacity.' },
               efficiency: { id: 'efficiency-helper', text: 'Find prompt and token optimization opportunities.' },
@@ -2316,6 +2316,40 @@
           table += '</tbody></table></div></div>';
         }
 
+        var assignment = report.subagent_assignment || {};
+        var assignmentSection = '';
+        if (assignment.overall && assignment.by_subagent) {
+          var overall = assignment.overall || {};
+          var bySubagent = assignment.by_subagent || {};
+          var assignments = assignment.assignments || {};
+          var names = Object.keys(bySubagent).sort(function(a, b) {
+            return (bySubagent[b].total || 0) - (bySubagent[a].total || 0);
+          });
+          assignmentSection = '<div class="card" style="margin-bottom:1.25rem"><div style="font-weight:600;margin-bottom:0.75rem">Subagent Assignment Efficacy</div>';
+          assignmentSection += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.75rem;margin-bottom:0.75rem;font-size:0.8125rem">';
+          assignmentSection += '<div><span style="color:var(--muted)">Delegations</span><div style="font-weight:600">' + (overall.total || 0) + '</div></div>';
+          assignmentSection += '<div><span style="color:var(--muted)">Success Rate</span><div style="font-weight:600">' + (((overall.success_rate || 0) * 100).toFixed(1)) + '%</div></div>';
+          assignmentSection += '<div><span style="color:var(--muted)">Timeout-like</span><div style="font-weight:600;color:var(--warning)">' + (overall.timeout_like || 0) + '</div></div>';
+          assignmentSection += '<div><span style="color:var(--muted)">P95 Duration</span><div style="font-weight:600">' + (overall.p95_duration_ms || 0).toFixed(0) + ' ms</div></div>';
+          assignmentSection += '</div>';
+          assignmentSection += '<div class="table-wrap"><table><thead><tr><th>Subagent</th><th>Assigned Model</th><th>Fallbacks</th><th>Success %</th><th>Timeouts</th><th>Avg ms</th><th>P95 ms</th></tr></thead><tbody>';
+          names.forEach(function(name) {
+            var stat = bySubagent[name] || {};
+            var cfg = assignments[name] || {};
+            var fallbackList = cfg.fallback_models || [];
+            assignmentSection += '<tr>'
+              + '<td>' + esc(name) + '</td>'
+              + '<td class="card-mono">' + esc(cfg.configured_model || '—') + '</td>'
+              + '<td>' + esc((fallbackList && fallbackList.length) ? fallbackList.join(', ') : '—') + '</td>'
+              + '<td>' + (((stat.success_rate || 0) * 100).toFixed(1)) + '%</td>'
+              + '<td>' + (stat.timeout_like || 0) + '</td>'
+              + '<td>' + (stat.avg_duration_ms || 0).toFixed(0) + '</td>'
+              + '<td>' + (stat.p95_duration_ms || 0).toFixed(0) + '</td>'
+              + '</tr>';
+          });
+          assignmentSection += '</tbody></table></div></div>';
+        }
+
         // Cost optimization tips
         var tips = '<div class="card"><div style="font-weight:600;margin-bottom:0.75rem">\u26a1 Optimization Tips</div><div style="font-size:0.8125rem;color:var(--muted)">';
         var tipList = [];
@@ -2344,7 +2378,7 @@
         }
         tips += tipList.join('') + '</div></div>';
 
-        return periodBar + banner + cards + tsChart + table + tips;
+        return periodBar + banner + cards + tsChart + table + assignmentSection + tips;
       });
     },
 
@@ -2900,6 +2934,7 @@
 
           c += '<div style="display:flex;gap:1rem;margin-top:0.75rem;font-size:0.75rem;color:var(--muted)">';
           if (a.model) c += '<div><span style="color:var(--text-dim)">Model:</span> ' + esc(a.model) + '</div>';
+          if (a.fallback_models && a.fallback_models.length) c += '<div><span style="color:var(--text-dim)">Fallbacks:</span> ' + esc(a.fallback_models.join(', ')) + '</div>';
           if (a.model_mode && a.model_mode !== 'fixed') c += '<div><span style="color:var(--text-dim)">Mode:</span> ' + esc(a.model_mode) + '</div>';
           if (a.resolved_model) c += '<div><span style="color:var(--text-dim)">Resolved:</span> ' + esc(a.resolved_model) + '</div>';
           c += '<div><span style="color:var(--text-dim)">Fixed skills:</span> '
@@ -2907,6 +2942,7 @@
             + ' data-name="' + esc(a.name) + '"'
             + ' data-display="' + esc(a.display_name || '') + '"'
             + ' data-model="' + esc(a.model || '') + '"'
+            + ' data-fallbacks="' + esc((a.fallback_models || []).join(",")) + '"'
             + ' data-role="' + esc(a.role) + '"'
             + ' data-skills="' + esc((a.skills || []).join(",")) + '"'
             + ' data-desc="' + esc(a.description || '') + '"'
@@ -2920,7 +2956,7 @@
 
           c += '<div style="display:flex;gap:0.5rem;margin-top:0.75rem;border-top:1px solid var(--border);padding-top:0.6rem">';
           c += '<button class="btn secondary sa-toggle" data-name="' + esc(a.name) + '" style="font-size:0.6875rem;padding:0.25rem 0.6rem">' + (a.enabled ? 'Disable' : 'Enable') + '</button>';
-          c += '<button class="btn secondary sa-edit" data-name="' + esc(a.name) + '" data-display="' + esc(a.display_name || '') + '" data-model="' + esc(a.model || '') + '" data-role="' + esc(a.role) + '" data-skills="' + esc((a.skills || []).join(",")) + '" data-desc="' + esc(a.description || '') + '" style="font-size:0.6875rem;padding:0.25rem 0.6rem">Edit</button>';
+          c += '<button class="btn secondary sa-edit" data-name="' + esc(a.name) + '" data-display="' + esc(a.display_name || '') + '" data-model="' + esc(a.model || '') + '" data-fallbacks="' + esc((a.fallback_models || []).join(",")) + '" data-role="' + esc(a.role) + '" data-skills="' + esc((a.skills || []).join(",")) + '" data-desc="' + esc(a.description || '') + '" style="font-size:0.6875rem;padding:0.25rem 0.6rem">Edit</button>';
           c += '<button class="btn secondary sa-delete" data-name="' + esc(a.name) + '" style="font-size:0.6875rem;padding:0.25rem 0.6rem;color:var(--error)">Delete</button>';
           c += '</div>';
           c += '</div>';
@@ -2949,6 +2985,8 @@
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Model</label>';
         html += '<input class="settings-input" id="sa-m-model" list="sa-model-options" placeholder="e.g. ollama/qwen3:8b | auto | orchestrator" style="margin-bottom:0.75rem;font-family:var(--font-mono)">';
         html += '<datalist id="sa-model-options">' + modelOptions + '</datalist>';
+        html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Fallback Models (comma-separated)</label>';
+        html += '<input class="settings-input" id="sa-m-fallbacks" list="sa-model-options" placeholder="e.g. openrouter/openai/gpt-4o, moonshot/kimi-k2-turbo-preview" style="margin-bottom:0.75rem;font-family:var(--font-mono)">';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Role</label>';
         html += '<select class="settings-input" id="sa-m-role" style="margin-bottom:0.75rem"><option value="subagent">subagent</option><option value="model-proxy">model-proxy</option></select>';
         html += '<label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:0.25rem">Fixed Skills (comma-separated)</label>';
@@ -2990,6 +3028,7 @@
             if (nameInp) { nameInp.value = vals.name || ''; nameInp.disabled = !!vals.editing; }
             var d = document.getElementById('sa-m-display'); if (d) d.value = vals.display || '';
             var m = document.getElementById('sa-m-model'); if (m) m.value = vals.model || '';
+            var fb = document.getElementById('sa-m-fallbacks'); if (fb) fb.value = vals.fallbacks || '';
             var r = document.getElementById('sa-m-role'); if (r) r.value = vals.role || 'subagent';
             var sk = document.getElementById('sa-m-skills'); if (sk) sk.value = vals.skills || '';
             var desc = document.getElementById('sa-m-desc'); if (desc) desc.value = vals.desc || '';
@@ -3014,21 +3053,23 @@
             var nameVal = (document.getElementById('sa-m-name') || {}).value || '';
             var displayVal = (document.getElementById('sa-m-display') || {}).value || '';
             var modelVal = (document.getElementById('sa-m-model') || {}).value || '';
+            var fallbackVals = (document.getElementById('sa-m-fallbacks') || {}).value || '';
             var roleVal = (document.getElementById('sa-m-role') || {}).value || 'subagent';
             var skillsVal = (document.getElementById('sa-m-skills') || {}).value || '';
             var skills = skillsVal.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+            var fallbacks = fallbackVals.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
             var descVal = (document.getElementById('sa-m-desc') || {}).value || '';
             if (!nameVal && !editingName) { toast('Name is required'); return; }
 
             if (editingName) {
               api('/api/subagents/' + encodeURIComponent(editingName), {
                 method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json', 'Accept': 'application/json' }),
-                body: JSON.stringify({ display_name: displayVal || null, model: modelVal || null, role: roleVal, skills: skills, description: descVal || null })
+                body: JSON.stringify({ display_name: displayVal || null, model: modelVal || null, fallback_models: fallbacks, role: roleVal, skills: skills, description: descVal || null })
               }).then(function() { toast('Agent updated'); closeModal(); self.navigate('agents'); });
             } else {
               api('/api/subagents', {
                 method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json', 'Accept': 'application/json' }),
-                body: JSON.stringify({ name: nameVal, display_name: displayVal || null, model: modelVal, role: roleVal, skills: skills, description: descVal || null })
+                body: JSON.stringify({ name: nameVal, display_name: displayVal || null, model: modelVal, fallback_models: fallbacks, role: roleVal, skills: skills, description: descVal || null })
               }).then(function() { toast('Agent created'); closeModal(); self.navigate('agents'); });
             }
           };
@@ -3049,6 +3090,7 @@
                 name: n, editing: n,
                 display: this.getAttribute('data-display'),
                 model: this.getAttribute('data-model'),
+                fallbacks: this.getAttribute('data-fallbacks'),
                 role: this.getAttribute('data-role'),
                 skills: this.getAttribute('data-skills'),
                 desc: this.getAttribute('data-desc')
@@ -3063,6 +3105,7 @@
                 name: n, editing: n,
                 display: this.getAttribute('data-display'),
                 model: this.getAttribute('data-model'),
+                fallbacks: this.getAttribute('data-fallbacks'),
                 role: this.getAttribute('data-role'),
                 skills: this.getAttribute('data-skills'),
                 desc: this.getAttribute('data-desc')
@@ -3283,7 +3326,7 @@
           + '<div style="margin-top:0.6rem"><button class="btn secondary" id="hints-reset-dismissed" style="font-size:0.7rem;padding:0.25rem 0.55rem">Reset dismissed hints</button></div>'
           + '</div>';
 
-        var tabs = '<div class="tabs" style="margin-bottom:1rem"><button class="' + (mode === 'form' ? 'active' : '') + '" data-settings-mode="form">Form</button><button class="' + (mode === 'models' ? 'active' : '') + '" data-settings-mode="models">Model Order</button><button class="' + (mode === 'json' ? 'active' : '') + '" data-settings-mode="json">JSON</button></div>';
+        var tabs = '<div class="tabs" style="margin-bottom:1rem"><button class="' + (mode === 'form' ? 'active' : '') + '" data-settings-mode="form">Form</button><button class="' + (mode === 'models' ? 'active' : '') + '" data-settings-mode="models">Model Order</button><button class="' + (mode === 'access' ? 'active' : '') + '" data-settings-mode="access">Access Control</button><button class="' + (mode === 'json' ? 'active' : '') + '" data-settings-mode="json">JSON</button></div>';
         var actions = '<div class="settings-actions"><button class="btn" id="settings-save" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Save</button><button class="btn secondary" id="settings-apply" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Apply</button><button class="btn secondary" id="settings-cancel" ' + (dirty ? '' : 'disabled style="opacity:0.4;pointer-events:none"') + '>Cancel</button>' + dirtyDot + '</div>';
 
         if (mode === 'json') {
@@ -3333,12 +3376,87 @@
             + actions;
         }
 
+        if (mode === 'access') {
+          var sec = draft.security || {};
+          var authLevels = [['External','External \u2014 safe tools only'],['Peer','Peer \u2014 safe + caution'],['SelfGenerated','SelfGenerated \u2014 safe + caution + dangerous'],['Creator','Creator \u2014 full access']];
+          var ceilLevels = [['External','External \u2014 safe tools only'],['Peer','Peer \u2014 safe + caution'],['SelfGenerated','SelfGenerated \u2014 safe + caution + dangerous']];
+          var mkOpts = function(levels, cur) { return levels.map(function(l) { return '<option value="' + l[0] + '"' + (cur === l[0] ? ' selected' : '') + '>' + l[1] + '</option>'; }).join(''); };
+          var accHtml = '';
+          accHtml += '<div class="settings-section"><div class="settings-section-title">Authority Matrix</div>'
+            + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">What each authority level can do:</div>'
+            + '<table style="width:100%;font-size:0.72rem;border-collapse:collapse">'
+            + '<thead><tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:0.35rem 0.5rem">Level</th><th style="text-align:center;padding:0.35rem">Safe</th><th style="text-align:center;padding:0.35rem">Caution</th><th style="text-align:center;padding:0.35rem">Dangerous</th><th style="text-align:center;padding:0.35rem">Forbidden</th></tr></thead>'
+            + '<tbody>'
+            + '<tr style="border-bottom:1px solid var(--border)"><td style="padding:0.35rem 0.5rem"><strong>Creator</strong></td><td style="text-align:center">\u2705</td><td style="text-align:center">\u2705</td><td style="text-align:center">\u2705</td><td style="text-align:center">\u274c</td></tr>'
+            + '<tr style="border-bottom:1px solid var(--border)"><td style="padding:0.35rem 0.5rem"><strong>SelfGenerated</strong></td><td style="text-align:center">\u2705</td><td style="text-align:center">\u2705</td><td style="text-align:center">\u2705</td><td style="text-align:center">\u274c</td></tr>'
+            + '<tr style="border-bottom:1px solid var(--border)"><td style="padding:0.35rem 0.5rem"><strong>Peer</strong></td><td style="text-align:center">\u2705</td><td style="text-align:center">\u2705</td><td style="text-align:center">\u274c</td><td style="text-align:center">\u274c</td></tr>'
+            + '<tr><td style="padding:0.35rem 0.5rem"><strong>External</strong></td><td style="text-align:center">\u2705</td><td style="text-align:center">\u274c</td><td style="text-align:center">\u274c</td><td style="text-align:center">\u274c</td></tr>'
+            + '</tbody></table>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin-top:0.5rem">'
+            + '<strong>Safe:</strong> conversation, summarization, web search. '
+            + '<strong>Caution:</strong> read_file, write_file, delegation. '
+            + '<strong>Dangerous:</strong> run_script, shell execution.'
+            + '</div></div>';
+          accHtml += '<div class="settings-section"><div class="settings-section-title">Security Policy</div>'
+            + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">'
+            + 'Authority resolution: effective = min(max(positive grants\u2026), min(negative ceilings\u2026))'
+            + '</div>';
+          var denyEmpty = sec.deny_on_empty_allowlist !== false;
+          accHtml += '<div class="settings-row"><div class="settings-label">Deny on empty allow-list</div>'
+            + '<div class="settings-toggle-wrap"><label class="toggle">'
+            + '<input type="checkbox" data-settings-path="security.deny_on_empty_allowlist"' + (denyEmpty ? ' checked' : '') + '>'
+            + '<span class="toggle-track"></span></label>'
+            + '<span class="settings-toggle-label">' + (denyEmpty ? 'On' : 'Off') + '</span></div></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'When enabled, channels with no allow-list entries reject all messages (secure default). When disabled, empty allow-lists permit all senders.'
+            + '</div>';
+          var alAuth = sec.allowlist_authority || 'Peer';
+          accHtml += '<div class="settings-row"><div class="settings-label">Allow-list authority</div>'
+            + '<select class="settings-input" data-settings-path="security.allowlist_authority" style="max-width:280px">'
+            + mkOpts(authLevels, alAuth) + '</select></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Authority granted to senders who pass a channel\u2019s allow-list check.'
+            + '</div>';
+          var trAuth = sec.trusted_authority || 'Creator';
+          accHtml += '<div class="settings-row"><div class="settings-label">Trusted sender authority</div>'
+            + '<select class="settings-input" data-settings-path="security.trusted_authority" style="max-width:280px">'
+            + mkOpts(authLevels, trAuth) + '</select></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Authority granted to senders listed in channels.trusted_sender_ids.'
+            + '</div>';
+          var apiAuth = sec.api_authority || 'Creator';
+          accHtml += '<div class="settings-row"><div class="settings-label">API authority</div>'
+            + '<select class="settings-input" data-settings-path="security.api_authority" style="max-width:280px">'
+            + mkOpts(authLevels, apiAuth) + '</select></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Authority for HTTP API and WebSocket requests.'
+            + '</div>';
+          var threatCeil = sec.threat_caution_ceiling || 'External';
+          accHtml += '<div class="settings-row"><div class="settings-label">Threat scanner ceiling</div>'
+            + '<select class="settings-input" data-settings-path="security.threat_caution_ceiling" style="max-width:280px">'
+            + mkOpts(ceilLevels, threatCeil) + '</select></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Maximum authority when the threat scanner flags input as Caution. Must be below Creator.'
+            + '</div>';
+          accHtml += '</div>';
+          accHtml += '<div class="settings-section"><div class="settings-section-title">How Claims Are Resolved</div>'
+            + '<div style="font-size:0.72rem;line-height:1.6;color:var(--text)">'
+            + '<strong>Positive grants</strong> OR across layers \u2014 any layer can grant authority (best grant wins):<br>'
+            + '<span style="color:var(--muted)">\u2022 Channel allow-list \u2192 allow-list authority &nbsp;\u2022 trusted_sender_ids \u2192 trusted authority &nbsp;\u2022 API key \u2192 API authority</span><br><br>'
+            + '<strong>Negative ceilings</strong> AND across layers \u2014 strictest restriction wins:<br>'
+            + '<span style="color:var(--muted)">\u2022 Threat scanner (Caution) \u2192 threat ceiling</span><br><br>'
+            + '<strong>Final authority</strong> = min(best grant, strictest ceiling)'
+            + '</div></div>';
+          return tabs + hintSettings + '<div class="settings-form">' + accHtml + '</div>' + actions;
+        }
+
         var html = tabs + hintSettings + '<div class="settings-form">';
         var specialSections = ['models', 'providers', 'wallet'];
         var sections = Object.keys(draft);
         sections.forEach(function(section) {
           var sectionData = draft[section];
           if (typeof sectionData !== 'object' || sectionData === null) return;
+          if (section === 'security') return; // rendered in Access Control tab
           var isImmutableSection = !!immutableSet[section];
 
           if (isImmutableSection) {
@@ -4130,7 +4248,7 @@
           var s = agent.stats;
           statsHtml = '<div style="margin-top:1rem;display:grid;grid-template-columns:repeat(2,1fr);gap:0.5rem">';
           var statItems = [
-            { label: 'Subordinates', val: s.subordinate_count },
+            { label: 'Subagents', val: s.subordinate_count },
             { label: 'Running', val: s.running_subordinates },
             { label: 'Total Skills', val: s.total_skills },
             { label: 'Enabled Skills', val: s.enabled_skills }
@@ -4160,7 +4278,7 @@
         subordinates = subordinates.filter(function(sid) { return !proxyLookup[String(sid)]; });
         var subsHtml = '';
         if (subordinates.length > 0) {
-          subsHtml = '<div style="margin-top:1rem"><div style="font-size:0.75rem;font-weight:600;color:var(--muted);letter-spacing:0.05em;margin-bottom:0.5rem">SUBORDINATES (' + subordinates.length + ')</div>'
+          subsHtml = '<div style="margin-top:1rem"><div style="font-size:0.75rem;font-weight:600;color:var(--muted);letter-spacing:0.05em;margin-bottom:0.5rem">SUBAGENTS (' + subordinates.length + ')</div>'
             + '<div style="display:flex;flex-wrap:wrap;gap:4px">';
           subordinates.forEach(function(sid) {
             subsHtml += '<span class="badge" style="cursor:pointer" data-roster-sub="' + esc(sid) + '">' + esc(sid) + '</span>';

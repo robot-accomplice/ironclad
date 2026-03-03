@@ -56,6 +56,22 @@ pub async fn agent_message_stream(
         body.content.clone()
     };
 
+    // Resolve authority for audit trail only. The streaming path does NOT execute
+    // tools — it only produces inference tokens — so authority is logged but not
+    // enforced. Tool execution happens on the non-streaming handler path where
+    // authority IS enforced via PolicyEngine. If the streaming path ever gains
+    // tool execution, this claim MUST be threaded through to the policy layer.
+    let _stream_claim = ironclad_core::security::resolve_api_claim(
+        threat.is_caution(),
+        "api-stream",
+        &config.security,
+    );
+    tracing::debug!(
+        authority = ?_stream_claim.authority,
+        sources = ?_stream_claim.sources,
+        "Streaming endpoint authority resolved (audit only — no tool execution on this path)"
+    );
+
     // In-flight deduplication
     let dedup_fp = ironclad_llm::DedupTracker::fingerprint(
         "",

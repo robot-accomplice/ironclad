@@ -7,8 +7,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde_json::json;
 
-use ironclad_core::InputAuthority;
-
 use super::core;
 use super::decomposition::{
     DecompositionDecision, DecompositionOutcome, DelegationProvenance,
@@ -216,11 +214,11 @@ pub async fn agent_message(
     let gate_system_note =
         build_gate_system_note(&gate_decision, delegation_workflow_note.as_deref());
 
-    let authority = if reduced_authority {
-        InputAuthority::External
-    } else {
-        InputAuthority::Creator
-    };
+    // Resolve authority via the unified claim-based RBAC system.
+    // HTTP API callers are authenticated via API key / WS ticket — no channel allow-list.
+    let api_claim =
+        ironclad_core::security::resolve_api_claim(reduced_authority, "api", &config.security);
+    let authority = api_claim.authority;
     let mut delegation_provenance = DelegationProvenance::default();
     let delegated_execution_note = if let DecompositionDecision::Delegated(plan) = &gate_decision {
         let delegated_params = serde_json::json!({
@@ -368,6 +366,7 @@ pub async fn agent_message(
         "cost": result.cost,
         "threat_score": threat.value(),
         "reduced_authority": reduced_authority,
+        "authority": format!("{:?}", api_claim.authority),
         "react_turns": result.react_turns,
     })))
 }

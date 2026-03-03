@@ -29,10 +29,9 @@ pub(super) fn is_virtual_orchestration_tool(tool_name: &str) -> bool {
 /// All tools apply the same policy + approval checks as delegation tools,
 /// then dispatch to the appropriate subagent management operation.
 ///
-/// Orchestration tools are system-internal: the agent managing its own
-/// subagent roster. We elevate External/Peer callers to SelfGenerated so
-/// the policy engine allows these Caution-level operations regardless of
-/// which channel triggered the conversation.
+/// Orchestration tools are sensitive roster-management operations.
+/// They run under the caller's resolved authority and must never be
+/// privilege-escalated implicitly.
 pub(super) async fn execute_virtual_orchestration_tool(
     state: &AppState,
     tool_name: &str,
@@ -41,27 +40,12 @@ pub(super) async fn execute_virtual_orchestration_tool(
     authority: ironclad_core::InputAuthority,
     tier: ironclad_core::SurvivalTier,
 ) -> Result<String, String> {
-    // Orchestration tools are system-internal operations (the agent
-    // managing its own team). Elevate restricted callers so the policy
-    // engine doesn't block roster queries or subagent composition.
-    let effective_authority = match authority {
-        ironclad_core::InputAuthority::External | ironclad_core::InputAuthority::Peer => {
-            tracing::debug!(
-                tool = tool_name,
-                original = ?authority,
-                "elevating orchestration authority to SelfGenerated"
-            );
-            ironclad_core::InputAuthority::SelfGenerated
-        }
-        other => other,
-    };
-
     // ── policy gate ──────────────────────────────────────────────
     let policy_result = super::check_tool_policy(
         &state.policy_engine,
         tool_name,
         params,
-        effective_authority,
+        authority,
         tier,
         ironclad_core::RiskLevel::Caution,
     );
@@ -134,8 +118,8 @@ pub(super) async fn execute_virtual_orchestration_tool(
 
 async fn compose_subagent(state: &AppState, params: &serde_json::Value) -> Result<String, String> {
     use crate::api::routes::subagents::{
-        ROLE_SUBAGENT, normalize_model_input, normalize_role, normalize_skills,
-        resolve_taskable_subagent_runtime_model, validate_subagent_contract,
+        ROLE_SUBAGENT, normalize_fallback_models, normalize_model_input, normalize_role,
+        normalize_skills, resolve_taskable_subagent_runtime_model, validate_subagent_contract,
         validate_subagent_name,
     };
 
@@ -181,6 +165,16 @@ async fn compose_subagent(state: &AppState, params: &serde_json::Value) -> Resul
         _ => vec![],
     };
     let skills = normalize_skills(&skills_raw);
+    let fallback_models_raw: Vec<String> = match params.get("fallback_models") {
+        Some(v) if v.is_array() => v
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        _ => vec![],
+    };
+    let fallback_models = normalize_fallback_models(&fallback_models_raw, &model);
 
     let role = params
         .get("role")
@@ -216,6 +210,9 @@ async fn compose_subagent(state: &AppState, params: &serde_json::Value) -> Resul
         name: name.clone(),
         display_name: Some(display_name.clone()),
         model: model.clone(),
+        fallback_models_json: Some(
+            serde_json::to_string(&fallback_models).unwrap_or_else(|_| "[]".to_string()),
+        ),
         role: normalized_role.to_string(),
         description: description.clone(),
         skills_json: Some(serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string())),
@@ -250,7 +247,8 @@ async fn compose_subagent(state: &AppState, params: &serde_json::Value) -> Resul
         skills.join(", ")
     };
     Ok(format!(
-        "created subagent '{name}' (display: {display_name}) model={model} role={normalized_role} skills=[{skills_label}] enabled=true"
+        "created subagent '{name}' (display: {display_name}) model={model} fallback_models={} role={normalized_role} skills=[{skills_label}] enabled=true",
+        serde_json::to_string(&fallback_models).unwrap_or_else(|_| "[]".to_string())
     ))
 }
 
@@ -324,7 +322,7 @@ async fn update_subagent_skills(
 // ── list-subagent-roster ─────────────────────────────────────────
 
 async fn list_subagent_roster(state: &AppState) -> Result<String, String> {
-    use crate::api::routes::subagents::ROLE_MODEL_PROXY;
+    use crate::api::routes::subagents::{ROLE_MODEL_PROXY, parse_fallback_models_json};
 
     let agents = ironclad_db::agents::list_sub_agents(&state.db)
         .map_err(|e| format!("failed to query sub-agents: {e}"))?;
@@ -377,12 +375,19 @@ async fn list_subagent_roster(state: &AppState) -> Result<String, String> {
         } else {
             skills.join(", ")
         };
+        let fallback_models = parse_fallback_models_json(a.fallback_models_json.as_deref());
+        let fallback_label = if fallback_models.is_empty() {
+            "[]".to_string()
+        } else {
+            format!("[{}]", fallback_models.join(", "))
+        };
 
         lines.push(format!(
-            "- {} [{}] model={} skills=[{}] enabled={} runtime={}{}",
+            "- {} [{}] model={} fallbacks={} skills=[{}] enabled={} runtime={}{}",
             a.name,
             a.role,
             a.model,
+            fallback_label,
             skills_label,
             a.enabled,
             runtime_state,

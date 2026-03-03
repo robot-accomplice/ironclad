@@ -32,6 +32,10 @@ pub trait PolicyRule: Send + Sync {
 pub struct PolicyContext {
     pub authority: InputAuthority,
     pub survival_tier: SurvivalTier,
+    /// Optional security claim from the RBAC resolution system.
+    /// When present, provides full provenance (grant sources, ceiling,
+    /// threat-downgrade status) for audit logging and advanced policy rules.
+    pub claim: Option<ironclad_core::SecurityClaim>,
 }
 
 #[derive(Debug, Clone)]
@@ -443,6 +447,7 @@ mod tests {
         let ctx_external = PolicyContext {
             authority: InputAuthority::External,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         assert!(
@@ -460,6 +465,7 @@ mod tests {
         let ctx_creator = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
         assert!(
             engine
@@ -470,6 +476,7 @@ mod tests {
         let ctx_self = PolicyContext {
             authority: InputAuthority::SelfGenerated,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
         assert!(
             engine
@@ -491,6 +498,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         assert!(
@@ -514,6 +522,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::High,
+            claim: None,
         };
 
         let decision = engine.evaluate_all(&make_request("read_file", RiskLevel::Safe), &ctx);
@@ -526,6 +535,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let low = ToolCallRequest {
@@ -556,6 +566,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let drain = ToolCallRequest {
@@ -572,6 +583,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let blocked = ToolCallRequest {
@@ -599,6 +611,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let req = |tool: &str| ToolCallRequest {
@@ -620,6 +633,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let huge = ToolCallRequest {
@@ -711,6 +725,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Peer,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         assert!(
@@ -816,6 +831,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let wget_inject = ToolCallRequest {
@@ -832,6 +848,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let backtick = ToolCallRequest {
@@ -848,6 +865,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let dollar_brace = ToolCallRequest {
@@ -866,6 +884,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let nested = ToolCallRequest {
@@ -884,6 +903,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let wallet = ToolCallRequest {
@@ -900,6 +920,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let ssh = ToolCallRequest {
@@ -923,6 +944,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::External,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
         let decision = engine.evaluate_all(&make_request("nuke", RiskLevel::Dangerous), &ctx);
         assert!(!decision.is_allowed());
@@ -937,6 +959,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::External,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
         // No rules -> allow
         assert!(
@@ -953,6 +976,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let float_high = ToolCallRequest {

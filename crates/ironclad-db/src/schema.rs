@@ -338,6 +338,7 @@ CREATE TABLE IF NOT EXISTS sub_agents (
     name TEXT NOT NULL UNIQUE,
     display_name TEXT,
     model TEXT NOT NULL DEFAULT '',
+    fallback_models_json TEXT NOT NULL DEFAULT '[]',
     role TEXT NOT NULL DEFAULT 'specialist',
     description TEXT,
     skills_json TEXT,
@@ -540,6 +541,13 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
     if !has_column(&conn, "hippocampus", "row_count")? {
         conn.execute(
             "ALTER TABLE hippocampus ADD COLUMN row_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "sub_agents", "fallback_models_json")? {
+        conn.execute(
+            "ALTER TABLE sub_agents ADD COLUMN fallback_models_json TEXT NOT NULL DEFAULT '[]'",
             [],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;

@@ -197,9 +197,13 @@ pub(super) async fn maybe_handle_specialist_creation_controls(
 ) -> Option<String> {
     let lower = user_content.to_ascii_lowercase();
     if !(lower.contains("approve specialist")
+        || lower.contains("approve subagent")
         || lower.contains("review specialist config")
+        || lower.contains("review subagent config")
         || lower.contains("show specialist config")
-        || lower.contains("deny specialist creation"))
+        || lower.contains("show subagent config")
+        || lower.contains("deny specialist creation")
+        || lower.contains("deny subagent creation"))
     {
         return None;
     }
@@ -209,14 +213,18 @@ pub(super) async fn maybe_handle_specialist_creation_controls(
         map.get(session_id).cloned()
     }?;
 
-    if lower.contains("review specialist config") || lower.contains("show specialist config") {
+    if lower.contains("review specialist config")
+        || lower.contains("show specialist config")
+        || lower.contains("review subagent config")
+        || lower.contains("show subagent config")
+    {
         return Some(format!(
-            "Proposed specialist configuration preview:\n\n```json\n{}\n```\n\nReply with `approve specialist creation` to create it, or `deny specialist creation` to keep centralized execution.",
+            "Proposed subagent configuration preview:\n\n```json\n{}\n```\n\nReply with `approve subagent creation` to create it, or `deny subagent creation` to keep centralized execution.",
             serde_json::to_string_pretty(&proposal).unwrap_or_else(|_| "{}".to_string())
         ));
     }
 
-    if lower.contains("approve specialist") {
+    if lower.contains("approve specialist") || lower.contains("approve subagent") {
         let name = proposal
             .get("name")
             .and_then(|v| v.as_str())
@@ -251,6 +259,7 @@ pub(super) async fn maybe_handle_specialist_creation_controls(
             name: name.clone(),
             display_name: Some(display_name.clone()),
             model: model.clone(),
+            fallback_models_json: Some("[]".to_string()),
             role: "subagent".to_string(),
             description: Some(description),
             skills_json: Some(serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string())),
@@ -258,7 +267,7 @@ pub(super) async fn maybe_handle_specialist_creation_controls(
             session_count: 0,
         };
         if let Err(e) = ironclad_db::agents::upsert_sub_agent(&state.db, &row) {
-            return Some(format!("Failed to create specialist: {e}"));
+            return Some(format!("Failed to create subagent: {e}"));
         }
         let config = ironclad_agent::subagents::AgentInstanceConfig {
             id: name.clone(),
@@ -269,21 +278,21 @@ pub(super) async fn maybe_handle_specialist_creation_controls(
             max_concurrent: 4,
         };
         if let Err(e) = state.registry.register(config).await {
-            tracing::error!(agent = %name, error = %e, "failed to register specialist in runtime");
+            tracing::error!(agent = %name, error = %e, "failed to register subagent in runtime");
         }
         if let Err(e) = state.registry.start_agent(&name).await {
-            tracing::error!(agent = %name, error = %e, "failed to start specialist in runtime");
+            tracing::error!(agent = %name, error = %e, "failed to start subagent in runtime");
         }
         {
             let mut map = state.pending_specialist_proposals.write().await;
             map.remove(session_id);
         }
         return Some(format!(
-            "Approved. Created specialist `{name}`. I can now decompose and delegate this task."
+            "Approved. Created subagent `{name}`. I can now decompose and delegate this task."
         ));
     }
 
-    if lower.contains("deny specialist creation") {
+    if lower.contains("deny specialist creation") || lower.contains("deny subagent creation") {
         {
             let mut map = state.pending_specialist_proposals.write().await;
             map.remove(session_id);
@@ -301,7 +310,7 @@ pub(super) async fn maybe_handle_specialist_creation_controls(
 pub(super) enum DecompositionOutcome {
     /// Task handled centrally -- no delegation.
     Centralized,
-    /// A specialist creation proposal was stored; caller must relay `prompt` to the user
+    /// A subagent creation proposal was stored; caller must relay `prompt` to the user
     /// and perform its own early-return (the return type differs between API and channel paths).
     SpecialistProposalPending { prompt: String },
     /// Task delegated via orchestrator; caller should thread `workflow_note` into context.
@@ -327,12 +336,12 @@ pub(super) async fn apply_decomposition_decision(
                 pending.insert(session_id.to_string(), payload);
             }
             let prompt = format!(
-                "I identified a capability gap and can create a new specialist with your approval.\n\n\
+                "I identified a capability gap and can create a new subagent with your approval.\n\n\
                  Proposed: `{}`\nRationale: {}\n\n\
                  Reply with:\n\
-                 - `review specialist config` to inspect full config\n\
-                 - `approve specialist creation` to create it\n\
-                 - `deny specialist creation` to continue with main-agent execution",
+                 - `review subagent config` to inspect full config\n\
+                 - `approve subagent creation` to create it\n\
+                 - `deny subagent creation` to continue with main-agent execution",
                 proposal.name, rationale
             );
             DecompositionOutcome::SpecialistProposalPending { prompt }

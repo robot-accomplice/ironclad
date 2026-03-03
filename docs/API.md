@@ -926,7 +926,7 @@ Create a new subagent.
 
 ```json
 {
-  "name": "research-specialist",
+  "name": "research-subagent",
   "model": "openai/gpt-4o",
   "role": "subagent",
   "skills": ["research", "summarization"]
@@ -951,7 +951,7 @@ Validation rules:
 ```json
 {
   "created": true,
-  "name": "research-specialist"
+  "name": "research-subagent"
 }
 ```
 
@@ -994,7 +994,7 @@ Get the orchestrated roster (orchestrator + taskable subagents) with fixed per-s
       "capabilities": ["orchestrate-subagents", "assign-tasks", "select-subagent-model"]
     },
     {
-      "name": "research-specialist",
+      "name": "research-subagent",
       "role": "subagent",
       "model": "openai/gpt-4o-mini",
       "skills": ["research", "summarization"]

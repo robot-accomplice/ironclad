@@ -26,6 +26,7 @@ pub mod error;
 pub mod input_capability_scan;
 pub mod keystore;
 pub mod personality;
+pub mod security;
 pub mod style;
 pub mod types;
 

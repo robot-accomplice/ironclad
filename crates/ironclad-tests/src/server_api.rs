@@ -122,6 +122,7 @@ primary = "ollama/qwen3:8b"
             engine.add_rule(Box::new(ironclad_agent::policy::CommandSafetyRule));
             Arc::new(engine)
         },
+        media_service: None,
     }
 }
 
@@ -1466,6 +1467,7 @@ async fn admin_model_and_provider_key_endpoints_cover_branches() {
         skills_json: None,
         enabled: true,
         session_count: 0,
+        fallback_models_json: None,
     };
     ironclad_db::agents::upsert_sub_agent(&state.db, &row).unwrap();
 
