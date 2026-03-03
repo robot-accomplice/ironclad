@@ -76,11 +76,11 @@ jobs:
           shared-key: release-gates
       - name: Install just
         run: cargo install just --locked
-      - name: Release-critical: Workspace tests
+      - name: "Release-critical: Workspace tests"
         run: cargo test --workspace --locked
-      - name: Release-critical: Server API integration
+      - name: "Release-critical: Server API integration"
         run: cargo test -p ironclad-tests server_api:: --locked
-      - name: Release-critical: Regression battery
+      - name: "Release-critical: Regression battery"
         run: just test-regression
       - name: Provenance generator self-test
         run: scripts/generate-provenance.sh --self-test
