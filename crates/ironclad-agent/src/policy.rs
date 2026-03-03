@@ -164,19 +164,19 @@ impl FinancialRule {
 
     fn extract_amount_cents(params: &Value) -> Option<i64> {
         let obj = params.as_object()?;
-        // Check integer cent keys first
-        for key in ["amount", "amount_cents", "cents", "value_cents"] {
+        // Explicit cent-denominated keys.
+        for key in ["amount_cents", "cents", "value_cents"] {
             if let Some(v) = obj.get(key) {
                 if let Some(n) = v.as_i64() {
                     return Some(n);
                 }
-                // Float fallback for "amount" — treat as dollars if fractional
-                if key == "amount"
-                    && let Some(n) = v.as_f64()
-                {
-                    return Some((n * 100.0).round() as i64);
-                }
             }
+        }
+        // "amount" is dollar-denominated; accept either integer or float JSON.
+        if let Some(v) = obj.get("amount")
+            && let Some(n) = v.as_f64()
+        {
+            return Some((n * 100.0).round() as i64);
         }
         // Dollar-denominated keys
         if let Some(v) = obj
@@ -747,10 +747,10 @@ mod tests {
 
     #[test]
     fn financial_extract_amount_cents_various_keys() {
-        // "amount" key
+        // "amount" key (dollars -> cents)
         assert_eq!(
             FinancialRule::extract_amount_cents(&serde_json::json!({"amount": 5000})),
-            Some(5000)
+            Some(500000)
         );
         // "amount_cents" key
         assert_eq!(
@@ -999,15 +999,15 @@ mod tests {
             "float amount $50.00 should be allowed under $100 threshold"
         );
 
-        // Integer "amount" still works as cents
+        // Integer "amount" is interpreted as dollars, same as float.
         let int_high = ToolCallRequest {
             tool_name: "transfer".into(),
-            params: serde_json::json!({ "amount": 15050 }),
+            params: serde_json::json!({ "amount": 150 }),
             risk_level: RiskLevel::Safe,
         };
         assert!(
             !rule.evaluate(&int_high, &ctx).is_allowed(),
-            "integer amount 15050 cents should be blocked by 10000-cent threshold"
+            "integer amount $150 should be blocked by $100 threshold"
         );
     }
 }
