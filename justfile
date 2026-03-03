@@ -477,7 +477,7 @@ ci-test:
             IFS=',' read -r -a TEST_CRATES <<<"${CI_TEST_FAST_CRATES}"
             echo "  Fast mode: using CI_TEST_FAST_CRATES override: ${TEST_CRATES[*]}"
         elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            declare -A selected=()
+            selected_raw=""
             full_matrix=0
             if git rev-parse --abbrev-ref --symbolic-full-name @{upstream} >/dev/null 2>&1; then
                 base_ref=$(git merge-base HEAD @{upstream})
@@ -493,7 +493,7 @@ ci-test:
                     crates/*)
                         crate_dir=$(echo "$path" | cut -d/ -f2)
                         if [[ "$crate_dir" == ironclad-* ]]; then
-                            selected["$crate_dir"]=1
+                            selected_raw+="${crate_dir}"$'\n'
                         fi
                         ;;
                 esac
@@ -502,14 +502,19 @@ ci-test:
                 fi
             done < <(git diff --name-only "${base_ref}...HEAD")
 
-            if [ "$full_matrix" -eq 0 ] && [ "${#selected[@]}" -gt 0 ]; then
+            if [ "$full_matrix" -eq 0 ] && [ -n "$selected_raw" ]; then
                 TEST_CRATES=()
                 for crate in "${CRATES[@]}"; do
-                    if [ -n "${selected[$crate]:-}" ]; then
+                    if printf "%s" "$selected_raw" | grep -qx "$crate"; then
                         TEST_CRATES+=("$crate")
                     fi
                 done
-                echo "  Fast mode: detected changed crates: ${TEST_CRATES[*]}"
+                if [ "${#TEST_CRATES[@]}" -gt 0 ]; then
+                    echo "  Fast mode: detected changed crates: ${TEST_CRATES[*]}"
+                else
+                    TEST_CRATES=("${CRATES[@]}")
+                    echo "  Fast mode: no mapped crate changes, using full crate matrix"
+                fi
             else
                 echo "  Fast mode: using full crate matrix (infra/workflow changes or no crate diff)"
             fi
