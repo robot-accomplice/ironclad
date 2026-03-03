@@ -71,6 +71,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-gates
       - name: Install just
         run: cargo install just --locked
       - name: Release-critical: Workspace tests

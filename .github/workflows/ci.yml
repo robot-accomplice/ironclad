@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, develop]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   checks: write
@@ -48,6 +52,7 @@ jobs:
     needs: lint
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
         crate:
           - ironclad-core
