@@ -79,7 +79,7 @@ jobs:
       - name: "Release-critical: Workspace tests"
         run: cargo test --workspace --locked
       - name: "Release-critical: Server API integration"
-        run: cargo test -p ironclad-tests server_api:: --locked
+        run: 'cargo test -p ironclad-tests server_api:: --locked'
       - name: "Release-critical: Regression battery"
         run: just test-regression
       - name: Provenance generator self-test
@@ -660,9 +660,7 @@ jobs:
         run: |
           if [ "${{ needs.publish.result }}" = "success" ] && \
              [ "${{ needs.release.result }}" = "success" ] && \
-             [ "${{ needs.sync-site.result }}" = "success" ] && \
-             [ "${{ needs.update-homebrew.result }}" = "success" ] && \
-             [ "${{ needs.update-winget.result }}" = "success" ]; then
+             [ "${{ needs.sync-site.result }}" = "success" ]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
             echo "emoji=✅" >> "$GITHUB_OUTPUT"
             echo "summary=All release stages completed successfully." >> "$GITHUB_OUTPUT"
@@ -742,8 +740,6 @@ jobs:
             --arg publish "${{ needs.publish.result }}" \
             --arg gh_release "${{ needs.release.result }}" \
             --arg site "${{ needs.sync-site.result }}" \
-            --arg homebrew "${{ needs.update-homebrew.result }}" \
-            --arg winget "${{ needs.update-winget.result }}" \
             '{
               embeds: [{
                 title: $title,
@@ -753,9 +749,7 @@ jobs:
                 fields: [
                   { name: "Crates.io", value: $publish, inline: true },
                   { name: "GitHub Release", value: $gh_release, inline: true },
-                  { name: "Site Sync", value: $site, inline: true },
-                  { name: "Homebrew", value: $homebrew, inline: true },
-                  { name: "Winget", value: $winget, inline: true }
+                  { name: "Site Sync", value: $site, inline: true }
                 ],
                 footer: { text: "Workflow run" },
                 timestamp: (now | todate)
@@ -776,8 +770,6 @@ jobs:
           | Crates.io Publish | ${{ needs.publish.result }} |
           | GitHub Release | ${{ needs.release.result }} |
           | Site Sync | ${{ needs.sync-site.result }} |
-          | Homebrew Tap | ${{ needs.update-homebrew.result }} |
-          | Winget Manifest | ${{ needs.update-winget.result }} |
           | Build Matrix | ${{ needs.build.result }} |
 
           **Links:**
