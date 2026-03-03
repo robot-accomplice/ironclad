@@ -160,8 +160,9 @@ pub enum ClaimSource {
 
 /// Immutable security principal resolved from all authentication layers.
 ///
-/// Constructed by [`crate::security::resolve_claim`] — callers receive it,
-/// they cannot modify the authority decision.
+/// Constructed by security claim resolvers such as
+/// [`crate::security::resolve_channel_claim`] — callers receive it, they
+/// cannot modify the authority decision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityClaim {
     /// The resolved effective authority after claim composition.

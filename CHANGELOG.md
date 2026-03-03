@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-03-03
+
+### Fixed
+
+- **Sub-agent fallback model persistence**: `upsert_sub_agent` now normalizes missing/empty `fallback_models_json` to `'[]'` so inserts/updates cannot violate the `sub_agents.fallback_models_json NOT NULL` constraint.
+- **Agent loop detection semantics**: loop detection in `AgentLoop::transition` now evaluates against prior calls before recording the current call, matching `LOOP_DETECTION_WINDOW` intent.
+- **Financial policy amount normalization**: `FinancialRule::extract_amount_cents` now interprets `amount` consistently as dollars (int/float), while cent-denominated keys remain explicit (`amount_cents`, `cents`, `value_cents`).
+
 ## [0.9.2] - 2026-03-02
 
 ### Added

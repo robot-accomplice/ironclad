@@ -627,7 +627,8 @@ fn audio_format_from_content_type(ct: &str) -> ironclad_channels::voice::AudioFo
 }
 
 /// Extract `MediaAttachment` entries from inbound metadata, download media
-/// via [`MediaService`], and prepend transcription/vision descriptions to
+/// via [`ironclad_channels::media::MediaService`], and prepend
+/// transcription/vision descriptions to
 /// `inbound.content`. Runs inline (not spawned) so content is enriched
 /// before the message reaches the LLM pipeline.
 async fn enrich_multimodal(state: &AppState, inbound: &mut ironclad_channels::InboundMessage) {

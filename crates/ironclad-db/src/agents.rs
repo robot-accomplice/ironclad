@@ -17,8 +17,16 @@ pub struct SubAgentRow {
     pub session_count: i64,
 }
 
+fn normalized_fallback_models_json(raw: Option<&str>) -> String {
+    match raw.map(str::trim) {
+        Some(v) if !v.is_empty() => v.to_string(),
+        _ => "[]".to_string(),
+    }
+}
+
 pub fn upsert_sub_agent(db: &Database, agent: &SubAgentRow) -> Result<()> {
     let conn = db.conn();
+    let fallback_models_json = normalized_fallback_models_json(agent.fallback_models_json.as_deref());
     conn.execute(
         "INSERT INTO sub_agents (id, name, display_name, model, fallback_models_json, role, description, skills_json, enabled, session_count)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -36,7 +44,7 @@ pub fn upsert_sub_agent(db: &Database, agent: &SubAgentRow) -> Result<()> {
             agent.name,
             agent.display_name,
             agent.model,
-            agent.fallback_models_json,
+            fallback_models_json,
             agent.role,
             agent.description,
             agent.skills_json,
@@ -64,7 +72,9 @@ pub fn list_sub_agents(db: &Database) -> Result<Vec<SubAgentRow>> {
                 name: row.get(1)?,
                 display_name: row.get(2)?,
                 model: row.get(3)?,
-                fallback_models_json: row.get(4)?,
+                fallback_models_json: Some(normalized_fallback_models_json(
+                    row.get::<_, Option<String>>(4)?.as_deref(),
+                )),
                 role: row.get(5)?,
                 description: row.get(6)?,
                 skills_json: row.get(7)?,
@@ -209,5 +219,19 @@ mod tests {
         let counts = list_session_counts_by_agent(&db).unwrap();
         assert_eq!(counts.get("alpha"), Some(&2));
         assert_eq!(counts.get("bravo"), Some(&1));
+    }
+
+    #[test]
+    fn upsert_normalizes_missing_fallback_models() {
+        let db = test_db();
+        let mut agent = sample_agent("fallback-default");
+        agent.fallback_models_json = None;
+        upsert_sub_agent(&db, &agent).unwrap();
+        let stored = list_sub_agents(&db).unwrap();
+        assert_eq!(
+            stored[0].fallback_models_json.as_deref(),
+            Some("[]"),
+            "missing fallback models should normalize to JSON empty array"
+        );
     }
 }
