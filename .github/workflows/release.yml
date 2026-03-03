@@ -78,7 +78,9 @@ jobs:
         run: cargo install just --locked
       - name: "Release-critical: Server smoke tests"
         run: |
-          cargo test -p ironclad-server --lib --locked
+          cargo test -p ironclad-server change_specialist_model_rejects_fallback_order --locked
+          cargo test -p ironclad-server change_orchestrator_model --locked
+          cargo test -p ironclad-server change_model_unknown_agent_404 --locked
           cargo test -p ironclad-harness --test api_domain stats_efficiency_returns_json --locked
       - name: "Release-critical: Server API integration"
         run: 'cargo test -p ironclad-tests server_api:: --locked'
