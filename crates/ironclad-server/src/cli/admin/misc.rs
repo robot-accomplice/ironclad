@@ -670,6 +670,144 @@ async fn cmd_mechanic_json(
         }
     }
 
+    // Plugin health checks
+    {
+        use ironclad_plugin_sdk::manifest::PluginManifest;
+
+        let plugins_dir = ironclad_dir.join("plugins");
+        if plugins_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&plugins_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let dir_name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let manifest_path = path.join("plugin.toml");
+
+                    if !manifest_path.exists() {
+                        let mut f = finding(
+                            "plugin-orphan-directory",
+                            "medium",
+                            0.95,
+                            format!("Orphan plugin directory: {dir_name}"),
+                            "Plugin directory exists but contains no valid plugin.toml. Likely an aborted install.",
+                            "Remove orphan plugin directory.",
+                            vec![format!("rm -rf \"{}\"", path.display())],
+                            true,
+                            false,
+                        );
+                        if repair {
+                            if let Ok(()) = std::fs::remove_dir_all(&path) {
+                                f.auto_repaired = true;
+                            }
+                        }
+                        findings.push(f);
+                        continue;
+                    }
+
+                    match PluginManifest::from_file(&manifest_path) {
+                        Ok(manifest) => {
+                            let report = manifest.vet(&path);
+                            for e in &report.errors {
+                                findings.push(finding(
+                                    "plugin-vet-error",
+                                    "high",
+                                    0.95,
+                                    format!("Plugin '{}': {e}", manifest.name),
+                                    format!(
+                                        "Plugin '{}' v{} has a blocking integrity error.",
+                                        manifest.name, manifest.version
+                                    ),
+                                    "Reinstall the plugin or resolve the missing dependency.",
+                                    vec![format!(
+                                        "ironclad plugins uninstall {} && ironclad plugins install <source>",
+                                        manifest.name
+                                    )],
+                                    false,
+                                    true,
+                                ));
+                            }
+                            for w in &report.warnings {
+                                findings.push(finding(
+                                    "plugin-vet-warning",
+                                    "low",
+                                    0.90,
+                                    format!("Plugin '{}': {w}", manifest.name),
+                                    format!(
+                                        "Plugin '{}' v{} has a non-blocking issue.",
+                                        manifest.name, manifest.version
+                                    ),
+                                    "Review plugin configuration.",
+                                    vec![format!("ironclad plugins info {}", manifest.name)],
+                                    false,
+                                    false,
+                                ));
+                            }
+
+                            // Repair: re-deploy missing companion skills
+                            if repair {
+                                let skills_dir = ironclad_dir.join("skills");
+                                for skill_rel in &manifest.companion_skills {
+                                    let src = path.join(skill_rel);
+                                    let skill_filename = std::path::Path::new(skill_rel)
+                                        .file_name()
+                                        .unwrap_or_default();
+                                    let dest = skills_dir.join(skill_filename);
+                                    if src.exists() && !dest.exists() {
+                                        std::fs::create_dir_all(&skills_dir).ok();
+                                        if std::fs::copy(&src, &dest).is_ok() {
+                                            findings.push(finding(
+                                                "plugin-companion-skill-redeployed",
+                                                "info",
+                                                1.0,
+                                                format!(
+                                                    "Re-deployed companion skill: {}",
+                                                    skill_filename.to_string_lossy()
+                                                ),
+                                                format!(
+                                                    "Plugin '{}' companion skill was missing from skills directory.",
+                                                    manifest.name
+                                                ),
+                                                "Companion skill re-deployed from plugin bundle.",
+                                                vec![],
+                                                true,
+                                                false,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            let mut f = finding(
+                                "plugin-corrupt-manifest",
+                                "medium",
+                                0.95,
+                                format!("Corrupt plugin manifest: {dir_name}"),
+                                "Plugin directory has a plugin.toml that cannot be parsed.",
+                                "Remove corrupt plugin directory.",
+                                vec![format!("rm -rf \"{}\"", path.display())],
+                                true,
+                                false,
+                            );
+                            if repair {
+                                if let Ok(()) = std::fs::remove_dir_all(&path) {
+                                    f.auto_repaired = true;
+                                }
+                            }
+                            findings.push(f);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Mark security_configured if no security findings were emitted
     let has_security_findings = findings.iter().any(|f| f.id.starts_with("security-"));
     if !has_security_findings {
@@ -1501,6 +1639,108 @@ pub async fn cmd_mechanic(
             }
             Err(e) => {
                 println!("  {WARN} Skills check failed: {e}");
+            }
+        }
+
+        // Plugins health / repair
+        {
+            use ironclad_plugin_sdk::manifest::PluginManifest;
+
+            let plugins_dir = ironclad_dir.join("plugins");
+            if plugins_dir.exists() {
+                // Scan for orphan directories (no valid plugin.toml — likely aborted install)
+                let mut orphan_dirs: Vec<PathBuf> = Vec::new();
+                let mut valid_plugins: Vec<(PathBuf, PluginManifest)> = Vec::new();
+
+                if let Ok(entries) = std::fs::read_dir(&plugins_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if !path.is_dir() {
+                            continue;
+                        }
+                        let manifest_path = path.join("plugin.toml");
+                        if !manifest_path.exists() {
+                            orphan_dirs.push(path);
+                            continue;
+                        }
+                        match PluginManifest::from_file(&manifest_path) {
+                            Ok(manifest) => valid_plugins.push((path, manifest)),
+                            Err(_) => orphan_dirs.push(path),
+                        }
+                    }
+                }
+
+                if orphan_dirs.is_empty() && valid_plugins.is_empty() {
+                    println!("  {OK} Plugins directory empty (no plugins installed)");
+                } else {
+                    // Report orphans
+                    for orphan in &orphan_dirs {
+                        let dir_name = orphan.file_name().unwrap_or_default().to_string_lossy();
+                        if repair {
+                            if prompt_yes_no(&format!(
+                                "  Remove orphan plugin directory '{dir_name}'? (no valid plugin.toml)"
+                            )) {
+                                if let Err(e) = std::fs::remove_dir_all(orphan) {
+                                    println!("  {ERR} Failed to remove {}: {e}", orphan.display());
+                                } else {
+                                    println!(
+                                        "  {ACTION} Removed orphan plugin directory: {dir_name}"
+                                    );
+                                    fixed += 1;
+                                }
+                            }
+                        } else {
+                            println!(
+                                "  {WARN} Orphan plugin directory: {dir_name} (no valid plugin.toml — use --repair to remove)"
+                            );
+                        }
+                    }
+
+                    // Vet each valid plugin
+                    let skills_dir = ironclad_dir.join("skills");
+                    for (plugin_dir, manifest) in &valid_plugins {
+                        let report = manifest.vet(plugin_dir);
+                        if report.is_ok() && report.warnings.is_empty() {
+                            println!(
+                                "  {OK} Plugin '{}' v{} — healthy",
+                                manifest.name, manifest.version
+                            );
+                        } else {
+                            for w in &report.warnings {
+                                println!("  {WARN} Plugin '{}': {w}", manifest.name);
+                            }
+                            for e in &report.errors {
+                                println!("  {ERR} Plugin '{}': {e}", manifest.name);
+                            }
+                        }
+
+                        // Repair: re-deploy missing companion skills
+                        if repair {
+                            for skill_rel in &manifest.companion_skills {
+                                let src = plugin_dir.join(skill_rel);
+                                let skill_filename = std::path::Path::new(skill_rel)
+                                    .file_name()
+                                    .unwrap_or_default();
+                                let dest = skills_dir.join(skill_filename);
+                                if src.exists() && !dest.exists() {
+                                    std::fs::create_dir_all(&skills_dir).ok();
+                                    if let Err(e) = std::fs::copy(&src, &dest) {
+                                        println!(
+                                            "  {ERR} Failed to re-deploy companion skill {}: {e}",
+                                            skill_filename.to_string_lossy()
+                                        );
+                                    } else {
+                                        println!(
+                                            "  {ACTION} Re-deployed missing companion skill: {}",
+                                            skill_filename.to_string_lossy()
+                                        );
+                                        fixed += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
