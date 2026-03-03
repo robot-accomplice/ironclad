@@ -60,7 +60,6 @@ impl ScriptRunner {
             tool: "script_runner".into(),
             message: format!("failed to spawn {interpreter}: {e}"),
         })?;
-
         let stdout = child.stdout.take().ok_or_else(|| IroncladError::Tool {
             tool: "script_runner".into(),
             message: "failed to capture script stdout".into(),

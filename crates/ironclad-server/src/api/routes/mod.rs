@@ -2984,6 +2984,19 @@ params = { path = "README.md" }
     #[tokio::test]
     async fn change_specialist_model_rejects_fallback_order() {
         let state = test_state();
+        let specialist = ironclad_db::agents::SubAgentRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "default-researcher".to_string(),
+            display_name: Some("Default Researcher".to_string()),
+            model: "openai/gpt-4o-mini".to_string(),
+            fallback_models_json: Some("[]".to_string()),
+            role: "subagent".to_string(),
+            description: Some("default specialist for tests".to_string()),
+            skills_json: Some(r#"["research"]"#.to_string()),
+            enabled: true,
+            session_count: 0,
+        };
+        ironclad_db::agents::upsert_sub_agent(&state.db, &specialist).unwrap();
         let app = build_router(state);
         let resp = app
             .oneshot(
