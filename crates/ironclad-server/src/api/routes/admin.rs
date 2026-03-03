@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use crate::config_runtime;
 use ironclad_agent::policy::{PolicyContext, ToolCallRequest};
 use ironclad_core::{
-    InputAuthority, IroncladConfig, PolicyDecision, SurvivalTier, input_capability_scan,
+    InputAuthority, IroncladConfig, IroncladError, PolicyDecision, SurvivalTier,
+    input_capability_scan,
 };
 
 use super::{
@@ -181,7 +182,78 @@ pub async fn approve_request(
         None => default_decided_by(),
     };
     match state.approvals.approve(&id, &decided_by) {
-        Ok(req) => Ok(Json(json!(req))),
+        Ok(req) => {
+            if let Some(decided_at) = req.decided_at {
+                ironclad_db::approvals::record_approval_decision(
+                    &state.db,
+                    &req.id,
+                    "approved",
+                    req.decided_by.as_deref().unwrap_or(&decided_by),
+                    &decided_at.to_rfc3339(),
+                )
+                .inspect_err(|e| tracing::warn!(error = %e, "failed to persist approval decision"))
+                .ok();
+            }
+
+            let replay_req = req.clone();
+            let replay_state = state.clone();
+            tokio::spawn(async move {
+                let params: serde_json::Value = serde_json::from_str(&replay_req.tool_input)
+                    .unwrap_or_else(|_| json!({ "raw_input": replay_req.tool_input }));
+                let replay_turn_id = replay_req
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| replay_req.id.clone());
+
+                replay_state.event_bus.publish(
+                    json!({
+                        "type": "approval_replay_started",
+                        "request_id": replay_req.id,
+                        "tool": replay_req.tool_name,
+                        "turn_id": replay_turn_id,
+                    })
+                    .to_string(),
+                );
+
+                let replay_result = super::agent::execute_tool_call_after_approval(
+                    &replay_state,
+                    &replay_req.tool_name,
+                    &params,
+                    &replay_turn_id,
+                    InputAuthority::Creator,
+                    None,
+                )
+                .await;
+
+                match replay_result {
+                    Ok(output) => replay_state.event_bus.publish(
+                        json!({
+                            "type": "approval_replay_succeeded",
+                            "request_id": replay_req.id,
+                            "tool": replay_req.tool_name,
+                            "turn_id": replay_turn_id,
+                            "output": output,
+                        })
+                        .to_string(),
+                    ),
+                    Err(error) => replay_state.event_bus.publish(
+                        json!({
+                            "type": "approval_replay_failed",
+                            "request_id": replay_req.id,
+                            "tool": replay_req.tool_name,
+                            "turn_id": replay_turn_id,
+                            "error": error,
+                        })
+                        .to_string(),
+                    ),
+                }
+            });
+
+            Ok(Json(json!({
+                "approval": req,
+                "replay_queued": true,
+            })))
+        }
         Err(e) => Err(not_found(e.to_string())),
     }
 }
@@ -374,7 +446,7 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn get_config_capabilities() -> impl IntoResponse {
     axum::Json(json!({
         "immutable_sections": ["server", "treasury", "a2a", "wallet"],
-        "mutable_sections": ["agent", "server", "database", "models", "memory", "cache", "treasury", "yield", "wallet", "a2a", "skills", "channels", "circuit_breaker", "providers", "context", "approvals", "plugins", "browser", "daemon", "update", "tier_adapt", "personality", "session", "digest", "multimodal", "knowledge", "workspace_config", "mcp", "devices", "discovery", "obsidian"],
+        "mutable_sections": ["agent", "server", "database", "models", "memory", "cache", "treasury", "yield", "wallet", "a2a", "skills", "channels", "circuit_breaker", "providers", "context", "approvals", "plugins", "browser", "daemon", "update", "tier_adapt", "personality", "session", "digest", "multimodal", "knowledge", "workspace_config", "mcp", "devices", "discovery", "obsidian", "security"],
         "notes": {
             "runtime_reload": "all sections are accepted and persisted to ironclad.toml with validation",
             "deferred_apply_examples": ["server.bind", "server.port", "wallet", "treasury.policy_engine", "browser.runtime"],
@@ -426,34 +498,6 @@ fn apply_provider_auth(
     } else {
         req.header(auth_header_name, key)
     }
-}
-
-fn is_loopback_url(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    lower.contains("127.0.0.1") || lower.contains("localhost")
-}
-
-fn legacy_loopback_support_state() -> &'static str {
-    "removed_v0_8"
-}
-
-fn classify_provider_connectivity_status(
-    provider_name: &str,
-    provider_url: &str,
-    models_url: &str,
-    _error: &str,
-    localish: bool,
-) -> (&'static str, Option<String>) {
-    let remote_discovery_target = models_url.contains("/v1/models");
-    if !localish && is_loopback_url(provider_url) && remote_discovery_target {
-        return (
-            "legacy_proxy_unsupported",
-            Some(format!(
-                "legacy loopback provider URL is unsupported in v0.8.0+: update providers.{provider_name}.url to a direct provider base URL"
-            )),
-        );
-    }
-    ("unreachable", None)
 }
 
 pub async fn get_available_models(
@@ -556,24 +600,11 @@ pub async fn get_available_models(
                 let has_ollama_shape = body.get("models").and_then(|v| v.as_array()).is_some();
                 let has_openai_shape = body.get("data").and_then(|v| v.as_array()).is_some();
                 if !has_ollama_shape && !has_openai_shape {
-                    let status = if !localish && is_loopback_url(&url) {
-                        "legacy_proxy_unsupported"
-                    } else {
-                        "error"
-                    };
-                    let hint = if status == "legacy_proxy_unsupported" {
-                        Some(format!(
-                            "legacy loopback provider URL is unsupported in v0.8.0+: update providers.{name}.url to a direct provider base URL"
-                        ))
-                    } else {
-                        None
-                    };
                     provider_reports.insert(
                         name.clone(),
                         json!({
-                            "status": status,
+                            "status": "error",
                             "error": "invalid models discovery response",
-                            "hint": hint,
                             "models": [],
                             "count": 0,
                         }),
@@ -632,14 +663,11 @@ pub async fn get_available_models(
             }
             Err(e) => {
                 let err = e.to_string();
-                let (status, hint) =
-                    classify_provider_connectivity_status(&name, &url, &models_url, &err, localish);
                 provider_reports.insert(
                     name.clone(),
                     json!({
-                        "status": status,
+                        "status": "unreachable",
                         "error": err,
-                        "hint": hint,
                         "models": [],
                         "count": 0,
                     }),
@@ -671,8 +699,6 @@ pub async fn get_available_models(
         "validation_level": validation_level,
         "proxy": {
             "mode": "in_process",
-            "loopback_listener_required": false,
-            "legacy_loopback_support": legacy_loopback_support_state()
         },
         "providers": provider_reports,
     }))
@@ -1070,6 +1096,11 @@ pub async fn get_capacity_stats(State(state): State<AppState>) -> impl IntoRespo
     axum::Json(json!({ "providers": Value::Object(providers) }))
 }
 
+pub async fn get_throttle_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let snapshot = state.rate_limiter.snapshot().await;
+    axum::Json(json!(snapshot))
+}
+
 pub async fn breaker_status(State(state): State<AppState>) -> impl IntoResponse {
     let llm = state.llm.read().await;
     let providers = llm.breakers.list_providers();
@@ -1289,6 +1320,7 @@ pub async fn execute_plugin_tool(
             let ctx = PolicyContext {
                 authority: InputAuthority::External,
                 survival_tier: SurvivalTier::Normal,
+                claim: None,
             };
             let decision = state.policy_engine.evaluate_all(&call, &ctx);
             if !decision.is_allowed() {
@@ -1734,7 +1766,7 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         "id": config.agent.id,
         "name": config.agent.name,
         "display_name": config.agent.name,
-        "role": "commander",
+        "role": "orchestrator",
         "model": config.models.primary,
         "enabled": true,
         "color": WORKSPACE_PALETTE[0],
@@ -1748,7 +1780,7 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         "voice": voice,
         "missions": missions,
         "firmware_rules": firmware_rules,
-        "skills": [],
+        "skills": &enabled_skills,
         "capabilities": [
             "orchestrate-subagents",
             "assign-tasks",
@@ -1766,16 +1798,32 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         });
         let model_mode = match sa.model.trim().to_ascii_lowercase().as_str() {
             "auto" => "auto",
-            "commander" => "commander",
+            "orchestrator" => "orchestrator",
             _ => "fixed",
         };
         let color = WORKSPACE_PALETTE[(i + 1) % WORKSPACE_PALETTE.len()];
+        let fallback_models =
+            crate::api::routes::subagents::parse_fallback_models_json(sa.fallback_models_json.as_deref());
+        // Merge per-agent skills with workspace-level enabled skills
+        let mut agent_skills: Vec<String> = sa.skills_json.as_ref().map(|s| {
+            serde_json::from_str::<Vec<String>>(s).unwrap_or_else(|e| {
+                tracing::warn!(agent = %sa.name, error = %e, "corrupt skills_json, defaulting to []");
+                Vec::new()
+            })
+        }).unwrap_or_default();
+        for ws_skill in &enabled_skills {
+            let ws = ws_skill.to_string();
+            if !agent_skills.iter().any(|s| s == &ws) {
+                agent_skills.push(ws);
+            }
+        }
         json!({
             "id": sa.id,
             "name": sa.name,
             "display_name": sa.display_name,
             "role": ROLE_SUBAGENT,
             "model": sa.model,
+            "fallback_models": fallback_models,
             "model_mode": model_mode,
             "resolved_model": runtime.map(|r| r.model.clone()),
             "enabled": sa.enabled,
@@ -1783,12 +1831,7 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
             "state": state_str,
             "session_count": session_counts.get(&sa.name).copied().unwrap_or(sa.session_count),
             "description": sa.description,
-            "skills": sa.skills_json.as_ref().map(|s| {
-                serde_json::from_str::<Vec<String>>(s).unwrap_or_else(|e| {
-                    tracing::warn!(agent = %sa.name, error = %e, "corrupt skills_json, defaulting to []");
-                    Vec::new()
-                })
-            }).unwrap_or_default(),
+            "skills": agent_skills,
             "supervisor": config.agent.id,
         })
     }).collect();
@@ -1850,11 +1893,11 @@ pub async fn change_agent_model(
     };
 
     let config = state.config.read().await;
-    let is_commander = agent_name == config.agent.name || agent_name == config.agent.id;
+    let is_orchestrator = agent_name == config.agent.name || agent_name == config.agent.id;
     let old_model;
     drop(config);
 
-    if is_commander {
+    if is_orchestrator {
         let mut config = state.config.write().await;
         old_model = config.models.primary.clone();
         let old_fallbacks = config.models.fallbacks.clone();
@@ -1870,7 +1913,7 @@ pub async fn change_agent_model(
         let models = config.models.clone();
         drop(config);
 
-        // Synchronize active router immediately for commander model changes.
+        // Synchronize active router immediately for orchestrator model changes.
         {
             let mut llm = state.llm.write().await;
             llm.router.sync_runtime(
@@ -1908,11 +1951,6 @@ pub async fn change_agent_model(
                 .collect::<Vec<_>>(),
         })))
     } else {
-        if body.fallbacks.is_some() {
-            return Err(bad_request(
-                "fallback ordering is only supported for the commander agent",
-            ));
-        }
         let agents =
             ironclad_db::agents::list_sub_agents(&state.db).map_err(|e| internal_err(&e))?;
         let existing = agents
@@ -1927,13 +1965,22 @@ pub async fn change_agent_model(
         old_model = existing.model.clone();
         let mut updated = existing.clone();
         updated.model = model.clone();
+        if let Some(requested) = body.fallbacks {
+            let normalized =
+                crate::api::routes::subagents::normalize_fallback_models(&requested, &model);
+            updated.fallback_models_json =
+                Some(serde_json::to_string(&normalized).unwrap_or_else(|_| "[]".to_string()));
+        }
         ironclad_db::agents::upsert_sub_agent(&state.db, &updated).map_err(|e| internal_err(&e))?;
         Ok(axum::Json(json!({
             "updated": true,
             "agent": agent_name,
             "old_model": old_model,
             "new_model": model,
-            "scope": "specialist (persisted to database)",
+            "fallback_models": crate::api::routes::subagents::parse_fallback_models_json(
+                updated.fallback_models_json.as_deref()
+            ),
+            "scope": "subagent (persisted to database)",
         })))
     }
 }
@@ -2059,6 +2106,177 @@ pub struct EfficiencyParams {
     pub model: Option<String>,
 }
 
+fn efficiency_window(period: &str) -> Option<String> {
+    match period {
+        "24h" => Some("-24 hours".to_string()),
+        "7d" => Some("-7 days".to_string()),
+        "30d" => Some("-30 days".to_string()),
+        "all" => None,
+        _ => Some("-7 days".to_string()),
+    }
+}
+
+fn extract_delegated_subagent(output: Option<&str>) -> String {
+    let Some(out) = output else {
+        return "(none)".to_string();
+    };
+    let marker = "delegated_subagent=";
+    let Some(idx) = out.find(marker) else {
+        return "(none)".to_string();
+    };
+    let start = idx + marker.len();
+    let tail = &out[start..];
+    tail.split_whitespace()
+        .next()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("(none)")
+        .to_string()
+}
+
+fn compute_subagent_assignment_efficacy(
+    db: &ironclad_db::Database,
+    period: &str,
+) -> Result<serde_json::Value, IroncladError> {
+    let conn = db.conn();
+    let window = efficiency_window(period);
+    let mut rows: Vec<(String, String, Option<i64>, Option<String>)> = Vec::new();
+
+    if let Some(w) = window.as_deref() {
+        let mut stmt = conn
+            .prepare(
+                "SELECT tool_name, status, duration_ms, output FROM tool_calls
+                 WHERE tool_name IN ('assign-tasks','delegate-subagent','orchestrate-subagents')
+                   AND created_at >= datetime('now', ?1)",
+            )
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        let mapped = stmt
+            .query_map([w], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        rows.extend(mapped.filter_map(std::result::Result::ok));
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT tool_name, status, duration_ms, output FROM tool_calls
+                 WHERE tool_name IN ('assign-tasks','delegate-subagent','orchestrate-subagents')",
+            )
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        let mapped = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        rows.extend(mapped.filter_map(std::result::Result::ok));
+    }
+
+    #[derive(Default)]
+    struct Stats {
+        total: i64,
+        success: i64,
+        failed: i64,
+        timeout_like: i64,
+        durations: Vec<i64>,
+    }
+
+    let mut by_subagent: std::collections::HashMap<String, Stats> =
+        std::collections::HashMap::new();
+    let mut overall = Stats::default();
+    for (_tool, status, duration_ms, output) in rows {
+        let subagent = extract_delegated_subagent(output.as_deref());
+        let entry = by_subagent.entry(subagent).or_default();
+        entry.total += 1;
+        overall.total += 1;
+        if status.eq_ignore_ascii_case("success") {
+            entry.success += 1;
+            overall.success += 1;
+        } else {
+            entry.failed += 1;
+            overall.failed += 1;
+            let lowered = output.as_deref().unwrap_or_default().to_ascii_lowercase();
+            if lowered.contains("timeout") {
+                entry.timeout_like += 1;
+                overall.timeout_like += 1;
+            }
+        }
+        if let Some(ms) = duration_ms {
+            entry.durations.push(ms);
+            overall.durations.push(ms);
+        }
+    }
+
+    let mut assignment = serde_json::Map::new();
+    let agents = ironclad_db::agents::list_sub_agents(db)?;
+    for sa in agents {
+        if sa.role.eq_ignore_ascii_case("model-proxy") {
+            continue;
+        }
+        assignment.insert(
+            sa.name.clone(),
+            json!({
+                "configured_model": sa.model,
+                "fallback_models": crate::api::routes::subagents::parse_fallback_models_json(sa.fallback_models_json.as_deref()),
+                "model_mode": match sa.model.trim().to_ascii_lowercase().as_str() {
+                    "auto" => "auto",
+                    "orchestrator" => "orchestrator",
+                    _ => "fixed",
+                },
+            }),
+        );
+    }
+
+    let stats_json = |s: &mut Stats| {
+        s.durations.sort_unstable();
+        let avg_ms = if s.durations.is_empty() {
+            0.0
+        } else {
+            s.durations.iter().sum::<i64>() as f64 / s.durations.len() as f64
+        };
+        let p95_ms = if s.durations.is_empty() {
+            0.0
+        } else {
+            let idx = ((s.durations.len() as f64) * 0.95).floor() as usize;
+            s.durations[idx.min(s.durations.len() - 1)] as f64
+        };
+        let success_rate = if s.total > 0 {
+            s.success as f64 / s.total as f64
+        } else {
+            0.0
+        };
+        json!({
+            "total": s.total,
+            "success": s.success,
+            "failed": s.failed,
+            "timeout_like": s.timeout_like,
+            "success_rate": success_rate,
+            "avg_duration_ms": avg_ms,
+            "p95_duration_ms": p95_ms,
+        })
+    };
+
+    let mut by_subagent_json = serde_json::Map::new();
+    for (name, mut stats) in by_subagent {
+        by_subagent_json.insert(name, stats_json(&mut stats));
+    }
+
+    Ok(json!({
+        "period": period,
+        "overall": stats_json(&mut overall),
+        "by_subagent": by_subagent_json,
+        "assignments": assignment,
+    }))
+}
+
 pub async fn get_efficiency(
     State(state): State<AppState>,
     Query(params): Query<EfficiencyParams>,
@@ -2068,7 +2286,19 @@ pub async fn get_efficiency(
 
     match ironclad_db::efficiency::compute_efficiency(&state.db, period, model) {
         Ok(report) => match serde_json::to_value(report) {
-            Ok(v) => Json(v).into_response(),
+            Ok(mut v) => {
+                if let Some(obj) = v.as_object_mut() {
+                    match compute_subagent_assignment_efficacy(&state.db, period) {
+                        Ok(metrics) => {
+                            obj.insert("subagent_assignment".to_string(), metrics);
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to compute subagent assignment efficacy");
+                        }
+                    }
+                }
+                Json(v).into_response()
+            }
             Err(e) => {
                 tracing::error!(error = %e, "failed to serialize efficiency report");
                 (
@@ -2179,6 +2409,7 @@ async fn run_llm_recommendation_analysis(
         temperature: Some(0.2),
         system: None,
         quality_target: None,
+        tools: vec![],
     };
 
     let llm = state.llm.read().await;
@@ -2259,6 +2490,9 @@ async fn run_llm_recommendation_analysis(
         tout,
         cost,
         Some("recommendations"),
+        false,
+        None,
+        None,
         false,
     )
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record recommendation inference cost"))
@@ -2739,30 +2973,6 @@ mod tests {
     }
 
     #[test]
-    fn classify_provider_connectivity_status_marks_local_proxy_refusal() {
-        let (status, hint) = classify_provider_connectivity_status(
-            "anthropic",
-            "http://127.0.0.1:8788/anthropic",
-            "http://127.0.0.1:8788/anthropic/v1/models",
-            "error sending request for url: connect: connection refused",
-            false,
-        );
-        assert_eq!(status, "legacy_proxy_unsupported");
-        assert!(hint.unwrap_or_default().contains("providers.anthropic.url"));
-    }
-
-    #[test]
-    fn loopback_nonlocal_proxy_can_be_marked_misconfigured() {
-        assert!(is_loopback_url("http://127.0.0.1:8788/anthropic"));
-        assert!(!is_loopback_url("https://api.anthropic.com"));
-    }
-
-    #[test]
-    fn legacy_loopback_support_state_is_removed() {
-        assert_eq!(legacy_loopback_support_state(), "removed_v0_8");
-    }
-
-    #[test]
     fn parse_db_timestamp_supports_rfc3339_and_sqlite_formats() {
         let rfc = parse_db_timestamp_utc("2026-02-26T10:11:12Z").unwrap();
         assert_eq!(rfc.to_rfc3339(), "2026-02-26T10:11:12+00:00");
@@ -2938,18 +3148,6 @@ mod tests {
         assert_eq!(format_balance(0.5, "cbBTC"), "0.50000000");
     }
 
-    // ── is_loopback_url additional tests ─────────────────────────
-
-    #[test]
-    fn is_loopback_url_localhost_case_insensitive() {
-        assert!(is_loopback_url("http://LOCALHOST:8080"));
-    }
-
-    #[test]
-    fn is_loopback_url_rejects_remote() {
-        assert!(!is_loopback_url("https://api.openai.com/v1"));
-    }
-
     // ── model_discovery_mode additional tests ────────────────────
 
     #[test]
@@ -3082,13 +3280,6 @@ mod tests {
     #[test]
     fn default_decided_by_returns_api() {
         assert_eq!(default_decided_by(), "api");
-    }
-
-    // ── legacy_loopback_support_state test ────────────────────────
-
-    #[test]
-    fn legacy_loopback_removed() {
-        assert_eq!(legacy_loopback_support_state(), "removed_v0_8");
     }
 
     // ── parse_db_timestamp_utc edge cases ────────────────────────

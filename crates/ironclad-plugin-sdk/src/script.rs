@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tracing::{debug, warn};
 
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::{IroncladError, Result, input_capability_scan};
 
 use crate::manifest::PluginManifest;
 use crate::{Plugin, ToolDef, ToolResult};
@@ -175,6 +175,43 @@ impl ScriptPlugin {
     pub fn manifest(&self) -> &PluginManifest {
         &self.manifest
     }
+
+    fn permissions_for_tool(&self, tool_name: &str) -> Vec<String> {
+        self.manifest
+            .tools
+            .iter()
+            .find(|t| t.name == tool_name)
+            .map(|t| {
+                if t.permissions.is_empty() {
+                    self.manifest.permissions.clone()
+                } else {
+                    t.permissions.clone()
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    fn enforce_runtime_permissions(&self, tool_name: &str, input: &Value) -> Result<()> {
+        let declared: Vec<String> = self
+            .permissions_for_tool(tool_name)
+            .into_iter()
+            .map(|p| p.to_ascii_lowercase())
+            .collect();
+        let scan = input_capability_scan::scan_input_capabilities(input);
+        if scan.requires_filesystem && !declared.iter().any(|p| p == "filesystem") {
+            return Err(IroncladError::Tool {
+                tool: tool_name.into(),
+                message: "tool input requires filesystem capability but plugin/tool did not declare 'filesystem' permission".into(),
+            });
+        }
+        if scan.requires_network && !declared.iter().any(|p| p == "network") {
+            return Err(IroncladError::Tool {
+                tool: tool_name.into(),
+                message: "tool input requires network capability but plugin/tool did not declare 'network' permission".into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -200,7 +237,11 @@ impl Plugin for ScriptPlugin {
                 } else {
                     ironclad_core::RiskLevel::Caution
                 },
-                permissions: self.manifest.permissions.clone(),
+                permissions: if t.permissions.is_empty() {
+                    self.manifest.permissions.clone()
+                } else {
+                    t.permissions.clone()
+                },
             })
             .collect()
     }
@@ -216,6 +257,7 @@ impl Plugin for ScriptPlugin {
     }
 
     async fn execute_tool(&self, tool_name: &str, input: &Value) -> Result<ToolResult> {
+        self.enforce_runtime_permissions(tool_name, input)?;
         let script_path = self
             .scripts
             .get(tool_name)
@@ -380,6 +422,7 @@ mod tests {
                     name: n.into(),
                     description: d.into(),
                     dangerous: false,
+                    permissions: vec![],
                 })
                 .collect(),
         }
@@ -599,6 +642,7 @@ mod tests {
                     name: n.into(),
                     description: d.into(),
                     dangerous,
+                    permissions: vec![],
                 })
                 .collect(),
         }

@@ -112,12 +112,17 @@ primary = "ollama/qwen3:8b"
         config_apply_status: Arc::new(RwLock::new(ConfigApplyStatus::new(&config_path))),
         pending_specialist_proposals: Arc::new(RwLock::new(std::collections::HashMap::new())),
         ws_tickets: ironclad_server::TicketStore::new(),
+        rate_limiter: ironclad_server::rate_limit::GlobalRateLimitLayer::new(
+            100,
+            std::time::Duration::from_secs(60),
+        ),
         policy_engine: {
             let mut engine = ironclad_agent::policy::PolicyEngine::new();
             engine.add_rule(Box::new(ironclad_agent::policy::AuthorityRule));
             engine.add_rule(Box::new(ironclad_agent::policy::CommandSafetyRule));
             Arc::new(engine)
         },
+        media_service: None,
     }
 }
 
@@ -1220,6 +1225,9 @@ async fn admin_endpoints_cover_config_wallet_breaker_and_stats() {
         0.012,
         Some("analysis"),
         false,
+        None,
+        None,
+        false,
     )
     .unwrap();
     ironclad_db::metrics::record_transaction(
@@ -1459,6 +1467,7 @@ async fn admin_model_and_provider_key_endpoints_cover_branches() {
         skills_json: None,
         enabled: true,
         session_count: 0,
+        fallback_models_json: None,
     };
     ironclad_db::agents::upsert_sub_agent(&state.db, &row).unwrap();
 
@@ -1476,7 +1485,7 @@ async fn admin_model_and_provider_key_endpoints_cover_branches() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    assert_eq!(body["scope"], "specialist (persisted to database)");
+    assert_eq!(body["scope"], "subagent (persisted to database)");
 
     let app = build_router(state.clone());
     let resp = app
@@ -1492,14 +1501,14 @@ async fn admin_model_and_provider_key_endpoints_cover_branches() {
     let body = json_body(resp).await;
     let roster = body["roster"].as_array().unwrap();
     assert!(roster.len() >= 2);
-    let commander = roster
+    let orchestrator = roster
         .iter()
-        .find(|a| a["role"] == "commander")
-        .expect("commander must be present");
+        .find(|a| a["role"] == "orchestrator")
+        .expect("orchestrator must be present");
     assert_eq!(
-        commander["skills"].as_array().unwrap().len(),
+        orchestrator["skills"].as_array().unwrap().len(),
         0,
-        "commander should not claim global skill ownership in roster"
+        "orchestrator should not claim global skill ownership in roster"
     );
     let sub = roster
         .iter()
@@ -1634,7 +1643,7 @@ async fn subagent_contract_validation_enforced() {
                 .uri("/api/subagents")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"name":"triage","model":"commander","role":"subagent","skills":["triage"]}"#,
+                    r#"{"name":"triage","model":"orchestrator","role":"subagent","skills":["triage"]}"#,
                 ))
                 .unwrap(),
         )

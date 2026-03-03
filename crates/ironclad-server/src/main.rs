@@ -5,7 +5,7 @@ use std::time::Instant;
 use clap::{Parser, Subcommand};
 use tracing::info;
 
-use ironclad_core::config::IroncladConfig;
+use ironclad_core::config::{IroncladConfig, resolve_config_path};
 use ironclad_core::style::Theme;
 use ironclad_server::cli;
 
@@ -160,6 +160,15 @@ enum Commands {
     #[command(next_help_heading = "Data")]
     #[command(subcommand)]
     Memory(MemoryCmd),
+    /// Ingest documents into the knowledge system
+    #[command(next_help_heading = "Data")]
+    Ingest {
+        /// File or directory path to ingest
+        path: String,
+        /// Emit machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage skills
     #[command(next_help_heading = "Data")]
     #[command(subcommand)]
@@ -703,19 +712,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     cli::init_api_key(parsed.api_key.clone());
     let t = cli::theme();
     eprint!("{}", t.reset());
-    let url = if parsed.url == "http://127.0.0.1:18789" && parsed.config.is_some() {
-        // Default URL — try to derive from config file
-        match parsed
-            .config
-            .as_deref()
+    let url = if parsed.url == "http://127.0.0.1:18789" {
+        // Default URL — try to derive server address from resolved config
+        resolve_config_path(parsed.config.as_deref())
             .and_then(|p| std::fs::read_to_string(p).ok())
-        {
-            Some(contents) => match IroncladConfig::from_str(&contents) {
-                Ok(cfg) => format!("http://{}:{}", cfg.server.bind, cfg.server.port),
-                Err(_) => parsed.url.clone(),
-            },
-            None => parsed.url.clone(),
-        }
+            .and_then(|contents| IroncladConfig::from_str(&contents).ok())
+            .map(|cfg| format!("http://{}:{}", cfg.server.bind, cfg.server.port))
+            .unwrap_or_else(|| parsed.url.clone())
     } else {
         parsed.url.clone()
     };
@@ -727,18 +730,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Serve { port, bind }) => cmd_serve(config_flag.clone(), port, bind).await,
         Some(Commands::Init { path }) => cmd_init(&path),
         Some(Commands::Setup) => cli::cmd_setup(),
-        Some(Commands::Check) => {
-            let cfg = config_flag
-                .clone()
-                .unwrap_or_else(|| "ironclad.toml".into());
-            cmd_check(&cfg)
-        }
+        Some(Commands::Check) => match resolve_config_path(config_flag.as_deref()) {
+            Some(p) => cmd_check(&p.to_string_lossy()),
+            None => {
+                let t = cli::theme();
+                print_banner(t);
+                eprintln!("  {} No configuration file found.", t.icon_warn());
+                eprintln!("    Searched: ~/.ironclad/ironclad.toml, ./ironclad.toml");
+                eprintln!(
+                    "    Specify a path with {}--config <path>{} or create one with {}ironclad init{}",
+                    t.bold(),
+                    t.reset(),
+                    t.bold(),
+                    t.reset()
+                );
+                eprintln!();
+                Err("no configuration file found".into())
+            }
+        },
         Some(Commands::Version) => {
             cmd_version(parsed.json);
             Ok(())
         }
         Some(Commands::Update(subcmd)) => {
-            let config_path = parsed.config.as_deref().unwrap_or("ironclad.toml");
+            let resolved = resolve_config_path(parsed.config.as_deref());
+            let config_path = resolved
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "ironclad.toml".into());
+            let config_path = config_path.as_str();
             match subcmd {
                 UpdateCmd::Check {
                     channel,
@@ -814,6 +834,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cli::cmd_memory(url, "search", None, Some(query.as_str()), limit).await
             }
         },
+        Some(Commands::Ingest { path, json }) => cmd_ingest(&path, json, config_flag.as_deref()),
         Some(Commands::Skills(sub)) => match sub {
             SkillsCmd::List => cli::cmd_skills_list(url).await,
             SkillsCmd::Show { id } => cli::cmd_skill_detail(url, &id).await,
@@ -1390,14 +1411,8 @@ async fn cmd_serve(
 
     const STEPS: u32 = 12;
 
-    let resolved_path = config_path.or_else(|| {
-        let home_config = ironclad_core::home_dir()
-            .join(".ironclad")
-            .join("ironclad.toml");
-        home_config
-            .exists()
-            .then(|| home_config.to_string_lossy().into_owned())
-    });
+    let resolved_path =
+        resolve_config_path(config_path.as_deref()).map(|p| p.to_string_lossy().into_owned());
 
     let mut config = match resolved_path {
         Some(ref p) => {
@@ -2074,6 +2089,98 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
+    // ── Security (RBAC) ──────────────────────────────────────
+    tw(&format!(
+        "  {ok} Security: deny_on_empty_allowlist={}, allowlist={:?}, trusted={:?}, api={:?}, threat_ceiling={:?}",
+        config.security.deny_on_empty_allowlist,
+        config.security.allowlist_authority,
+        config.security.trusted_authority,
+        config.security.api_authority,
+        config.security.threat_caution_ceiling,
+    ));
+    tw(&format!(
+        "  {ok} Trusted senders: {} configured",
+        config.channels.trusted_sender_ids.len()
+    ));
+
+    // Per-channel allow-list warnings
+    {
+        let mut any_channel_warn = false;
+        if let Some(ref tg) = config.channels.telegram {
+            if tg.allowed_chat_ids.is_empty() && config.security.deny_on_empty_allowlist {
+                tw(&format!(
+                    "  {warn} Telegram: allowed_chat_ids is empty (all messages will be rejected)"
+                ));
+                tw("         Hint: find your chat ID by messaging @userinfobot on Telegram");
+                any_channel_warn = true;
+            } else if !tg.allowed_chat_ids.is_empty() {
+                tw(&format!(
+                    "  {ok} Telegram: {} chat ID(s) configured",
+                    tg.allowed_chat_ids.len()
+                ));
+            }
+        }
+        if let Some(ref dc) = config.channels.discord {
+            if dc.allowed_guild_ids.is_empty() && config.security.deny_on_empty_allowlist {
+                tw(&format!(
+                    "  {warn} Discord: allowed_guild_ids is empty (all messages will be rejected)"
+                ));
+                any_channel_warn = true;
+            } else if !dc.allowed_guild_ids.is_empty() {
+                tw(&format!(
+                    "  {ok} Discord: {} guild ID(s) configured",
+                    dc.allowed_guild_ids.len()
+                ));
+            }
+        }
+        if let Some(ref wa) = config.channels.whatsapp {
+            if wa.allowed_numbers.is_empty() && config.security.deny_on_empty_allowlist {
+                tw(&format!(
+                    "  {warn} WhatsApp: allowed_numbers is empty (all messages will be rejected)"
+                ));
+                any_channel_warn = true;
+            } else if !wa.allowed_numbers.is_empty() {
+                tw(&format!(
+                    "  {ok} WhatsApp: {} number(s) configured",
+                    wa.allowed_numbers.len()
+                ));
+            }
+        }
+        if let Some(ref sig) = config.channels.signal {
+            if sig.allowed_numbers.is_empty() && config.security.deny_on_empty_allowlist {
+                tw(&format!(
+                    "  {warn} Signal: allowed_numbers is empty (all messages will be rejected)"
+                ));
+                any_channel_warn = true;
+            } else if !sig.allowed_numbers.is_empty() {
+                tw(&format!(
+                    "  {ok} Signal: {} number(s) configured",
+                    sig.allowed_numbers.len()
+                ));
+            }
+        }
+        if config.channels.email.enabled {
+            if config.channels.email.allowed_senders.is_empty()
+                && config.security.deny_on_empty_allowlist
+            {
+                tw(&format!(
+                    "  {warn} Email: allowed_senders is empty (all messages will be rejected)"
+                ));
+                any_channel_warn = true;
+            } else if !config.channels.email.allowed_senders.is_empty() {
+                tw(&format!(
+                    "  {ok} Email: {} sender(s) configured",
+                    config.channels.email.allowed_senders.len()
+                ));
+            }
+        }
+        if config.channels.trusted_sender_ids.is_empty() && !any_channel_warn {
+            tw(&format!(
+                "  {warn} No trusted senders — no user can reach Creator authority"
+            ));
+        }
+    }
+
     eprintln!();
     tw(&format!("  {ok} {s}All checks passed.{r}"));
     eprintln!();
@@ -2100,6 +2207,60 @@ fn cmd_version(json: bool) {
     tw(&format!("  target:     {}", std::env::consts::ARCH));
     tw(&format!("  os:         {}", std::env::consts::OS));
     eprintln!();
+}
+
+fn cmd_ingest(
+    path: &str,
+    json: bool,
+    config_path: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use ironclad_agent::ingest::{ingest_directory, ingest_file};
+
+    let cfg = match resolve_config_path(config_path) {
+        Some(p) => IroncladConfig::from_file(&p)?,
+        None => IroncladConfig::from_str(FALLBACK_CONFIG)?,
+    };
+
+    let db_path = cfg.database.path.to_string_lossy();
+    let db = ironclad_db::Database::new(&db_path)?;
+
+    let target = std::path::Path::new(path);
+
+    let results = if target.is_dir() {
+        ingest_directory(&db, target)?
+    } else if target.is_file() {
+        vec![ingest_file(&db, target)?]
+    } else {
+        return Err(format!("{path} does not exist or is not accessible").into());
+    };
+
+    if json {
+        let out = serde_json::to_string_pretty(&results)?;
+        std::io::Write::write_all(&mut std::io::stdout(), out.as_bytes())?;
+        std::io::Write::write_all(&mut std::io::stdout(), b"\n")?;
+    } else {
+        if results.is_empty() {
+            eprintln!("No supported files found.");
+            return Ok(());
+        }
+        for r in &results {
+            eprintln!(
+                "  ✓ {} — {} ({} chunks, {} chars)",
+                r.file_path,
+                r.file_type.label(),
+                r.chunks_stored,
+                r.total_chars
+            );
+        }
+        let total_chunks: usize = results.iter().map(|r| r.chunks_stored).sum();
+        eprintln!(
+            "\nIngested {} file(s), {} total chunks.",
+            results.len(),
+            total_chunks
+        );
+    }
+
+    Ok(())
 }
 
 fn cmd_web(config_path: Option<&str>, cli_url: &str) -> Result<(), Box<dyn std::error::Error>> {

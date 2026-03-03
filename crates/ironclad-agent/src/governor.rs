@@ -1,14 +1,24 @@
-use ironclad_core::config::SessionConfig;
+use chrono::{DateTime, Utc};
+use ironclad_core::config::{DigestConfig, SessionConfig};
 use ironclad_db::Database;
 use ironclad_llm::format::UnifiedMessage;
 
 pub struct SessionGovernor {
     config: SessionConfig,
+    digest_config: DigestConfig,
 }
 
 impl SessionGovernor {
     pub fn new(config: SessionConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            digest_config: DigestConfig::default(),
+        }
+    }
+
+    pub fn with_digest(mut self, digest_config: DigestConfig) -> Self {
+        self.digest_config = digest_config;
+        self
     }
 
     /// Run a single maintenance tick: expire stale sessions based on TTL.
@@ -21,6 +31,14 @@ impl SessionGovernor {
             if let Err(e) = self.compact_before_archive(db, session_id) {
                 tracing::warn!(error = %e, session_id = %session_id, "compaction failed before archive, proceeding with expiry");
             }
+            // Generate episodic digest before the session status changes
+            if let Ok(Some(session)) = ironclad_db::sessions::get_session(db, session_id) {
+                crate::digest::digest_on_close(db, &self.digest_config, &session);
+            }
+            // Clean up checkpoints before expiry
+            if let Err(e) = ironclad_db::checkpoint::clear_checkpoints(db, session_id) {
+                tracing::warn!(error = %e, session_id = %session_id, "failed to clear checkpoints");
+            }
             if let Err(e) = ironclad_db::sessions::set_session_status(
                 db,
                 session_id,
@@ -30,6 +48,9 @@ impl SessionGovernor {
                 continue;
             }
             expired += 1;
+        }
+        if let Err(e) = self.decay_episodic_importance(db) {
+            tracing::warn!(error = %e, "episodic importance decay failed during governor tick");
         }
         Ok(expired)
     }
@@ -59,6 +80,10 @@ impl SessionGovernor {
         for s in &agent_scoped {
             if let Err(e) = self.compact_before_archive(db, &s.id) {
                 tracing::warn!(error = %e, session_id = %s.id, "compaction failed before rotation");
+            }
+            crate::digest::digest_on_close(db, &self.digest_config, s);
+            if let Err(e) = ironclad_db::checkpoint::clear_checkpoints(db, &s.id) {
+                tracing::warn!(error = %e, session_id = %s.id, "failed to clear checkpoints on rotation");
             }
         }
         let archived = agent_scoped.len();
@@ -94,6 +119,54 @@ impl SessionGovernor {
         );
         ironclad_db::sessions::append_message(db, session_id, "system", &digest)?;
         Ok(())
+    }
+
+    fn decay_episodic_importance(&self, db: &Database) -> ironclad_core::Result<usize> {
+        let half_life_days = self.digest_config.decay_half_life_days as f64;
+        if half_life_days <= 0.0 {
+            return Ok(0);
+        }
+
+        let now = Utc::now();
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT id, importance, created_at FROM episodic_memory")
+            .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let importance: i32 = row.get(1)?;
+                let created_at: String = row.get(2)?;
+                Ok((id, importance, created_at))
+            })
+            .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+
+        let mut updates: Vec<(String, i32)> = Vec::new();
+        for row in rows {
+            let (id, importance, created_at) =
+                row.map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+            if let Ok(created_dt) = DateTime::parse_from_rfc3339(&created_at) {
+                let age_days = (now - created_dt.with_timezone(&Utc))
+                    .to_std()
+                    .map(|d| d.as_secs_f64() / 86_400.0)
+                    .unwrap_or(0.0);
+                let decayed = crate::digest::decay_importance(importance, age_days, half_life_days);
+                if decayed != importance {
+                    updates.push((id, decayed));
+                }
+            }
+        }
+        drop(stmt);
+
+        for (id, new_importance) in &updates {
+            conn.execute(
+                "UPDATE episodic_memory SET importance = ?1 WHERE id = ?2",
+                (&new_importance, id),
+            )
+            .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+        }
+
+        Ok(updates.len())
     }
 }
 

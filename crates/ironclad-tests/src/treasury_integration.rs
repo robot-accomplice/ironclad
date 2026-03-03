@@ -63,6 +63,9 @@ fn inference_budget_tracking() {
             cost,
             Some("T3"),
             false,
+            None,
+            None,
+            false,
         )
         .unwrap();
         total_cost += cost;

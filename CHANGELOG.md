@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-03-03
+
+### Fixed
+
+- **Sub-agent fallback model persistence**: `upsert_sub_agent` now normalizes missing/empty `fallback_models_json` to `'[]'` so inserts/updates cannot violate the `sub_agents.fallback_models_json NOT NULL` constraint.
+- **Agent loop detection semantics**: loop detection in `AgentLoop::transition` now evaluates against prior calls before recording the current call, matching `LOOP_DETECTION_WINDOW` intent.
+- **Financial policy amount normalization**: `FinancialRule::extract_amount_cents` now interprets `amount` consistently as dollars (int/float), while cent-denominated keys remain explicit (`amount_cents`, `cents`, `value_cents`).
+
+## [0.9.2] - 2026-03-02
+
+### Added
+
+- **Wiring Remediation (Phase 0)**: Comprehensive Tier 1–3 wiring audit remediation. 14 gates cleared — all functional wires verified against code. See `docs/audit/wiring-audit-v0.9.md` for the full re-audit.
+- **Unified Request Pipeline**: API (`agent_message`) and channel (`process_channel_message`) paths now share `prepare_inference` + `execute_inference_pipeline` in `core.rs`, eliminating 6+ behavioral asymmetries between entry points.
+- **Multi-Tool Parsing**: `parse_tool_calls` (plural) correctly parses multiple tool invocations from a single LLM response across all four provider formats.
+- **OpenAI Responses + Google Tool Wiring**: Bidirectional tool support for OpenAI Responses API and Google Generative AI — tool definitions translated into requests, structured tool calls parsed from responses with `{"tool_call": ...}` shim.
+- **Quality Warm Start**: `QualityTracker` is seeded from `inference_costs` on startup, eliminating cold-start assumptions for metascore routing.
+- **Escalation Read Feedback**: `EscalationTracker` acceptance history now feeds routing weight adjustments via `escalation_bias`, closing the feedback loop.
+- **Approval Resume**: Blocked tool calls are re-executed asynchronously after approval via `execute_tool_call_after_approval`.
+- **Hippocampus (2.13)**: Self-describing schema map with auto-discovery of all system tables. Agent-created tables (`ag_<id>_*`) with access levels, row counts, and guardrails. Compact summary injected into system prompt (~200 tokens) for ambient storage awareness.
+- **Agent Data Tools**: `CreateTable`, `AlterTable`, `DropTable` registered in ToolRegistry with hippocampus auto-registration, size limits, and reserved-name enforcement.
+- **Document Ingestion Pipeline (3.5.5)**: `ironclad ingest <path>` CLI and `POST /api/knowledge/ingest` API. Supports `.md`, `.txt`, `.rs`, `.py`, `.js`, `.ts`, `.pdf` files. Parse → chunk (512 tokens, 64-token overlap) → embed → store in memory system.
+- **IANA Timezone Support (1.18)**: Cron scheduler evaluates session reset schedules using IANA timezone identifiers. Conformance tests for DST transitions, sub-minute cron, timezone-prefixed expressions.
+- **Inference Costs Extension**: `latency_ms` (INTEGER), `quality_score` (REAL), `escalation` (BOOLEAN) columns added to `inference_costs` table. All inference calls now record latency and escalation state.
+- **MCP Server Gateway**: First plugin release. `IroncladMcpHandler` bridges rmcp's `ServerHandler` to the ToolRegistry. External MCP clients (Claude Desktop, Cursor, VS Code) connect via StreamableHTTP, discover tools through `tools/list`, invoke through `tools/call`. All MCP tool calls run with `InputAuthority::External`.
+- **Golden Test Fixtures**: Deterministic golden files for delegation, delegation follow-up, echo follow-up, and echo tool-call pathways.
+- **Tool-Call Shim Tests**: Harness integration tests verifying the full structured tool_call → parse → execute → observation → follow-up pipeline.
+
+### Changed
+
+- **`post_turn_ingest` Tool Results**: All call sites now pass actual tool call name + result from the ReAct loop instead of `&[]`. Episodic memory captures tool-use context, improving digest quality.
+- **Gate System Note**: `build_gate_system_note` now wired in both API and channel paths (previously channel-only).
+- **Shared Confidence Evaluator**: `infer_with_fallback` uses the shared `LlmService.confidence` instance instead of creating a local copy.
+- **Context Pruning**: `needs_pruning()` → `soft_trim()` wired in `build_context` when assembled context exceeds the token budget.
+- **Checkpoint Load**: `load_checkpoint` called during inference preparation for session resume (previously write-only).
+- **Importance Decay**: `decay_importance` called from `SessionGovernor.tick()` after digest, preventing stale context accumulation.
+- **CI Pipeline**: Parallelized per-crate test execution and harness quick-test stages for faster CI runtime.
+
+### Removed
+
+- **`SpawnManager`**: Dead module removed (`spawning.rs` deleted, zero references). Virtual delegation tool pattern replaced it.
+- **Dead Routing Surfaces**: `uniroute.rs` (ModelVector, QueryRequirements, ModelVectorRegistry) deleted. Dead selector functions (`select_for_complexity`, `select_cheapest_qualified`, `select_for_quality_target`) removed. `ModelRouter` retained as active runtime override/fallback router.
+- **`router_integration.rs`**: Dead test module removed (tested deleted routing code).
+- **`skills-roadmap-2026.md`**: Superseded by `capabilities-roadmap-2026.md`.
+
+## [0.9.1] - 2026-03-01
+
+### Added
+
+- **Model Metascore Routing (2.19 core)**: Unified per-model scoring replaces availability-first routing. `ModelProfile` combines static provider attributes (cost, tier, locality) with dynamic observations (quality, capacity headroom, circuit breaker health). `metascore()` produces a transparent 5-dimension breakdown (efficacy, cost, availability, locality, confidence) with configurable weights for cost-aware mode. `select_by_metascore()` is now the primary routing decision in `select_routed_model_with_audit()`.
+- **Tiered Inference Pipeline (2.3)**: `ConfidenceEvaluator` scores local model responses using token probability, response length, and self-reported uncertainty signals. Responses below the confidence floor trigger automatic escalation to the next model in the fallback chain. `EscalationTracker` records escalation events for capacity/cost telemetry.
+- **Throttle Event Observability (1.17)**: New `GET /api/stats/throttle` endpoint exposes live rate-limit counters including global/per-IP/per-actor request counts, throttle tallies, and top-10 offenders. `ThrottleSnapshot` struct provides admin visibility into abuse patterns.
+- **Quality Tracking**: `QualityTracker` now records observations on every inference success with a heuristic quality signal (response structure, finish reason, latency). Exponential moving average feeds into metascore efficacy dimension.
+- **Audit Trail Extensions**: `ModelSelectionAudit` now includes `metascore_breakdown` (full per-dimension scores) and `complexity_score` for routing decisions. `ModelCandidateAudit` includes per-candidate metascores.
+- **Profile module** (`ironclad-llm::profile`): `ModelProfile`, `MetascoreBreakdown`, `build_model_profiles()`, `select_by_metascore()` — 9 unit tests covering local/cloud task routing, cold-start penalties, cost-aware selection, blocked model filtering, and deterministic tie-breaking.
+
+### Changed
+
+- **Routing hot path**: `select_routed_model_with_audit()` now extracts features from user content, classifies task complexity, builds model profiles, and selects via metascore — replacing the previous first-usable-model strategy.
+- **Rate limiter architecture**: `GlobalRateLimitLayer` is now constructed once at startup and shared between the axum middleware stack and `AppState`, enabling admin observability of the same rate-limit counters the middleware uses.
+
+## [0.9.0] - 2026-03-01
+
+### Added
+
+- **Durable Delivery Queue**: Channel messages now persist to SQLite before delivery. On startup, `DeliveryQueue::with_store(db)` recovers undelivered messages and retries them with exponential backoff, preventing message loss across restarts.
+- **Episodic Digest**: `digest_on_close()` is now wired into `SessionGovernor`. When sessions expire or rotate, the governor summarizes conversation history via the LLM and stores it as episodic memory, improving long-term context quality and reducing stale-context dredging.
+- **Prompt Compression**: A `PromptCompressor` gate in the context assembly pipeline compresses prompts when `config.cache.prompt_compression` is enabled. Reduces token usage on large context windows while preserving semantic fidelity.
+- **Context Checkpoint**: New `[context.checkpoint]` config section with `enabled` and `every_n_turns` controls. Checkpoints save system-prompt hash, memory summary, active tasks, and conversation digest to `context_checkpoints` table, enabling fast context warm-up on session restore.
+- **Introspection Skill**: Four new read-only tools (`get_runtime_context`, `get_memory_stats`, `get_channel_health`, `get_subagent_status`) give the agent self-awareness of its runtime state, memory tiers, channel connectivity, and subagent/task status.
+- **ToolContext extensions**: `channel: Option<String>` and `db: Option<Database>` fields added to `ToolContext`, enabling tools to understand their invocation context and query runtime state directly.
+- **Architecture diagrams**: Five new dataflow diagrams (§20–§24) and three new sequence diagrams (§14–§16) documenting checkpoint, delivery queue, digest, compression, and introspection subsystems.
+
+### Changed
+
+- **Agent module decomposition**: The monolithic `agent.rs` (5,832 lines) has been decomposed into 15 focused submodules under `agent/`: `mod.rs` (86 lines), `handlers.rs`, `streaming.rs`, `channel_message.rs`, `core.rs`, `decomposition.rs`, `routing.rs`, `tools.rs`, `guards.rs`, `delegation.rs`, `diagnostics.rs`, `orchestration.rs`, `bot_commands.rs`, `channel_helpers.rs`, `poll_loops.rs`. No file exceeds 500 lines.
+- **Test decomposition**: The monolithic `tests.rs` (1,067 lines) split into 6 focused test modules under `agent/tests/`: `guard_tests`, `tool_tests`, `channel_tests`, `decomposition_tests`, `diagnostics_tests`, `routing_tests`.
+- **Decomposition helper**: Extracted shared decomposition orchestration logic (previously duplicated between `agent_message` and `process_channel_message`) into `decomposition.rs::apply_decomposition_decision()`.
+- **DigestConfig threading**: `SessionGovernor` now receives `DigestConfig` from the heartbeat scheduler, enabling configurable digest behavior without hardcoded defaults.
+
 ## [0.8.9] - 2026-03-01
 
 ### Security
@@ -367,7 +447,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Roster and status semantics**: `/api/roster`, `/api/agent/status`, and dashboard agent views now distinguish taskable subagents from model proxies and report taskable counts with clearer operator-facing terminology.
-- **Subagent model assignment options**: Added support for `auto` (router-controlled) and `commander` (primary-agent-assigned) model modes for taskable subagents, including runtime model resolution behavior.
+- **Subagent model assignment options**: Added support for `auto` (router-controlled) and `orchestrator` (primary-agent-assigned) model modes for taskable subagents, including runtime model resolution behavior.
 - **Context forensics UX**: Context Explorer now supports live stream-turn handoff and direct forensic drill-down using active `turn_id` metadata.
 
 ## [0.6.1] - 2026-02-24

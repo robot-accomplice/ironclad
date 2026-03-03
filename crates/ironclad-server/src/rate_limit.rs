@@ -91,6 +91,58 @@ impl GlobalRateLimitLayer {
         let now = Instant::now();
         counter.retain(|_, (_, start)| now.duration_since(*start) < window);
     }
+
+    /// Snapshot current throttle statistics for admin observability.
+    ///
+    /// Returns counts of throttled requests per-IP, per-actor, and globally
+    /// within the current window, plus top offenders (up to 10 each).
+    pub async fn snapshot(&self) -> ThrottleSnapshot {
+        let guard = self.state.lock().await;
+
+        let mut top_ips: Vec<_> = guard
+            .throttled_per_ip
+            .iter()
+            .map(|(ip, &count)| (ip.to_string(), count))
+            .collect();
+        top_ips.sort_by(|a, b| b.1.cmp(&a.1));
+        top_ips.truncate(10);
+
+        let mut top_actors: Vec<_> = guard
+            .throttled_per_actor
+            .iter()
+            .map(|(actor, &count)| (actor.clone(), count))
+            .collect();
+        top_actors.sort_by(|a, b| b.1.cmp(&a.1));
+        top_actors.truncate(10);
+
+        ThrottleSnapshot {
+            window_secs: self.window.as_secs(),
+            global_count: guard.count,
+            global_capacity: self.capacity,
+            per_ip_capacity: self.per_ip_capacity,
+            per_actor_capacity: self.per_actor_capacity,
+            throttled_global: guard.throttled_global,
+            active_ips: guard.per_ip.len(),
+            active_actors: guard.per_actor.len(),
+            top_throttled_ips: top_ips,
+            top_throttled_actors: top_actors,
+        }
+    }
+}
+
+/// Snapshot of current throttle counters for observability.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ThrottleSnapshot {
+    pub window_secs: u64,
+    pub global_count: u64,
+    pub global_capacity: u64,
+    pub per_ip_capacity: u64,
+    pub per_actor_capacity: u64,
+    pub throttled_global: u64,
+    pub active_ips: usize,
+    pub active_actors: usize,
+    pub top_throttled_ips: Vec<(String, u64)>,
+    pub top_throttled_actors: Vec<(String, u64)>,
 }
 
 impl<S> Layer<S> for GlobalRateLimitLayer {
@@ -494,5 +546,30 @@ mod tests {
             .unwrap();
         let resp = svc.ready().await.unwrap().call(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn snapshot_reflects_throttle_state() {
+        let layer = GlobalRateLimitLayer::new(2, Duration::from_secs(60));
+        let mut svc = layer.layer(dummy_service().into_service());
+
+        // Exhaust global capacity.
+        for _ in 0..2 {
+            let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+            let _ = svc.ready().await.unwrap().call(req).await.unwrap();
+        }
+        // This should be throttled.
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let resp = svc.ready().await.unwrap().call(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let snap = layer.snapshot().await;
+        assert_eq!(snap.global_count, 2);
+        assert_eq!(snap.global_capacity, 2);
+        assert!(
+            snap.throttled_global >= 1,
+            "should record ≥1 throttled global"
+        );
+        assert_eq!(snap.window_secs, 60);
     }
 }

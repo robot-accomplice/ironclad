@@ -1,31 +1,56 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use futures_util::StreamExt;
 use ironclad_core::{IroncladError, Result};
 use lettre::message::{Mailbox, MessageBuilder};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+use mail_parser::MimeHeaders;
 use serde_json::json;
-use tracing::{debug, warn};
+use tokio::sync::Notify;
+use tokio_util::compat::TokioAsyncReadCompatExt;
+use tracing::{debug, error, info, warn};
 
 use super::{ChannelAdapter, InboundMessage, OutboundMessage};
+
+/// TLS stream type used for IMAP connections.
+/// Chain: tokio TcpStream → compat (futures IO) → native-tls TLS.
+type ImapTlsStream = async_native_tls::TlsStream<tokio_util::compat::Compat<tokio::net::TcpStream>>;
 
 /// Maximum email body size (1 MB). Content beyond this limit is truncated.
 const MAX_EMAIL_BODY_BYTES: usize = 1_048_576;
 
 /// Email channel adapter for bidirectional email communication.
+///
+/// Supports SMTP sending (via Lettre) and IMAP receiving (via async-imap).
+/// The IMAP listener can authenticate with password or XOAUTH2 (Gmail).
 pub struct EmailAdapter {
     from_address: String,
     smtp_host: String,
-    #[allow(dead_code)]
     imap_host: String,
-    #[allow(dead_code)]
     imap_port: u16,
+    username: String,
+    password: String,
     allowed_senders: Vec<String>,
+    /// When `true`, an empty `allowed_senders` list denies all messages (secure default).
+    /// When `false`, an empty list allows all messages (legacy behavior).
+    deny_on_empty: bool,
     buffer: Arc<Mutex<VecDeque<InboundMessage>>>,
     transport: AsyncSmtpTransport<Tokio1Executor>,
+    /// IMAP polling interval (defaults to 30s if not overridden).
+    poll_interval: Duration,
+    /// OAuth2 access token for XOAUTH2 authentication (Gmail).
+    oauth2_token: Option<String>,
+    /// Whether to use IMAP IDLE when supported by the server.
+    imap_idle_enabled: bool,
+    /// Handle for the background IMAP listener task.
+    imap_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Shutdown signal for the IMAP listener.
+    shutdown: Arc<Notify>,
 }
 
 impl EmailAdapter {
@@ -38,7 +63,7 @@ impl EmailAdapter {
         username: String,
         password: String,
     ) -> Result<Self> {
-        let creds = Credentials::new(username, password);
+        let creds = Credentials::new(username.clone(), password.clone());
         let transport = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp_host)
             .map_err(|e| IroncladError::Config(format!("invalid SMTP relay hostname: {e}")))?
             .port(smtp_port)
@@ -50,9 +75,17 @@ impl EmailAdapter {
             smtp_host,
             imap_host,
             imap_port,
+            username,
+            password,
             allowed_senders: Vec::new(),
+            deny_on_empty: false,
             buffer: Arc::new(Mutex::new(VecDeque::new())),
             transport,
+            poll_interval: Duration::from_secs(30),
+            oauth2_token: None,
+            imap_idle_enabled: true,
+            imap_handle: Mutex::new(None),
+            shutdown: Arc::new(Notify::new()),
         })
     }
 
@@ -61,10 +94,33 @@ impl EmailAdapter {
         self
     }
 
-    /// Check if a sender is in the allowed list (empty list = allow all).
+    pub fn with_deny_on_empty(mut self, deny: bool) -> Self {
+        self.deny_on_empty = deny;
+        self
+    }
+
+    pub fn with_poll_interval(mut self, interval: Duration) -> Self {
+        self.poll_interval = interval;
+        self
+    }
+
+    pub fn with_oauth2_token(mut self, token: Option<String>) -> Self {
+        self.oauth2_token = token;
+        self
+    }
+
+    pub fn with_imap_idle_enabled(mut self, enabled: bool) -> Self {
+        self.imap_idle_enabled = enabled;
+        self
+    }
+
+    /// Check if a sender is in the allowed list.
+    ///
+    /// When `deny_on_empty` is `true`, an empty list rejects all senders (secure default).
+    /// When `deny_on_empty` is `false`, an empty list allows all senders (legacy behavior).
     pub fn is_sender_allowed(&self, sender: &str) -> bool {
         if self.allowed_senders.is_empty() {
-            return true;
+            return !self.deny_on_empty;
         }
         let sender_lower = sender.to_lowercase();
         self.allowed_senders
@@ -152,6 +208,344 @@ impl EmailAdapter {
             "message_id": format!("<{}.ironclad@{}>", uuid::Uuid::new_v4(), self.smtp_host),
         })
     }
+
+    /// Start the background IMAP listener that polls for new messages.
+    ///
+    /// Requires `imap_host` to be configured. The listener connects via TLS,
+    /// authenticates (password or XOAUTH2), and polls INBOX for unseen messages.
+    pub async fn start_imap_listener(self: &Arc<Self>) -> Result<()> {
+        if self.imap_host.is_empty() {
+            return Err(IroncladError::Config(
+                "IMAP host not configured".to_string(),
+            ));
+        }
+        let adapter = Arc::clone(self);
+        let handle = tokio::spawn(async move {
+            if let Err(e) = imap_poll_loop(adapter).await {
+                error!(error = %e, "IMAP listener terminated with error");
+            }
+        });
+        *self.imap_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+        if self.imap_idle_enabled {
+            warn!("IMAP IDLE requested but not yet implemented; falling back to polling");
+        }
+        info!(host = %self.imap_host, port = %self.imap_port, "IMAP listener started");
+        Ok(())
+    }
+
+    /// Shut down the background IMAP listener gracefully.
+    pub async fn shutdown_imap(&self) {
+        self.shutdown.notify_waiters();
+        let handle = self
+            .imap_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            let _ = handle.await;
+        }
+    }
+}
+
+/// Build the XOAUTH2 SASL token for Gmail authentication.
+///
+/// Format: `base64("user=" + user + "\x01auth=Bearer " + token + "\x01\x01")`
+pub fn build_xoauth2_token(username: &str, access_token: &str) -> String {
+    use base64::Engine;
+    let sasl = format!("user={}\x01auth=Bearer {}\x01\x01", username, access_token);
+    base64::engine::general_purpose::STANDARD.encode(sasl.as_bytes())
+}
+
+/// Parse a raw RFC 5322 email into an InboundMessage using `mail-parser`.
+///
+/// Returns `None` if the message cannot be parsed or has no usable body.
+/// Extracts: From, Subject, Body (text/plain preferred, text/html fallback),
+/// Thread-ID (via In-Reply-To / Message-ID), and attachment metadata.
+pub fn parse_email_rfc5322(
+    raw: &[u8],
+    allowed_senders: &[String],
+    deny_on_empty: bool,
+) -> Option<InboundMessage> {
+    let parsed = mail_parser::MessageParser::default().parse(raw)?;
+
+    let from = parsed
+        .from()
+        .and_then(|addrs| addrs.first())
+        .and_then(|addr| addr.address())
+        .unwrap_or("");
+    if from.is_empty() {
+        warn!("IMAP: skipping message with no From address");
+        return None;
+    }
+
+    // Sender filtering (reuses same logic as EmailAdapter::is_sender_allowed)
+    if !is_sender_allowed_static(from, allowed_senders, deny_on_empty) {
+        debug!(from = from, "IMAP: sender not in allowed list, skipping");
+        return None;
+    }
+
+    let subject = parsed.subject().unwrap_or("");
+    let message_id = parsed.message_id().map(|s| s.to_string());
+    let in_reply_to = parsed
+        .in_reply_to()
+        .as_text_list()
+        .and_then(|list| list.first().map(|s| s.to_string()));
+
+    // Body extraction: prefer text/plain, fall back to text/html
+    let body_raw = parsed
+        .body_text(0)
+        .map(|s| s.to_string())
+        .or_else(|| {
+            parsed.body_html(0).map(|s| {
+                // Strip HTML tags for a rough plaintext fallback
+                strip_html_tags(&s)
+            })
+        })
+        .unwrap_or_default();
+
+    let body = if body_raw.len() > MAX_EMAIL_BODY_BYTES {
+        warn!(
+            from = from,
+            original_len = body_raw.len(),
+            "IMAP email body exceeds {} bytes; truncating",
+            MAX_EMAIL_BODY_BYTES
+        );
+        let mut end = MAX_EMAIL_BODY_BYTES;
+        while end > 0 && !body_raw.is_char_boundary(end) {
+            end -= 1;
+        }
+        body_raw[..end].to_string()
+    } else {
+        body_raw
+    };
+
+    // Attachment metadata extraction — uses MediaAttachment for cross-channel consistency
+    let attachments: Vec<super::MediaAttachment> = parsed
+        .attachments()
+        .map(|part| {
+            let ct = part
+                .content_type()
+                .map(|ct| format!("{}/{}", ct.ctype(), ct.subtype().unwrap_or("octet-stream")))
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            super::MediaAttachment {
+                media_type: super::MediaType::from_content_type(&ct),
+                source_url: None,
+                local_path: None,
+                filename: Some(part.attachment_name().unwrap_or("unnamed").to_string()),
+                content_type: ct,
+                size_bytes: Some(part.contents().len()),
+                caption: None,
+            }
+        })
+        .collect();
+
+    // DKIM-Signature presence check (lightweight; full verification deferred)
+    let has_dkim = parsed.header_values("DKIM-Signature").next().is_some();
+
+    let content = if subject.is_empty() {
+        body
+    } else {
+        format!("[Subject: {subject}] {body}")
+    };
+
+    let thread_id = in_reply_to
+        .as_deref()
+        .or(message_id.as_deref())
+        .unwrap_or("default")
+        .to_string();
+
+    Some(InboundMessage {
+        id: message_id.clone().unwrap_or_else(|| "unknown".to_string()),
+        platform: "email".to_string(),
+        sender_id: from.to_string(),
+        content,
+        timestamp: Utc::now(),
+        metadata: Some(json!({
+            "subject": subject,
+            "message_id": message_id,
+            "in_reply_to": in_reply_to,
+            "thread_id": thread_id,
+            "attachments": attachments,
+            "has_dkim_signature": has_dkim,
+        })),
+    })
+}
+
+/// Static sender-allowed check (no &self needed — usable from free functions).
+fn is_sender_allowed_static(sender: &str, allowed: &[String], deny_on_empty: bool) -> bool {
+    if allowed.is_empty() {
+        return !deny_on_empty;
+    }
+    let sender_lower = sender.to_lowercase();
+    allowed.iter().any(|s| s.to_lowercase() == sender_lower)
+}
+
+/// Rough HTML tag stripping for text/html fallback.
+fn strip_html_tags(html: &str) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(ch),
+            _ => {}
+        }
+    }
+    result
+}
+
+/// Background IMAP poll loop. Connects, authenticates, and polls for unseen messages.
+async fn imap_poll_loop(adapter: Arc<EmailAdapter>) -> Result<()> {
+    let mut backoff_secs = 1u64;
+
+    loop {
+        match run_imap_session(&adapter).await {
+            Ok(()) => {
+                // Session ended normally (e.g. shutdown signal)
+                info!("IMAP session ended normally");
+                return Ok(());
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    backoff_secs = backoff_secs,
+                    "IMAP session error, reconnecting"
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
+                    _ = adapter.shutdown.notified() => {
+                        info!("IMAP listener shutdown requested");
+                        return Ok(());
+                    }
+                }
+                backoff_secs = (backoff_secs * 2).min(300);
+            }
+        }
+    }
+}
+
+/// Run a single IMAP session: connect, authenticate, poll INBOX.
+async fn run_imap_session(adapter: &Arc<EmailAdapter>) -> Result<()> {
+    // Establish TLS connection: tokio TCP → compat wrapper → native-tls
+    let tcp = tokio::net::TcpStream::connect((adapter.imap_host.as_str(), adapter.imap_port))
+        .await
+        .map_err(|e| IroncladError::Channel(format!("IMAP TCP connect failed: {e}")))?;
+    let tcp_compat = tcp.compat();
+    let tls = async_native_tls::TlsConnector::new();
+    let tls_stream: ImapTlsStream = tls
+        .connect(&adapter.imap_host, tcp_compat)
+        .await
+        .map_err(|e| IroncladError::Channel(format!("IMAP TLS handshake failed: {e}")))?;
+    let client: async_imap::Client<ImapTlsStream> = async_imap::Client::new(tls_stream);
+
+    // Authenticate
+    let mut session: async_imap::Session<ImapTlsStream> = if let Some(ref token) =
+        adapter.oauth2_token
+    {
+        let xoauth2 = build_xoauth2_token(&adapter.username, token);
+        let auth = ImapXoauth2Auth {
+            token: xoauth2.clone(),
+        };
+        client
+            .authenticate("XOAUTH2", auth)
+            .await
+            .map_err(|(e, _)| IroncladError::Channel(format!("IMAP XOAUTH2 auth failed: {e}")))?
+    } else {
+        client
+            .login(&adapter.username, &adapter.password)
+            .await
+            .map_err(|(e, _)| IroncladError::Channel(format!("IMAP login failed: {e}")))?
+    };
+
+    info!("IMAP authenticated successfully");
+
+    // Select INBOX
+    session
+        .select("INBOX")
+        .await
+        .map_err(|e| IroncladError::Channel(format!("IMAP SELECT INBOX failed: {e}")))?;
+
+    // Poll loop
+    loop {
+        // Search for unseen messages using UIDs (not sequence numbers).
+        // UIDs are stable across concurrent modifications, unlike sequence numbers
+        // which shift when other messages are deleted.
+        let unseen = session
+            .uid_search("UNSEEN")
+            .await
+            .map_err(|e| IroncladError::Channel(format!("IMAP UID SEARCH failed: {e}")))?;
+
+        if !unseen.is_empty() {
+            let uid_list: String = unseen
+                .iter()
+                .map(|uid: &u32| uid.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+
+            debug!(count = unseen.len(), "IMAP fetching unseen messages by UID");
+
+            let fetches = session
+                .uid_fetch(&uid_list, "RFC822")
+                .await
+                .map_err(|e| IroncladError::Channel(format!("IMAP UID FETCH failed: {e}")))?;
+
+            let mut fetch_vec: Vec<async_imap::types::Fetch> = Vec::new();
+            {
+                let mut stream = std::pin::pin!(fetches);
+                while let Some(item) = stream.next().await {
+                    if let Ok(fetch) = item {
+                        fetch_vec.push(fetch);
+                    }
+                }
+            }
+
+            for fetch in &fetch_vec {
+                if let Some(body) = fetch.body()
+                    && let Some(msg) =
+                        parse_email_rfc5322(body, &adapter.allowed_senders, adapter.deny_on_empty)
+                {
+                    debug!(
+                        from = %msg.sender_id,
+                        id = %msg.id,
+                        "IMAP received email"
+                    );
+                    adapter.push_message(msg);
+                }
+            }
+
+            // Mark fetched messages as Seen using UID STORE for consistency
+            let store_result = session
+                .uid_store(&uid_list, "+FLAGS (\\Seen)")
+                .await
+                .map_err(|e| IroncladError::Channel(format!("IMAP UID STORE flags failed: {e}")))?;
+            // Consume the store response stream to completion
+            let mut store_stream = std::pin::pin!(store_result);
+            while store_stream.next().await.is_some() {}
+        }
+
+        // Wait for poll interval or shutdown signal
+        tokio::select! {
+            _ = tokio::time::sleep(adapter.poll_interval) => {}
+            _ = adapter.shutdown.notified() => {
+                info!("IMAP shutdown during poll wait");
+                let _ = session.logout().await;
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// XOAUTH2 authenticator wrapper for async-imap.
+struct ImapXoauth2Auth {
+    token: String,
+}
+
+impl async_imap::Authenticator for ImapXoauth2Auth {
+    type Response = String;
+    fn process(&mut self, _data: &[u8]) -> Self::Response {
+        self.token.clone()
+    }
 }
 
 #[async_trait]
@@ -237,9 +631,17 @@ mod tests {
     }
 
     #[test]
-    fn is_sender_allowed_empty_list_allows_all() {
+    fn is_sender_allowed_empty_legacy_allows_all() {
+        // deny_on_empty=false (legacy default from new()): empty list allows everyone
         let adapter = test_adapter();
         assert!(adapter.is_sender_allowed("anyone@example.com"));
+    }
+
+    #[test]
+    fn is_sender_allowed_empty_secure_denies_all() {
+        // deny_on_empty=true (secure default): empty list denies everyone
+        let adapter = test_adapter().with_deny_on_empty(true);
+        assert!(!adapter.is_sender_allowed("anyone@example.com"));
     }
 
     #[test]
@@ -247,6 +649,16 @@ mod tests {
         let adapter = test_adapter().with_allowed_senders(vec!["boss@example.com".into()]);
         assert!(adapter.is_sender_allowed("boss@example.com"));
         assert!(adapter.is_sender_allowed("BOSS@EXAMPLE.COM"));
+        assert!(!adapter.is_sender_allowed("stranger@example.com"));
+    }
+
+    #[test]
+    fn is_sender_allowed_filters_with_deny_on_empty() {
+        // deny_on_empty doesn't affect non-empty lists
+        let adapter = test_adapter()
+            .with_allowed_senders(vec!["boss@example.com".into()])
+            .with_deny_on_empty(true);
+        assert!(adapter.is_sender_allowed("boss@example.com"));
         assert!(!adapter.is_sender_allowed("stranger@example.com"));
     }
 
@@ -498,5 +910,253 @@ mod tests {
         let result = adapter.recv().await.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().sender_id, "test@example.com");
+    }
+
+    // ── Phase 2: IMAP / RFC 5322 tests ─────────────────────────────
+
+    #[test]
+    fn xoauth2_token_format() {
+        let token = build_xoauth2_token("user@gmail.com", "ya29.access-token");
+        // Decode and verify the SASL XOAUTH2 format
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&token)
+            .expect("valid base64");
+        let sasl = String::from_utf8(decoded).expect("valid utf-8");
+        assert!(sasl.starts_with("user=user@gmail.com\x01auth=Bearer ya29.access-token\x01\x01"));
+    }
+
+    #[test]
+    fn xoauth2_token_with_empty_inputs() {
+        // Must not panic even with empty strings
+        let token = build_xoauth2_token("", "");
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&token)
+            .expect("valid base64");
+        let sasl = String::from_utf8(decoded).expect("valid utf-8");
+        assert_eq!(sasl, "user=\x01auth=Bearer \x01\x01");
+    }
+
+    /// Minimal RFC 5322 message with text/plain body.
+    fn rfc5322_plain() -> Vec<u8> {
+        b"From: alice@example.com\r\n\
+          To: agent@example.com\r\n\
+          Subject: Test Subject\r\n\
+          Message-ID: <msg-123@example.com>\r\n\
+          Date: Mon, 01 Jan 2024 00:00:00 +0000\r\n\
+          \r\n\
+          Hello from Alice!"
+            .to_vec()
+    }
+
+    #[test]
+    fn rfc5322_parse_plain_text() {
+        let msg = parse_email_rfc5322(&rfc5322_plain(), &[], false).expect("should parse");
+        assert_eq!(msg.platform, "email");
+        assert_eq!(msg.sender_id, "alice@example.com");
+        assert!(msg.content.contains("Test Subject"));
+        assert!(msg.content.contains("Hello from Alice!"));
+        // mail-parser strips angle brackets from Message-ID
+        assert_eq!(msg.id, "msg-123@example.com");
+        let meta = msg.metadata.unwrap();
+        assert_eq!(meta["subject"], "Test Subject");
+        assert_eq!(meta["message_id"], "msg-123@example.com");
+        assert_eq!(meta["has_dkim_signature"], false);
+    }
+
+    #[test]
+    fn rfc5322_sender_filtering_deny_on_empty() {
+        // deny_on_empty=true with empty allowed list → rejects all
+        let result = parse_email_rfc5322(&rfc5322_plain(), &[], true);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn rfc5322_sender_filtering_allowed_list() {
+        let allowed = vec!["alice@example.com".to_string()];
+        let msg = parse_email_rfc5322(&rfc5322_plain(), &allowed, true).expect("should parse");
+        assert_eq!(msg.sender_id, "alice@example.com");
+
+        // Different sender not in list
+        let raw = b"From: bob@example.com\r\nSubject: Hi\r\n\r\nHello";
+        let result = parse_email_rfc5322(raw, &allowed, true);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn rfc5322_thread_id_from_in_reply_to() {
+        let raw = b"From: alice@example.com\r\n\
+                    Message-ID: <msg-2@example.com>\r\n\
+                    In-Reply-To: <orig-1@example.com>\r\n\
+                    Subject: Re: Thread\r\n\
+                    \r\n\
+                    Reply body";
+        let msg = parse_email_rfc5322(raw, &[], false).expect("should parse");
+        let meta = msg.metadata.unwrap();
+        // Thread ID should prefer In-Reply-To over Message-ID
+        // mail-parser strips angle brackets from header values
+        assert_eq!(meta["thread_id"], "orig-1@example.com");
+    }
+
+    #[test]
+    fn rfc5322_thread_id_from_message_id_only() {
+        let raw = b"From: alice@example.com\r\n\
+                    Message-ID: <msg-solo@example.com>\r\n\
+                    Subject: New thread\r\n\
+                    \r\n\
+                    Starting fresh";
+        let msg = parse_email_rfc5322(raw, &[], false).expect("should parse");
+        let meta = msg.metadata.unwrap();
+        assert_eq!(meta["thread_id"], "msg-solo@example.com");
+    }
+
+    #[test]
+    fn rfc5322_html_body_fallback() {
+        let raw = b"From: alice@example.com\r\n\
+                    Subject: HTML\r\n\
+                    Content-Type: text/html\r\n\
+                    \r\n\
+                    <html><body><p>Hello <b>World</b></p></body></html>";
+        let msg = parse_email_rfc5322(raw, &[], false).expect("should parse");
+        // HTML tags should be stripped
+        assert!(msg.content.contains("Hello World"));
+        assert!(!msg.content.contains("<html>"));
+        assert!(!msg.content.contains("<b>"));
+    }
+
+    #[test]
+    fn rfc5322_no_from_address_returns_none() {
+        let raw = b"Subject: No From\r\n\r\nBody text";
+        let result = parse_email_rfc5322(raw, &[], false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn rfc5322_dkim_signature_detection() {
+        let raw = b"From: alice@example.com\r\n\
+                    DKIM-Signature: v=1; a=rsa-sha256; d=example.com\r\n\
+                    Subject: Signed\r\n\
+                    \r\n\
+                    Signed body";
+        let msg = parse_email_rfc5322(raw, &[], false).expect("should parse");
+        let meta = msg.metadata.unwrap();
+        assert_eq!(meta["has_dkim_signature"], true);
+    }
+
+    #[test]
+    fn rfc5322_attachment_metadata() {
+        // Build a multipart/mixed message with an attachment
+        let raw = b"From: alice@example.com\r\n\
+                    Subject: With attachment\r\n\
+                    MIME-Version: 1.0\r\n\
+                    Content-Type: multipart/mixed; boundary=\"boundary42\"\r\n\
+                    \r\n\
+                    --boundary42\r\n\
+                    Content-Type: text/plain\r\n\
+                    \r\n\
+                    Main body text\r\n\
+                    --boundary42\r\n\
+                    Content-Type: application/pdf; name=\"report.pdf\"\r\n\
+                    Content-Disposition: attachment; filename=\"report.pdf\"\r\n\
+                    Content-Transfer-Encoding: base64\r\n\
+                    \r\n\
+                    dGVzdA==\r\n\
+                    --boundary42--";
+        let msg = parse_email_rfc5322(raw, &[], false).expect("should parse");
+        let meta = msg.metadata.unwrap();
+        let attachments = meta["attachments"].as_array().expect("attachments array");
+        assert!(!attachments.is_empty());
+        let first = &attachments[0];
+        assert_eq!(first["filename"], "report.pdf");
+        assert_eq!(first["content_type"], "application/pdf");
+        assert_eq!(first["media_type"], "document");
+        assert!(first["size_bytes"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn rfc5322_body_truncation() {
+        // Build an email with a body exceeding MAX_EMAIL_BODY_BYTES
+        let big_body = "x".repeat(MAX_EMAIL_BODY_BYTES + 500);
+        let raw = format!(
+            "From: alice@example.com\r\nSubject: Big\r\n\r\n{}",
+            big_body
+        );
+        let msg = parse_email_rfc5322(raw.as_bytes(), &[], false).expect("should parse");
+        // Content includes "[Subject: Big] " prefix, but body portion should be truncated
+        assert!(msg.content.len() <= MAX_EMAIL_BODY_BYTES + 50);
+    }
+
+    #[test]
+    fn rfc5322_no_body_returns_empty_content() {
+        let raw = b"From: alice@example.com\r\nSubject: Headers Only\r\n\r\n";
+        let msg = parse_email_rfc5322(raw, &[], false).expect("should parse");
+        // Should still parse — content will just be the subject prefix
+        assert!(msg.content.contains("Headers Only"));
+    }
+
+    #[test]
+    fn strip_html_tags_basic() {
+        assert_eq!(strip_html_tags("<p>Hello</p>"), "Hello");
+        assert_eq!(
+            strip_html_tags("<html><body><b>Bold</b> text</body></html>"),
+            "Bold text"
+        );
+        assert_eq!(strip_html_tags("no tags here"), "no tags here");
+        assert_eq!(strip_html_tags(""), "");
+        assert_eq!(strip_html_tags("<>"), "");
+    }
+
+    #[test]
+    fn is_sender_allowed_static_cases() {
+        // Empty list + deny=false → allow all
+        assert!(is_sender_allowed_static("anyone@x.com", &[], false));
+        // Empty list + deny=true → deny all
+        assert!(!is_sender_allowed_static("anyone@x.com", &[], true));
+        // Specific list → case-insensitive match
+        let list = vec!["Alice@Example.COM".to_string()];
+        assert!(is_sender_allowed_static("alice@example.com", &list, true));
+        assert!(!is_sender_allowed_static("bob@example.com", &list, true));
+    }
+
+    #[test]
+    fn rfc5322_multipart_alternative_prefers_plain() {
+        let raw = b"From: alice@example.com\r\n\
+                    Subject: Multi\r\n\
+                    MIME-Version: 1.0\r\n\
+                    Content-Type: multipart/alternative; boundary=\"alt99\"\r\n\
+                    \r\n\
+                    --alt99\r\n\
+                    Content-Type: text/plain\r\n\
+                    \r\n\
+                    Plain text version\r\n\
+                    --alt99\r\n\
+                    Content-Type: text/html\r\n\
+                    \r\n\
+                    <html><body>HTML version</body></html>\r\n\
+                    --alt99--";
+        let msg = parse_email_rfc5322(raw, &[], false).expect("should parse");
+        // text/plain should be preferred over text/html
+        assert!(msg.content.contains("Plain text version"));
+        assert!(!msg.content.contains("HTML version"));
+    }
+
+    #[test]
+    fn rfc5322_garbage_bytes_returns_none() {
+        // Random garbage should not panic — just return None
+        let garbage = vec![0xFF, 0xFE, 0x00, 0x01, 0x80, 0x90, 0xAB];
+        let result = parse_email_rfc5322(&garbage, &[], false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn builder_methods() {
+        let adapter = test_adapter()
+            .with_poll_interval(Duration::from_secs(60))
+            .with_oauth2_token(Some("tok123".to_string()))
+            .with_imap_idle_enabled(false);
+        assert_eq!(adapter.poll_interval, Duration::from_secs(60));
+        assert_eq!(adapter.oauth2_token.as_deref(), Some("tok123"));
+        assert!(!adapter.imap_idle_enabled);
     }
 }

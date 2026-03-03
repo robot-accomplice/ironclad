@@ -24,7 +24,6 @@ toml = "0.8"
 wat = "1"
 axum = "0.8"
 tower = "0.5"
-hyper = "1"
 
 [lib]
 name = "ironclad_tests"

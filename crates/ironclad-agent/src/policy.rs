@@ -32,6 +32,10 @@ pub trait PolicyRule: Send + Sync {
 pub struct PolicyContext {
     pub authority: InputAuthority,
     pub survival_tier: SurvivalTier,
+    /// Optional security claim from the RBAC resolution system.
+    /// When present, provides full provenance (grant sources, ceiling,
+    /// threat-downgrade status) for audit logging and advanced policy rules.
+    pub claim: Option<ironclad_core::SecurityClaim>,
 }
 
 #[derive(Debug, Clone)]
@@ -160,19 +164,19 @@ impl FinancialRule {
 
     fn extract_amount_cents(params: &Value) -> Option<i64> {
         let obj = params.as_object()?;
-        // Check integer cent keys first
-        for key in ["amount", "amount_cents", "cents", "value_cents"] {
-            if let Some(v) = obj.get(key) {
-                if let Some(n) = v.as_i64() {
-                    return Some(n);
-                }
-                // Float fallback for "amount" — treat as dollars if fractional
-                if key == "amount"
-                    && let Some(n) = v.as_f64()
-                {
-                    return Some((n * 100.0).round() as i64);
-                }
+        // Explicit cent-denominated keys.
+        for key in ["amount_cents", "cents", "value_cents"] {
+            if let Some(v) = obj.get(key)
+                && let Some(n) = v.as_i64()
+            {
+                return Some(n);
             }
+        }
+        // "amount" is dollar-denominated; accept either integer or float JSON.
+        if let Some(v) = obj.get("amount")
+            && let Some(n) = v.as_f64()
+        {
+            return Some((n * 100.0).round() as i64);
         }
         // Dollar-denominated keys
         if let Some(v) = obj
@@ -443,6 +447,7 @@ mod tests {
         let ctx_external = PolicyContext {
             authority: InputAuthority::External,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         assert!(
@@ -460,6 +465,7 @@ mod tests {
         let ctx_creator = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
         assert!(
             engine
@@ -470,6 +476,7 @@ mod tests {
         let ctx_self = PolicyContext {
             authority: InputAuthority::SelfGenerated,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
         assert!(
             engine
@@ -491,6 +498,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         assert!(
@@ -514,6 +522,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::High,
+            claim: None,
         };
 
         let decision = engine.evaluate_all(&make_request("read_file", RiskLevel::Safe), &ctx);
@@ -526,6 +535,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let low = ToolCallRequest {
@@ -556,6 +566,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let drain = ToolCallRequest {
@@ -572,6 +583,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let blocked = ToolCallRequest {
@@ -599,6 +611,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let req = |tool: &str| ToolCallRequest {
@@ -620,6 +633,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let huge = ToolCallRequest {
@@ -711,6 +725,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Peer,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         assert!(
@@ -732,10 +747,10 @@ mod tests {
 
     #[test]
     fn financial_extract_amount_cents_various_keys() {
-        // "amount" key
+        // "amount" key (dollars -> cents)
         assert_eq!(
             FinancialRule::extract_amount_cents(&serde_json::json!({"amount": 5000})),
-            Some(5000)
+            Some(500000)
         );
         // "amount_cents" key
         assert_eq!(
@@ -816,6 +831,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let wget_inject = ToolCallRequest {
@@ -832,6 +848,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let backtick = ToolCallRequest {
@@ -848,6 +865,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let dollar_brace = ToolCallRequest {
@@ -866,6 +884,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let nested = ToolCallRequest {
@@ -884,6 +903,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let wallet = ToolCallRequest {
@@ -900,6 +920,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let ssh = ToolCallRequest {
@@ -923,6 +944,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::External,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
         let decision = engine.evaluate_all(&make_request("nuke", RiskLevel::Dangerous), &ctx);
         assert!(!decision.is_allowed());
@@ -937,6 +959,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::External,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
         // No rules -> allow
         assert!(
@@ -953,6 +976,7 @@ mod tests {
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
             survival_tier: SurvivalTier::Normal,
+            claim: None,
         };
 
         let float_high = ToolCallRequest {
@@ -975,15 +999,15 @@ mod tests {
             "float amount $50.00 should be allowed under $100 threshold"
         );
 
-        // Integer "amount" still works as cents
+        // Integer "amount" is interpreted as dollars, same as float.
         let int_high = ToolCallRequest {
             tool_name: "transfer".into(),
-            params: serde_json::json!({ "amount": 15050 }),
+            params: serde_json::json!({ "amount": 150 }),
             risk_level: RiskLevel::Safe,
         };
         assert!(
             !rule.evaluate(&int_high, &ctx).is_allowed(),
-            "integer amount 15050 cents should be blocked by 10000-cent threshold"
+            "integer amount $150 should be blocked by $100 threshold"
         );
     }
 }

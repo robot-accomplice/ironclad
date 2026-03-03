@@ -127,12 +127,56 @@ fn default_risk_level() -> RiskLevel {
     RiskLevel::Caution
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Authority level of the message sender, resolved from authentication layers.
+///
+/// Variant order matters: `External < Peer < SelfGenerated < Creator` via derived
+/// `Ord`, enabling `min()`/`max()` in the claim composition algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum InputAuthority {
-    Creator,
-    SelfGenerated,
-    Peer,
     External,
+    Peer,
+    SelfGenerated,
+    Creator,
+}
+
+// ── Claim-based RBAC types ──────────────────────────────────────────────────
+
+/// Which authentication layer contributed a positive grant to a [`SecurityClaim`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ClaimSource {
+    /// Sender passed the channel's allow-list (Telegram chat IDs, Discord guild IDs, etc.).
+    ChannelAllowList,
+    /// Sender matched `channels.trusted_sender_ids`.
+    TrustedSenderId,
+    /// HTTP API key authentication.
+    ApiKey,
+    /// WebSocket ticket authentication.
+    WsTicket,
+    /// A2A ECDH session key agreement.
+    A2aSession,
+    /// No authentication source — anonymous/default.
+    Anonymous,
+}
+
+/// Immutable security principal resolved from all authentication layers.
+///
+/// Constructed by security claim resolvers such as
+/// [`crate::security::resolve_channel_claim`] — callers receive it, they
+/// cannot modify the authority decision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityClaim {
+    /// The resolved effective authority after claim composition.
+    pub authority: InputAuthority,
+    /// Which authentication layer(s) contributed positive grants.
+    pub sources: Vec<ClaimSource>,
+    /// The ceiling applied by negative restrictions (threat scanner, etc.).
+    pub ceiling: InputAuthority,
+    /// Whether the threat scanner applied a downgrade.
+    pub threat_downgraded: bool,
+    /// Original sender identifier for audit trail.
+    pub sender_id: String,
+    /// Channel that produced this claim.
+    pub channel: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +307,64 @@ mod tests {
             let back: InputAuthority = serde_json::from_str(&json).unwrap();
             assert_eq!(auth, back);
         }
+    }
+
+    #[test]
+    fn input_authority_ordering() {
+        assert!(InputAuthority::External < InputAuthority::Peer);
+        assert!(InputAuthority::Peer < InputAuthority::SelfGenerated);
+        assert!(InputAuthority::SelfGenerated < InputAuthority::Creator);
+
+        // min/max work correctly for claim composition
+        let grants = [InputAuthority::Peer, InputAuthority::Creator];
+        assert_eq!(
+            grants.iter().copied().max().unwrap(),
+            InputAuthority::Creator
+        );
+
+        let ceilings = [InputAuthority::External, InputAuthority::Peer];
+        assert_eq!(
+            ceilings.iter().copied().min().unwrap(),
+            InputAuthority::External
+        );
+
+        // min(grant, ceiling) caps authority
+        let grant = InputAuthority::Creator;
+        let ceiling = InputAuthority::External;
+        assert_eq!(grant.min(ceiling), InputAuthority::External);
+    }
+
+    #[test]
+    fn claim_source_serde() {
+        for src in [
+            ClaimSource::ChannelAllowList,
+            ClaimSource::TrustedSenderId,
+            ClaimSource::ApiKey,
+            ClaimSource::WsTicket,
+            ClaimSource::A2aSession,
+            ClaimSource::Anonymous,
+        ] {
+            let json = serde_json::to_string(&src).unwrap();
+            let back: ClaimSource = serde_json::from_str(&json).unwrap();
+            assert_eq!(src, back);
+        }
+    }
+
+    #[test]
+    fn security_claim_serde() {
+        let claim = SecurityClaim {
+            authority: InputAuthority::Peer,
+            sources: vec![ClaimSource::ChannelAllowList],
+            ceiling: InputAuthority::Creator,
+            threat_downgraded: false,
+            sender_id: "12345".into(),
+            channel: "telegram".into(),
+        };
+        let json = serde_json::to_string(&claim).unwrap();
+        let back: SecurityClaim = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.authority, InputAuthority::Peer);
+        assert_eq!(back.sources, vec![ClaimSource::ChannelAllowList]);
+        assert!(!back.threat_downgraded);
     }
 
     #[test]

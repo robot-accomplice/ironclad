@@ -459,6 +459,8 @@ mod tests {
             agent_id: "test-agent".into(),
             authority: InputAuthority::Creator,
             workspace_root: std::env::current_dir().unwrap(),
+            channel: None,
+            db: None,
         }
     }
 

@@ -211,14 +211,103 @@ fn cleanup_legacy_windows_service() {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    if is_admin {
-        if let Err(e) = run_cmd("sc.exe", &["stop", WINDOWS_DAEMON_NAME]) {
-            tracing::debug!(error = %e, "legacy Windows service stop failed (may not exist)");
-        }
-        if let Err(e) = run_cmd("sc.exe", &["delete", WINDOWS_DAEMON_NAME]) {
-            tracing::debug!(error = %e, "legacy Windows service delete failed (may not exist)");
+    if !is_admin {
+        tracing::warn!("legacy Windows service cleanup skipped: Administrator privileges required");
+        return;
+    }
+
+    match legacy_windows_service_exists() {
+        Ok(false) => return,
+        Ok(true) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "unable to verify legacy Windows service presence");
         }
     }
+
+    for attempt in 1..=3 {
+        if let Err(e) = run_sc_best_effort("stop", WINDOWS_DAEMON_NAME) {
+            tracing::debug!(
+                error = %e,
+                attempt,
+                "legacy Windows service stop failed"
+            );
+        }
+        if let Err(e) = run_sc_best_effort("delete", WINDOWS_DAEMON_NAME) {
+            tracing::debug!(
+                error = %e,
+                attempt,
+                "legacy Windows service delete failed"
+            );
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(600));
+
+        match legacy_windows_service_exists() {
+            Ok(false) => {
+                tracing::info!("legacy Windows service cleanup complete");
+                return;
+            }
+            Ok(true) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to verify legacy Windows service cleanup");
+            }
+        }
+    }
+
+    tracing::warn!(
+        "legacy Windows service still present after cleanup attempts; remove with `sc.exe delete {WINDOWS_DAEMON_NAME}`"
+    );
+}
+
+fn run_sc_best_effort(action: &str, service: &str) -> Result<()> {
+    let out = command_output("sc.exe", &[action, service])?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    if sc_output_is_not_found(&combined) || sc_output_is_not_active(&combined) {
+        return Ok(());
+    }
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim().to_string()
+    } else {
+        stdout.trim().to_string()
+    };
+    Err(IroncladError::Config(format!(
+        "sc.exe {action} failed (exit {}): {}",
+        out.status.code().unwrap_or(-1),
+        detail
+    )))
+}
+
+fn legacy_windows_service_exists() -> Result<bool> {
+    let out = command_output("sc.exe", &["query", WINDOWS_DAEMON_NAME])?;
+    if out.status.success() {
+        return Ok(true);
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    if sc_output_is_not_found(&combined) {
+        return Ok(false);
+    }
+    Err(IroncladError::Config(format!(
+        "sc.exe query failed (exit {}): {}",
+        out.status.code().unwrap_or(-1),
+        combined.trim()
+    )))
+}
+
+fn sc_output_is_not_found(output: &str) -> bool {
+    let lowered = output.to_ascii_lowercase();
+    lowered.contains("1060") || lowered.contains("does not exist")
+}
+
+fn sc_output_is_not_active(output: &str) -> bool {
+    let lowered = output.to_ascii_lowercase();
+    lowered.contains("1062") || lowered.contains("has not been started")
 }
 
 fn install_daemon_to(
@@ -786,6 +875,22 @@ mod tests {
         assert!(unit.contains("[Install]"));
         assert!(unit.contains("ExecStart=/usr/bin/ironclad serve -c /etc/ironclad.toml -p 8080"));
         assert!(unit.contains("Type=simple"));
+    }
+
+    #[test]
+    fn sc_output_not_found_detection() {
+        assert!(sc_output_is_not_found("OpenService FAILED 1060"));
+        assert!(sc_output_is_not_found(
+            "The specified service does not exist as an installed service."
+        ));
+        assert!(!sc_output_is_not_found("SERVICE_NAME: IroncladAgent"));
+    }
+
+    #[test]
+    fn sc_output_not_active_detection() {
+        assert!(sc_output_is_not_active("ControlService FAILED 1062"));
+        assert!(sc_output_is_not_active("The service has not been started."));
+        assert!(!sc_output_is_not_active("STATE              : 4  RUNNING"));
     }
 
     #[test]

@@ -2100,6 +2100,7 @@ pub(crate) fn import_agents(oc_root: &Path, ic_root: &Path) -> AreaResult {
             name: name.clone(),
             display_name: Some(display_name),
             model,
+            fallback_models_json: Some("[]".to_string()),
             role: role.to_string(),
             description: None,
             skills_json: None,

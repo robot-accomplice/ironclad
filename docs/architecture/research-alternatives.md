@@ -43,7 +43,7 @@
 - Python-only
 - No built-in persistence beyond task context
 
-**Relevance to Ironclad**: The role-based delegation pattern is useful for specialist sub-agents, but CrewAI's scope is too narrow for a full autonomous agent runtime.
+**Relevance to Ironclad**: The role-based delegation pattern is useful for subagent delegation, but CrewAI's scope is too narrow for a full autonomous agent runtime.
 
 ### 1.3 — Microsoft Agent Framework (AutoGen + Semantic Kernel merger)
 

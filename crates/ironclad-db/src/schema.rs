@@ -204,6 +204,9 @@ CREATE TABLE IF NOT EXISTS inference_costs (
     cost REAL NOT NULL,
     tier TEXT,
     cached INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER,
+    quality_score REAL,
+    escalation INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_inference_costs_time ON inference_costs(created_at DESC);
@@ -335,6 +338,7 @@ CREATE TABLE IF NOT EXISTS sub_agents (
     name TEXT NOT NULL UNIQUE,
     display_name TEXT,
     model TEXT NOT NULL DEFAULT '',
+    fallback_models_json TEXT NOT NULL DEFAULT '[]',
     role TEXT NOT NULL DEFAULT 'specialist',
     description TEXT,
     skills_json TEXT,
@@ -408,6 +412,22 @@ CREATE TABLE IF NOT EXISTS model_selection_events (
 );
 CREATE INDEX IF NOT EXISTS idx_model_selection_events_turn ON model_selection_events(turn_id);
 CREATE INDEX IF NOT EXISTS idx_model_selection_events_created ON model_selection_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS abuse_events (
+    id TEXT PRIMARY KEY,
+    actor_id TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    action_taken TEXT NOT NULL,
+    detail TEXT,
+    score REAL NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_abuse_events_actor ON abuse_events(actor_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_abuse_events_origin ON abuse_events(origin, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_abuse_events_created ON abuse_events(created_at DESC);
 "#;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
@@ -433,6 +453,7 @@ pub fn initialize_db(db: &Database) -> Result<()> {
 
     run_migrations(db)?;
     ensure_optional_columns(db)?;
+    crate::hippocampus::bootstrap_hippocampus(db)?;
     Ok(())
 }
 
@@ -483,6 +504,50 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
         .map_err(|e| IroncladError::Database(e.to_string()))?;
         conn.execute(
             "UPDATE delivery_queue SET idempotency_key = id WHERE idempotency_key = ''",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    // v0.9.2: inference_costs extension — latency, quality, escalation
+    if !has_column(&conn, "inference_costs", "latency_ms")? {
+        conn.execute(
+            "ALTER TABLE inference_costs ADD COLUMN latency_ms INTEGER",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "inference_costs", "quality_score")? {
+        conn.execute(
+            "ALTER TABLE inference_costs ADD COLUMN quality_score REAL",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "inference_costs", "escalation")? {
+        conn.execute(
+            "ALTER TABLE inference_costs ADD COLUMN escalation INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    // v0.9.2: hippocampus extension — access_level, row_count
+    if !has_column(&conn, "hippocampus", "access_level")? {
+        conn.execute(
+            "ALTER TABLE hippocampus ADD COLUMN access_level TEXT NOT NULL DEFAULT 'internal'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "hippocampus", "row_count")? {
+        conn.execute(
+            "ALTER TABLE hippocampus ADD COLUMN row_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "sub_agents", "fallback_models_json")? {
+        conn.execute(
+            "ALTER TABLE sub_agents ADD COLUMN fallback_models_json TEXT NOT NULL DEFAULT '[]'",
             [],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -584,8 +649,9 @@ mod tests {
     fn schema_creates_all_tables() {
         let db = Database::new(":memory:").unwrap();
         let count = table_count(&db).unwrap();
-        // 30 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback + context_snapshots + model_selection_events = 34
-        assert_eq!(count, 34, "expected 34 user-defined tables, got {count}");
+        // 30 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback
+        // + context_snapshots + model_selection_events + abuse_events = 35
+        assert_eq!(count, 35, "expected 35 user-defined tables, got {count}");
     }
 
     #[test]
@@ -594,7 +660,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 34);
+        assert_eq!(count, 35);
     }
 
     #[test]

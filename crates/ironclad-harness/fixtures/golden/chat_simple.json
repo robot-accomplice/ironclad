@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-harness-001",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "mock-model-v1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Rust is a systems programming language focused on safety, concurrency, and performance. It achieves memory safety without garbage collection through its ownership system."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 28,
+    "total_tokens": 70
+  }
+}

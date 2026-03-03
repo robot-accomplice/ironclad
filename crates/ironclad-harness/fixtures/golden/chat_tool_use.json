@@ -1,0 +1,31 @@
+{
+  "id": "chatcmpl-harness-002",
+  "object": "chat.completion",
+  "created": 1700000001,
+  "model": "mock-model-v1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_harness_001",
+            "type": "function",
+            "function": {
+              "name": "search_memory",
+              "arguments": "{\"query\": \"rust ownership\", \"limit\": 5}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 55,
+    "completion_tokens": 32,
+    "total_tokens": 87
+  }
+}
