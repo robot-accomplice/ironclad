@@ -119,6 +119,8 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 }
 
 pub fn cmd_plugin_install(source: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use ironclad_plugin_sdk::manifest::PluginManifest;
+
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let source_path = std::path::Path::new(source);
@@ -133,14 +135,60 @@ pub fn cmd_plugin_install(source: &str) -> Result<(), Box<dyn std::error::Error>
         return Ok(());
     }
 
-    let manifest_content = std::fs::read_to_string(&manifest_path)?;
-    let manifest: toml::Value = manifest_content.parse()?;
-    let plugin_name = manifest
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+    // Parse the full manifest (validates structure, permissions, requirements, etc.)
+    let manifest = PluginManifest::from_file(&manifest_path)
+        .map_err(|e| format!("Invalid plugin.toml: {e}"))?;
+    let plugin_name = &manifest.name;
 
-    let plugins_dir = ironclad_core::home_dir().join(".ironclad").join("plugins");
+    // ── Check requirements ──────────────────────────────────────
+    if !manifest.requirements.is_empty() {
+        println!("\n  {ACTION} Checking requirements for {BOLD}{plugin_name}{RESET}...\n");
+        let results = manifest.check_requirements();
+        let mut has_missing_required = false;
+
+        for (req, found) in &results {
+            if *found {
+                println!(
+                    "    {OK} {GREEN}{}{RESET} ({}) — found",
+                    req.name, req.command
+                );
+            } else if req.optional {
+                println!(
+                    "    {WARN} {YELLOW}{}{RESET} ({}) — not found (optional)",
+                    req.name, req.command
+                );
+            } else {
+                has_missing_required = true;
+                println!(
+                    "    {ERR} {RED}{}{RESET} ({}) — not found",
+                    req.name, req.command
+                );
+                if let Some(hint) = &req.install_hint {
+                    println!("      Install: {CYAN}{hint}{RESET}");
+                }
+            }
+        }
+        println!();
+
+        if has_missing_required {
+            eprintln!("  {ERR} Cannot install {plugin_name}: missing required dependencies.");
+            eprintln!("  Install the missing requirements above and try again.\n");
+            return Ok(());
+        }
+    }
+
+    // ── Check companion skill files exist in source ─────────────
+    for skill_path in &manifest.companion_skills {
+        let full = source_path.join(skill_path);
+        if !full.exists() {
+            eprintln!("  {ERR} Companion skill not found in bundle: {skill_path}");
+            return Ok(());
+        }
+    }
+
+    // ── Check not already installed ─────────────────────────────
+    let ironclad_dir = ironclad_core::home_dir().join(".ironclad");
+    let plugins_dir = ironclad_dir.join("plugins");
     let dest = plugins_dir.join(plugin_name);
 
     if dest.exists() {
@@ -149,26 +197,75 @@ pub fn cmd_plugin_install(source: &str) -> Result<(), Box<dyn std::error::Error>
         return Ok(());
     }
 
+    // ── Copy plugin directory ───────────────────────────────────
     std::fs::create_dir_all(&dest)?;
     copy_dir_recursive(source_path, &dest)?;
 
     println!("  {OK} Installed plugin: {plugin_name}");
     println!("  Location: {}", dest.display());
+
+    // ── Install companion skills ────────────────────────────────
+    if !manifest.companion_skills.is_empty() {
+        let skills_dir = ironclad_dir.join("skills");
+        std::fs::create_dir_all(&skills_dir)?;
+
+        for skill_rel in &manifest.companion_skills {
+            let src_skill = source_path.join(skill_rel);
+            let skill_filename = std::path::Path::new(skill_rel)
+                .file_name()
+                .unwrap_or_default();
+            let dest_skill = skills_dir.join(skill_filename);
+
+            std::fs::copy(&src_skill, &dest_skill)?;
+            println!(
+                "  {OK} Installed companion skill: {}",
+                skill_filename.to_string_lossy()
+            );
+        }
+    }
+
     println!("  Restart the server to activate.\n");
     Ok(())
 }
 
 pub fn cmd_plugin_uninstall(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use ironclad_plugin_sdk::manifest::PluginManifest;
+
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
-    let plugin_dir = ironclad_core::home_dir()
-        .join(".ironclad")
-        .join("plugins")
-        .join(name);
+    let ironclad_dir = ironclad_core::home_dir().join(".ironclad");
+    let plugin_dir = ironclad_dir.join("plugins").join(name);
 
     if !plugin_dir.exists() {
         eprintln!("  Plugin not found: {name}");
         return Ok(());
+    }
+
+    // Remove companion skills if the manifest declares them
+    let manifest_path = plugin_dir.join("plugin.toml");
+    if manifest_path.exists() {
+        if let Ok(manifest) = PluginManifest::from_file(&manifest_path) {
+            let skills_dir = ironclad_dir.join("skills");
+            for skill_rel in &manifest.companion_skills {
+                let skill_filename = std::path::Path::new(skill_rel)
+                    .file_name()
+                    .unwrap_or_default();
+                let skill_path = skills_dir.join(skill_filename);
+                if skill_path.exists() {
+                    if let Err(e) = std::fs::remove_file(&skill_path) {
+                        eprintln!(
+                            "  {WARN} Could not remove companion skill {}: {e}",
+                            skill_filename.to_string_lossy()
+                        );
+                    } else {
+                        println!(
+                            "  {OK} Removed companion skill: {}",
+                            skill_filename.to_string_lossy()
+                        );
+                    }
+                }
+            }
+        }
     }
 
     std::fs::remove_dir_all(&plugin_dir)?;

@@ -70,3 +70,35 @@ Body text is the runtime instruction payload.
   - Remove name from downloadable registry to avoid collision.
   - Keep behavior notes in release docs.
 - Runtime API output keeps `built_in` flags and immutability semantics unchanged.
+
+## Capability Enforcement Policy (v0.9.4+)
+
+This section defines which skill format is allowed to drive which level of
+execution risk.
+
+### Tier Model
+
+- **Tier 0 (instruction-only)**: Markdown instruction skills (`.md`) that shape
+  agent behavior via prompt injection. No new executable capability.
+- **Tier 1 (controlled execution)**: Built-in skills or plugins with typed
+  parameters and runtime policy enforcement.
+- **Tier 2 (privileged execution)**: Built-in skills or plugins requiring
+  explicit approvals, stricter sandbox/policy ceilings, and full audit logging.
+
+### Required Enforcement
+
+- High-risk executor patterns (AI CLI orchestration, shell delegation, networked
+  command runners) **must not** be implemented as markdown-only instruction
+  skills.
+- Any high-risk executor must be implemented as either:
+  - a built-in skill with compiled policy hooks, or
+  - a plugin with explicit capability manifest + runtime policy checks.
+- Runtime activation must fail closed when required policy metadata is missing.
+
+### Delegation/Recursion Guardrails
+
+- Recursive AI-CLI delegation must be blocked structurally, not by prompt text
+  alone.
+- Enforce maximum delegation depth and cycle detection for helper/subagent
+  delegation paths.
+- Record denied recursion/delegation attempts in policy/audit logs with reason.

@@ -416,6 +416,9 @@ mod tests {
             description: "test plugin".into(),
             author: "test".into(),
             permissions: vec![],
+            timeout_seconds: None,
+            requirements: vec![],
+            companion_skills: vec![],
             tools: tools
                 .into_iter()
                 .map(|(n, d)| ManifestToolDef {
@@ -636,6 +639,9 @@ mod tests {
             description: "test plugin".into(),
             author: "test".into(),
             permissions: vec![],
+            timeout_seconds: None,
+            requirements: vec![],
+            companion_skills: vec![],
             tools: tools
                 .into_iter()
                 .map(|(n, d, dangerous)| ManifestToolDef {
