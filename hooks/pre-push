@@ -30,7 +30,25 @@ else
     GATE_CMD="just ci-test-fast"
 fi
 
+# Auto-tune local test parallelism unless the user set it explicitly.
+if [ -z "${CI_TEST_PARALLELISM:-}" ]; then
+    CORES=""
+    if command -v nproc >/dev/null 2>&1; then
+        CORES=$(nproc)
+    elif command -v sysctl >/dev/null 2>&1; then
+        CORES=$(sysctl -n hw.ncpu 2>/dev/null || true)
+    fi
+    if [ -n "${CORES}" ] && [ "${CORES}" -gt 0 ] 2>/dev/null; then
+        # Keep some headroom for linker + OS responsiveness.
+        PAR=$((CORES - 2))
+        if [ "${PAR}" -lt 4 ]; then PAR=4; fi
+        if [ "${PAR}" -gt 16 ]; then PAR=16; fi
+        export CI_TEST_PARALLELISM="${PAR}"
+    fi
+fi
+
 echo "Mode: ${MODE}"
+echo "CI_TEST_PARALLELISM: ${CI_TEST_PARALLELISM:-default}"
 echo "Running: ${GATE_CMD}"
 echo ""
 
