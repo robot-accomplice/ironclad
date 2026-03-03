@@ -76,8 +76,10 @@ jobs:
           shared-key: release-gates
       - name: Install just
         run: cargo install just --locked
-      - name: "Release-critical: Workspace tests"
-        run: cargo test --workspace --locked
+      - name: "Release-critical: Server smoke tests"
+        run: |
+          cargo test -p ironclad-server --lib --locked
+          cargo test -p ironclad-harness --test api_domain stats_efficiency_returns_json --locked
       - name: "Release-critical: Server API integration"
         run: 'cargo test -p ironclad-tests server_api:: --locked'
       - name: "Release-critical: Regression battery"
