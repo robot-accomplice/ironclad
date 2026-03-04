@@ -190,16 +190,54 @@ pub async fn knowledge_ingest(
     axum::Json(body): axum::Json<IngestRequest>,
 ) -> impl IntoResponse {
     use ironclad_agent::ingest::{ingest_directory, ingest_file};
+    use std::path::Path;
 
-    let target = std::path::Path::new(&body.path);
+    let workspace = {
+        let cfg = state.config.read().await;
+        cfg.agent.workspace.clone()
+    };
+    if !workspace.exists()
+        && let Err(e) = std::fs::create_dir_all(&workspace)
+    {
+        return Err(bad_request(format!(
+            "workspace root '{}' cannot be created: {e}",
+            workspace.display()
+        )));
+    }
+    let workspace_root = match std::fs::canonicalize(&workspace) {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(bad_request(format!(
+                "workspace root '{}' is not accessible: {e}",
+                workspace.display()
+            )));
+        }
+    };
+    let raw = Path::new(&body.path);
+    let candidate = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        workspace_root.join(raw)
+    };
+    let target = match std::fs::canonicalize(&candidate) {
+        Ok(p) => p,
+        Err(_) => return Err(bad_request("path does not exist or is not accessible")),
+    };
+    if !target.starts_with(&workspace_root) {
+        return Err(bad_request(format!(
+            "path '{}' escapes workspace root '{}'",
+            target.display(),
+            workspace_root.display()
+        )));
+    }
 
     let results = if target.is_dir() {
-        match ingest_directory(&state.db, target) {
+        match ingest_directory(&state.db, &target) {
             Ok(r) => r,
             Err(e) => return Err(internal_err(&e)),
         }
     } else if target.is_file() {
-        match ingest_file(&state.db, target) {
+        match ingest_file(&state.db, &target) {
             Ok(r) => vec![r],
             Err(e) => return Err(bad_request(format!("{e}"))),
         }

@@ -157,10 +157,13 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let ty = entry.file_type()?;
+        if ty.is_symlink() {
+            continue;
+        }
         let dest_path = dst.join(entry.file_name());
         if ty.is_dir() {
             copy_dir_recursive(&entry.path(), &dest_path)?;
-        } else {
+        } else if ty.is_file() {
             std::fs::copy(entry.path(), &dest_path)?;
         }
     }

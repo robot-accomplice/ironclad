@@ -397,9 +397,13 @@ pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
         let entry = entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
+        } else if ft.is_file() {
             fs::copy(&src_path, &dst_path)?;
         }
     }
@@ -476,6 +480,20 @@ mod tests {
             fs::read_to_string(target.join("sub/b.txt")).unwrap(),
             "world"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_recursive_skips_symlinks() {
+        use std::os::unix::fs::symlink;
+        let src = TempDir::new().unwrap();
+        let dst = TempDir::new().unwrap();
+        fs::write(src.path().join("real.txt"), "ok").unwrap();
+        symlink(src.path().join("real.txt"), src.path().join("link.txt")).unwrap();
+        let target = dst.path().join("copy");
+        copy_dir_recursive(src.path(), &target).unwrap();
+        assert!(target.join("real.txt").exists());
+        assert!(!target.join("link.txt").exists());
     }
 
     #[test]

@@ -1294,6 +1294,29 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn knowledge_ingest_rejects_path_outside_workspace() {
+        let app = build_router(test_state());
+        let outside = std::env::temp_dir().join(format!("ic-outside-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&outside, b"secret").unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/knowledge/ingest")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "path": outside.to_string_lossy() }).to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = text_body(resp).await;
+        assert!(body.contains("escapes workspace root"));
+
+        let _ = std::fs::remove_file(outside);
+    }
+
+    #[tokio::test]
     async fn list_cron_jobs_returns_array() {
         let app = build_router(test_state());
         let req = Request::builder()
@@ -4506,6 +4529,23 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
+    async fn slash_model_override_requires_creator_authority() {
+        let state = test_state();
+        let inbound = InboundMessage {
+            id: "cmd-1".into(),
+            platform: "telegram".into(),
+            sender_id: "external-user".into(),
+            content: "/model ollama/qwen3:8b".into(),
+            timestamp: chrono::Utc::now(),
+            metadata: None,
+        };
+        let reply = agent::handle_bot_command(&state, "/model ollama/qwen3:8b", Some(&inbound))
+            .await
+            .unwrap();
+        assert!(reply.contains("requires Creator authority"));
+    }
+
+    #[tokio::test]
     async fn slash_models_lists_configured() {
         let state = test_state();
         let reply = agent::handle_bot_command(&state, "/models", None)
@@ -4580,6 +4620,23 @@ params = { path = "README.md" }
             .await
             .unwrap();
         assert!(reply.contains("already closed"));
+    }
+
+    #[tokio::test]
+    async fn slash_breaker_reset_requires_creator_authority() {
+        let state = test_state();
+        let inbound = InboundMessage {
+            id: "cmd-2".into(),
+            platform: "telegram".into(),
+            sender_id: "external-user".into(),
+            content: "/breaker reset".into(),
+            timestamp: chrono::Utc::now(),
+            metadata: None,
+        };
+        let reply = agent::handle_bot_command(&state, "/breaker reset", Some(&inbound))
+            .await
+            .unwrap();
+        assert!(reply.contains("requires Creator authority"));
     }
 
     #[tokio::test]
