@@ -72,6 +72,19 @@ if ! "$HTTP_BIN" -fsS "${BASE_URL}/api/health" >/dev/null 2>&1; then
   exit 1
 fi
 
+for _ in $(seq 1 40); do
+  if "$HTTP_BIN" -fsS "${BASE_URL}/api/config" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+if ! "$HTTP_BIN" -fsS "${BASE_URL}/api/config" >/dev/null 2>&1; then
+  echo "Server did not become config-ready. Log:"
+  cat "$SERVER_LOG"
+  exit 1
+fi
+
 echo "Running CLI UAT smoke"
 BASE_URL="$BASE_URL" bash scripts/run-uat-cli-smoke.sh
 

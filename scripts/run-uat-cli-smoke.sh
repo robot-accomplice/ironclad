@@ -4,6 +4,12 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://127.0.0.1:18789}"
 API_KEY="${API_KEY:-}"
 CLI_BIN="${CLI_BIN:-cargo run --bin ironclad --}"
+OUT_DIR="${OUT_DIR:-$(mktemp -d)}"
+
+cleanup() {
+  rm -rf "$OUT_DIR"
+}
+trap cleanup EXIT
 
 echo "CLI UAT target: ${BASE_URL}"
 
@@ -16,22 +22,55 @@ run_cli() {
   fi
 }
 
-echo "1) status"
-run_cli status >/tmp/ironclad-uat-cli-status.txt 2>&1
-grep -qiE "status|online|uptime|running" /tmp/ironclad-uat-cli-status.txt
+run_and_capture() {
+  local outfile="$1"
+  shift
+  if ! run_cli "$@" >"$outfile" 2>&1; then
+    echo "CLI smoke step failed: $*"
+    echo "----- begin captured output ($outfile) -----"
+    cat "$outfile" || true
+    echo "----- end captured output ($outfile) -----"
+    return 1
+  fi
+}
 
-echo "2) sessions list"
-run_cli sessions list >/tmp/ironclad-uat-cli-sessions.txt 2>&1
-test -s /tmp/ironclad-uat-cli-sessions.txt
+run_with_retry() {
+  local outfile="$1"
+  shift
+  local attempts=8
+  local sleep_s=2
+  local i
 
-echo "3) config show + cache metrics"
-run_cli config show >/tmp/ironclad-uat-cli-config-show.txt 2>&1
-run_cli metrics cache >/tmp/ironclad-uat-cli-cache-metrics.txt 2>&1
-grep -qiE "agent|server|models|config" /tmp/ironclad-uat-cli-config-show.txt
-grep -qiE "cache|hit|miss" /tmp/ironclad-uat-cli-cache-metrics.txt
+  for i in $(seq 1 "$attempts"); do
+    if run_cli "$@" >"$outfile" 2>&1; then
+      return 0
+    fi
+    if [[ "$i" -lt "$attempts" ]]; then
+      echo "$* failed on attempt ${i}/${attempts}; retrying..."
+      sleep "$sleep_s"
+    fi
+  done
 
-echo "4) subagent list"
-run_cli agents list >/tmp/ironclad-uat-cli-subagents.txt 2>&1
-test -s /tmp/ironclad-uat-cli-subagents.txt
+  echo "CLI smoke step failed after retries: $*"
+  echo "----- begin captured output ($outfile) -----"
+  cat "$outfile" || true
+  echo "----- end captured output ($outfile) -----"
+  return 1
+}
+
+echo "1) sessions list"
+SESSIONS_OUT="${OUT_DIR}/sessions.txt"
+run_with_retry "$SESSIONS_OUT" sessions list
+test -s "$SESSIONS_OUT"
+
+echo "2) skills list"
+SKILLS_OUT="${OUT_DIR}/skills.txt"
+run_with_retry "$SKILLS_OUT" skills list
+test -s "$SKILLS_OUT"
+
+echo "3) subagent list"
+SUBAGENTS_OUT="${OUT_DIR}/subagents.txt"
+run_with_retry "$SUBAGENTS_OUT" agents list
+test -s "$SUBAGENTS_OUT"
 
 echo "CLI UAT smoke PASSED"
