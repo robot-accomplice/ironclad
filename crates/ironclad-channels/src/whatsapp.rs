@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn sender_allowed_empty_default_denies_all() {
-        // deny_on_empty=true (secure default): empty list denies everyone
+        // secure default: empty list denies everyone
         let adapter = WhatsAppAdapter::new("tok".into(), "ph".into()).unwrap();
         assert!(!adapter.is_sender_allowed("any_number"));
     }
@@ -566,7 +566,15 @@ mod tests {
 
     #[test]
     fn process_webhook_valid() {
-        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into()).unwrap();
+        let adapter = WhatsAppAdapter::with_config(
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
+            vec!["555".into()],
+            None,
+            false,
+        )
+        .unwrap();
         let webhook = json!({
             "entry": [{
                 "changes": [{

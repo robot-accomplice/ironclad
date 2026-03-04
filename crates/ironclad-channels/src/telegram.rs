@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn chat_allowed_empty_default_denies_all() {
-        // deny_on_empty=true (secure default): empty list denies everyone
+        // secure default: empty list denies everyone
         let adapter = TelegramAdapter::new("tok".into());
         assert!(!adapter.is_chat_allowed(12345));
     }
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn process_webhook_update_valid() {
-        let adapter = TelegramAdapter::new("tok".into());
+        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![42], None, false);
         let update = json!({
             "update_id": 999,
             "message": {
@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn process_webhook_update_without_update_id() {
-        let adapter = TelegramAdapter::new("tok".into());
+        let adapter = TelegramAdapter::with_config("tok".into(), 30, vec![42], None, false);
         let update = json!({
             "message": {
                 "message_id": 1,

@@ -34,6 +34,7 @@ tracing = { workspace = true }
 futures-util = "0.3"
 axum = "0.8"
 wiremock = "0.6"
+serial_test = "3"
 
 [lib]
 name = "ironclad_harness"
