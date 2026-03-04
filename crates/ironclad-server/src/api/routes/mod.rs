@@ -7732,6 +7732,62 @@ params = { path = "README.md" }
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
+    #[tokio::test]
+    async fn routing_eval_endpoint_rejects_malformed_candidates_json() {
+        let state = test_state();
+        let evt = ironclad_db::model_selection::ModelSelectionEventRow {
+            id: "mse-eval-bad-candidates".into(),
+            turn_id: "turn-eval-bad-candidates".into(),
+            session_id: "sess-eval-bad-candidates".into(),
+            agent_id: "agent-eval".into(),
+            channel: "cli".into(),
+            selected_model: "ollama/qwen3:8b".into(),
+            strategy: "metascore".into(),
+            primary_model: "ollama/qwen3:8b".into(),
+            override_model: None,
+            complexity: Some("0.4".into()),
+            user_excerpt: "eval malformed candidates".into(),
+            candidates_json: "this-is-not-json".into(),
+            created_at: "2025-01-01T00:00:00".into(),
+            schema_version: ironclad_db::model_selection::ROUTING_SCHEMA_VERSION,
+            attribution: Some("unit-test".into()),
+            metascore_json: None,
+            features_json: None,
+        };
+        ironclad_db::model_selection::record_model_selection_event(&state.db, &evt).unwrap();
+        ironclad_db::metrics::record_inference_cost(
+            &state.db,
+            "ollama/qwen3:8b",
+            "ollama",
+            50,
+            25,
+            0.001,
+            Some("T1"),
+            false,
+            Some(80),
+            Some(0.5),
+            false,
+            Some("turn-eval-bad-candidates"),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/routing-eval")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"limit":50000,"since":"2025-01-01","until":"2025-01-02"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
     // ── PUT /api/turns/:id/feedback (update existing) ───────────
 
     #[tokio::test]
