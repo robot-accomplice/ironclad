@@ -14,7 +14,6 @@ use tempfile::TempDir;
 
 use crate::client::HarnessClient;
 use crate::config_gen::{ConfigOverrides, generate_config};
-use crate::port_pool::allocate_port;
 
 /// How the sandbox runs the server.
 #[derive(Debug, Clone, Copy)]
@@ -62,22 +61,22 @@ impl SandboxedServer {
         mode: SandboxMode,
         overrides: ConfigOverrides,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let port = allocate_port();
         let tmp_dir = TempDir::new()?;
         let api_key = overrides.api_key.clone();
-        let config_path = generate_config(tmp_dir.path(), port, &overrides)?;
         let db_path = tmp_dir.path().join("state.db");
-        let base_url = format!("http://127.0.0.1:{port}");
 
         match mode {
             SandboxMode::InProcess => {
+                // Bind first so the kernel reserves a unique free port; this avoids
+                // cross-process collisions during highly parallel test runs.
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+                let port = listener.local_addr()?.port();
+                let config_path = generate_config(tmp_dir.path(), port, &overrides)?;
+                let base_url = format!("http://127.0.0.1:{port}");
                 let config = ironclad_core::IroncladConfig::from_file(&config_path)?;
                 let router =
                     ironclad_server::bootstrap_with_config_path(config, Some(config_path.clone()))
                         .await?;
-
-                let bind_addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
-                let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
                 let handle = tokio::spawn(async move {
                     let _ = axum::serve(
@@ -105,6 +104,9 @@ impl SandboxedServer {
 
             #[cfg(feature = "full-process")]
             SandboxMode::Process => {
+                let port = crate::port_pool::allocate_port();
+                let config_path = generate_config(tmp_dir.path(), port, &overrides)?;
+                let base_url = format!("http://127.0.0.1:{port}");
                 let bin = assert_cmd::cargo::cargo_bin("ironclad");
                 let child = std::process::Command::new(bin)
                     .args(["serve", "-c"])
