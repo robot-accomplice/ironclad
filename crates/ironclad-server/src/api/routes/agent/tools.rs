@@ -399,7 +399,7 @@ async fn execute_tool_call_internal(
             Ok(ironclad_agent::approvals::ToolClassification::Gated) => {
                 let request = state
                     .approvals
-                    .request_approval(tool_name, &params.to_string(), Some(turn_id))
+                    .request_approval(tool_name, &params.to_string(), Some(turn_id), authority)
                     .map_err(|e| format!("Approval error: {e}"))?;
                 ironclad_db::approvals::record_approval_request(
                     &state.db,

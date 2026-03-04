@@ -221,7 +221,7 @@ pub async fn approve_request(
                     &replay_req.tool_name,
                     &params,
                     &replay_turn_id,
-                    InputAuthority::Creator,
+                    replay_req.requested_authority,
                     None,
                 )
                 .await;

@@ -229,8 +229,23 @@ impl A2aProtocol {
 
     /// Derive a 32-byte session key from X25519 ECDH shared secret using HKDF-SHA256.
     pub fn derive_session_key(our_secret: EphemeralSecret, their_public: &PublicKey) -> [u8; 32] {
+        // Domain-separated, deterministic salt derived from both ephemeral
+        // public keys (order-independent so both peers derive the same value).
+        let our_public = PublicKey::from(&our_secret);
+        let our_bytes = our_public.as_bytes();
+        let their_bytes = their_public.as_bytes();
+        let (left, right) = if our_bytes <= their_bytes {
+            (our_bytes, their_bytes)
+        } else {
+            (their_bytes, our_bytes)
+        };
+        let mut salt_material = [0u8; 64];
+        salt_material[..32].copy_from_slice(left);
+        salt_material[32..].copy_from_slice(right);
+        let salt = <Sha256 as sha2::Digest>::digest(salt_material);
+
         let shared = our_secret.diffie_hellman(their_public);
-        let h = Hkdf::<Sha256>::new(None, shared.as_bytes());
+        let h = Hkdf::<Sha256>::new(Some(salt.as_ref()), shared.as_bytes());
         let mut key = [0u8; 32];
         // SAFETY: HKDF-SHA256 expand to 32 bytes cannot fail per RFC 5869
         h.expand(b"ironclad-a2a-session", &mut key)

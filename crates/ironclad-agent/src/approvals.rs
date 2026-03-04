@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use ironclad_core::config::ApprovalsConfig;
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::{InputAuthority, IroncladError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolClassification {
@@ -30,11 +30,17 @@ pub struct ApprovalRequest {
     pub tool_name: String,
     pub tool_input: String,
     pub session_id: Option<String>,
+    #[serde(default = "default_requested_authority")]
+    pub requested_authority: InputAuthority,
     pub status: ApprovalStatus,
     pub decided_by: Option<String>,
     pub decided_at: Option<DateTime<Utc>>,
     pub timeout_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+}
+
+fn default_requested_authority() -> InputAuthority {
+    InputAuthority::External
 }
 
 pub struct ApprovalManager {
@@ -82,6 +88,7 @@ impl ApprovalManager {
         tool_name: &str,
         tool_input: &str,
         session_id: Option<&str>,
+        requested_authority: InputAuthority,
     ) -> Result<ApprovalRequest> {
         let id = Uuid::new_v4().to_string();
         let timeout_at = Utc::now() + Duration::seconds(self.config.timeout_seconds as i64);
@@ -91,6 +98,7 @@ impl ApprovalManager {
             tool_name: tool_name.to_string(),
             tool_input: tool_input.to_string(),
             session_id: session_id.map(|s| s.to_string()),
+            requested_authority,
             status: ApprovalStatus::Pending,
             decided_by: None,
             decided_at: None,
@@ -254,17 +262,29 @@ mod tests {
     fn request_approval_creates_pending() {
         let mgr = ApprovalManager::new(test_config());
         let req = mgr
-            .request_approval("shell", "ls -la", Some("sess-1"))
+            .request_approval("shell", "ls -la", Some("sess-1"), InputAuthority::External)
             .unwrap();
         assert_eq!(req.status, ApprovalStatus::Pending);
         assert_eq!(req.tool_name, "shell");
+        assert_eq!(req.requested_authority, InputAuthority::External);
         assert!(req.decided_by.is_none());
+    }
+
+    #[test]
+    fn request_approval_preserves_requested_authority() {
+        let mgr = ApprovalManager::new(test_config());
+        let req = mgr
+            .request_approval("shell", "ls", None, InputAuthority::Peer)
+            .unwrap();
+        assert_eq!(req.requested_authority, InputAuthority::Peer);
     }
 
     #[test]
     fn approve_request() {
         let mgr = ApprovalManager::new(test_config());
-        let req = mgr.request_approval("shell", "ls", None).unwrap();
+        let req = mgr
+            .request_approval("shell", "ls", None, InputAuthority::External)
+            .unwrap();
         let approved = mgr.approve(&req.id, "admin").unwrap();
         assert_eq!(approved.status, ApprovalStatus::Approved);
         assert_eq!(approved.decided_by.as_deref(), Some("admin"));
@@ -273,7 +293,9 @@ mod tests {
     #[test]
     fn deny_request() {
         let mgr = ApprovalManager::new(test_config());
-        let req = mgr.request_approval("write_file", "{}", None).unwrap();
+        let req = mgr
+            .request_approval("write_file", "{}", None, InputAuthority::External)
+            .unwrap();
         let denied = mgr.deny(&req.id, "admin").unwrap();
         assert_eq!(denied.status, ApprovalStatus::Denied);
     }
@@ -288,7 +310,9 @@ mod tests {
     #[test]
     fn double_approve_fails() {
         let mgr = ApprovalManager::new(test_config());
-        let req = mgr.request_approval("shell", "cmd", None).unwrap();
+        let req = mgr
+            .request_approval("shell", "cmd", None, InputAuthority::External)
+            .unwrap();
         mgr.approve(&req.id, "admin").unwrap();
         let result = mgr.approve(&req.id, "admin2");
         assert!(result.is_err());
@@ -297,8 +321,11 @@ mod tests {
     #[test]
     fn list_pending_filters() {
         let mgr = ApprovalManager::new(test_config());
-        mgr.request_approval("shell", "1", None).unwrap();
-        let req2 = mgr.request_approval("write_file", "2", None).unwrap();
+        mgr.request_approval("shell", "1", None, InputAuthority::External)
+            .unwrap();
+        let req2 = mgr
+            .request_approval("write_file", "2", None, InputAuthority::External)
+            .unwrap();
         mgr.approve(&req2.id, "admin").unwrap();
 
         let pending = mgr.list_pending();
@@ -312,7 +339,8 @@ mod tests {
             timeout_seconds: 0,
             ..test_config()
         });
-        mgr.request_approval("shell", "cmd", None).unwrap();
+        mgr.request_approval("shell", "cmd", None, InputAuthority::External)
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
         let expired = mgr.expire_timed_out();
         assert_eq!(expired.len(), 1);
@@ -322,8 +350,11 @@ mod tests {
     #[test]
     fn clear_decided() {
         let mgr = ApprovalManager::new(test_config());
-        mgr.request_approval("shell", "1", None).unwrap();
-        let req2 = mgr.request_approval("write_file", "2", None).unwrap();
+        mgr.request_approval("shell", "1", None, InputAuthority::External)
+            .unwrap();
+        let req2 = mgr
+            .request_approval("write_file", "2", None, InputAuthority::External)
+            .unwrap();
         mgr.approve(&req2.id, "admin").unwrap();
 
         let cleared = mgr.clear_decided();
