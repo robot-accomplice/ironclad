@@ -1298,7 +1298,13 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn knowledge_ingest_rejects_path_outside_workspace() {
-        let app = build_router(test_state());
+        let state = test_state();
+        let workspace = tempfile::tempdir().unwrap();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.agent.workspace = workspace.path().to_path_buf();
+        }
+        let app = build_router(state);
         let outside = std::env::temp_dir().join(format!("ic-outside-{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&outside, b"secret").unwrap();
 
