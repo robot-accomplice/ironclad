@@ -1502,9 +1502,8 @@ mod tests {
     async fn cmd_plugin_info_not_found() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/plugins", serde_json::json!({"plugins": []})).await;
-        super::cmd_plugin_info(&s.uri(), "nonexistent")
-            .await
-            .unwrap();
+        let result = super::cmd_plugin_info(&s.uri(), "nonexistent").await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -1528,9 +1527,8 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&s)
             .await;
-        super::cmd_plugin_toggle(&s.uri(), "weather", false)
-            .await
-            .unwrap();
+        let result = super::cmd_plugin_toggle(&s.uri(), "weather", false).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

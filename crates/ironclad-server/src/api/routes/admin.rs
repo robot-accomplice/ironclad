@@ -1121,13 +1121,23 @@ pub async fn breaker_status(State(state): State<AppState>) -> impl IntoResponse 
             json!({
                 "state": state_str,
                 "blocked": *circuit_state == ironclad_llm::CircuitState::Open,
+                "credit_tripped": llm.breakers.is_credit_tripped(name),
+                "operator_forced_open": llm.breakers.is_operator_forced_open(name),
             }),
         );
     }
 
     for name in config.providers.keys() {
         if !provider_states.contains_key(name) {
-            provider_states.insert(name.clone(), json!({ "state": "closed", "blocked": false }));
+            provider_states.insert(
+                name.clone(),
+                json!({
+                    "state": "closed",
+                    "blocked": false,
+                    "credit_tripped": false,
+                    "operator_forced_open": false,
+                }),
+            );
         }
     }
 
@@ -3040,6 +3050,7 @@ pub async fn get_routing_diagnostics(State(state): State<AppState>) -> impl Into
                 "provider": name,
                 "state": format!("{state:?}"),
                 "credit_tripped": llm_read.breakers.is_credit_tripped(&name),
+                "operator_forced_open": llm_read.breakers.is_operator_forced_open(&name),
             })
         })
         .collect();
