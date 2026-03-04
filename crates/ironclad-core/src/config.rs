@@ -516,6 +516,59 @@ impl IroncladConfig {
             ));
         }
 
+        let routing = &self.models.routing;
+        if !(0.0..=1.0).contains(&routing.accuracy_floor) {
+            return Err(IroncladError::Config(format!(
+                "models.routing.accuracy_floor must be in [0.0, 1.0], got {}",
+                routing.accuracy_floor
+            )));
+        }
+        if routing.accuracy_min_obs == 0 {
+            return Err(IroncladError::Config(
+                "models.routing.accuracy_min_obs must be >= 1".into(),
+            ));
+        }
+        if let Some(cost_weight) = routing.cost_weight
+            && !(0.0..=1.0).contains(&cost_weight)
+        {
+            return Err(IroncladError::Config(format!(
+                "models.routing.cost_weight must be in [0.0, 1.0], got {cost_weight}"
+            )));
+        }
+        if !(0.0..=1.0).contains(&routing.canary_fraction) {
+            return Err(IroncladError::Config(format!(
+                "models.routing.canary_fraction must be in [0.0, 1.0], got {}",
+                routing.canary_fraction
+            )));
+        }
+        if routing.canary_model.is_none() && routing.canary_fraction > 0.0 {
+            return Err(IroncladError::Config(
+                "models.routing.canary_fraction > 0 requires models.routing.canary_model".into(),
+            ));
+        }
+        if routing.canary_model.is_some() && routing.canary_fraction <= 0.0 {
+            return Err(IroncladError::Config(
+                "models.routing.canary_model requires models.routing.canary_fraction > 0".into(),
+            ));
+        }
+        if let Some(canary_model) = &routing.canary_model {
+            if canary_model.trim().is_empty() {
+                return Err(IroncladError::Config(
+                    "models.routing.canary_model must be non-empty when set".into(),
+                ));
+            }
+            if routing.blocked_models.iter().any(|m| m == canary_model) {
+                return Err(IroncladError::Config(format!(
+                    "models.routing.canary_model '{canary_model}' must not appear in models.routing.blocked_models"
+                )));
+            }
+        }
+        if routing.blocked_models.iter().any(|m| m.trim().is_empty()) {
+            return Err(IroncladError::Config(
+                "models.routing.blocked_models entries must be non-empty".into(),
+            ));
+        }
+
         Ok(())
     }
 }
@@ -3109,5 +3162,99 @@ primary = "ollama/qwen3:8b"
 threat_caution_ceiling = "Peer"
 "#;
         IroncladConfig::from_str(toml).unwrap();
+    }
+
+    #[test]
+    fn validate_routing_accuracy_floor_out_of_range_fails() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[models.routing]
+accuracy_floor = 1.5
+"#;
+        let err = IroncladConfig::from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("accuracy_floor"));
+    }
+
+    #[test]
+    fn validate_routing_canary_fraction_requires_model() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[models.routing]
+canary_fraction = 0.2
+"#;
+        let err = IroncladConfig::from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("canary_model"));
+    }
+
+    #[test]
+    fn validate_routing_canary_model_requires_fraction() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[models.routing]
+canary_model = "openai/gpt-4o"
+"#;
+        let err = IroncladConfig::from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("canary_fraction"));
+    }
+
+    #[test]
+    fn validate_routing_canary_model_must_not_be_blocked() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[models.routing]
+canary_model = "openai/gpt-4o"
+canary_fraction = 0.5
+blocked_models = ["openai/gpt-4o"]
+"#;
+        let err = IroncladConfig::from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("blocked_models"));
     }
 }

@@ -308,7 +308,11 @@ pub(super) async fn select_routed_model_with_audit(
                 }
             }
 
+            let usable = c.usable;
             candidates.push(c);
+            if !usable {
+                continue;
+            }
 
             match &best_selection {
                 Some((_, _, best_score)) if breakdown.final_score <= *best_score => {}
@@ -331,7 +335,8 @@ pub(super) async fn select_routed_model_with_audit(
                     let prefix = canary.split('/').next().unwrap_or("unknown");
                     let has_provider = llm_read.providers.get_by_model(canary).is_some();
                     let blocked = llm_read.breakers.is_blocked(prefix);
-                    if has_provider && !blocked {
+                    let config_blocked = blocked_models.iter().any(|b| b == canary);
+                    if has_provider && !blocked && !config_blocked {
                         tracing::info!(
                             canary_model = canary.as_str(),
                             production_model = selected.as_str(),
@@ -344,6 +349,7 @@ pub(super) async fn select_routed_model_with_audit(
                             canary_model = canary.as_str(),
                             has_provider,
                             blocked,
+                            config_blocked,
                             "canary model unavailable, using production selection"
                         );
                         (selected.clone(), false)
