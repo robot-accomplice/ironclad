@@ -78,7 +78,7 @@ impl EmailAdapter {
             username,
             password,
             allowed_senders: Vec::new(),
-            deny_on_empty: false,
+            deny_on_empty: true,
             buffer: Arc::new(Mutex::new(VecDeque::new())),
             transport,
             poll_interval: Duration::from_secs(30),
@@ -628,13 +628,14 @@ mod tests {
     fn platform_name_is_email() {
         let adapter = test_adapter();
         assert_eq!(adapter.platform_name(), "email");
+        assert!(adapter.deny_on_empty);
     }
 
     #[test]
-    fn is_sender_allowed_empty_legacy_allows_all() {
-        // deny_on_empty=false (legacy default from new()): empty list allows everyone
+    fn is_sender_allowed_empty_default_denies_all() {
+        // deny_on_empty=true (secure default): empty list denies everyone
         let adapter = test_adapter();
-        assert!(adapter.is_sender_allowed("anyone@example.com"));
+        assert!(!adapter.is_sender_allowed("anyone@example.com"));
     }
 
     #[test]

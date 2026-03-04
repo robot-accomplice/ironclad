@@ -35,7 +35,7 @@ impl TelegramAdapter {
             poll_timeout: 30,
             allowed_chat_ids: Vec::new(),
             webhook_secret: None,
-            deny_on_empty: false,
+            deny_on_empty: true,
             message_buffer: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
@@ -474,6 +474,7 @@ mod tests {
         assert_eq!(adapter.poll_timeout, 30);
         assert!(adapter.allowed_chat_ids.is_empty());
         assert!(adapter.webhook_secret.is_none());
+        assert!(adapter.deny_on_empty);
     }
 
     #[test]
@@ -486,10 +487,10 @@ mod tests {
     }
 
     #[test]
-    fn chat_allowed_empty_legacy_allows_all() {
-        // deny_on_empty=false (legacy): empty list allows everyone
+    fn chat_allowed_empty_default_denies_all() {
+        // deny_on_empty=true (secure default): empty list denies everyone
         let adapter = TelegramAdapter::new("tok".into());
-        assert!(adapter.is_chat_allowed(12345));
+        assert!(!adapter.is_chat_allowed(12345));
     }
 
     #[test]

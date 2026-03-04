@@ -34,7 +34,7 @@ impl SignalAdapter {
                 .build()
                 .unwrap_or_default(),
             allowed_numbers: Vec::new(),
-            deny_on_empty: false,
+            deny_on_empty: true,
             message_buffer: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
@@ -229,6 +229,7 @@ mod tests {
         assert_eq!(adapter.phone_number, "+15551234567");
         assert_eq!(adapter.daemon_url, "http://localhost:8080");
         assert!(adapter.allowed_numbers.is_empty());
+        assert!(adapter.deny_on_empty);
     }
 
     #[test]
@@ -244,10 +245,10 @@ mod tests {
     }
 
     #[test]
-    fn sender_allowed_empty_legacy_allows_all() {
-        // deny_on_empty=false (legacy): empty list allows everyone
+    fn sender_allowed_empty_default_denies_all() {
+        // deny_on_empty=true (secure default): empty list denies everyone
         let adapter = SignalAdapter::new("+1".into(), "http://localhost:8080".into());
-        assert!(adapter.is_sender_allowed("+any_number"));
+        assert!(!adapter.is_sender_allowed("+any_number"));
     }
 
     #[test]
