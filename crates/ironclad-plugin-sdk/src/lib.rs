@@ -18,6 +18,8 @@
 //! - `registry` -- Plugin registration, lookup, enable/disable
 //! - `script` -- Script-based plugin execution (subprocess with sandboxing)
 
+pub mod archive;
+pub mod catalog;
 pub mod loader;
 pub mod manifest;
 pub mod registry;

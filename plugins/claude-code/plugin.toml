@@ -1,0 +1,23 @@
+name = "claude-code"
+version = "0.1.0"
+description = "Delegate complex coding tasks to Claude Code CLI"
+author = "Ironclad"
+permissions = ["filesystem", "process"]
+timeout_seconds = 300
+companion_skills = ["skills/claude-code.md"]
+
+[[requirements]]
+name = "Claude Code CLI"
+command = "claude"
+install_hint = "Install Claude Code: https://docs.anthropic.com/en/docs/claude-code"
+
+[[requirements]]
+name = "jq"
+command = "jq"
+install_hint = "Install jq: https://jqlang.github.io/jq/download/"
+
+[[tools]]
+name = "claude-code"
+description = "Invoke Claude Code CLI to perform a coding task. Receives a prompt and optional parameters, executes claude in headless mode, and returns structured results including output, cost, and session ID for resumption."
+dangerous = true
+permissions = ["filesystem", "process"]
