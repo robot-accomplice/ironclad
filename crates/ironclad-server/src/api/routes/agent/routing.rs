@@ -177,6 +177,7 @@ pub(super) async fn select_routed_model_with_audit(
     let cost_aware = config.models.routing.cost_aware;
     let accuracy_floor = config.models.routing.accuracy_floor;
     let accuracy_min_obs = config.models.routing.accuracy_min_obs;
+    let cost_weight = config.models.routing.cost_weight;
     let mut ordered_models = vec![primary.clone()];
     for fb in &config.models.fallbacks {
         if !fb.is_empty() && !ordered_models.iter().any(|m| m == fb) {
@@ -265,7 +266,8 @@ pub(super) async fn select_routed_model_with_audit(
         // Build audit entries for all profiled candidates.
         let mut best_selection: Option<(String, ironclad_llm::MetascoreBreakdown, f64)> = None;
         for profile in &profiles {
-            let mut breakdown = profile.metascore(complexity, cost_aware);
+            let mut breakdown =
+                profile.metascore_with_cost_weight(complexity, cost_aware, cost_weight);
             if escalation_bias != 0.0 {
                 let delta = if profile.is_local {
                     escalation_bias

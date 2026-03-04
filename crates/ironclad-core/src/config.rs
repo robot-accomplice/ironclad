@@ -751,6 +751,12 @@ pub struct RoutingConfig {
     /// Minimum observations before the accuracy floor applies to a model.
     #[serde(default = "default_accuracy_min_obs")]
     pub accuracy_min_obs: usize,
+    /// Custom cost weight for metascore \[0.0–1.0\]. When set, replaces the
+    /// binary `cost_aware` toggle with a continuous dial: 0.0 = ignore cost,
+    /// 1.0 = maximize savings. Efficacy weight adjusts inversely.
+    /// When `None`, falls back to `cost_aware` boolean behavior.
+    #[serde(default)]
+    pub cost_weight: Option<f64>,
 }
 
 impl Default for RoutingConfig {
@@ -763,6 +769,7 @@ impl Default for RoutingConfig {
             estimated_output_tokens: default_estimated_output_tokens(),
             accuracy_floor: 0.0,
             accuracy_min_obs: default_accuracy_min_obs(),
+            cost_weight: None,
         }
     }
 }
