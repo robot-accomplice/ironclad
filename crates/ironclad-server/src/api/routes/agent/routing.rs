@@ -281,23 +281,22 @@ pub(super) async fn select_routed_model_with_audit(
             // is below the configured threshold, provided enough data exists.
             if accuracy_floor > 0.0 {
                 let obs_count = llm_read.quality.observation_count(&profile.model_name);
-                if obs_count >= accuracy_min_obs {
-                    if let Some(q) = llm_read.quality.estimated_quality(&profile.model_name) {
-                        if q < accuracy_floor {
-                            tracing::debug!(
-                                model = profile.model_name.as_str(),
-                                quality = q,
-                                floor = accuracy_floor,
-                                obs = obs_count,
-                                "model gated by accuracy floor"
-                            );
-                            c.quality_gated = true;
-                            c.usable = false;
-                            c.note = format!("quality {q:.3} < floor {accuracy_floor:.3}");
-                            candidates.push(c);
-                            continue;
-                        }
-                    }
+                if obs_count >= accuracy_min_obs
+                    && let Some(q) = llm_read.quality.estimated_quality(&profile.model_name)
+                    && q < accuracy_floor
+                {
+                    tracing::debug!(
+                        model = profile.model_name.as_str(),
+                        quality = q,
+                        floor = accuracy_floor,
+                        obs = obs_count,
+                        "model gated by accuracy floor"
+                    );
+                    c.quality_gated = true;
+                    c.usable = false;
+                    c.note = format!("quality {q:.3} < floor {accuracy_floor:.3}");
+                    candidates.push(c);
+                    continue;
                 }
             }
 
