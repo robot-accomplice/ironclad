@@ -7,10 +7,11 @@
 
 use crate::Database;
 use ironclad_core::{IroncladError, Result};
+use serde::Serialize;
 
 /// A single row in the routing dataset — one routing decision joined with its
 /// aggregated inference cost outcome.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RoutingDatasetRow {
     // ── routing decision (from model_selection_events) ──
     pub event_id: String,
@@ -174,7 +175,7 @@ pub fn extract_routing_dataset(
 }
 
 /// Summary statistics for the extracted dataset.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DatasetSummary {
     pub total_rows: usize,
     pub distinct_models: usize,
