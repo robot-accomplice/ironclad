@@ -407,27 +407,41 @@ impl IroncladConfig {
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(toml_str: &str) -> Result<Self> {
         let mut config: Self = toml::from_str(toml_str)?;
-        config.database.path = expand_tilde(&config.database.path);
-        config.agent.workspace = expand_tilde(&config.agent.workspace);
-        config.server.log_dir = expand_tilde(&config.server.log_dir);
-        config.skills.skills_dir = expand_tilde(&config.skills.skills_dir);
-        config.wallet.path = expand_tilde(&config.wallet.path);
-        config.plugins.dir = expand_tilde(&config.plugins.dir);
-        config.browser.profile_dir = expand_tilde(&config.browser.profile_dir);
-        config.daemon.pid_file = expand_tilde(&config.daemon.pid_file);
-        if let Some(ref vp) = config.obsidian.vault_path {
-            config.obsidian.vault_path = Some(expand_tilde(vp));
+        config.normalize_paths();
+        config.normalize_legacy_aliases();
+        config.merge_bundled_providers();
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Expand home-relative (`~`) paths across all configured path fields.
+    pub fn normalize_paths(&mut self) {
+        self.database.path = expand_tilde(&self.database.path);
+        self.agent.workspace = expand_tilde(&self.agent.workspace);
+        self.server.log_dir = expand_tilde(&self.server.log_dir);
+        self.skills.skills_dir = expand_tilde(&self.skills.skills_dir);
+        self.wallet.path = expand_tilde(&self.wallet.path);
+        self.plugins.dir = expand_tilde(&self.plugins.dir);
+        self.browser.profile_dir = expand_tilde(&self.browser.profile_dir);
+        self.daemon.pid_file = expand_tilde(&self.daemon.pid_file);
+        self.multimodal.media_dir = self.multimodal.media_dir.as_ref().map(|p| expand_tilde(p));
+        self.devices.identity_path = self.devices.identity_path.as_ref().map(|p| expand_tilde(p));
+
+        if let Some(ref vp) = self.obsidian.vault_path {
+            self.obsidian.vault_path = Some(expand_tilde(vp));
         }
-        config.obsidian.auto_detect_paths = config
+        self.obsidian.auto_detect_paths = self
             .obsidian
             .auto_detect_paths
             .iter()
             .map(|p| expand_tilde(p))
             .collect();
-        config.normalize_legacy_aliases();
-        config.merge_bundled_providers();
-        config.validate()?;
-        Ok(config)
+
+        for source in &mut self.knowledge.sources {
+            if let Some(ref p) = source.path {
+                source.path = Some(expand_tilde(p));
+            }
+        }
     }
 
     pub fn normalize_legacy_aliases(&mut self) {
@@ -673,7 +687,7 @@ pub fn home_dir() -> PathBuf {
 /// 4. `None` — caller decides the fallback (e.g., built-in defaults or error)
 pub fn resolve_config_path(explicit: Option<&str>) -> Option<PathBuf> {
     if let Some(p) = explicit {
-        return Some(PathBuf::from(p));
+        return Some(expand_tilde(Path::new(p)));
     }
     let home_config = home_dir().join(".ironclad").join("ironclad.toml");
     if home_config.exists() {
@@ -3081,6 +3095,61 @@ per_payment_cap = 0.0
         assert_eq!(
             p.unwrap(),
             std::path::PathBuf::from("/nonexistent/path/ironclad.toml")
+        );
+    }
+
+    #[test]
+    fn resolve_config_path_explicit_tilde_expands() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let p = resolve_config_path(Some("~/ironclad.toml")).unwrap();
+        assert_eq!(p, std::path::PathBuf::from(home).join("ironclad.toml"));
+    }
+
+    #[test]
+    fn tilde_expansion_for_multimodal_knowledge_and_device_paths() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let cfg = IroncladConfig::from_str(
+            r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[multimodal]
+media_dir = "~/media"
+
+[[knowledge.sources]]
+name = "local"
+source_type = "filesystem"
+path = "~/docs"
+
+[devices]
+identity_path = "~/.ironclad/device.json"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cfg.multimodal.media_dir.unwrap(),
+            std::path::PathBuf::from(&home).join("media")
+        );
+        assert_eq!(
+            cfg.knowledge.sources[0].path.clone().unwrap(),
+            std::path::PathBuf::from(&home).join("docs")
+        );
+        assert_eq!(
+            cfg.devices.identity_path.unwrap(),
+            std::path::PathBuf::from(&home)
+                .join(".ironclad")
+                .join("device.json")
         );
     }
 

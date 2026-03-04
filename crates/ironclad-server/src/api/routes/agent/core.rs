@@ -580,12 +580,12 @@ pub(super) async fn check_cache(
     cache_hash: &str,
     query_embedding: Option<&[f32]>,
 ) -> Option<ironclad_llm::CachedResponse> {
+    let _ = user_content;
+    let _ = query_embedding;
     let mut llm = state.llm.write().await;
-    if let Some(emb) = query_embedding {
-        llm.cache.lookup_with_embedding(cache_hash, emb)
-    } else {
-        llm.cache.lookup(cache_hash, user_content)
-    }
+    // High-integrity default: only exact/tool-TTL cache hits.
+    // Semantic near-match cache reuse can fabricate wrong instruction-bound outputs.
+    llm.cache.lookup_strict(cache_hash)
 }
 
 /// Store a response in the semantic cache.

@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Routing dataset privacy default**: `GET /api/models/routing-dataset` now redacts `user_excerpt` by default; explicit opt-in is required to include excerpts.
 - **Routing eval validation**: `POST /api/models/routing-eval` now validates `cost_weight`, `accuracy_floor`, and `accuracy_min_obs` bounds.
 - **Config defaults/tests**: routing defaults now use `metascore`; legacy `heuristic` input is accepted and normalized to `metascore` during validation.
+- **Cache integrity mode for live agent path**: semantic near-match cache reuse is now disabled in the inference pipeline (`lookup_strict`: exact + tool-TTL only) to prevent instruction-mismatched cached responses.
+- **Path normalization parity**: runtime `PUT /api/config` updates now apply the same tilde (`~`) path expansion as TOML load (`normalize_paths`), including multimodal, device, and knowledge source path fields.
+- **Explicit config path behavior**: `resolve_config_path(Some(\"~/...\"))` now expands to the user home directory instead of preserving a literal `~`.
+
+### Fixed
+
+- **Live startup migration deadlock on legacy DBs**: database initialization/migration order no longer fails on `inference_costs.turn_id` index creation when the column is absent in legacy state.
+- **Migration 13 idempotency**: routing v0.9.4 migration path now handles pre-existing `turn_id`/routing columns without `duplicate column` failures.
 
 ### Security
 

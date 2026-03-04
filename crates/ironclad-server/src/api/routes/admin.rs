@@ -799,6 +799,8 @@ pub async fn update_config(
             return Err(bad_request(msg));
         }
     };
+    // Keep runtime JSON patch behavior aligned with TOML load path resolution.
+    updated.normalize_paths();
     updated.normalize_legacy_aliases();
     if let Err(e) = updated.validate() {
         tracing::warn!(error = %e, "config validation failed");
