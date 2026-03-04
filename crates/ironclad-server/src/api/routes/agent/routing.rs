@@ -180,6 +180,7 @@ pub(super) async fn select_routed_model_with_audit(
     let cost_weight = config.models.routing.cost_weight;
     let canary_model = config.models.routing.canary_model.clone();
     let canary_fraction = config.models.routing.canary_fraction;
+    let blocked_models = config.models.routing.blocked_models.clone();
     let mut ordered_models = vec![primary.clone()];
     for fb in &config.models.fallbacks {
         if !fb.is_empty() && !ordered_models.iter().any(|m| m == fb) {
@@ -194,8 +195,11 @@ pub(super) async fn select_routed_model_with_audit(
         let provider_available = llm_read.providers.get_by_model(model).is_some();
         let provider_prefix = model.split('/').next().unwrap_or("unknown");
         let breaker_blocked = llm_read.breakers.is_blocked(provider_prefix);
-        let usable = provider_available && !breaker_blocked;
-        let note = if usable {
+        let config_blocked = blocked_models.iter().any(|b| b == model);
+        let usable = provider_available && !breaker_blocked && !config_blocked;
+        let note = if config_blocked {
+            "model on config blocklist".to_string()
+        } else if usable {
             "usable".to_string()
         } else if !provider_available {
             "no provider configured for model".to_string()

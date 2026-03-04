@@ -766,6 +766,11 @@ pub struct RoutingConfig {
     /// Only effective when `canary_model` is set. Default: 0.0 (disabled).
     #[serde(default)]
     pub canary_fraction: f64,
+    /// Static model blocklist — models listed here are unconditionally excluded
+    /// from all routing paths (override, metascore, fallback). Useful as an
+    /// instant kill-switch without restarting the server.
+    #[serde(default)]
+    pub blocked_models: Vec<String>,
 }
 
 impl Default for RoutingConfig {
@@ -781,6 +786,7 @@ impl Default for RoutingConfig {
             cost_weight: None,
             canary_model: None,
             canary_fraction: 0.0,
+            blocked_models: Vec::new(),
         }
     }
 }

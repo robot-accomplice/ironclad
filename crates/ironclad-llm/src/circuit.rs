@@ -182,6 +182,16 @@ impl CircuitBreakerRegistry {
             .collect()
     }
 
+    /// Force a provider's circuit breaker open (kill-switch). Stays open
+    /// until explicitly `reset()` — identical to a credit-trip, but with a
+    /// separate semantic meaning for operator-initiated blocks.
+    pub fn force_open(&mut self, provider: &str) {
+        let cb = self.get_or_create(provider);
+        cb.state = CircuitState::Open;
+        cb.last_failure_at = Some(Instant::now());
+        cb.credit_tripped = true; // prevents auto-recovery to HalfOpen
+    }
+
     /// Toggle soft capacity pressure state for a provider.
     pub fn set_capacity_pressure(&mut self, provider: &str, pressured: bool) {
         let cb = self.get_or_create(provider);
@@ -350,5 +360,24 @@ mod tests {
         reg.set_capacity_pressure("openai", false);
         assert_eq!(reg.get_state("openai"), CircuitState::Closed);
         assert!(!reg.is_blocked("openai"));
+    }
+
+    #[test]
+    fn force_open_blocks_and_stays_open() {
+        let mut reg = CircuitBreakerRegistry::new(&test_config());
+        assert!(!reg.is_blocked("openai"));
+
+        reg.force_open("openai");
+        assert!(reg.is_blocked("openai"));
+        assert_eq!(reg.get_state("openai"), CircuitState::Open);
+
+        // Should NOT auto-recover to HalfOpen (credit_tripped prevents it)
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(reg.is_blocked("openai"));
+
+        // reset() clears the force-open
+        reg.reset("openai");
+        assert!(!reg.is_blocked("openai"));
+        assert_eq!(reg.get_state("openai"), CircuitState::Closed);
     }
 }
