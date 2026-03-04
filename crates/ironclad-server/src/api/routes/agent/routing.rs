@@ -577,10 +577,11 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
     let mut last_error = String::new();
     let infer_started = Instant::now();
 
-    for (attempt_idx, model) in candidates.iter().enumerate() {
-        if attempt_idx >= budget.max_fallback_attempts {
+    let mut attempted = 0usize;
+    for model in &candidates {
+        if attempted >= budget.max_fallback_attempts {
             tracing::warn!(
-                attempted = attempt_idx,
+                attempted,
                 cap = budget.max_fallback_attempts,
                 "fallback attempt budget exhausted"
             );
@@ -640,6 +641,7 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
             .map(|(_, m)| m)
             .unwrap_or(model)
             .to_string();
+        attempted += 1;
         let mut req_clone = unified_req.clone();
         // Ensure the request targets this model's API name
         if !req_clone.model.is_empty() {

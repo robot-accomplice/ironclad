@@ -730,70 +730,99 @@
       + labelEls
       + '</svg>';
   }
-  function renderModelDecisionGraph(events, focusModel, focusEdge) {
-    var rows = Array.isArray(events) ? events.slice().reverse() : [];
+  function renderModelDecisionGraph(events, focusTurnId, focusModel, focusEdge) {
+    var rows = Array.isArray(events) ? events.slice() : [];
     if (!rows.length) {
-      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Explorable Model Decision Graph</div><div style="color:var(--muted)">No model selection events yet.</div></div>';
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Task Model Decision Graph</div><div style="color:var(--muted)">No model selection events yet.</div></div>';
     }
-    var nodeMap = {};
-    var sequence = [];
+    var byTurn = {};
     rows.forEach(function(ev) {
-      var model = String((ev && (ev.executed_model || ev.selected_model)) || '').trim();
-      if (!model) return;
-      sequence.push(model);
-      if (!nodeMap[model]) nodeMap[model] = { model: model, count: 0 };
-      nodeMap[model].count += 1;
+      var tid = String((ev && ev.turn_id) || '').trim();
+      if (!tid) return;
+      byTurn[tid] = ev;
     });
+    var selectedTurn = focusTurnId && byTurn[focusTurnId] ? focusTurnId : String(rows[0].turn_id || '');
+    var selectedEvent = byTurn[selectedTurn] || rows[0] || {};
+    var selectedModel = String(selectedEvent.selected_model || '').trim();
+    var candidates = Array.isArray(selectedEvent.candidates) ? selectedEvent.candidates : [];
+
+    var nodeMap = {};
+    candidates.forEach(function(c) {
+      var model = String((c && c.model) || '').trim();
+      if (!model) return;
+      var score = typeof c.metascore === 'number' ? c.metascore : null;
+      nodeMap[model] = {
+        model: model,
+        score: score,
+        usable: c && c.usable !== false
+      };
+    });
+    if (selectedModel && !nodeMap[selectedModel]) {
+      nodeMap[selectedModel] = { model: selectedModel, score: null, usable: true };
+    }
     var nodes = Object.keys(nodeMap).sort();
     if (!nodes.length) return '';
-    var edges = {};
-    for (var i = 1; i < sequence.length; i++) {
-      var from = sequence[i - 1];
-      var to = sequence[i];
-      var key = from + '→' + to;
-      if (!edges[key]) edges[key] = { key: key, from: from, to: to, count: 0 };
-      edges[key].count += 1;
-    }
-    var centerX = 340, centerY = 150, radius = Math.max(90, Math.min(125, 44 + (nodes.length * 10)));
+
+    var centerX = 340, centerY = 150, radius = Math.max(92, Math.min(130, 52 + (nodes.length * 6)));
     var pos = {};
     nodes.forEach(function(model, idx) {
       var angle = (-Math.PI / 2) + (idx * (2 * Math.PI / nodes.length));
       pos[model] = { x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius };
     });
 
-    var edgeEls = Object.keys(edges).map(function(k) {
+    var edges = {};
+    nodes.forEach(function(model) {
+      if (!selectedModel || model === selectedModel) return;
+      var key = model + '→' + selectedModel;
+      edges[key] = { key: key, from: model, to: selectedModel, count: 1 };
+    });
+    var edgeKeys = Object.keys(edges);
+    var edgeEls = edgeKeys.map(function(k) {
       var e = edges[k];
       var a = pos[e.from], b = pos[e.to];
       if (!a || !b) return '';
       var active = focusEdge && focusEdge === e.key;
       var faded = (focusModel && e.from !== focusModel && e.to !== focusModel) || (focusEdge && !active);
       var cls = 'model-graph-edge' + (active ? ' active' : '') + (faded ? ' model-graph-faded' : '');
-      var width = 1 + Math.min(5, e.count);
-      return '<line class="' + cls + '" data-edge-key="' + esc(e.key) + '" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke-width="' + width + '"><title>' + esc(e.key) + ' · ' + e.count + ' transition(s)</title></line>';
+      var width = 1.5;
+      return '<line class="' + cls + '" data-edge-key="' + esc(e.key) + '" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke-width="' + width + '"><title>' + esc(e.key) + '</title></line>';
     }).join('');
 
     var nodeEls = nodes.map(function(model) {
       var p = pos[model];
-      var active = focusModel && focusModel === model;
-      var faded = focusModel && !active && !Object.keys(edges).some(function(k) { return edges[k].from === model || edges[k].to === model || edges[k].from === focusModel || edges[k].to === focusModel; });
+      var active = (focusModel && focusModel === model) || (!focusModel && model === selectedModel);
+      var faded = focusModel && !active;
       var cls = 'model-graph-node' + (active ? ' active' : '') + (faded ? ' model-graph-faded' : '');
-      var count = nodeMap[model].count;
+      var short = truncate(model.split('/').pop() || model, 11);
+      var score = nodeMap[model].score;
+      var scoreTxt = typeof score === 'number' ? ' · score ' + score.toFixed(3) : '';
+      var selectedTxt = model === selectedModel ? ' · selected' : '';
       return '<g data-node-model="' + esc(model) + '" style="cursor:pointer">'
-        + '<circle class="' + cls + '" cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="20"><title>' + esc(model) + ' · selected ' + count + ' time(s)</title></circle>'
-        + '<text class="model-graph-node-label" x="' + p.x.toFixed(1) + '" y="' + (p.y + 4).toFixed(1) + '">' + esc(truncate(model.split('/').pop() || model, 10)) + '</text>'
+        + '<circle class="' + cls + '" cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="20"><title>' + esc(model + selectedTxt + scoreTxt) + '</title></circle>'
+        + '<text class="model-graph-node-label" x="' + p.x.toFixed(1) + '" y="' + (p.y + 4).toFixed(1) + '">' + esc(short) + '</text>'
         + '</g>';
     }).join('');
 
-    var detail = 'Click a model node or transition edge to inspect routing continuity.';
+    var options = rows.slice(0, 80).map(function(ev) {
+      var tid = String(ev.turn_id || '');
+      var stamp = String(ev.created_at || '').replace('T', ' ').replace('Z', '');
+      var excerpt = truncate(String(ev.user_excerpt || ''), 44);
+      var label = truncate(tid, 8) + (excerpt ? ' · ' + excerpt : '') + (stamp ? ' · ' + stamp : '');
+      return '<option value="' + esc(tid) + '"' + (tid === selectedTurn ? ' selected' : '') + '>' + esc(label) + '</option>';
+    }).join('');
+
+    var detail = 'Task turn: ' + selectedTurn + '. Selected model: ' + (selectedModel || 'unknown') + '.';
     if (focusEdge && edges[focusEdge]) {
-      detail = 'Focused transition: ' + edges[focusEdge].from + ' → ' + edges[focusEdge].to + ' (' + edges[focusEdge].count + ' times).';
-    } else if (focusModel && nodeMap[focusModel]) {
-      detail = 'Focused model: ' + focusModel + ' (' + nodeMap[focusModel].count + ' selections).';
+      detail = 'Task turn: ' + selectedTurn + '. Candidate edge: ' + edges[focusEdge].from + ' → ' + edges[focusEdge].to + '.';
+    } else if (focusModel) {
+      var n = nodeMap[focusModel];
+      if (n) detail = 'Task turn: ' + selectedTurn + '. Focused model: ' + focusModel + (typeof n.score === 'number' ? ' (metascore ' + n.score.toFixed(3) + ').' : '.');
     }
 
     return '<div class="card" style="margin-bottom:1rem;padding-bottom:0.75rem">'
-      + '<div class="card-title">Explorable Model Decision Graph</div>'
-      + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.5rem">Chronological transitions over recent routing decisions. Thicker edges indicate repeated transitions.</div>'
+      + '<div class="card-title">Task Model Decision Graph</div>'
+      + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.5rem">Candidate models and chosen model for a single task. Pick a task turn to inspect that decision.</div>'
+      + '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.55rem"><label for="model-graph-task-select" style="font-size:0.75rem;color:var(--muted)">Task turn</label><select id="model-graph-task-select" class="select" style="min-width:320px;max-width:100%">' + options + '</select></div>'
       + '<div class="model-graph-wrap">'
       + '<svg class="model-graph-svg" viewBox="0 0 680 300" preserveAspectRatio="xMidYMid meet">'
       + edgeEls + nodeEls
@@ -1334,6 +1363,7 @@
     _overviewShowDetails: false,
     _routingProfileDraft: null,
     _routingProfileDefaults: null,
+    _modelGraphFocusTurn: null,
     _modelGraphFocusModel: null,
     _modelGraphFocusEdge: null,
     ws: null,
@@ -2244,16 +2274,11 @@
         api('/api/stats/costs'),
         api('/api/stats/transactions?hours=24'),
         api('/api/stats/capacity').catch(function() { return { providers: {} }; }),
-        api('/api/models/selections?limit=50').catch(function() { return { events: [] }; }),
-        api('/api/models/routing-diagnostics').catch(function() { return { config: {} }; })
+        api('/api/models/selections?limit=50').catch(function() { return { events: [] }; })
       ]).then(function(arr) {
         stackedId = 0;
         var costs = arr[0].costs || []; var txs = arr[1].transactions || []; var capacity = arr[2].providers || {};
         var modelSelections = arr[3].events || [];
-        var routingConfig = (arr[4] && arr[4].config) ? arr[4].config : {};
-        var routingProfile = deriveRoutingProfile(routingConfig);
-        App._routingProfileDefaults = routingProfile;
-        if (!App._routingProfileDraft) App._routingProfileDraft = { correctness: routingProfile.correctness, cost: routingProfile.cost, speed: routingProfile.speed };
         var providerCosts = {}; var providerTokens = {};
         PROVIDERS.forEach(function(p) { providerCosts[p] = []; providerTokens[p] = []; });
         var now = new Date(); var xLabels = [];
@@ -2330,6 +2355,35 @@
           + (selectionRows || '<tr><td colspan="6" style="color:var(--muted)">No model selection traces yet.</td></tr>')
           + '</tbody></table></div>';
 
+        return costChart + tokenChart + statGrid + capacityTable + selectionTable +
+          '<p style="margin:1.25rem 0 0.5rem;color:var(--muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.06em">Transactions</p><div class="table-wrap" style="margin-bottom:1.25rem"><table><thead><tr><th>Type</th><th>Amount</th><th>Counterparty</th><th>Time</th></tr></thead><tbody>' + txRows + '</tbody></table></div>' +
+          '<p style="margin-bottom:0.5rem;color:var(--muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.06em">Request log</p><div class="table-wrap"><table><thead><tr><th>ID</th><th>Model</th><th>Provider</th><th>In</th><th>Out</th><th>Cost</th><th>Time</th></tr></thead><tbody>' + costRows + '</tbody></table></div>';
+      });
+    },
+
+    _effPeriod: '7d',
+    renderEfficiency: function() {
+      var self = this;
+      var period = this._effPeriod || '7d';
+      return Promise.all([
+        api('/api/stats/efficiency?period=' + encodeURIComponent(period)),
+        api('/api/models/selections?limit=80').catch(function() { return { events: [] }; }),
+        api('/api/models/routing-diagnostics').catch(function() { return { config: {} }; })
+      ]).then(function(arr) {
+        var report = arr[0] || {};
+        var modelSelections = (arr[1] && arr[1].events) ? arr[1].events : [];
+        var routingConfig = (arr[2] && arr[2].config) ? arr[2].config : {};
+        var routingProfile = deriveRoutingProfile(routingConfig);
+        App._routingProfileDefaults = routingProfile;
+        if (!App._routingProfileDraft) App._routingProfileDraft = { correctness: routingProfile.correctness, cost: routingProfile.cost, speed: routingProfile.speed };
+
+        var models = report.models || {};
+        var ts = report.time_series || [];
+        var totals = report.totals || {};
+        var modelNames = Object.keys(models).sort(function(a, b) {
+          return (models[b].cost.total || 0) - (models[a].cost.total || 0);
+        });
+
         var spider = renderRoutingSpiderSvg(App._routingProfileDraft || routingProfile);
         var persistedLabel = '';
         if (App._routingProfilePersistedAt) {
@@ -2351,26 +2405,7 @@
           + '<div class="routing-profile-actions"><button class="btn" id="routing-profile-apply" style="font-size:0.6875rem;padding:0.3rem 0.7rem">Apply profile</button><button class="btn secondary" id="routing-profile-reset" style="font-size:0.6875rem;padding:0.3rem 0.7rem">Reset</button></div>'
           + persistedLabel
           + '</div></div></div>';
-
-        var decisionGraph = renderModelDecisionGraph(modelSelections, App._modelGraphFocusModel, App._modelGraphFocusEdge);
-
-        return costChart + tokenChart + statGrid + profileCard + capacityTable + decisionGraph + selectionTable +
-          '<p style="margin:1.25rem 0 0.5rem;color:var(--muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.06em">Transactions</p><div class="table-wrap" style="margin-bottom:1.25rem"><table><thead><tr><th>Type</th><th>Amount</th><th>Counterparty</th><th>Time</th></tr></thead><tbody>' + txRows + '</tbody></table></div>' +
-          '<p style="margin-bottom:0.5rem;color:var(--muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.06em">Request log</p><div class="table-wrap"><table><thead><tr><th>ID</th><th>Model</th><th>Provider</th><th>In</th><th>Out</th><th>Cost</th><th>Time</th></tr></thead><tbody>' + costRows + '</tbody></table></div>';
-      });
-    },
-
-    _effPeriod: '7d',
-    renderEfficiency: function() {
-      var self = this;
-      var period = this._effPeriod || '7d';
-      return api('/api/stats/efficiency?period=' + encodeURIComponent(period)).then(function(report) {
-        var models = report.models || {};
-        var ts = report.time_series || [];
-        var totals = report.totals || {};
-        var modelNames = Object.keys(models).sort(function(a, b) {
-          return (models[b].cost.total || 0) - (models[a].cost.total || 0);
-        });
+        var decisionGraph = renderModelDecisionGraph(modelSelections, App._modelGraphFocusTurn, App._modelGraphFocusModel, App._modelGraphFocusEdge);
 
         // Period selector
         var periods = ['1h', '24h', '7d', '30d', 'all'];
@@ -2572,7 +2607,7 @@
         }
         tips += tipList.join('') + '</div></div>';
 
-        return periodBar + banner + cards + tsChart + table + assignmentSection + tips;
+        return profileCard + decisionGraph + periodBar + banner + cards + tsChart + table + assignmentSection + tips;
       });
     },
 
@@ -4151,27 +4186,27 @@
     if (graphNode) {
       App._modelGraphFocusModel = graphNode.getAttribute('data-node-model');
       App._modelGraphFocusEdge = null;
-      App.navigate('metrics');
+      App.navigate('efficiency');
       return;
     }
     var graphEdge = e.target.closest('[data-edge-key]');
     if (graphEdge) {
       App._modelGraphFocusEdge = graphEdge.getAttribute('data-edge-key');
       App._modelGraphFocusModel = null;
-      App.navigate('metrics');
+      App.navigate('efficiency');
       return;
     }
     if (e.target.closest('#model-graph-clear-focus')) {
       App._modelGraphFocusModel = null;
       App._modelGraphFocusEdge = null;
-      App.navigate('metrics');
+      App.navigate('efficiency');
       return;
     }
     if (e.target.closest('#routing-profile-reset')) {
       App._routingProfileDraft = App._routingProfileDefaults
         ? { correctness: App._routingProfileDefaults.correctness, cost: App._routingProfileDefaults.cost, speed: App._routingProfileDefaults.speed }
         : { correctness: 0.0, cost: 0.0, speed: 0.0 };
-      App.navigate('metrics');
+      App.navigate('efficiency');
       return;
     }
     if (e.target.closest('#routing-profile-apply')) {
@@ -4186,7 +4221,7 @@
         App._routingProfilePersistedAt = new Date().toISOString();
         App._routingProfilePersisted = !!(resp && resp.persisted);
         toast(App._routingProfilePersisted ? 'Routing profile applied and persisted.' : 'Routing profile applied.');
-        App.navigate('metrics');
+        App.navigate('efficiency');
       }).catch(function(err) {
         if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Apply profile'; }
         toast(err.message || 'Failed to apply routing profile');
@@ -5454,6 +5489,13 @@
       return;
     }
   });
+  if (content) content.addEventListener('change', function(e) {
+    if (!e.target || e.target.id !== 'model-graph-task-select') return;
+    App._modelGraphFocusTurn = e.target.value || null;
+    App._modelGraphFocusModel = null;
+    App._modelGraphFocusEdge = null;
+    App.navigate('efficiency');
+  });
   if (content) content.addEventListener('input', function(e) {
     var slider = e.target.closest('[data-routing-slider]');
     if (!slider) return;
@@ -6370,8 +6412,8 @@
           }
         }
         if (event && (event.type === 'model_selection' || event.type === 'model_shift')) {
-          if (App.page === 'metrics') {
-            App.navigate('metrics');
+          if (App.page === 'efficiency') {
+            App.navigate('efficiency');
           } else if (App.page === 'context' && App._ctxActiveTurn && event.turn_id === App._ctxActiveTurn.id) {
             App.navigate('context');
           }

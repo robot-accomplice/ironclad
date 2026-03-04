@@ -16,7 +16,10 @@ use ironclad_core::{InputAuthority, ModelTier};
 use super::AppState;
 use super::decomposition::DelegationProvenance;
 use super::diagnostics::{collect_runtime_diagnostics, diagnostics_system_note};
-use super::guards::{enforce_non_repetition, enforce_subagent_claim_guard};
+use super::guards::{
+    enforce_execution_truth_guard, enforce_model_identity_truth_guard, enforce_non_repetition,
+    enforce_subagent_claim_guard,
+};
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
 };
@@ -556,6 +559,26 @@ pub(super) async fn run_inference_and_react(
 
     // Post-ReAct guards
     let final_content = enforce_subagent_claim_guard(final_content, delegation_provenance);
+    let final_content = enforce_execution_truth_guard(
+        prepared
+            .request
+            .messages
+            .last()
+            .map(|m| m.content.as_str())
+            .unwrap_or_default(),
+        final_content,
+        &tool_results_acc,
+    );
+    let final_content = enforce_model_identity_truth_guard(
+        prepared
+            .request
+            .messages
+            .last()
+            .map(|m| m.content.as_str())
+            .unwrap_or_default(),
+        final_content,
+        &resolved_model,
+    );
     let final_content =
         enforce_non_repetition(final_content, prepared.previous_assistant.as_deref());
 
@@ -736,8 +759,11 @@ pub(super) async fn execute_inference_pipeline(
     .await;
 
     if let Some(cached) = cached {
+        let cached_content = enforce_execution_truth_guard(user_content, cached.content, &[]);
+        let cached_content =
+            enforce_model_identity_truth_guard(user_content, cached_content, &cached.model);
         let guarded_cached_content =
-            enforce_non_repetition(cached.content, prepared.previous_assistant.as_deref());
+            enforce_non_repetition(cached_content, prepared.previous_assistant.as_deref());
         let cached_provider_prefix = cached
             .model
             .split('/')

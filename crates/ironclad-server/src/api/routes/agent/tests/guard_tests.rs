@@ -83,6 +83,79 @@ fn enforce_non_repetition_with_none_previous() {
     assert_eq!(result, response);
 }
 
+// ── execution truth guard tests ──────────────────────────────
+
+#[test]
+fn execution_truth_guard_blocks_unexecuted_command_suggestion() {
+    let prompt = "Use a tool to list files in /Users/jmachen";
+    let response =
+        "You can use the following command: `ls /Users/jmachen | head -n 10`".to_string();
+    let guarded = enforce_execution_truth_guard(prompt, response, &[]);
+    assert!(guarded.contains("did not execute a tool"));
+}
+
+#[test]
+fn execution_truth_guard_allows_verified_tool_output() {
+    let prompt = "Run ls /Users/jmachen";
+    let response = "/Users/jmachen\nApplications\nDesktop".to_string();
+    let guarded = enforce_execution_truth_guard(
+        prompt,
+        response.clone(),
+        &[("bash".to_string(), "Applications".to_string())],
+    );
+    assert_eq!(guarded, response);
+}
+
+#[test]
+fn execution_truth_guard_blocks_unverified_delegation_claim() {
+    let prompt = "Order a subagent to produce a sitrep.";
+    let response = "Here is the sitrep from the geopolitical subagent: ...".to_string();
+    let guarded = enforce_execution_truth_guard(prompt, response, &[]);
+    assert!(guarded.contains("did not execute a delegated subagent task"));
+}
+
+#[test]
+fn execution_truth_guard_blocks_failed_delegation_attempt() {
+    let prompt = "Delegate this to a subagent.";
+    let response = "Delegation complete.".to_string();
+    let guarded = enforce_execution_truth_guard(
+        prompt,
+        response,
+        &[(
+            "assign-tasks".to_string(),
+            "error: unknown tool".to_string(),
+        )],
+    );
+    assert!(guarded.contains("did not execute a delegated subagent task"));
+}
+
+#[test]
+fn execution_truth_guard_blocks_unverified_cron_claim() {
+    let prompt = "Schedule a cron job every 5 minutes.";
+    let response = "Use this crontab entry: */5 * * * *".to_string();
+    let guarded = enforce_execution_truth_guard(prompt, response, &[]);
+    assert!(guarded.contains("did not execute a cron scheduling tool"));
+}
+
+// ── model identity guard tests ───────────────────────────────
+
+#[test]
+fn model_identity_guard_corrects_mismatched_self_report() {
+    let prompt = "Are you still on your current model?";
+    let response = "I am currently on openai/gpt-5.3-codex.".to_string();
+    let guarded = enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest");
+    assert!(guarded.contains("ollama/phi4-mini:latest"));
+}
+
+#[test]
+fn model_identity_guard_keeps_matching_self_report() {
+    let prompt = "What model are you running?";
+    let response = "I am currently running on ollama/phi4-mini:latest.".to_string();
+    let guarded =
+        enforce_model_identity_truth_guard(prompt, response.clone(), "ollama/phi4-mini:latest");
+    assert_eq!(guarded, response);
+}
+
 // ── repeat_tokens tests ──────────────────────────────────────
 
 #[test]

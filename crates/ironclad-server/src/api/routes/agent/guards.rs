@@ -113,6 +113,136 @@ pub(super) fn enforce_non_repetition(response: String, previous_assistant: Optio
     response
 }
 
+fn requests_execution(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    [
+        " run ",
+        " execute ",
+        " use a tool",
+        "use the tool",
+        "list entries",
+        "list files",
+        "file distribution",
+        "schedule a cron",
+        "schedule cron",
+        "create cron",
+        "order a subagent",
+        "delegate",
+        "orchestrate",
+        "ls ",
+        "/status",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
+}
+
+fn prompt_requests_delegation(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("subagent") || lower.contains("delegate") || lower.contains("orchestrate")
+}
+
+fn prompt_requests_cron(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("cron") || (lower.contains("schedule") && lower.contains("minute"))
+}
+
+fn looks_like_unexecuted_claim(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    lower.contains("\"tool_call\"")
+        || lower.contains("you can use the following")
+        || lower.contains("you can run")
+        || lower.contains("would use the following")
+        || lower.contains("crontab entry")
+        || lower.contains("unable to directly execute")
+}
+
+pub(super) fn enforce_execution_truth_guard(
+    user_prompt: &str,
+    response: String,
+    tool_results: &[(String, String)],
+) -> String {
+    if prompt_requests_delegation(user_prompt)
+        && !tool_results.iter().any(|(name, output)| {
+            let n = name.to_ascii_lowercase();
+            let is_delegate_tool = n.contains("subagent")
+                || n.contains("delegate")
+                || n.contains("assign")
+                || n.contains("orchestrate");
+            let succeeded = !output.to_ascii_lowercase().starts_with("error:");
+            is_delegate_tool && succeeded
+        })
+    {
+        tracing::warn!("execution truth guard blocked unverified delegation claim");
+        return "I did not execute a delegated subagent task for that request. I can only claim delegated results when a subagent tool call actually runs."
+            .to_string();
+    }
+    if prompt_requests_cron(user_prompt)
+        && !tool_results.iter().any(|(name, output)| {
+            name.to_ascii_lowercase().contains("cron")
+                && !output.to_ascii_lowercase().starts_with("error:")
+        })
+    {
+        tracing::warn!("execution truth guard blocked unverified cron claim");
+        return "I did not execute a cron scheduling tool for that request. I can only confirm schedules that were actually created or validated by a tool run."
+            .to_string();
+    }
+
+    if !requests_execution(user_prompt) {
+        return response;
+    }
+    if !tool_results.is_empty() {
+        return response;
+    }
+    let lower = response.to_ascii_lowercase();
+    if lower.contains("encountered an error reaching all llm providers") {
+        return response;
+    }
+    if looks_like_unexecuted_claim(&response)
+        || lower.contains("tool successfully executed")
+        || lower.contains("the `")
+        || lower.starts_with('{')
+    {
+        tracing::warn!("execution truth guard rewrote unverified execution-style response");
+        return "I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
+            .to_string();
+    }
+    "I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
+        .to_string()
+}
+
+fn model_identity_prompt(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("current model")
+        || lower.contains("what model")
+        || lower.contains("which model")
+        || lower.contains("still on")
+        || lower.contains("/status")
+}
+
+pub(super) fn enforce_model_identity_truth_guard(
+    user_prompt: &str,
+    response: String,
+    executed_model: &str,
+) -> String {
+    if !model_identity_prompt(user_prompt) {
+        return response;
+    }
+    if response
+        .to_ascii_lowercase()
+        .contains(&executed_model.to_ascii_lowercase())
+    {
+        return response;
+    }
+    tracing::warn!(
+        executed_model,
+        "model identity guard corrected inconsistent self-report"
+    );
+    format!(
+        "I am currently running on {}. If that changes due to fallback, I will report the final model once per turn with the reason.",
+        executed_model
+    )
+}
+
 // ── Scope validation ──────────────────────────────────────────
 
 /// Max length for scope identifiers (peer_id, group_id, channel).
