@@ -1563,7 +1563,11 @@ mod tests {
     #[test]
     fn cmd_plugin_uninstall_not_found() {
         unsafe { std::env::set_var("HOME", "/tmp/ironclad_test_uninstall_home") };
-        super::cmd_plugin_uninstall("nonexistent").unwrap();
+        let result = super::cmd_plugin_uninstall("nonexistent");
+        assert!(
+            result.is_err(),
+            "uninstall of nonexistent plugin should fail"
+        );
         unsafe { std::env::remove_var("HOME") };
     }
 

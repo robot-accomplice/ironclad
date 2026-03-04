@@ -477,7 +477,7 @@ async fn model_listing_parity() {
         .pointer("/models/routing/mode")
         .and_then(|v| v.as_str())
         .expect("routing mode must be present");
-    assert_eq!(mode, "heuristic");
+    assert_eq!(mode, "metascore");
 
     let threshold = config
         .pointer("/models/routing/confidence_threshold")

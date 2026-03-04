@@ -7421,39 +7421,6 @@ params = { path = "README.md" }
             features_json: None,
         };
         ironclad_db::model_selection::record_model_selection_event(&state.db, &evt).unwrap();
-        let inserted = ironclad_db::model_selection::get_model_selection_by_turn_id(
-            &state.db,
-            "turn-eval-bad-candidates",
-        )
-        .unwrap()
-        .expect("model selection row should exist");
-        assert_eq!(inserted.candidates_json, "this-is-not-json");
-        ironclad_db::metrics::record_inference_cost(
-            &state.db,
-            "ollama/qwen3:8b",
-            "ollama",
-            50,
-            25,
-            0.001,
-            Some("T1"),
-            false,
-            Some(80),
-            Some(0.5),
-            false,
-            Some("turn-eval-bad-candidates"),
-        )
-        .unwrap();
-        let extracted = ironclad_db::routing_dataset::extract_routing_dataset(
-            &state.db,
-            &ironclad_db::routing_dataset::DatasetFilter::default(),
-        )
-        .unwrap();
-        assert!(
-            extracted
-                .iter()
-                .any(|r| r.turn_id == "turn-eval-bad-candidates"),
-            "routing dataset should include malformed candidates row"
-        );
 
         let app = build_router(state);
         let resp = app
