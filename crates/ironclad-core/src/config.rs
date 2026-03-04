@@ -743,6 +743,14 @@ pub struct RoutingConfig {
     pub cost_aware: bool,
     #[serde(default = "default_estimated_output_tokens")]
     pub estimated_output_tokens: u32,
+    /// Minimum observed quality score (0.0–1.0) for a model to be considered
+    /// during metascore routing.  Models with fewer than `accuracy_min_obs`
+    /// observations are exempt (insufficient data). Set to 0.0 to disable.
+    #[serde(default)]
+    pub accuracy_floor: f64,
+    /// Minimum observations before the accuracy floor applies to a model.
+    #[serde(default = "default_accuracy_min_obs")]
+    pub accuracy_min_obs: usize,
 }
 
 impl Default for RoutingConfig {
@@ -753,8 +761,14 @@ impl Default for RoutingConfig {
             local_first: true,
             cost_aware: false,
             estimated_output_tokens: default_estimated_output_tokens(),
+            accuracy_floor: 0.0,
+            accuracy_min_obs: default_accuracy_min_obs(),
         }
     }
+}
+
+fn default_accuracy_min_obs() -> usize {
+    10
 }
 
 fn default_estimated_output_tokens() -> u32 {

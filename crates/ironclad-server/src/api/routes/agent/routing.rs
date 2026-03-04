@@ -45,6 +45,9 @@ pub(super) struct ModelCandidateAudit {
     /// Metascore for this candidate (populated when metascore routing is active).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metascore: Option<f64>,
+    /// True if this candidate was filtered out by the accuracy-floor gate.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quality_gated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -172,6 +175,8 @@ pub(super) async fn select_routed_model_with_audit(
     let primary = config.models.primary.clone();
     let routing_mode = config.models.routing.mode.clone();
     let cost_aware = config.models.routing.cost_aware;
+    let accuracy_floor = config.models.routing.accuracy_floor;
+    let accuracy_min_obs = config.models.routing.accuracy_min_obs;
     let mut ordered_models = vec![primary.clone()];
     for fb in &config.models.fallbacks {
         if !fb.is_empty() && !ordered_models.iter().any(|m| m == fb) {
@@ -202,6 +207,7 @@ pub(super) async fn select_routed_model_with_audit(
             usable,
             note,
             metascore: None,
+            quality_gated: false,
         }
     };
     let mut candidates = Vec::new();
@@ -270,6 +276,31 @@ pub(super) async fn select_routed_model_with_audit(
             }
             let mut c = evaluate(&profile.model_name, "metascore_candidate");
             c.metascore = Some(breakdown.final_score);
+
+            // Accuracy-floor gate: skip candidates whose observed quality
+            // is below the configured threshold, provided enough data exists.
+            if accuracy_floor > 0.0 {
+                let obs_count = llm_read.quality.observation_count(&profile.model_name);
+                if obs_count >= accuracy_min_obs {
+                    if let Some(q) = llm_read.quality.estimated_quality(&profile.model_name) {
+                        if q < accuracy_floor {
+                            tracing::debug!(
+                                model = profile.model_name.as_str(),
+                                quality = q,
+                                floor = accuracy_floor,
+                                obs = obs_count,
+                                "model gated by accuracy floor"
+                            );
+                            c.quality_gated = true;
+                            c.usable = false;
+                            c.note = format!("quality {q:.3} < floor {accuracy_floor:.3}");
+                            candidates.push(c);
+                            continue;
+                        }
+                    }
+                }
+            }
+
             candidates.push(c);
 
             match &best_selection {
