@@ -1521,17 +1521,15 @@ mod tests {
 
     #[tokio::test]
     async fn cmd_plugin_install_missing_source() {
-        super::cmd_plugin_install("/tmp/ironclad_test_nonexistent_plugin_dir")
-            .await
-            .unwrap();
+        let result = super::cmd_plugin_install("/tmp/ironclad_test_nonexistent_plugin_dir").await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn cmd_plugin_install_no_manifest() {
         let dir = tempfile::tempdir().unwrap();
-        super::cmd_plugin_install(dir.path().to_str().unwrap())
-            .await
-            .unwrap();
+        let result = super::cmd_plugin_install(dir.path().to_str().unwrap()).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
