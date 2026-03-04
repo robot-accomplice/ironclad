@@ -2355,7 +2355,7 @@ primary = "ollama/qwen3:8b"
 fallbacks = []
 
 [models.routing]
-mode = "rule"
+mode = "heuristic"
 confidence_threshold = 0.9
 local_first = true
 

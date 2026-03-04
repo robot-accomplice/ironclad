@@ -181,7 +181,9 @@ Send a message to the agent and receive a response.
   "session_id": "abc-123",
   "user_message_id": "msg-001",
   "assistant_message_id": "msg-002",
+  "selected_model": "moonshot/kimi-k2-turbo-preview",
   "model": "ollama/qwen3:8b",
+  "model_shift_from": "moonshot/kimi-k2-turbo-preview",
   "cached": false,
   "tokens_in": 150,
   "tokens_out": 85,
@@ -189,6 +191,8 @@ Send a message to the agent and receive a response.
   "tools_used": []
 }
 ```
+
+`selected_model` is the router's chosen model before execution. `model` is the model that actually produced the response. `model_shift_from` is `null` when no shift happened.
 
 When a cached response is returned, `cached: true` and `tokens_saved` is included.
 
@@ -649,6 +653,30 @@ List recent model-selection forensic events (newest first).
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `limit` | `usize` | `100` | Maximum events to return (1-500) |
+
+### `GET /api/models/routing-diagnostics`
+
+Returns routing configuration and model-profile diagnostics used for operator analysis.
+
+### `GET /api/models/routing-dataset`
+
+Returns joined routing + cost rows.
+
+`user_excerpt` is redacted by default in JSON responses. Use `include_user_excerpt=true` to opt in.
+
+### `POST /api/models/routing-eval`
+
+Runs offline replay against routing dataset rows.
+
+Validation:
+- `cost_weight` must be in `[0.0, 1.0]`
+- `accuracy_floor` must be in `[0.0, 1.0]`
+- `accuracy_min_obs` must be `>= 1`
+
+### WebSocket Routing Events
+
+- `model_selection`: emitted when routing selects a model candidate set for a turn.
+- `model_shift`: emitted when execution model differs from selected model (fallback/cache continuity events).
 
 ---
 

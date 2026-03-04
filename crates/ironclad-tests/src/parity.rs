@@ -44,7 +44,7 @@ primary = "ollama/qwen3:8b"
 fallbacks = ["ollama/llama3:8b"]
 
 [models.routing]
-mode = "rule"
+mode = "heuristic"
 confidence_threshold = 0.85
 local_first = true
 "#;
@@ -477,7 +477,7 @@ async fn model_listing_parity() {
         .pointer("/models/routing/mode")
         .and_then(|v| v.as_str())
         .expect("routing mode must be present");
-    assert_eq!(mode, "rule");
+    assert_eq!(mode, "heuristic");
 
     let threshold = config
         .pointer("/models/routing/confidence_threshold")

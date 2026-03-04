@@ -121,10 +121,10 @@ pub fn extract_routing_dataset(
             COALESCE(SUM(ic.tokens_out), 0) AS total_tokens_out,
             COALESCE(SUM(ic.cost), 0.0)     AS total_cost,
             COUNT(ic.id)                     AS inference_count,
-            MAX(ic.cached)                   AS any_cached,
+            COALESCE(MAX(ic.cached), 0)      AS any_cached,
             AVG(ic.latency_ms)              AS avg_latency_ms,
             AVG(ic.quality_score)           AS avg_quality_score,
-            MAX(ic.escalation)              AS any_escalation
+            COALESCE(MAX(ic.escalation), 0) AS any_escalation
          FROM model_selection_events mse
          INNER JOIN inference_costs ic ON ic.turn_id = mse.turn_id
          {where_clause}
@@ -164,7 +164,7 @@ pub fn extract_routing_dataset(
                 any_cached: r.get::<_, i32>(21)? != 0,
                 avg_latency_ms: r.get(22)?,
                 avg_quality_score: r.get(23)?,
-                any_escalation: r.get::<_, i32>(24).unwrap_or(0) != 0,
+                any_escalation: r.get::<_, i32>(24)? != 0,
             })
         })
         .map_err(|e| IroncladError::Database(format!("query routing dataset: {e}")))?

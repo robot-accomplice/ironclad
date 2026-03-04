@@ -103,7 +103,7 @@ LLM model selection and routing.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mode` | `String` | `"heuristic"` | Routing strategy: `heuristic`, `rule`, `ml` |
+| `mode` | `String` | `"metascore"` | Routing strategy: `primary` or `metascore` (`heuristic` is accepted as a deprecated alias and normalized to `metascore`) |
 | `confidence_threshold` | `f64` | `0.9` | Minimum confidence for local model routing |
 | `local_first` | `bool` | `true` | Prefer local models when confidence is sufficient |
 | `cost_aware` | `bool` | `false` | Factor cost into routing decisions |

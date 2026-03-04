@@ -20,7 +20,13 @@ pub(crate) async fn handle_bot_command(
     let authority = resolve_command_authority(state, inbound).await;
 
     match cmd {
-        "/status" => Some(build_status_reply(state).await),
+        "/status" => {
+            if authority < InputAuthority::Peer {
+                Some("⛔ /status requires Peer authority or higher.".into())
+            } else {
+                Some(build_status_reply(state).await)
+            }
+        }
         "/model" => Some(handle_model_command(state, args, authority).await),
         "/models" => Some(handle_models_list(state).await),
         "/breaker" => Some(handle_breaker_command(state, args, authority).await),
@@ -60,6 +66,8 @@ async fn resolve_command_authority(
     let (sender_in_allowlist, allowlist_configured) = match platform.as_str() {
         "telegram" => {
             if let Some(ref tg) = config.channels.telegram {
+                // Telegram command authority is scoped to the chat context to align
+                // with adapter allow-list semantics (chat IDs, not sender IDs).
                 let in_list = tg
                     .allowed_chat_ids
                     .iter()
@@ -106,12 +114,14 @@ async fn resolve_command_authority(
             }
         }
         "email" => {
+            let sender_lc = inbound.sender_id.to_lowercase();
             let in_list = config
                 .channels
                 .email
                 .allowed_senders
                 .iter()
-                .any(|s| s.eq_ignore_ascii_case(&inbound.sender_id));
+                .map(|s| s.to_lowercase())
+                .any(|s| s == sender_lc);
             (
                 !config.channels.email.allowed_senders.is_empty() && in_list,
                 !config.channels.email.allowed_senders.is_empty(),

@@ -32,6 +32,7 @@ struct KeystoreData {
 struct KeystoreState {
     entries: Option<HashMap<String, Zeroizing<String>>>,
     passphrase: Option<Zeroizing<String>>,
+    last_file_fingerprint: Option<(std::time::SystemTime, u64)>,
 }
 
 #[derive(Clone)]
@@ -47,6 +48,7 @@ impl Keystore {
             state: Arc::new(Mutex::new(KeystoreState {
                 entries: None,
                 passphrase: None,
+                last_file_fingerprint: None,
             })),
         }
     }
@@ -61,6 +63,7 @@ impl Keystore {
             let mut st = lock_or_recover(&self.state);
             st.entries = Some(HashMap::new());
             st.passphrase = Some(Zeroizing::new(passphrase.to_string()));
+            st.last_file_fingerprint = None;
             drop(st);
             self.save()?;
             self.append_audit_event(
@@ -77,6 +80,7 @@ impl Keystore {
         let mut st = lock_or_recover(&self.state);
         st.entries = Some(zeroized_entries);
         st.passphrase = Some(Zeroizing::new(passphrase.to_string()));
+        st.last_file_fingerprint = self.current_file_fingerprint();
         Ok(())
     }
 
@@ -112,7 +116,8 @@ impl Keystore {
             entries.insert(key.to_string(), Zeroizing::new(value.to_string()))
         };
         let save_res = self.save();
-        if save_res.is_err() {
+        let rolled_back = save_res.is_err();
+        if rolled_back {
             let mut st = lock_or_recover(&self.state);
             if let Some(entries) = st.entries.as_mut() {
                 if let Some(prev) = previous {
@@ -126,7 +131,8 @@ impl Keystore {
             "set",
             Some(key),
             json!({
-                "result": if save_res.is_ok() { "ok" } else { "error" }
+                "result": if save_res.is_ok() { "ok" } else { "error" },
+                "rolled_back": rolled_back
             }),
         );
         match (save_res, audit_res) {
@@ -148,7 +154,8 @@ impl Keystore {
         let existed = removed.is_some();
         if existed {
             let save_res = self.save();
-            if save_res.is_err() {
+            let rolled_back = save_res.is_err();
+            if rolled_back {
                 let mut st = lock_or_recover(&self.state);
                 if let Some(entries) = st.entries.as_mut()
                     && let Some(prev) = removed
@@ -160,7 +167,8 @@ impl Keystore {
                 "remove",
                 Some(key),
                 json!({
-                    "result": if save_res.is_ok() { "ok" } else { "error" }
+                    "result": if save_res.is_ok() { "ok" } else { "error" },
+                    "rolled_back": rolled_back
                 }),
             );
             match (save_res, audit_res) {
@@ -194,7 +202,8 @@ impl Keystore {
             before
         };
         let save_res = self.save();
-        if save_res.is_err() {
+        let rolled_back = save_res.is_err();
+        if rolled_back {
             let mut st = lock_or_recover(&self.state);
             st.entries = Some(snapshot);
         }
@@ -203,7 +212,8 @@ impl Keystore {
             None,
             json!({
                 "result": if save_res.is_ok() { "ok" } else { "error" },
-                "count": count
+                "count": count,
+                "rolled_back": rolled_back
             }),
         );
         match (save_res, audit_res) {
@@ -232,7 +242,8 @@ impl Keystore {
             prev
         };
         let save_res = self.save();
-        if save_res.is_err() {
+        let rolled_back = save_res.is_err();
+        if rolled_back {
             let mut st = lock_or_recover(&self.state);
             st.passphrase = old_passphrase;
         }
@@ -240,7 +251,8 @@ impl Keystore {
             "rekey",
             None,
             json!({
-                "result": if save_res.is_ok() { "ok" } else { "error" }
+                "result": if save_res.is_ok() { "ok" } else { "error" },
+                "rolled_back": rolled_back
             }),
         );
         match (save_res, audit_res) {
@@ -351,6 +363,9 @@ impl Keystore {
         }
 
         std::fs::rename(&tmp, &self.path)?;
+        let fingerprint = self.current_file_fingerprint();
+        let mut st = lock_or_recover(&self.state);
+        st.last_file_fingerprint = fingerprint;
 
         Ok(())
     }
@@ -394,9 +409,20 @@ impl Keystore {
         if !self.path.exists() {
             return Ok(());
         }
+        let current_fingerprint = self.current_file_fingerprint();
+        if current_fingerprint.is_some() && st.last_file_fingerprint == current_fingerprint {
+            return Ok(());
+        }
         let refreshed = self.decrypt_entries(passphrase)?;
         st.entries = Some(refreshed);
+        st.last_file_fingerprint = current_fingerprint;
         Ok(())
+    }
+
+    fn current_file_fingerprint(&self) -> Option<(std::time::SystemTime, u64)> {
+        let meta = std::fs::metadata(&self.path).ok()?;
+        let modified = meta.modified().ok()?;
+        Some((modified, meta.len()))
     }
 }
 
@@ -745,6 +771,9 @@ mod tests {
         assert!(res.is_err());
         assert_eq!(ks.get("stable"), Some("1".into()));
         assert_eq!(ks.get("transient"), None);
+        let audit = std::fs::read_to_string(path.with_extension("audit.log")).unwrap();
+        assert!(audit.contains("\"operation\":\"set\""));
+        assert!(audit.contains("\"rolled_back\":true"));
 
         let mut restore = std::fs::metadata(dir.path()).unwrap().permissions();
         restore.set_mode(0o700);

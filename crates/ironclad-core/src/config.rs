@@ -424,9 +424,17 @@ impl IroncladConfig {
             .iter()
             .map(|p| expand_tilde(p))
             .collect();
+        config.normalize_legacy_aliases();
         config.merge_bundled_providers();
         config.validate()?;
         Ok(config)
+    }
+
+    pub fn normalize_legacy_aliases(&mut self) {
+        if self.models.routing.mode == "heuristic" {
+            tracing::warn!("models.routing.mode=heuristic is deprecated; normalizing to metascore");
+            self.models.routing.mode = "metascore".into();
+        }
     }
 
     fn merge_bundled_providers(&mut self) {
@@ -517,14 +525,9 @@ impl IroncladConfig {
         }
 
         // ── Routing config validation ──────────────────────────────
-        // Keep `heuristic` as a supported legacy alias to avoid breaking
-        // existing runtime configs and defaults.
-        if !matches!(
-            self.models.routing.mode.as_str(),
-            "primary" | "metascore" | "heuristic"
-        ) {
+        if !matches!(self.models.routing.mode.as_str(), "primary" | "metascore") {
             return Err(IroncladError::Config(format!(
-                "models.routing.mode must be one of \"primary\", \"metascore\", or \"heuristic\", got \"{}\"",
+                "models.routing.mode must be one of \"primary\" or \"metascore\", got \"{}\"",
                 self.models.routing.mode
             )));
         }
@@ -886,7 +889,7 @@ fn default_estimated_output_tokens() -> u32 {
 }
 
 fn default_routing_mode() -> String {
-    "heuristic".into()
+    "metascore".into()
 }
 
 fn default_confidence_threshold() -> f64 {
@@ -2054,7 +2057,7 @@ primary = "openai/gpt-5.3-codex"
 fallbacks = ["google/gemini-3-flash", "ollama/qwen3:14b"]
 
 [models.routing]
-mode = "ml"
+mode = "metascore"
 confidence_threshold = 0.85
 local_first = true
 
@@ -2474,7 +2477,7 @@ ignored_folders = [".obsidian", ".git"]
         assert_eq!(default_port(), 18789);
         assert_eq!(default_bind(), "127.0.0.1");
         assert_eq!(default_estimated_output_tokens(), 500);
-        assert_eq!(default_routing_mode(), "heuristic");
+        assert_eq!(default_routing_mode(), "metascore");
         assert!((default_confidence_threshold() - 0.9).abs() < f64::EPSILON);
         assert!(default_true());
         assert_eq!(default_cb_threshold(), 3);
@@ -2589,7 +2592,7 @@ ignored_folders = [".obsidian", ".git"]
     #[test]
     fn routing_config_default() {
         let cfg = RoutingConfig::default();
-        assert_eq!(cfg.mode, "heuristic");
+        assert_eq!(cfg.mode, "metascore");
         assert!((cfg.confidence_threshold - 0.9).abs() < f64::EPSILON);
         assert!(cfg.local_first);
         assert!(!cfg.cost_aware);
@@ -3285,5 +3288,28 @@ primary = "ollama/qwen3:8b"
 mode = "random"
 "#;
         assert!(IroncladConfig::from_str(toml).is_err());
+    }
+
+    #[test]
+    fn validate_routing_mode_heuristic_normalizes_to_metascore() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[models.routing]
+mode = "heuristic"
+"#;
+        let cfg = IroncladConfig::from_str(toml).expect("heuristic alias should remain accepted");
+        assert_eq!(cfg.models.routing.mode, "metascore");
     }
 }

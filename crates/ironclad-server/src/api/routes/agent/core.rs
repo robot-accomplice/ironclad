@@ -51,7 +51,6 @@ pub(super) struct InferenceInput<'a> {
 pub(super) struct PreparedInference {
     pub model: String,
     pub model_for_api: String,
-    pub provider_prefix: String,
     pub tier: ModelTier,
     pub request: ironclad_llm::format::UnifiedRequest,
     pub previous_assistant: Option<String>,
@@ -100,8 +99,6 @@ pub(super) async fn prepare_inference(
     )
     .await;
     let _ = ironclad_db::sessions::update_model(&state.db, input.session_id, &model);
-
-    let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
 
     // Tier resolution
     let tier = {
@@ -330,7 +327,6 @@ pub(super) async fn prepare_inference(
     Ok(PreparedInference {
         model,
         model_for_api,
-        provider_prefix,
         tier,
         request,
         previous_assistant,
@@ -370,6 +366,7 @@ pub(super) async fn run_inference_and_react(
     delegation_provenance: &mut DelegationProvenance,
 ) -> InferenceOutput {
     // Initial inference
+    let mut resolved_model = prepared.model.clone();
     let (
         initial_content,
         mut total_in,
@@ -379,15 +376,18 @@ pub(super) async fn run_inference_and_react(
         quality_score,
         escalated,
     ) = match infer_with_fallback(state, &prepared.request, &prepared.model).await {
-        Ok(result) => (
-            result.content,
-            result.tokens_in,
-            result.tokens_out,
-            result.cost,
-            result.latency_ms,
-            result.quality_score,
-            result.escalated,
-        ),
+        Ok(result) => {
+            resolved_model = result.model.clone();
+            (
+                result.content,
+                result.tokens_in,
+                result.tokens_out,
+                result.cost,
+                result.latency_ms,
+                result.quality_score,
+                result.escalated,
+            )
+        }
         Err(last_error) => (
             super::tools::provider_failure_user_message(&last_error.to_string(), true),
             0,
@@ -518,6 +518,7 @@ pub(super) async fn run_inference_and_react(
             let follow_content =
                 match infer_with_fallback(state, &follow_req, &prepared.model).await {
                     Ok(result) => {
+                        resolved_model = result.model.clone();
                         total_in += result.tokens_in;
                         total_out += result.tokens_out;
                         total_cost += result.cost;
@@ -560,7 +561,7 @@ pub(super) async fn run_inference_and_react(
 
     InferenceOutput {
         content: final_content,
-        model: prepared.model.clone(),
+        model: resolved_model,
         tokens_in: total_in,
         tokens_out: total_out,
         cost: total_cost,
@@ -689,7 +690,12 @@ pub(super) fn post_turn_ingest(
 /// Result of the unified inference pipeline (cache check → inference → post-turn ops).
 pub(super) struct PipelineResult {
     pub content: String,
+    /// Model selected by routing before execution.
+    pub selected_model: String,
+    /// Model that actually produced the response (may differ on fallback/cache hit).
     pub model: String,
+    /// When actual model differs, contains the originally selected model.
+    pub model_shift_from: Option<String>,
     pub tokens_in: i64,
     pub tokens_out: i64,
     pub cost: f64,
@@ -732,10 +738,16 @@ pub(super) async fn execute_inference_pipeline(
     if let Some(cached) = cached {
         let guarded_cached_content =
             enforce_non_repetition(cached.content, prepared.previous_assistant.as_deref());
+        let cached_provider_prefix = cached
+            .model
+            .split('/')
+            .next()
+            .unwrap_or("unknown")
+            .to_string();
         record_cost(
             state,
             &cached.model,
-            &prepared.provider_prefix,
+            &cached_provider_prefix,
             0,
             0,
             0.0,
@@ -753,10 +765,30 @@ pub(super) async fn execute_inference_pipeline(
             &guarded_cached_content,
         )
         .map_err(|e| format!("failed to store cached response: {e}"))?;
+        if cached.model != prepared.model {
+            state.event_bus.publish(
+                serde_json::json!({
+                    "type": "model_shift",
+                    "turn_id": turn_id,
+                    "session_id": session_id,
+                    "channel": channel_label.unwrap_or("unknown"),
+                    "selected_model": prepared.model,
+                    "executed_model": cached.model,
+                    "reason": "cache_hit",
+                })
+                .to_string(),
+            );
+        }
 
         return Ok(PipelineResult {
             content: guarded_cached_content,
-            model: cached.model,
+            selected_model: prepared.model.clone(),
+            model: cached.model.clone(),
+            model_shift_from: if cached.model != prepared.model {
+                Some(prepared.model.clone())
+            } else {
+                None
+            },
             tokens_in: 0,
             tokens_out: 0,
             cost: 0.0,
@@ -792,10 +824,16 @@ pub(super) async fn execute_inference_pipeline(
     .map_err(|e| format!("failed to store assistant response: {e}"))?;
 
     // 4. Record cost
+    let executed_provider_prefix = inference
+        .model
+        .split('/')
+        .next()
+        .unwrap_or("unknown")
+        .to_string();
     record_cost(
         state,
         &inference.model,
-        &prepared.provider_prefix,
+        &executed_provider_prefix,
         inference.tokens_in,
         inference.tokens_out,
         inference.cost,
@@ -827,9 +865,30 @@ pub(super) async fn execute_inference_pipeline(
     )
     .await;
 
+    if inference.model != prepared.model {
+        state.event_bus.publish(
+            serde_json::json!({
+                "type": "model_shift",
+                "turn_id": turn_id,
+                "session_id": session_id,
+                "channel": channel_label.unwrap_or("unknown"),
+                "selected_model": prepared.model,
+                "executed_model": inference.model,
+                "reason": "fallback",
+            })
+            .to_string(),
+        );
+    }
+
     Ok(PipelineResult {
         content: inference.content,
-        model: inference.model,
+        selected_model: prepared.model.clone(),
+        model: inference.model.clone(),
+        model_shift_from: if inference.model != prepared.model {
+            Some(prepared.model.clone())
+        } else {
+            None
+        },
         tokens_in: inference.tokens_in,
         tokens_out: inference.tokens_out,
         cost: inference.cost,

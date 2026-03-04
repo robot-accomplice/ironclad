@@ -619,7 +619,7 @@ pub fn cmd_plugin_uninstall(name: &str) -> Result<(), Box<dyn std::error::Error>
 
     if !plugin_dir.exists() {
         eprintln!("  Plugin not found: {name}");
-        return Ok(());
+        return Err(format!("plugin not found: {name}").into());
     }
 
     // Remove companion skills if the manifest declares them

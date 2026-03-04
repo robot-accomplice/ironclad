@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Routing observability UX**: Metrics dashboard now includes an explorable model-decision graph and a routing-profile spider graph (correctness/cost/speed) with runtime apply support via safe config patching.
+- **Model shift telemetry**: Non-streaming inference pipeline now emits websocket `model_shift` events when execution model differs from selected model (fallback or cache continuity path).
+- **Routing profile roadmap spec**: Added `docs/roadmap/0.9.4/features/user-routing-profile-spider-graph.md` and linked roadmap entry.
+
+### Changed
+
+- **Agent message contract**: `/api/agent/message` responses now expose both routing-time and execution-time model fields (`selected_model`, `model`, `model_shift_from`) for continuity diagnostics.
+- **Routing dataset privacy default**: `GET /api/models/routing-dataset` now redacts `user_excerpt` by default; explicit opt-in is required to include excerpts.
+- **Routing eval validation**: `POST /api/models/routing-eval` now validates `cost_weight`, `accuracy_floor`, and `accuracy_min_obs` bounds.
+- **Config defaults/tests**: routing defaults now use `metascore`; legacy `heuristic` input is accepted and normalized to `metascore` during validation.
+
+### Security
+
+- **Strict deny-by-default channels**: adapters now reject traffic when allowlists are empty (`deny_on_empty=true`). Alpha update/mechanic flows are expected to repair channel allowlists during upgrade/install.
+
 ## [0.9.3] - 2026-03-03
 
 ### Fixed
