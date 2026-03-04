@@ -459,11 +459,12 @@ pub fn build_router(state: AppState) -> Router {
         generate_deep_analysis, get_agents, get_available_models, get_cache_stats,
         get_capacity_stats, get_config, get_config_apply_status, get_config_capabilities,
         get_costs, get_efficiency, get_mcp_runtime, get_overview_timeseries, get_plugins,
-        get_recommendations, get_runtime_surfaces, get_throttle_stats, get_transactions,
-        list_discovered_agents, list_paired_devices, mcp_client_disconnect, mcp_client_discover,
-        pair_device, register_discovered_agent, roster, set_provider_key, start_agent, stop_agent,
-        toggle_plugin, unpair_device, update_config, verify_discovered_agent, verify_paired_device,
-        wallet_address, wallet_balance, workspace_state,
+        get_recommendations, get_routing_diagnostics, get_runtime_surfaces, get_throttle_stats,
+        get_transactions, list_discovered_agents, list_paired_devices, mcp_client_disconnect,
+        mcp_client_discover, pair_device, register_discovered_agent, roster, set_provider_key,
+        start_agent, stop_agent, toggle_plugin, unpair_device, update_config,
+        verify_discovered_agent, verify_paired_device, wallet_address, wallet_balance,
+        workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
@@ -555,6 +556,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/stats/capacity", get(get_capacity_stats))
         .route("/api/stats/throttle", get(get_throttle_stats))
         .route("/api/models/available", get(get_available_models))
+        .route(
+            "/api/models/routing-diagnostics",
+            get(get_routing_diagnostics),
+        )
         .route("/api/breaker/status", get(breaker_status))
         .route("/api/breaker/reset/{provider}", post(breaker_reset))
         .route("/api/agent/status", get(agent_status))
@@ -1432,6 +1437,7 @@ primary = "ollama/qwen3:8b"
             Some(100),
             Some(0.85),
             false,
+            None,
         )
         .unwrap();
         let app = build_router(state);
@@ -5770,6 +5776,7 @@ params = { path = "README.md" }
             Some(200),
             Some(0.90),
             false,
+            None,
         )
         .unwrap();
 
@@ -7268,6 +7275,10 @@ params = { path = "README.md" }
             user_excerpt: "test".into(),
             candidates_json: r#"["claude-4"]"#.into(),
             created_at: "2025-01-01T00:00:00".into(),
+            schema_version: ironclad_db::model_selection::ROUTING_SCHEMA_VERSION,
+            attribution: None,
+            metascore_json: None,
+            features_json: None,
         };
         ironclad_db::model_selection::record_model_selection_event(&state.db, &evt).unwrap();
 
@@ -7328,6 +7339,10 @@ params = { path = "README.md" }
                 user_excerpt: "hello".into(),
                 candidates_json: "[]".into(),
                 created_at: format!("2025-01-0{i}T00:00:00"),
+                schema_version: ironclad_db::model_selection::ROUTING_SCHEMA_VERSION,
+                attribution: None,
+                metascore_json: None,
+                features_json: None,
             };
             ironclad_db::model_selection::record_model_selection_event(&state.db, &evt).unwrap();
         }

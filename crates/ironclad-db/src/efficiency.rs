@@ -704,6 +704,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         )
         .unwrap();
         record_inference_cost(
@@ -718,6 +719,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         )
         .unwrap();
 
@@ -745,10 +747,11 @@ mod tests {
             None,
             None,
             false,
+            None,
         )
         .unwrap();
         record_inference_cost(
-            &db, "gpt-4", "openai", 200, 100, 0.02, None, false, None, None, false,
+            &db, "gpt-4", "openai", 200, 100, 0.02, None, false, None, None, false, None,
         )
         .unwrap();
 
@@ -772,10 +775,11 @@ mod tests {
             None,
             None,
             false,
+            None,
         )
         .unwrap();
         record_inference_cost(
-            &db, "gpt-4", "openai", 200, 100, 0.02, None, false, None, None, false,
+            &db, "gpt-4", "openai", 200, 100, 0.02, None, false, None, None, false, None,
         )
         .unwrap();
 
@@ -800,6 +804,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         )
         .unwrap();
 
@@ -820,11 +825,11 @@ mod tests {
     fn all_cached_full_rate() {
         let db = test_db();
         record_inference_cost(
-            &db, "m1", "p1", 100, 50, 0.01, None, true, None, None, false,
+            &db, "m1", "p1", 100, 50, 0.01, None, true, None, None, false, None,
         )
         .unwrap();
         record_inference_cost(
-            &db, "m1", "p1", 100, 50, 0.01, None, true, None, None, false,
+            &db, "m1", "p1", 100, 50, 0.01, None, true, None, None, false, None,
         )
         .unwrap();
 
@@ -842,8 +847,10 @@ mod tests {
     #[test]
     fn zero_tokens_in_no_division_by_zero() {
         let db = test_db();
-        record_inference_cost(&db, "m1", "p1", 0, 50, 0.01, None, false, None, None, false)
-            .unwrap();
+        record_inference_cost(
+            &db, "m1", "p1", 0, 50, 0.01, None, false, None, None, false, None,
+        )
+        .unwrap();
 
         let report = compute_efficiency(&db, "all", None).unwrap();
         let m = &report.models["m1"];
@@ -885,7 +892,7 @@ mod tests {
     fn zero_tokens_out_no_division_by_zero() {
         let db = test_db();
         record_inference_cost(
-            &db, "m1", "p1", 1000, 0, 0.01, None, false, None, None, false,
+            &db, "m1", "p1", 1000, 0, 0.01, None, false, None, None, false, None,
         )
         .unwrap();
 
@@ -899,11 +906,11 @@ mod tests {
     fn no_cached_zero_rate() {
         let db = test_db();
         record_inference_cost(
-            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false,
+            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false, None,
         )
         .unwrap();
         record_inference_cost(
-            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false,
+            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false, None,
         )
         .unwrap();
 
@@ -916,12 +923,12 @@ mod tests {
         let db = test_db();
         // m1: 1000 in, 500 out -> density ~0.5
         record_inference_cost(
-            &db, "m1", "p1", 1000, 500, 0.01, None, false, None, None, false,
+            &db, "m1", "p1", 1000, 500, 0.01, None, false, None, None, false, None,
         )
         .unwrap();
         // m2: 100 in, 200 out -> density ~2.0  (more efficient)
         record_inference_cost(
-            &db, "m2", "p2", 100, 200, 0.005, None, false, None, None, false,
+            &db, "m2", "p2", 100, 200, 0.005, None, false, None, None, false, None,
         )
         .unwrap();
 
@@ -1015,6 +1022,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         )
         .unwrap();
         record_inference_cost(
@@ -1029,10 +1037,11 @@ mod tests {
             None,
             None,
             false,
+            None,
         )
         .unwrap();
         record_inference_cost(
-            &db, "gpt-4", "openai", 500, 200, 0.01, None, false, None, None, false,
+            &db, "gpt-4", "openai", 500, 200, 0.01, None, false, None, None, false, None,
         )
         .unwrap();
 
@@ -1087,11 +1096,11 @@ mod tests {
         drop(conn);
 
         record_inference_cost(
-            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false,
+            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false, None,
         )
         .unwrap();
         record_inference_cost(
-            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false,
+            &db, "m1", "p1", 100, 50, 0.01, None, false, None, None, false, None,
         )
         .unwrap();
 
@@ -1209,7 +1218,7 @@ mod tests {
     fn report_cost_attribution_all_history() {
         let db = test_db();
         record_inference_cost(
-            &db, "m1", "p1", 1000, 500, 0.03, None, false, None, None, false,
+            &db, "m1", "p1", 1000, 500, 0.03, None, false, None, None, false, None,
         )
         .unwrap();
 

@@ -2504,6 +2504,7 @@ async fn run_llm_recommendation_analysis(
         None,
         None,
         false,
+        None,
     )
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record recommendation inference cost"))
     .ok();
@@ -2785,6 +2786,108 @@ pub async fn mcp_client_disconnect(
 pub async fn issue_ws_ticket(State(state): State<AppState>) -> impl IntoResponse {
     let ticket = state.ws_tickets.issue();
     Json(json!({ "ticket": ticket, "expires_in": 30 }))
+}
+
+/// GET /api/models/routing-diagnostics
+///
+/// Returns a comprehensive snapshot of routing state for operator diagnostics:
+/// - Model profiles with metascores at current complexity
+/// - Circuit breaker states
+/// - Shadow prediction agreement summary
+/// - Active routing config (accuracy floor, cost weight, canary, blocklist)
+pub async fn get_routing_diagnostics(State(state): State<AppState>) -> impl IntoResponse {
+    let config = state.config.read().await;
+    let routing_config = &config.models.routing;
+    let cost_aware = routing_config.cost_aware;
+    let cost_weight = routing_config.cost_weight;
+    let accuracy_floor = routing_config.accuracy_floor;
+    let accuracy_min_obs = routing_config.accuracy_min_obs;
+    let canary_model = routing_config.canary_model.clone();
+    let canary_fraction = routing_config.canary_fraction;
+    let blocked_models = routing_config.blocked_models.clone();
+    let routing_mode = routing_config.mode.clone();
+    drop(config);
+
+    let llm_read = state.llm.read().await;
+
+    // Build profiles for all configured models.
+    let profiles = ironclad_llm::build_model_profiles(
+        &llm_read.router,
+        &llm_read.providers,
+        &llm_read.quality,
+        &llm_read.capacity,
+        &llm_read.breakers,
+    );
+
+    // Compute metascores at a representative complexity (0.5 = medium).
+    let profile_diagnostics: Vec<Value> = profiles
+        .iter()
+        .map(|p| {
+            let breakdown = p.metascore_with_cost_weight(0.5, cost_aware, cost_weight);
+            json!({
+                "model": p.model_name,
+                "is_local": p.is_local,
+                "tier": format!("{:?}", p.tier),
+                "cost_per_1k_tokens": (p.cost_per_input_token + p.cost_per_output_token) * 1000.0,
+                "estimated_quality": p.estimated_quality,
+                "observation_count": p.observation_count,
+                "availability": p.availability,
+                "capacity_headroom": p.capacity_headroom,
+                "metascore": {
+                    "final_score": breakdown.final_score,
+                    "efficacy": breakdown.efficacy,
+                    "cost": breakdown.cost,
+                    "availability": breakdown.availability,
+                    "locality": breakdown.locality,
+                    "confidence": breakdown.confidence,
+                },
+                "blocked_by_config": blocked_models.contains(&p.model_name),
+            })
+        })
+        .collect();
+
+    // Circuit breaker states.
+    let breaker_states: Vec<Value> = llm_read
+        .breakers
+        .list_providers()
+        .into_iter()
+        .map(|(name, state)| {
+            json!({
+                "provider": name,
+                "state": format!("{state:?}"),
+                "credit_tripped": llm_read.breakers.is_credit_tripped(&name),
+            })
+        })
+        .collect();
+
+    // Shadow prediction summary (if any data exists).
+    let shadow_summary =
+        ironclad_db::shadow_routing::shadow_agreement_summary(&state.db, None).ok();
+
+    let shadow_json = shadow_summary.map(|s| {
+        json!({
+            "total": s.total,
+            "agreed": s.agreed,
+            "disagreed": s.disagreed,
+            "agreement_rate": s.agreement_rate,
+        })
+    });
+
+    Json(json!({
+        "routing_mode": routing_mode,
+        "config": {
+            "cost_aware": cost_aware,
+            "cost_weight": cost_weight,
+            "accuracy_floor": accuracy_floor,
+            "accuracy_min_obs": accuracy_min_obs,
+            "canary_model": canary_model,
+            "canary_fraction": canary_fraction,
+            "blocked_models": blocked_models,
+        },
+        "profiles": profile_diagnostics,
+        "circuit_breakers": breaker_states,
+        "shadow_predictions": shadow_json,
+    }))
 }
 
 #[cfg(test)]

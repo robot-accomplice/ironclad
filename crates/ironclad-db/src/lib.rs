@@ -27,6 +27,8 @@
 //! - `tools` -- Tool call records
 //! - `policy` -- Policy decision records
 //! - `metrics` -- Inference cost tracking, proxy snapshots, transactions, turn feedback
+//! - `routing_dataset` -- Historical routing decision + cost outcome JOIN for ML training
+//! - `shadow_routing` -- Counterfactual ML predictions stored alongside production decisions
 
 pub mod abuse;
 pub mod agents;
@@ -44,8 +46,10 @@ pub mod memory;
 pub mod metrics;
 pub mod model_selection;
 pub mod policy;
+pub mod routing_dataset;
 pub mod schema;
 pub mod sessions;
+pub mod shadow_routing;
 pub mod skills;
 pub mod tools;
 

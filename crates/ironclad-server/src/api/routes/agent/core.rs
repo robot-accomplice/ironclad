@@ -744,6 +744,7 @@ pub(super) async fn execute_inference_pipeline(
             Some(0),
             None,
             false,
+            Some(turn_id),
         );
         let asst_id = ironclad_db::sessions::append_message(
             &state.db,
@@ -803,6 +804,7 @@ pub(super) async fn execute_inference_pipeline(
         Some(inference.latency_ms as i64),
         Some(inference.quality_score),
         inference.escalated,
+        Some(turn_id),
     );
 
     // 5. Post-turn ingest (spawns background task)
@@ -856,6 +858,7 @@ pub(super) fn record_cost(
     latency_ms: Option<i64>,
     quality_score: Option<f64>,
     escalation: bool,
+    turn_id: Option<&str>,
 ) {
     ironclad_db::metrics::record_inference_cost(
         &state.db,
@@ -869,6 +872,7 @@ pub(super) fn record_cost(
         latency_ms,
         quality_score,
         escalation,
+        turn_id,
     )
     .inspect_err(|e| tracing::warn!(error = %e, "failed to record inference cost"))
     .ok();

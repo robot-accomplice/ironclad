@@ -743,6 +743,34 @@ pub struct RoutingConfig {
     pub cost_aware: bool,
     #[serde(default = "default_estimated_output_tokens")]
     pub estimated_output_tokens: u32,
+    /// Minimum observed quality score (0.0–1.0) for a model to be considered
+    /// during metascore routing.  Models with fewer than `accuracy_min_obs`
+    /// observations are exempt (insufficient data). Set to 0.0 to disable.
+    #[serde(default)]
+    pub accuracy_floor: f64,
+    /// Minimum observations before the accuracy floor applies to a model.
+    #[serde(default = "default_accuracy_min_obs")]
+    pub accuracy_min_obs: usize,
+    /// Custom cost weight for metascore \[0.0–1.0\]. When set, replaces the
+    /// binary `cost_aware` toggle with a continuous dial: 0.0 = ignore cost,
+    /// 1.0 = maximize savings. Efficacy weight adjusts inversely.
+    /// When `None`, falls back to `cost_aware` boolean behavior.
+    #[serde(default)]
+    pub cost_weight: Option<f64>,
+    /// Canary model to route a fraction of traffic through for A/B validation.
+    /// When set, `canary_fraction` of requests are routed to this model instead
+    /// of the metascore winner. Set to `None` to disable canary routing.
+    #[serde(default)]
+    pub canary_model: Option<String>,
+    /// Fraction of requests routed to the canary model [0.0–1.0].
+    /// Only effective when `canary_model` is set. Default: 0.0 (disabled).
+    #[serde(default)]
+    pub canary_fraction: f64,
+    /// Static model blocklist — models listed here are unconditionally excluded
+    /// from all routing paths (override, metascore, fallback). Useful as an
+    /// instant kill-switch without restarting the server.
+    #[serde(default)]
+    pub blocked_models: Vec<String>,
 }
 
 impl Default for RoutingConfig {
@@ -753,8 +781,18 @@ impl Default for RoutingConfig {
             local_first: true,
             cost_aware: false,
             estimated_output_tokens: default_estimated_output_tokens(),
+            accuracy_floor: 0.0,
+            accuracy_min_obs: default_accuracy_min_obs(),
+            cost_weight: None,
+            canary_model: None,
+            canary_fraction: 0.0,
+            blocked_models: Vec::new(),
         }
     }
+}
+
+fn default_accuracy_min_obs() -> usize {
+    10
 }
 
 fn default_estimated_output_tokens() -> u32 {
