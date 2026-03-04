@@ -1,6 +1,7 @@
 use super::*;
 
 use ironclad_plugin_sdk::manifest::PluginManifest;
+use sha2::{Digest, Sha256};
 
 // ── Install source detection ────────────────────────────────────
 
@@ -170,7 +171,9 @@ pub(crate) fn companion_skill_install_name(plugin_name: &str, skill_rel: &str) -
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
-    format!("{plugin_name}--{skill_filename}")
+    let hash = Sha256::digest(skill_rel.as_bytes());
+    let short = hex::encode(&hash[..6]);
+    format!("{plugin_name}--{short}--{skill_filename}")
 }
 
 fn check_requirements(manifest: &PluginManifest) -> bool {
@@ -332,14 +335,12 @@ fn install_from_directory(source_path: &std::path::Path) -> Result<(), Box<dyn s
     let (_ok, _action, warn, _detail, err_icon) = icons();
 
     if !source_path.exists() {
-        eprintln!("  Source not found: {}", source_path.display());
-        return Ok(());
+        return Err(format!("source not found: {}", source_path.display()).into());
     }
 
     let manifest_path = source_path.join("plugin.toml");
     if !manifest_path.exists() {
-        eprintln!("  No plugin.toml found in {}", source_path.display());
-        return Ok(());
+        return Err(format!("no plugin.toml found in {}", source_path.display()).into());
     }
 
     let manifest = PluginManifest::from_file(&manifest_path)
@@ -355,18 +356,18 @@ fn install_from_directory(source_path: &std::path::Path) -> Result<(), Box<dyn s
             eprintln!("    {err_icon} {e}");
         }
         eprintln!("\n  {err_icon} Plugin failed vetting. Fix errors above before installing.\n");
-        return Ok(());
+        return Err("plugin vetting failed".into());
     }
 
     if !check_requirements(&manifest) {
-        return Ok(());
+        return Err("missing required plugin dependencies".into());
     }
     if !check_companion_skills_exist(&manifest, source_path) {
-        return Ok(());
+        return Err("companion skill files missing from plugin bundle".into());
     }
     let dest = match check_not_installed(&manifest.name) {
         Ok(d) => d,
-        Err(()) => return Ok(()),
+        Err(()) => return Err(format!("plugin '{}' already installed", manifest.name).into()),
     };
 
     std::fs::create_dir_all(&dest)?;
@@ -386,8 +387,7 @@ fn install_from_archive(archive_path: &std::path::Path) -> Result<(), Box<dyn st
     let (ok, action, _warn, _detail, err_icon) = icons();
 
     if !archive_path.exists() {
-        eprintln!("  Archive not found: {}", archive_path.display());
-        return Ok(());
+        return Err(format!("archive not found: {}", archive_path.display()).into());
     }
 
     println!("\n  {action} Unpacking {}...", archive_path.display());
@@ -409,7 +409,7 @@ fn install_from_archive(archive_path: &std::path::Path) -> Result<(), Box<dyn st
     if !check_requirements(&result.manifest) {
         // Clean up staging
         let _ = std::fs::remove_dir_all(&result.dest_dir);
-        return Ok(());
+        return Err("missing required plugin dependencies".into());
     }
 
     // Check not already installed
@@ -417,7 +417,7 @@ fn install_from_archive(archive_path: &std::path::Path) -> Result<(), Box<dyn st
         Ok(d) => d,
         Err(()) => {
             let _ = std::fs::remove_dir_all(&result.dest_dir);
-            return Ok(());
+            return Err(format!("plugin '{}' already installed", result.manifest.name).into());
         }
     };
 
@@ -439,7 +439,15 @@ fn install_from_archive(archive_path: &std::path::Path) -> Result<(), Box<dyn st
         std::fs::remove_dir_all(&result.dest_dir)
     })?;
 
-    deploy_companion_skills(&result.manifest, &dest)?;
+    if let Err(e) = deploy_companion_skills(&result.manifest, &dest) {
+        // Roll back partial install on post-move failure.
+        if let Err(clean_err) = std::fs::remove_dir_all(&dest) {
+            eprintln!(
+                "  {err_icon} Companion skill deployment failed and rollback also failed: {clean_err}"
+            );
+        }
+        return Err(e);
+    }
     print_plugin_summary(
         &result.manifest,
         &format!("archive: {}", archive_path.display()),
@@ -488,7 +496,7 @@ async fn install_from_catalog(name: &str) -> Result<(), Box<dyn std::error::Erro
 
     // Check not already installed
     if check_not_installed(&entry.name).is_err() {
-        return Ok(());
+        return Err(format!("plugin '{}' already installed", entry.name).into());
     }
 
     // Prompt before download
@@ -510,8 +518,7 @@ async fn install_from_catalog(name: &str) -> Result<(), Box<dyn std::error::Erro
     let resp = client.get(&archive_url).send().await?;
 
     if !resp.status().is_success() {
-        eprintln!("  {err_icon} Download failed: HTTP {}", resp.status());
-        return Ok(());
+        return Err(format!("download failed: HTTP {}", resp.status()).into());
     }
 
     let bytes = resp.bytes().await?;
@@ -535,24 +542,24 @@ async fn install_from_catalog(name: &str) -> Result<(), Box<dyn std::error::Erro
 
     // Identity check: manifest name must match catalog entry name
     if result.manifest.name != entry.name {
-        eprintln!(
-            "  {err_icon} Identity mismatch: catalog says '{}' but archive contains '{}'",
-            entry.name, result.manifest.name
-        );
         let _ = std::fs::remove_dir_all(&result.dest_dir);
-        return Ok(());
+        return Err(format!(
+            "identity mismatch: catalog says '{}' but archive contains '{}'",
+            entry.name, result.manifest.name
+        )
+        .into());
     }
 
     // Re-check "already installed" against manifest name (authoritative identity)
     if check_not_installed(&result.manifest.name).is_err() {
         let _ = std::fs::remove_dir_all(&result.dest_dir);
-        return Ok(());
+        return Err(format!("plugin '{}' already installed", result.manifest.name).into());
     }
 
     // Requirements check
     if !check_requirements(&result.manifest) {
         let _ = std::fs::remove_dir_all(&result.dest_dir);
-        return Ok(());
+        return Err("missing required plugin dependencies".into());
     }
 
     // Move from staging to plugins dir
@@ -566,7 +573,15 @@ async fn install_from_catalog(name: &str) -> Result<(), Box<dyn std::error::Erro
         std::fs::remove_dir_all(&result.dest_dir)
     })?;
 
-    deploy_companion_skills(&result.manifest, &dest)?;
+    if let Err(e) = deploy_companion_skills(&result.manifest, &dest) {
+        // Roll back partial install on post-move failure.
+        if let Err(clean_err) = std::fs::remove_dir_all(&dest) {
+            eprintln!(
+                "  {err_icon} Companion skill deployment failed and rollback also failed: {clean_err}"
+            );
+        }
+        return Err(e);
+    }
     print_plugin_summary(&result.manifest, &format!("catalog: {name}"));
     Ok(())
 }
@@ -606,7 +621,9 @@ pub fn cmd_plugin_uninstall(name: &str) -> Result<(), Box<dyn std::error::Error>
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
+                let old_prefixed_name = format!("{name}--{legacy_name}");
                 let legacy_path = skills_dir.join(&legacy_name);
+                let old_prefixed_path = skills_dir.join(&old_prefixed_name);
                 let source_path = plugin_dir.join(skill_rel);
                 let same_content = std::fs::read(&legacy_path)
                     .ok()
@@ -620,6 +637,20 @@ pub fn cmd_plugin_uninstall(name: &str) -> Result<(), Box<dyn std::error::Error>
                         );
                     } else {
                         println!("  {ok} Removed legacy companion skill: {legacy_name}");
+                    }
+                }
+                let old_prefixed_same_content = std::fs::read(&old_prefixed_path)
+                    .ok()
+                    .zip(std::fs::read(&source_path).ok())
+                    .map(|(a, b)| a == b)
+                    .unwrap_or(false);
+                if old_prefixed_same_content {
+                    if let Err(e) = std::fs::remove_file(&old_prefixed_path) {
+                        eprintln!(
+                            "  {warn} Could not remove legacy companion skill {old_prefixed_name}: {e}",
+                        );
+                    } else {
+                        println!("  {ok} Removed legacy companion skill: {old_prefixed_name}");
                     }
                 }
             }
@@ -724,14 +755,12 @@ pub fn cmd_plugin_pack(dir: &str, output: Option<&str>) -> Result<(), Box<dyn st
 
     let source_path = std::path::Path::new(dir);
     if !source_path.exists() {
-        eprintln!("  {err_icon} Source directory not found: {dir}");
-        return Ok(());
+        return Err(format!("source directory not found: {dir}").into());
     }
 
     let manifest_path = source_path.join("plugin.toml");
     if !manifest_path.exists() {
-        eprintln!("  {err_icon} No plugin.toml found in {dir}");
-        return Ok(());
+        return Err(format!("no plugin.toml found in {dir}").into());
     }
 
     // Vet the plugin before packing
@@ -757,7 +786,7 @@ pub fn cmd_plugin_pack(dir: &str, output: Option<&str>) -> Result<(), Box<dyn st
             eprintln!(
                 "\n  {err_icon} Plugin failed vetting. Fix the errors above before packing.\n"
             );
-            return Ok(());
+            return Err("plugin vetting failed".into());
         }
         println!();
     }
@@ -782,4 +811,16 @@ pub fn cmd_plugin_pack(dir: &str, output: Option<&str>) -> Result<(), Box<dyn st
         result.uncompressed_bytes
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::companion_skill_install_name;
+
+    #[test]
+    fn companion_skill_install_name_distinguishes_paths_with_same_basename() {
+        let a = companion_skill_install_name("plugin-a", "skills/core/readme.md");
+        let b = companion_skill_install_name("plugin-a", "skills/extra/readme.md");
+        assert_ne!(a, b);
+    }
 }
