@@ -4,6 +4,7 @@ use axum::{
     Json,
     extract::{Path, Query, State},
     http::StatusCode,
+    http::header,
     response::IntoResponse,
 };
 use serde::Deserialize;
@@ -1161,6 +1162,189 @@ pub async fn breaker_reset(
         "provider": provider,
         "state": "closed",
         "reset": true,
+    })))
+}
+
+pub async fn breaker_open(
+    State(state): State<AppState>,
+    Path(provider): Path<String>,
+) -> Result<impl IntoResponse, JsonError> {
+    let provider_known = {
+        let cfg = state.config.read().await;
+        cfg.providers.contains_key(&provider)
+    };
+    if !provider_known {
+        return Err(not_found(format!("unknown provider '{provider}'")));
+    }
+
+    let mut llm = state.llm.write().await;
+    llm.breakers.force_open(&provider);
+
+    Ok(axum::Json(json!({
+        "provider": provider,
+        "state": "open",
+        "blocked": true,
+        "operator_forced_open": true,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RoutingDatasetQuery {
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub schema_version: Option<i64>,
+    pub limit: Option<usize>,
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RoutingEvalRequest {
+    pub since: Option<String>,
+    pub until: Option<String>,
+    pub schema_version: Option<i64>,
+    pub limit: Option<usize>,
+    pub cost_aware: Option<bool>,
+    pub cost_weight: Option<f64>,
+    pub accuracy_floor: Option<f64>,
+    pub accuracy_min_obs: Option<usize>,
+    pub include_verdicts: Option<bool>,
+}
+
+fn build_dataset_filter(q: &RoutingDatasetQuery) -> ironclad_db::routing_dataset::DatasetFilter {
+    ironclad_db::routing_dataset::DatasetFilter {
+        since: q.since.clone(),
+        until: q.until.clone(),
+        schema_version: q.schema_version,
+        limit: q.limit,
+    }
+}
+
+pub async fn get_routing_dataset(
+    State(state): State<AppState>,
+    Query(q): Query<RoutingDatasetQuery>,
+) -> Result<impl IntoResponse, JsonError> {
+    let filter = build_dataset_filter(&q);
+    if q.format.as_deref() == Some("tsv") {
+        let tsv = ironclad_db::routing_dataset::extract_routing_dataset_tsv(&state.db, &filter)
+            .map_err(|e| internal_err(&e))?;
+        return Ok((
+            [(
+                header::CONTENT_TYPE,
+                "text/tab-separated-values; charset=utf-8",
+            )],
+            tsv,
+        )
+            .into_response());
+    }
+
+    let rows = ironclad_db::routing_dataset::extract_routing_dataset(&state.db, &filter)
+        .map_err(|e| internal_err(&e))?;
+    let summary = ironclad_db::routing_dataset::dataset_summary(&state.db, &filter)
+        .map_err(|e| internal_err(&e))?;
+    Ok(axum::Json(json!({
+        "rows": rows,
+        "summary": {
+            "total_rows": summary.total_rows,
+            "distinct_models": summary.distinct_models,
+            "distinct_strategies": summary.distinct_strategies,
+            "total_cost": summary.total_cost,
+            "avg_cost_per_decision": summary.avg_cost_per_decision,
+            "schema_versions": summary.schema_versions,
+        }
+    }))
+    .into_response())
+}
+
+pub async fn run_routing_eval(
+    State(state): State<AppState>,
+    Json(req): Json<RoutingEvalRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let filter = ironclad_db::routing_dataset::DatasetFilter {
+        since: req.since.clone(),
+        until: req.until.clone(),
+        schema_version: req.schema_version,
+        limit: req.limit.or(Some(1000)),
+    };
+    let rows = ironclad_db::routing_dataset::extract_routing_dataset(&state.db, &filter)
+        .map_err(|e| internal_err(&e))?;
+
+    let llm = state.llm.read().await;
+    let profiles = ironclad_llm::build_model_profiles(
+        &llm.router,
+        &llm.providers,
+        &llm.quality,
+        &llm.capacity,
+        &llm.breakers,
+    );
+    let profile_by_model: std::collections::HashMap<String, ironclad_llm::ModelProfile> = profiles
+        .into_iter()
+        .map(|p| (p.model_name.clone(), p))
+        .collect();
+    drop(llm);
+
+    #[derive(Deserialize)]
+    struct CandidateWire {
+        model: String,
+        usable: bool,
+    }
+
+    let mut eval_rows = Vec::new();
+    for row in rows {
+        let complexity = row
+            .complexity
+            .as_deref()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.5)
+            .clamp(0.0, 1.0);
+        let wire: Vec<CandidateWire> =
+            serde_json::from_str(&row.candidates_json).unwrap_or_default();
+        let mut candidates: Vec<ironclad_llm::ModelProfile> = wire
+            .into_iter()
+            .filter(|c| c.usable)
+            .filter_map(|c| profile_by_model.get(&c.model).cloned())
+            .collect();
+        if let Some(prod) = profile_by_model.get(&row.selected_model).cloned()
+            && !candidates.iter().any(|c| c.model_name == prod.model_name)
+        {
+            candidates.push(prod);
+        }
+        if candidates.is_empty() {
+            continue;
+        }
+        eval_rows.push(ironclad_llm::eval_harness::EvalRow {
+            turn_id: row.turn_id,
+            production_model: row.selected_model,
+            complexity,
+            candidates,
+            observed_cost: row.total_cost,
+            observed_quality: row.avg_quality_score,
+        });
+    }
+
+    let config = ironclad_llm::eval_harness::EvalConfig {
+        cost_aware: req.cost_aware.unwrap_or(false),
+        cost_weight: req.cost_weight,
+        accuracy_floor: req.accuracy_floor.unwrap_or(0.0),
+        accuracy_min_obs: req.accuracy_min_obs.unwrap_or(10),
+    };
+    let verdicts = ironclad_llm::eval_harness::replay(&eval_rows, &config);
+    let summary = ironclad_llm::eval_harness::summarize(&verdicts);
+    let include_verdicts = req.include_verdicts.unwrap_or(false);
+
+    Ok(axum::Json(json!({
+        "rows_considered": eval_rows.len(),
+        "summary": summary,
+        "config": {
+            "cost_aware": config.cost_aware,
+            "cost_weight": config.cost_weight,
+            "accuracy_floor": config.accuracy_floor,
+            "accuracy_min_obs": config.accuracy_min_obs,
+        },
+        "verdicts": if include_verdicts {
+            json!(verdicts)
+        } else {
+            json!([])
+        }
     })))
 }
 
