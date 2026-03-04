@@ -73,33 +73,7 @@ impl Keystore {
             )?;
             return Ok(());
         }
-
-        let data = std::fs::read(&self.path)?;
-        if data.len() < SALT_LEN + NONCE_LEN + 1 {
-            return Err(IroncladError::Keystore("corrupt keystore file".into()));
-        }
-
-        let salt = &data[..SALT_LEN];
-        let nonce_bytes = &data[SALT_LEN..SALT_LEN + NONCE_LEN];
-        let ciphertext = &data[SALT_LEN + NONCE_LEN..];
-
-        let key = derive_key(passphrase, salt)?;
-        let cipher = Aes256Gcm::new_from_slice(key.as_ref())
-            .map_err(|e| IroncladError::Keystore(e.to_string()))?;
-        let nonce = Nonce::from_slice(nonce_bytes);
-
-        let plaintext = cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|_| IroncladError::Keystore("decryption failed (wrong passphrase?)".into()))?;
-
-        let store: KeystoreData = serde_json::from_slice(&plaintext)
-            .map_err(|e| IroncladError::Keystore(format!("corrupt keystore data: {e}")))?;
-
-        let zeroized_entries: HashMap<String, Zeroizing<String>> = store
-            .entries
-            .into_iter()
-            .map(|(k, v)| (k, Zeroizing::new(v)))
-            .collect();
+        let zeroized_entries = self.decrypt_entries(passphrase)?;
         let mut st = lock_or_recover(&self.state);
         st.entries = Some(zeroized_entries);
         st.passphrase = Some(Zeroizing::new(passphrase.to_string()));
@@ -121,8 +95,9 @@ impl Keystore {
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
-        lock_or_recover(&self.state)
-            .entries
+        let mut st = lock_or_recover(&self.state);
+        self.refresh_locked(&mut st).ok();
+        st.entries
             .as_ref()
             .and_then(|m| m.get(key).map(|v| (**v).clone()))
     }
@@ -179,8 +154,9 @@ impl Keystore {
     }
 
     pub fn list_keys(&self) -> Vec<String> {
-        lock_or_recover(&self.state)
-            .entries
+        let mut st = lock_or_recover(&self.state);
+        self.refresh_locked(&mut st).ok();
+        st.entries
             .as_ref()
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default()
@@ -342,6 +318,50 @@ impl Keystore {
 
         std::fs::rename(&tmp, &self.path)?;
 
+        Ok(())
+    }
+
+    fn decrypt_entries(&self, passphrase: &str) -> Result<HashMap<String, Zeroizing<String>>> {
+        let data = std::fs::read(&self.path)?;
+        if data.len() < SALT_LEN + NONCE_LEN + 1 {
+            return Err(IroncladError::Keystore("corrupt keystore file".into()));
+        }
+
+        let salt = &data[..SALT_LEN];
+        let nonce_bytes = &data[SALT_LEN..SALT_LEN + NONCE_LEN];
+        let ciphertext = &data[SALT_LEN + NONCE_LEN..];
+
+        let key = derive_key(passphrase, salt)?;
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref())
+            .map_err(|e| IroncladError::Keystore(e.to_string()))?;
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|_| IroncladError::Keystore("decryption failed (wrong passphrase?)".into()))?;
+
+        let store: KeystoreData = serde_json::from_slice(&plaintext)
+            .map_err(|e| IroncladError::Keystore(format!("corrupt keystore data: {e}")))?;
+
+        Ok(store
+            .entries
+            .into_iter()
+            .map(|(k, v)| (k, Zeroizing::new(v)))
+            .collect())
+    }
+
+    fn refresh_locked(&self, st: &mut KeystoreState) -> Result<()> {
+        if st.entries.is_none() {
+            return Ok(());
+        }
+        let Some(passphrase) = st.passphrase.as_ref() else {
+            return Ok(());
+        };
+        if !self.path.exists() {
+            return Ok(());
+        }
+        let refreshed = self.decrypt_entries(passphrase)?;
+        st.entries = Some(refreshed);
         Ok(())
     }
 }
@@ -520,6 +540,23 @@ mod tests {
         let ks2 = Keystore::new(&path);
         ks2.unlock_machine().unwrap();
         assert_eq!(ks2.get("service_key"), Some("abc".into()));
+    }
+
+    #[test]
+    fn test_get_refreshes_entries_after_external_write() {
+        let path = temp_path();
+        let ks_a = Keystore::new(&path);
+        ks_a.unlock_machine().unwrap();
+        ks_a.set("openai_api_key", "old-value").unwrap();
+        assert_eq!(ks_a.get("openai_api_key"), Some("old-value".into()));
+
+        // Simulate a second process mutating the same keystore file.
+        let ks_b = Keystore::new(&path);
+        ks_b.unlock_machine().unwrap();
+        ks_b.set("openai_api_key", "new-value").unwrap();
+
+        // Without a refresh-on-read policy this can stay stale in ks_a.
+        assert_eq!(ks_a.get("openai_api_key"), Some("new-value".into()));
     }
 
     #[test]

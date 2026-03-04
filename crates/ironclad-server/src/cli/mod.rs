@@ -1336,7 +1336,7 @@ mod tests {
             serde_json::json!({"ok": true}),
         )
         .await;
-        super::cmd_circuit_reset(&s.uri()).await.unwrap();
+        super::cmd_circuit_reset(&s.uri(), None).await.unwrap();
     }
 
     #[tokio::test]
@@ -1347,7 +1347,21 @@ mod tests {
             .respond_with(ResponseTemplate::new(500))
             .mount(&s)
             .await;
-        super::cmd_circuit_reset(&s.uri()).await.unwrap();
+        super::cmd_circuit_reset(&s.uri(), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_circuit_reset_single_provider() {
+        let s = MockServer::start().await;
+        mock_post(
+            &s,
+            "/api/breaker/reset/openai",
+            serde_json::json!({"ok": true}),
+        )
+        .await;
+        super::cmd_circuit_reset(&s.uri(), Some("openai"))
+            .await
+            .unwrap();
     }
 
     // ── Agents ────────────────────────────────────────────────

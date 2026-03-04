@@ -417,6 +417,8 @@ pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
                     "model",
                     "models",
                     "format",
+                    "api_key_ref",
+                    "api_key_env",
                     "auth_mode",
                     "auth_header",
                     "is_local",
@@ -1143,12 +1145,16 @@ pub async fn breaker_reset(
     State(state): State<AppState>,
     Path(provider): Path<String>,
 ) -> Result<impl IntoResponse, JsonError> {
-    let mut llm = state.llm.write().await;
-    // BUG-04: reject unknown providers instead of silently creating a breaker
-    let known = llm.breakers.list_providers();
-    if !known.iter().any(|(name, _)| name == &provider) {
+    let provider_known = {
+        let cfg = state.config.read().await;
+        cfg.providers.contains_key(&provider)
+    };
+    if !provider_known {
         return Err(not_found(format!("unknown provider '{provider}'")));
     }
+
+    let mut llm = state.llm.write().await;
+    // Always allow reset for configured providers, even if no breaker state exists yet.
     llm.breakers.reset(&provider);
 
     Ok(axum::Json(json!({

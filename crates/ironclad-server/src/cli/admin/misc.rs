@@ -891,32 +891,38 @@ pub async fn cmd_circuit_status(url: &str) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-pub async fn cmd_circuit_reset(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_circuit_reset(
+    url: &str,
+    provider: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let client = super::http_client()?;
-    let status = client
-        .get(format!("{url}/api/breaker/status"))
-        .send()
-        .await
-        .inspect_err(|_| {
-            eprintln!("  {ERR} Cannot reach gateway at {url}");
-        })?;
-
     heading("Circuit Breaker Reset");
 
-    if !status.status().is_success() {
-        eprintln!("    {WARN} Status returned HTTP {}", status.status());
-        eprintln!();
-        return Ok(());
-    }
+    let providers: Vec<String> = if let Some(single) = provider {
+        vec![single.to_string()]
+    } else {
+        let status = client
+            .get(format!("{url}/api/breaker/status"))
+            .send()
+            .await
+            .inspect_err(|_| {
+                eprintln!("  {ERR} Cannot reach gateway at {url}");
+            })?;
 
-    let body: serde_json::Value = status.json().await.unwrap_or_default();
-    let providers: Vec<String> = body
-        .get("providers")
-        .and_then(|v| v.as_object())
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
+        if !status.status().is_success() {
+            eprintln!("    {WARN} Status returned HTTP {}", status.status());
+            eprintln!();
+            return Ok(());
+        }
+
+        let body: serde_json::Value = status.json().await.unwrap_or_default();
+        body.get("providers")
+            .and_then(|v| v.as_object())
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    };
 
     if providers.is_empty() {
         eprintln!("    {WARN} No providers reported by gateway");
