@@ -142,6 +142,7 @@ pub async fn cmd_plugin_info(base_url: &str, name: &str) -> Result<(), Box<dyn s
         }
         None => {
             eprintln!("  Plugin not found: {name}");
+            return Err(format!("plugin not found: {name}").into());
         }
     }
     Ok(())
@@ -269,12 +270,19 @@ fn deploy_companion_skills(
     let skills_dir = ironclad_dir.join("skills");
     std::fs::create_dir_all(&skills_dir)?;
 
+    let mut installed = Vec::new();
     for skill_rel in &manifest.companion_skills {
         let src_skill = source_dir.join(skill_rel);
         let installed_name = companion_skill_install_name(&manifest.name, skill_rel);
         let dest_skill = skills_dir.join(&installed_name);
 
-        std::fs::copy(&src_skill, &dest_skill)?;
+        if let Err(e) = std::fs::copy(&src_skill, &dest_skill) {
+            for path in installed.iter().rev() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(Box::new(e));
+        }
+        installed.push(dest_skill);
         println!("  {ok} Installed companion skill: {installed_name}");
     }
     Ok(())
@@ -374,9 +382,15 @@ fn install_from_directory(source_path: &std::path::Path) -> Result<(), Box<dyn s
     };
 
     std::fs::create_dir_all(&dest)?;
-    copy_dir_recursive(source_path, &dest)?;
+    if let Err(e) = copy_dir_recursive(source_path, &dest) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(Box::new(e));
+    }
 
-    deploy_companion_skills(&manifest, source_path)?;
+    if let Err(e) = deploy_companion_skills(&manifest, source_path) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(e);
+    }
     print_plugin_summary(&manifest, &format!("directory: {}", source_path.display()));
     Ok(())
 }
@@ -438,7 +452,10 @@ fn install_from_archive(archive_path: &std::path::Path) -> Result<(), Box<dyn st
     std::fs::create_dir_all(dest.parent().unwrap_or(&dest))?;
     std::fs::rename(&result.dest_dir, &dest).or_else(|_| {
         // rename fails across filesystems; fall back to copy + remove
-        copy_dir_recursive(&result.dest_dir, &dest)?;
+        if let Err(e) = copy_dir_recursive(&result.dest_dir, &dest) {
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(e);
+        }
         std::fs::remove_dir_all(&result.dest_dir)
     })?;
 
@@ -572,7 +589,10 @@ async fn install_from_catalog(name: &str) -> Result<(), Box<dyn std::error::Erro
         .join(&result.manifest.name);
     std::fs::create_dir_all(dest.parent().unwrap_or(&dest))?;
     std::fs::rename(&result.dest_dir, &dest).or_else(|_| {
-        copy_dir_recursive(&result.dest_dir, &dest)?;
+        if let Err(e) = copy_dir_recursive(&result.dest_dir, &dest) {
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(e);
+        }
         std::fs::remove_dir_all(&result.dest_dir)
     })?;
 
@@ -686,6 +706,7 @@ pub async fn cmd_plugin_toggle(
         println!("  {ok} Plugin {name} {action}d");
     } else {
         eprintln!("  Failed to {action} plugin {name}: {}", resp.status());
+        return Err(format!("failed to {action} plugin {name}: HTTP {}", resp.status()).into());
     }
     Ok(())
 }

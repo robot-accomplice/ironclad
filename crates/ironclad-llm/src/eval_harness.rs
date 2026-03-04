@@ -9,6 +9,7 @@
 //! and produces per-row verdicts plus aggregate metrics.
 
 use crate::profile::{MetascoreBreakdown, ModelProfile};
+use serde::Serialize;
 
 /// A simplified input row for the evaluation harness, derived from
 /// the routing dataset but containing only the fields needed for replay.
@@ -28,7 +29,7 @@ pub struct EvalRow {
 }
 
 /// Outcome of replaying a single routing decision.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EvalVerdict {
     pub turn_id: String,
     pub production_model: String,
@@ -41,7 +42,7 @@ pub struct EvalVerdict {
 }
 
 /// Aggregate metrics from an evaluation run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EvalSummary {
     pub total_rows: usize,
     /// How many rows would have changed model selection.

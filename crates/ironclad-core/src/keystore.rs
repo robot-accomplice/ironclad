@@ -103,15 +103,25 @@ impl Keystore {
     }
 
     pub fn set(&self, key: &str, value: &str) -> Result<()> {
-        {
+        let previous = {
             let mut st = lock_or_recover(&self.state);
             let entries = st
                 .entries
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
-            entries.insert(key.to_string(), Zeroizing::new(value.to_string()));
-        }
+            entries.insert(key.to_string(), Zeroizing::new(value.to_string()))
+        };
         let save_res = self.save();
+        if save_res.is_err() {
+            let mut st = lock_or_recover(&self.state);
+            if let Some(entries) = st.entries.as_mut() {
+                if let Some(prev) = previous {
+                    entries.insert(key.to_string(), prev);
+                } else {
+                    entries.remove(key);
+                }
+            }
+        }
         let audit_res = self.append_audit_event(
             "set",
             Some(key),
@@ -127,16 +137,25 @@ impl Keystore {
     }
 
     pub fn remove(&self, key: &str) -> Result<bool> {
-        let existed = {
+        let removed = {
             let mut st = lock_or_recover(&self.state);
             let entries = st
                 .entries
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
-            entries.remove(key).is_some()
+            entries.remove(key)
         };
+        let existed = removed.is_some();
         if existed {
             let save_res = self.save();
+            if save_res.is_err() {
+                let mut st = lock_or_recover(&self.state);
+                if let Some(entries) = st.entries.as_mut()
+                    && let Some(prev) = removed
+                {
+                    entries.insert(key.to_string(), prev);
+                }
+            }
             let audit_res = self.append_audit_event(
                 "remove",
                 Some(key),
@@ -164,15 +183,21 @@ impl Keystore {
 
     pub fn import(&self, new_entries: HashMap<String, String>) -> Result<usize> {
         let count = new_entries.len();
-        {
+        let snapshot = {
             let mut st = lock_or_recover(&self.state);
             let entries = st
                 .entries
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
+            let before = entries.clone();
             entries.extend(new_entries.into_iter().map(|(k, v)| (k, Zeroizing::new(v))));
-        }
+            before
+        };
         let save_res = self.save();
+        if save_res.is_err() {
+            let mut st = lock_or_recover(&self.state);
+            st.entries = Some(snapshot);
+        }
         let audit_res = self.append_audit_event(
             "import",
             None,
@@ -200,8 +225,17 @@ impl Keystore {
         if !self.is_unlocked() {
             return Err(IroncladError::Keystore("keystore is locked".into()));
         }
-        lock_or_recover(&self.state).passphrase = Some(Zeroizing::new(new_passphrase.to_string()));
+        let old_passphrase = {
+            let mut st = lock_or_recover(&self.state);
+            let prev = st.passphrase.clone();
+            st.passphrase = Some(Zeroizing::new(new_passphrase.to_string()));
+            prev
+        };
         let save_res = self.save();
+        if save_res.is_err() {
+            let mut st = lock_or_recover(&self.state);
+            st.passphrase = old_passphrase;
+        }
         let audit_res = self.append_audit_event(
             "rekey",
             None,
@@ -691,6 +725,30 @@ mod tests {
 
         ks.set("key", "second").unwrap();
         assert_eq!(ks.get("key"), Some("second".into()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_set_rolls_back_on_save_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keystore.enc");
+        let ks = Keystore::new(&path);
+        ks.unlock("pass").unwrap();
+        ks.set("stable", "1").unwrap();
+
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o500);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        let res = ks.set("transient", "2");
+        assert!(res.is_err());
+        assert_eq!(ks.get("stable"), Some("1".into()));
+        assert_eq!(ks.get("transient"), None);
+
+        let mut restore = std::fs::metadata(dir.path()).unwrap().permissions();
+        restore.set_mode(0o700);
+        std::fs::set_permissions(dir.path(), restore).unwrap();
     }
 
     #[test]
