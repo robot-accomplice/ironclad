@@ -178,6 +178,8 @@ pub(super) async fn select_routed_model_with_audit(
     let accuracy_floor = config.models.routing.accuracy_floor;
     let accuracy_min_obs = config.models.routing.accuracy_min_obs;
     let cost_weight = config.models.routing.cost_weight;
+    let canary_model = config.models.routing.canary_model.clone();
+    let canary_fraction = config.models.routing.canary_fraction;
     let mut ordered_models = vec![primary.clone()];
     for fb in &config.models.fallbacks {
         if !fb.is_empty() && !ordered_models.iter().any(|m| m == fb) {
@@ -317,14 +319,47 @@ pub(super) async fn select_routed_model_with_audit(
         }
 
         if let Some((selected, breakdown, _)) = best_selection {
+            // Canary interception: if a canary model is configured and the
+            // random draw falls within canary_fraction, substitute the canary
+            // model — but only if it has a valid, unblocked provider.
+            let (final_model, canary_active) = if let Some(ref canary) = canary_model {
+                if canary_fraction > 0.0 && rand::random::<f64>() < canary_fraction {
+                    let prefix = canary.split('/').next().unwrap_or("unknown");
+                    let has_provider = llm_read.providers.get_by_model(canary).is_some();
+                    let blocked = llm_read.breakers.is_blocked(prefix);
+                    if has_provider && !blocked {
+                        tracing::info!(
+                            canary_model = canary.as_str(),
+                            production_model = selected.as_str(),
+                            canary_fraction,
+                            "canary routing activated"
+                        );
+                        (canary.clone(), true)
+                    } else {
+                        tracing::debug!(
+                            canary_model = canary.as_str(),
+                            has_provider,
+                            blocked,
+                            "canary model unavailable, using production selection"
+                        );
+                        (selected.clone(), false)
+                    }
+                } else {
+                    (selected.clone(), false)
+                }
+            } else {
+                (selected.clone(), false)
+            };
+
             let strategy = format!(
-                "metascore_{:.3}_c{complexity:.2}{}{}",
+                "metascore_{:.3}_c{complexity:.2}{}{}{}",
                 breakdown.final_score,
                 if cost_aware { "_cost" } else { "" },
-                if escalation_bias != 0.0 { "_esc" } else { "" }
+                if escalation_bias != 0.0 { "_esc" } else { "" },
+                if canary_active { "_canary" } else { "" }
             );
             tracing::debug!(
-                model = selected.as_str(),
+                model = final_model.as_str(),
                 complexity,
                 cost_aware,
                 metascore = breakdown.final_score,
@@ -336,10 +371,11 @@ pub(super) async fn select_routed_model_with_audit(
                 escalation_bias,
                 local_acceptance,
                 local_total,
+                canary_active,
                 "metascore routing selected model"
             );
             return ModelSelectionAudit {
-                selected_model: selected,
+                selected_model: final_model,
                 strategy,
                 primary_model: primary,
                 override_model: llm_read.router.get_override().map(|s| s.to_string()),

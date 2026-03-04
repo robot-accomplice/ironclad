@@ -757,6 +757,15 @@ pub struct RoutingConfig {
     /// When `None`, falls back to `cost_aware` boolean behavior.
     #[serde(default)]
     pub cost_weight: Option<f64>,
+    /// Canary model to route a fraction of traffic through for A/B validation.
+    /// When set, `canary_fraction` of requests are routed to this model instead
+    /// of the metascore winner. Set to `None` to disable canary routing.
+    #[serde(default)]
+    pub canary_model: Option<String>,
+    /// Fraction of requests routed to the canary model [0.0–1.0].
+    /// Only effective when `canary_model` is set. Default: 0.0 (disabled).
+    #[serde(default)]
+    pub canary_fraction: f64,
 }
 
 impl Default for RoutingConfig {
@@ -770,6 +779,8 @@ impl Default for RoutingConfig {
             accuracy_floor: 0.0,
             accuracy_min_obs: default_accuracy_min_obs(),
             cost_weight: None,
+            canary_model: None,
+            canary_fraction: 0.0,
         }
     }
 }
