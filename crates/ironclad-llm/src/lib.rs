@@ -43,6 +43,8 @@ pub mod client;
 pub mod compression;
 pub mod dedup;
 pub mod embedding;
+/// Offline routing evaluation harness for replaying historical decisions.
+pub mod eval_harness;
 pub mod format;
 pub mod ml_router;
 pub mod oauth;
