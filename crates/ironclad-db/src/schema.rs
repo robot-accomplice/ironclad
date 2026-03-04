@@ -449,6 +449,7 @@ CREATE INDEX IF NOT EXISTS idx_abuse_events_actor ON abuse_events(actor_id, crea
 CREATE INDEX IF NOT EXISTS idx_abuse_events_origin ON abuse_events(origin, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_created ON abuse_events(created_at DESC);
 "#;
+const EMBEDDED_SCHEMA_VERSION: i64 = 13;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {
@@ -464,10 +465,13 @@ pub fn initialize_db(db: &Database) -> Result<()> {
             .map_err(|e| IroncladError::Database(e.to_string()))?;
 
         if !version_exists {
-            // The embedded schema already incorporates all migrations through v10,
-            // so seed the version to 10 so run_migrations() won't re-apply them.
-            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [10])
-                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            // The embedded schema already incorporates migrations through v0.9.4.
+            // Seed schema_version accordingly so run_migrations() only applies newer files.
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [EMBEDDED_SCHEMA_VERSION],
+            )
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
         }
     }
 
@@ -729,7 +733,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(version >= 10, "embedded schema seeds at version 10");
+        assert!(
+            version >= EMBEDDED_SCHEMA_VERSION,
+            "embedded schema seeds at version {EMBEDDED_SCHEMA_VERSION}"
+        );
     }
 
     #[test]
@@ -766,7 +773,10 @@ mod tests {
             !versions.is_empty(),
             "schema_version should have at least one entry"
         );
-        assert!(versions[0] >= 10, "embedded schema seeds at version 10");
+        assert!(
+            versions[0] >= EMBEDDED_SCHEMA_VERSION,
+            "embedded schema seeds at version {EMBEDDED_SCHEMA_VERSION}"
+        );
         for w in versions.windows(2) {
             assert!(w[1] > w[0], "versions must be strictly increasing");
         }
@@ -786,14 +796,14 @@ mod tests {
         let conn = db.conn();
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM schema_version WHERE version >= 10",
-                [],
+                "SELECT COUNT(*) FROM schema_version WHERE version >= ?1",
+                [EMBEDDED_SCHEMA_VERSION],
                 |row| row.get(0),
             )
             .unwrap();
         assert!(
             count >= 1,
-            "embedded schema should seed at least version 10"
+            "embedded schema should seed at least version {EMBEDDED_SCHEMA_VERSION}"
         );
     }
 
@@ -1011,12 +1021,12 @@ mod tests {
         let conn = db.conn();
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM schema_version WHERE version = 10",
-                [],
+                "SELECT COUNT(*) FROM schema_version WHERE version = ?1",
+                [EMBEDDED_SCHEMA_VERSION],
                 |row| row.get(0),
             )
             .unwrap();
-        // Should still be exactly 1 row for version 10
+        // Should still be exactly 1 row for the embedded seed version.
         assert_eq!(
             count, 1,
             "reinitialize should not duplicate the seed version row"
@@ -1033,8 +1043,11 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(SCHEMA_SQL).unwrap();
-        conn.execute("INSERT INTO schema_version (version) VALUES (10)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            [EMBEDDED_SCHEMA_VERSION],
+        )
+        .unwrap();
 
         // We can't drop a column in SQLite easily, so instead we create a
         // separate DB from scratch without the column and test the has_column logic.
@@ -1066,7 +1079,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(max_version >= 10);
+        assert!(max_version >= EMBEDDED_SCHEMA_VERSION);
     }
 
     #[test]
