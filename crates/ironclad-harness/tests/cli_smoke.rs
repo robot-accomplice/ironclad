@@ -14,6 +14,7 @@
 
 use ironclad_harness::sandbox::{SandboxMode, SandboxedServer};
 use serde_json::json;
+use serial_test::serial;
 use tokio::process::Command;
 
 #[allow(deprecated)] // cargo_bin! macro requires CARGO_BIN_EXE_ env var not available here
@@ -36,6 +37,7 @@ fn cli(server: &SandboxedServer) -> Command {
 // ── Version (offline — no server needed) ────────────────────
 
 #[tokio::test]
+#[serial]
 async fn cli_version_succeeds() {
     let output = ironclad_bin()
         .arg("version")
@@ -52,6 +54,7 @@ async fn cli_version_succeeds() {
 // ── Status ──────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn cli_status_succeeds() {
     let server = SandboxedServer::spawn(SandboxMode::InProcess)
         .await
@@ -72,6 +75,7 @@ async fn cli_status_succeeds() {
 // ── Sessions ────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn cli_sessions_list() {
     let server = SandboxedServer::spawn(SandboxMode::InProcess)
         .await
@@ -90,6 +94,7 @@ async fn cli_sessions_list() {
 }
 
 #[tokio::test]
+#[serial]
 async fn cli_sessions_show() {
     let server = SandboxedServer::spawn(SandboxMode::InProcess)
         .await
@@ -118,6 +123,7 @@ async fn cli_sessions_show() {
 // ── Memory ──────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn cli_memory_list_episodic() {
     let server = SandboxedServer::spawn(SandboxMode::InProcess)
         .await
@@ -136,6 +142,7 @@ async fn cli_memory_list_episodic() {
 }
 
 #[tokio::test]
+#[serial]
 async fn cli_memory_list_semantic() {
     let server = SandboxedServer::spawn(SandboxMode::InProcess)
         .await
@@ -156,6 +163,7 @@ async fn cli_memory_list_semantic() {
 // ── Skills ──────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn cli_skills_list() {
     let server = SandboxedServer::spawn(SandboxMode::InProcess)
         .await
@@ -176,6 +184,7 @@ async fn cli_skills_list() {
 // ── Config ──────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn cli_config_show() {
     let server = SandboxedServer::spawn(SandboxMode::InProcess)
         .await
@@ -196,6 +205,7 @@ async fn cli_config_show() {
 // ── Metrics ─────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn cli_metrics_costs() {
     let server = SandboxedServer::spawn(SandboxMode::InProcess)
         .await
@@ -216,6 +226,7 @@ async fn cli_metrics_costs() {
 // ── Schedule ────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn cli_schedule_list() {
     let server = SandboxedServer::spawn(SandboxMode::InProcess)
         .await
@@ -236,6 +247,7 @@ async fn cli_schedule_list() {
 // ── Wallet ──────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn cli_wallet_balance() {
     let server = SandboxedServer::spawn(SandboxMode::InProcess)
         .await
@@ -256,6 +268,7 @@ async fn cli_wallet_balance() {
 // ── Circuit breaker ─────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn cli_circuit_status() {
     let server = SandboxedServer::spawn(SandboxMode::InProcess)
         .await

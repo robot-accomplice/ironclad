@@ -516,6 +516,92 @@ impl IroncladConfig {
             ));
         }
 
+        // ── Routing config validation ──────────────────────────────
+        // Keep `heuristic` as a supported legacy alias to avoid breaking
+        // existing runtime configs and defaults.
+        if !matches!(
+            self.models.routing.mode.as_str(),
+            "primary" | "metascore" | "heuristic"
+        ) {
+            return Err(IroncladError::Config(format!(
+                "models.routing.mode must be one of \"primary\", \"metascore\", or \"heuristic\", got \"{}\"",
+                self.models.routing.mode
+            )));
+        }
+        if !(0.0..=1.0).contains(&self.models.routing.confidence_threshold) {
+            return Err(IroncladError::Config(format!(
+                "models.routing.confidence_threshold must be in [0.0, 1.0], got {}",
+                self.models.routing.confidence_threshold
+            )));
+        }
+        if self.models.routing.estimated_output_tokens == 0 {
+            return Err(IroncladError::Config(
+                "models.routing.estimated_output_tokens must be >= 1".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.models.routing.accuracy_floor) {
+            return Err(IroncladError::Config(format!(
+                "models.routing.accuracy_floor must be in [0.0, 1.0], got {}",
+                self.models.routing.accuracy_floor
+            )));
+        }
+        if self.models.routing.accuracy_min_obs == 0 {
+            return Err(IroncladError::Config(
+                "models.routing.accuracy_min_obs must be >= 1".into(),
+            ));
+        }
+        if let Some(cost_weight) = self.models.routing.cost_weight
+            && !(0.0..=1.0).contains(&cost_weight)
+        {
+            return Err(IroncladError::Config(format!(
+                "models.routing.cost_weight must be in [0.0, 1.0], got {cost_weight}"
+            )));
+        }
+        if !(0.0..=1.0).contains(&self.models.routing.canary_fraction) {
+            return Err(IroncladError::Config(format!(
+                "models.routing.canary_fraction must be in [0.0, 1.0], got {}",
+                self.models.routing.canary_fraction
+            )));
+        }
+
+        let canary_model = self
+            .models
+            .routing
+            .canary_model
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        if self.models.routing.canary_fraction > 0.0 && canary_model.is_none() {
+            return Err(IroncladError::Config(
+                "models.routing.canary_fraction > 0 requires models.routing.canary_model".into(),
+            ));
+        }
+        if canary_model.is_some() && self.models.routing.canary_fraction <= 0.0 {
+            return Err(IroncladError::Config(
+                "models.routing.canary_model requires models.routing.canary_fraction > 0".into(),
+            ));
+        }
+        if let Some(canary) = canary_model
+            && self
+                .models
+                .routing
+                .blocked_models
+                .iter()
+                .any(|m| m.trim() == canary)
+        {
+            return Err(IroncladError::Config(
+                "models.routing.canary_model must not also appear in models.routing.blocked_models"
+                    .into(),
+            ));
+        }
+        for blocked in &self.models.routing.blocked_models {
+            if blocked.trim().is_empty() {
+                return Err(IroncladError::Config(
+                    "models.routing.blocked_models entries must be non-empty".into(),
+                ));
+            }
+        }
+
         Ok(())
     }
 }
@@ -3109,5 +3195,95 @@ primary = "ollama/qwen3:8b"
 threat_caution_ceiling = "Peer"
 "#;
         IroncladConfig::from_str(toml).unwrap();
+    }
+
+    #[test]
+    fn validate_routing_accuracy_floor_out_of_range_fails() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[models.routing]
+accuracy_floor = 1.5
+"#;
+        assert!(IroncladConfig::from_str(toml).is_err());
+    }
+
+    #[test]
+    fn validate_routing_canary_fraction_requires_canary_model() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[models.routing]
+canary_fraction = 0.1
+"#;
+        assert!(IroncladConfig::from_str(toml).is_err());
+    }
+
+    #[test]
+    fn validate_routing_canary_model_must_not_be_blocked() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[models.routing]
+canary_model = "ollama/qwen3:8b"
+canary_fraction = 0.2
+blocked_models = ["ollama/qwen3:8b"]
+"#;
+        assert!(IroncladConfig::from_str(toml).is_err());
+    }
+
+    #[test]
+    fn validate_routing_mode_invalid_fails() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[models.routing]
+mode = "random"
+"#;
+        assert!(IroncladConfig::from_str(toml).is_err());
     }
 }
