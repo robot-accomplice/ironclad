@@ -39,7 +39,28 @@ pub async fn init_plugin_registry(config: &PluginsConfig) -> Arc<PluginRegistry>
         let version = dp.manifest.version.clone();
         let tool_count = dp.manifest.tools.len();
 
-        let plugin = ScriptPlugin::new(dp.manifest, dp.dir);
+        // ── Vet plugin integrity before registration ─────────────
+        let report = dp.manifest.vet(&dp.dir);
+        for w in &report.warnings {
+            warn!(name = %name, warning = %w, "plugin vet warning");
+        }
+        if !report.is_ok() {
+            for e in &report.errors {
+                warn!(name = %name, error = %e, "plugin vet error");
+            }
+            warn!(
+                name = %name,
+                errors = report.errors.len(),
+                "skipping plugin due to vet errors"
+            );
+            continue;
+        }
+
+        let timeout_secs = dp.manifest.timeout_seconds;
+        let mut plugin = ScriptPlugin::new(dp.manifest, dp.dir);
+        if let Some(secs) = timeout_secs {
+            plugin = plugin.with_timeout(std::time::Duration::from_secs(secs));
+        }
         match registry.register(Box::new(plugin)).await {
             Ok(()) => {
                 info!(
@@ -156,6 +177,43 @@ description = "Says hello"
         };
         let registry = init_plugin_registry(&config).await;
         assert_eq!(registry.plugin_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn init_respects_timeout_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin_dir = dir.path().join("slow-plugin");
+        fs::create_dir(&plugin_dir).unwrap();
+        fs::write(
+            plugin_dir.join("plugin.toml"),
+            r#"
+name = "slow-plugin"
+version = "0.1.0"
+timeout_seconds = 300
+
+[[tools]]
+name = "slow_task"
+description = "A long-running task"
+"#,
+        )
+        .unwrap();
+        fs::write(plugin_dir.join("slow_task.sh"), "#!/bin/sh\necho done").unwrap();
+
+        let config = PluginsConfig {
+            dir: dir.path().to_path_buf(),
+            allow: vec![],
+            deny: vec![],
+            strict_permissions: false,
+            allowed_permissions: vec![],
+        };
+        let registry = init_plugin_registry(&config).await;
+        assert_eq!(registry.plugin_count().await, 1);
+        // Verify the plugin registered and its tool works
+        let result = registry
+            .execute_tool("slow_task", &serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(result.success);
     }
 
     #[tokio::test]

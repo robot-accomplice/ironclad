@@ -1519,19 +1519,23 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn cmd_plugin_install_missing_source() {
-        super::cmd_plugin_install("/tmp/ironclad_test_nonexistent_plugin_dir").unwrap();
+    #[tokio::test]
+    async fn cmd_plugin_install_missing_source() {
+        super::cmd_plugin_install("/tmp/ironclad_test_nonexistent_plugin_dir")
+            .await
+            .unwrap();
     }
 
-    #[test]
-    fn cmd_plugin_install_no_manifest() {
+    #[tokio::test]
+    async fn cmd_plugin_install_no_manifest() {
         let dir = tempfile::tempdir().unwrap();
-        super::cmd_plugin_install(dir.path().to_str().unwrap()).unwrap();
+        super::cmd_plugin_install(dir.path().to_str().unwrap())
+            .await
+            .unwrap();
     }
 
-    #[test]
-    fn cmd_plugin_install_valid() {
+    #[tokio::test]
+    async fn cmd_plugin_install_valid() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = dir.path().join("plugin.toml");
         std::fs::write(&manifest, "name = \"test-plugin\"\nversion = \"0.1\"").unwrap();
@@ -1542,7 +1546,7 @@ mod tests {
         std::fs::write(sub.join("helper.gosh"), "// helper").unwrap();
 
         unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
-        let _ = super::cmd_plugin_install(dir.path().to_str().unwrap());
+        let _ = super::cmd_plugin_install(dir.path().to_str().unwrap()).await;
         unsafe { std::env::remove_var("HOME") };
     }
 

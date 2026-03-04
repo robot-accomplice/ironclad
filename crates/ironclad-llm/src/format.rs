@@ -283,11 +283,35 @@ pub fn translate_request(request: &UnifiedRequest, format: ApiFormat) -> Result<
     }
 }
 
+fn message_has_provider_content(message: &UnifiedMessage) -> bool {
+    if let Some(parts) = &message.parts
+        && parts.iter().any(|p| match p {
+            ContentPart::Text { text } => !text.trim().is_empty(),
+            ContentPart::ImageUrl { .. }
+            | ContentPart::ImageBase64 { .. }
+            | ContentPart::AudioTranscription { .. } => true,
+        })
+    {
+        return true;
+    }
+    !message.content.trim().is_empty()
+}
+
+fn include_message_for_provider(message: &UnifiedMessage) -> bool {
+    // Upstream providers reject empty assistant payload entries in history.
+    // Skip empty assistant turns to avoid request-level 400s during fallback.
+    if message.role == "assistant" && !message_has_provider_content(message) {
+        return false;
+    }
+    true
+}
+
 fn translate_anthropic(req: &UnifiedRequest) -> Result<Value> {
     let messages: Vec<Value> = req
         .messages
         .iter()
         .filter(|m| m.role != "system")
+        .filter(|m| include_message_for_provider(m))
         .map(|m| {
             let content = match &m.parts {
                 Some(parts) if m.is_multimodal() => parts_to_anthropic(parts),
@@ -347,6 +371,9 @@ fn translate_openai_completions(req: &UnifiedRequest) -> Result<Value> {
     }
 
     for m in &req.messages {
+        if !include_message_for_provider(m) {
+            continue;
+        }
         let content = match &m.parts {
             Some(parts) if m.is_multimodal() => parts_to_openai(parts),
             _ => serde_json::json!(m.content),
@@ -401,6 +428,9 @@ fn translate_openai_responses(req: &UnifiedRequest) -> Result<Value> {
     }
 
     for m in &req.messages {
+        if !include_message_for_provider(m) {
+            continue;
+        }
         let content = match &m.parts {
             Some(parts) if m.is_multimodal() => parts_to_openai_responses(parts),
             _ => vec![serde_json::json!({"type": "input_text", "text": m.content})],
@@ -457,6 +487,7 @@ fn translate_google(req: &UnifiedRequest) -> Result<Value> {
         .messages
         .iter()
         .filter(|m| m.role != "system")
+        .filter(|m| include_message_for_provider(m))
         .map(|m| {
             let role = match m.role.as_str() {
                 "assistant" => "model",
@@ -1403,6 +1434,29 @@ mod tests {
         assert_eq!(msgs.len(), 1); // no system message
     }
 
+    #[test]
+    fn translate_openai_skips_empty_assistant_messages() {
+        let req = UnifiedRequest {
+            model: "gpt-4o-mini".into(),
+            messages: vec![
+                UnifiedMessage::text("user", "hello"),
+                UnifiedMessage::text("assistant", "   "),
+                UnifiedMessage::text("assistant", "real answer"),
+            ],
+            max_tokens: None,
+            temperature: None,
+            system: None,
+            quality_target: None,
+            tools: vec![],
+        };
+        let body = translate_request(&req, ApiFormat::OpenAiCompletions).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[1]["role"], "assistant");
+        assert_eq!(msgs[1]["content"], "real answer");
+    }
+
     // ── OpenAI Responses format ──────────────────────
 
     #[test]
@@ -1418,6 +1472,29 @@ mod tests {
         };
         let body = translate_request(&req, ApiFormat::OpenAiResponses).unwrap();
         assert!(body.get("max_output_tokens").is_none() || body["max_output_tokens"].is_null());
+    }
+
+    #[test]
+    fn translate_openai_responses_skips_empty_assistant_messages() {
+        let req = UnifiedRequest {
+            model: "gpt-4o".into(),
+            messages: vec![
+                UnifiedMessage::text("user", "hello"),
+                UnifiedMessage::text("assistant", ""),
+                UnifiedMessage::text("assistant", "ready"),
+            ],
+            max_tokens: None,
+            temperature: None,
+            system: None,
+            quality_target: None,
+            tools: vec![],
+        };
+        let body = translate_request(&req, ApiFormat::OpenAiResponses).unwrap();
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[1]["role"], "assistant");
+        assert_eq!(input[1]["content"][0]["text"], "ready");
     }
 
     // ── Google format ──────────────────────
@@ -1458,6 +1535,29 @@ mod tests {
         assert_eq!(contents.len(), 1);
         assert_eq!(contents[0]["role"], "user");
         assert_eq!(body["systemInstruction"]["parts"][0]["text"], "Be helpful");
+    }
+
+    #[test]
+    fn translate_google_skips_empty_assistant_messages() {
+        let req = UnifiedRequest {
+            model: "gemini-2.5-flash".into(),
+            messages: vec![
+                UnifiedMessage::text("user", "hello"),
+                UnifiedMessage::text("assistant", "   "),
+                UnifiedMessage::text("assistant", "ok"),
+            ],
+            max_tokens: None,
+            temperature: None,
+            system: None,
+            quality_target: None,
+            tools: vec![],
+        };
+        let body = translate_request(&req, ApiFormat::GoogleGenerativeAi).unwrap();
+        let contents = body["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[0]["role"], "user");
+        assert_eq!(contents[1]["role"], "model");
+        assert_eq!(contents[1]["parts"][0]["text"], "ok");
     }
 
     #[test]

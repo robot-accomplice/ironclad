@@ -1,6 +1,6 @@
 # C4 Level 3: Component Diagram -- ironclad-plugin-sdk
 
-*SDK for defining and running plugins that expose tools to the agent. Plugins are loaded from a directory (one `plugin.toml` per plugin), registered in a central registry, and executed on demand. The built-in `ScriptPlugin` runs external scripts (e.g. `.gosh`, `.py`, `.sh`) per tool.*
+*SDK for defining and running plugins that expose tools to the agent. Plugins are loaded from a directory (one `plugin.toml` per plugin), registered in a central registry, and executed on demand. The built-in `ScriptPlugin` runs external scripts (e.g. `.gosh`, `.py`, `.sh`) per tool. The SDK also provides packaging (`.ic.zip` archives), checksum verification, and remote catalog discovery for plugin distribution.*
 
 ---
 
@@ -16,6 +16,8 @@ flowchart TB
         REGISTRY["PluginRegistry<br/>register, init_all,<br/>execute_tool, find_tool,<br/>list_plugins, disable/enable"]
         LOADER["loader.rs<br/>discover_plugins(dir)<br/>plugin.toml per directory"]
         SCRIPT["script.rs<br/>ScriptPlugin<br/>executes external scripts"]
+        ARCHIVE["archive.rs<br/>pack/unpack .ic.zip<br/>SHA-256 verification"]
+        CATALOG["catalog.rs<br/>PluginCatalog<br/>remote search + lookup"]
     end
 
     subgraph ManifestDetail ["PluginManifest"]
@@ -71,6 +73,77 @@ flowchart TB
 5. **Toggle**  
    `disable_plugin(name)` / `enable_plugin(name)` set status to `Disabled` or `Active`. Disabled plugins are skipped for `execute_tool` and `list_all_tools`.
 
+## Plugin Development Sequences
+
+### 1) Install + Companion Skill Deployment
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant CLI as "ironclad plugins install"
+    participant FS as Filesystem
+    participant M as PluginManifest
+
+    Op->>CLI: install /path/to/plugin
+    CLI->>M: parse + validate plugin.toml
+    CLI->>M: check_requirements()
+    M-->>CLI: required deps present
+    CLI->>FS: copy plugin dir to ~/.ironclad/plugins/<name>
+    CLI->>FS: copy companion skills to ~/.ironclad/skills/<plugin>--<skill>.md
+    CLI-->>Op: install success + restart required
+```
+
+### 2) Server Startup Registration Path
+
+```mermaid
+sequenceDiagram
+    participant S as Server Boot
+    participant L as loader::discover_plugins
+    participant V as manifest.vet()
+    participant R as PluginRegistry
+    participant P as ScriptPlugin
+
+    S->>L: scan plugins dir
+    L-->>S: DiscoveredPlugin[]
+    loop each discovered plugin
+        S->>V: integrity + requirements vet
+        alt vet has errors
+            S-->>S: skip plugin, log warnings/errors
+        else vet ok
+            S->>P: ScriptPlugin::new(manifest, dir)
+            S->>R: register(plugin)
+        end
+    end
+    S->>R: init_all()
+    R-->>S: active/error status per plugin
+```
+
+### 3) Tool Execution + Permission Gates
+
+```mermaid
+sequenceDiagram
+    participant API as /api/plugins/{name}/execute/{tool}
+    participant PE as PolicyEngine
+    participant R as PluginRegistry
+    participant SP as ScriptPlugin
+    participant Proc as Script Process
+
+    API->>R: find_tool(tool)
+    API->>API: infer required permissions from input scan
+    API->>PE: evaluate risk policy (authority=External)
+    alt denied by policy/permissions
+        API-->>API: return 403
+    else allowed
+        API->>R: execute_tool(tool, input)
+        R->>SP: execute_tool(...)
+        SP->>SP: enforce declared permissions (process + input-derived caps)
+        SP->>Proc: spawn script/interpreter with IRONCLAD_* env
+        Proc-->>SP: stdout/stderr/exit
+        SP-->>R: ToolResult
+        R-->>API: ToolResult
+    end
+```
+
 ## Types
 
 | Type | Location | Purpose |
@@ -79,8 +152,14 @@ flowchart TB
 | `ToolDef` | `lib.rs` | name, description, parameters (JSON schema), risk_level (RiskLevel, default Caution), permissions (Vec\<String\>) |
 | `ToolResult` | `lib.rs` | success, output, optional metadata |
 | `PluginStatus` | `lib.rs` | Loaded, Active, Disabled, Error |
-| `PluginManifest` | `manifest.rs` | TOML: name, version, description, author, permissions, tools (ManifestToolDef) |
+| `PluginManifest` | `manifest.rs` | TOML: name, version, description, author, permissions, requirements, companion_skills, tools |
 | `ManifestToolDef` | `manifest.rs` | name, description, dangerous |
+| `Requirement` | `manifest.rs` | External dependency: name, command, install_hint, optional |
+| `PackResult` | `archive.rs` | Result of packing: archive_path, sha256, name, version, file_count |
+| `UnpackResult` | `archive.rs` | Result of unpacking: dest_dir, manifest, sha256, file_count |
+| `ArchiveError` | `archive.rs` | IO, ZIP, manifest, checksum, path traversal errors |
+| `PluginCatalog` | `catalog.rs` | Remote catalog: search(query), find(name) |
+| `PluginCatalogEntry` | `catalog.rs` | Catalog entry: name, version, sha256, path, tier |
 | `PluginRegistry` | `registry.rs` | In-memory map of plugins, allow/deny lists, init/execute/list/disable/enable |
 | `PluginInfo` | `registry.rs` | name, version, status, tools (for API listing) |
 | `DiscoveredPlugin` | `loader.rs` | manifest + directory path |
@@ -88,7 +167,7 @@ flowchart TB
 
 ## Dependencies
 
-**External crates**: `async-trait`, `serde`, `serde_json`, `tokio`, `tracing`, `toml`
+**External crates**: `async-trait`, `serde`, `serde_json`, `tokio`, `tracing`, `toml`, `zip`, `sha2`, `hex`, `thiserror`
 
 **Internal crates**: `ironclad-core` (Result, IroncladError, config)
 
