@@ -2331,6 +2331,15 @@
           + '</tbody></table></div>';
 
         var spider = renderRoutingSpiderSvg(App._routingProfileDraft || routingProfile);
+        var persistedLabel = '';
+        if (App._routingProfilePersistedAt) {
+          var savedAt = new Date(App._routingProfilePersistedAt);
+          var savedText = Number.isNaN(savedAt.getTime()) ? App._routingProfilePersistedAt : savedAt.toLocaleString();
+          persistedLabel = '<div style="margin-top:0.45rem;font-size:0.6875rem;color:var(--muted)">'
+            + (App._routingProfilePersisted ? 'Saved to config: ' : 'Applied: ')
+            + esc(savedText)
+            + '</div>';
+        }
         var profileCard = '<div class="card" style="margin-bottom:1rem;padding-bottom:0.75rem"><div class="card-title">Routing Weights (Correctness / Cost / Speed)</div>'
           + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.65rem">Operator profile mapped onto routing controls. Adjust and apply to persist to runtime config.</div>'
           + '<div class="routing-profile-grid">'
@@ -2340,6 +2349,7 @@
           + '<div class="routing-slider-row"><label for="routing-slider-cost"><span>Cost</span><span id="routing-slider-cost-val">' + round2((App._routingProfileDraft || routingProfile).cost).toFixed(2) + '</span></label><input id="routing-slider-cost" data-routing-slider="cost" type="range" min="0" max="1" step="0.01" value="' + round2((App._routingProfileDraft || routingProfile).cost).toFixed(2) + '"></div>'
           + '<div class="routing-slider-row"><label for="routing-slider-speed"><span>Speed</span><span id="routing-slider-speed-val">' + round2((App._routingProfileDraft || routingProfile).speed).toFixed(2) + '</span></label><input id="routing-slider-speed" data-routing-slider="speed" type="range" min="0" max="1" step="0.01" value="' + round2((App._routingProfileDraft || routingProfile).speed).toFixed(2) + '"></div>'
           + '<div class="routing-profile-actions"><button class="btn" id="routing-profile-apply" style="font-size:0.6875rem;padding:0.3rem 0.7rem">Apply profile</button><button class="btn secondary" id="routing-profile-reset" style="font-size:0.6875rem;padding:0.3rem 0.7rem">Reset</button></div>'
+          + persistedLabel
           + '</div></div></div>';
 
         var decisionGraph = renderModelDecisionGraph(modelSelections, App._modelGraphFocusModel, App._modelGraphFocusEdge);
@@ -4172,8 +4182,10 @@
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch)
-      }).then(function() {
-        toast('Routing profile applied.');
+      }).then(function(resp) {
+        App._routingProfilePersistedAt = new Date().toISOString();
+        App._routingProfilePersisted = !!(resp && resp.persisted);
+        toast(App._routingProfilePersisted ? 'Routing profile applied and persisted.' : 'Routing profile applied.');
         App.navigate('metrics');
       }).catch(function(err) {
         if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Apply profile'; }

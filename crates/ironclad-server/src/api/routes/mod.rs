@@ -1118,6 +1118,55 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn put_config_routing_weights_persist_round_trip() {
+        let state = test_state();
+        let app = build_router(state.clone());
+        let patch = r#"{
+            "models": {
+                "routing": {
+                    "accuracy_floor": 0.42,
+                    "cost_weight": 0.31,
+                    "cost_aware": true,
+                    "confidence_threshold": 0.77,
+                    "estimated_output_tokens": 640
+                }
+            }
+        }"#;
+        let put_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(patch))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(put_resp.status(), StatusCode::OK);
+        let put_body = json_body(put_resp).await;
+        assert_eq!(put_body["persisted"], true);
+
+        let get_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let cfg = json_body(get_resp).await;
+        assert_eq!(cfg["models"]["routing"]["accuracy_floor"], 0.42);
+        assert_eq!(cfg["models"]["routing"]["cost_weight"], 0.31);
+        assert_eq!(cfg["models"]["routing"]["cost_aware"], true);
+        assert_eq!(cfg["models"]["routing"]["confidence_threshold"], 0.77);
+        assert_eq!(cfg["models"]["routing"]["estimated_output_tokens"], 640);
+    }
+
+    #[tokio::test]
     async fn put_config_rejects_invalid() {
         let state = test_state();
         let old_name = state.config.read().await.agent.name.clone();
