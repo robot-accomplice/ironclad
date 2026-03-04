@@ -26,13 +26,14 @@ pub fn record_inference_cost(
     latency_ms: Option<i64>,
     quality_score: Option<f64>,
     escalation: bool,
+    turn_id: Option<&str>,
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO inference_costs \
-         (id, model, provider, tokens_in, tokens_out, cost, tier, cached, latency_ms, quality_score, escalation) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         (id, model, provider, tokens_in, tokens_out, cost, tier, cached, latency_ms, quality_score, escalation, turn_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             id,
             model,
@@ -44,7 +45,8 @@ pub fn record_inference_cost(
             cached as i32,
             latency_ms,
             quality_score,
-            escalation as i32
+            escalation as i32,
+            turn_id
         ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;

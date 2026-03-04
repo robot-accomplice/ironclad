@@ -3,6 +3,10 @@ use rusqlite::OptionalExtension;
 
 use crate::Database;
 
+/// Current routing feature schema version. Bump when feature extraction or
+/// scoring logic changes to invalidate historical reproducibility.
+pub const ROUTING_SCHEMA_VERSION: i64 = 1;
+
 #[derive(Debug, Clone)]
 pub struct ModelSelectionEventRow {
     pub id: String,
@@ -18,6 +22,11 @@ pub struct ModelSelectionEventRow {
     pub user_excerpt: String,
     pub candidates_json: String,
     pub created_at: String,
+    // v0.9.4: routing baseline hardening fields
+    pub schema_version: i64,
+    pub attribution: Option<String>,
+    pub metascore_json: Option<String>,
+    pub features_json: Option<String>,
 }
 
 pub fn record_model_selection_event(db: &Database, row: &ModelSelectionEventRow) -> Result<()> {
@@ -25,8 +34,9 @@ pub fn record_model_selection_event(db: &Database, row: &ModelSelectionEventRow)
     conn.execute(
         "INSERT INTO model_selection_events
          (id, turn_id, session_id, agent_id, channel, selected_model, strategy, primary_model,
-          override_model, complexity, user_excerpt, candidates_json, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+          override_model, complexity, user_excerpt, candidates_json, created_at,
+          schema_version, attribution, metascore_json, features_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         rusqlite::params![
             row.id,
             row.turn_id,
@@ -41,6 +51,10 @@ pub fn record_model_selection_event(db: &Database, row: &ModelSelectionEventRow)
             row.user_excerpt,
             row.candidates_json,
             row.created_at,
+            row.schema_version,
+            row.attribution,
+            row.metascore_json,
+            row.features_json,
         ],
     )
     .map_err(|e| IroncladError::Database(format!("record model selection event: {e}")))?;
@@ -55,7 +69,8 @@ pub fn get_model_selection_by_turn_id(
     let mut stmt = conn
         .prepare(
             "SELECT id, turn_id, session_id, agent_id, channel, selected_model, strategy, primary_model,
-                    override_model, complexity, user_excerpt, candidates_json, created_at
+                    override_model, complexity, user_excerpt, candidates_json, created_at,
+                    schema_version, attribution, metascore_json, features_json
              FROM model_selection_events
              WHERE turn_id = ?1
              ORDER BY created_at DESC
@@ -78,6 +93,10 @@ pub fn get_model_selection_by_turn_id(
                 user_excerpt: r.get(10)?,
                 candidates_json: r.get(11)?,
                 created_at: r.get(12)?,
+                schema_version: r.get(13)?,
+                attribution: r.get(14)?,
+                metascore_json: r.get(15)?,
+                features_json: r.get(16)?,
             })
         })
         .optional()
@@ -93,7 +112,8 @@ pub fn list_model_selection_events(
     let mut stmt = conn
         .prepare(
             "SELECT id, turn_id, session_id, agent_id, channel, selected_model, strategy, primary_model,
-                    override_model, complexity, user_excerpt, candidates_json, created_at
+                    override_model, complexity, user_excerpt, candidates_json, created_at,
+                    schema_version, attribution, metascore_json, features_json
              FROM model_selection_events
              ORDER BY created_at DESC
              LIMIT ?1",
@@ -115,7 +135,44 @@ pub fn list_model_selection_events(
                 user_excerpt: r.get(10)?,
                 candidates_json: r.get(11)?,
                 created_at: r.get(12)?,
+                schema_version: r.get(13)?,
+                attribution: r.get(14)?,
+                metascore_json: r.get(15)?,
+                features_json: r.get(16)?,
             })
+        })
+        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(rows)
+}
+
+/// Count routing decisions grouped by attribution label since a given datetime.
+pub fn attribution_breakdown(db: &Database, since: Option<&str>) -> Result<Vec<(String, i64)>> {
+    let conn = db.conn();
+    let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match since {
+        Some(dt) => (
+            "SELECT COALESCE(attribution, 'unknown'), COUNT(*)
+             FROM model_selection_events
+             WHERE created_at >= ?1
+             GROUP BY COALESCE(attribution, 'unknown')
+             ORDER BY COUNT(*) DESC",
+            vec![Box::new(dt.to_string())],
+        ),
+        None => (
+            "SELECT COALESCE(attribution, 'unknown'), COUNT(*)
+             FROM model_selection_events
+             GROUP BY COALESCE(attribution, 'unknown')
+             ORDER BY COUNT(*) DESC",
+            vec![],
+        ),
+    };
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         })
         .map_err(|e| IroncladError::Database(e.to_string()))?
         .collect::<std::result::Result<Vec<_>, _>>()
@@ -146,6 +203,10 @@ mod tests {
             user_excerpt: "Tell me about Rust".to_string(),
             candidates_json: r#"["claude-4","gpt-4"]"#.to_string(),
             created_at: "2025-06-01T00:00:00".to_string(),
+            schema_version: ROUTING_SCHEMA_VERSION,
+            attribution: None,
+            metascore_json: None,
+            features_json: None,
         }
     }
 
@@ -162,6 +223,7 @@ mod tests {
         assert_eq!(found.selected_model, "claude-4");
         assert_eq!(found.strategy, "complexity");
         assert_eq!(found.complexity.as_deref(), Some("high"));
+        assert_eq!(found.schema_version, ROUTING_SCHEMA_VERSION);
     }
 
     #[test]
@@ -195,6 +257,24 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(found.complexity.is_none());
+    }
+
+    #[test]
+    fn record_with_attribution_and_metascore() {
+        let db = test_db();
+        let mut evt = sample_event("mse-attr", "turn-attr");
+        evt.attribution = Some("metascore".to_string());
+        evt.metascore_json = Some(r#"{"efficacy":0.8,"cost":0.5}"#.to_string());
+        evt.features_json = Some(r#"[0.3,0.5,0.1]"#.to_string());
+        record_model_selection_event(&db, &evt).unwrap();
+
+        let found = get_model_selection_by_turn_id(&db, "turn-attr")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.attribution.as_deref(), Some("metascore"));
+        assert!(found.metascore_json.is_some());
+        assert!(found.features_json.is_some());
+        assert_eq!(found.schema_version, ROUTING_SCHEMA_VERSION);
     }
 
     #[test]
@@ -271,5 +351,42 @@ mod tests {
         // Same id should fail (PRIMARY KEY constraint)
         let result = record_model_selection_event(&db, &evt);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn attribution_breakdown_counts_correctly() {
+        let db = test_db();
+        for (i, attr) in ["metascore", "metascore", "override", "fallback"]
+            .iter()
+            .enumerate()
+        {
+            let mut evt = sample_event(&format!("mse-ab-{i}"), &format!("turn-ab-{i}"));
+            evt.attribution = Some(attr.to_string());
+            evt.created_at = format!("2025-06-01T0{i}:00:00");
+            record_model_selection_event(&db, &evt).unwrap();
+        }
+
+        let counts = attribution_breakdown(&db, None).unwrap();
+        assert_eq!(counts.len(), 3);
+        // metascore should be first (count=2)
+        assert_eq!(counts[0].0, "metascore");
+        assert_eq!(counts[0].1, 2);
+    }
+
+    #[test]
+    fn attribution_breakdown_with_since_filter() {
+        let db = test_db();
+        let mut e1 = sample_event("mse-ab-old", "turn-ab-old");
+        e1.attribution = Some("metascore".to_string());
+        e1.created_at = "2024-01-01T00:00:00".to_string();
+        let mut e2 = sample_event("mse-ab-new", "turn-ab-new");
+        e2.attribution = Some("override".to_string());
+        e2.created_at = "2025-06-01T00:00:00".to_string();
+        record_model_selection_event(&db, &e1).unwrap();
+        record_model_selection_event(&db, &e2).unwrap();
+
+        let counts = attribution_breakdown(&db, Some("2025-01-01T00:00:00")).unwrap();
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].0, "override");
     }
 }

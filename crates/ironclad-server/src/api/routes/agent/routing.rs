@@ -101,6 +101,13 @@ pub(super) async fn persist_model_selection_audit(
         user_excerpt: summarize_user_excerpt(user_content),
         candidates_json: serde_json::to_string(&audit.candidates).unwrap_or_else(|_| "[]".into()),
         created_at: chrono::Utc::now().to_rfc3339(),
+        schema_version: ironclad_db::model_selection::ROUTING_SCHEMA_VERSION,
+        attribution: Some(audit.strategy.clone()),
+        metascore_json: audit
+            .metascore_breakdown
+            .as_ref()
+            .and_then(|m| serde_json::to_string(m).ok()),
+        features_json: None,
     };
     if let Err(e) = ironclad_db::model_selection::record_model_selection_event(&state.db, &row) {
         tracing::warn!(error = %e, turn_id, "failed to persist model selection audit");

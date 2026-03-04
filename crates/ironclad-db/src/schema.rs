@@ -207,9 +207,11 @@ CREATE TABLE IF NOT EXISTS inference_costs (
     latency_ms INTEGER,
     quality_score REAL,
     escalation INTEGER NOT NULL DEFAULT 0,
+    turn_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_inference_costs_time ON inference_costs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inference_costs_turn ON inference_costs(turn_id);
 
 CREATE TABLE IF NOT EXISTS proxy_stats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -408,10 +410,28 @@ CREATE TABLE IF NOT EXISTS model_selection_events (
     complexity TEXT,
     user_excerpt TEXT NOT NULL,
     candidates_json TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    attribution TEXT,
+    metascore_json TEXT,
+    features_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_model_selection_events_turn ON model_selection_events(turn_id);
 CREATE INDEX IF NOT EXISTS idx_model_selection_events_created ON model_selection_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS shadow_routing_predictions (
+    id TEXT PRIMARY KEY,
+    turn_id TEXT NOT NULL,
+    production_model TEXT NOT NULL,
+    shadow_model TEXT,
+    production_complexity REAL,
+    shadow_complexity REAL,
+    agreed INTEGER NOT NULL DEFAULT 0,
+    detail_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_routing_created ON shadow_routing_predictions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shadow_routing_turn ON shadow_routing_predictions(turn_id);
 
 CREATE TABLE IF NOT EXISTS abuse_events (
     id TEXT PRIMARY KEY,
@@ -552,6 +572,40 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     }
+    // v0.9.4: routing baseline hardening — schema version, attribution, features
+    if !has_column(&conn, "model_selection_events", "schema_version")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "model_selection_events", "attribution")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN attribution TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "model_selection_events", "metascore_json")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN metascore_json TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "model_selection_events", "features_json")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN features_json TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    // v0.9.4: inference_costs turn linkage
+    if !has_column(&conn, "inference_costs", "turn_id")? {
+        conn.execute("ALTER TABLE inference_costs ADD COLUMN turn_id TEXT", [])
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -650,8 +704,9 @@ mod tests {
         let db = Database::new(":memory:").unwrap();
         let count = table_count(&db).unwrap();
         // 30 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback
-        // + context_snapshots + model_selection_events + abuse_events = 35
-        assert_eq!(count, 35, "expected 35 user-defined tables, got {count}");
+        // + context_snapshots + model_selection_events + abuse_events
+        // + shadow_routing_predictions (v0.9.4) = 36
+        assert_eq!(count, 36, "expected 36 user-defined tables, got {count}");
     }
 
     #[test]
@@ -660,7 +715,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 35);
+        assert_eq!(count, 36);
     }
 
     #[test]

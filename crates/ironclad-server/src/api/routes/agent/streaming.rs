@@ -465,6 +465,7 @@ pub async fn agent_message_stream(
             Some(stream_latency_ms),
             None, // quality_score not computed for streaming
             false,
+            Some(&turn_id_clone),
         );
 
         // Capacity + breaker tracking (streaming-specific -- needs raw LLM access)
