@@ -99,6 +99,7 @@ fn session_message_and_llm_format_roundtrip() {
         None,
         None,
         false,
+        None,
     )
     .unwrap();
 

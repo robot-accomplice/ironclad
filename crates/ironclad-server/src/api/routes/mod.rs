@@ -1432,6 +1432,7 @@ primary = "ollama/qwen3:8b"
             Some(100),
             Some(0.85),
             false,
+            None,
         )
         .unwrap();
         let app = build_router(state);
@@ -5755,6 +5756,7 @@ params = { path = "README.md" }
             Some(200),
             Some(0.90),
             false,
+            None,
         )
         .unwrap();
 
@@ -7253,6 +7255,10 @@ params = { path = "README.md" }
             user_excerpt: "test".into(),
             candidates_json: r#"["claude-4"]"#.into(),
             created_at: "2025-01-01T00:00:00".into(),
+            schema_version: ironclad_db::model_selection::ROUTING_SCHEMA_VERSION,
+            attribution: None,
+            metascore_json: None,
+            features_json: None,
         };
         ironclad_db::model_selection::record_model_selection_event(&state.db, &evt).unwrap();
 
@@ -7313,6 +7319,10 @@ params = { path = "README.md" }
                 user_excerpt: "hello".into(),
                 candidates_json: "[]".into(),
                 created_at: format!("2025-01-0{i}T00:00:00"),
+                schema_version: ironclad_db::model_selection::ROUTING_SCHEMA_VERSION,
+                attribution: None,
+                metascore_json: None,
+                features_json: None,
             };
             ironclad_db::model_selection::record_model_selection_event(&state.db, &evt).unwrap();
         }

@@ -166,6 +166,7 @@ mod tests {
             Some(150),
             Some(0.92),
             false,
+            None,
         )
         .unwrap();
         assert!(!id.is_empty());
@@ -210,7 +211,7 @@ mod tests {
     fn record_inference_cost_cached() {
         let db = test_db();
         let id = record_inference_cost(
-            &db, "gpt-4", "openai", 100, 50, 0.005, None, true, None, None, false,
+            &db, "gpt-4", "openai", 100, 50, 0.005, None, true, None, None, false, None,
         )
         .unwrap();
         assert!(!id.is_empty());
@@ -260,6 +261,7 @@ mod tests {
             Some(100),
             Some(0.7),
             false,
+            None,
         )
         .unwrap();
         record_inference_cost(
@@ -274,6 +276,7 @@ mod tests {
             Some(200),
             Some(0.9),
             false,
+            None,
         )
         .unwrap();
         record_inference_cost(
@@ -288,6 +291,7 @@ mod tests {
             Some(150),
             Some(0.85),
             false,
+            None,
         )
         .unwrap();
 
@@ -315,10 +319,14 @@ mod tests {
             None,
             Some(0.8),
             false,
+            None,
         )
         .unwrap();
         // Insert a row with NULL quality_score.
-        record_inference_cost(&db, "m", "p", 100, 50, 0.01, None, true, None, None, false).unwrap();
+        record_inference_cost(
+            &db, "m", "p", 100, 50, 0.01, None, true, None, None, false, None,
+        )
+        .unwrap();
         let scores = recent_quality_scores(&db, 10).unwrap();
         assert_eq!(scores.len(), 1);
         assert!((scores[0].1 - 0.8).abs() < f64::EPSILON);
@@ -340,6 +348,7 @@ mod tests {
                 None,
                 Some(i as f64 * 0.2),
                 false,
+                None,
             )
             .unwrap();
         }
