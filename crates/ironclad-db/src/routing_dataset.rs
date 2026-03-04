@@ -43,7 +43,7 @@ pub struct RoutingDatasetRow {
 }
 
 /// Filter parameters for dataset extraction.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DatasetFilter {
     /// Only include rows with `created_at >= since`.
     pub since: Option<String>,
@@ -186,7 +186,10 @@ pub struct DatasetSummary {
 
 /// Compute summary statistics for the routing dataset.
 pub fn dataset_summary(db: &Database, filter: &DatasetFilter) -> Result<DatasetSummary> {
-    let rows = extract_routing_dataset(db, filter)?;
+    let mut summary_filter = filter.clone();
+    // Summary stats should represent the full filtered dataset, not a pagination cap.
+    summary_filter.limit = None;
+    let rows = extract_routing_dataset(db, &summary_filter)?;
     if rows.is_empty() {
         return Ok(DatasetSummary {
             total_rows: 0,
@@ -573,6 +576,33 @@ mod tests {
         assert!((s.total_cost - 0.04).abs() < 1e-9);
         assert!((s.avg_cost_per_decision - 0.02).abs() < 1e-9);
         assert_eq!(s.schema_versions, vec![ROUTING_SCHEMA_VERSION]);
+    }
+
+    #[test]
+    fn dataset_summary_ignores_limit_cap() {
+        let db = test_db();
+        for i in 0..3 {
+            let eid = format!("evt-sum-{i}");
+            let tid = format!("turn-sum-{i}");
+            insert_decision(
+                &db,
+                &eid,
+                &tid,
+                "claude-4",
+                Some("metascore"),
+                &format!("2025-06-0{}T00:00:00", i + 1),
+            );
+            insert_cost(&db, &tid, "claude-4", 100, 50, 0.01);
+        }
+        let s = dataset_summary(
+            &db,
+            &DatasetFilter {
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(s.total_rows, 3);
     }
 
     #[test]

@@ -22,6 +22,8 @@ struct CircuitBreaker {
     /// When true, the breaker was tripped by a credit/billing error and will
     /// NOT auto-recover to HalfOpen. It stays Open until explicitly `reset()`.
     credit_tripped: bool,
+    /// When true, breaker was opened by an explicit operator kill-switch.
+    operator_forced_open: bool,
     /// Soft-pressure signal from capacity monitoring; used to deprioritize a
     /// provider before hard failures occur.
     preemptive_half_open: bool,
@@ -38,6 +40,7 @@ impl CircuitBreaker {
             threshold: config.threshold,
             window: Duration::from_secs(config.window_seconds),
             credit_tripped: false,
+            operator_forced_open: false,
             preemptive_half_open: false,
         }
     }
@@ -45,7 +48,7 @@ impl CircuitBreaker {
     fn effective_state(&self) -> CircuitState {
         match self.state {
             CircuitState::Open => {
-                if self.credit_tripped {
+                if self.credit_tripped || self.operator_forced_open {
                     return CircuitState::Open;
                 }
                 if let Some(last) = self.last_failure_at
@@ -148,6 +151,7 @@ impl CircuitBreakerRegistry {
         cb.state = CircuitState::Open;
         cb.last_failure_at = Some(Instant::now());
         cb.credit_tripped = true;
+        cb.operator_forced_open = false;
     }
 
     pub fn reset(&mut self, provider: &str) {
@@ -158,6 +162,7 @@ impl CircuitBreakerRegistry {
         cb.last_failure_at = None;
         cb.cooldown = Duration::from_secs(base_cooldown);
         cb.credit_tripped = false;
+        cb.operator_forced_open = false;
         cb.preemptive_half_open = false;
     }
 
@@ -166,6 +171,13 @@ impl CircuitBreakerRegistry {
         self.breakers
             .get(provider)
             .is_some_and(|cb| cb.credit_tripped)
+    }
+
+    /// Returns true if the provider is held open by operator kill-switch.
+    pub fn is_operator_forced_open(&self, provider: &str) -> bool {
+        self.breakers
+            .get(provider)
+            .is_some_and(|cb| cb.operator_forced_open)
     }
 
     pub fn get_state(&self, provider: &str) -> CircuitState {
@@ -183,19 +195,19 @@ impl CircuitBreakerRegistry {
     }
 
     /// Force a provider's circuit breaker open (kill-switch). Stays open
-    /// until explicitly `reset()` — identical to a credit-trip, but with a
-    /// separate semantic meaning for operator-initiated blocks.
+    /// until explicitly `reset()`, without being marked as a credit trip.
     pub fn force_open(&mut self, provider: &str) {
         let cb = self.get_or_create(provider);
         cb.state = CircuitState::Open;
         cb.last_failure_at = Some(Instant::now());
-        cb.credit_tripped = true; // prevents auto-recovery to HalfOpen
+        cb.credit_tripped = false;
+        cb.operator_forced_open = true;
     }
 
     /// Toggle soft capacity pressure state for a provider.
     pub fn set_capacity_pressure(&mut self, provider: &str, pressured: bool) {
         let cb = self.get_or_create(provider);
-        if cb.credit_tripped || cb.state == CircuitState::Open {
+        if cb.credit_tripped || cb.operator_forced_open || cb.state == CircuitState::Open {
             return;
         }
         cb.preemptive_half_open = pressured;
@@ -370,14 +382,17 @@ mod tests {
         reg.force_open("openai");
         assert!(reg.is_blocked("openai"));
         assert_eq!(reg.get_state("openai"), CircuitState::Open);
+        assert!(reg.is_operator_forced_open("openai"));
+        assert!(!reg.is_credit_tripped("openai"));
 
-        // Should NOT auto-recover to HalfOpen (credit_tripped prevents it)
+        // Should NOT auto-recover to HalfOpen (operator-forced open prevents it)
         std::thread::sleep(Duration::from_millis(5));
         assert!(reg.is_blocked("openai"));
 
         // reset() clears the force-open
         reg.reset("openai");
         assert!(!reg.is_blocked("openai"));
+        assert!(!reg.is_operator_forced_open("openai"));
         assert_eq!(reg.get_state("openai"), CircuitState::Closed);
     }
 }
