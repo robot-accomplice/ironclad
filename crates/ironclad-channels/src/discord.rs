@@ -51,7 +51,7 @@ impl DiscordAdapter {
                 .build()
                 .unwrap_or_default(),
             allowed_guild_ids: Vec::new(),
-            deny_on_empty: false,
+            deny_on_empty: true,
             message_buffer: Arc::new(Mutex::new(VecDeque::new())),
             gateway_connection: Arc::new(GatewayConnection::new()),
             gateway_handle: Mutex::new(None),
@@ -872,6 +872,7 @@ mod tests {
         let adapter = DiscordAdapter::new("test-token".into());
         assert_eq!(adapter.token, "test-token");
         assert!(adapter.allowed_guild_ids.is_empty());
+        assert!(adapter.deny_on_empty);
     }
 
     #[test]
@@ -886,10 +887,10 @@ mod tests {
     }
 
     #[test]
-    fn guild_allowed_empty_legacy_allows_all() {
-        // deny_on_empty=false (legacy): empty list allows everyone
+    fn guild_allowed_empty_default_denies_all() {
+        // secure default: empty list denies everyone
         let adapter = DiscordAdapter::new("tok".into());
-        assert!(adapter.is_guild_allowed("any_guild"));
+        assert!(!adapter.is_guild_allowed("any_guild"));
     }
 
     #[test]
@@ -916,7 +917,7 @@ mod tests {
 
     #[test]
     fn parse_message_create_valid() {
-        let adapter = DiscordAdapter::new("tok".into());
+        let adapter = DiscordAdapter::with_config("tok".into(), vec!["g789".into()], false);
         let data = json!({
             "id": "msg123",
             "channel_id": "ch456",
@@ -1661,7 +1662,7 @@ mod tests {
     fn dispatch_message_create_full_pipeline() {
         // Simulates the full gateway dispatch path:
         // raw JSON → extract sequence → parse_dispatch → parse_message_create → push → recv
-        let adapter = DiscordAdapter::new("tok".into());
+        let adapter = DiscordAdapter::with_config("tok".into(), vec!["g-456".into()], false);
         let conn = &adapter.gateway_connection;
 
         let raw = json!({
