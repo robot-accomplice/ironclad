@@ -151,7 +151,9 @@ fn execution_truth_guard_blocks_unverified_cron_claim() {
 fn model_identity_guard_corrects_mismatched_self_report() {
     let prompt = "Are you still on your current model?";
     let response = "I am currently on openai/gpt-5.3-codex.".to_string();
-    let guarded = enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest");
+    let guarded =
+        enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest", "Duncan");
+    assert!(guarded.contains("Duncan reporting in."));
     assert!(guarded.contains("ollama/phi4-mini:latest"));
 }
 
@@ -160,10 +162,10 @@ fn model_identity_guard_always_emits_canonical_model_for_identity_prompts() {
     let prompt = "What model are you running?";
     let response = "I am currently running on ollama/phi4-mini:latest.".to_string();
     let guarded =
-        enforce_model_identity_truth_guard(prompt, response.clone(), "ollama/phi4-mini:latest");
+        enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest", "Duncan");
     assert_eq!(
         guarded,
-        "I am currently running on ollama/phi4-mini:latest."
+        "Duncan reporting in. I am currently running on ollama/phi4-mini:latest."
     );
 }
 
@@ -171,10 +173,11 @@ fn model_identity_guard_always_emits_canonical_model_for_identity_prompts() {
 fn model_identity_guard_handles_still_using_phrase() {
     let prompt = "Can you confirm for me that you are still using moonshot?";
     let response = "Yes, still moonshot.".to_string();
-    let guarded = enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest");
+    let guarded =
+        enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest", "Duncan");
     assert_eq!(
         guarded,
-        "I am currently running on ollama/phi4-mini:latest."
+        "Duncan reporting in. I am currently running on ollama/phi4-mini:latest."
     );
 }
 
@@ -193,6 +196,30 @@ fn current_events_guard_keeps_valid_current_events_response() {
     let response = "Acknowledged. I am retrieving a live sitrep now.".to_string();
     let guarded = enforce_current_events_truth_guard(prompt, response.clone());
     assert_eq!(guarded, response);
+}
+
+#[test]
+fn personality_integrity_guard_strips_foreign_vendor_boilerplate() {
+    let prompt = "Tell me about your personality";
+    let response =
+        "As an AI developed by Microsoft, I can help with many tasks. I stay concise.".to_string();
+    let guarded =
+        enforce_personality_integrity_guard(prompt, response, "Duncan", "openrouter/auto");
+    assert!(
+        !guarded
+            .to_ascii_lowercase()
+            .contains("as an ai developed by microsoft")
+    );
+    assert!(guarded.contains("I stay concise."));
+}
+
+#[test]
+fn personality_integrity_guard_requests_context_for_release_copy_when_empty_after_strip() {
+    let prompt = "create a summary for the upcoming 0.9.5 release for LinkedIn and X.com";
+    let response = "As an AI developed by Microsoft.".to_string();
+    let guarded =
+        enforce_personality_integrity_guard(prompt, response, "Duncan", "openrouter/auto");
+    assert!(guarded.contains("need concrete Ironclad 0.9.5 context"));
 }
 
 // ── repeat_tokens tests ──────────────────────────────────────

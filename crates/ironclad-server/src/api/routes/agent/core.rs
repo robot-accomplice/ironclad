@@ -18,13 +18,15 @@ use super::decomposition::DelegationProvenance;
 use super::diagnostics::{collect_runtime_diagnostics, diagnostics_system_note};
 use super::guards::{
     enforce_current_events_truth_guard, enforce_execution_truth_guard,
-    enforce_model_identity_truth_guard, enforce_non_repetition, enforce_subagent_claim_guard,
+    enforce_model_identity_truth_guard, enforce_non_repetition,
+    enforce_personality_integrity_guard, enforce_subagent_claim_guard,
 };
 use super::intents::{
     requests_acknowledgement, requests_capability_summary, requests_cron, requests_current_events,
-    requests_delegation, requests_execution, requests_file_distribution, requests_image_count_scan,
+    requests_delegation, requests_file_distribution, requests_image_count_scan,
     requests_introspection, requests_obsidian_insights, requests_personality_profile,
     requests_provider_inventory, requests_random_tool_use, requests_wallet_address_scan,
+    should_bypass_cache_for_prompt,
 };
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
@@ -597,7 +599,8 @@ async fn try_execution_shortcut(
 ) -> Option<InferenceOutput> {
     if requests_acknowledgement(user_prompt) {
         return Some(InferenceOutput {
-            content: "Acknowledged, awaiting your command.".to_string(),
+            content: "Acknowledged. By your command, I’ll hold for your next instruction."
+                .to_string(),
             model: prepared_model.to_string(),
             tokens_in: 0,
             tokens_out: 0,
@@ -610,16 +613,7 @@ async fn try_execution_shortcut(
         });
     }
 
-    if !requests_execution(user_prompt)
-        && !requests_current_events(user_prompt)
-        && !requests_introspection(user_prompt)
-        && !requests_provider_inventory(user_prompt)
-        && !requests_personality_profile(user_prompt)
-        && !requests_capability_summary(user_prompt)
-        && !requests_wallet_address_scan(user_prompt)
-        && !requests_image_count_scan(user_prompt)
-        && !requests_obsidian_insights(user_prompt)
-    {
+    if !should_bypass_cache_for_prompt(user_prompt) {
         return None;
     }
 
@@ -648,7 +642,7 @@ async fn try_execution_shortcut(
         };
         return Some(InferenceOutput {
             content: format!(
-                "I can execute tools, inspect runtime state, run shell/file workflows, schedule cron jobs, and delegate to subagents. Active model: {}. Enabled subagents: {}. Tool sample: {}.",
+                "By your command: I can execute tools, inspect runtime state, run shell and file workflows, schedule cron jobs, and delegate to subagents. Active model: {}. Enabled subagents: {}. Tool sample: {}.",
                 primary_model, subagent_total, sample
             ),
             model: prepared_model.to_string(),
@@ -671,7 +665,7 @@ async fn try_execution_shortcut(
         };
         return Some(InferenceOutput {
             content: format!(
-                "I’m {}. My operating style is loyal, direct, execution-first, and concise. I acknowledge requests, prioritize verified tool-backed actions, and avoid claiming work I did not execute.",
+                "I’m {}. Operating profile: loyal, direct, execution-first, concise. I acknowledge, execute, and report only verified tool-backed outcomes.",
                 identity
             ),
             model: prepared_model.to_string(),
@@ -708,7 +702,7 @@ async fn try_execution_shortcut(
             .join(", ");
         return Some(InferenceOutput {
             content: format!(
-                "Current primary model: {}. Configured provider families: {}{}",
+                "Model report: primary is {}. Provider families loaded: {}{}",
                 primary,
                 sample,
                 if providers.len() > 24 {
@@ -802,7 +796,7 @@ async fn try_execution_shortcut(
                     if guarded_direct != direct.content {
                         return Some(InferenceOutput {
                             content: format!(
-                                "Delegation was unavailable ({}), and direct fallback could not produce a verified live sitrep. Please retry once model/provider reachability stabilizes.",
+                                "Acknowledged. Delegation was unavailable ({}), and direct fallback could not produce a verified live sitrep. Please retry once model/provider reachability stabilizes.",
                                 err
                             ),
                             model: direct.model,
@@ -818,7 +812,7 @@ async fn try_execution_shortcut(
                     }
                     return Some(InferenceOutput {
                         content: format!(
-                            "Delegation was unavailable ({}). I switched to direct retrieval and produced this sitrep:\n\n{}",
+                            "Acknowledged. Delegation was unavailable ({}), so I switched to direct retrieval and produced this sitrep:\n\n{}",
                             err,
                             guarded_direct.trim()
                         ),
@@ -835,7 +829,7 @@ async fn try_execution_shortcut(
                 }
                 return Some(InferenceOutput {
                     content: format!(
-                        "Acknowledged. I attempted delegation for live geopolitical retrieval, and direct fallback inference, but both failed. Delegation error: {}",
+                        "Acknowledged. I attempted delegation for live geopolitical retrieval and a direct fallback inference path, but both failed. Delegation error: {}",
                         err
                     ),
                     model: prepared_model.to_string(),
@@ -966,7 +960,7 @@ async fn try_execution_shortcut(
                 };
                 tool_results.push((used.clone(), output.clone()));
                 let content = format!(
-                    "Available tools (sample): {}. Random pick: {}. Output:\n{}",
+                    "By your command, tool inventory follows.\nAvailable tools (sample): {}.\nRandom pick: {}.\nOutput:\n{}",
                     names.into_iter().take(12).collect::<Vec<_>>().join(", "),
                     used,
                     output.trim()
@@ -987,8 +981,9 @@ async fn try_execution_shortcut(
             Err(err) => {
                 let tool_results = vec![("echo".to_string(), format!("error: {err}"))];
                 return Some(InferenceOutput {
-                    content: "I attempted a direct tool execution shortcut, but it failed."
-                        .to_string(),
+                    content:
+                        "I attempted a direct tool execution shortcut, but it failed. I can retry on your command."
+                            .to_string(),
                     model: prepared_model.to_string(),
                     tokens_in: 0,
                     tokens_out: 0,
@@ -1332,7 +1327,7 @@ async fn try_execution_shortcut(
                 ));
                 return Some(InferenceOutput {
                     content: format!(
-                        "Scheduled cron job '{}' (id: {}) with expression '{}'.",
+                        "By your command, scheduled cron job '{}' (id: {}) with expression '{}'.",
                         name, job_id, schedule_expr
                     ),
                     model: prepared_model.to_string(),
@@ -1593,9 +1588,23 @@ pub(super) async fn run_inference_and_react(
     let final_content = enforce_subagent_claim_guard(final_content, delegation_provenance);
     let final_content =
         enforce_execution_truth_guard(user_prompt, final_content, &tool_results_acc);
-    let final_content =
-        enforce_model_identity_truth_guard(user_prompt, final_content, &resolved_model);
+    let agent_name = {
+        let cfg = state.config.read().await;
+        cfg.agent.name.clone()
+    };
+    let final_content = enforce_model_identity_truth_guard(
+        user_prompt,
+        final_content,
+        &resolved_model,
+        &agent_name,
+    );
     let final_content = enforce_current_events_truth_guard(user_prompt, final_content);
+    let final_content = enforce_personality_integrity_guard(
+        user_prompt,
+        final_content,
+        &agent_name,
+        &resolved_model,
+    );
     let final_content =
         enforce_non_repetition(final_content, prepared.previous_assistant.as_deref());
 
@@ -1767,17 +1776,7 @@ pub(super) async fn execute_inference_pipeline(
     delegation_provenance: &mut DelegationProvenance,
 ) -> Result<PipelineResult, String> {
     // 1. Cache check
-    let cached = if requests_execution(user_content)
-        || requests_current_events(user_content)
-        || requests_introspection(user_content)
-        || requests_provider_inventory(user_content)
-        || requests_personality_profile(user_content)
-        || requests_capability_summary(user_content)
-        || requests_acknowledgement(user_content)
-        || requests_wallet_address_scan(user_content)
-        || requests_image_count_scan(user_content)
-        || requests_obsidian_insights(user_content)
-    {
+    let cached = if should_bypass_cache_for_prompt(user_content) {
         None
     } else {
         check_cache(
@@ -1791,9 +1790,23 @@ pub(super) async fn execute_inference_pipeline(
 
     if let Some(cached) = cached {
         let cached_content = enforce_execution_truth_guard(user_content, cached.content, &[]);
-        let cached_content =
-            enforce_model_identity_truth_guard(user_content, cached_content, &cached.model);
+        let agent_name = {
+            let cfg = state.config.read().await;
+            cfg.agent.name.clone()
+        };
+        let cached_content = enforce_model_identity_truth_guard(
+            user_content,
+            cached_content,
+            &cached.model,
+            &agent_name,
+        );
         let cached_content = enforce_current_events_truth_guard(user_content, cached_content);
+        let cached_content = enforce_personality_integrity_guard(
+            user_content,
+            cached_content,
+            &agent_name,
+            &cached.model,
+        );
         let guarded_cached_content =
             enforce_non_repetition(cached_content, prepared.previous_assistant.as_deref());
         let cached_provider_prefix = cached

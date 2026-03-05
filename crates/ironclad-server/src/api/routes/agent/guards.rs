@@ -58,7 +58,7 @@ pub(super) fn enforce_subagent_claim_guard(
         return response;
     }
     tracing::warn!("Blocking unverified channel response that claims subagent-produced output");
-    "I can't claim live subagent-produced output unless I actually run a delegated subagent/tool turn in this reply. If you want proof, ask me to run a concrete delegated task and I will return that output directly."
+    "By your command, I will not fake delegation. I can't claim live subagent-produced output unless I actually run a delegated subagent/tool turn in this reply. Ask me to run a concrete delegated task and I'll return that output directly."
         .to_string()
 }
 
@@ -145,7 +145,7 @@ pub(super) fn enforce_execution_truth_guard(
         })
     {
         tracing::warn!("execution truth guard blocked unverified delegation claim");
-        return "I did not execute a delegated subagent task for that request. I can only claim delegated results when a subagent tool call actually runs."
+        return "By your command, execution truth is strict: I did not execute a delegated subagent task for that request. I can only claim delegated results when a subagent tool call actually runs."
             .to_string();
     }
     if requests_cron(user_prompt)
@@ -155,7 +155,7 @@ pub(super) fn enforce_execution_truth_guard(
         })
     {
         tracing::warn!("execution truth guard blocked unverified cron claim");
-        return "I did not execute a cron scheduling tool for that request. I can only confirm schedules that were actually created or validated by a tool run."
+        return "By your command, execution truth is strict: I did not execute a cron scheduling tool for that request. I can only confirm schedules that were actually created or validated by a tool run."
             .to_string();
     }
 
@@ -175,7 +175,7 @@ pub(super) fn enforce_execution_truth_guard(
         || lower.starts_with('{')
     {
         tracing::warn!("execution truth guard rewrote unverified execution-style response");
-        return "I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
+        return "By your command, execution truth is strict: I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
             .to_string();
     }
     // If there is no explicit execution claim, keep the response.
@@ -186,6 +186,7 @@ pub(super) fn enforce_model_identity_truth_guard(
     user_prompt: &str,
     response: String,
     executed_model: &str,
+    agent_name: &str,
 ) -> String {
     if !requests_model_identity(user_prompt) {
         return response;
@@ -194,7 +195,83 @@ pub(super) fn enforce_model_identity_truth_guard(
         executed_model,
         "model identity guard emitted canonical model identity"
     );
-    format!("I am currently running on {}.", executed_model)
+    format!("{agent_name} reporting in. I am currently running on {executed_model}.")
+}
+
+fn contains_foreign_identity_boilerplate(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    let markers = [
+        "as an ai developed by microsoft",
+        "as an ai developed by",
+        "as an ai language model",
+        "as a language model",
+        "i am claude",
+        "i'm claude",
+        "i am chatgpt",
+        "i'm chatgpt",
+    ];
+    markers.iter().any(|m| lower.contains(m))
+}
+
+fn filter_foreign_identity_sentences(response: &str) -> String {
+    let markers = [
+        "as an ai developed by microsoft",
+        "as an ai developed by",
+        "as an ai language model",
+        "as a language model",
+        "i am claude",
+        "i'm claude",
+        "i am chatgpt",
+        "i'm chatgpt",
+    ];
+
+    let mut out = String::new();
+    for chunk in response.split_inclusive(['\n', '.', '!', '?']) {
+        let lower = chunk.to_ascii_lowercase();
+        if markers.iter().any(|m| lower.contains(m)) {
+            continue;
+        }
+        out.push_str(chunk);
+    }
+    out.trim().to_string()
+}
+
+pub(super) fn enforce_personality_integrity_guard(
+    user_prompt: &str,
+    response: String,
+    agent_name: &str,
+    executed_model: &str,
+) -> String {
+    if !contains_foreign_identity_boilerplate(&response) {
+        return response;
+    }
+    tracing::warn!("personality integrity guard stripped foreign identity boilerplate");
+    let cleaned = filter_foreign_identity_sentences(&response);
+    if !cleaned.is_empty() {
+        return cleaned;
+    }
+    let lower_prompt = user_prompt.to_ascii_lowercase();
+    let asks_release_summary = lower_prompt.contains("release")
+        || lower_prompt.contains("changelog")
+        || lower_prompt.contains("linkedin")
+        || lower_prompt.contains("x.com")
+        || lower_prompt.contains("twitter")
+        || lower_prompt.contains("v0.9.5")
+        || lower_prompt.contains("0.9.5");
+    if asks_release_summary {
+        return "I need concrete Ironclad 0.9.5 context to summarize accurately. I can pull from changelog/roadmap memory if available, or you can provide release notes and I’ll format them for operator, LinkedIn, and X."
+            .to_string();
+    }
+    if requests_model_identity(user_prompt) {
+        return format!(
+            "I am {} and I am currently running on {}.",
+            agent_name, executed_model
+        );
+    }
+    format!(
+        "I’m {}. I’ll continue in my configured voice and avoid foreign boilerplate.",
+        agent_name
+    )
 }
 
 fn looks_like_stale_knowledge_disclaimer(response: &str) -> bool {

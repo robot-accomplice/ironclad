@@ -180,6 +180,19 @@ pub(super) fn requests_obsidian_insights(prompt: &str) -> bool {
     mentions_vault && asks_for_summary
 }
 
+pub(super) fn should_bypass_cache_for_prompt(prompt: &str) -> bool {
+    requests_execution(prompt)
+        || requests_current_events(prompt)
+        || requests_introspection(prompt)
+        || requests_provider_inventory(prompt)
+        || requests_personality_profile(prompt)
+        || requests_capability_summary(prompt)
+        || requests_acknowledgement(prompt)
+        || requests_wallet_address_scan(prompt)
+        || requests_image_count_scan(prompt)
+        || requests_obsidian_insights(prompt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +310,21 @@ mod tests {
         ));
         assert!(requests_obsidian_insights("summarize my vault"));
         assert!(!requests_obsidian_insights("vault token price"));
+    }
+
+    #[test]
+    fn cache_bypass_markers_cover_shortcut_handled_prompts() {
+        assert!(should_bypass_cache_for_prompt(
+            "tell me about the tools you can use, pick one at random, and use it"
+        ));
+        assert!(should_bypass_cache_for_prompt(
+            "Good evening Duncan. Acknowledge this request in one sentence, then wait."
+        ));
+        assert!(should_bypass_cache_for_prompt(
+            "What does the geopolitical monitor have to say about today's news?"
+        ));
+        assert!(!should_bypass_cache_for_prompt(
+            "Summarize this paragraph in one sentence."
+        ));
     }
 }

@@ -41,8 +41,9 @@ use self::guards::resolve_web_scope;
 use self::guards::{
     MAX_SCOPE_ID, claims_unverified_subagent_output, common_prefix_ratio,
     enforce_current_events_truth_guard, enforce_execution_truth_guard,
-    enforce_model_identity_truth_guard, enforce_non_repetition, enforce_subagent_claim_guard,
-    looks_repetitive, repeat_tokens,
+    enforce_model_identity_truth_guard, enforce_non_repetition,
+    enforce_personality_integrity_guard, enforce_subagent_claim_guard, looks_repetitive,
+    repeat_tokens,
 };
 pub use self::handlers::agent_message;
 use self::orchestration::{execute_virtual_orchestration_tool, is_virtual_orchestration_tool};
