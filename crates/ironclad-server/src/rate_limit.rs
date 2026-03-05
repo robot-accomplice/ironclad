@@ -177,13 +177,22 @@ fn too_many_requests_response() -> Response<Body> {
         "error": "rate_limit_exceeded",
         "message": "Too many requests, please try again later"
     });
-    Response::builder()
+    let body_bytes = serde_json::to_vec(&body)
+        .unwrap_or_else(|_| br#"{"error":"rate_limit_exceeded"}"#.to_vec());
+    match Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&body).expect("static error body serialization"),
-        ))
-        .expect("error response construction")
+        .body(Body::from(body_bytes))
+    {
+        Ok(resp) => resp,
+        Err(_) => {
+            let mut resp = Response::new(Body::from(
+                br#"{"error":"rate_limit_exceeded"}"#.as_slice().to_vec(),
+            ));
+            *resp.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+            resp
+        }
+    }
 }
 
 fn stable_token_fingerprint(raw: &str) -> String {

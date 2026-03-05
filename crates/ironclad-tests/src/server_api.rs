@@ -730,6 +730,10 @@ async fn session_turn_and_context_endpoints_work() {
             user_excerpt: "test prompt".to_string(),
             candidates_json: r#"[{"model":"claude-3-7-sonnet","source":"primary_ordered","provider_available":true,"breaker_blocked":false,"usable":true,"note":"usable"}]"#.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
+            schema_version: ironclad_db::model_selection::ROUTING_SCHEMA_VERSION,
+            attribution: Some("primary_usable".to_string()),
+            metascore_json: None,
+            features_json: None,
         },
     )
     .unwrap();
@@ -1228,6 +1232,7 @@ async fn admin_endpoints_cover_config_wallet_breaker_and_stats() {
         None,
         None,
         false,
+        None,
     )
     .unwrap();
     ironclad_db::metrics::record_transaction(

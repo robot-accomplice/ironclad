@@ -1,6 +1,7 @@
 //! Model selection, inference fallback chain, and routing audit persistence.
 
 use std::collections::HashMap;
+use std::sync::Once;
 use std::time::{Duration, Instant};
 
 use ironclad_core::IroncladError;
@@ -8,6 +9,8 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::AppState;
+
+static HEURISTIC_ALIAS_NOTICE: Once = Once::new();
 
 #[allow(dead_code)] // model/provider reserved for future per-turn audit trails
 pub(super) struct InferenceResult {
@@ -45,6 +48,9 @@ pub(super) struct ModelCandidateAudit {
     /// Metascore for this candidate (populated when metascore routing is active).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metascore: Option<f64>,
+    /// True if this candidate was filtered out by the accuracy-floor gate.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quality_gated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +107,13 @@ pub(super) async fn persist_model_selection_audit(
         user_excerpt: summarize_user_excerpt(user_content),
         candidates_json: serde_json::to_string(&audit.candidates).unwrap_or_else(|_| "[]".into()),
         created_at: chrono::Utc::now().to_rfc3339(),
+        schema_version: ironclad_db::model_selection::ROUTING_SCHEMA_VERSION,
+        attribution: Some(audit.strategy.clone()),
+        metascore_json: audit
+            .metascore_breakdown
+            .as_ref()
+            .and_then(|m| serde_json::to_string(m).ok()),
+        features_json: None,
     };
     if let Err(e) = ironclad_db::model_selection::record_model_selection_event(&state.db, &row) {
         tracing::warn!(error = %e, turn_id, "failed to persist model selection audit");
@@ -165,6 +178,12 @@ pub(super) async fn select_routed_model_with_audit(
     let primary = config.models.primary.clone();
     let routing_mode = config.models.routing.mode.clone();
     let cost_aware = config.models.routing.cost_aware;
+    let accuracy_floor = config.models.routing.accuracy_floor;
+    let accuracy_min_obs = config.models.routing.accuracy_min_obs;
+    let cost_weight = config.models.routing.cost_weight;
+    let canary_model = config.models.routing.canary_model.clone();
+    let canary_fraction = config.models.routing.canary_fraction;
+    let blocked_models = config.models.routing.blocked_models.clone();
     let mut ordered_models = vec![primary.clone()];
     for fb in &config.models.fallbacks {
         if !fb.is_empty() && !ordered_models.iter().any(|m| m == fb) {
@@ -179,8 +198,11 @@ pub(super) async fn select_routed_model_with_audit(
         let provider_available = llm_read.providers.get_by_model(model).is_some();
         let provider_prefix = model.split('/').next().unwrap_or("unknown");
         let breaker_blocked = llm_read.breakers.is_blocked(provider_prefix);
-        let usable = provider_available && !breaker_blocked;
-        let note = if usable {
+        let config_blocked = blocked_models.iter().any(|b| b == model);
+        let usable = provider_available && !breaker_blocked && !config_blocked;
+        let note = if config_blocked {
+            "model on config blocklist".to_string()
+        } else if usable {
             "usable".to_string()
         } else if !provider_available {
             "no provider configured for model".to_string()
@@ -195,6 +217,7 @@ pub(super) async fn select_routed_model_with_audit(
             usable,
             note,
             metascore: None,
+            quality_gated: false,
         }
     };
     let mut candidates = Vec::new();
@@ -225,7 +248,16 @@ pub(super) async fn select_routed_model_with_audit(
     // Phase 2: Metascore routing (2.19).
     // Build per-model profiles from current system state, score with metascore,
     // and select the highest-scoring candidate.
-    if routing_mode != "primary" {
+    let routing_mode_effective = if routing_mode == "heuristic" {
+        HEURISTIC_ALIAS_NOTICE.call_once(|| {
+            tracing::info!("models.routing.mode=heuristic currently aliases metascore behavior");
+        });
+        "metascore"
+    } else {
+        routing_mode.as_str()
+    };
+
+    if routing_mode_effective != "primary" {
         let features = ironclad_llm::extract_features(user_content, 0, 0);
         let complexity = ironclad_llm::classify_complexity(&features);
 
@@ -252,7 +284,8 @@ pub(super) async fn select_routed_model_with_audit(
         // Build audit entries for all profiled candidates.
         let mut best_selection: Option<(String, ironclad_llm::MetascoreBreakdown, f64)> = None;
         for profile in &profiles {
-            let mut breakdown = profile.metascore(complexity, cost_aware);
+            let mut breakdown =
+                profile.metascore_with_cost_weight(complexity, cost_aware, cost_weight);
             if escalation_bias != 0.0 {
                 let delta = if profile.is_local {
                     escalation_bias
@@ -263,7 +296,35 @@ pub(super) async fn select_routed_model_with_audit(
             }
             let mut c = evaluate(&profile.model_name, "metascore_candidate");
             c.metascore = Some(breakdown.final_score);
+
+            // Accuracy-floor gate: skip candidates whose observed quality
+            // is below the configured threshold, provided enough data exists.
+            if accuracy_floor > 0.0 {
+                let obs_count = llm_read.quality.observation_count(&profile.model_name);
+                if obs_count >= accuracy_min_obs
+                    && let Some(q) = llm_read.quality.estimated_quality(&profile.model_name)
+                    && q < accuracy_floor
+                {
+                    tracing::debug!(
+                        model = profile.model_name.as_str(),
+                        quality = q,
+                        floor = accuracy_floor,
+                        obs = obs_count,
+                        "model gated by accuracy floor"
+                    );
+                    c.quality_gated = true;
+                    c.usable = false;
+                    c.note = format!("quality {q:.3} < floor {accuracy_floor:.3}");
+                    candidates.push(c);
+                    continue;
+                }
+            }
+
+            let usable = c.usable;
             candidates.push(c);
+            if !usable {
+                continue;
+            }
 
             match &best_selection {
                 Some((_, _, best_score)) if breakdown.final_score <= *best_score => {}
@@ -278,14 +339,49 @@ pub(super) async fn select_routed_model_with_audit(
         }
 
         if let Some((selected, breakdown, _)) = best_selection {
+            // Canary interception: if a canary model is configured and the
+            // random draw falls within canary_fraction, substitute the canary
+            // model — but only if it has a valid, unblocked provider.
+            let (final_model, canary_active) = if let Some(ref canary) = canary_model {
+                if canary_fraction > 0.0 && rand::random::<f64>() < canary_fraction {
+                    let prefix = canary.split('/').next().unwrap_or("unknown");
+                    let has_provider = llm_read.providers.get_by_model(canary).is_some();
+                    let blocked = llm_read.breakers.is_blocked(prefix);
+                    let config_blocked = blocked_models.iter().any(|b| b == canary);
+                    if has_provider && !blocked && !config_blocked {
+                        tracing::info!(
+                            canary_model = canary.as_str(),
+                            production_model = selected.as_str(),
+                            canary_fraction,
+                            "canary routing activated"
+                        );
+                        (canary.clone(), true)
+                    } else {
+                        tracing::debug!(
+                            canary_model = canary.as_str(),
+                            has_provider,
+                            blocked,
+                            config_blocked,
+                            "canary model unavailable, using production selection"
+                        );
+                        (selected.clone(), false)
+                    }
+                } else {
+                    (selected.clone(), false)
+                }
+            } else {
+                (selected.clone(), false)
+            };
+
             let strategy = format!(
-                "metascore_{:.3}_c{complexity:.2}{}{}",
+                "metascore_{:.3}_c{complexity:.2}{}{}{}",
                 breakdown.final_score,
                 if cost_aware { "_cost" } else { "" },
-                if escalation_bias != 0.0 { "_esc" } else { "" }
+                if escalation_bias != 0.0 { "_esc" } else { "" },
+                if canary_active { "_canary" } else { "" }
             );
             tracing::debug!(
-                model = selected.as_str(),
+                model = final_model.as_str(),
                 complexity,
                 cost_aware,
                 metascore = breakdown.final_score,
@@ -297,10 +393,11 @@ pub(super) async fn select_routed_model_with_audit(
                 escalation_bias,
                 local_acceptance,
                 local_total,
+                canary_active,
                 "metascore routing selected model"
             );
             return ModelSelectionAudit {
-                selected_model: selected,
+                selected_model: final_model,
                 strategy,
                 primary_model: primary,
                 override_model: llm_read.router.get_override().map(|s| s.to_string()),
@@ -480,10 +577,11 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
     let mut last_error = String::new();
     let infer_started = Instant::now();
 
-    for (attempt_idx, model) in candidates.iter().enumerate() {
-        if attempt_idx >= budget.max_fallback_attempts {
+    let mut attempted = 0usize;
+    for model in &candidates {
+        if attempted >= budget.max_fallback_attempts {
             tracing::warn!(
-                attempted = attempt_idx,
+                attempted,
                 cap = budget.max_fallback_attempts,
                 "fallback attempt budget exhausted"
             );
@@ -543,6 +641,7 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
             .map(|(_, m)| m)
             .unwrap_or(model)
             .to_string();
+        attempted += 1;
         let mut req_clone = unified_req.clone();
         // Ensure the request targets this model's API name
         if !req_clone.model.is_empty() {

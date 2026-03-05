@@ -16,7 +16,7 @@ use ironclad_llm::oauth::check_and_repair_oauth_storage;
 use super::{colors, heading, icons};
 use crate::cli::{CRT_DRAW_MS, theme};
 
-const DEFAULT_REGISTRY_URL: &str = "https://roboticus.ai/registry/manifest.json";
+pub(crate) const DEFAULT_REGISTRY_URL: &str = "https://roboticus.ai/registry/manifest.json";
 const CRATES_IO_API: &str = "https://crates.io/api/v1/crates/ironclad-server";
 const CRATE_NAME: &str = "ironclad-server";
 const RELEASE_BASE_URL: &str = "https://github.com/robot-accomplice/ironclad/releases/download";
@@ -33,6 +33,8 @@ pub struct RegistryManifest {
 pub struct Packs {
     pub providers: ProviderPack,
     pub skills: SkillPack,
+    #[serde(default)]
+    pub plugins: Option<ironclad_plugin_sdk::catalog::PluginCatalog>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,7 +133,7 @@ pub fn bytes_sha256(data: &[u8]) -> String {
     hex::encode(hash)
 }
 
-fn resolve_registry_url(cli_override: Option<&str>, config_path: &str) -> String {
+pub(crate) fn resolve_registry_url(cli_override: Option<&str>, config_path: &str) -> String {
     if let Some(url) = cli_override {
         return url.to_string();
     }
@@ -153,7 +155,7 @@ fn resolve_registry_url(cli_override: Option<&str>, config_path: &str) -> String
     DEFAULT_REGISTRY_URL.to_string()
 }
 
-fn registry_base_url(manifest_url: &str) -> String {
+pub(crate) fn registry_base_url(manifest_url: &str) -> String {
     if let Some(pos) = manifest_url.rfind('/') {
         manifest_url[..pos].to_string()
     } else {
@@ -762,7 +764,7 @@ async fn apply_binary_update(yes: bool, method: &str) -> Result<bool, Box<dyn st
 
 // ── Content update (providers + skills) ──────────────────────
 
-async fn fetch_manifest(
+pub(crate) async fn fetch_manifest(
     client: &reqwest::Client,
     registry_url: &str,
 ) -> Result<RegistryManifest, Box<dyn std::error::Error>> {

@@ -1021,6 +1021,43 @@ sequenceDiagram
 
 ---
 
+## 18. Routing Continuity + Model Shift Telemetry
+
+How selection-time model decisions and execution-time fallbacks are surfaced to operators.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant API as ironclad-server /api/agent/message
+    participant R as routing.rs
+    participant I as infer_with_fallback()
+    participant DB as ironclad-db
+    participant WS as EventBus /ws
+    participant UI as Dashboard (Metrics)
+
+    U->>API: message request
+    API->>R: select_routed_model_with_audit()
+    R->>DB: model_selection_event(selected_model, candidates)
+    R->>WS: model_selection
+    R-->>API: selected_model
+
+    API->>I: infer_with_fallback(selected_model)
+    alt executed_model == selected_model
+        I-->>API: response(model=selected_model)
+    else fallback/cache path
+        I-->>API: response(model=executed_model)
+        API->>WS: model_shift(selected_model, executed_model, reason)
+    end
+
+    API->>DB: inference_cost(executed_model, tokens, cost)
+    API-->>U: selected_model + model + model_shift_from
+    WS-->>UI: model_selection/model_shift
+    UI->>UI: update routing graph + metrics detail
+    Note over UI: Routing profile sliders are normalized<br/>(correctness + cost + speed <= 1.0)<br/>before PUT /api/config persistence
+```
+
+---
+
 ## Cross-Reference Matrix
 
 | Sequence | Related Dataflow Diagrams | Related C4 Docs | Key Tables |
@@ -1042,6 +1079,7 @@ sequenceDiagram
 | 15. Episodic Digest | Diagram 22 (Episodic Digest) | ironclad-c4-agent, ironclad-c4-db | episodic_memory |
 | 16. Introspection Tool | Diagram 24 (Introspection Tool Architecture) | ironclad-c4-agent | sub_agents, tasks |
 | 17. Metascore + Tiered Inference | Diagram 3 (Metascore Router) | ironclad-c4-llm, ironclad-c4-server | inference_costs, model_selection events |
+| 18. Routing Continuity + Shift Telemetry | Diagram 3 (Metascore Router), Diagram 16 (Context Observatory) | ironclad-c4-llm, ironclad-c4-server | model_selection_events, inference_costs |
 
 ### Embedded Sequences in C4 Docs (not duplicated here)
 

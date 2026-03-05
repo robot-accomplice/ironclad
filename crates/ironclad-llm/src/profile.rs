@@ -66,6 +66,20 @@ impl ModelProfile {
     ///
     /// Returns a breakdown with component scores and the weighted final score.
     pub fn metascore(&self, complexity: f64, cost_aware: bool) -> MetascoreBreakdown {
+        self.metascore_with_cost_weight(complexity, cost_aware, None)
+    }
+
+    /// Compute the metascore with an explicit cost-weight override.
+    ///
+    /// When `cost_weight_override` is `Some(w)`, it directly sets the cost
+    /// weight in \[0.0, 1.0\] and efficacy absorbs the complementary share.
+    /// When `None`, falls back to the `cost_aware` boolean behavior.
+    pub fn metascore_with_cost_weight(
+        &self,
+        complexity: f64,
+        cost_aware: bool,
+        cost_weight_override: Option<f64>,
+    ) -> MetascoreBreakdown {
         // Efficacy: use observed quality or default prior.
         let raw_quality = self.estimated_quality.unwrap_or(DEFAULT_QUALITY_PRIOR);
         let efficacy = raw_quality.clamp(0.0, 1.0);
@@ -92,8 +106,18 @@ impl ModelProfile {
             0.6 + 0.4 * (self.observation_count as f64 / CONFIDENCE_THRESHOLD as f64)
         };
 
-        // Weight selection: cost-aware mode shifts weight toward cost.
-        let (w_eff, w_cost, w_avail, w_local) = if cost_aware {
+        // Weight selection.
+        // If a continuous cost_weight_override is provided, it controls the
+        // cost/efficacy tradeoff directly. Availability and locality keep
+        // fixed shares; efficacy absorbs whatever cost gives up.
+        let (w_eff, w_cost, w_avail, w_local) = if let Some(cw) = cost_weight_override {
+            let cw = cw.clamp(0.0, 1.0);
+            // Reserve 0.30 for availability + 0.10 for locality = 0.40 fixed.
+            // Remaining 0.60 split between efficacy and cost per the weight.
+            let w_cost = 0.60 * cw;
+            let w_eff = 0.60 * (1.0 - cw);
+            (w_eff, w_cost, 0.30, 0.10)
+        } else if cost_aware {
             (0.35, 0.30, 0.25, 0.10)
         } else {
             (0.45, 0.15, 0.30, 0.10)

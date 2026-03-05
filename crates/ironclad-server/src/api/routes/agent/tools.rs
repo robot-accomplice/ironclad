@@ -35,15 +35,31 @@ pub(super) fn parse_tool_call(response: &str) -> Option<(String, serde_json::Val
 
             let json_str = &response[brace_start..end];
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str)
-                && let Some(tool_call) = parsed.get("tool_call")
-                && let Some(name) = tool_call.get("name").and_then(|n| n.as_str())
+                && let Some((name, params)) = extract_tool_invocation(&parsed)
             {
-                let params = tool_call.get("params").cloned().unwrap_or(json!({}));
-                return Some((name.to_string(), params));
+                return Some((name, params));
             }
         }
         search_end = rel;
     }
+    None
+}
+
+fn extract_tool_invocation(parsed: &serde_json::Value) -> Option<(String, serde_json::Value)> {
+    let tool_call = parsed.get("tool_call")?;
+
+    if let Some(name) = tool_call.get("name").and_then(|n| n.as_str()) {
+        let params = tool_call.get("params").cloned().unwrap_or(json!({}));
+        return Some((name.to_string(), params));
+    }
+
+    // Accept shorthand shape:
+    // {"tool_call":"bash","params":{"command":"ls"}}
+    if let Some(name) = tool_call.as_str() {
+        let params = parsed.get("params").cloned().unwrap_or(json!({}));
+        return Some((name.to_string(), params));
+    }
+
     None
 }
 
@@ -105,11 +121,9 @@ pub(super) fn parse_tool_calls(response: &str) -> Vec<(String, serde_json::Value
 
         let json_str = &response[brace_start..end];
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str)
-            && let Some(tool_call) = parsed.get("tool_call")
-            && let Some(name) = tool_call.get("name").and_then(|n| n.as_str())
+            && let Some((name, params)) = extract_tool_invocation(&parsed)
         {
-            let params = tool_call.get("params").cloned().unwrap_or(json!({}));
-            results.push((name.to_string(), params));
+            results.push((name, params));
         }
         search_start = end;
     }
@@ -399,7 +413,7 @@ async fn execute_tool_call_internal(
             Ok(ironclad_agent::approvals::ToolClassification::Gated) => {
                 let request = state
                     .approvals
-                    .request_approval(tool_name, &params.to_string(), Some(turn_id))
+                    .request_approval(tool_name, &params.to_string(), Some(turn_id), authority)
                     .map_err(|e| format!("Approval error: {e}"))?;
                 ironclad_db::approvals::record_approval_request(
                     &state.db,
@@ -631,5 +645,22 @@ I will also search:
         let single = parse_tool_call(input);
         assert!(single.is_some());
         assert_eq!(single.unwrap().0, "echo");
+    }
+
+    #[test]
+    fn parse_tool_call_shorthand_shape() {
+        let input = r#"{"tool_call":"bash","params":{"command":"ls -la"}}"#;
+        let single = parse_tool_call(input).expect("should parse shorthand shape");
+        assert_eq!(single.0, "bash");
+        assert_eq!(single.1["command"], "ls -la");
+    }
+
+    #[test]
+    fn parse_tool_calls_shorthand_shape() {
+        let input = r#"{"tool_call":"orchestrate-subagents","params":{"task":"sitrep"}}"#;
+        let calls = parse_tool_calls(input);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "orchestrate-subagents");
+        assert_eq!(calls[0].1["task"], "sitrep");
     }
 }

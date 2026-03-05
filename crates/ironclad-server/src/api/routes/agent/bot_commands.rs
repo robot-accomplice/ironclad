@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use ironclad_core::InputAuthority;
+
 use super::AppState;
 use super::diagnostics::{collect_runtime_diagnostics, is_model_proxy_role, sanitize_diag_token};
 
@@ -15,12 +17,19 @@ pub(crate) async fn handle_bot_command(
         .unwrap_or((command, ""));
     let cmd = cmd.split('@').next().unwrap_or(cmd);
     let args = args.trim();
+    let authority = resolve_command_authority(state, inbound).await;
 
     match cmd {
-        "/status" => Some(build_status_reply(state).await),
-        "/model" => Some(handle_model_command(state, args).await),
+        "/status" => {
+            if authority < InputAuthority::Peer {
+                Some("⛔ /status requires Peer authority or higher.".into())
+            } else {
+                Some(build_status_reply(state).await)
+            }
+        }
+        "/model" => Some(handle_model_command(state, args, authority).await),
         "/models" => Some(handle_models_list(state).await),
-        "/breaker" => Some(handle_breaker_command(state, args).await),
+        "/breaker" => Some(handle_breaker_command(state, args, authority).await),
         "/retry" => Some(handle_retry_command(state, inbound).await),
         "/help" => Some(HELP_TEXT.into()),
         _ => None,
@@ -38,6 +47,104 @@ const HELP_TEXT: &str = "\
 /retry   — show last assistant response in this chat\n\
 /help    — show this message\n\n\
 Anything else is sent to the LLM.";
+
+async fn resolve_command_authority(
+    state: &AppState,
+    inbound: Option<&ironclad_channels::InboundMessage>,
+) -> InputAuthority {
+    let Some(inbound) = inbound else {
+        // Test/internal invocations without channel context keep full authority.
+        return InputAuthority::Creator;
+    };
+
+    let config = state.config.read().await;
+    let trusted = config.channels.trusted_sender_ids.clone();
+    let security_config = config.security.clone();
+    let chat_id = super::resolve_channel_chat_id(inbound);
+    let platform = inbound.platform.to_lowercase();
+
+    let (sender_in_allowlist, allowlist_configured) = match platform.as_str() {
+        "telegram" => {
+            if let Some(ref tg) = config.channels.telegram {
+                // Telegram command authority is scoped to the chat context to align
+                // with adapter allow-list semantics (chat IDs, not sender IDs).
+                let in_list = tg
+                    .allowed_chat_ids
+                    .iter()
+                    .any(|id| id.to_string() == chat_id);
+                (
+                    !tg.allowed_chat_ids.is_empty() && in_list,
+                    !tg.allowed_chat_ids.is_empty(),
+                )
+            } else {
+                (false, false)
+            }
+        }
+        "whatsapp" => {
+            if let Some(ref wa) = config.channels.whatsapp {
+                let in_list = wa.allowed_numbers.iter().any(|n| n == &inbound.sender_id);
+                (
+                    !wa.allowed_numbers.is_empty() && in_list,
+                    !wa.allowed_numbers.is_empty(),
+                )
+            } else {
+                (false, false)
+            }
+        }
+        "discord" => {
+            if let Some(ref dc) = config.channels.discord {
+                let in_list = dc.allowed_guild_ids.iter().any(|g| g == &chat_id);
+                (
+                    !dc.allowed_guild_ids.is_empty() && in_list,
+                    !dc.allowed_guild_ids.is_empty(),
+                )
+            } else {
+                (false, false)
+            }
+        }
+        "signal" => {
+            if let Some(ref sig) = config.channels.signal {
+                let in_list = sig.allowed_numbers.iter().any(|n| n == &inbound.sender_id);
+                (
+                    !sig.allowed_numbers.is_empty() && in_list,
+                    !sig.allowed_numbers.is_empty(),
+                )
+            } else {
+                (false, false)
+            }
+        }
+        "email" => {
+            let sender_lc = inbound.sender_id.to_lowercase();
+            let in_list = config
+                .channels
+                .email
+                .allowed_senders
+                .iter()
+                .map(|s| s.to_lowercase())
+                .any(|s| s == sender_lc);
+            (
+                !config.channels.email.allowed_senders.is_empty() && in_list,
+                !config.channels.email.allowed_senders.is_empty(),
+            )
+        }
+        _ => (false, false),
+    };
+    drop(config);
+
+    ironclad_core::security::resolve_channel_claim(
+        &ironclad_core::security::ChannelContext {
+            sender_id: &inbound.sender_id,
+            chat_id: &chat_id,
+            channel: &platform,
+            sender_in_allowlist,
+            allowlist_configured,
+            threat_is_caution: false,
+            trusted_sender_ids: &trusted,
+        },
+        &security_config,
+    )
+    .authority
+}
 
 async fn handle_retry_command(
     state: &AppState,
@@ -73,7 +180,7 @@ async fn handle_retry_command(
     content
 }
 
-async fn handle_model_command(state: &AppState, args: &str) -> String {
+async fn handle_model_command(state: &AppState, args: &str, authority: InputAuthority) -> String {
     if args.is_empty() {
         let llm = state.llm.read().await;
         let current = llm.router.select_model().to_string();
@@ -89,6 +196,9 @@ async fn handle_model_command(state: &AppState, args: &str) -> String {
     }
 
     if args == "reset" || args == "clear" {
+        if authority != InputAuthority::Creator {
+            return "⛔ /model reset requires Creator authority.".into();
+        }
         let mut llm = state.llm.write().await;
         llm.router.clear_override();
         let current = llm.router.select_model().to_string();
@@ -106,6 +216,10 @@ async fn handle_model_command(state: &AppState, args: &str) -> String {
             "⚠️ Unknown model: {model_name}\n\
              Use /models to see available models, or specify as provider/model."
         );
+    }
+
+    if authority != InputAuthority::Creator {
+        return "⛔ /model override requires Creator authority.".into();
     }
 
     let mut llm = state.llm.write().await;
@@ -143,8 +257,11 @@ async fn handle_models_list(state: &AppState) -> String {
     lines.join("\n")
 }
 
-async fn handle_breaker_command(state: &AppState, args: &str) -> String {
+async fn handle_breaker_command(state: &AppState, args: &str, authority: InputAuthority) -> String {
     if args.starts_with("reset") {
+        if authority != InputAuthority::Creator {
+            return "⛔ /breaker reset requires Creator authority.".into();
+        }
         let provider = args.strip_prefix("reset").unwrap_or("").trim();
         let mut llm = state.llm.write().await;
 

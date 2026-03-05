@@ -197,6 +197,17 @@ impl SemanticCache {
         self.lookup_semantic(prompt_text)
     }
 
+    /// Strict lookup: L1 exact -> L3 tool-TTL only.
+    ///
+    /// Use this path for high-integrity interactions where semantically similar
+    /// prompts must not reuse cached content.
+    pub fn lookup_strict(&mut self, prompt_hash: &str) -> Option<CachedResponse> {
+        if let Some(hit) = self.lookup_exact(prompt_hash) {
+            return Some(hit);
+        }
+        self.lookup_tool_ttl(prompt_hash)
+    }
+
     /// Multi-level lookup using a real embedding for L2 (from EmbeddingClient).
     pub fn lookup_with_embedding(
         &mut self,
@@ -726,6 +737,19 @@ mod tests {
         let result = cache.lookup_with_embedding("exact_h", &emb);
         assert!(result.is_some());
         assert_eq!(result.unwrap().content, "exact");
+    }
+
+    #[test]
+    fn lookup_strict_does_not_use_semantic_near_match() {
+        let mut cache = SemanticCache::new(true, 3600, 100);
+        let prompt1 = "What is the capital city of France?";
+        let hash1 = SemanticCache::compute_hash("sys", "", prompt1);
+        cache.store_with_embedding(&hash1, prompt1, make_response("Paris"));
+
+        // A semantically similar prompt should not hit through strict lookup.
+        let hash2 = SemanticCache::compute_hash("sys", "", "What is the capital of France?");
+        let result = cache.lookup_strict(&hash2);
+        assert!(result.is_none());
     }
 
     #[test]

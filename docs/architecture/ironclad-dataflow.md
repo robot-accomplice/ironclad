@@ -216,7 +216,7 @@ flowchart TD
 
     MODE -->|"primary"| DIRECT["Use primary model<br/>(skip scoring)"]
 
-    MODE -->|"heuristic / ml"| FEATURES["extract_features():<br/>message len, tool_call count, depth"]
+    MODE -->|"metascore / heuristic(alias)"| FEATURES["extract_features():<br/>message len, tool_call count, depth"]
     FEATURES --> CLASSIFY["classify_complexity()<br/>weighted sum → score 0.0–1.0"]
 
     subgraph MetascoreRouting["Metascore Model Selection (v0.9.1)"]

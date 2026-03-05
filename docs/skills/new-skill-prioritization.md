@@ -47,6 +47,14 @@ Wave 1 is now present in code/registry and should be treated as adoption + quali
      - Distinguishes auth errors vs transport/model errors
      - Recommends least-risk credential fix
 
+4. `introspection`
+   - Problem: inconsistent self-awareness of available skills/tools/routes
+   - Triggers: what tools can you use, what skills are available, introspect capabilities
+   - Acceptance:
+     - Lists currently available tools/skills without fabrication
+     - States capability limits before claiming execution
+     - Uses runtime status surfaces for verification when available
+
 ### Downloadable/optional skills (shipped)
 
 1. `skill-creation`

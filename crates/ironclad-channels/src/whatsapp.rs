@@ -39,7 +39,7 @@ impl WhatsAppAdapter {
             allowed_numbers: Vec::new(),
             api_version: "v21.0".into(),
             app_secret: None,
-            deny_on_empty: false,
+            deny_on_empty: true,
         })
     }
 
@@ -271,11 +271,10 @@ impl WhatsAppAdapter {
         caption: Option<&str>,
     ) -> Value {
         let mut media_obj = json!({ "link": media_url });
-        if let Some(cap) = caption {
-            media_obj
-                .as_object_mut()
-                .unwrap()
-                .insert("caption".into(), json!(cap));
+        if let Some(cap) = caption
+            && let Some(obj) = media_obj.as_object_mut()
+        {
+            obj.insert("caption".into(), json!(cap));
         }
         let mut payload = serde_json::Map::new();
         payload.insert("messaging_product".into(), json!("whatsapp"));
@@ -470,6 +469,7 @@ mod tests {
         assert_eq!(adapter.phone_number_id, "phone123");
         assert_eq!(adapter.api_version, "v21.0");
         assert!(adapter.allowed_numbers.is_empty());
+        assert!(adapter.deny_on_empty);
     }
 
     #[test]
@@ -533,10 +533,10 @@ mod tests {
     }
 
     #[test]
-    fn sender_allowed_empty_legacy_allows_all() {
-        // deny_on_empty=false (legacy): empty list allows everyone
+    fn sender_allowed_empty_default_denies_all() {
+        // secure default: empty list denies everyone
         let adapter = WhatsAppAdapter::new("tok".into(), "ph".into()).unwrap();
-        assert!(adapter.is_sender_allowed("any_number"));
+        assert!(!adapter.is_sender_allowed("any_number"));
     }
 
     #[test]
@@ -565,7 +565,15 @@ mod tests {
 
     #[test]
     fn process_webhook_valid() {
-        let adapter = WhatsAppAdapter::new("tok".into(), "ph".into()).unwrap();
+        let adapter = WhatsAppAdapter::with_config(
+            "tok".into(),
+            "ph".into(),
+            "v".into(),
+            vec!["555".into()],
+            None,
+            false,
+        )
+        .unwrap();
         let webhook = json!({
             "entry": [{
                 "changes": [{

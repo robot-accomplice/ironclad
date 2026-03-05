@@ -32,6 +32,7 @@ struct KeystoreData {
 struct KeystoreState {
     entries: Option<HashMap<String, Zeroizing<String>>>,
     passphrase: Option<Zeroizing<String>>,
+    last_file_fingerprint: Option<(std::time::SystemTime, u64)>,
 }
 
 #[derive(Clone)]
@@ -47,6 +48,7 @@ impl Keystore {
             state: Arc::new(Mutex::new(KeystoreState {
                 entries: None,
                 passphrase: None,
+                last_file_fingerprint: None,
             })),
         }
     }
@@ -61,6 +63,7 @@ impl Keystore {
             let mut st = lock_or_recover(&self.state);
             st.entries = Some(HashMap::new());
             st.passphrase = Some(Zeroizing::new(passphrase.to_string()));
+            st.last_file_fingerprint = None;
             drop(st);
             self.save()?;
             self.append_audit_event(
@@ -73,36 +76,11 @@ impl Keystore {
             )?;
             return Ok(());
         }
-
-        let data = std::fs::read(&self.path)?;
-        if data.len() < SALT_LEN + NONCE_LEN + 1 {
-            return Err(IroncladError::Keystore("corrupt keystore file".into()));
-        }
-
-        let salt = &data[..SALT_LEN];
-        let nonce_bytes = &data[SALT_LEN..SALT_LEN + NONCE_LEN];
-        let ciphertext = &data[SALT_LEN + NONCE_LEN..];
-
-        let key = derive_key(passphrase, salt)?;
-        let cipher = Aes256Gcm::new_from_slice(key.as_ref())
-            .map_err(|e| IroncladError::Keystore(e.to_string()))?;
-        let nonce = Nonce::from_slice(nonce_bytes);
-
-        let plaintext = cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|_| IroncladError::Keystore("decryption failed (wrong passphrase?)".into()))?;
-
-        let store: KeystoreData = serde_json::from_slice(&plaintext)
-            .map_err(|e| IroncladError::Keystore(format!("corrupt keystore data: {e}")))?;
-
-        let zeroized_entries: HashMap<String, Zeroizing<String>> = store
-            .entries
-            .into_iter()
-            .map(|(k, v)| (k, Zeroizing::new(v)))
-            .collect();
+        let zeroized_entries = self.decrypt_entries(passphrase)?;
         let mut st = lock_or_recover(&self.state);
         st.entries = Some(zeroized_entries);
         st.passphrase = Some(Zeroizing::new(passphrase.to_string()));
+        st.last_file_fingerprint = self.current_file_fingerprint();
         Ok(())
     }
 
@@ -121,27 +99,40 @@ impl Keystore {
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
-        lock_or_recover(&self.state)
-            .entries
+        let mut st = lock_or_recover(&self.state);
+        self.refresh_locked(&mut st).ok();
+        st.entries
             .as_ref()
             .and_then(|m| m.get(key).map(|v| (**v).clone()))
     }
 
     pub fn set(&self, key: &str, value: &str) -> Result<()> {
-        {
+        let previous = {
             let mut st = lock_or_recover(&self.state);
             let entries = st
                 .entries
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
-            entries.insert(key.to_string(), Zeroizing::new(value.to_string()));
-        }
+            entries.insert(key.to_string(), Zeroizing::new(value.to_string()))
+        };
         let save_res = self.save();
+        let rolled_back = save_res.is_err();
+        if rolled_back {
+            let mut st = lock_or_recover(&self.state);
+            if let Some(entries) = st.entries.as_mut() {
+                if let Some(prev) = previous {
+                    entries.insert(key.to_string(), prev);
+                } else {
+                    entries.remove(key);
+                }
+            }
+        }
         let audit_res = self.append_audit_event(
             "set",
             Some(key),
             json!({
-                "result": if save_res.is_ok() { "ok" } else { "error" }
+                "result": if save_res.is_ok() { "ok" } else { "error" },
+                "rolled_back": rolled_back
             }),
         );
         match (save_res, audit_res) {
@@ -152,21 +143,32 @@ impl Keystore {
     }
 
     pub fn remove(&self, key: &str) -> Result<bool> {
-        let existed = {
+        let removed = {
             let mut st = lock_or_recover(&self.state);
             let entries = st
                 .entries
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
-            entries.remove(key).is_some()
+            entries.remove(key)
         };
+        let existed = removed.is_some();
         if existed {
             let save_res = self.save();
+            let rolled_back = save_res.is_err();
+            if rolled_back {
+                let mut st = lock_or_recover(&self.state);
+                if let Some(entries) = st.entries.as_mut()
+                    && let Some(prev) = removed
+                {
+                    entries.insert(key.to_string(), prev);
+                }
+            }
             let audit_res = self.append_audit_event(
                 "remove",
                 Some(key),
                 json!({
-                    "result": if save_res.is_ok() { "ok" } else { "error" }
+                    "result": if save_res.is_ok() { "ok" } else { "error" },
+                    "rolled_back": rolled_back
                 }),
             );
             match (save_res, audit_res) {
@@ -179,8 +181,9 @@ impl Keystore {
     }
 
     pub fn list_keys(&self) -> Vec<String> {
-        lock_or_recover(&self.state)
-            .entries
+        let mut st = lock_or_recover(&self.state);
+        self.refresh_locked(&mut st).ok();
+        st.entries
             .as_ref()
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default()
@@ -188,21 +191,29 @@ impl Keystore {
 
     pub fn import(&self, new_entries: HashMap<String, String>) -> Result<usize> {
         let count = new_entries.len();
-        {
+        let snapshot = {
             let mut st = lock_or_recover(&self.state);
             let entries = st
                 .entries
                 .as_mut()
                 .ok_or_else(|| IroncladError::Keystore("keystore is locked".into()))?;
+            let before = entries.clone();
             entries.extend(new_entries.into_iter().map(|(k, v)| (k, Zeroizing::new(v))));
-        }
+            before
+        };
         let save_res = self.save();
+        let rolled_back = save_res.is_err();
+        if rolled_back {
+            let mut st = lock_or_recover(&self.state);
+            st.entries = Some(snapshot);
+        }
         let audit_res = self.append_audit_event(
             "import",
             None,
             json!({
                 "result": if save_res.is_ok() { "ok" } else { "error" },
-                "count": count
+                "count": count,
+                "rolled_back": rolled_back
             }),
         );
         match (save_res, audit_res) {
@@ -224,13 +235,24 @@ impl Keystore {
         if !self.is_unlocked() {
             return Err(IroncladError::Keystore("keystore is locked".into()));
         }
-        lock_or_recover(&self.state).passphrase = Some(Zeroizing::new(new_passphrase.to_string()));
+        let old_passphrase = {
+            let mut st = lock_or_recover(&self.state);
+            let prev = st.passphrase.clone();
+            st.passphrase = Some(Zeroizing::new(new_passphrase.to_string()));
+            prev
+        };
         let save_res = self.save();
+        let rolled_back = save_res.is_err();
+        if rolled_back {
+            let mut st = lock_or_recover(&self.state);
+            st.passphrase = old_passphrase;
+        }
         let audit_res = self.append_audit_event(
             "rekey",
             None,
             json!({
-                "result": if save_res.is_ok() { "ok" } else { "error" }
+                "result": if save_res.is_ok() { "ok" } else { "error" },
+                "rolled_back": rolled_back
             }),
         );
         match (save_res, audit_res) {
@@ -341,8 +363,66 @@ impl Keystore {
         }
 
         std::fs::rename(&tmp, &self.path)?;
+        let fingerprint = self.current_file_fingerprint();
+        let mut st = lock_or_recover(&self.state);
+        st.last_file_fingerprint = fingerprint;
 
         Ok(())
+    }
+
+    fn decrypt_entries(&self, passphrase: &str) -> Result<HashMap<String, Zeroizing<String>>> {
+        let data = std::fs::read(&self.path)?;
+        if data.len() < SALT_LEN + NONCE_LEN + 1 {
+            return Err(IroncladError::Keystore("corrupt keystore file".into()));
+        }
+
+        let salt = &data[..SALT_LEN];
+        let nonce_bytes = &data[SALT_LEN..SALT_LEN + NONCE_LEN];
+        let ciphertext = &data[SALT_LEN + NONCE_LEN..];
+
+        let key = derive_key(passphrase, salt)?;
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref())
+            .map_err(|e| IroncladError::Keystore(e.to_string()))?;
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|_| IroncladError::Keystore("decryption failed (wrong passphrase?)".into()))?;
+
+        let store: KeystoreData = serde_json::from_slice(&plaintext)
+            .map_err(|e| IroncladError::Keystore(format!("corrupt keystore data: {e}")))?;
+
+        Ok(store
+            .entries
+            .into_iter()
+            .map(|(k, v)| (k, Zeroizing::new(v)))
+            .collect())
+    }
+
+    fn refresh_locked(&self, st: &mut KeystoreState) -> Result<()> {
+        if st.entries.is_none() {
+            return Ok(());
+        }
+        let Some(passphrase) = st.passphrase.as_ref() else {
+            return Ok(());
+        };
+        if !self.path.exists() {
+            return Ok(());
+        }
+        let current_fingerprint = self.current_file_fingerprint();
+        if current_fingerprint.is_some() && st.last_file_fingerprint == current_fingerprint {
+            return Ok(());
+        }
+        let refreshed = self.decrypt_entries(passphrase)?;
+        st.entries = Some(refreshed);
+        st.last_file_fingerprint = current_fingerprint;
+        Ok(())
+    }
+
+    fn current_file_fingerprint(&self) -> Option<(std::time::SystemTime, u64)> {
+        let meta = std::fs::metadata(&self.path).ok()?;
+        let modified = meta.modified().ok()?;
+        Some((modified, meta.len()))
     }
 }
 
@@ -523,6 +603,23 @@ mod tests {
     }
 
     #[test]
+    fn test_get_refreshes_entries_after_external_write() {
+        let path = temp_path();
+        let ks_a = Keystore::new(&path);
+        ks_a.unlock_machine().unwrap();
+        ks_a.set("openai_api_key", "old-value").unwrap();
+        assert_eq!(ks_a.get("openai_api_key"), Some("old-value".into()));
+
+        // Simulate a second process mutating the same keystore file.
+        let ks_b = Keystore::new(&path);
+        ks_b.unlock_machine().unwrap();
+        ks_b.set("openai_api_key", "new-value").unwrap();
+
+        // Without a refresh-on-read policy this can stay stale in ks_a.
+        assert_eq!(ks_a.get("openai_api_key"), Some("new-value".into()));
+    }
+
+    #[test]
     fn test_lock_clears_memory() {
         let path = temp_path();
         let ks = Keystore::new(&path);
@@ -654,6 +751,33 @@ mod tests {
 
         ks.set("key", "second").unwrap();
         assert_eq!(ks.get("key"), Some("second".into()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_set_rolls_back_on_save_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keystore.enc");
+        let ks = Keystore::new(&path);
+        ks.unlock("pass").unwrap();
+        ks.set("stable", "1").unwrap();
+
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o500);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        let res = ks.set("transient", "2");
+        assert!(res.is_err());
+        assert_eq!(ks.get("stable"), Some("1".into()));
+        assert_eq!(ks.get("transient"), None);
+        let audit = std::fs::read_to_string(path.with_extension("audit.log")).unwrap();
+        assert!(audit.contains("\"operation\":\"set\""));
+        assert!(audit.contains("\"rolled_back\":true"));
+
+        let mut restore = std::fs::metadata(dir.path()).unwrap().permissions();
+        restore.set_mode(0o700);
+        std::fs::set_permissions(dir.path(), restore).unwrap();
     }
 
     #[test]

@@ -319,6 +319,20 @@ Both skills: register as tools in the `ToolRegistry` so the agent can invoke the
 
 ---
 
+### 1.26 User-Tunable Routing Profile + Spider Graph
+
+**Current state**: Routing knobs exist in config (`accuracy_floor`, `cost_weight`, `confidence_threshold`), but operators cannot tune tradeoffs quickly from the dashboard, and model-routing continuity is hard to inspect visually.
+
+**Target**: Add a dashboard control surface with correctness/cost/speed sliders and a spider graph, plus an explorable graph of recent model-routing transitions.
+
+**Builds on**: `/api/config` runtime apply path, `GET /api/models/selections`, `GET /api/models/routing-diagnostics`, websocket telemetry (`model_selection`, `model_shift`).
+
+**Scope**: Ship a first-pass profile mapping that updates existing routing config safely (no new persistence schema), renders a spider graph for the active weights, and renders a clickable transition graph for recent routing decisions.
+
+**Release posture**: Target `v0.9.4` for operator visibility and faster routing iteration.
+
+---
+
 
 ## Tier 2 — New Capabilities
 

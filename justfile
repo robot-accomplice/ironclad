@@ -70,6 +70,12 @@ test-release-critical:
 test-soak-fuzz:
     bash scripts/run-soak-fuzz.sh
 
+# Agent behavior soak (live API assertions for tool execution and routing truthfulness)
+# Env knobs:
+#   BASE_URL=http://127.0.0.1:18789 SOAK_TIMEOUT_SECONDS=240 just test-agent-behavior-soak
+test-agent-behavior-soak:
+    python3 scripts/run-agent-behavior-soak.py
+
 # CLI UAT smoke against a running server
 # Env knobs:
 #   BASE_URL=http://127.0.0.1:18789 API_KEY=... just test-uat-cli

@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS inference_costs (
     latency_ms INTEGER,
     quality_score REAL,
     escalation INTEGER NOT NULL DEFAULT 0,
+    turn_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_inference_costs_time ON inference_costs(created_at DESC);
@@ -408,10 +409,28 @@ CREATE TABLE IF NOT EXISTS model_selection_events (
     complexity TEXT,
     user_excerpt TEXT NOT NULL,
     candidates_json TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    attribution TEXT,
+    metascore_json TEXT,
+    features_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_model_selection_events_turn ON model_selection_events(turn_id);
 CREATE INDEX IF NOT EXISTS idx_model_selection_events_created ON model_selection_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS shadow_routing_predictions (
+    id TEXT PRIMARY KEY,
+    turn_id TEXT NOT NULL,
+    production_model TEXT NOT NULL,
+    shadow_model TEXT,
+    production_complexity REAL,
+    shadow_complexity REAL,
+    agreed INTEGER NOT NULL DEFAULT 0,
+    detail_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_routing_created ON shadow_routing_predictions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shadow_routing_turn ON shadow_routing_predictions(turn_id);
 
 CREATE TABLE IF NOT EXISTS abuse_events (
     id TEXT PRIMARY KEY,
@@ -429,6 +448,7 @@ CREATE INDEX IF NOT EXISTS idx_abuse_events_actor ON abuse_events(actor_id, crea
 CREATE INDEX IF NOT EXISTS idx_abuse_events_origin ON abuse_events(origin, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_created ON abuse_events(created_at DESC);
 "#;
+const EMBEDDED_SCHEMA_VERSION: i64 = 13;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {
@@ -444,10 +464,13 @@ pub fn initialize_db(db: &Database) -> Result<()> {
             .map_err(|e| IroncladError::Database(e.to_string()))?;
 
         if !version_exists {
-            // The embedded schema already incorporates all migrations through v10,
-            // so seed the version to 10 so run_migrations() won't re-apply them.
-            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [10])
-                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            // The embedded schema already incorporates migrations through v0.9.4.
+            // Seed schema_version accordingly so run_migrations() only applies newer files.
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [EMBEDDED_SCHEMA_VERSION],
+            )
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
         }
     }
 
@@ -552,6 +575,47 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     }
+    // v0.9.4: routing baseline hardening — schema version, attribution, features
+    if !has_column(&conn, "model_selection_events", "schema_version")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "model_selection_events", "attribution")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN attribution TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "model_selection_events", "metascore_json")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN metascore_json TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "model_selection_events", "features_json")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN features_json TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    // v0.9.4: inference_costs turn linkage
+    if !has_column(&conn, "inference_costs", "turn_id")? {
+        conn.execute("ALTER TABLE inference_costs ADD COLUMN turn_id TEXT", [])
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if has_column(&conn, "inference_costs", "turn_id")? {
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_inference_costs_turn ON inference_costs(turn_id)",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -606,8 +670,13 @@ pub fn run_migrations(db: &Database) -> Result<()> {
         let tx = conn.unchecked_transaction().map_err(|e| {
             IroncladError::Database(format!("begin tx for migration {version}: {e}"))
         })?;
-        tx.execute_batch(sql.trim())
-            .map_err(|e| IroncladError::Database(format!("migration {version}: {e}")))?;
+        if version == 13 {
+            apply_migration_13_idempotent(&tx)
+                .map_err(|e| IroncladError::Database(format!("migration {version}: {e}")))?;
+        } else {
+            tx.execute_batch(sql.trim())
+                .map_err(|e| IroncladError::Database(format!("migration {version}: {e}")))?;
+        }
         tx.execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
             [version],
@@ -616,6 +685,73 @@ pub fn run_migrations(db: &Database) -> Result<()> {
         tx.commit()
             .map_err(|e| IroncladError::Database(format!("commit migration {version}: {e}")))?;
     }
+
+    Ok(())
+}
+
+fn apply_migration_13_idempotent(conn: &rusqlite::Transaction<'_>) -> Result<()> {
+    // model_selection_events additions
+    if !has_column(conn, "model_selection_events", "schema_version")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(conn, "model_selection_events", "attribution")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN attribution TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(conn, "model_selection_events", "metascore_json")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN metascore_json TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(conn, "model_selection_events", "features_json")? {
+        conn.execute(
+            "ALTER TABLE model_selection_events ADD COLUMN features_json TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+
+    // inference_costs turn linkage
+    if !has_column(conn, "inference_costs", "turn_id")? {
+        conn.execute("ALTER TABLE inference_costs ADD COLUMN turn_id TEXT", [])
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if has_column(conn, "inference_costs", "turn_id")? {
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_inference_costs_turn ON inference_costs(turn_id)",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+
+    // shadow routing table + indexes
+    conn.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS shadow_routing_predictions (
+    id TEXT PRIMARY KEY,
+    turn_id TEXT NOT NULL,
+    production_model TEXT NOT NULL,
+    shadow_model TEXT,
+    production_complexity REAL,
+    shadow_complexity REAL,
+    agreed INTEGER NOT NULL DEFAULT 0,
+    detail_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_routing_created ON shadow_routing_predictions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shadow_routing_turn ON shadow_routing_predictions(turn_id);
+"#,
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     Ok(())
 }
@@ -650,8 +786,9 @@ mod tests {
         let db = Database::new(":memory:").unwrap();
         let count = table_count(&db).unwrap();
         // 30 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback
-        // + context_snapshots + model_selection_events + abuse_events = 35
-        assert_eq!(count, 35, "expected 35 user-defined tables, got {count}");
+        // + context_snapshots + model_selection_events + abuse_events
+        // + shadow_routing_predictions (v0.9.4) = 36
+        assert_eq!(count, 36, "expected 36 user-defined tables, got {count}");
     }
 
     #[test]
@@ -660,7 +797,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 35);
+        assert_eq!(count, 36);
     }
 
     #[test]
@@ -674,7 +811,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(version >= 10, "embedded schema seeds at version 10");
+        assert!(
+            version >= EMBEDDED_SCHEMA_VERSION,
+            "embedded schema seeds at version {EMBEDDED_SCHEMA_VERSION}"
+        );
     }
 
     #[test]
@@ -711,7 +851,10 @@ mod tests {
             !versions.is_empty(),
             "schema_version should have at least one entry"
         );
-        assert!(versions[0] >= 10, "embedded schema seeds at version 10");
+        assert!(
+            versions[0] >= EMBEDDED_SCHEMA_VERSION,
+            "embedded schema seeds at version {EMBEDDED_SCHEMA_VERSION}"
+        );
         for w in versions.windows(2) {
             assert!(w[1] > w[0], "versions must be strictly increasing");
         }
@@ -731,14 +874,14 @@ mod tests {
         let conn = db.conn();
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM schema_version WHERE version >= 10",
-                [],
+                "SELECT COUNT(*) FROM schema_version WHERE version >= ?1",
+                [EMBEDDED_SCHEMA_VERSION],
                 |row| row.get(0),
             )
             .unwrap();
         assert!(
             count >= 1,
-            "embedded schema should seed at least version 10"
+            "embedded schema should seed at least version {EMBEDDED_SCHEMA_VERSION}"
         );
     }
 
@@ -956,12 +1099,12 @@ mod tests {
         let conn = db.conn();
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM schema_version WHERE version = 10",
-                [],
+                "SELECT COUNT(*) FROM schema_version WHERE version = ?1",
+                [EMBEDDED_SCHEMA_VERSION],
                 |row| row.get(0),
             )
             .unwrap();
-        // Should still be exactly 1 row for version 10
+        // Should still be exactly 1 row for the embedded seed version.
         assert_eq!(
             count, 1,
             "reinitialize should not duplicate the seed version row"
@@ -978,8 +1121,11 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(SCHEMA_SQL).unwrap();
-        conn.execute("INSERT INTO schema_version (version) VALUES (10)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            [EMBEDDED_SCHEMA_VERSION],
+        )
+        .unwrap();
 
         // We can't drop a column in SQLite easily, so instead we create a
         // separate DB from scratch without the column and test the has_column logic.
@@ -1011,7 +1157,63 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(max_version >= 10);
+        assert!(max_version >= EMBEDDED_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn embedded_schema_does_not_fail_when_inference_costs_lacks_turn_id() {
+        // Simulate legacy DB state: inference_costs exists but without turn_id.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(
+            r#"
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO schema_version(version) VALUES (12);
+CREATE TABLE IF NOT EXISTS inference_costs (
+    id TEXT PRIMARY KEY,
+    model TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    tokens_in INTEGER NOT NULL,
+    tokens_out INTEGER NOT NULL,
+    cost REAL NOT NULL,
+    tier TEXT,
+    cached INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER,
+    quality_score REAL,
+    escalation INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_inference_costs_time ON inference_costs(created_at DESC);
+"#,
+        )
+        .unwrap();
+
+        // Running full embedded schema should no longer fail on idx_inference_costs_turn.
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+    }
+
+    #[test]
+    fn migration_13_is_idempotent_when_columns_already_exist() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+
+        // Should succeed when all migration-13 target columns/tables already exist.
+        apply_migration_13_idempotent(&tx).unwrap();
+        apply_migration_13_idempotent(&tx).unwrap();
+
+        // turn_id index should still exist and schema should remain queryable.
+        let idx_count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_inference_costs_turn'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_count, 1);
     }
 
     #[test]

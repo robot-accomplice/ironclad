@@ -9,6 +9,7 @@ mod delegation;
 mod diagnostics;
 mod guards;
 mod handlers;
+mod intents;
 mod orchestration;
 mod poll_loops;
 mod routing;
@@ -38,7 +39,8 @@ use self::diagnostics::{RuntimeDiagnostics, diagnostics_system_note, sanitize_di
 use self::guards::resolve_web_scope;
 #[cfg(test)]
 use self::guards::{
-    MAX_SCOPE_ID, claims_unverified_subagent_output, common_prefix_ratio, enforce_non_repetition,
+    MAX_SCOPE_ID, claims_unverified_subagent_output, common_prefix_ratio,
+    enforce_execution_truth_guard, enforce_model_identity_truth_guard, enforce_non_repetition,
     enforce_subagent_claim_guard, looks_repetitive, repeat_tokens,
 };
 pub use self::handlers::agent_message;

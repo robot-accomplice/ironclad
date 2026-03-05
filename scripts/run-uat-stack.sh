@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PORT="${PORT:-18789}"
+if [[ -z "${PORT:-}" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PORT="$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)"
+  else
+    PORT="18789"
+  fi
+fi
 BASE_URL="${BASE_URL:-http://127.0.0.1:${PORT}}"
 TMP_DIR="$(mktemp -d)"
 CONFIG_FILE="${TMP_DIR}/ironclad.toml"
@@ -55,6 +68,19 @@ done
 
 if ! "$HTTP_BIN" -fsS "${BASE_URL}/api/health" >/dev/null 2>&1; then
   echo "Server did not become healthy. Log:"
+  cat "$SERVER_LOG"
+  exit 1
+fi
+
+for _ in $(seq 1 40); do
+  if "$HTTP_BIN" -fsS "${BASE_URL}/api/config" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+if ! "$HTTP_BIN" -fsS "${BASE_URL}/api/config" >/dev/null 2>&1; then
+  echo "Server did not become config-ready. Log:"
   cat "$SERVER_LOG"
   exit 1
 fi

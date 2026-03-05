@@ -79,7 +79,8 @@ impl ChannelRouter {
 
         for (name, adapter) in &adapters {
             match adapter.recv().await {
-                Ok(Some(msg)) => {
+                Ok(Some(mut msg)) => {
+                    msg.sanitize();
                     debug!(channel = %name, msg_id = %msg.id, "received message");
                     let mut channels = self.channels.lock().await;
                     if let Some(entry) = channels.get_mut(name) {
@@ -379,6 +380,22 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].0, "ch1");
         assert_eq!(msgs[0].1.content, "hello");
+    }
+
+    #[tokio::test]
+    async fn poll_all_sanitizes_inbound_messages() {
+        let router = ChannelRouter::new();
+        router
+            .register(Arc::new(MockAdapter::with_message(
+                "teleg\x00ram",
+                "hi\x00there",
+            )))
+            .await;
+
+        let msgs = router.poll_all().await;
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].1.content, "hi\x00there");
+        assert!(!msgs[0].1.platform.contains('\0'));
     }
 
     #[tokio::test]

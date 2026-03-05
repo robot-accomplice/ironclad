@@ -1336,7 +1336,7 @@ mod tests {
             serde_json::json!({"ok": true}),
         )
         .await;
-        super::cmd_circuit_reset(&s.uri()).await.unwrap();
+        super::cmd_circuit_reset(&s.uri(), None).await.unwrap();
     }
 
     #[tokio::test]
@@ -1347,7 +1347,21 @@ mod tests {
             .respond_with(ResponseTemplate::new(500))
             .mount(&s)
             .await;
-        super::cmd_circuit_reset(&s.uri()).await.unwrap();
+        super::cmd_circuit_reset(&s.uri(), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_circuit_reset_single_provider() {
+        let s = MockServer::start().await;
+        mock_post(
+            &s,
+            "/api/breaker/reset/openai",
+            serde_json::json!({"ok": true}),
+        )
+        .await;
+        super::cmd_circuit_reset(&s.uri(), Some("openai"))
+            .await
+            .unwrap();
     }
 
     // ── Agents ────────────────────────────────────────────────
@@ -1488,9 +1502,8 @@ mod tests {
     async fn cmd_plugin_info_not_found() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/plugins", serde_json::json!({"plugins": []})).await;
-        super::cmd_plugin_info(&s.uri(), "nonexistent")
-            .await
-            .unwrap();
+        let result = super::cmd_plugin_info(&s.uri(), "nonexistent").await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -1514,24 +1527,25 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&s)
             .await;
-        super::cmd_plugin_toggle(&s.uri(), "weather", false)
-            .await
-            .unwrap();
+        let result = super::cmd_plugin_toggle(&s.uri(), "weather", false).await;
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn cmd_plugin_install_missing_source() {
-        super::cmd_plugin_install("/tmp/ironclad_test_nonexistent_plugin_dir").unwrap();
+    #[tokio::test]
+    async fn cmd_plugin_install_missing_source() {
+        let result = super::cmd_plugin_install("/tmp/ironclad_test_nonexistent_plugin_dir").await;
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn cmd_plugin_install_no_manifest() {
+    #[tokio::test]
+    async fn cmd_plugin_install_no_manifest() {
         let dir = tempfile::tempdir().unwrap();
-        super::cmd_plugin_install(dir.path().to_str().unwrap()).unwrap();
+        let result = super::cmd_plugin_install(dir.path().to_str().unwrap()).await;
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn cmd_plugin_install_valid() {
+    #[tokio::test]
+    async fn cmd_plugin_install_valid() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = dir.path().join("plugin.toml");
         std::fs::write(&manifest, "name = \"test-plugin\"\nversion = \"0.1\"").unwrap();
@@ -1542,14 +1556,18 @@ mod tests {
         std::fs::write(sub.join("helper.gosh"), "// helper").unwrap();
 
         unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
-        let _ = super::cmd_plugin_install(dir.path().to_str().unwrap());
+        let _ = super::cmd_plugin_install(dir.path().to_str().unwrap()).await;
         unsafe { std::env::remove_var("HOME") };
     }
 
     #[test]
     fn cmd_plugin_uninstall_not_found() {
         unsafe { std::env::set_var("HOME", "/tmp/ironclad_test_uninstall_home") };
-        super::cmd_plugin_uninstall("nonexistent").unwrap();
+        let result = super::cmd_plugin_uninstall("nonexistent");
+        assert!(
+            result.is_err(),
+            "uninstall of nonexistent plugin should fail"
+        );
         unsafe { std::env::remove_var("HOME") };
     }
 

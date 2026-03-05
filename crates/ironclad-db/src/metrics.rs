@@ -26,13 +26,14 @@ pub fn record_inference_cost(
     latency_ms: Option<i64>,
     quality_score: Option<f64>,
     escalation: bool,
+    turn_id: Option<&str>,
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO inference_costs \
-         (id, model, provider, tokens_in, tokens_out, cost, tier, cached, latency_ms, quality_score, escalation) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         (id, model, provider, tokens_in, tokens_out, cost, tier, cached, latency_ms, quality_score, escalation, turn_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             id,
             model,
@@ -44,7 +45,8 @@ pub fn record_inference_cost(
             cached as i32,
             latency_ms,
             quality_score,
-            escalation as i32
+            escalation as i32,
+            turn_id
         ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -164,6 +166,7 @@ mod tests {
             Some(150),
             Some(0.92),
             false,
+            None,
         )
         .unwrap();
         assert!(!id.is_empty());
@@ -208,7 +211,7 @@ mod tests {
     fn record_inference_cost_cached() {
         let db = test_db();
         let id = record_inference_cost(
-            &db, "gpt-4", "openai", 100, 50, 0.005, None, true, None, None, false,
+            &db, "gpt-4", "openai", 100, 50, 0.005, None, true, None, None, false, None,
         )
         .unwrap();
         assert!(!id.is_empty());
@@ -258,6 +261,7 @@ mod tests {
             Some(100),
             Some(0.7),
             false,
+            None,
         )
         .unwrap();
         record_inference_cost(
@@ -272,6 +276,7 @@ mod tests {
             Some(200),
             Some(0.9),
             false,
+            None,
         )
         .unwrap();
         record_inference_cost(
@@ -286,6 +291,7 @@ mod tests {
             Some(150),
             Some(0.85),
             false,
+            None,
         )
         .unwrap();
 
@@ -313,10 +319,14 @@ mod tests {
             None,
             Some(0.8),
             false,
+            None,
         )
         .unwrap();
         // Insert a row with NULL quality_score.
-        record_inference_cost(&db, "m", "p", 100, 50, 0.01, None, true, None, None, false).unwrap();
+        record_inference_cost(
+            &db, "m", "p", 100, 50, 0.01, None, true, None, None, false, None,
+        )
+        .unwrap();
         let scores = recent_quality_scores(&db, 10).unwrap();
         assert_eq!(scores.len(), 1);
         assert!((scores[0].1 - 0.8).abs() < f64::EPSILON);
@@ -338,6 +348,7 @@ mod tests {
                 None,
                 Some(i as f64 * 0.2),
                 false,
+                None,
             )
             .unwrap();
         }

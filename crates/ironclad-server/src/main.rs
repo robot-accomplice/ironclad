@@ -376,7 +376,10 @@ enum CircuitCmd {
     /// Show circuit breaker status
     Status,
     /// Reset tripped circuit breakers
-    Reset,
+    Reset {
+        /// Reset only one provider breaker (e.g., openai)
+        provider: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -561,14 +564,30 @@ enum PluginsCmd {
     List,
     /// Show plugin details
     Info { name: String },
-    /// Install a plugin from a directory
-    Install { source: String },
+    /// Install a plugin from a local dir, .ic.zip archive, or catalog name
+    Install {
+        /// Plugin source: directory path, .ic.zip path, or catalog plugin name
+        source: String,
+    },
     /// Uninstall a plugin
     Uninstall { name: String },
     /// Enable a disabled plugin
     Enable { name: String },
     /// Disable a plugin
     Disable { name: String },
+    /// Search the plugin catalog
+    Search {
+        /// Search query (matches name, description, author)
+        query: String,
+    },
+    /// Pack a plugin directory into a distributable .ic.zip archive
+    Pack {
+        /// Path to the plugin directory containing plugin.toml
+        dir: String,
+        /// Output directory for the archive (default: current directory)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -811,7 +830,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }) => cli::cmd_logs(url, lines, follow, &level).await,
         Some(Commands::Circuit(sub)) => match sub {
             CircuitCmd::Status => cli::cmd_circuit_status(url).await,
-            CircuitCmd::Reset => cli::cmd_circuit_reset(url).await,
+            CircuitCmd::Reset { provider } => {
+                cli::cmd_circuit_reset(url, provider.as_deref()).await
+            }
         },
 
         // ── Data ────────────────────────────────────────────
@@ -929,10 +950,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Plugins(sub)) => match sub {
             PluginsCmd::List => cli::cmd_plugins_list(url).await,
             PluginsCmd::Info { name } => cli::cmd_plugin_info(url, &name).await,
-            PluginsCmd::Install { source } => cli::cmd_plugin_install(&source),
+            PluginsCmd::Install { source } => cli::cmd_plugin_install(&source).await,
             PluginsCmd::Uninstall { name } => cli::cmd_plugin_uninstall(&name),
             PluginsCmd::Enable { name } => cli::cmd_plugin_toggle(url, &name, true).await,
             PluginsCmd::Disable { name } => cli::cmd_plugin_toggle(url, &name, false).await,
+            PluginsCmd::Search { query } => cli::cmd_plugin_search(&query).await,
+            PluginsCmd::Pack { dir, output } => cli::cmd_plugin_pack(&dir, output.as_deref()),
         },
         Some(Commands::Agents(sub)) => match sub {
             AgentsCmd::List => cli::cmd_agents_list(url).await,
@@ -2332,7 +2355,7 @@ primary = "ollama/qwen3:8b"
 fallbacks = []
 
 [models.routing]
-mode = "rule"
+mode = "heuristic"
 confidence_threshold = 0.9
 local_first = true
 
