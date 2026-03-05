@@ -178,8 +178,8 @@ pub(super) fn enforce_execution_truth_guard(
         return "I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
             .to_string();
     }
-    "I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
-        .to_string()
+    // If there is no explicit execution claim, keep the response.
+    response
 }
 
 pub(super) fn enforce_model_identity_truth_guard(

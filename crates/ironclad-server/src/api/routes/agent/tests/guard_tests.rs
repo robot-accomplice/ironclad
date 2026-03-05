@@ -95,6 +95,14 @@ fn execution_truth_guard_blocks_unexecuted_command_suggestion() {
 }
 
 #[test]
+fn execution_truth_guard_keeps_non_claim_response_without_tool_results() {
+    let prompt = "use your introspection skill";
+    let response = "I can run introspection for you now and summarize it.".to_string();
+    let guarded = enforce_execution_truth_guard(prompt, response.clone(), &[]);
+    assert_eq!(guarded, response);
+}
+
+#[test]
 fn execution_truth_guard_allows_verified_tool_output() {
     let prompt = "Run ls /Users/jmachen";
     let response = "/Users/jmachen\nApplications\nDesktop".to_string();

@@ -22,7 +22,7 @@ use super::guards::{
 };
 use super::intents::{
     requests_cron, requests_current_events, requests_delegation, requests_execution,
-    requests_file_distribution, requests_random_tool_use,
+    requests_file_distribution, requests_introspection, requests_random_tool_use,
 };
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
@@ -404,7 +404,10 @@ async fn try_execution_shortcut(
     prepared_model: &str,
     delegation_provenance: &mut DelegationProvenance,
 ) -> Option<InferenceOutput> {
-    if !requests_execution(user_prompt) && !requests_geopolitical_sitrep(user_prompt) {
+    if !requests_execution(user_prompt)
+        && !requests_geopolitical_sitrep(user_prompt)
+        && !requests_introspection(user_prompt)
+    {
         return None;
     }
 
@@ -468,7 +471,76 @@ async fn try_execution_shortcut(
         }
     }
 
-    // 1) Tool inventory + random tool execution request.
+    // 1) Introspection request — execute actual introspection tools and summarize.
+    if requests_introspection(user_prompt) {
+        let mut tool_results = Vec::new();
+        let mut snippets = Vec::new();
+
+        for tool_name in [
+            "get_runtime_context",
+            "get_subagent_status",
+            "get_channel_health",
+            "get_memory_stats",
+        ] {
+            let out = execute_tool_call(
+                state,
+                tool_name,
+                &serde_json::json!({}),
+                turn_id,
+                authority,
+                channel_label,
+            )
+            .await;
+            match out {
+                Ok(output) => {
+                    tool_results.push((tool_name.to_string(), output.clone()));
+                    snippets.push(format!("{}: {}", tool_name, output.trim()));
+                }
+                Err(err) => {
+                    tool_results.push((tool_name.to_string(), format!("error: {err}")));
+                    snippets.push(format!("{}: error: {}", tool_name, err));
+                }
+            }
+        }
+
+        let mut names = state
+            .tools
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect::<Vec<_>>();
+        names.sort();
+
+        let tool_sample = names
+            .iter()
+            .take(24)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let summary = format!(
+            "Acknowledged. Active introspection completed.\n\
+             Available tools: {} total (sample: {}).\n\
+             Current subagent/runtime functionality snapshot:\n{}",
+            names.len(),
+            tool_sample,
+            snippets.join("\n")
+        );
+
+        return Some(InferenceOutput {
+            content: summary,
+            model: prepared_model.to_string(),
+            tokens_in: 0,
+            tokens_out: 0,
+            cost: 0.0,
+            react_turns: 1,
+            latency_ms: 0,
+            quality_score: 1.0,
+            escalated: false,
+            tool_results,
+        });
+    }
+
+    // 2) Tool inventory + random tool execution request.
     if requests_random_tool_use(user_prompt) {
         let mut names = state
             .tools
@@ -550,7 +622,7 @@ async fn try_execution_shortcut(
         }
     }
 
-    // 2) File distribution request (supports '~' and absolute paths).
+    // 3) File distribution request (supports '~' and absolute paths).
     if requests_file_distribution(user_prompt) {
         let path = extract_path_hint(user_prompt).unwrap_or_else(|| ".".to_string());
         let cmd = build_distribution_command(&path);
@@ -599,7 +671,7 @@ async fn try_execution_shortcut(
         }
     }
 
-    // 3) Delegation request — force a real orchestration tool execution attempt.
+    // 4) Delegation request — force a real orchestration tool execution attempt.
     if requests_delegation(user_prompt) {
         delegation_provenance.subagent_task_started = true;
         let params = serde_json::json!({
@@ -656,7 +728,7 @@ async fn try_execution_shortcut(
         }
     }
 
-    // 4) Cron request — create a real cron job directly through DB path.
+    // 5) Cron request — create a real cron job directly through DB path.
     if requests_cron(user_prompt) {
         let agent_id = {
             let cfg = state.config.read().await;

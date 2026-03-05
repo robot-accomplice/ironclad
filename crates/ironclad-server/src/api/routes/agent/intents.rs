@@ -7,6 +7,9 @@ pub(super) fn requests_execution(prompt: &str) -> bool {
         "use the tool",
         "tools you can use",
         "pick one at random",
+        "introspection tool",
+        "introspection skill",
+        "introspect",
         "list entries",
         "list files",
         "file distribution",
@@ -25,7 +28,15 @@ pub(super) fn requests_execution(prompt: &str) -> bool {
 
 pub(super) fn requests_delegation(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
-    lower.contains("subagent") || lower.contains("delegate") || lower.contains("orchestrate")
+    if lower.contains("delegate") || lower.contains("orchestrate") || lower.contains("assign") {
+        return true;
+    }
+    lower.contains("subagent")
+        && (lower.contains("order")
+            || lower.contains("task")
+            || lower.contains("run ")
+            || lower.contains("to a subagent")
+            || lower.contains("to the subagent"))
 }
 
 pub(super) fn requests_cron(prompt: &str) -> bool {
@@ -73,6 +84,24 @@ pub(super) fn requests_current_events(prompt: &str) -> bool {
     .any(|m| lower.contains(m))
 }
 
+pub(super) fn requests_introspection(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    [
+        "introspection tool",
+        "introspection skill",
+        "introspect",
+        "what tools can you use",
+        "what tools do you have",
+        "available tools",
+        "subagent functionality",
+        "current subagent functionality",
+        "summarize the results",
+        "summarize introspection",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,6 +118,9 @@ mod tests {
     #[test]
     fn delegation_and_cron_markers_match_expected_prompts() {
         assert!(requests_delegation("order a subagent to do this"));
+        assert!(!requests_delegation(
+            "use your introspection tool to discover current subagent functionality"
+        ));
         assert!(requests_cron("schedule a cron job every 5 minute"));
     }
 
@@ -107,5 +139,16 @@ mod tests {
         ));
         assert!(requests_current_events("Give me a geopolitical sitrep"));
         assert!(requests_current_events("What are today's current events?"));
+    }
+
+    #[test]
+    fn introspection_markers_match_expected_prompts() {
+        assert!(requests_introspection(
+            "I want you to use your introspection skill"
+        ));
+        assert!(requests_introspection(
+            "use your introspection tool to discover current subagent functionality"
+        ));
+        assert!(requests_introspection("what tools do you have available?"));
     }
 }
