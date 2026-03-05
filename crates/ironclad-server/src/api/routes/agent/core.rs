@@ -569,12 +569,9 @@ fn default_obsidian_vault_path() -> Option<String> {
         format!("{home}/Obsidian"),
         format!("{home}/Vault"),
     ];
-    for c in candidates {
-        if std::path::Path::new(&c).is_dir() {
-            return Some(c);
-        }
-    }
-    None
+    candidates
+        .into_iter()
+        .find(|c| std::path::Path::new(c).is_dir())
 }
 
 fn build_obsidian_insight_command(path: &str) -> String {
