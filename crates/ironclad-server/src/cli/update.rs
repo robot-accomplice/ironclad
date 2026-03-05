@@ -20,6 +20,8 @@ pub(crate) const DEFAULT_REGISTRY_URL: &str = "https://roboticus.ai/registry/man
 const CRATES_IO_API: &str = "https://crates.io/api/v1/crates/ironclad-server";
 const CRATE_NAME: &str = "ironclad-server";
 const RELEASE_BASE_URL: &str = "https://github.com/robot-accomplice/ironclad/releases/download";
+const GITHUB_RELEASES_API: &str =
+    "https://api.github.com/repos/robot-accomplice/ironclad/releases?per_page=100";
 
 // ── Registry manifest (remote) ───────────────────────────────
 
@@ -252,6 +254,8 @@ fn run_mechanic_checks_maintenance(config_path: &str) {
 
 fn parse_semver(v: &str) -> (u32, u32, u32) {
     let v = v.trim_start_matches('v');
+    let v = v.split_once('+').map(|(core, _)| core).unwrap_or(v);
+    let v = v.split_once('-').map(|(core, _)| core).unwrap_or(v);
     let parts: Vec<&str> = v.split('.').collect();
     let major = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
     let minor = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -264,6 +268,11 @@ fn is_newer(remote: &str, local: &str) -> bool {
 }
 
 fn platform_archive_name(version: &str) -> Option<String> {
+    let (arch, os, ext) = platform_archive_parts()?;
+    Some(format!("ironclad-{version}-{arch}-{os}.{ext}"))
+}
+
+fn platform_archive_parts() -> Option<(&'static str, &'static str, &'static str)> {
     let arch = match std::env::consts::ARCH {
         "x86_64" => "x86_64",
         "aarch64" => "aarch64",
@@ -276,7 +285,7 @@ fn platform_archive_name(version: &str) -> Option<String> {
         _ => return None,
     };
     let ext = if os == "windows" { "zip" } else { "tar.gz" };
-    Some(format!("ironclad-{version}-{arch}-{os}.{ext}"))
+    Some((arch, os, ext))
 }
 
 fn parse_sha256sums_for_artifact(sha256sums: &str, artifact: &str) -> Option<String> {
@@ -293,6 +302,85 @@ fn parse_sha256sums_for_artifact(sha256sums: &str, artifact: &str) -> Option<Str
         }
     }
     None
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
+    published_at: Option<String>,
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GitHubAsset {
+    name: String,
+}
+
+fn core_version(s: &str) -> &str {
+    let s = s.trim_start_matches('v');
+    let s = s.split_once('+').map(|(core, _)| core).unwrap_or(s);
+    let s = s.split_once('-').map(|(core, _)| core).unwrap_or(s);
+    s
+}
+
+fn select_archive_asset_name(release: &GitHubRelease, version: &str) -> Option<String> {
+    let exact = platform_archive_name(version)?;
+    if release.assets.iter().any(|a| a.name == exact) {
+        return Some(exact);
+    }
+    let (arch, os, ext) = platform_archive_parts()?;
+    let suffix = format!("-{arch}-{os}.{ext}");
+    let core_prefix = format!("ironclad-{}", core_version(version));
+    release
+        .assets
+        .iter()
+        .find(|a| a.name.ends_with(&suffix) && a.name.starts_with(&core_prefix))
+        .map(|a| a.name.clone())
+}
+
+fn select_release_for_download(
+    releases: &[GitHubRelease],
+    version: &str,
+) -> Option<(String, String)> {
+    let canonical = format!("v{version}");
+
+    if let Some(exact) = releases
+        .iter()
+        .find(|r| !r.draft && !r.prerelease && r.tag_name == canonical)
+    {
+        let has_sums = exact.assets.iter().any(|a| a.name == "SHA256SUMS.txt");
+        if has_sums && let Some(archive) = select_archive_asset_name(exact, version) {
+            return Some((exact.tag_name.clone(), archive));
+        }
+    }
+
+    releases
+        .iter()
+        .filter(|r| !r.draft && !r.prerelease)
+        .filter(|r| core_version(&r.tag_name) == core_version(version))
+        .filter(|r| r.assets.iter().any(|a| a.name == "SHA256SUMS.txt"))
+        .filter_map(|r| select_archive_asset_name(r, version).map(|archive| (r, archive)))
+        .max_by_key(|(r, _)| r.published_at.as_deref().unwrap_or(""))
+        .map(|(r, archive)| (r.tag_name.clone(), archive))
+}
+
+async fn resolve_download_release(
+    client: &reqwest::Client,
+    version: &str,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let resp = client.get(GITHUB_RELEASES_API).send().await?;
+    if !resp.status().is_success() {
+        return Err(format!("Failed to query GitHub releases: HTTP {}", resp.status()).into());
+    }
+    let releases: Vec<GitHubRelease> = resp.json().await?;
+    select_release_for_download(&releases, version).ok_or_else(|| {
+        format!(
+            "No downloadable release found for v{version} with required platform archive and SHA256SUMS.txt"
+        )
+        .into()
+    })
 }
 
 fn find_file_recursive(root: &Path, filename: &str) -> io::Result<Option<PathBuf>> {
@@ -383,14 +471,14 @@ async fn apply_binary_download_update(
     client: &reqwest::Client,
     latest: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let archive = platform_archive_name(latest).ok_or_else(|| {
+    let _archive_probe = platform_archive_name(latest).ok_or_else(|| {
         format!(
             "No release archive mapping for platform {}/{}",
             std::env::consts::OS,
             std::env::consts::ARCH
         )
     })?;
-    let tag = format!("v{latest}");
+    let (tag, archive) = resolve_download_release(client, latest).await?;
     let sha_url = format!("{RELEASE_BASE_URL}/{tag}/SHA256SUMS.txt");
     let archive_url = format!("{RELEASE_BASE_URL}/{tag}/{archive}");
 
@@ -1798,6 +1886,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_semver_ignores_build_and_prerelease_metadata() {
+        assert_eq!(parse_semver("0.9.4+hotfix.1"), (0, 9, 4));
+        assert_eq!(parse_semver("v1.2.3-rc.1"), (1, 2, 3));
+    }
+
+    #[test]
     fn is_newer_patch_bump() {
         assert!(is_newer("1.0.1", "1.0.0"));
         assert!(!is_newer("1.0.0", "1.0.1"));
@@ -1880,6 +1974,94 @@ def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
     fn parse_sha256sums_for_artifact_returns_none_when_missing() {
         let sums = "abc123  file-a.tar.gz\n";
         assert!(parse_sha256sums_for_artifact(sums, "file-b.tar.gz").is_none());
+    }
+
+    #[test]
+    fn select_release_for_download_prefers_exact_tag() {
+        let archive = platform_archive_name("0.9.4").unwrap();
+        let releases = vec![
+            GitHubRelease {
+                tag_name: "v0.9.4+hotfix.1".into(),
+                draft: false,
+                prerelease: false,
+                published_at: Some("2026-03-05T11:36:51Z".into()),
+                assets: vec![
+                    GitHubAsset {
+                        name: "SHA256SUMS.txt".into(),
+                    },
+                    GitHubAsset {
+                        name: format!(
+                            "ironclad-0.9.4+hotfix.1-{}",
+                            &archive["ironclad-0.9.4-".len()..]
+                        ),
+                    },
+                ],
+            },
+            GitHubRelease {
+                tag_name: "v0.9.4".into(),
+                draft: false,
+                prerelease: false,
+                published_at: Some("2026-03-05T10:00:00Z".into()),
+                assets: vec![
+                    GitHubAsset {
+                        name: "SHA256SUMS.txt".into(),
+                    },
+                    GitHubAsset {
+                        name: archive.clone(),
+                    },
+                ],
+            },
+        ];
+
+        let selected = select_release_for_download(&releases, "0.9.4");
+        assert_eq!(
+            selected.as_ref().map(|(tag, _)| tag.as_str()),
+            Some("v0.9.4")
+        );
+    }
+
+    #[test]
+    fn select_release_for_download_falls_back_to_hotfix_tag() {
+        let archive = platform_archive_name("0.9.4").unwrap();
+        let suffix = &archive["ironclad-0.9.4-".len()..];
+        let releases = vec![
+            GitHubRelease {
+                tag_name: "v0.9.4".into(),
+                draft: false,
+                prerelease: false,
+                published_at: Some("2026-03-05T10:00:00Z".into()),
+                assets: vec![GitHubAsset {
+                    name: "PROVENANCE.json".into(),
+                }],
+            },
+            GitHubRelease {
+                tag_name: "v0.9.4+hotfix.2".into(),
+                draft: false,
+                prerelease: false,
+                published_at: Some("2026-03-05T12:00:00Z".into()),
+                assets: vec![
+                    GitHubAsset {
+                        name: "SHA256SUMS.txt".into(),
+                    },
+                    GitHubAsset {
+                        name: format!("ironclad-0.9.4+hotfix.2-{suffix}"),
+                    },
+                ],
+            },
+        ];
+
+        let selected = select_release_for_download(&releases, "0.9.4");
+        let expected_archive = format!("ironclad-0.9.4+hotfix.2-{suffix}");
+        assert_eq!(
+            selected.as_ref().map(|(tag, _)| tag.as_str()),
+            Some("v0.9.4+hotfix.2")
+        );
+        assert_eq!(
+            selected
+                .as_ref()
+                .map(|(_, archive_name)| archive_name.as_str()),
+            Some(expected_archive.as_str())
+        );
     }
 
     #[test]
