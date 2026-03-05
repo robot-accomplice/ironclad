@@ -666,17 +666,45 @@
   function round2(v) {
     return Math.round(Number(v || 0) * 100) / 100;
   }
+  function normalizeRoutingProfile(profile, preferredKey) {
+    var p = {
+      correctness: clamp01(profile && profile.correctness),
+      cost: clamp01(profile && profile.cost),
+      speed: clamp01(profile && profile.speed)
+    };
+    var keys = ['correctness', 'cost', 'speed'];
+    var total = p.correctness + p.cost + p.speed;
+    if (total <= 1.0 + 1e-9) {
+      return { correctness: round2(p.correctness), cost: round2(p.cost), speed: round2(p.speed) };
+    }
+    if (preferredKey && keys.indexOf(preferredKey) !== -1) {
+      var otherSum = 0;
+      keys.forEach(function(k) { if (k !== preferredKey) otherSum += p[k]; });
+      p[preferredKey] = Math.max(0, Math.min(p[preferredKey], 1 - otherSum));
+      return { correctness: round2(p.correctness), cost: round2(p.cost), speed: round2(p.speed) };
+    }
+    if (total > 0) {
+      var scale = 1 / total;
+      p.correctness *= scale;
+      p.cost *= scale;
+      p.speed *= scale;
+    }
+    return { correctness: round2(p.correctness), cost: round2(p.cost), speed: round2(p.speed) };
+  }
+  function routingProfileTotal(profile) {
+    return round2(clamp01(profile && profile.correctness) + clamp01(profile && profile.cost) + clamp01(profile && profile.speed));
+  }
   function deriveRoutingProfile(cfg) {
     var correctness = clamp01(cfg && cfg.accuracy_floor);
     var costWeight = cfg && cfg.cost_weight;
     var cost = clamp01(costWeight == null ? (cfg && cfg.cost_aware ? 0.5 : 0.0) : costWeight);
     var confidence = clamp01(cfg && cfg.confidence_threshold != null ? cfg.confidence_threshold : 0.9);
     var speed = clamp01((0.95 - confidence) / 0.35);
-    return {
+    return normalizeRoutingProfile({
       correctness: round2(correctness),
       cost: round2(cost),
       speed: round2(speed)
-    };
+    });
   }
   function projectRoutingPatchFromProfile(profile) {
     var p = {
@@ -2374,8 +2402,9 @@
         var modelSelections = (arr[1] && arr[1].events) ? arr[1].events : [];
         var routingConfig = (arr[2] && arr[2].config) ? arr[2].config : {};
         var routingProfile = deriveRoutingProfile(routingConfig);
-        App._routingProfileDefaults = routingProfile;
-        if (!App._routingProfileDraft) App._routingProfileDraft = { correctness: routingProfile.correctness, cost: routingProfile.cost, speed: routingProfile.speed };
+        App._routingProfileDefaults = normalizeRoutingProfile(routingProfile);
+        if (!App._routingProfileDraft) App._routingProfileDraft = normalizeRoutingProfile({ correctness: routingProfile.correctness, cost: routingProfile.cost, speed: routingProfile.speed });
+        App._routingProfileDraft = normalizeRoutingProfile(App._routingProfileDraft);
 
         var models = report.models || {};
         var ts = report.time_series || [];
@@ -2402,6 +2431,7 @@
           + '<div class="routing-slider-row"><label for="routing-slider-correctness"><span>Correctness</span><span id="routing-slider-correctness-val">' + round2((App._routingProfileDraft || routingProfile).correctness).toFixed(2) + '</span></label><input id="routing-slider-correctness" data-routing-slider="correctness" type="range" min="0" max="1" step="0.01" value="' + round2((App._routingProfileDraft || routingProfile).correctness).toFixed(2) + '"></div>'
           + '<div class="routing-slider-row"><label for="routing-slider-cost"><span>Cost</span><span id="routing-slider-cost-val">' + round2((App._routingProfileDraft || routingProfile).cost).toFixed(2) + '</span></label><input id="routing-slider-cost" data-routing-slider="cost" type="range" min="0" max="1" step="0.01" value="' + round2((App._routingProfileDraft || routingProfile).cost).toFixed(2) + '"></div>'
           + '<div class="routing-slider-row"><label for="routing-slider-speed"><span>Speed</span><span id="routing-slider-speed-val">' + round2((App._routingProfileDraft || routingProfile).speed).toFixed(2) + '</span></label><input id="routing-slider-speed" data-routing-slider="speed" type="range" min="0" max="1" step="0.01" value="' + round2((App._routingProfileDraft || routingProfile).speed).toFixed(2) + '"></div>'
+          + '<div style="font-size:0.72rem;color:var(--muted);margin-top:0.35rem">Total: <span id="routing-slider-total">' + routingProfileTotal((App._routingProfileDraft || routingProfile)).toFixed(2) + '</span> / 1.00</div>'
           + '<div class="routing-profile-actions"><button class="btn" id="routing-profile-apply" style="font-size:0.6875rem;padding:0.3rem 0.7rem">Apply profile</button><button class="btn secondary" id="routing-profile-reset" style="font-size:0.6875rem;padding:0.3rem 0.7rem">Reset</button></div>'
           + persistedLabel
           + '</div></div></div>';
@@ -4203,9 +4233,9 @@
       return;
     }
     if (e.target.closest('#routing-profile-reset')) {
-      App._routingProfileDraft = App._routingProfileDefaults
+      App._routingProfileDraft = normalizeRoutingProfile(App._routingProfileDefaults
         ? { correctness: App._routingProfileDefaults.correctness, cost: App._routingProfileDefaults.cost, speed: App._routingProfileDefaults.speed }
-        : { correctness: 0.0, cost: 0.0, speed: 0.0 };
+        : { correctness: 0.0, cost: 0.0, speed: 0.0 });
       App.navigate('efficiency');
       return;
     }
@@ -5506,9 +5536,16 @@
         ? { correctness: App._routingProfileDefaults.correctness, cost: App._routingProfileDefaults.cost, speed: App._routingProfileDefaults.speed }
         : { correctness: 0.0, cost: 0.0, speed: 0.0 };
     }
-    App._routingProfileDraft[key] = round2(clamp01(slider.value));
-    var valEl = document.getElementById('routing-slider-' + key + '-val');
-    if (valEl) valEl.textContent = App._routingProfileDraft[key].toFixed(2);
+    App._routingProfileDraft[key] = clamp01(slider.value);
+    App._routingProfileDraft = normalizeRoutingProfile(App._routingProfileDraft, key);
+    ['correctness', 'cost', 'speed'].forEach(function(k) {
+      var valEl = document.getElementById('routing-slider-' + k + '-val');
+      if (valEl) valEl.textContent = App._routingProfileDraft[k].toFixed(2);
+      var sliderEl = document.getElementById('routing-slider-' + k);
+      if (sliderEl) sliderEl.value = App._routingProfileDraft[k].toFixed(2);
+    });
+    var totalEl = document.getElementById('routing-slider-total');
+    if (totalEl) totalEl.textContent = routingProfileTotal(App._routingProfileDraft).toFixed(2);
     var spiderHost = document.getElementById('routing-profile-spider-host');
     if (spiderHost) spiderHost.innerHTML = renderRoutingSpiderSvg(App._routingProfileDraft);
   });
