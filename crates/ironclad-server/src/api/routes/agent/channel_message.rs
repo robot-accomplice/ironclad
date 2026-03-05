@@ -2,8 +2,8 @@
 
 use super::AppState;
 use super::channel_helpers::{
-    estimate_inference_latency, resolve_channel_chat_id, resolve_channel_scope,
-    send_thinking_indicator, send_typing_indicator,
+    build_personality_ack_text, estimate_inference_latency, resolve_channel_chat_id,
+    resolve_channel_scope, send_thinking_indicator, send_typing_indicator,
 };
 use super::core;
 use super::decomposition::{
@@ -18,6 +18,72 @@ use super::intents::{
 use ironclad_core::InputAuthority;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+fn is_internal_delegation_metadata_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with("delegated_subagent=")
+        || t.starts_with("selected_subagent=")
+        || t.starts_with("fallback_models=")
+        || t.starts_with("notes=")
+    {
+        return true;
+    }
+    if let Some(rest) = t.strip_prefix("subtask ") {
+        let mut parts = rest.splitn(2, " -> ");
+        if let (Some(left), Some(_)) = (parts.next(), parts.next())
+            && left.chars().all(|c| c.is_ascii_digit())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+pub(super) fn strip_internal_delegation_metadata(content: &str) -> String {
+    let filtered = content
+        .lines()
+        .filter(|line| !is_internal_delegation_metadata_line(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    if filtered.is_empty() {
+        content.trim().to_string()
+    } else {
+        filtered
+    }
+}
+
+fn normalize_telegram_text(content: &str) -> String {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        let mut normalized = if in_fence {
+            line.to_string()
+        } else {
+            line.trim_start_matches('#').trim_start().to_string()
+        };
+        normalized = normalized
+            .replace("**", "")
+            .replace("__", "")
+            .replace('`', "");
+        out.push(normalized);
+    }
+    out.join("\n").trim().to_string()
+}
+
+pub(super) fn format_channel_reply_for_delivery(platform: &str, content: &str) -> String {
+    let cleaned = strip_internal_delegation_metadata(content);
+    if platform.eq_ignore_ascii_case("telegram") {
+        return normalize_telegram_text(&cleaned);
+    }
+    cleaned
+}
 
 pub async fn process_channel_message(
     state: &AppState,
@@ -67,6 +133,7 @@ pub async fn process_channel_message(
         && let Some(reply) =
             super::handle_bot_command(state, &inbound.content, Some(&inbound)).await
     {
+        let reply = format_channel_reply_for_delivery(&platform, &reply);
         state
             .channel_router
             .send_reply(&platform, &chat_id, reply)
@@ -144,6 +211,7 @@ pub async fn process_channel_message(
     if let Some(reply) =
         maybe_handle_specialist_creation_controls(state, &session_id, &user_content).await
     {
+        let reply = format_channel_reply_for_delivery(&platform, &reply);
         state
             .channel_router
             .send_reply(&platform, &chat_id, reply)
@@ -316,6 +384,7 @@ pub async fn process_channel_message(
         .await
         {
             Ok(output) => {
+                let output = strip_internal_delegation_metadata(&output);
                 precomputed_delegation_provenance.subagent_task_started = true;
                 precomputed_delegation_provenance.subagent_task_completed = true;
                 precomputed_delegation_provenance.subagent_result_attached =
@@ -346,6 +415,7 @@ pub async fn process_channel_message(
         )
         .await
     {
+        let skill_reply = format_channel_reply_for_delivery(&platform, &skill_reply);
         state
             .channel_router
             .send_reply(&platform, &chat_id, skill_reply)
@@ -410,6 +480,7 @@ pub async fn process_channel_message(
     // ── Thinking/typing indicator ────────────────────────────────────
     let thinking_sent = Arc::new(AtomicBool::new(false));
     {
+        let ack_text = build_personality_ack_text(state).await;
         if let Some(notice) = model_switch_notice.as_ref() {
             state
                 .channel_router
@@ -428,11 +499,7 @@ pub async fn process_channel_message(
         if should_pre_ack {
             state
                 .channel_router
-                .send_reply(
-                    &platform,
-                    &chat_id,
-                    "Acknowledged. Working on that now.".to_string(),
-                )
+                .send_reply(&platform, &chat_id, ack_text.clone())
                 .await
                 .inspect_err(|e| tracing::warn!(error = %e, "failed to send pre-acknowledgment"))
                 .ok();
@@ -453,11 +520,7 @@ pub async fn process_channel_message(
             if platform == "telegram" {
                 state
                     .channel_router
-                    .send_reply(
-                        &platform,
-                        &chat_id,
-                        "Acknowledged. Working on that now.".to_string(),
-                    )
+                    .send_reply(&platform, &chat_id, ack_text.clone())
                     .await
                     .inspect_err(|e| tracing::warn!(error = %e, "failed to send acknowledgment"))
                     .ok();
@@ -471,6 +534,7 @@ pub async fn process_channel_message(
             let delayed_chat_id = chat_id.clone();
             let delayed_metadata = inbound.metadata.clone();
             let delayed_guard = Arc::clone(&thinking_sent);
+            let delayed_ack = ack_text.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(thinking_threshold)).await;
                 if delayed_guard.load(Ordering::Acquire) {
@@ -479,11 +543,7 @@ pub async fn process_channel_message(
                 if delayed_platform == "telegram" {
                     delayed_state
                         .channel_router
-                        .send_reply(
-                            &delayed_platform,
-                            &delayed_chat_id,
-                            "Acknowledged. Working on that now.".to_string(),
-                        )
+                        .send_reply(&delayed_platform, &delayed_chat_id, delayed_ack)
                         .await
                         .inspect_err(
                             |e| tracing::warn!(error = %e, "failed to send delayed acknowledgment"),
@@ -527,9 +587,10 @@ pub async fn process_channel_message(
     };
 
     // Send reply to channel
+    let outbound = format_channel_reply_for_delivery(&platform, &result.content);
     if let Err(e) = state
         .channel_router
-        .send_reply(&platform, &chat_id, result.content.clone())
+        .send_reply(&platform, &chat_id, outbound)
         .await
     {
         thinking_sent.store(true, Ordering::Release);

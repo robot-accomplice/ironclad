@@ -1,3 +1,6 @@
+use super::super::channel_message::{
+    format_channel_reply_for_delivery, strip_internal_delegation_metadata,
+};
 use super::*;
 
 // ── metadata_str tests ───────────────────────────────────────
@@ -133,4 +136,41 @@ fn parse_skills_json_handles_none_invalid_and_valid_payloads() {
     assert!(parse_skills_json(Some("not-json")).is_empty());
     let parsed = parse_skills_json(Some(r#"["geo","risk-analysis"]"#));
     assert_eq!(parsed, vec!["geo".to_string(), "risk-analysis".to_string()]);
+}
+
+// ── channel output sanitation tests ──────────────────────────
+
+#[test]
+fn strip_internal_delegation_metadata_removes_internal_lines() {
+    let raw = "\
+delegated_subagent=geopolitical-sitrep model=openrouter/auto fallback_models=[\"a\",\"b\"]\n\
+subtask 1 -> geopolitical-sitrep\n\
+**Global update**\n\
+notes=timeout guardrail rerouted\n\
+Key point one\n\
+Key point two";
+    let cleaned = strip_internal_delegation_metadata(raw);
+    assert!(!cleaned.contains("delegated_subagent="));
+    assert!(!cleaned.contains("subtask 1 ->"));
+    assert!(!cleaned.contains("notes="));
+    assert!(cleaned.contains("Global update"));
+    assert!(cleaned.contains("Key point one"));
+}
+
+#[test]
+fn format_channel_reply_for_delivery_normalizes_telegram_markdown() {
+    let raw = "\
+# Heading\n\
+**bold** and `code`\n\
+delegated_subagent=geo model=x fallback_models=[]\n\
+subtask 1 -> geo\n\
+line";
+    let out = format_channel_reply_for_delivery("telegram", raw);
+    assert!(!out.contains("**"));
+    assert!(!out.contains('`'));
+    assert!(!out.contains("delegated_subagent="));
+    assert!(!out.contains("subtask 1 ->"));
+    assert!(out.contains("Heading"));
+    assert!(out.contains("bold and code"));
+    assert!(out.contains("line"));
 }
