@@ -11,6 +11,10 @@ use super::decomposition::{
     apply_decomposition_decision, build_gate_system_note, evaluate_decomposition_gate,
     maybe_handle_specialist_creation_controls,
 };
+use super::intents::{
+    requests_cron, requests_current_events, requests_delegation, requests_execution,
+    requests_file_distribution, requests_introspection,
+};
 use ironclad_core::InputAuthority;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -414,6 +418,28 @@ pub async fn process_channel_message(
                 .inspect_err(|e| tracing::warn!(error = %e, "failed to send model switch notice"))
                 .ok();
         }
+        let should_pre_ack = platform == "telegram"
+            && (requests_execution(&user_content)
+                || requests_current_events(&user_content)
+                || requests_delegation(&user_content)
+                || requests_introspection(&user_content)
+                || requests_file_distribution(&user_content)
+                || requests_cron(&user_content));
+        if should_pre_ack {
+            state
+                .channel_router
+                .send_reply(
+                    &platform,
+                    &chat_id,
+                    "Acknowledged. Working on that now.".to_string(),
+                )
+                .await
+                .inspect_err(|e| tracing::warn!(error = %e, "failed to send pre-acknowledgment"))
+                .ok();
+            send_thinking_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
+            thinking_sent.store(true, Ordering::Release);
+        }
+
         let estimated_latency = estimate_inference_latency(
             prepared.tier,
             user_content.len(),
@@ -423,7 +449,7 @@ pub async fn process_channel_message(
         )
         .await;
 
-        if estimated_latency >= thinking_threshold {
+        if !should_pre_ack && estimated_latency >= thinking_threshold {
             if platform == "telegram" {
                 state
                     .channel_router
@@ -438,7 +464,7 @@ pub async fn process_channel_message(
             }
             send_thinking_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
             thinking_sent.store(true, Ordering::Release);
-        } else {
+        } else if !should_pre_ack {
             send_typing_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
             let delayed_state = state.clone();
             let delayed_platform = platform.clone();

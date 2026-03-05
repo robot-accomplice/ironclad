@@ -21,8 +21,9 @@ use super::guards::{
     enforce_model_identity_truth_guard, enforce_non_repetition, enforce_subagent_claim_guard,
 };
 use super::intents::{
-    requests_cron, requests_current_events, requests_delegation, requests_execution,
-    requests_file_distribution, requests_introspection, requests_random_tool_use,
+    requests_acknowledgement, requests_cron, requests_current_events, requests_delegation,
+    requests_execution, requests_file_distribution, requests_introspection,
+    requests_random_tool_use,
 };
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
@@ -381,18 +382,26 @@ fn extract_path_hint(prompt: &str) -> Option<String> {
     None
 }
 
+fn expand_user_path(path: &str) -> String {
+    if path == "~" {
+        return std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "~".to_string());
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        let base = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "~".to_string());
+        return format!("{base}/{rest}");
+    }
+    path.to_string()
+}
+
 fn build_distribution_command(path: &str) -> String {
-    let target = shell_quote(path);
+    let target = shell_quote(&expand_user_path(path));
     format!(
         "find {target} -maxdepth 5 -type f 2>/dev/null | awk -F. 'NF>1{{ext=$NF}} NF==1{{ext=\"[noext]\"}} {{count[ext]++}} END{{for(e in count) print e\"\\t\"count[e]}}' | sort -k2,2nr | head -n 20"
     )
-}
-
-fn requests_geopolitical_sitrep(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    (lower.contains("geopolitical") && lower.contains("situation"))
-        || (lower.contains("geopolitical") && lower.contains("sitrep"))
-        || (lower.contains("geopolitics") && lower.contains("sitrep"))
 }
 
 async fn try_execution_shortcut(
@@ -404,23 +413,36 @@ async fn try_execution_shortcut(
     prepared_model: &str,
     delegation_provenance: &mut DelegationProvenance,
 ) -> Option<InferenceOutput> {
+    if requests_acknowledgement(user_prompt) {
+        return Some(InferenceOutput {
+            content: "Acknowledged, awaiting your command.".to_string(),
+            model: prepared_model.to_string(),
+            tokens_in: 0,
+            tokens_out: 0,
+            cost: 0.0,
+            react_turns: 1,
+            latency_ms: 0,
+            quality_score: 1.0,
+            escalated: false,
+            tool_results: vec![],
+        });
+    }
+
     if !requests_execution(user_prompt)
-        && !requests_geopolitical_sitrep(user_prompt)
+        && !requests_current_events(user_prompt)
         && !requests_introspection(user_prompt)
     {
         return None;
     }
 
     // 0) Geopolitical sitrep request — force real delegated execution.
-    if requests_geopolitical_sitrep(user_prompt) {
+    if requests_current_events(user_prompt) {
         delegation_provenance.subagent_task_started = true;
         let params = serde_json::json!({
-            "subtasks": [{
-                "task": format!(
-                    "Provide an up-to-date geopolitical sitrep for today with concrete current date references and no stale-memory disclaimers. User request: {}",
-                    user_prompt
-                )
-            }]
+            "task": format!(
+                "Provide an up-to-date geopolitical sitrep for today with concrete current date references and no stale-memory disclaimers. User request: {}",
+                user_prompt
+            )
         });
         let out = execute_tool_call(
             state,
@@ -454,7 +476,7 @@ async fn try_execution_shortcut(
                 tool_results.push(("orchestrate-subagents".to_string(), format!("error: {err}")));
                 return Some(InferenceOutput {
                     content: format!(
-                        "Acknowledged. I attempted live geopolitical delegation, but it failed: {}",
+                        "Acknowledged. I attempted delegation for live geopolitical retrieval, but it failed: {}",
                         err
                     ),
                     model: prepared_model.to_string(),
@@ -625,6 +647,7 @@ async fn try_execution_shortcut(
     // 3) File distribution request (supports '~' and absolute paths).
     if requests_file_distribution(user_prompt) {
         let path = extract_path_hint(user_prompt).unwrap_or_else(|| ".".to_string());
+        let resolved_path = expand_user_path(&path);
         let cmd = build_distribution_command(&path);
         let params = serde_json::json!({
             "command": cmd,
@@ -638,7 +661,12 @@ async fn try_execution_shortcut(
             Ok(output) => {
                 tool_results.push(("bash".to_string(), output.clone()));
                 return Some(InferenceOutput {
-                    content: format!("File distribution for {}:\n{}", path, output.trim()),
+                    content: format!(
+                        "File distribution for {} (resolved: {}):\n{}",
+                        path,
+                        resolved_path,
+                        output.trim()
+                    ),
                     model: prepared_model.to_string(),
                     tokens_in: 0,
                     tokens_out: 0,
@@ -654,8 +682,8 @@ async fn try_execution_shortcut(
                 tool_results.push(("bash".to_string(), format!("error: {err}")));
                 return Some(InferenceOutput {
                     content: format!(
-                        "I attempted to compute file distribution for {}, but the command failed: {}",
-                        path, err
+                        "I attempted to compute file distribution for {} (resolved: {}), but the command failed: {}",
+                        path, resolved_path, err
                     ),
                     model: prepared_model.to_string(),
                     tokens_in: 0,

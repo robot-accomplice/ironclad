@@ -28,7 +28,10 @@ pub(super) fn requests_execution(prompt: &str) -> bool {
 
 pub(super) fn requests_delegation(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
-    if lower.contains("delegate") || lower.contains("orchestrate") || lower.contains("assign") {
+    if lower.contains("delegate") || lower.contains("orchestrate") {
+        return true;
+    }
+    if lower.contains("assign") && lower.contains("subagent") {
         return true;
     }
     lower.contains("subagent")
@@ -102,6 +105,12 @@ pub(super) fn requests_introspection(prompt: &str) -> bool {
     .any(|m| lower.contains(m))
 }
 
+pub(super) fn requests_acknowledgement(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    (lower.contains("acknowledge") || lower.contains("acknowledg"))
+        && (lower.contains("one sentence") || lower.contains("then wait"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,5 +159,16 @@ mod tests {
             "use your introspection tool to discover current subagent functionality"
         ));
         assert!(requests_introspection("what tools do you have available?"));
+    }
+
+    #[test]
+    fn acknowledgement_markers_match_expected_prompts() {
+        assert!(requests_acknowledgement(
+            "Good evening Duncan. Acknowledge this request in one sentence, then wait."
+        ));
+        assert!(requests_acknowledgement(
+            "acknowledge this in one sentence and then wait for my next command"
+        ));
+        assert!(!requests_acknowledgement("please acknowledge receipt"));
     }
 }
