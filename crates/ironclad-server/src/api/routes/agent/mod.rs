@@ -9,6 +9,7 @@ mod delegation;
 mod diagnostics;
 mod guards;
 mod handlers;
+mod intents;
 mod orchestration;
 mod poll_loops;
 mod routing;

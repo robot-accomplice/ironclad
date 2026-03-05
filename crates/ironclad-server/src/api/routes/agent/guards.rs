@@ -3,6 +3,10 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use super::intents::{
+    requests_cron, requests_delegation, requests_execution, requests_model_identity,
+};
+
 /// RAII guard that releases a dedup fingerprint when dropped.
 /// Ensures cleanup on all exit paths, including async stream disconnects.
 pub(super) struct DedupGuard {
@@ -113,39 +117,6 @@ pub(super) fn enforce_non_repetition(response: String, previous_assistant: Optio
     response
 }
 
-fn requests_execution(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    [
-        " run ",
-        " execute ",
-        " use a tool",
-        "use the tool",
-        "list entries",
-        "list files",
-        "file distribution",
-        "schedule a cron",
-        "schedule cron",
-        "create cron",
-        "order a subagent",
-        "delegate",
-        "orchestrate",
-        "ls ",
-        "/status",
-    ]
-    .iter()
-    .any(|m| lower.contains(m))
-}
-
-fn prompt_requests_delegation(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    lower.contains("subagent") || lower.contains("delegate") || lower.contains("orchestrate")
-}
-
-fn prompt_requests_cron(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    lower.contains("cron") || (lower.contains("schedule") && lower.contains("minute"))
-}
-
 fn looks_like_unexecuted_claim(response: &str) -> bool {
     let lower = response.to_ascii_lowercase();
     lower.contains("\"tool_call\"")
@@ -161,7 +132,7 @@ pub(super) fn enforce_execution_truth_guard(
     response: String,
     tool_results: &[(String, String)],
 ) -> String {
-    if prompt_requests_delegation(user_prompt)
+    if requests_delegation(user_prompt)
         && !tool_results.iter().any(|(name, output)| {
             let n = name.to_ascii_lowercase();
             let is_delegate_tool = n.contains("subagent")
@@ -176,7 +147,7 @@ pub(super) fn enforce_execution_truth_guard(
         return "I did not execute a delegated subagent task for that request. I can only claim delegated results when a subagent tool call actually runs."
             .to_string();
     }
-    if prompt_requests_cron(user_prompt)
+    if requests_cron(user_prompt)
         && !tool_results.iter().any(|(name, output)| {
             name.to_ascii_lowercase().contains("cron")
                 && !output.to_ascii_lowercase().starts_with("error:")
@@ -210,24 +181,12 @@ pub(super) fn enforce_execution_truth_guard(
         .to_string()
 }
 
-fn model_identity_prompt(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    lower.contains("current model")
-        || lower.contains("what model")
-        || lower.contains("which model")
-        || lower.contains("still on")
-        || lower.contains("still using")
-        || lower.contains("using moonshot")
-        || lower.contains("confirm for me")
-        || lower.contains("/status")
-}
-
 pub(super) fn enforce_model_identity_truth_guard(
     user_prompt: &str,
     response: String,
     executed_model: &str,
 ) -> String {
-    if !model_identity_prompt(user_prompt) {
+    if !requests_model_identity(user_prompt) {
         return response;
     }
     tracing::warn!(

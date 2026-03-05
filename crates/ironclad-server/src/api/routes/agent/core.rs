@@ -20,6 +20,10 @@ use super::guards::{
     enforce_execution_truth_guard, enforce_model_identity_truth_guard, enforce_non_repetition,
     enforce_subagent_claim_guard,
 };
+use super::intents::{
+    requests_cron, requests_delegation, requests_execution, requests_file_distribution,
+    requests_random_tool_use,
+};
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
 };
@@ -358,50 +362,6 @@ pub(super) fn sanitize_model_output(content: String, hmac_secret: &[u8]) -> Stri
     }
 }
 
-fn prompt_requests_execution(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    [
-        " run ",
-        " execute ",
-        " use a tool",
-        "tools you can use",
-        "pick one at random",
-        "list entries",
-        "list files",
-        "file distribution",
-        "schedule a cron",
-        "schedule cron",
-        "create cron",
-        "order a subagent",
-        "delegate",
-        "orchestrate",
-        "ls ",
-    ]
-    .iter()
-    .any(|m| lower.contains(m))
-}
-
-fn prompt_requests_delegation(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    lower.contains("subagent") || lower.contains("delegate") || lower.contains("orchestrate")
-}
-
-fn prompt_requests_cron(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    lower.contains("cron") || (lower.contains("schedule") && lower.contains("minute"))
-}
-
-fn prompt_requests_file_distribution(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    lower.contains("file distribution")
-}
-
-fn prompt_requests_random_tool_use(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    lower.contains("tools you can use")
-        || (lower.contains("pick one at random") && lower.contains("tool"))
-}
-
 fn shell_quote(raw: &str) -> String {
     format!("'{}'", raw.replace('\'', "'\"'\"'"))
 }
@@ -437,12 +397,12 @@ async fn try_execution_shortcut(
     prepared_model: &str,
     delegation_provenance: &mut DelegationProvenance,
 ) -> Option<InferenceOutput> {
-    if !prompt_requests_execution(user_prompt) {
+    if !requests_execution(user_prompt) {
         return None;
     }
 
     // 1) Tool inventory + random tool execution request.
-    if prompt_requests_random_tool_use(user_prompt) {
+    if requests_random_tool_use(user_prompt) {
         let mut names = state
             .tools
             .list()
@@ -524,7 +484,7 @@ async fn try_execution_shortcut(
     }
 
     // 2) File distribution request (supports '~' and absolute paths).
-    if prompt_requests_file_distribution(user_prompt) {
+    if requests_file_distribution(user_prompt) {
         let path = extract_path_hint(user_prompt).unwrap_or_else(|| ".".to_string());
         let cmd = build_distribution_command(&path);
         let params = serde_json::json!({
@@ -573,7 +533,7 @@ async fn try_execution_shortcut(
     }
 
     // 3) Delegation request — force a real orchestration tool execution attempt.
-    if prompt_requests_delegation(user_prompt) {
+    if requests_delegation(user_prompt) {
         delegation_provenance.subagent_task_started = true;
         let params = serde_json::json!({
             "subtasks": [{
@@ -630,7 +590,7 @@ async fn try_execution_shortcut(
     }
 
     // 4) Cron request — create a real cron job directly through DB path.
-    if prompt_requests_cron(user_prompt) {
+    if requests_cron(user_prompt) {
         let agent_id = {
             let cfg = state.config.read().await;
             cfg.agent.id.clone()
@@ -1087,7 +1047,7 @@ pub(super) async fn execute_inference_pipeline(
     delegation_provenance: &mut DelegationProvenance,
 ) -> Result<PipelineResult, String> {
     // 1. Cache check
-    let cached = if prompt_requests_execution(user_content) {
+    let cached = if requests_execution(user_content) {
         None
     } else {
         check_cache(
