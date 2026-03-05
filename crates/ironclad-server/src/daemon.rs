@@ -174,6 +174,47 @@ fn windows_pid_running(pid: u32) -> Result<bool> {
     Ok(stdout.trim() == "RUNNING")
 }
 
+fn windows_listening_pid(port: u16) -> Result<Option<u32>> {
+    if std::env::consts::OS != "windows" {
+        return Ok(None);
+    }
+
+    // Prefer PowerShell TCP APIs for locale-independent output.
+    let script = format!(
+        "$c = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) {{ Write-Output $c.OwningProcess }}"
+    );
+    if let Ok(out) = command_output("powershell", &["-NoProfile", "-Command", &script])
+        && out.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let pid = stdout.trim().parse::<u32>().ok();
+        if pid.is_some() {
+            return Ok(pid);
+        }
+    }
+
+    // Fallback: parse netstat output.
+    let out = command_output("netstat", &["-ano"])?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let needle = format!(":{port}");
+    for line in stdout.lines() {
+        let lower = line.to_ascii_lowercase();
+        if !lower.contains("listen") || !line.contains(&needle) {
+            continue;
+        }
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if let Some(last) = cols.last()
+            && let Ok(pid) = last.parse::<u32>()
+        {
+            return Ok(Some(pid));
+        }
+    }
+    Ok(None)
+}
+
 fn spawn_windows_daemon_process(install: &WindowsDaemonInstall) -> Result<u32> {
     let mut cmd = std::process::Command::new(&install.binary);
     cmd.args([
@@ -456,6 +497,14 @@ pub fn start_daemon() -> Result<()> {
             {
                 return Ok(());
             }
+            // Marker PID may be missing/stale; recover from active listener on configured port.
+            if let Some(pid) = windows_listening_pid(install.port)?
+                && windows_pid_running(pid)?
+            {
+                install.pid = Some(pid);
+                write_windows_daemon_marker(&install)?;
+                return Ok(());
+            }
             let pid = spawn_windows_daemon_process(&install)?;
             install.pid = Some(pid);
             write_windows_daemon_marker(&install)?;
@@ -464,9 +513,16 @@ pub fn start_daemon() -> Result<()> {
             // The process may crash immediately on startup (bad config, port conflict, etc.).
             std::thread::sleep(std::time::Duration::from_secs(1));
             if !windows_pid_running(pid)? {
-                return Err(IroncladError::Config(
-                    "daemon process exited immediately after spawn — check config and port availability".into(),
-                ));
+                let detail = if let Some(owner) = windows_listening_pid(install.port)? {
+                    format!(
+                        "daemon process exited immediately after spawn — port {} is already in use by pid {}",
+                        install.port, owner
+                    )
+                } else {
+                    "daemon process exited immediately after spawn — check config and port availability"
+                        .to_string()
+                };
+                return Err(IroncladError::Config(detail));
             }
             Ok(())
         }
@@ -486,7 +542,8 @@ pub fn stop_daemon() -> Result<()> {
                 Some(i) => i,
                 None => return Ok(()),
             };
-            let Some(pid) = install.pid else {
+            let pid = install.pid.or(windows_listening_pid(install.port)?);
+            let Some(pid) = pid else {
                 return Ok(());
             };
             let pid_s = pid.to_string();
