@@ -248,7 +248,7 @@ async fn subagent_crud_lifecycle() {
             "/api/subagents",
             &json!({
                 "name": "test-sub",
-                "model": "gpt-4o-mini",
+                "model": "openai/gpt-4o-mini",
                 "system_prompt": "You are a test helper."
             }),
         )
