@@ -24,6 +24,7 @@ use super::intents::{
     requests_acknowledgement, requests_capability_summary, requests_cron, requests_current_events,
     requests_delegation, requests_execution, requests_file_distribution, requests_introspection,
     requests_personality_profile, requests_provider_inventory, requests_random_tool_use,
+    requests_wallet_address_scan,
 };
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
@@ -404,6 +405,13 @@ fn build_distribution_command(path: &str) -> String {
     )
 }
 
+fn build_wallet_scan_command(path: &str) -> String {
+    let target = shell_quote(&expand_user_path(path));
+    format!(
+        "rg -l -P \"(0x[a-fA-F0-9]{{40}}|bc1[ac-hj-np-z02-9]{{11,71}}|[13][a-km-zA-HJ-NP-Z1-9]{{25,34}}|[1-9A-HJ-NP-Za-km-z]{{32,44}})\" {target} -g '!.git/**' -g '!target/**' 2>/dev/null | while IFS= read -r f; do realpath \"$f\" 2>/dev/null || printf \"%s\\n\" \"$f\"; done | sort -u | head -n 500"
+    )
+}
+
 async fn try_execution_shortcut(
     state: &AppState,
     user_prompt: &str,
@@ -434,6 +442,7 @@ async fn try_execution_shortcut(
         && !requests_provider_inventory(user_prompt)
         && !requests_personality_profile(user_prompt)
         && !requests_capability_summary(user_prompt)
+        && !requests_wallet_address_scan(user_prompt)
     {
         return None;
     }
@@ -792,6 +801,68 @@ async fn try_execution_shortcut(
                 return Some(InferenceOutput {
                     content: format!(
                         "I attempted to compute file distribution for {} (resolved: {}), but the command failed: {}",
+                        path, resolved_path, err
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
+    // 3b) Wallet address scan request — recursively search files and return full paths.
+    if requests_wallet_address_scan(user_prompt) {
+        let path = extract_path_hint(user_prompt).unwrap_or_else(|| "~/code".to_string());
+        let resolved_path = expand_user_path(&path);
+        let cmd = build_wallet_scan_command(&path);
+        let params = serde_json::json!({
+            "command": cmd,
+            "cwd": ".",
+            "timeout_seconds": 90
+        });
+        let out =
+            execute_tool_call(state, "bash", &params, turn_id, authority, channel_label).await;
+        let mut tool_results = Vec::new();
+        match out {
+            Ok(output) => {
+                tool_results.push(("bash".to_string(), output.clone()));
+                let trimmed = output.trim();
+                let content = if trimmed.is_empty() {
+                    format!(
+                        "No wallet-address-like patterns were found under {} (resolved: {}).",
+                        path, resolved_path
+                    )
+                } else {
+                    format!(
+                        "Wallet-address-like patterns found under {} (resolved: {}):\n{}",
+                        path, resolved_path, trimmed
+                    )
+                };
+                return Some(InferenceOutput {
+                    content,
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                tool_results.push(("bash".to_string(), format!("error: {err}")));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "I attempted a recursive wallet-address scan under {} (resolved: {}), but the command failed: {}",
                         path, resolved_path, err
                     ),
                     model: prepared_model.to_string(),
@@ -1331,6 +1402,7 @@ pub(super) async fn execute_inference_pipeline(
         || requests_personality_profile(user_content)
         || requests_capability_summary(user_content)
         || requests_acknowledgement(user_content)
+        || requests_wallet_address_scan(user_content)
     {
         None
     } else {

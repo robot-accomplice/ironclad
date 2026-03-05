@@ -133,6 +133,15 @@ pub(super) fn requests_capability_summary(prompt: &str) -> bool {
         || lower.contains("what can you help")
 }
 
+pub(super) fn requests_wallet_address_scan(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    (lower.contains("wallet address") || lower.contains("wallet addresses"))
+        && (lower.contains("search")
+            || lower.contains("find")
+            || lower.contains("scan")
+            || lower.contains("recursively"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +219,16 @@ mod tests {
         assert!(requests_capability_summary(
             "Duncan, what are you able to do for me right now?"
         ));
+    }
+
+    #[test]
+    fn wallet_scan_markers_match_expected_prompts() {
+        assert!(requests_wallet_address_scan(
+            "search the ~/code folder recursively and tell me files containing wallet address"
+        ));
+        assert!(requests_wallet_address_scan(
+            "find wallet addresses in /tmp recursively"
+        ));
+        assert!(!requests_wallet_address_scan("show me your wallet balance"));
     }
 }
