@@ -380,6 +380,19 @@ fn extract_path_hint(prompt: &str) -> Option<String> {
             return Some(t.to_string());
         }
     }
+    let lower = cleaned.to_ascii_lowercase();
+    if lower.contains("downloads folder") || lower.contains(" downloads ") {
+        return Some("~/Downloads".to_string());
+    }
+    if lower.contains("desktop folder") || lower.contains(" desktop ") {
+        return Some("~/Desktop".to_string());
+    }
+    if lower.contains("documents folder") || lower.contains(" documents ") {
+        return Some("~/Documents".to_string());
+    }
+    if lower.contains("code folder") || lower.contains(" ~/code") || lower.contains(" /code") {
+        return Some("~/code".to_string());
+    }
     None
 }
 
@@ -408,7 +421,7 @@ fn build_distribution_command(path: &str) -> String {
 fn build_wallet_scan_command(path: &str) -> String {
     let target = shell_quote(&expand_user_path(path));
     format!(
-        "rg -l -P \"(0x[a-fA-F0-9]{{40}}|bc1[ac-hj-np-z02-9]{{11,71}}|[13][a-km-zA-HJ-NP-Z1-9]{{25,34}}|[1-9A-HJ-NP-Za-km-z]{{32,44}})\" {target} -g '!.git/**' -g '!target/**' 2>/dev/null | while IFS= read -r f; do realpath \"$f\" 2>/dev/null || printf \"%s\\n\" \"$f\"; done | sort -u | head -n 500"
+        "rg -l -P \"(0x[a-fA-F0-9]{{40}}|bc1[ac-hj-np-z02-9]{{11,71}}|[13][a-km-zA-HJ-NP-Z1-9]{{25,34}}|[1-9A-HJ-NP-Za-km-z]{{32,44}}|(?i)(seed phrase|mnemonic|private key|wallet credentials?|keystore|xprv|xpub|begin (ec|rsa) private key))\" {target} -g '!.git/**' -g '!target/**' 2>/dev/null | while IFS= read -r f; do realpath \"$f\" 2>/dev/null || printf \"%s\\n\" \"$f\"; done | sort -u | head -n 500"
     )
 }
 
@@ -836,12 +849,12 @@ async fn try_execution_shortcut(
                 let trimmed = output.trim();
                 let content = if trimmed.is_empty() {
                     format!(
-                        "No wallet-address-like patterns were found under {} (resolved: {}).",
+                        "No wallet-address-or-credential-like patterns were found under {} (resolved: {}).",
                         path, resolved_path
                     )
                 } else {
                     format!(
-                        "Wallet-address-like patterns found under {} (resolved: {}):\n{}",
+                        "Wallet-address-or-credential-like patterns found under {} (resolved: {}):\n{}",
                         path, resolved_path, trimmed
                     )
                 };
