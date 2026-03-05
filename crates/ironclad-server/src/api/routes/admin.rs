@@ -2254,6 +2254,7 @@ pub async fn change_agent_model(
                     format!("agent '{agent_name}' not found"),
                 )
             })?;
+        crate::api::routes::subagents::validate_subagent_model_for_role(&existing.role, &model)?;
         old_model = existing.model.clone();
         let mut updated = existing.clone();
         updated.model = model.clone();

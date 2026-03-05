@@ -263,7 +263,7 @@ fn parse_semver(v: &str) -> (u32, u32, u32) {
     (major, minor, patch)
 }
 
-fn is_newer(remote: &str, local: &str) -> bool {
+pub(crate) fn is_newer(remote: &str, local: &str) -> bool {
     parse_semver(remote) > parse_semver(local)
 }
 
@@ -730,7 +730,7 @@ fn print_diff(old: &str, new: &str) {
 
 // ── Binary update ────────────────────────────────────────────
 
-async fn check_binary_version(
+pub(crate) async fn check_binary_version(
     client: &reqwest::Client,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let resp = client.get(CRATES_IO_API).send().await?;

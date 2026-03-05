@@ -127,6 +127,56 @@ fn count_occurrences(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
 }
 
+#[derive(Debug, Clone)]
+struct ProviderHealthRow {
+    name: String,
+    status: String,
+    count: u64,
+    error: Option<String>,
+}
+
+async fn fetch_provider_health(
+    base_url: &str,
+) -> Result<Vec<ProviderHealthRow>, Box<dyn std::error::Error>> {
+    let resp = super::http_client()?
+        .get(format!(
+            "{base_url}/api/models/available?validation_level=zero"
+        ))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(std::io::Error::other(format!(
+            "provider models endpoint returned HTTP {}",
+            resp.status()
+        ))
+        .into());
+    }
+    let body: serde_json::Value = resp.json().await?;
+    let mut rows = Vec::new();
+    let providers = body
+        .get("providers")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    for (name, report) in providers {
+        rows.push(ProviderHealthRow {
+            name,
+            status: report
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            count: report.get("count").and_then(|v| v.as_u64()).unwrap_or(0),
+            error: report
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        });
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(rows)
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct MechanicRepairPlan {
     description: String,
@@ -437,6 +487,78 @@ async fn cmd_mechanic_json(
                         "ironclad channels status".to_string(),
                         "ironclad logs -n 200".to_string(),
                     ],
+                    false,
+                    false,
+                ));
+            }
+        }
+
+        match fetch_provider_health(base_url).await {
+            Ok(rows) if rows.is_empty() => {
+                findings.push(finding(
+                    "provider-health-empty",
+                    "medium",
+                    0.85,
+                    "Provider health check returned no providers",
+                    "No provider status records were returned by /api/models/available.",
+                    "Verify providers are configured and reachable from the runtime.",
+                    vec!["ironclad models scan".to_string()],
+                    false,
+                    false,
+                ));
+            }
+            Ok(rows) => {
+                for row in rows {
+                    match row.status.as_str() {
+                        "ok" if row.count > 0 => {}
+                        "ok" => findings.push(finding(
+                            "provider-health-no-models",
+                            "medium",
+                            0.88,
+                            format!("Provider '{}' reachable but no models discovered", row.name),
+                            "Provider endpoint responded successfully but model list is empty.",
+                            "Check provider model inventory and credentials.",
+                            vec![format!("ironclad models scan --provider {}", row.name)],
+                            false,
+                            false,
+                        )),
+                        "unreachable" | "error" => findings.push(finding(
+                            "provider-health-unavailable",
+                            "high",
+                            0.93,
+                            format!("Provider '{}' is {}", row.name, row.status),
+                            row.error.unwrap_or_else(|| "provider route is not healthy".to_string()),
+                            "Restore provider connectivity/auth so fallback routing can continue automatically.",
+                            vec![
+                                format!("ironclad models scan --provider {}", row.name),
+                                "ironclad mechanic --repair".to_string(),
+                            ],
+                            false,
+                            false,
+                        )),
+                        other => findings.push(finding(
+                            "provider-health-unknown",
+                            "medium",
+                            0.8,
+                            format!("Provider '{}' reported status '{}'", row.name, other),
+                            row.error.unwrap_or_else(|| "unknown provider health state".to_string()),
+                            "Inspect provider configuration and discovery path.",
+                            vec![format!("ironclad models scan --provider {}", row.name)],
+                            false,
+                            false,
+                        )),
+                    }
+                }
+            }
+            Err(e) => {
+                findings.push(finding(
+                    "provider-health-check-failed",
+                    "medium",
+                    0.9,
+                    "Provider health check failed",
+                    format!("Could not query /api/models/available: {e}"),
+                    "Inspect gateway and provider discovery endpoint health.",
+                    vec!["ironclad models scan".to_string()],
                     false,
                     false,
                 ));
@@ -1789,6 +1911,49 @@ pub async fn cmd_mechanic(
             }
         }
 
+        // Provider route health (reachability + discovered model counts)
+        match fetch_provider_health(base_url).await {
+            Ok(rows) if rows.is_empty() => {
+                println!("  {WARN} Provider health check returned no providers");
+            }
+            Ok(rows) => {
+                println!(
+                    "  {OK} Provider health check completed ({} provider{})",
+                    rows.len(),
+                    if rows.len() == 1 { "" } else { "s" }
+                );
+                for row in rows {
+                    match row.status.as_str() {
+                        "ok" if row.count > 0 => {
+                            println!(
+                                "    {OK} {}: reachable ({} model{})",
+                                row.name,
+                                row.count,
+                                if row.count == 1 { "" } else { "s" }
+                            );
+                        }
+                        "ok" => {
+                            println!(
+                                "    {WARN} {}: reachable but no models discovered",
+                                row.name
+                            );
+                        }
+                        "unreachable" | "error" => {
+                            let detail = row.error.as_deref().unwrap_or("unknown provider error");
+                            println!("    {WARN} {}: {} ({detail})", row.name, row.status);
+                        }
+                        other => {
+                            let detail = row.error.as_deref().unwrap_or("no extra detail");
+                            println!("    {WARN} {}: {other} ({detail})", row.name);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  {WARN} Provider health check failed: {e}");
+            }
+        }
+
         // Smart diagnostics from recent logs + channel telemetry.
         let log_snapshot = recent_log_snapshot(&ironclad_dir.join("logs"), 350_000);
         if let Some(snapshot) = log_snapshot.as_deref() {
@@ -1943,6 +2108,134 @@ pub async fn cmd_mechanic(
         }
     } else {
         println!("    {DETAIL} Skipping server checks (config, skills, wallet, channels)");
+    }
+
+    if repair {
+        println!("\n  {BOLD}Mechanic Integrated Sweep{RESET}\n");
+
+        // Update availability probe
+        match super::http_client() {
+            Ok(client) => match crate::cli::update::check_binary_version(&client).await {
+                Ok(Some(latest))
+                    if crate::cli::update::is_newer(&latest, env!("CARGO_PKG_VERSION")) =>
+                {
+                    println!(
+                        "  {WARN} Update available: v{latest} (current v{})",
+                        env!("CARGO_PKG_VERSION")
+                    );
+                }
+                Ok(Some(latest)) => {
+                    println!("  {OK} Binary version current (latest v{latest})");
+                }
+                Ok(None) => {
+                    println!("  {WARN} Update check unavailable (could not query release source)");
+                }
+                Err(e) => {
+                    println!("  {WARN} Update check failed: {e}");
+                }
+            },
+            Err(e) => {
+                println!("  {WARN} Update check setup failed: {e}");
+            }
+        }
+
+        // Defrag sweep summary
+        let workspace = ironclad_dir.join("workspace");
+        if workspace.exists() {
+            let passes = [
+                crate::cli::defrag::pass_refs(&workspace),
+                crate::cli::defrag::pass_drift(&workspace),
+                crate::cli::defrag::pass_artifacts(&workspace),
+                crate::cli::defrag::pass_stale(&workspace),
+                crate::cli::defrag::pass_identity(&workspace),
+                crate::cli::defrag::pass_scripts(&workspace),
+            ];
+            let total_findings: usize = passes.iter().map(std::vec::Vec::len).sum();
+            let fixable_findings: usize = passes.iter().flatten().filter(|f| f.fixable).count();
+
+            if total_findings == 0 {
+                println!("  {OK} Defrag sweep clean (0 findings)");
+            } else {
+                println!(
+                    "  {WARN} Defrag sweep found {total_findings} finding(s), {fixable_findings} fixable"
+                );
+                println!(
+                    "    {DETAIL} Run `ironclad defrag --fix --yes` to apply fixable defrag repairs."
+                );
+            }
+        } else {
+            println!(
+                "  {WARN} Defrag sweep skipped: workspace directory missing ({})",
+                workspace.display()
+            );
+        }
+
+        // Circuit status summary
+        if gateway_up {
+            match super::http_client() {
+                Ok(client) => match client
+                    .get(format!("{base_url}/api/breaker/status"))
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                        let providers = body
+                            .get("providers")
+                            .and_then(|v| v.as_object())
+                            .cloned()
+                            .unwrap_or_default();
+                        if providers.is_empty() {
+                            println!("  {OK} Circuit status: no providers registered");
+                        } else {
+                            let mut open_or_half = 0usize;
+                            for status in providers.values() {
+                                let state = status
+                                    .get("state")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                if state.eq_ignore_ascii_case("open")
+                                    || state.eq_ignore_ascii_case("half_open")
+                                    || state.eq_ignore_ascii_case("half-open")
+                                {
+                                    open_or_half += 1;
+                                }
+                            }
+                            if open_or_half == 0 {
+                                println!(
+                                    "  {OK} Circuit status healthy ({} provider{} closed)",
+                                    providers.len(),
+                                    if providers.len() == 1 { "" } else { "s" }
+                                );
+                            } else {
+                                println!(
+                                    "  {WARN} Circuit status degraded ({open_or_half}/{} provider{} open or half-open)",
+                                    providers.len(),
+                                    if providers.len() == 1 { "" } else { "s" }
+                                );
+                                println!(
+                                    "    {DETAIL} Run `ironclad circuit status` for per-provider state."
+                                );
+                            }
+                        }
+                    }
+                    Ok(resp) => {
+                        println!(
+                            "  {WARN} Circuit status check failed (HTTP {})",
+                            resp.status()
+                        );
+                    }
+                    Err(e) => {
+                        println!("  {WARN} Circuit status check failed: {e}");
+                    }
+                },
+                Err(e) => {
+                    println!("  {WARN} Circuit status check setup failed: {e}");
+                }
+            }
+        } else {
+            println!("  {WARN} Circuit status check skipped: gateway unavailable");
+        }
     }
 
     // ── Security configuration audit ─────────────────────────────
@@ -2354,38 +2647,52 @@ pub fn cmd_completion(shell: &str) -> Result<(), Box<dyn std::error::Error>> {
             println!("# Ironclad bash completion");
             println!("# Add to ~/.bashrc: eval \"$(ironclad completion bash)\"");
             println!(
-                "complete -W \"serve init check version status sessions memory skills cron metrics wallet config breaker channels plugins mechanic daemon completion\" ironclad"
+                "complete -W \"agents auth channels check circuit completion config daemon defrag ingest init keystore logs mechanic memory metrics migrate models plugins reset schedule security serve sessions setup skills status uninstall update version wallet web\" ironclad"
             );
         }
         "zsh" => {
             println!("# Ironclad zsh completion");
             println!("# Add to ~/.zshrc: eval \"$(ironclad completion zsh)\"");
             println!(
-                "compctl -k \"(serve init check version status sessions memory skills cron metrics wallet config breaker channels plugins mechanic daemon completion)\" ironclad"
+                "compctl -k \"(agents auth channels check circuit completion config daemon defrag ingest init keystore logs mechanic memory metrics migrate models plugins reset schedule security serve sessions setup skills status uninstall update version wallet web)\" ironclad"
             );
         }
         "fish" => {
             println!("# Ironclad fish completion");
             println!("# Run: ironclad completion fish | source");
             for cmd in [
-                "serve",
-                "init",
-                "check",
-                "version",
-                "status",
-                "sessions",
-                "memory",
-                "skills",
-                "cron",
-                "metrics",
-                "wallet",
-                "config",
-                "breaker",
+                "agents",
+                "auth",
                 "channels",
-                "plugins",
-                "mechanic",
-                "daemon",
+                "check",
+                "circuit",
                 "completion",
+                "config",
+                "daemon",
+                "defrag",
+                "ingest",
+                "init",
+                "keystore",
+                "logs",
+                "mechanic",
+                "memory",
+                "metrics",
+                "migrate",
+                "models",
+                "plugins",
+                "reset",
+                "schedule",
+                "security",
+                "serve",
+                "sessions",
+                "setup",
+                "skills",
+                "status",
+                "uninstall",
+                "update",
+                "version",
+                "wallet",
+                "web",
             ] {
                 println!("complete -c ironclad -a {cmd}");
             }
@@ -2502,6 +2809,31 @@ pub async fn cmd_metrics(
             let costs = data["costs"].as_array();
             match costs {
                 Some(arr) if !arr.is_empty() => {
+                    let mut suppressed_zero_rows = 0usize;
+                    let filtered: Vec<&serde_json::Value> = arr
+                        .iter()
+                        .filter(|c| {
+                            let tin = c["tokens_in"].as_i64().unwrap_or(0);
+                            let tout = c["tokens_out"].as_i64().unwrap_or(0);
+                            let cost = c["cost"].as_f64().unwrap_or(0.0);
+                            let cached = c["cached"].as_bool().unwrap_or(false);
+                            let keep = cached || tin != 0 || tout != 0 || cost > 0.0;
+                            if !keep {
+                                suppressed_zero_rows += 1;
+                            }
+                            keep
+                        })
+                        .collect();
+                    if filtered.is_empty() {
+                        empty_state(
+                            "No billable/non-empty inference costs recorded (all recent rows were zero-token/no-cost events)",
+                        );
+                        if suppressed_zero_rows > 0 {
+                            kv("Suppressed Zero Rows", &suppressed_zero_rows.to_string());
+                        }
+                        return Ok(());
+                    }
+
                     let widths = [20, 16, 10, 10, 10, 8];
                     table_header(
                         &[
@@ -2519,7 +2851,7 @@ pub async fn cmd_metrics(
                     let mut total_in = 0i64;
                     let mut total_out = 0i64;
 
-                    for c in arr {
+                    for c in &filtered {
                         let model = truncate_id(c["model"].as_str().unwrap_or(""), 17);
                         let provider = c["provider"].as_str().unwrap_or("").to_string();
                         let tin = c["tokens_in"].as_i64().unwrap_or(0);
@@ -2551,11 +2883,14 @@ pub async fn cmd_metrics(
                     eprintln!();
                     kv_accent("Total Cost", &format!("${total_cost:.4}"));
                     kv("Total Tokens", &format!("{total_in} in / {total_out} out"));
-                    kv("Requests", &arr.len().to_string());
-                    if !arr.is_empty() {
+                    kv("Requests", &filtered.len().to_string());
+                    if suppressed_zero_rows > 0 {
+                        kv("Suppressed Zero Rows", &suppressed_zero_rows.to_string());
+                    }
+                    if !filtered.is_empty() {
                         kv(
                             "Avg Cost/Request",
-                            &format!("${:.4}", total_cost / arr.len() as f64),
+                            &format!("${:.4}", total_cost / filtered.len() as f64),
                         );
                     }
                 }
@@ -2792,6 +3127,14 @@ pub async fn cmd_logs(
 
 // ── Security audit ─────────────────────────────────────────────
 
+fn resolve_security_audit_config_path(config_path: &str) -> std::path::PathBuf {
+    if config_path == "ironclad.toml" {
+        return ironclad_core::resolve_config_path(None)
+            .unwrap_or_else(|| std::path::PathBuf::from("ironclad.toml"));
+    }
+    std::path::PathBuf::from(config_path)
+}
+
 pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
@@ -2803,7 +3146,8 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     let mut fail_count = 0u32;
 
     // 1. Check config file permissions
-    let config_file = std::path::Path::new(config_path);
+    let resolved_config_path = resolve_security_audit_config_path(config_path);
+    let config_file = resolved_config_path.as_path();
     if config_file.exists() {
         #[cfg(unix)]
         {
@@ -2815,7 +3159,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
                     "  {RED}{ERR} FAIL{RESET} Config file is world/group-readable (mode {:o})",
                     mode & 0o777
                 );
-                println!("         Fix: chmod 600 {config_path}");
+                println!("         Fix: chmod 600 {}", config_file.display());
                 fail_count += 1;
             } else {
                 println!("  {OK} Config file permissions (mode {:o})", mode & 0o777);
@@ -2828,7 +3172,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
             warn_count += 1;
         }
     } else {
-        println!("  {WARN} Config file not found: {config_path}");
+        println!("  {WARN} Config file not found: {}", config_file.display());
         warn_count += 1;
     }
 
@@ -3093,6 +3437,44 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sub_agents", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total_rows, 1);
+    }
+
+    #[test]
+    fn normalize_schema_safe_converts_invalid_subagent_model_to_auto() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sub_agents (role TEXT, model TEXT, skills_json TEXT);
+             INSERT INTO sub_agents (role, model, skills_json) VALUES ('subagent', 'orca-ata', '[]');
+             INSERT INTO sub_agents (role, model, skills_json) VALUES ('subagent', 'openai/gpt-4o', '[]');
+             INSERT INTO sub_agents (role, model, skills_json) VALUES ('subagent', 'auto', '[]');",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(normalize_schema_safe(&db_path).unwrap());
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+        let m1: String = conn
+            .query_row("SELECT model FROM sub_agents WHERE rowid = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let m2: String = conn
+            .query_row("SELECT model FROM sub_agents WHERE rowid = 2", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let m3: String = conn
+            .query_row("SELECT model FROM sub_agents WHERE rowid = 3", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(m1, "auto");
+        assert_eq!(m2, "openai/gpt-4o");
+        assert_eq!(m3, "auto");
     }
 
     #[test]
@@ -3467,5 +3849,19 @@ primary = "ollama/qwen3:8b"
         .unwrap();
 
         cmd_security_audit(cfg_path.to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn resolve_security_audit_config_path_falls_back_to_home_default() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
+        let ironclad_dir = home.path().join(".ironclad");
+        std::fs::create_dir_all(&ironclad_dir).unwrap();
+        let home_cfg = ironclad_dir.join("ironclad.toml");
+        std::fs::write(&home_cfg, "[server]\nport = 18789\n").unwrap();
+
+        let resolved = resolve_security_audit_config_path("ironclad.toml");
+        assert_eq!(resolved, home_cfg);
     }
 }

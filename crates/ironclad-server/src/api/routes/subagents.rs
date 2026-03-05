@@ -130,11 +130,47 @@ pub(crate) fn normalize_fallback_models(models: &[String], primary_model: &str) 
     out
 }
 
-fn is_model_mode(model: &str) -> bool {
+pub(crate) fn is_model_mode(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
         MODEL_MODE_AUTO | MODEL_MODE_ORCHESTRATOR
     )
+}
+
+pub(crate) fn is_concrete_provider_model(model: &str) -> bool {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let Some((provider, model_name)) = trimmed.split_once('/') else {
+        return false;
+    };
+    !provider.trim().is_empty() && !model_name.trim().is_empty()
+}
+
+pub(crate) fn validate_subagent_model_for_role(role: &str, model: &str) -> Result<(), JsonError> {
+    let normalized = normalize_role(role).ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            "role must be 'subagent' or 'model-proxy'".to_string(),
+        )
+    })?;
+    if model.trim().is_empty() {
+        return Err(bad_request(
+            "model cannot be empty; use a concrete provider/model, 'auto', or 'orchestrator'",
+        ));
+    }
+    if normalized == ROLE_MODEL_PROXY && is_model_mode(model) {
+        return Err(bad_request(
+            "model-proxy entries require a concrete provider/model, not 'auto' or 'orchestrator'",
+        ));
+    }
+    if !is_model_mode(model) && !is_concrete_provider_model(model) {
+        return Err(bad_request(
+            "model must be provider/model format, or one of: 'auto', 'orchestrator'",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn resolve_taskable_subagent_runtime_model(
@@ -148,7 +184,14 @@ pub(crate) async fn resolve_taskable_subagent_runtime_model(
             let llm = state.llm.read().await;
             llm.router.select_model().to_string()
         }
-        _ => configured_model.trim().to_string(),
+        _ if is_concrete_provider_model(configured_model) => configured_model.trim().to_string(),
+        _ => {
+            tracing::warn!(
+                configured_model = %configured_model,
+                "invalid fixed subagent model; falling back to auto model routing"
+            );
+            super::agent::select_routed_model(state, "").await
+        }
     }
 }
 
@@ -174,16 +217,7 @@ pub(crate) fn validate_subagent_contract(
             "model-proxy entries cannot own skills; only taskable subagents may have fixed skills",
         ));
     }
-    if model.trim().is_empty() {
-        return Err(bad_request(
-            "model cannot be empty; use a concrete provider/model, 'auto', or 'orchestrator'",
-        ));
-    }
-    if normalized == ROLE_MODEL_PROXY && is_model_mode(model) {
-        return Err(bad_request(
-            "model-proxy entries require a concrete provider/model, not 'auto' or 'orchestrator'",
-        ));
-    }
+    validate_subagent_model_for_role(normalized, model)?;
     Ok(())
 }
 
@@ -722,6 +756,15 @@ mod tests {
         assert!(!is_model_mode(""));
     }
 
+    #[test]
+    fn is_concrete_provider_model_requires_provider_slash_model() {
+        assert!(is_concrete_provider_model("openai/gpt-4o"));
+        assert!(is_concrete_provider_model("ollama/qwen3:8b"));
+        assert!(!is_concrete_provider_model("orca-ata"));
+        assert!(!is_concrete_provider_model("openai/"));
+        assert!(!is_concrete_provider_model("/gpt-4o"));
+    }
+
     // ── validate_subagent_contract ──────────────────────────────
 
     #[test]
@@ -780,6 +823,12 @@ mod tests {
     fn validate_contract_rejects_model_proxy_with_orchestrator() {
         let err = validate_subagent_contract("model-proxy", "orchestrator", &[], None).unwrap_err();
         assert!(err.1.contains("concrete provider/model"));
+    }
+
+    #[test]
+    fn validate_contract_rejects_invalid_fixed_model_identifier() {
+        let err = validate_subagent_contract("subagent", "orca-ata", &[], None).unwrap_err();
+        assert!(err.1.contains("provider/model format"));
     }
 
     // ── runtime_state_label ─────────────────────────────────────

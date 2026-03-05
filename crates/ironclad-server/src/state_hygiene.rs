@@ -85,6 +85,19 @@ pub fn run_state_hygiene(
         let n = conn.changes();
         report.subagent_rows_normalized += n;
         report.changed_rows += n;
+
+        conn.execute(
+            "UPDATE sub_agents
+             SET model='auto'
+             WHERE lower(trim(role))='subagent'
+               AND trim(model) <> ''
+               AND lower(trim(model)) NOT IN ('auto','orchestrator')
+               AND instr(trim(model), '/') = 0",
+            [],
+        )?;
+        let n = conn.changes();
+        report.subagent_rows_normalized += n;
+        report.changed_rows += n;
     }
 
     if has_table("cron_jobs")?
