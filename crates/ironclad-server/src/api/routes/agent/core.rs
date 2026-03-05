@@ -368,6 +368,105 @@ fn shell_quote(raw: &str) -> String {
     format!("'{}'", raw.replace('\'', "'\"'\"'"))
 }
 
+fn sanitize_folder_token(raw: &str) -> Option<String> {
+    let cleaned = raw.trim_matches(|c: char| ",.;:!?\"'`()[]{}".contains(c));
+    if cleaned.is_empty() {
+        return None;
+    }
+    let valid = cleaned
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !valid {
+        return None;
+    }
+    Some(cleaned.to_string())
+}
+
+fn title_case_ascii(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    if let Some(first) = chars.next() {
+        out.push(first.to_ascii_uppercase());
+    }
+    for c in chars {
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
+fn home_folder_exists(name: &str) -> bool {
+    let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) else {
+        return false;
+    };
+    std::path::Path::new(&home).join(name).is_dir()
+}
+
+fn resolve_home_folder_name(token: &str) -> String {
+    let lower = token.to_ascii_lowercase();
+    let mapped = match lower.as_str() {
+        "docs" | "doc" | "documents" => "Documents".to_string(),
+        "downloads" | "download" => "Downloads".to_string(),
+        "desktop" => "Desktop".to_string(),
+        "pictures" | "pics" | "photos" => "Pictures".to_string(),
+        "music" => "Music".to_string(),
+        "videos" | "video" | "movies" | "movie" => "Movies".to_string(),
+        "code" => "code".to_string(),
+        "workspace" | "workspaces" => "code".to_string(),
+        _ => token.to_string(),
+    };
+
+    if home_folder_exists(&mapped) {
+        return mapped;
+    }
+    let title = title_case_ascii(&mapped);
+    if home_folder_exists(&title) {
+        return title;
+    }
+    let lower = mapped.to_ascii_lowercase();
+    if home_folder_exists(&lower) {
+        return lower;
+    }
+    mapped
+}
+
+fn infer_home_folder_hint(cleaned_prompt: &str) -> Option<String> {
+    let tokens: Vec<String> = cleaned_prompt
+        .split_whitespace()
+        .filter_map(sanitize_folder_token)
+        .collect();
+    for (idx, token) in tokens.iter().enumerate() {
+        if !token.eq_ignore_ascii_case("folder") {
+            continue;
+        }
+        let mut candidate: Option<&str> = None;
+        if idx >= 1 {
+            let prev = tokens[idx - 1].as_str();
+            if !prev.eq_ignore_ascii_case("my")
+                && !prev.eq_ignore_ascii_case("the")
+                && !prev.eq_ignore_ascii_case("a")
+                && !prev.eq_ignore_ascii_case("an")
+            {
+                candidate = Some(prev);
+            }
+        }
+        if candidate.is_none() && idx >= 2 {
+            let prev_prev = tokens[idx - 2].as_str();
+            if !prev_prev.eq_ignore_ascii_case("my")
+                && !prev_prev.eq_ignore_ascii_case("the")
+                && !prev_prev.eq_ignore_ascii_case("a")
+                && !prev_prev.eq_ignore_ascii_case("an")
+            {
+                candidate = Some(prev_prev);
+            }
+        }
+        if let Some(name) = candidate {
+            let resolved = resolve_home_folder_name(name);
+            return Some(format!("~/{}", resolved));
+        }
+    }
+    None
+}
+
 fn extract_path_hint(prompt: &str) -> Option<String> {
     let mut cleaned = prompt.replace('\n', " ");
     cleaned = cleaned.replace('\t', " ");
@@ -390,8 +489,35 @@ fn extract_path_hint(prompt: &str) -> Option<String> {
     if lower.contains("documents folder") || lower.contains(" documents ") {
         return Some("~/Documents".to_string());
     }
+    if lower.contains("pictures folder") || lower.contains(" pictures ") {
+        return Some("~/Pictures".to_string());
+    }
+    if lower.contains("music folder") || lower.contains(" music ") {
+        return Some("~/Music".to_string());
+    }
+    if lower.contains("movies folder") || lower.contains(" videos folder") {
+        return Some("~/Movies".to_string());
+    }
     if lower.contains("code folder") || lower.contains(" ~/code") || lower.contains(" /code") {
         return Some("~/code".to_string());
+    }
+    for prefix in ["my ", "the "] {
+        if let Some(start) = lower.find(prefix) {
+            let segment = &cleaned[start + prefix.len()..];
+            let segment_lower = segment.to_ascii_lowercase();
+            if let Some(end) = segment_lower.find(" folder") {
+                let candidate = segment[..end].trim();
+                if let Some(name) = candidate.split_whitespace().last()
+                    && let Some(token) = sanitize_folder_token(name)
+                {
+                    let resolved = resolve_home_folder_name(&token);
+                    return Some(format!("~/{}", resolved));
+                }
+            }
+        }
+    }
+    if let Some(path) = infer_home_folder_hint(&cleaned) {
+        return Some(path);
     }
     None
 }
