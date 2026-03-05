@@ -22,9 +22,9 @@ use super::guards::{
 };
 use super::intents::{
     requests_acknowledgement, requests_capability_summary, requests_cron, requests_current_events,
-    requests_delegation, requests_execution, requests_file_distribution, requests_introspection,
-    requests_personality_profile, requests_provider_inventory, requests_random_tool_use,
-    requests_wallet_address_scan,
+    requests_delegation, requests_execution, requests_file_distribution, requests_image_count_scan,
+    requests_introspection, requests_personality_profile, requests_provider_inventory,
+    requests_random_tool_use, requests_wallet_address_scan,
 };
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
@@ -551,6 +551,13 @@ fn build_wallet_scan_command(path: &str) -> String {
     )
 }
 
+fn build_image_count_command(path: &str) -> String {
+    let target = shell_quote(&expand_user_path(path));
+    format!(
+        "find {target} -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.gif' -o -iname '*.bmp' -o -iname '*.webp' -o -iname '*.tif' -o -iname '*.tiff' -o -iname '*.heic' -o -iname '*.heif' -o -iname '*.avif' -o -iname '*.svg' \\) 2>/dev/null | wc -l | tr -d ' '"
+    )
+}
+
 async fn try_execution_shortcut(
     state: &AppState,
     user_prompt: &str,
@@ -582,6 +589,7 @@ async fn try_execution_shortcut(
         && !requests_personality_profile(user_prompt)
         && !requests_capability_summary(user_prompt)
         && !requests_wallet_address_scan(user_prompt)
+        && !requests_image_count_scan(user_prompt)
     {
         return None;
     }
@@ -1002,6 +1010,73 @@ async fn try_execution_shortcut(
                 return Some(InferenceOutput {
                     content: format!(
                         "I attempted a recursive wallet-address scan under {} (resolved: {}), but the command failed: {}",
+                        path, resolved_path, err
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
+    // 3c) Image-count request — recursively count image files.
+    if requests_image_count_scan(user_prompt) {
+        let lower = user_prompt.to_ascii_lowercase();
+        let path = if let Some(p) = extract_path_hint(user_prompt) {
+            p
+        } else if lower.contains("photos") || lower.contains("pictures") {
+            "~/Pictures".to_string()
+        } else if lower.contains("downloads") {
+            "~/Downloads".to_string()
+        } else if lower.contains("documents") || lower.contains("docs") {
+            "~/Documents".to_string()
+        } else if lower.contains("desktop") {
+            "~/Desktop".to_string()
+        } else {
+            "~/Pictures".to_string()
+        };
+        let resolved_path = expand_user_path(&path);
+        let cmd = build_image_count_command(&path);
+        let params = serde_json::json!({
+            "command": cmd,
+            "cwd": ".",
+            "timeout_seconds": 90
+        });
+        let out =
+            execute_tool_call(state, "bash", &params, turn_id, authority, channel_label).await;
+        let mut tool_results = Vec::new();
+        match out {
+            Ok(output) => {
+                tool_results.push(("bash".to_string(), output.clone()));
+                let count = output.trim().parse::<u64>().unwrap_or(0);
+                return Some(InferenceOutput {
+                    content: format!(
+                        "Found {} image files under {} (resolved: {}).",
+                        count, path, resolved_path
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                tool_results.push(("bash".to_string(), format!("error: {err}")));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "I attempted to count image files under {} (resolved: {}), but the command failed: {}",
                         path, resolved_path, err
                     ),
                     model: prepared_model.to_string(),
@@ -1542,6 +1617,7 @@ pub(super) async fn execute_inference_pipeline(
         || requests_capability_summary(user_content)
         || requests_acknowledgement(user_content)
         || requests_wallet_address_scan(user_content)
+        || requests_image_count_scan(user_content)
     {
         None
     } else {

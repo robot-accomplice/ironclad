@@ -152,6 +152,19 @@ pub(super) fn requests_wallet_address_scan(prompt: &str) -> bool {
             || lower.contains("see if there are"))
 }
 
+pub(super) fn requests_image_count_scan(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    let asks_for_count = lower.contains("how many")
+        || lower.contains("count")
+        || lower.contains("number of")
+        || lower.contains("total");
+    let mentions_images = lower.contains("image files")
+        || lower.contains("images")
+        || lower.contains("photos")
+        || lower.contains("pictures");
+    asks_for_count && mentions_images
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +259,16 @@ mod tests {
             "Now look in my Downloads folder for wallet credentials"
         ));
         assert!(!requests_wallet_address_scan("show me your wallet balance"));
+    }
+
+    #[test]
+    fn image_count_markers_match_expected_prompts() {
+        assert!(requests_image_count_scan(
+            "How many image files are in my photos?"
+        ));
+        assert!(requests_image_count_scan(
+            "count images in ~/Downloads recursively"
+        ));
+        assert!(!requests_image_count_scan("show me photos from yesterday"));
     }
 }
