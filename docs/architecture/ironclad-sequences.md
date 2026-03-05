@@ -1053,6 +1053,7 @@ sequenceDiagram
     API-->>U: selected_model + model + model_shift_from
     WS-->>UI: model_selection/model_shift
     UI->>UI: update routing graph + metrics detail
+    Note over UI: Routing profile sliders are normalized<br/>(correctness + cost + speed <= 1.0)<br/>before PUT /api/config persistence
 ```
 
 ---

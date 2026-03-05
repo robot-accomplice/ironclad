@@ -109,6 +109,10 @@ LLM model selection and routing.
 | `cost_aware` | `bool` | `false` | Factor cost into routing decisions |
 | `estimated_output_tokens` | `u32` | `500` | Estimated output tokens for cost calculations |
 
+Dashboard note:
+- The routing profile UI maps `correctness`, `cost`, and `speed` to these fields.
+- UI guardrails enforce `correctness + cost + speed <= 1.0` before sending `PUT /api/config`.
+
 ### `[models.tiered_inference]`
 
 | Field | Type | Default | Description |

@@ -30,6 +30,8 @@ Expose a user-facing control surface for routing tradeoffs and make routing deci
 ## Guardrails
 
 - Slider inputs are clamped to `[0.0, 1.0]`.
+- Slider aggregate is constrained to `<= 1.0` (`correctness + cost + speed`).
+- Dashboard normalizes profile values before apply, so persisted config never reflects an overcommitted profile.
 - Config updates go through `PUT /api/config`, preserving existing validation and runtime reload behavior.
 - No direct mutation of provider keys or auth settings from this control surface.
 
