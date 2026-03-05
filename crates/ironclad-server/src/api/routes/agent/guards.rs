@@ -4,7 +4,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::intents::{
-    requests_cron, requests_delegation, requests_execution, requests_model_identity,
+    requests_cron, requests_current_events, requests_delegation, requests_execution,
+    requests_model_identity,
 };
 
 /// RAII guard that releases a dedup fingerprint when dropped.
@@ -194,6 +195,28 @@ pub(super) fn enforce_model_identity_truth_guard(
         "model identity guard emitted canonical model identity"
     );
     format!("I am currently running on {}.", executed_model)
+}
+
+fn looks_like_stale_knowledge_disclaimer(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    lower.contains("as of my last update")
+        || lower.contains("as of my last training")
+        || lower.contains("i cannot provide real-time updates")
+        || lower.contains("i can't provide real-time updates")
+        || lower.contains("as of early 2023")
+        || lower.contains("as of 2023")
+}
+
+pub(super) fn enforce_current_events_truth_guard(user_prompt: &str, response: String) -> String {
+    if !requests_current_events(user_prompt) {
+        return response;
+    }
+    if !looks_like_stale_knowledge_disclaimer(&response) {
+        return response;
+    }
+    tracing::warn!("current-events guard blocked stale-knowledge disclaimer response");
+    "Acknowledged. I cannot provide a current-events sitrep from stale memory. I will run live retrieval/delegation and return an up-to-date report with the current date."
+        .to_string()
 }
 
 // ── Scope validation ──────────────────────────────────────────

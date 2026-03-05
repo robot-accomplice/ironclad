@@ -56,6 +56,23 @@ pub(super) fn requests_model_identity(prompt: &str) -> bool {
         || lower.contains("/status")
 }
 
+pub(super) fn requests_current_events(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    [
+        "geopolitical situation",
+        "geopolitical sitrep",
+        "sitrep",
+        "current events",
+        "latest news",
+        "what's happening",
+        "what is happening",
+        "today's",
+        "as of today",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +98,14 @@ mod tests {
             "can you confirm for me that you are still using moonshot?"
         ));
         assert!(requests_model_identity("/status"));
+    }
+
+    #[test]
+    fn current_events_markers_match_expected_prompts() {
+        assert!(requests_current_events(
+            "What's the geopolitical situation?"
+        ));
+        assert!(requests_current_events("Give me a geopolitical sitrep"));
+        assert!(requests_current_events("What are today's current events?"));
     }
 }

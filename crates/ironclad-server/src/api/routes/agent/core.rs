@@ -17,12 +17,12 @@ use super::AppState;
 use super::decomposition::DelegationProvenance;
 use super::diagnostics::{collect_runtime_diagnostics, diagnostics_system_note};
 use super::guards::{
-    enforce_execution_truth_guard, enforce_model_identity_truth_guard, enforce_non_repetition,
-    enforce_subagent_claim_guard,
+    enforce_current_events_truth_guard, enforce_execution_truth_guard,
+    enforce_model_identity_truth_guard, enforce_non_repetition, enforce_subagent_claim_guard,
 };
 use super::intents::{
-    requests_cron, requests_delegation, requests_execution, requests_file_distribution,
-    requests_random_tool_use,
+    requests_cron, requests_current_events, requests_delegation, requests_execution,
+    requests_file_distribution, requests_random_tool_use,
 };
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
@@ -388,6 +388,13 @@ fn build_distribution_command(path: &str) -> String {
     )
 }
 
+fn requests_geopolitical_sitrep(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    (lower.contains("geopolitical") && lower.contains("situation"))
+        || (lower.contains("geopolitical") && lower.contains("sitrep"))
+        || (lower.contains("geopolitics") && lower.contains("sitrep"))
+}
+
 async fn try_execution_shortcut(
     state: &AppState,
     user_prompt: &str,
@@ -398,7 +405,69 @@ async fn try_execution_shortcut(
     delegation_provenance: &mut DelegationProvenance,
 ) -> Option<InferenceOutput> {
     if !requests_execution(user_prompt) {
-        return None;
+        if !requests_geopolitical_sitrep(user_prompt) {
+            return None;
+        }
+    }
+
+    // 0) Geopolitical sitrep request — force real delegated execution.
+    if requests_geopolitical_sitrep(user_prompt) {
+        delegation_provenance.subagent_task_started = true;
+        let params = serde_json::json!({
+            "subtasks": [{
+                "task": format!(
+                    "Provide an up-to-date geopolitical sitrep for today with concrete current date references and no stale-memory disclaimers. User request: {}",
+                    user_prompt
+                )
+            }]
+        });
+        let out = execute_tool_call(
+            state,
+            "orchestrate-subagents",
+            &params,
+            turn_id,
+            authority,
+            channel_label,
+        )
+        .await;
+        let mut tool_results = Vec::new();
+        match out {
+            Ok(output) => {
+                delegation_provenance.subagent_task_completed = true;
+                delegation_provenance.subagent_result_attached = !output.trim().is_empty();
+                tool_results.push(("orchestrate-subagents".to_string(), output.clone()));
+                return Some(InferenceOutput {
+                    content: output,
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                tool_results.push(("orchestrate-subagents".to_string(), format!("error: {err}")));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "Acknowledged. I attempted live geopolitical delegation, but it failed: {}",
+                        err
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
     }
 
     // 1) Tool inventory + random tool execution request.
@@ -876,6 +945,7 @@ pub(super) async fn run_inference_and_react(
         enforce_execution_truth_guard(user_prompt, final_content, &tool_results_acc);
     let final_content =
         enforce_model_identity_truth_guard(user_prompt, final_content, &resolved_model);
+    let final_content = enforce_current_events_truth_guard(user_prompt, final_content);
     let final_content =
         enforce_non_repetition(final_content, prepared.previous_assistant.as_deref());
 
@@ -1047,7 +1117,7 @@ pub(super) async fn execute_inference_pipeline(
     delegation_provenance: &mut DelegationProvenance,
 ) -> Result<PipelineResult, String> {
     // 1. Cache check
-    let cached = if requests_execution(user_content) {
+    let cached = if requests_execution(user_content) || requests_current_events(user_content) {
         None
     } else {
         check_cache(
@@ -1063,6 +1133,7 @@ pub(super) async fn execute_inference_pipeline(
         let cached_content = enforce_execution_truth_guard(user_content, cached.content, &[]);
         let cached_content =
             enforce_model_identity_truth_guard(user_content, cached_content, &cached.model);
+        let cached_content = enforce_current_events_truth_guard(user_content, cached_content);
         let guarded_cached_content =
             enforce_non_repetition(cached_content, prepared.previous_assistant.as_deref());
         let cached_provider_prefix = cached

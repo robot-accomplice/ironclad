@@ -170,6 +170,23 @@ fn model_identity_guard_handles_still_using_phrase() {
     );
 }
 
+#[test]
+fn current_events_guard_blocks_stale_knowledge_disclaimer() {
+    let prompt = "What's the geopolitical situation?";
+    let response =
+        "As of my last update in early 2023, I cannot provide real-time updates.".to_string();
+    let guarded = enforce_current_events_truth_guard(prompt, response);
+    assert!(guarded.contains("cannot provide a current-events sitrep from stale memory"));
+}
+
+#[test]
+fn current_events_guard_keeps_valid_current_events_response() {
+    let prompt = "Give me a geopolitical sitrep";
+    let response = "Acknowledged. I am retrieving a live sitrep now.".to_string();
+    let guarded = enforce_current_events_truth_guard(prompt, response.clone());
+    assert_eq!(guarded, response);
+}
+
 // ── repeat_tokens tests ──────────────────────────────────────
 
 #[test]
