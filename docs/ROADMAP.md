@@ -614,6 +614,20 @@ Scoring contract reference: `docs/evals/METASCORE_V1_SPEC.md` (spec-only).
 
 ---
 
+### 2.22 Anchored Agent Audit Ledger (Sanitized On-Chain Provenance)
+
+**Current state**: Ironclad has strong internal logs, event streams, and database-level forensics, but audit evidence remains mutable at the infrastructure layer and is not cryptographically anchored externally.
+
+**Target**: Write a sanitized, privacy-preserving activity ledger to blockchain for immutable auditability and attributable provenance of agent behavior sequences, suitable for legal/compliance workflows.
+
+**Builds on**: Existing event bus + audit records, approval workflow logs, model selection telemetry, tool execution traces, and wallet/transaction primitives.
+
+**Scope**: Define a canonical `AuditEventEnvelope` with deterministic ordering fields (agent_id, session_id, turn_id, sequence number, timestamps, event type, hash chain pointers). Build a sanitizer that strips/irreversibly transforms sensitive content (PII, secrets, raw prompts/tool payloads), preserving only provenance metadata and cryptographic digests. Batch events into anchored commitments (Merkle root or rolling hash checkpoint) and submit on-chain at configurable intervals or trigger thresholds. Add verification tooling (`verify-audit-proof`) to prove event inclusion and ordering from local records against chain anchors. Expose retention/export controls and operator policy toggles (`audit_anchor.enabled`, network/contract target, cadence, max cost budget, redaction profile). Include legal-grade runbooks for evidence extraction and chain-of-custody documentation.
+
+**Non-goals for v1**: Storing raw conversational/tool content on-chain, cross-jurisdiction legal opinion automation, and public disclosure of sensitive operational metadata.
+
+---
+
 ## Tier 3 — Frontier
 
 Ambitious capabilities that push the architecture into new territory. High effort, high potential.
@@ -1145,6 +1159,7 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 2.19 | Model metascore routing profiles | 2 | ModelRouter, provider registry/config, cost/capacity telemetry, orchestration | High |
 | 2.20 | Voice channels (promoted from 3.6) | 2 | Channel adapters, whisper-rs, local TTS | High |
 | 2.21 | Skill registry protocol | 2 | SkillLoader, 2.14 skills catalog, skill manifests, wallet/ECDSA | Medium |
+| 2.22 | Anchored agent audit ledger (sanitized on-chain provenance) | 2 | Event bus/audit records, wallet/chain integration, proof verification tooling | High |
 | 3.1 | Compile-time agent safety | 3 | Agent loop, policy engine | High |
 | 3.2 | ~~MCP integration~~ ✅ | 3 | Tool registry, config | ~~High~~ Done |
 | 3.3 | Multi-agent orchestration (partial) | 3 | SubagentRegistry, A2A, 2.9 | High |
