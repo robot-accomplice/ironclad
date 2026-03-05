@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-03-05
+
 ### Added
 
 - **Routing observability UX**: Metrics dashboard now includes an explorable model-decision graph and a routing-profile spider graph (correctness/cost/speed) with runtime apply support via safe config patching.
