@@ -4617,6 +4617,23 @@ params = { path = "README.md" }
     }
 
     #[tokio::test]
+    async fn slash_status_unknown_platform_denied_by_default() {
+        let state = test_state();
+        let inbound = InboundMessage {
+            id: "cmd-status-unknown".into(),
+            platform: "custom-channel".into(),
+            sender_id: "operator-user".into(),
+            content: "/status".into(),
+            timestamp: chrono::Utc::now(),
+            metadata: None,
+        };
+        let reply = agent::handle_bot_command(&state, "/status", Some(&inbound))
+            .await
+            .unwrap();
+        assert!(reply.contains("requires Peer authority"));
+    }
+
+    #[tokio::test]
     async fn slash_model_shows_current() {
         let state = test_state();
         let reply = agent::handle_bot_command(&state, "/model", None)

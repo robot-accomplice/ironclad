@@ -1,5 +1,7 @@
 //! Config, stats, circuit breaker, wallet, plugins, browser, agents, workspace, A2A.
 
+use std::collections::HashMap;
+
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -3106,11 +3108,47 @@ pub async fn get_routing_diagnostics(State(state): State<AppState>) -> impl Into
         &llm_read.breakers,
     );
 
+    // Trace-backed confidence inputs from executed turns (selected model -> observed quality).
+    let trace_quality_by_model: HashMap<String, (i64, Option<f64>)> = {
+        let conn = state.db.conn();
+        let mut map = HashMap::new();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT mse.selected_model, COUNT(*) AS obs, AVG(ic.quality_score) AS avg_quality
+             FROM model_selection_events mse
+             INNER JOIN inference_costs ic ON ic.turn_id = mse.turn_id
+             WHERE ic.quality_score IS NOT NULL
+             GROUP BY mse.selected_model",
+        ) && let Ok(rows) = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Option<f64>>(2)?,
+            ))
+        }) {
+            for (model, obs, avg_quality) in rows.flatten() {
+                map.insert(model, (obs, avg_quality));
+            }
+        }
+        map
+    };
+
     // Compute metascores at a representative complexity (0.5 = medium).
     let profile_diagnostics: Vec<Value> = profiles
         .iter()
         .map(|p| {
             let breakdown = p.metascore_with_cost_weight(0.5, cost_aware, cost_weight);
+            let (trace_obs, trace_avg_quality) = trace_quality_by_model
+                .get(&p.model_name)
+                .copied()
+                .unwrap_or((0, None));
+            let confidence_trace_backed =
+                trace_obs >= accuracy_min_obs as i64 && trace_avg_quality.is_some();
+            let confidence = if confidence_trace_backed {
+                let observed = trace_avg_quality.unwrap_or(0.0).clamp(0.0, 1.0);
+                Some(((breakdown.confidence + observed) / 2.0).clamp(0.0, 1.0))
+            } else {
+                None
+            };
             json!({
                 "model": p.model_name,
                 "is_local": p.is_local,
@@ -3126,7 +3164,11 @@ pub async fn get_routing_diagnostics(State(state): State<AppState>) -> impl Into
                     "cost": breakdown.cost,
                     "availability": breakdown.availability,
                     "locality": breakdown.locality,
-                    "confidence": breakdown.confidence,
+                    "confidence": confidence,
+                    "confidence_raw": breakdown.confidence,
+                    "confidence_trace_backed": confidence_trace_backed,
+                    "confidence_trace_observations": trace_obs,
+                    "confidence_trace_avg_quality": trace_avg_quality,
                 },
                 "blocked_by_config": blocked_models.contains(&p.model_name),
             })

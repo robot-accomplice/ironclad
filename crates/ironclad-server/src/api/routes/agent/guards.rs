@@ -50,6 +50,7 @@ pub(super) fn claims_unverified_subagent_output(response: &str) -> bool {
 pub(super) fn enforce_subagent_claim_guard(
     response: String,
     provenance: &super::DelegationProvenance,
+    agent_name: &str,
 ) -> String {
     let allow_claim = provenance.subagent_task_started
         && provenance.subagent_task_completed
@@ -58,8 +59,9 @@ pub(super) fn enforce_subagent_claim_guard(
         return response;
     }
     tracing::warn!("Blocking unverified channel response that claims subagent-produced output");
-    "By your command, I will not fake delegation. I can't claim live subagent-produced output unless I actually run a delegated subagent/tool turn in this reply. Ask me to run a concrete delegated task and I'll return that output directly."
-        .to_string()
+    format!(
+        "{agent_name}: by your command, I will not fake delegation. I can't claim live subagent-produced output unless I actually run a delegated subagent/tool turn in this reply. Ask me to run a concrete delegated task and I'll return that output directly."
+    )
 }
 
 pub(super) fn repeat_tokens(text: &str) -> HashSet<String> {
@@ -132,6 +134,7 @@ pub(super) fn enforce_execution_truth_guard(
     user_prompt: &str,
     response: String,
     tool_results: &[(String, String)],
+    agent_name: &str,
 ) -> String {
     if requests_delegation(user_prompt)
         && !tool_results.iter().any(|(name, output)| {
@@ -145,8 +148,9 @@ pub(super) fn enforce_execution_truth_guard(
         })
     {
         tracing::warn!("execution truth guard blocked unverified delegation claim");
-        return "By your command, execution truth is strict: I did not execute a delegated subagent task for that request. I can only claim delegated results when a subagent tool call actually runs."
-            .to_string();
+        return format!(
+            "{agent_name}: by your command, execution truth is strict. I did not execute a delegated subagent task for that request. I can only claim delegated results when a subagent tool call actually runs."
+        );
     }
     if requests_cron(user_prompt)
         && !tool_results.iter().any(|(name, output)| {
@@ -155,8 +159,9 @@ pub(super) fn enforce_execution_truth_guard(
         })
     {
         tracing::warn!("execution truth guard blocked unverified cron claim");
-        return "By your command, execution truth is strict: I did not execute a cron scheduling tool for that request. I can only confirm schedules that were actually created or validated by a tool run."
-            .to_string();
+        return format!(
+            "{agent_name}: by your command, execution truth is strict. I did not execute a cron scheduling tool for that request. I can only confirm schedules that were actually created or validated by a tool run."
+        );
     }
 
     if !requests_execution(user_prompt) {
@@ -175,8 +180,9 @@ pub(super) fn enforce_execution_truth_guard(
         || lower.starts_with('{')
     {
         tracing::warn!("execution truth guard rewrote unverified execution-style response");
-        return "By your command, execution truth is strict: I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
-            .to_string();
+        return format!(
+            "{agent_name}: by your command, execution truth is strict. I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
+        );
     }
     // If there is no explicit execution claim, keep the response.
     response

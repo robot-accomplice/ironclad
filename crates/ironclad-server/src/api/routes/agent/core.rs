@@ -1585,13 +1585,14 @@ pub(super) async fn run_inference_and_react(
     }
 
     // Post-ReAct guards
-    let final_content = enforce_subagent_claim_guard(final_content, delegation_provenance);
-    let final_content =
-        enforce_execution_truth_guard(user_prompt, final_content, &tool_results_acc);
     let agent_name = {
         let cfg = state.config.read().await;
         cfg.agent.name.clone()
     };
+    let final_content =
+        enforce_subagent_claim_guard(final_content, delegation_provenance, &agent_name);
+    let final_content =
+        enforce_execution_truth_guard(user_prompt, final_content, &tool_results_acc, &agent_name);
     let final_content = enforce_model_identity_truth_guard(
         user_prompt,
         final_content,
@@ -1789,11 +1790,12 @@ pub(super) async fn execute_inference_pipeline(
     };
 
     if let Some(cached) = cached {
-        let cached_content = enforce_execution_truth_guard(user_content, cached.content, &[]);
         let agent_name = {
             let cfg = state.config.read().await;
             cfg.agent.name.clone()
         };
+        let cached_content =
+            enforce_execution_truth_guard(user_content, cached.content, &[], &agent_name);
         let cached_content = enforce_model_identity_truth_guard(
             user_content,
             cached_content,

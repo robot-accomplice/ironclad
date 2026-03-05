@@ -6,8 +6,11 @@ use super::*;
 fn subagent_claim_guard_blocks_unverified_live_delegation() {
     let fabricated =
         "[delegating to subagent: geopolitical specialist]\n\nGEOPOLITICAL FLASH UPDATE ...";
-    let guarded =
-        enforce_subagent_claim_guard(fabricated.to_string(), &DelegationProvenance::default());
+    let guarded = enforce_subagent_claim_guard(
+        fabricated.to_string(),
+        &DelegationProvenance::default(),
+        "Duncan",
+    );
     assert!(guarded.contains("I can't claim live subagent-produced output"));
 }
 
@@ -21,6 +24,7 @@ fn subagent_claim_guard_allows_when_delegated_this_turn() {
             subagent_task_completed: true,
             subagent_result_attached: true,
         },
+        "Duncan",
     );
     assert_eq!(guarded, content);
 }
@@ -28,8 +32,11 @@ fn subagent_claim_guard_allows_when_delegated_this_turn() {
 #[test]
 fn subagent_claim_guard_blocks_standing_by_claim_without_provenance() {
     let fabricated = "Good. The subagents are actually running now - all 10 taskable subagents operational.\n\nGeopolitical Specialist: Standing by for tasking.";
-    let guarded =
-        enforce_subagent_claim_guard(fabricated.to_string(), &DelegationProvenance::default());
+    let guarded = enforce_subagent_claim_guard(
+        fabricated.to_string(),
+        &DelegationProvenance::default(),
+        "Duncan",
+    );
     assert!(guarded.contains("I can't claim live subagent-produced output"));
 }
 
@@ -37,8 +44,11 @@ fn subagent_claim_guard_blocks_standing_by_claim_without_provenance() {
 fn subagent_claim_guard_blocks_subagent_generated_claim_without_provenance() {
     let fabricated =
         "Subagent-generated sitrep: geopolitical flash update with live delegated output.";
-    let guarded =
-        enforce_subagent_claim_guard(fabricated.to_string(), &DelegationProvenance::default());
+    let guarded = enforce_subagent_claim_guard(
+        fabricated.to_string(),
+        &DelegationProvenance::default(),
+        "Duncan",
+    );
     assert!(guarded.contains("I can't claim live subagent-produced output"));
 }
 
@@ -90,7 +100,7 @@ fn execution_truth_guard_blocks_unexecuted_command_suggestion() {
     let prompt = "Use a tool to list files in /Users/jmachen";
     let response =
         "You can use the following command: `ls /Users/jmachen | head -n 10`".to_string();
-    let guarded = enforce_execution_truth_guard(prompt, response, &[]);
+    let guarded = enforce_execution_truth_guard(prompt, response, &[], "Duncan");
     assert!(guarded.contains("did not execute a tool"));
 }
 
@@ -98,7 +108,7 @@ fn execution_truth_guard_blocks_unexecuted_command_suggestion() {
 fn execution_truth_guard_keeps_non_claim_response_without_tool_results() {
     let prompt = "use your introspection skill";
     let response = "I can run introspection for you now and summarize it.".to_string();
-    let guarded = enforce_execution_truth_guard(prompt, response.clone(), &[]);
+    let guarded = enforce_execution_truth_guard(prompt, response.clone(), &[], "Duncan");
     assert_eq!(guarded, response);
 }
 
@@ -110,6 +120,7 @@ fn execution_truth_guard_allows_verified_tool_output() {
         prompt,
         response.clone(),
         &[("bash".to_string(), "Applications".to_string())],
+        "Duncan",
     );
     assert_eq!(guarded, response);
 }
@@ -118,7 +129,7 @@ fn execution_truth_guard_allows_verified_tool_output() {
 fn execution_truth_guard_blocks_unverified_delegation_claim() {
     let prompt = "Order a subagent to produce a sitrep.";
     let response = "Here is the sitrep from the geopolitical subagent: ...".to_string();
-    let guarded = enforce_execution_truth_guard(prompt, response, &[]);
+    let guarded = enforce_execution_truth_guard(prompt, response, &[], "Duncan");
     assert!(guarded.contains("did not execute a delegated subagent task"));
 }
 
@@ -133,6 +144,7 @@ fn execution_truth_guard_blocks_failed_delegation_attempt() {
             "assign-tasks".to_string(),
             "error: unknown tool".to_string(),
         )],
+        "Duncan",
     );
     assert!(guarded.contains("did not execute a delegated subagent task"));
 }
@@ -141,7 +153,7 @@ fn execution_truth_guard_blocks_failed_delegation_attempt() {
 fn execution_truth_guard_blocks_unverified_cron_claim() {
     let prompt = "Schedule a cron job every 5 minutes.";
     let response = "Use this crontab entry: */5 * * * *".to_string();
-    let guarded = enforce_execution_truth_guard(prompt, response, &[]);
+    let guarded = enforce_execution_truth_guard(prompt, response, &[], "Duncan");
     assert!(guarded.contains("did not execute a cron scheduling tool"));
 }
 
