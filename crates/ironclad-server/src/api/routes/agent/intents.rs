@@ -139,9 +139,12 @@ pub(super) fn requests_wallet_address_scan(prompt: &str) -> bool {
         || lower.contains("wallet addresses")
         || lower.contains("wallet credential")
         || lower.contains("wallet credentials")
-        || (lower.contains("wallet") && lower.contains("private key"))
-        || (lower.contains("wallet") && lower.contains("seed phrase"))
-        || (lower.contains("wallet") && lower.contains("mnemonic"));
+        || lower.contains("private key")
+        || lower.contains("seed phrase")
+        || lower.contains("mnemonic")
+        || lower.contains("keystore")
+        || lower.contains("xprv")
+        || lower.contains("xpub");
     has_wallet_target
         && (lower.contains("search")
             || lower.contains("find")
@@ -269,6 +272,9 @@ mod tests {
         ));
         assert!(requests_wallet_address_scan(
             "Now look in my Downloads folder for wallet credentials"
+        ));
+        assert!(requests_wallet_address_scan(
+            "Please check my Desktop folder for files containing private key and list full paths."
         ));
         assert!(!requests_wallet_address_scan("show me your wallet balance"));
     }
