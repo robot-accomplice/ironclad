@@ -739,9 +739,74 @@ async fn try_execution_shortcut(
             }
             Err(err) => {
                 tool_results.push(("orchestrate-subagents".to_string(), format!("error: {err}")));
+                let direct_model = {
+                    let cfg = state.config.read().await;
+                    cfg.models.primary.clone()
+                };
+                let direct_req = ironclad_llm::format::UnifiedRequest {
+                    model: direct_model
+                        .split_once('/')
+                        .map(|(_, m)| m)
+                        .unwrap_or(&direct_model)
+                        .to_string(),
+                    messages: vec![
+                        ironclad_llm::format::UnifiedMessage {
+                            role: "system".into(),
+                            content: "Delegation fallback path activated. Provide a concise geopolitical sitrep for today with explicit concrete date references and key events. Do not use stale-memory disclaimers.".to_string(),
+                            parts: None,
+                        },
+                        ironclad_llm::format::UnifiedMessage {
+                            role: "user".into(),
+                            content: user_prompt.to_string(),
+                            parts: None,
+                        },
+                    ],
+                    max_tokens: Some(1200),
+                    temperature: None,
+                    system: None,
+                    quality_target: None,
+                    tools: vec![],
+                };
+                if let Ok(direct) = infer_with_fallback(state, &direct_req, &direct_model).await {
+                    let guarded_direct =
+                        enforce_current_events_truth_guard(user_prompt, direct.content.clone());
+                    if guarded_direct != direct.content {
+                        return Some(InferenceOutput {
+                            content: format!(
+                                "Delegation was unavailable ({}), and direct fallback could not produce a verified live sitrep. Please retry once model/provider reachability stabilizes.",
+                                err
+                            ),
+                            model: direct.model,
+                            tokens_in: direct.tokens_in,
+                            tokens_out: direct.tokens_out,
+                            cost: direct.cost,
+                            react_turns: 1,
+                            latency_ms: direct.latency_ms,
+                            quality_score: 0.0,
+                            escalated: direct.escalated,
+                            tool_results,
+                        });
+                    }
+                    return Some(InferenceOutput {
+                        content: format!(
+                            "Delegation was unavailable ({}). I switched to direct retrieval and produced this sitrep:\n\n{}",
+                            err,
+                            guarded_direct.trim()
+                        ),
+                        model: direct.model,
+                        tokens_in: direct.tokens_in,
+                        tokens_out: direct.tokens_out,
+                        cost: direct.cost,
+                        react_turns: 1,
+                        latency_ms: direct.latency_ms,
+                        quality_score: direct.quality_score,
+                        escalated: direct.escalated,
+                        tool_results,
+                    });
+                }
                 return Some(InferenceOutput {
                     content: format!(
-                        "Acknowledged. I attempted delegation for live geopolitical retrieval, but it failed: {}",
+                        "Acknowledged. I attempted delegation for live geopolitical retrieval, and direct fallback inference, but both failed. Delegation error: {}",
                         err
                     ),
                     model: prepared_model.to_string(),
