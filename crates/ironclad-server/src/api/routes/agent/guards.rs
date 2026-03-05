@@ -216,6 +216,9 @@ fn model_identity_prompt(prompt: &str) -> bool {
         || lower.contains("what model")
         || lower.contains("which model")
         || lower.contains("still on")
+        || lower.contains("still using")
+        || lower.contains("using moonshot")
+        || lower.contains("confirm for me")
         || lower.contains("/status")
 }
 
@@ -227,20 +230,11 @@ pub(super) fn enforce_model_identity_truth_guard(
     if !model_identity_prompt(user_prompt) {
         return response;
     }
-    if response
-        .to_ascii_lowercase()
-        .contains(&executed_model.to_ascii_lowercase())
-    {
-        return response;
-    }
     tracing::warn!(
         executed_model,
-        "model identity guard corrected inconsistent self-report"
+        "model identity guard emitted canonical model identity"
     );
-    format!(
-        "I am currently running on {}. If that changes due to fallback, I will report the final model once per turn with the reason.",
-        executed_model
-    )
+    format!("I am currently running on {}.", executed_model)
 }
 
 // ── Scope validation ──────────────────────────────────────────

@@ -408,9 +408,10 @@
     .routing-slider-row label { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--muted); margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.06em; }
     .routing-slider-row input[type="range"] { width: 100%; accent-color: var(--accent); }
     .routing-profile-actions { display: flex; gap: 0.5rem; margin-top: 0.85rem; flex-wrap: wrap; }
-    .model-graph-wrap { position: relative; height: 300px; border: 1px solid var(--border); border-radius: 6px; background: linear-gradient(180deg, rgba(99,102,241,0.08), rgba(99,102,241,0.02)); overflow: hidden; }
+    .model-graph-wrap { position: relative; height: 320px; border: 1px solid var(--border); border-radius: 6px; background: linear-gradient(180deg, rgba(99,102,241,0.08), rgba(99,102,241,0.02)); overflow: hidden; }
     .model-graph-svg { width: 100%; height: 100%; display: block; }
     .model-graph-node { fill: var(--surface); stroke: var(--accent); stroke-width: 1.6; cursor: pointer; }
+    .model-graph-node-unusable { fill: rgba(255,255,255,0.06); stroke: var(--muted); stroke-dasharray: 3 2; }
     .model-graph-node-label { fill: var(--text); font-size: 10px; font-family: var(--font-mono); text-anchor: middle; pointer-events: none; }
     .model-graph-edge { stroke: var(--border); stroke-opacity: 0.75; cursor: pointer; }
     .model-graph-edge.active { stroke: var(--accent); stroke-opacity: 0.95; }
@@ -731,6 +732,7 @@
       + '</svg>';
   }
   function renderModelDecisionGraph(events, focusTurnId, focusModel, focusEdge) {
+    var MAX_GRAPH_CANDIDATES = 18;
     var rows = Array.isArray(events) ? events.slice() : [];
     if (!rows.length) {
       return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Task Model Decision Graph</div><div style="color:var(--muted)">No model selection events yet.</div></div>';
@@ -760,18 +762,41 @@
     if (selectedModel && !nodeMap[selectedModel]) {
       nodeMap[selectedModel] = { model: selectedModel, score: null, usable: true };
     }
-    var nodes = Object.keys(nodeMap).sort();
+    var sortedNodes = Object.keys(nodeMap).sort(function(a, b) {
+      if (a === selectedModel) return -1;
+      if (b === selectedModel) return 1;
+      var sa = nodeMap[a] && typeof nodeMap[a].score === 'number' ? nodeMap[a].score : -Infinity;
+      var sb = nodeMap[b] && typeof nodeMap[b].score === 'number' ? nodeMap[b].score : -Infinity;
+      if (sa !== sb) return sb - sa;
+      return a.localeCompare(b);
+    });
+    var hiddenCount = Math.max(0, sortedNodes.length - MAX_GRAPH_CANDIDATES);
+    var nodes = sortedNodes.slice(0, MAX_GRAPH_CANDIDATES);
+    if (selectedModel && nodes.indexOf(selectedModel) === -1) {
+      nodes[nodes.length - 1] = selectedModel;
+    }
     if (!nodes.length) return '';
 
-    var centerX = 340, centerY = 150, radius = Math.max(92, Math.min(130, 52 + (nodes.length * 6)));
+    var width = 680, height = 320;
+    var selectedX = 530, selectedY = height / 2;
+    var candidateX = 220;
     var pos = {};
-    nodes.forEach(function(model, idx) {
-      var angle = (-Math.PI / 2) + (idx * (2 * Math.PI / nodes.length));
-      pos[model] = { x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius };
+    var candidateModels = nodes.filter(function(model) { return model !== selectedModel; });
+    if (selectedModel) pos[selectedModel] = { x: selectedX, y: selectedY };
+    candidateModels.forEach(function(model, idx) {
+      var y;
+      if (candidateModels.length === 1) {
+        y = selectedY;
+      } else {
+        var pad = 28;
+        var span = Math.max(10, (height - (pad * 2)));
+        y = pad + ((span * idx) / (candidateModels.length - 1));
+      }
+      pos[model] = { x: candidateX, y: y };
     });
 
     var edges = {};
-    nodes.forEach(function(model) {
+    candidateModels.forEach(function(model) {
       if (!selectedModel || model === selectedModel) return;
       var key = model + '→' + selectedModel;
       edges[key] = { key: key, from: model, to: selectedModel, count: 1 };
@@ -784,22 +809,34 @@
       var active = focusEdge && focusEdge === e.key;
       var faded = (focusModel && e.from !== focusModel && e.to !== focusModel) || (focusEdge && !active);
       var cls = 'model-graph-edge' + (active ? ' active' : '') + (faded ? ' model-graph-faded' : '');
-      var width = 1.5;
-      return '<line class="' + cls + '" data-edge-key="' + esc(e.key) + '" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke-width="' + width + '"><title>' + esc(e.key) + '</title></line>';
+      return '<line class="' + cls + '" data-edge-key="' + esc(e.key) + '" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke-width="1.4"><title>' + esc(e.key) + '</title></line>';
     }).join('');
+
+    var laneGuides = '';
+    if (candidateModels.length > 1) {
+      var yMin = pos[candidateModels[0]].y;
+      var yMax = pos[candidateModels[candidateModels.length - 1]].y;
+      laneGuides = '<line x1="' + candidateX + '" y1="' + yMin.toFixed(1) + '" x2="' + candidateX + '" y2="' + yMax.toFixed(1) + '" stroke="var(--border)" stroke-opacity="0.45" stroke-dasharray="2 3" />';
+    }
 
     var nodeEls = nodes.map(function(model) {
       var p = pos[model];
+      if (!p) return '';
       var active = (focusModel && focusModel === model) || (!focusModel && model === selectedModel);
       var faded = focusModel && !active;
-      var cls = 'model-graph-node' + (active ? ' active' : '') + (faded ? ' model-graph-faded' : '');
-      var short = truncate(model.split('/').pop() || model, 11);
+      var unusable = nodeMap[model] && nodeMap[model].usable === false;
+      var cls = 'model-graph-node' + (active ? ' active' : '') + (faded ? ' model-graph-faded' : '') + (unusable ? ' model-graph-node-unusable' : '');
+      var short = truncate(model.split('/').pop() || model, 22);
       var score = nodeMap[model].score;
       var scoreTxt = typeof score === 'number' ? ' · score ' + score.toFixed(3) : '';
       var selectedTxt = model === selectedModel ? ' · selected' : '';
+      var r = model === selectedModel ? 14 : 10;
+      var labelX = model === selectedModel ? p.x : (p.x - 14);
+      var labelY = model === selectedModel ? (p.y + 28) : (p.y + 3);
+      var anchor = model === selectedModel ? 'middle' : 'end';
       return '<g data-node-model="' + esc(model) + '" style="cursor:pointer">'
-        + '<circle class="' + cls + '" cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="20"><title>' + esc(model + selectedTxt + scoreTxt) + '</title></circle>'
-        + '<text class="model-graph-node-label" x="' + p.x.toFixed(1) + '" y="' + (p.y + 4).toFixed(1) + '">' + esc(short) + '</text>'
+        + '<circle class="' + cls + '" cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="' + r + '"><title>' + esc(model + selectedTxt + scoreTxt) + '</title></circle>'
+        + '<text class="model-graph-node-label" text-anchor="' + anchor + '" x="' + labelX.toFixed(1) + '" y="' + labelY.toFixed(1) + '">' + esc(short) + '</text>'
         + '</g>';
     }).join('');
 
@@ -811,7 +848,7 @@
       return '<option value="' + esc(tid) + '"' + (tid === selectedTurn ? ' selected' : '') + '>' + esc(label) + '</option>';
     }).join('');
 
-    var detail = 'Task turn: ' + selectedTurn + '. Selected model: ' + (selectedModel || 'unknown') + '.';
+    var detail = 'Task turn: ' + selectedTurn + '. Selected model: ' + (selectedModel || 'unknown') + '. Displaying top ' + nodes.length + ' candidate models' + (hiddenCount > 0 ? ' (' + hiddenCount + ' hidden).' : '.');
     if (focusEdge && edges[focusEdge]) {
       detail = 'Task turn: ' + selectedTurn + '. Candidate edge: ' + edges[focusEdge].from + ' → ' + edges[focusEdge].to + '.';
     } else if (focusModel) {
@@ -824,8 +861,10 @@
       + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.5rem">Candidate models and chosen model for a single task. Pick a task turn to inspect that decision.</div>'
       + '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.55rem"><label for="model-graph-task-select" style="font-size:0.75rem;color:var(--muted)">Task turn</label><select id="model-graph-task-select" class="select" style="min-width:320px;max-width:100%">' + options + '</select></div>'
       + '<div class="model-graph-wrap">'
-      + '<svg class="model-graph-svg" viewBox="0 0 680 300" preserveAspectRatio="xMidYMid meet">'
-      + edgeEls + nodeEls
+      + '<svg class="model-graph-svg" viewBox="0 0 680 320" preserveAspectRatio="xMidYMid meet">'
+      + '<text x="36" y="22" fill="var(--muted)" style="font-size:10px;font-family:var(--font-mono)">Candidates (ranked)</text>'
+      + '<text x="487" y="22" fill="var(--muted)" style="font-size:10px;font-family:var(--font-mono)">Selected</text>'
+      + laneGuides + edgeEls + nodeEls
       + '</svg></div>'
       + '<div id="model-graph-detail" class="model-graph-detail">' + esc(detail) + '</div>'
       + '<div style="margin-top:0.5rem"><button class="btn secondary" id="model-graph-clear-focus" style="font-size:0.6875rem;padding:0.22rem 0.55rem">Clear focus</button></div>'

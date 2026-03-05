@@ -148,12 +148,26 @@ fn model_identity_guard_corrects_mismatched_self_report() {
 }
 
 #[test]
-fn model_identity_guard_keeps_matching_self_report() {
+fn model_identity_guard_always_emits_canonical_model_for_identity_prompts() {
     let prompt = "What model are you running?";
     let response = "I am currently running on ollama/phi4-mini:latest.".to_string();
     let guarded =
         enforce_model_identity_truth_guard(prompt, response.clone(), "ollama/phi4-mini:latest");
-    assert_eq!(guarded, response);
+    assert_eq!(
+        guarded,
+        "I am currently running on ollama/phi4-mini:latest."
+    );
+}
+
+#[test]
+fn model_identity_guard_handles_still_using_phrase() {
+    let prompt = "Can you confirm for me that you are still using moonshot?";
+    let response = "Yes, still moonshot.".to_string();
+    let guarded = enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest");
+    assert_eq!(
+        guarded,
+        "I am currently running on ollama/phi4-mini:latest."
+    );
 }
 
 // ── repeat_tokens tests ──────────────────────────────────────

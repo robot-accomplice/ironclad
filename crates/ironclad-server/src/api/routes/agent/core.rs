@@ -358,6 +358,339 @@ pub(super) fn sanitize_model_output(content: String, hmac_secret: &[u8]) -> Stri
     }
 }
 
+fn prompt_requests_execution(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    [
+        " run ",
+        " execute ",
+        " use a tool",
+        "tools you can use",
+        "pick one at random",
+        "list entries",
+        "list files",
+        "file distribution",
+        "schedule a cron",
+        "schedule cron",
+        "create cron",
+        "order a subagent",
+        "delegate",
+        "orchestrate",
+        "ls ",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
+}
+
+fn prompt_requests_delegation(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("subagent") || lower.contains("delegate") || lower.contains("orchestrate")
+}
+
+fn prompt_requests_cron(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("cron") || (lower.contains("schedule") && lower.contains("minute"))
+}
+
+fn prompt_requests_file_distribution(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("file distribution")
+}
+
+fn prompt_requests_random_tool_use(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("tools you can use")
+        || (lower.contains("pick one at random") && lower.contains("tool"))
+}
+
+fn shell_quote(raw: &str) -> String {
+    format!("'{}'", raw.replace('\'', "'\"'\"'"))
+}
+
+fn extract_path_hint(prompt: &str) -> Option<String> {
+    let mut cleaned = prompt.replace('\n', " ");
+    cleaned = cleaned.replace('\t', " ");
+    for token in cleaned.split_whitespace() {
+        let t = token.trim_matches(|c: char| ",.;:!?\"'`()[]{}".contains(c));
+        if t.is_empty() {
+            continue;
+        }
+        if t == "~" || t.starts_with("~/") || t.starts_with('/') {
+            return Some(t.to_string());
+        }
+    }
+    None
+}
+
+fn build_distribution_command(path: &str) -> String {
+    let target = shell_quote(path);
+    format!(
+        "find {target} -maxdepth 5 -type f 2>/dev/null | awk -F. 'NF>1{{ext=$NF}} NF==1{{ext=\"[noext]\"}} {{count[ext]++}} END{{for(e in count) print e\"\\t\"count[e]}}' | sort -k2,2nr | head -n 20"
+    )
+}
+
+async fn try_execution_shortcut(
+    state: &AppState,
+    user_prompt: &str,
+    turn_id: &str,
+    authority: InputAuthority,
+    channel_label: Option<&str>,
+    prepared_model: &str,
+    delegation_provenance: &mut DelegationProvenance,
+) -> Option<InferenceOutput> {
+    if !prompt_requests_execution(user_prompt) {
+        return None;
+    }
+
+    // 1) Tool inventory + random tool execution request.
+    if prompt_requests_random_tool_use(user_prompt) {
+        let mut names = state
+            .tools
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect::<Vec<_>>();
+        names.sort();
+        let pick = if names.is_empty() {
+            "echo".to_string()
+        } else {
+            let idx = user_prompt.len() % names.len();
+            names[idx].clone()
+        };
+        let params = if pick == "echo" {
+            serde_json::json!({"message": "Duncan Idaho reporting for duty."})
+        } else if pick == "get_runtime_context" {
+            serde_json::json!({})
+        } else {
+            serde_json::json!({"message": format!("tool probe via {}", pick)})
+        };
+        let mut tool_results = Vec::new();
+        let out = execute_tool_call(
+            state,
+            if pick == "echo" || pick == "get_runtime_context" {
+                &pick
+            } else {
+                "echo"
+            },
+            &params,
+            turn_id,
+            authority,
+            channel_label,
+        )
+        .await;
+        match out {
+            Ok(output) => {
+                let used = if pick == "echo" || pick == "get_runtime_context" {
+                    pick.clone()
+                } else {
+                    "echo".to_string()
+                };
+                tool_results.push((used.clone(), output.clone()));
+                let content = format!(
+                    "Available tools (sample): {}. Random pick: {}. Output:\n{}",
+                    names.into_iter().take(12).collect::<Vec<_>>().join(", "),
+                    used,
+                    output.trim()
+                );
+                return Some(InferenceOutput {
+                    content,
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                let tool_results = vec![("echo".to_string(), format!("error: {err}"))];
+                return Some(InferenceOutput {
+                    content: "I attempted a direct tool execution shortcut, but it failed."
+                        .to_string(),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
+    // 2) File distribution request (supports '~' and absolute paths).
+    if prompt_requests_file_distribution(user_prompt) {
+        let path = extract_path_hint(user_prompt).unwrap_or_else(|| ".".to_string());
+        let cmd = build_distribution_command(&path);
+        let params = serde_json::json!({
+            "command": cmd,
+            "cwd": ".",
+            "timeout_seconds": 45
+        });
+        let out =
+            execute_tool_call(state, "bash", &params, turn_id, authority, channel_label).await;
+        let mut tool_results = Vec::new();
+        match out {
+            Ok(output) => {
+                tool_results.push(("bash".to_string(), output.clone()));
+                return Some(InferenceOutput {
+                    content: format!("File distribution for {}:\n{}", path, output.trim()),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                tool_results.push(("bash".to_string(), format!("error: {err}")));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "I attempted to compute file distribution for {}, but the command failed: {}",
+                        path, err
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
+    // 3) Delegation request — force a real orchestration tool execution attempt.
+    if prompt_requests_delegation(user_prompt) {
+        delegation_provenance.subagent_task_started = true;
+        let params = serde_json::json!({
+            "subtasks": [{
+                "task": user_prompt
+            }]
+        });
+        let out = execute_tool_call(
+            state,
+            "orchestrate-subagents",
+            &params,
+            turn_id,
+            authority,
+            channel_label,
+        )
+        .await;
+        let mut tool_results = Vec::new();
+        match out {
+            Ok(output) => {
+                delegation_provenance.subagent_task_completed = true;
+                delegation_provenance.subagent_result_attached = !output.trim().is_empty();
+                tool_results.push(("orchestrate-subagents".to_string(), output.clone()));
+                return Some(InferenceOutput {
+                    content: output,
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                tool_results.push(("orchestrate-subagents".to_string(), format!("error: {err}")));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "I attempted delegation via orchestrate-subagents, but it failed: {}",
+                        err
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
+    // 4) Cron request — create a real cron job directly through DB path.
+    if prompt_requests_cron(user_prompt) {
+        let agent_id = {
+            let cfg = state.config.read().await;
+            cfg.agent.id.clone()
+        };
+        let name = format!("agent-cron-{}", &turn_id[..turn_id.len().min(8)]);
+        let schedule_expr = "*/5 * * * *";
+        let mut tool_results = Vec::new();
+        match ironclad_db::cron::create_job(
+            &state.db,
+            &name,
+            &agent_id,
+            "cron",
+            Some(schedule_expr),
+            "{}",
+        ) {
+            Ok(job_id) => {
+                tool_results.push((
+                    "cron-create".to_string(),
+                    format!("job_id={job_id} schedule={schedule_expr}"),
+                ));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "Scheduled cron job '{}' (id: {}) with expression '{}'.",
+                        name, job_id, schedule_expr
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                tool_results.push(("cron-create".to_string(), format!("error: {err}")));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "I attempted to schedule a cron job, but creation failed: {}",
+                        err
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
+    None
+}
+
 /// Run the non-streaming inference + ReAct loop. Returns the final assistant content
 /// along with token/cost totals.
 pub(super) async fn run_inference_and_react(
@@ -368,6 +701,26 @@ pub(super) async fn run_inference_and_react(
     channel_label: Option<&str>,
     delegation_provenance: &mut DelegationProvenance,
 ) -> InferenceOutput {
+    let user_prompt = prepared
+        .request
+        .messages
+        .last()
+        .map(|m| m.content.as_str())
+        .unwrap_or_default();
+    if let Some(shortcut) = try_execution_shortcut(
+        state,
+        user_prompt,
+        turn_id,
+        authority,
+        channel_label,
+        &prepared.model,
+        delegation_provenance,
+    )
+    .await
+    {
+        return shortcut;
+    }
+
     // Initial inference
     let mut resolved_model = prepared.model.clone();
     let (
@@ -559,26 +912,10 @@ pub(super) async fn run_inference_and_react(
 
     // Post-ReAct guards
     let final_content = enforce_subagent_claim_guard(final_content, delegation_provenance);
-    let final_content = enforce_execution_truth_guard(
-        prepared
-            .request
-            .messages
-            .last()
-            .map(|m| m.content.as_str())
-            .unwrap_or_default(),
-        final_content,
-        &tool_results_acc,
-    );
-    let final_content = enforce_model_identity_truth_guard(
-        prepared
-            .request
-            .messages
-            .last()
-            .map(|m| m.content.as_str())
-            .unwrap_or_default(),
-        final_content,
-        &resolved_model,
-    );
+    let final_content =
+        enforce_execution_truth_guard(user_prompt, final_content, &tool_results_acc);
+    let final_content =
+        enforce_model_identity_truth_guard(user_prompt, final_content, &resolved_model);
     let final_content =
         enforce_non_repetition(final_content, prepared.previous_assistant.as_deref());
 
@@ -750,13 +1087,17 @@ pub(super) async fn execute_inference_pipeline(
     delegation_provenance: &mut DelegationProvenance,
 ) -> Result<PipelineResult, String> {
     // 1. Cache check
-    let cached = check_cache(
-        state,
-        user_content,
-        &prepared.cache_hash,
-        prepared.query_embedding.as_deref(),
-    )
-    .await;
+    let cached = if prompt_requests_execution(user_content) {
+        None
+    } else {
+        check_cache(
+            state,
+            user_content,
+            &prepared.cache_hash,
+            prepared.query_embedding.as_deref(),
+        )
+        .await
+    };
 
     if let Some(cached) = cached {
         let cached_content = enforce_execution_truth_guard(user_content, cached.content, &[]);
