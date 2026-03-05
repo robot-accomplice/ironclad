@@ -23,8 +23,8 @@ use super::guards::{
 use super::intents::{
     requests_acknowledgement, requests_capability_summary, requests_cron, requests_current_events,
     requests_delegation, requests_execution, requests_file_distribution, requests_image_count_scan,
-    requests_introspection, requests_personality_profile, requests_provider_inventory,
-    requests_random_tool_use, requests_wallet_address_scan,
+    requests_introspection, requests_obsidian_insights, requests_personality_profile,
+    requests_provider_inventory, requests_random_tool_use, requests_wallet_address_scan,
 };
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
@@ -558,6 +558,37 @@ fn build_image_count_command(path: &str) -> String {
     )
 }
 
+fn default_obsidian_vault_path() -> Option<String> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
+    let candidates = [
+        format!("{home}/Documents/Obsidian Vault"),
+        format!("{home}/Desktop/My Vault"),
+        format!("{home}/Desktop/Obsidian Vault"),
+        format!("{home}/Obsidian"),
+        format!("{home}/Vault"),
+    ];
+    for c in candidates {
+        if std::path::Path::new(&c).is_dir() {
+            return Some(c);
+        }
+    }
+    None
+}
+
+fn build_obsidian_insight_command(path: &str) -> String {
+    let target = shell_quote(path);
+    format!(
+        "notes=$(find {target} -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' '); \
+         echo \"NOTES=$notes\"; \
+         echo 'TOP_TAGS:'; \
+         rg -o --no-filename '#[A-Za-z][A-Za-z0-9_/-]*' {target} -g '*.md' 2>/dev/null | sort | uniq -c | sort -nr | head -n 10 || true; \
+         echo 'SAMPLE_NOTES:'; \
+         find {target} -type f -name '*.md' 2>/dev/null | sed 's|^.*/||' | head -n 10 || true"
+    )
+}
+
 async fn try_execution_shortcut(
     state: &AppState,
     user_prompt: &str,
@@ -590,6 +621,7 @@ async fn try_execution_shortcut(
         && !requests_capability_summary(user_prompt)
         && !requests_wallet_address_scan(user_prompt)
         && !requests_image_count_scan(user_prompt)
+        && !requests_obsidian_insights(user_prompt)
     {
         return None;
     }
@@ -1158,6 +1190,70 @@ async fn try_execution_shortcut(
         }
     }
 
+    // 3d) Obsidian vault insight request — summarize note corpus signals.
+    if requests_obsidian_insights(user_prompt) {
+        let path = extract_path_hint(user_prompt)
+            .map(|p| expand_user_path(&p))
+            .or_else(default_obsidian_vault_path)
+            .unwrap_or_else(|| "~/Documents/Obsidian Vault".to_string());
+        let cmd = build_obsidian_insight_command(&path);
+        let params = serde_json::json!({
+            "command": cmd,
+            "cwd": ".",
+            "timeout_seconds": 90
+        });
+        let out =
+            execute_tool_call(state, "bash", &params, turn_id, authority, channel_label).await;
+        let mut tool_results = Vec::new();
+        match out {
+            Ok(output) => {
+                tool_results.push(("bash".to_string(), output.clone()));
+                let mut note_count = "0".to_string();
+                for line in output.lines() {
+                    if let Some(rest) = line.strip_prefix("NOTES=") {
+                        note_count = rest.trim().to_string();
+                        break;
+                    }
+                }
+                return Some(InferenceOutput {
+                    content: format!(
+                        "Obsidian vault scan complete for {}.\nNote count: {}.\n\n{}",
+                        path,
+                        note_count,
+                        output.trim()
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                tool_results.push(("bash".to_string(), format!("error: {err}")));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "I attempted to analyze the Obsidian vault at {}, but the scan failed: {}",
+                        path, err
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
     // 4) Delegation request — force a real orchestration tool execution attempt.
     if requests_delegation(user_prompt) {
         delegation_provenance.subagent_task_started = true;
@@ -1683,6 +1779,7 @@ pub(super) async fn execute_inference_pipeline(
         || requests_acknowledgement(user_content)
         || requests_wallet_address_scan(user_content)
         || requests_image_count_scan(user_content)
+        || requests_obsidian_insights(user_content)
     {
         None
     } else {

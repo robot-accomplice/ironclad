@@ -165,6 +165,18 @@ pub(super) fn requests_image_count_scan(prompt: &str) -> bool {
     asks_for_count && mentions_images
 }
 
+pub(super) fn requests_obsidian_insights(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    let mentions_vault = lower.contains("obsidian") || lower.contains("vault");
+    let asks_for_summary = lower.contains("insight")
+        || lower.contains("summary")
+        || lower.contains("summarize")
+        || lower.contains("what")
+        || lower.contains("say about")
+        || lower.contains("status");
+    mentions_vault && asks_for_summary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +282,14 @@ mod tests {
             "count images in ~/Downloads recursively"
         ));
         assert!(!requests_image_count_scan("show me photos from yesterday"));
+    }
+
+    #[test]
+    fn obsidian_insight_markers_match_expected_prompts() {
+        assert!(requests_obsidian_insights(
+            "Any insights you care to draw from the obsidian vault?"
+        ));
+        assert!(requests_obsidian_insights("summarize my vault"));
+        assert!(!requests_obsidian_insights("vault token price"));
     }
 }
