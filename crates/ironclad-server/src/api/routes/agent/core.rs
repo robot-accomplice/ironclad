@@ -404,10 +404,8 @@ async fn try_execution_shortcut(
     prepared_model: &str,
     delegation_provenance: &mut DelegationProvenance,
 ) -> Option<InferenceOutput> {
-    if !requests_execution(user_prompt) {
-        if !requests_geopolitical_sitrep(user_prompt) {
-            return None;
-        }
+    if !requests_execution(user_prompt) && !requests_geopolitical_sitrep(user_prompt) {
+        return None;
     }
 
     // 0) Geopolitical sitrep request — force real delegated execution.
