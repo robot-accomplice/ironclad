@@ -421,7 +421,7 @@ async fn json_error_layer(
     *resp.status_mut() = code;
     resp.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
-        "application/json".parse().unwrap(),
+        axum::http::HeaderValue::from_static("application/json"),
     );
     resp
 }
@@ -438,14 +438,17 @@ async fn security_headers_layer(
     let headers = response.headers_mut();
     headers.insert(
         axum::http::header::HeaderName::from_static("content-security-policy"),
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'"
-            .parse()
-            .unwrap(),
+        axum::http::HeaderValue::from_static(
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'",
+        ),
     );
-    headers.insert(axum::http::header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
+    headers.insert(
+        axum::http::header::X_FRAME_OPTIONS,
+        axum::http::HeaderValue::from_static("DENY"),
+    );
     headers.insert(
         axum::http::header::X_CONTENT_TYPE_OPTIONS,
-        "nosniff".parse().unwrap(),
+        axum::http::HeaderValue::from_static("nosniff"),
     );
     response
 }
@@ -1115,6 +1118,55 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn put_config_routing_weights_persist_round_trip() {
+        let state = test_state();
+        let app = build_router(state.clone());
+        let patch = r#"{
+            "models": {
+                "routing": {
+                    "accuracy_floor": 0.42,
+                    "cost_weight": 0.31,
+                    "cost_aware": true,
+                    "confidence_threshold": 0.77,
+                    "estimated_output_tokens": 640
+                }
+            }
+        }"#;
+        let put_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(patch))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(put_resp.status(), StatusCode::OK);
+        let put_body = json_body(put_resp).await;
+        assert_eq!(put_body["persisted"], true);
+
+        let get_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let cfg = json_body(get_resp).await;
+        assert_eq!(cfg["models"]["routing"]["accuracy_floor"], 0.42);
+        assert_eq!(cfg["models"]["routing"]["cost_weight"], 0.31);
+        assert_eq!(cfg["models"]["routing"]["cost_aware"], true);
+        assert_eq!(cfg["models"]["routing"]["confidence_threshold"], 0.77);
+        assert_eq!(cfg["models"]["routing"]["estimated_output_tokens"], 640);
+    }
+
+    #[tokio::test]
     async fn put_config_rejects_invalid() {
         let state = test_state();
         let old_name = state.config.read().await.agent.name.clone();
@@ -1295,7 +1347,13 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn knowledge_ingest_rejects_path_outside_workspace() {
-        let app = build_router(test_state());
+        let state = test_state();
+        let workspace = tempfile::tempdir().unwrap();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.agent.workspace = workspace.path().to_path_buf();
+        }
+        let app = build_router(state);
         let outside = std::env::temp_dir().join(format!("ic-outside-{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&outside, b"secret").unwrap();
 
@@ -1314,6 +1372,29 @@ primary = "ollama/qwen3:8b"
         assert!(body.contains("escapes workspace root"));
 
         let _ = std::fs::remove_file(outside);
+    }
+
+    #[tokio::test]
+    async fn knowledge_ingest_rejects_missing_workspace_root() {
+        let state = test_state();
+        let missing =
+            std::env::temp_dir().join(format!("ic-missing-workspace-{}", uuid::Uuid::new_v4()));
+        {
+            let mut cfg = state.config.write().await;
+            cfg.agent.workspace = missing.clone();
+        }
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/knowledge/ingest")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"path":"README.md"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = text_body(resp).await;
+        assert!(body.contains("workspace root"));
     }
 
     #[tokio::test]
@@ -1639,7 +1720,9 @@ primary = "ollama/qwen3:8b"
         assert!(body["user_message_id"].is_string());
         assert!(body["assistant_message_id"].is_string());
         assert!(body["content"].is_string());
+        assert!(body["selected_model"].is_string());
         assert!(body["model"].is_string());
+        assert!(body.get("model_shift_from").is_some());
     }
 
     #[tokio::test]
@@ -3803,7 +3886,9 @@ params = { path = "README.md" }
         let body = json_body(resp).await;
         assert_eq!(body["cached"], true);
         assert_eq!(body["content"], "cached answer from mock");
+        assert!(body["selected_model"].is_string());
         assert_eq!(body["model"], "mock-model");
+        assert!(body.get("model_shift_from").is_some());
         assert_eq!(body["tokens_saved"], 42);
     }
 
@@ -4481,6 +4566,23 @@ params = { path = "README.md" }
         assert!(reply.contains("subagents:"));
         assert!(reply.contains("econ-analyst=running"));
         assert!(reply.contains("geopolitical-specialist=booting"));
+    }
+
+    #[tokio::test]
+    async fn slash_status_requires_peer_authority() {
+        let state = test_state();
+        let inbound = InboundMessage {
+            id: "cmd-status-1".into(),
+            platform: "telegram".into(),
+            sender_id: "external-user".into(),
+            content: "/status".into(),
+            timestamp: chrono::Utc::now(),
+            metadata: None,
+        };
+        let reply = agent::handle_bot_command(&state, "/status", Some(&inbound))
+            .await
+            .unwrap();
+        assert!(reply.contains("requires Peer authority"));
     }
 
     #[tokio::test]
@@ -7508,6 +7610,61 @@ params = { path = "README.md" }
         let body = json_body(resp).await;
         assert_eq!(body["summary"]["total_rows"], 1);
         assert_eq!(body["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(body["rows"][0]["user_excerpt"], "[redacted]");
+    }
+
+    #[tokio::test]
+    async fn routing_dataset_endpoint_can_include_user_excerpt_when_opted_in() {
+        let state = test_state();
+        let evt = ironclad_db::model_selection::ModelSelectionEventRow {
+            id: "mse-dataset-2".into(),
+            turn_id: "turn-dataset-2".into(),
+            session_id: "sess-dataset".into(),
+            agent_id: "agent-dataset".into(),
+            channel: "cli".into(),
+            selected_model: "ollama/qwen3:8b".into(),
+            strategy: "metascore".into(),
+            primary_model: "ollama/qwen3:8b".into(),
+            override_model: None,
+            complexity: Some("0.18".into()),
+            user_excerpt: "sensitive excerpt".into(),
+            candidates_json: r#"[{"model":"ollama/qwen3:8b","usable":true}]"#.into(),
+            created_at: "2025-01-01T00:00:00".into(),
+            schema_version: ironclad_db::model_selection::ROUTING_SCHEMA_VERSION,
+            attribution: Some("unit-test".into()),
+            metascore_json: None,
+            features_json: None,
+        };
+        ironclad_db::model_selection::record_model_selection_event(&state.db, &evt).unwrap();
+        ironclad_db::metrics::record_inference_cost(
+            &state.db,
+            "ollama/qwen3:8b",
+            "ollama",
+            40,
+            20,
+            0.0005,
+            Some("T1"),
+            false,
+            Some(80),
+            Some(0.7),
+            false,
+            Some("turn-dataset-2"),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/routing-dataset?limit=10&include_user_excerpt=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["rows"][0]["user_excerpt"], "sensitive excerpt");
     }
 
     #[tokio::test]
@@ -7568,6 +7725,116 @@ params = { path = "README.md" }
         assert!(body["rows_considered"].as_u64().unwrap_or(0) >= 1);
         assert!(body["summary"]["total_rows"].as_u64().unwrap_or(0) >= 1);
         assert!(body["verdicts"].is_array());
+    }
+
+    #[tokio::test]
+    async fn routing_eval_endpoint_rejects_invalid_weights() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/routing-eval")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"cost_weight":1.3,"accuracy_floor":-0.2,"accuracy_min_obs":0}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn routing_dataset_endpoint_rejects_invalid_since_format() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/routing-dataset?since=not-a-date")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn routing_eval_endpoint_rejects_invalid_until_format() {
+        let state = test_state();
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/routing-eval")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"until":"bad-date"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn routing_eval_endpoint_rejects_malformed_candidates_json() {
+        let state = test_state();
+        let evt = ironclad_db::model_selection::ModelSelectionEventRow {
+            id: "mse-eval-bad-candidates".into(),
+            turn_id: "turn-eval-bad-candidates".into(),
+            session_id: "sess-eval-bad-candidates".into(),
+            agent_id: "agent-eval".into(),
+            channel: "cli".into(),
+            selected_model: "ollama/qwen3:8b".into(),
+            strategy: "metascore".into(),
+            primary_model: "ollama/qwen3:8b".into(),
+            override_model: None,
+            complexity: Some("0.4".into()),
+            user_excerpt: "eval malformed candidates".into(),
+            candidates_json: "this-is-not-json".into(),
+            created_at: "2025-01-01T00:00:00".into(),
+            schema_version: ironclad_db::model_selection::ROUTING_SCHEMA_VERSION,
+            attribution: Some("unit-test".into()),
+            metascore_json: None,
+            features_json: None,
+        };
+        ironclad_db::model_selection::record_model_selection_event(&state.db, &evt).unwrap();
+        ironclad_db::metrics::record_inference_cost(
+            &state.db,
+            "ollama/qwen3:8b",
+            "ollama",
+            50,
+            25,
+            0.001,
+            Some("T1"),
+            false,
+            Some(80),
+            Some(0.5),
+            false,
+            Some("turn-eval-bad-candidates"),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/routing-eval")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"limit":50000,"since":"2025-01-01","until":"2025-01-02"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     // ── PUT /api/turns/:id/feedback (update existing) ───────────

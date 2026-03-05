@@ -199,7 +199,7 @@ pub(super) async fn execute_virtual_subagent_tool_call(
         Ok(ironclad_agent::approvals::ToolClassification::Gated) => {
             let request = state
                 .approvals
-                .request_approval(tool_name, &params.to_string(), Some(turn_id))
+                .request_approval(tool_name, &params.to_string(), Some(turn_id), authority)
                 .map_err(|e| format!("Approval error: {e}"))?;
             ironclad_db::approvals::record_approval_request(
                 &state.db,

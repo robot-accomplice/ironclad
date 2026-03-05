@@ -711,7 +711,7 @@ fallbacks = [
 ]
 
 [models.routing]
-mode = "heuristic"  # "heuristic", "primary", or "round-robin"
+mode = "metascore"  # "primary" or "metascore" ("heuristic" accepted as legacy alias)
 confidence_threshold = 0.9
 local_first = true
 

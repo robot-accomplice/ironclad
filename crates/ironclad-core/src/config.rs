@@ -407,26 +407,48 @@ impl IroncladConfig {
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(toml_str: &str) -> Result<Self> {
         let mut config: Self = toml::from_str(toml_str)?;
-        config.database.path = expand_tilde(&config.database.path);
-        config.agent.workspace = expand_tilde(&config.agent.workspace);
-        config.server.log_dir = expand_tilde(&config.server.log_dir);
-        config.skills.skills_dir = expand_tilde(&config.skills.skills_dir);
-        config.wallet.path = expand_tilde(&config.wallet.path);
-        config.plugins.dir = expand_tilde(&config.plugins.dir);
-        config.browser.profile_dir = expand_tilde(&config.browser.profile_dir);
-        config.daemon.pid_file = expand_tilde(&config.daemon.pid_file);
-        if let Some(ref vp) = config.obsidian.vault_path {
-            config.obsidian.vault_path = Some(expand_tilde(vp));
+        config.normalize_paths();
+        config.normalize_legacy_aliases();
+        config.merge_bundled_providers();
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Expand home-relative (`~`) paths across all configured path fields.
+    pub fn normalize_paths(&mut self) {
+        self.database.path = expand_tilde(&self.database.path);
+        self.agent.workspace = expand_tilde(&self.agent.workspace);
+        self.server.log_dir = expand_tilde(&self.server.log_dir);
+        self.skills.skills_dir = expand_tilde(&self.skills.skills_dir);
+        self.wallet.path = expand_tilde(&self.wallet.path);
+        self.plugins.dir = expand_tilde(&self.plugins.dir);
+        self.browser.profile_dir = expand_tilde(&self.browser.profile_dir);
+        self.daemon.pid_file = expand_tilde(&self.daemon.pid_file);
+        self.multimodal.media_dir = self.multimodal.media_dir.as_ref().map(|p| expand_tilde(p));
+        self.devices.identity_path = self.devices.identity_path.as_ref().map(|p| expand_tilde(p));
+
+        if let Some(ref vp) = self.obsidian.vault_path {
+            self.obsidian.vault_path = Some(expand_tilde(vp));
         }
-        config.obsidian.auto_detect_paths = config
+        self.obsidian.auto_detect_paths = self
             .obsidian
             .auto_detect_paths
             .iter()
             .map(|p| expand_tilde(p))
             .collect();
-        config.merge_bundled_providers();
-        config.validate()?;
-        Ok(config)
+
+        for source in &mut self.knowledge.sources {
+            if let Some(ref p) = source.path {
+                source.path = Some(expand_tilde(p));
+            }
+        }
+    }
+
+    pub fn normalize_legacy_aliases(&mut self) {
+        if self.models.routing.mode == "heuristic" {
+            tracing::warn!("models.routing.mode=heuristic is deprecated; normalizing to metascore");
+            self.models.routing.mode = "metascore".into();
+        }
     }
 
     fn merge_bundled_providers(&mut self) {
@@ -517,14 +539,9 @@ impl IroncladConfig {
         }
 
         // ── Routing config validation ──────────────────────────────
-        // Keep `heuristic` as a supported legacy alias to avoid breaking
-        // existing runtime configs and defaults.
-        if !matches!(
-            self.models.routing.mode.as_str(),
-            "primary" | "metascore" | "heuristic"
-        ) {
+        if !matches!(self.models.routing.mode.as_str(), "primary" | "metascore") {
             return Err(IroncladError::Config(format!(
-                "models.routing.mode must be one of \"primary\", \"metascore\", or \"heuristic\", got \"{}\"",
+                "models.routing.mode must be one of \"primary\" or \"metascore\", got \"{}\"",
                 self.models.routing.mode
             )));
         }
@@ -670,7 +687,7 @@ pub fn home_dir() -> PathBuf {
 /// 4. `None` — caller decides the fallback (e.g., built-in defaults or error)
 pub fn resolve_config_path(explicit: Option<&str>) -> Option<PathBuf> {
     if let Some(p) = explicit {
-        return Some(PathBuf::from(p));
+        return Some(expand_tilde(Path::new(p)));
     }
     let home_config = home_dir().join(".ironclad").join("ironclad.toml");
     if home_config.exists() {
@@ -886,7 +903,7 @@ fn default_estimated_output_tokens() -> u32 {
 }
 
 fn default_routing_mode() -> String {
-    "heuristic".into()
+    "metascore".into()
 }
 
 fn default_confidence_threshold() -> f64 {
@@ -2054,7 +2071,7 @@ primary = "openai/gpt-5.3-codex"
 fallbacks = ["google/gemini-3-flash", "ollama/qwen3:14b"]
 
 [models.routing]
-mode = "ml"
+mode = "metascore"
 confidence_threshold = 0.85
 local_first = true
 
@@ -2474,7 +2491,7 @@ ignored_folders = [".obsidian", ".git"]
         assert_eq!(default_port(), 18789);
         assert_eq!(default_bind(), "127.0.0.1");
         assert_eq!(default_estimated_output_tokens(), 500);
-        assert_eq!(default_routing_mode(), "heuristic");
+        assert_eq!(default_routing_mode(), "metascore");
         assert!((default_confidence_threshold() - 0.9).abs() < f64::EPSILON);
         assert!(default_true());
         assert_eq!(default_cb_threshold(), 3);
@@ -2589,7 +2606,7 @@ ignored_folders = [".obsidian", ".git"]
     #[test]
     fn routing_config_default() {
         let cfg = RoutingConfig::default();
-        assert_eq!(cfg.mode, "heuristic");
+        assert_eq!(cfg.mode, "metascore");
         assert!((cfg.confidence_threshold - 0.9).abs() < f64::EPSILON);
         assert!(cfg.local_first);
         assert!(!cfg.cost_aware);
@@ -3081,6 +3098,61 @@ per_payment_cap = 0.0
         );
     }
 
+    #[test]
+    fn resolve_config_path_explicit_tilde_expands() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let p = resolve_config_path(Some("~/ironclad.toml")).unwrap();
+        assert_eq!(p, std::path::PathBuf::from(home).join("ironclad.toml"));
+    }
+
+    #[test]
+    fn tilde_expansion_for_multimodal_knowledge_and_device_paths() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let cfg = IroncladConfig::from_str(
+            r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[multimodal]
+media_dir = "~/media"
+
+[[knowledge.sources]]
+name = "local"
+source_type = "filesystem"
+path = "~/docs"
+
+[devices]
+identity_path = "~/.ironclad/device.json"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cfg.multimodal.media_dir.unwrap(),
+            std::path::PathBuf::from(&home).join("media")
+        );
+        assert_eq!(
+            cfg.knowledge.sources[0].path.clone().unwrap(),
+            std::path::PathBuf::from(&home).join("docs")
+        );
+        assert_eq!(
+            cfg.devices.identity_path.unwrap(),
+            std::path::PathBuf::from(&home)
+                .join(".ironclad")
+                .join("device.json")
+        );
+    }
+
     // ── KnowledgeConfig / WorkspaceConfig defaults ──────────────────────
 
     #[test]
@@ -3285,5 +3357,28 @@ primary = "ollama/qwen3:8b"
 mode = "random"
 "#;
         assert!(IroncladConfig::from_str(toml).is_err());
+    }
+
+    #[test]
+    fn validate_routing_mode_heuristic_normalizes_to_metascore() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+
+[models.routing]
+mode = "heuristic"
+"#;
+        let cfg = IroncladConfig::from_str(toml).expect("heuristic alias should remain accepted");
+        assert_eq!(cfg.models.routing.mode, "metascore");
     }
 }

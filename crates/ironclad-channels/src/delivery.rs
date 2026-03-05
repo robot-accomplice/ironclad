@@ -305,15 +305,16 @@ impl DeliveryQueue {
     }
 
     pub async fn replay_dead_letter_in_memory(&self, id: &str) -> bool {
-        let mut dead = self.dead_letters.lock().await;
-        if let Some(pos) = dead.iter().position(|item| item.id == id)
-            && let Some(mut item) = dead.get(pos).cloned()
-        {
-            // Hold both locks to avoid the item existing in neither collection
-            let mut items = self.items.lock().await;
-            dead.remove(pos);
+        let maybe_item = {
+            let mut dead = self.dead_letters.lock().await;
+            dead.iter()
+                .position(|item| item.id == id)
+                .map(|pos| dead.remove(pos))
+        };
+        if let Some(mut item) = maybe_item {
             item.status = DeliveryStatus::Pending;
             item.next_retry_at = Utc::now();
+            let mut items = self.items.lock().await;
             items.push_back(item);
             return true;
         }

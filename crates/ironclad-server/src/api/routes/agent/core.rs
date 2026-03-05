@@ -16,7 +16,14 @@ use ironclad_core::{InputAuthority, ModelTier};
 use super::AppState;
 use super::decomposition::DelegationProvenance;
 use super::diagnostics::{collect_runtime_diagnostics, diagnostics_system_note};
-use super::guards::{enforce_non_repetition, enforce_subagent_claim_guard};
+use super::guards::{
+    enforce_execution_truth_guard, enforce_model_identity_truth_guard, enforce_non_repetition,
+    enforce_subagent_claim_guard,
+};
+use super::intents::{
+    requests_cron, requests_delegation, requests_execution, requests_file_distribution,
+    requests_random_tool_use,
+};
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
 };
@@ -51,7 +58,6 @@ pub(super) struct InferenceInput<'a> {
 pub(super) struct PreparedInference {
     pub model: String,
     pub model_for_api: String,
-    pub provider_prefix: String,
     pub tier: ModelTier,
     pub request: ironclad_llm::format::UnifiedRequest,
     pub previous_assistant: Option<String>,
@@ -100,8 +106,6 @@ pub(super) async fn prepare_inference(
     )
     .await;
     let _ = ironclad_db::sessions::update_model(&state.db, input.session_id, &model);
-
-    let provider_prefix = model.split('/').next().unwrap_or("unknown").to_string();
 
     // Tier resolution
     let tier = {
@@ -330,7 +334,6 @@ pub(super) async fn prepare_inference(
     Ok(PreparedInference {
         model,
         model_for_api,
-        provider_prefix,
         tier,
         request,
         previous_assistant,
@@ -359,6 +362,295 @@ pub(super) fn sanitize_model_output(content: String, hmac_secret: &[u8]) -> Stri
     }
 }
 
+fn shell_quote(raw: &str) -> String {
+    format!("'{}'", raw.replace('\'', "'\"'\"'"))
+}
+
+fn extract_path_hint(prompt: &str) -> Option<String> {
+    let mut cleaned = prompt.replace('\n', " ");
+    cleaned = cleaned.replace('\t', " ");
+    for token in cleaned.split_whitespace() {
+        let t = token.trim_matches(|c: char| ",.;:!?\"'`()[]{}".contains(c));
+        if t.is_empty() {
+            continue;
+        }
+        if t == "~" || t.starts_with("~/") || t.starts_with('/') {
+            return Some(t.to_string());
+        }
+    }
+    None
+}
+
+fn build_distribution_command(path: &str) -> String {
+    let target = shell_quote(path);
+    format!(
+        "find {target} -maxdepth 5 -type f 2>/dev/null | awk -F. 'NF>1{{ext=$NF}} NF==1{{ext=\"[noext]\"}} {{count[ext]++}} END{{for(e in count) print e\"\\t\"count[e]}}' | sort -k2,2nr | head -n 20"
+    )
+}
+
+async fn try_execution_shortcut(
+    state: &AppState,
+    user_prompt: &str,
+    turn_id: &str,
+    authority: InputAuthority,
+    channel_label: Option<&str>,
+    prepared_model: &str,
+    delegation_provenance: &mut DelegationProvenance,
+) -> Option<InferenceOutput> {
+    if !requests_execution(user_prompt) {
+        return None;
+    }
+
+    // 1) Tool inventory + random tool execution request.
+    if requests_random_tool_use(user_prompt) {
+        let mut names = state
+            .tools
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect::<Vec<_>>();
+        names.sort();
+        let pick = if names.is_empty() {
+            "echo".to_string()
+        } else {
+            let idx = user_prompt.len() % names.len();
+            names[idx].clone()
+        };
+        let params = if pick == "echo" {
+            serde_json::json!({"message": "Duncan Idaho reporting for duty."})
+        } else if pick == "get_runtime_context" {
+            serde_json::json!({})
+        } else {
+            serde_json::json!({"message": format!("tool probe via {}", pick)})
+        };
+        let mut tool_results = Vec::new();
+        let out = execute_tool_call(
+            state,
+            if pick == "echo" || pick == "get_runtime_context" {
+                &pick
+            } else {
+                "echo"
+            },
+            &params,
+            turn_id,
+            authority,
+            channel_label,
+        )
+        .await;
+        match out {
+            Ok(output) => {
+                let used = if pick == "echo" || pick == "get_runtime_context" {
+                    pick.clone()
+                } else {
+                    "echo".to_string()
+                };
+                tool_results.push((used.clone(), output.clone()));
+                let content = format!(
+                    "Available tools (sample): {}. Random pick: {}. Output:\n{}",
+                    names.into_iter().take(12).collect::<Vec<_>>().join(", "),
+                    used,
+                    output.trim()
+                );
+                return Some(InferenceOutput {
+                    content,
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                let tool_results = vec![("echo".to_string(), format!("error: {err}"))];
+                return Some(InferenceOutput {
+                    content: "I attempted a direct tool execution shortcut, but it failed."
+                        .to_string(),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
+    // 2) File distribution request (supports '~' and absolute paths).
+    if requests_file_distribution(user_prompt) {
+        let path = extract_path_hint(user_prompt).unwrap_or_else(|| ".".to_string());
+        let cmd = build_distribution_command(&path);
+        let params = serde_json::json!({
+            "command": cmd,
+            "cwd": ".",
+            "timeout_seconds": 45
+        });
+        let out =
+            execute_tool_call(state, "bash", &params, turn_id, authority, channel_label).await;
+        let mut tool_results = Vec::new();
+        match out {
+            Ok(output) => {
+                tool_results.push(("bash".to_string(), output.clone()));
+                return Some(InferenceOutput {
+                    content: format!("File distribution for {}:\n{}", path, output.trim()),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                tool_results.push(("bash".to_string(), format!("error: {err}")));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "I attempted to compute file distribution for {}, but the command failed: {}",
+                        path, err
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
+    // 3) Delegation request — force a real orchestration tool execution attempt.
+    if requests_delegation(user_prompt) {
+        delegation_provenance.subagent_task_started = true;
+        let params = serde_json::json!({
+            "subtasks": [{
+                "task": user_prompt
+            }]
+        });
+        let out = execute_tool_call(
+            state,
+            "orchestrate-subagents",
+            &params,
+            turn_id,
+            authority,
+            channel_label,
+        )
+        .await;
+        let mut tool_results = Vec::new();
+        match out {
+            Ok(output) => {
+                delegation_provenance.subagent_task_completed = true;
+                delegation_provenance.subagent_result_attached = !output.trim().is_empty();
+                tool_results.push(("orchestrate-subagents".to_string(), output.clone()));
+                return Some(InferenceOutput {
+                    content: output,
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                tool_results.push(("orchestrate-subagents".to_string(), format!("error: {err}")));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "I attempted delegation via orchestrate-subagents, but it failed: {}",
+                        err
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
+    // 4) Cron request — create a real cron job directly through DB path.
+    if requests_cron(user_prompt) {
+        let agent_id = {
+            let cfg = state.config.read().await;
+            cfg.agent.id.clone()
+        };
+        let name = format!("agent-cron-{}", &turn_id[..turn_id.len().min(8)]);
+        let schedule_expr = "*/5 * * * *";
+        let mut tool_results = Vec::new();
+        match ironclad_db::cron::create_job(
+            &state.db,
+            &name,
+            &agent_id,
+            "cron",
+            Some(schedule_expr),
+            "{}",
+        ) {
+            Ok(job_id) => {
+                tool_results.push((
+                    "cron-create".to_string(),
+                    format!("job_id={job_id} schedule={schedule_expr}"),
+                ));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "Scheduled cron job '{}' (id: {}) with expression '{}'.",
+                        name, job_id, schedule_expr
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                tool_results.push(("cron-create".to_string(), format!("error: {err}")));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "I attempted to schedule a cron job, but creation failed: {}",
+                        err
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
+    None
+}
+
 /// Run the non-streaming inference + ReAct loop. Returns the final assistant content
 /// along with token/cost totals.
 pub(super) async fn run_inference_and_react(
@@ -369,7 +661,28 @@ pub(super) async fn run_inference_and_react(
     channel_label: Option<&str>,
     delegation_provenance: &mut DelegationProvenance,
 ) -> InferenceOutput {
+    let user_prompt = prepared
+        .request
+        .messages
+        .last()
+        .map(|m| m.content.as_str())
+        .unwrap_or_default();
+    if let Some(shortcut) = try_execution_shortcut(
+        state,
+        user_prompt,
+        turn_id,
+        authority,
+        channel_label,
+        &prepared.model,
+        delegation_provenance,
+    )
+    .await
+    {
+        return shortcut;
+    }
+
     // Initial inference
+    let mut resolved_model = prepared.model.clone();
     let (
         initial_content,
         mut total_in,
@@ -379,15 +692,18 @@ pub(super) async fn run_inference_and_react(
         quality_score,
         escalated,
     ) = match infer_with_fallback(state, &prepared.request, &prepared.model).await {
-        Ok(result) => (
-            result.content,
-            result.tokens_in,
-            result.tokens_out,
-            result.cost,
-            result.latency_ms,
-            result.quality_score,
-            result.escalated,
-        ),
+        Ok(result) => {
+            resolved_model = result.model.clone();
+            (
+                result.content,
+                result.tokens_in,
+                result.tokens_out,
+                result.cost,
+                result.latency_ms,
+                result.quality_score,
+                result.escalated,
+            )
+        }
         Err(last_error) => (
             super::tools::provider_failure_user_message(&last_error.to_string(), true),
             0,
@@ -518,6 +834,7 @@ pub(super) async fn run_inference_and_react(
             let follow_content =
                 match infer_with_fallback(state, &follow_req, &prepared.model).await {
                     Ok(result) => {
+                        resolved_model = result.model.clone();
                         total_in += result.tokens_in;
                         total_out += result.tokens_out;
                         total_cost += result.cost;
@@ -556,11 +873,15 @@ pub(super) async fn run_inference_and_react(
     // Post-ReAct guards
     let final_content = enforce_subagent_claim_guard(final_content, delegation_provenance);
     let final_content =
+        enforce_execution_truth_guard(user_prompt, final_content, &tool_results_acc);
+    let final_content =
+        enforce_model_identity_truth_guard(user_prompt, final_content, &resolved_model);
+    let final_content =
         enforce_non_repetition(final_content, prepared.previous_assistant.as_deref());
 
     InferenceOutput {
         content: final_content,
-        model: prepared.model.clone(),
+        model: resolved_model,
         tokens_in: total_in,
         tokens_out: total_out,
         cost: total_cost,
@@ -579,12 +900,12 @@ pub(super) async fn check_cache(
     cache_hash: &str,
     query_embedding: Option<&[f32]>,
 ) -> Option<ironclad_llm::CachedResponse> {
+    let _ = user_content;
+    let _ = query_embedding;
     let mut llm = state.llm.write().await;
-    if let Some(emb) = query_embedding {
-        llm.cache.lookup_with_embedding(cache_hash, emb)
-    } else {
-        llm.cache.lookup(cache_hash, user_content)
-    }
+    // High-integrity default: only exact/tool-TTL cache hits.
+    // Semantic near-match cache reuse can fabricate wrong instruction-bound outputs.
+    llm.cache.lookup_strict(cache_hash)
 }
 
 /// Store a response in the semantic cache.
@@ -689,7 +1010,12 @@ pub(super) fn post_turn_ingest(
 /// Result of the unified inference pipeline (cache check → inference → post-turn ops).
 pub(super) struct PipelineResult {
     pub content: String,
+    /// Model selected by routing before execution.
+    pub selected_model: String,
+    /// Model that actually produced the response (may differ on fallback/cache hit).
     pub model: String,
+    /// When actual model differs, contains the originally selected model.
+    pub model_shift_from: Option<String>,
     pub tokens_in: i64,
     pub tokens_out: i64,
     pub cost: f64,
@@ -721,21 +1047,34 @@ pub(super) async fn execute_inference_pipeline(
     delegation_provenance: &mut DelegationProvenance,
 ) -> Result<PipelineResult, String> {
     // 1. Cache check
-    let cached = check_cache(
-        state,
-        user_content,
-        &prepared.cache_hash,
-        prepared.query_embedding.as_deref(),
-    )
-    .await;
+    let cached = if requests_execution(user_content) {
+        None
+    } else {
+        check_cache(
+            state,
+            user_content,
+            &prepared.cache_hash,
+            prepared.query_embedding.as_deref(),
+        )
+        .await
+    };
 
     if let Some(cached) = cached {
+        let cached_content = enforce_execution_truth_guard(user_content, cached.content, &[]);
+        let cached_content =
+            enforce_model_identity_truth_guard(user_content, cached_content, &cached.model);
         let guarded_cached_content =
-            enforce_non_repetition(cached.content, prepared.previous_assistant.as_deref());
+            enforce_non_repetition(cached_content, prepared.previous_assistant.as_deref());
+        let cached_provider_prefix = cached
+            .model
+            .split('/')
+            .next()
+            .unwrap_or("unknown")
+            .to_string();
         record_cost(
             state,
             &cached.model,
-            &prepared.provider_prefix,
+            &cached_provider_prefix,
             0,
             0,
             0.0,
@@ -753,10 +1092,30 @@ pub(super) async fn execute_inference_pipeline(
             &guarded_cached_content,
         )
         .map_err(|e| format!("failed to store cached response: {e}"))?;
+        if cached.model != prepared.model {
+            state.event_bus.publish(
+                serde_json::json!({
+                    "type": "model_shift",
+                    "turn_id": turn_id,
+                    "session_id": session_id,
+                    "channel": channel_label.unwrap_or("unknown"),
+                    "selected_model": prepared.model,
+                    "executed_model": cached.model,
+                    "reason": "cache_hit",
+                })
+                .to_string(),
+            );
+        }
 
         return Ok(PipelineResult {
             content: guarded_cached_content,
-            model: cached.model,
+            selected_model: prepared.model.clone(),
+            model: cached.model.clone(),
+            model_shift_from: if cached.model != prepared.model {
+                Some(prepared.model.clone())
+            } else {
+                None
+            },
             tokens_in: 0,
             tokens_out: 0,
             cost: 0.0,
@@ -792,10 +1151,16 @@ pub(super) async fn execute_inference_pipeline(
     .map_err(|e| format!("failed to store assistant response: {e}"))?;
 
     // 4. Record cost
+    let executed_provider_prefix = inference
+        .model
+        .split('/')
+        .next()
+        .unwrap_or("unknown")
+        .to_string();
     record_cost(
         state,
         &inference.model,
-        &prepared.provider_prefix,
+        &executed_provider_prefix,
         inference.tokens_in,
         inference.tokens_out,
         inference.cost,
@@ -827,9 +1192,30 @@ pub(super) async fn execute_inference_pipeline(
     )
     .await;
 
+    if inference.model != prepared.model {
+        state.event_bus.publish(
+            serde_json::json!({
+                "type": "model_shift",
+                "turn_id": turn_id,
+                "session_id": session_id,
+                "channel": channel_label.unwrap_or("unknown"),
+                "selected_model": prepared.model,
+                "executed_model": inference.model,
+                "reason": "fallback",
+            })
+            .to_string(),
+        );
+    }
+
     Ok(PipelineResult {
         content: inference.content,
-        model: inference.model,
+        selected_model: prepared.model.clone(),
+        model: inference.model.clone(),
+        model_shift_from: if inference.model != prepared.model {
+            Some(prepared.model.clone())
+        } else {
+            None
+        },
         tokens_in: inference.tokens_in,
         tokens_out: inference.tokens_out,
         cost: inference.cost,

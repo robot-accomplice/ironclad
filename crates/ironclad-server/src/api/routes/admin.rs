@@ -221,7 +221,7 @@ pub async fn approve_request(
                     &replay_req.tool_name,
                     &params,
                     &replay_turn_id,
-                    InputAuthority::Creator,
+                    replay_req.requested_authority,
                     None,
                 )
                 .await;
@@ -790,7 +790,7 @@ pub async fn update_config(
         })));
     }
 
-    let updated: IroncladConfig = match serde_json::from_value(current) {
+    let mut updated: IroncladConfig = match serde_json::from_value(current) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, "config deserialization failed");
@@ -799,6 +799,9 @@ pub async fn update_config(
             return Err(bad_request(msg));
         }
     };
+    // Keep runtime JSON patch behavior aligned with TOML load path resolution.
+    updated.normalize_paths();
+    updated.normalize_legacy_aliases();
     if let Err(e) = updated.validate() {
         tracing::warn!(error = %e, "config validation failed");
         let msg = "invalid config: validation failed".to_string();
@@ -1167,6 +1170,7 @@ pub async fn breaker_reset(
     let mut llm = state.llm.write().await;
     // Always allow reset for configured providers, even if no breaker state exists yet.
     llm.breakers.reset(&provider);
+    tracing::warn!(provider = %provider, "operator requested breaker reset");
 
     Ok(axum::Json(json!({
         "provider": provider,
@@ -1189,6 +1193,7 @@ pub async fn breaker_open(
 
     let mut llm = state.llm.write().await;
     llm.breakers.force_open(&provider);
+    tracing::warn!(provider = %provider, "operator requested breaker force-open");
 
     Ok(axum::Json(json!({
         "provider": provider,
@@ -1205,7 +1210,10 @@ pub struct RoutingDatasetQuery {
     pub schema_version: Option<i64>,
     pub limit: Option<usize>,
     pub format: Option<String>,
+    pub include_user_excerpt: Option<bool>,
 }
+
+const MAX_DATASET_LIMIT: usize = 50_000;
 
 #[derive(Debug, Deserialize)]
 pub struct RoutingEvalRequest {
@@ -1221,20 +1229,43 @@ pub struct RoutingEvalRequest {
 }
 
 fn build_dataset_filter(q: &RoutingDatasetQuery) -> ironclad_db::routing_dataset::DatasetFilter {
+    let limit = q.limit.map(|n| n.min(MAX_DATASET_LIMIT));
     ironclad_db::routing_dataset::DatasetFilter {
         since: q.since.clone(),
         until: q.until.clone(),
         schema_version: q.schema_version,
-        limit: q.limit,
+        limit,
     }
+}
+
+fn valid_time_filter(value: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(value).is_ok()
+        || chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
 }
 
 pub async fn get_routing_dataset(
     State(state): State<AppState>,
     Query(q): Query<RoutingDatasetQuery>,
 ) -> Result<impl IntoResponse, JsonError> {
+    if let Some(ref since) = q.since
+        && !valid_time_filter(since)
+    {
+        return Err(bad_request("since must be RFC3339 or YYYY-MM-DD"));
+    }
+    if let Some(ref until) = q.until
+        && !valid_time_filter(until)
+    {
+        return Err(bad_request("until must be RFC3339 or YYYY-MM-DD"));
+    }
+
     let filter = build_dataset_filter(&q);
+    let include_user_excerpt = q.include_user_excerpt.unwrap_or(false);
     if q.format.as_deref() == Some("tsv") {
+        if !include_user_excerpt {
+            return Err(bad_request(
+                "TSV export includes user excerpts; pass include_user_excerpt=true to confirm.",
+            ));
+        }
         let tsv = ironclad_db::routing_dataset::extract_routing_dataset_tsv(&state.db, &filter)
             .map_err(|e| internal_err(&e))?;
         return Ok((
@@ -1247,10 +1278,40 @@ pub async fn get_routing_dataset(
             .into_response());
     }
 
-    let rows = ironclad_db::routing_dataset::extract_routing_dataset(&state.db, &filter)
+    let mut rows = ironclad_db::routing_dataset::extract_routing_dataset(&state.db, &filter)
         .map_err(|e| internal_err(&e))?;
-    let summary = ironclad_db::routing_dataset::dataset_summary(&state.db, &filter)
-        .map_err(|e| internal_err(&e))?;
+    if !include_user_excerpt {
+        for row in &mut rows {
+            row.user_excerpt = "[redacted]".to_string();
+        }
+    }
+    let mut schema_versions: Vec<i64> = rows
+        .iter()
+        .map(|r| r.schema_version)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    schema_versions.sort_unstable();
+    let summary = ironclad_db::routing_dataset::DatasetSummary {
+        total_rows: rows.len(),
+        distinct_models: rows
+            .iter()
+            .map(|r| r.selected_model.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        distinct_strategies: rows
+            .iter()
+            .map(|r| r.strategy.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        total_cost: rows.iter().map(|r| r.total_cost).sum(),
+        avg_cost_per_decision: if rows.is_empty() {
+            0.0
+        } else {
+            rows.iter().map(|r| r.total_cost).sum::<f64>() / rows.len() as f64
+        },
+        schema_versions,
+    };
     Ok(axum::Json(json!({
         "rows": rows,
         "summary": {
@@ -1269,11 +1330,37 @@ pub async fn run_routing_eval(
     State(state): State<AppState>,
     Json(req): Json<RoutingEvalRequest>,
 ) -> Result<impl IntoResponse, JsonError> {
+    if let Some(ref since) = req.since
+        && !valid_time_filter(since)
+    {
+        return Err(bad_request("since must be RFC3339 or YYYY-MM-DD"));
+    }
+    if let Some(ref until) = req.until
+        && !valid_time_filter(until)
+    {
+        return Err(bad_request("until must be RFC3339 or YYYY-MM-DD"));
+    }
+    if let Some(cost_weight) = req.cost_weight
+        && !(0.0..=1.0).contains(&cost_weight)
+    {
+        return Err(bad_request("cost_weight must be in [0.0, 1.0]"));
+    }
+    if let Some(accuracy_floor) = req.accuracy_floor
+        && !(0.0..=1.0).contains(&accuracy_floor)
+    {
+        return Err(bad_request("accuracy_floor must be in [0.0, 1.0]"));
+    }
+    if let Some(min_obs) = req.accuracy_min_obs
+        && min_obs < 1
+    {
+        return Err(bad_request("accuracy_min_obs must be >= 1"));
+    }
+
     let filter = ironclad_db::routing_dataset::DatasetFilter {
         since: req.since.clone(),
         until: req.until.clone(),
         schema_version: req.schema_version,
-        limit: req.limit.or(Some(1000)),
+        limit: req.limit.map(|n| n.min(MAX_DATASET_LIMIT)).or(Some(1000)),
     };
     let rows = ironclad_db::routing_dataset::extract_routing_dataset(&state.db, &filter)
         .map_err(|e| internal_err(&e))?;
@@ -1307,7 +1394,12 @@ pub async fn run_routing_eval(
             .unwrap_or(0.5)
             .clamp(0.0, 1.0);
         let wire: Vec<CandidateWire> =
-            serde_json::from_str(&row.candidates_json).unwrap_or_default();
+            serde_json::from_str(&row.candidates_json).map_err(|_| {
+                bad_request(format!(
+                    "routing dataset row {} has malformed candidates_json",
+                    row.turn_id
+                ))
+            })?;
         let mut candidates: Vec<ironclad_llm::ModelProfile> = wire
             .into_iter()
             .filter(|c| c.usable)

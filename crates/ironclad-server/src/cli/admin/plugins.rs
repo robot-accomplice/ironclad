@@ -619,7 +619,65 @@ pub fn cmd_plugin_uninstall(name: &str) -> Result<(), Box<dyn std::error::Error>
 
     if !plugin_dir.exists() {
         eprintln!("  Plugin not found: {name}");
-        return Ok(());
+        return Err(format!("plugin not found: {name}").into());
+    }
+
+    // Remove companion skills if the manifest declares them
+    let manifest_path = plugin_dir.join("plugin.toml");
+    if manifest_path.exists()
+        && let Ok(manifest) = PluginManifest::from_file(&manifest_path)
+    {
+        let skills_dir = ironclad_dir.join("skills");
+        for skill_rel in &manifest.companion_skills {
+            let installed_name = companion_skill_install_name(name, skill_rel);
+            let skill_path = skills_dir.join(&installed_name);
+            if skill_path.exists() {
+                if let Err(e) = std::fs::remove_file(&skill_path) {
+                    eprintln!("  {warn} Could not remove companion skill {installed_name}: {e}",);
+                } else {
+                    println!("  {ok} Removed companion skill: {installed_name}");
+                }
+            } else {
+                // Backward compat: legacy flat naming — only remove if content matches
+                let legacy_name = std::path::Path::new(skill_rel)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let old_prefixed_name = format!("{name}--{legacy_name}");
+                let legacy_path = skills_dir.join(&legacy_name);
+                let old_prefixed_path = skills_dir.join(&old_prefixed_name);
+                let source_path = plugin_dir.join(skill_rel);
+                let same_content = std::fs::read(&legacy_path)
+                    .ok()
+                    .zip(std::fs::read(&source_path).ok())
+                    .map(|(a, b)| a == b)
+                    .unwrap_or(false);
+                if same_content {
+                    if let Err(e) = std::fs::remove_file(&legacy_path) {
+                        eprintln!(
+                            "  {warn} Could not remove legacy companion skill {legacy_name}: {e}",
+                        );
+                    } else {
+                        println!("  {ok} Removed legacy companion skill: {legacy_name}");
+                    }
+                }
+                let old_prefixed_same_content = std::fs::read(&old_prefixed_path)
+                    .ok()
+                    .zip(std::fs::read(&source_path).ok())
+                    .map(|(a, b)| a == b)
+                    .unwrap_or(false);
+                if old_prefixed_same_content {
+                    if let Err(e) = std::fs::remove_file(&old_prefixed_path) {
+                        eprintln!(
+                            "  {warn} Could not remove legacy companion skill {old_prefixed_name}: {e}",
+                        );
+                    } else {
+                        println!("  {ok} Removed legacy companion skill: {old_prefixed_name}");
+                    }
+                }
+            }
+        }
     }
 
     // Remove companion skills if the manifest declares them

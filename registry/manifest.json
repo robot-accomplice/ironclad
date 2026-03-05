@@ -2,7 +2,7 @@
   "version": "0.3.4",
   "packs": {
     "builtins": {
-      "sha256": "44ca8fdd5c57cbeefe5f1eedbbf068027ff7ce1e668c770b625e312d8ded8d7f",
+      "sha256": "15c2d7a3d288202ae47c8c531f255027a18e05b0fb4e5ca30e92162645bc551b",
       "path": "builtin-skills.json"
     },
     "providers": {

@@ -107,6 +107,7 @@ impl CircuitBreakerRegistry {
             CircuitState::HalfOpen => {
                 if cb.preemptive_half_open {
                     cb.failure_count = 0;
+                    cb.preemptive_half_open = false;
                     return;
                 }
                 cb.state = CircuitState::Closed;

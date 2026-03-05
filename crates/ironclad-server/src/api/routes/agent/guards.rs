@@ -3,6 +3,10 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use super::intents::{
+    requests_cron, requests_delegation, requests_execution, requests_model_identity,
+};
+
 /// RAII guard that releases a dedup fingerprint when dropped.
 /// Ensures cleanup on all exit paths, including async stream disconnects.
 pub(super) struct DedupGuard {
@@ -111,6 +115,85 @@ pub(super) fn enforce_non_repetition(response: String, previous_assistant: Optio
             .to_string();
     }
     response
+}
+
+fn looks_like_unexecuted_claim(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    lower.contains("\"tool_call\"")
+        || lower.contains("you can use the following")
+        || lower.contains("you can run")
+        || lower.contains("would use the following")
+        || lower.contains("crontab entry")
+        || lower.contains("unable to directly execute")
+}
+
+pub(super) fn enforce_execution_truth_guard(
+    user_prompt: &str,
+    response: String,
+    tool_results: &[(String, String)],
+) -> String {
+    if requests_delegation(user_prompt)
+        && !tool_results.iter().any(|(name, output)| {
+            let n = name.to_ascii_lowercase();
+            let is_delegate_tool = n.contains("subagent")
+                || n.contains("delegate")
+                || n.contains("assign")
+                || n.contains("orchestrate");
+            let succeeded = !output.to_ascii_lowercase().starts_with("error:");
+            is_delegate_tool && succeeded
+        })
+    {
+        tracing::warn!("execution truth guard blocked unverified delegation claim");
+        return "I did not execute a delegated subagent task for that request. I can only claim delegated results when a subagent tool call actually runs."
+            .to_string();
+    }
+    if requests_cron(user_prompt)
+        && !tool_results.iter().any(|(name, output)| {
+            name.to_ascii_lowercase().contains("cron")
+                && !output.to_ascii_lowercase().starts_with("error:")
+        })
+    {
+        tracing::warn!("execution truth guard blocked unverified cron claim");
+        return "I did not execute a cron scheduling tool for that request. I can only confirm schedules that were actually created or validated by a tool run."
+            .to_string();
+    }
+
+    if !requests_execution(user_prompt) {
+        return response;
+    }
+    if !tool_results.is_empty() {
+        return response;
+    }
+    let lower = response.to_ascii_lowercase();
+    if lower.contains("encountered an error reaching all llm providers") {
+        return response;
+    }
+    if looks_like_unexecuted_claim(&response)
+        || lower.contains("tool successfully executed")
+        || lower.contains("the `")
+        || lower.starts_with('{')
+    {
+        tracing::warn!("execution truth guard rewrote unverified execution-style response");
+        return "I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
+            .to_string();
+    }
+    "I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
+        .to_string()
+}
+
+pub(super) fn enforce_model_identity_truth_guard(
+    user_prompt: &str,
+    response: String,
+    executed_model: &str,
+) -> String {
+    if !requests_model_identity(user_prompt) {
+        return response;
+    }
+    tracing::warn!(
+        executed_model,
+        "model identity guard emitted canonical model identity"
+    );
+    format!("I am currently running on {}.", executed_model)
 }
 
 // ── Scope validation ──────────────────────────────────────────

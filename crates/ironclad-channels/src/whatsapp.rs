@@ -271,11 +271,10 @@ impl WhatsAppAdapter {
         caption: Option<&str>,
     ) -> Value {
         let mut media_obj = json!({ "link": media_url });
-        if let Some(cap) = caption {
-            media_obj
-                .as_object_mut()
-                .unwrap()
-                .insert("caption".into(), json!(cap));
+        if let Some(cap) = caption
+            && let Some(obj) = media_obj.as_object_mut()
+        {
+            obj.insert("caption".into(), json!(cap));
         }
         let mut payload = serde_json::Map::new();
         payload.insert("messaging_product".into(), json!("whatsapp"));

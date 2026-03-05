@@ -43,6 +43,13 @@ struct TicketStoreInner {
     last_cleanup: Instant,
 }
 
+fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!("ticket store mutex poisoned; recovering state");
+        poisoned.into_inner()
+    })
+}
+
 impl Default for TicketStore {
     fn default() -> Self {
         Self::new()
@@ -65,7 +72,7 @@ impl TicketStore {
         rand::rngs::OsRng.fill_bytes(&mut bytes);
         let ticket = format!("wst_{}", hex::encode(bytes));
 
-        let mut inner = self.inner.lock().expect("ticket store lock poisoned");
+        let mut inner = lock_or_recover(&self.inner);
 
         // Lazy cleanup: evict expired tickets periodically or when store is large
         if inner.tickets.len() >= MAX_OUTSTANDING
@@ -90,7 +97,7 @@ impl TicketStore {
     /// Attempt to redeem a ticket. Returns `true` if the ticket was valid,
     /// not expired, and not previously used. The ticket is consumed atomically.
     pub fn redeem(&self, ticket: &str) -> bool {
-        let mut inner = self.inner.lock().expect("ticket store lock poisoned");
+        let mut inner = lock_or_recover(&self.inner);
         match inner.tickets.remove(ticket) {
             Some(entry) => entry.issued_at.elapsed() < TICKET_TTL,
             None => false,

@@ -403,6 +403,22 @@
     .metrics-stat { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.625rem 0.75rem; }
     .metrics-stat-label { font-size: 0.625rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
     .metrics-stat-value { font-size: 1rem; font-weight: 700; margin-top: 0.125rem; font-family: var(--font-mono); }
+    .routing-profile-grid { display: grid; grid-template-columns: minmax(220px, 260px) minmax(260px, 1fr); gap: 1rem; align-items: start; }
+    .routing-slider-row { margin-bottom: 0.75rem; }
+    .routing-slider-row label { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--muted); margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.06em; }
+    .routing-slider-row input[type="range"] { width: 100%; accent-color: var(--accent); }
+    .routing-profile-actions { display: flex; gap: 0.5rem; margin-top: 0.85rem; flex-wrap: wrap; }
+    .model-graph-wrap { position: relative; height: 320px; border: 1px solid var(--border); border-radius: 6px; background: linear-gradient(180deg, rgba(99,102,241,0.08), rgba(99,102,241,0.02)); overflow: hidden; }
+    .model-graph-svg { width: 100%; height: 100%; display: block; }
+    .model-graph-node { fill: var(--surface); stroke: var(--accent); stroke-width: 1.6; cursor: pointer; }
+    .model-graph-node-unusable { fill: rgba(255,255,255,0.06); stroke: var(--muted); stroke-dasharray: 3 2; }
+    .model-graph-node-label { fill: var(--text); font-size: 10px; font-family: var(--font-mono); text-anchor: middle; pointer-events: none; }
+    .model-graph-edge { stroke: var(--border); stroke-opacity: 0.75; cursor: pointer; }
+    .model-graph-edge.active { stroke: var(--accent); stroke-opacity: 0.95; }
+    .model-graph-node.active { fill: rgba(99,102,241,0.18); }
+    .model-graph-faded { opacity: 0.3; }
+    .model-graph-detail { margin-top: 0.65rem; font-size: 0.75rem; color: var(--muted); }
+    @media (max-width: 960px) { .routing-profile-grid { grid-template-columns: 1fr; } .model-graph-wrap { height: 250px; } }
     .cal-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; }
     .cal-header { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; flex-shrink: 0; }
     .cal-header-left { display: flex; align-items: center; gap: 1rem; }
@@ -641,6 +657,247 @@
   }
   function uiBtnLabel(iconName, label) { return uiIcon(iconName) + '<span>' + label + '</span>'; }
   function truncate(s, n) { return (s && s.length > n) ? s.slice(0, n) + '\u2026' : (s || ''); }
+  function clamp01(v) {
+    var n = Number(v);
+    if (!isFinite(n)) return 0;
+    if (n < 0) return 0;
+    if (n > 1) return 1;
+    return n;
+  }
+  function round2(v) {
+    return Math.round(Number(v || 0) * 100) / 100;
+  }
+  function normalizeRoutingProfile(profile, preferredKey) {
+    var p = {
+      correctness: clamp01(profile && profile.correctness),
+      cost: clamp01(profile && profile.cost),
+      speed: clamp01(profile && profile.speed)
+    };
+    var keys = ['correctness', 'cost', 'speed'];
+    var total = p.correctness + p.cost + p.speed;
+    if (total <= 1.0 + 1e-9) {
+      return { correctness: round2(p.correctness), cost: round2(p.cost), speed: round2(p.speed) };
+    }
+    if (preferredKey && keys.indexOf(preferredKey) !== -1) {
+      var otherSum = 0;
+      keys.forEach(function(k) { if (k !== preferredKey) otherSum += p[k]; });
+      p[preferredKey] = Math.max(0, Math.min(p[preferredKey], 1 - otherSum));
+      return { correctness: round2(p.correctness), cost: round2(p.cost), speed: round2(p.speed) };
+    }
+    if (total > 0) {
+      var scale = 1 / total;
+      p.correctness *= scale;
+      p.cost *= scale;
+      p.speed *= scale;
+    }
+    return { correctness: round2(p.correctness), cost: round2(p.cost), speed: round2(p.speed) };
+  }
+  function routingProfileTotal(profile) {
+    return round2(clamp01(profile && profile.correctness) + clamp01(profile && profile.cost) + clamp01(profile && profile.speed));
+  }
+  function deriveRoutingProfile(cfg) {
+    var correctness = clamp01(cfg && cfg.accuracy_floor);
+    var costWeight = cfg && cfg.cost_weight;
+    var cost = clamp01(costWeight == null ? (cfg && cfg.cost_aware ? 0.5 : 0.0) : costWeight);
+    var confidence = clamp01(cfg && cfg.confidence_threshold != null ? cfg.confidence_threshold : 0.9);
+    var speed = clamp01((0.95 - confidence) / 0.35);
+    return normalizeRoutingProfile({
+      correctness: round2(correctness),
+      cost: round2(cost),
+      speed: round2(speed)
+    });
+  }
+  function projectRoutingPatchFromProfile(profile) {
+    var p = {
+      correctness: clamp01(profile && profile.correctness),
+      cost: clamp01(profile && profile.cost),
+      speed: clamp01(profile && profile.speed)
+    };
+    return {
+      models: {
+        routing: {
+          accuracy_floor: round2(p.correctness),
+          cost_aware: p.cost > 0.01,
+          cost_weight: round2(p.cost),
+          confidence_threshold: round2(0.95 - (0.35 * p.speed)),
+          estimated_output_tokens: Math.max(200, Math.min(1200, Math.round(1200 - (800 * p.speed))))
+        }
+      }
+    };
+  }
+  function renderRoutingSpiderSvg(profile) {
+    var values = [clamp01(profile.correctness), clamp01(profile.cost), clamp01(profile.speed)];
+    var labels = ['Correctness', 'Cost', 'Speed'];
+    var cx = 110, cy = 110, r = 78;
+    var grid = '';
+    [0.25, 0.5, 0.75, 1.0].forEach(function(level) {
+      var pts = [];
+      for (var i = 0; i < 3; i++) {
+        var angle = (-Math.PI / 2) + (i * (2 * Math.PI / 3));
+        pts.push((cx + Math.cos(angle) * r * level).toFixed(1) + ',' + (cy + Math.sin(angle) * r * level).toFixed(1));
+      }
+      grid += '<polygon points="' + pts.join(' ') + '" fill="none" stroke="var(--border)" stroke-width="1"/>';
+    });
+    var axes = '';
+    var labelEls = '';
+    var polyPts = [];
+    for (var i = 0; i < 3; i++) {
+      var ang = (-Math.PI / 2) + (i * (2 * Math.PI / 3));
+      var ox = cx + Math.cos(ang) * r;
+      var oy = cy + Math.sin(ang) * r;
+      axes += '<line x1="' + cx + '" y1="' + cy + '" x2="' + ox.toFixed(1) + '" y2="' + oy.toFixed(1) + '" stroke="var(--border)"/>';
+      var lx = cx + Math.cos(ang) * (r + 18);
+      var ly = cy + Math.sin(ang) * (r + 18);
+      labelEls += '<text x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1) + '" text-anchor="middle" fill="var(--muted)" style="font-size:10px;font-family:var(--font)">' + labels[i] + '</text>';
+      var px = cx + Math.cos(ang) * r * values[i];
+      var py = cy + Math.sin(ang) * r * values[i];
+      polyPts.push(px.toFixed(1) + ',' + py.toFixed(1));
+    }
+    return '<svg viewBox="0 0 220 220" width="220" height="220" aria-label="routing profile spider graph">'
+      + grid + axes
+      + '<polygon points="' + polyPts.join(' ') + '" fill="rgba(99,102,241,0.25)" stroke="var(--accent)" stroke-width="2"/>'
+      + labelEls
+      + '</svg>';
+  }
+  function renderModelDecisionGraph(events, focusTurnId, focusModel, focusEdge) {
+    var MAX_GRAPH_CANDIDATES = 18;
+    var rows = Array.isArray(events) ? events.slice() : [];
+    if (!rows.length) {
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Task Model Decision Graph</div><div style="color:var(--muted)">No model selection events yet.</div></div>';
+    }
+    var byTurn = {};
+    rows.forEach(function(ev) {
+      var tid = String((ev && ev.turn_id) || '').trim();
+      if (!tid) return;
+      byTurn[tid] = ev;
+    });
+    var selectedTurn = focusTurnId && byTurn[focusTurnId] ? focusTurnId : String(rows[0].turn_id || '');
+    var selectedEvent = byTurn[selectedTurn] || rows[0] || {};
+    var selectedModel = String(selectedEvent.selected_model || '').trim();
+    var candidates = Array.isArray(selectedEvent.candidates) ? selectedEvent.candidates : [];
+
+    var nodeMap = {};
+    candidates.forEach(function(c) {
+      var model = String((c && c.model) || '').trim();
+      if (!model) return;
+      var score = typeof c.metascore === 'number' ? c.metascore : null;
+      nodeMap[model] = {
+        model: model,
+        score: score,
+        usable: c && c.usable !== false
+      };
+    });
+    if (selectedModel && !nodeMap[selectedModel]) {
+      nodeMap[selectedModel] = { model: selectedModel, score: null, usable: true };
+    }
+    var sortedNodes = Object.keys(nodeMap).sort(function(a, b) {
+      if (a === selectedModel) return -1;
+      if (b === selectedModel) return 1;
+      var sa = nodeMap[a] && typeof nodeMap[a].score === 'number' ? nodeMap[a].score : -Infinity;
+      var sb = nodeMap[b] && typeof nodeMap[b].score === 'number' ? nodeMap[b].score : -Infinity;
+      if (sa !== sb) return sb - sa;
+      return a.localeCompare(b);
+    });
+    var hiddenCount = Math.max(0, sortedNodes.length - MAX_GRAPH_CANDIDATES);
+    var nodes = sortedNodes.slice(0, MAX_GRAPH_CANDIDATES);
+    if (selectedModel && nodes.indexOf(selectedModel) === -1) {
+      nodes[nodes.length - 1] = selectedModel;
+    }
+    if (!nodes.length) return '';
+
+    var width = 680, height = 320;
+    var selectedX = 530, selectedY = height / 2;
+    var candidateX = 220;
+    var pos = {};
+    var candidateModels = nodes.filter(function(model) { return model !== selectedModel; });
+    if (selectedModel) pos[selectedModel] = { x: selectedX, y: selectedY };
+    candidateModels.forEach(function(model, idx) {
+      var y;
+      if (candidateModels.length === 1) {
+        y = selectedY;
+      } else {
+        var pad = 28;
+        var span = Math.max(10, (height - (pad * 2)));
+        y = pad + ((span * idx) / (candidateModels.length - 1));
+      }
+      pos[model] = { x: candidateX, y: y };
+    });
+
+    var edges = {};
+    candidateModels.forEach(function(model) {
+      if (!selectedModel || model === selectedModel) return;
+      var key = model + '→' + selectedModel;
+      edges[key] = { key: key, from: model, to: selectedModel, count: 1 };
+    });
+    var edgeKeys = Object.keys(edges);
+    var edgeEls = edgeKeys.map(function(k) {
+      var e = edges[k];
+      var a = pos[e.from], b = pos[e.to];
+      if (!a || !b) return '';
+      var active = focusEdge && focusEdge === e.key;
+      var faded = (focusModel && e.from !== focusModel && e.to !== focusModel) || (focusEdge && !active);
+      var cls = 'model-graph-edge' + (active ? ' active' : '') + (faded ? ' model-graph-faded' : '');
+      return '<line class="' + cls + '" data-edge-key="' + esc(e.key) + '" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1) + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke-width="1.4"><title>' + esc(e.key) + '</title></line>';
+    }).join('');
+
+    var laneGuides = '';
+    if (candidateModels.length > 1) {
+      var yMin = pos[candidateModels[0]].y;
+      var yMax = pos[candidateModels[candidateModels.length - 1]].y;
+      laneGuides = '<line x1="' + candidateX + '" y1="' + yMin.toFixed(1) + '" x2="' + candidateX + '" y2="' + yMax.toFixed(1) + '" stroke="var(--border)" stroke-opacity="0.45" stroke-dasharray="2 3" />';
+    }
+
+    var nodeEls = nodes.map(function(model) {
+      var p = pos[model];
+      if (!p) return '';
+      var active = (focusModel && focusModel === model) || (!focusModel && model === selectedModel);
+      var faded = focusModel && !active;
+      var unusable = nodeMap[model] && nodeMap[model].usable === false;
+      var cls = 'model-graph-node' + (active ? ' active' : '') + (faded ? ' model-graph-faded' : '') + (unusable ? ' model-graph-node-unusable' : '');
+      var short = truncate(model.split('/').pop() || model, 22);
+      var score = nodeMap[model].score;
+      var scoreTxt = typeof score === 'number' ? ' · score ' + score.toFixed(3) : '';
+      var selectedTxt = model === selectedModel ? ' · selected' : '';
+      var r = model === selectedModel ? 14 : 10;
+      var labelX = model === selectedModel ? p.x : (p.x - 14);
+      var labelY = model === selectedModel ? (p.y + 28) : (p.y + 3);
+      var anchor = model === selectedModel ? 'middle' : 'end';
+      return '<g data-node-model="' + esc(model) + '" style="cursor:pointer">'
+        + '<circle class="' + cls + '" cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="' + r + '"><title>' + esc(model + selectedTxt + scoreTxt) + '</title></circle>'
+        + '<text class="model-graph-node-label" text-anchor="' + anchor + '" x="' + labelX.toFixed(1) + '" y="' + labelY.toFixed(1) + '">' + esc(short) + '</text>'
+        + '</g>';
+    }).join('');
+
+    var options = rows.slice(0, 80).map(function(ev) {
+      var tid = String(ev.turn_id || '');
+      var stamp = String(ev.created_at || '').replace('T', ' ').replace('Z', '');
+      var excerpt = truncate(String(ev.user_excerpt || ''), 44);
+      var label = truncate(tid, 8) + (excerpt ? ' · ' + excerpt : '') + (stamp ? ' · ' + stamp : '');
+      return '<option value="' + esc(tid) + '"' + (tid === selectedTurn ? ' selected' : '') + '>' + esc(label) + '</option>';
+    }).join('');
+
+    var detail = 'Task turn: ' + selectedTurn + '. Selected model: ' + (selectedModel || 'unknown') + '. Displaying top ' + nodes.length + ' candidate models' + (hiddenCount > 0 ? ' (' + hiddenCount + ' hidden).' : '.');
+    if (focusEdge && edges[focusEdge]) {
+      detail = 'Task turn: ' + selectedTurn + '. Candidate edge: ' + edges[focusEdge].from + ' → ' + edges[focusEdge].to + '.';
+    } else if (focusModel) {
+      var n = nodeMap[focusModel];
+      if (n) detail = 'Task turn: ' + selectedTurn + '. Focused model: ' + focusModel + (typeof n.score === 'number' ? ' (metascore ' + n.score.toFixed(3) + ').' : '.');
+    }
+
+    return '<div class="card" style="margin-bottom:1rem;padding-bottom:0.75rem">'
+      + '<div class="card-title">Task Model Decision Graph</div>'
+      + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.5rem">Candidate models and chosen model for a single task. Pick a task turn to inspect that decision.</div>'
+      + '<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.55rem"><label for="model-graph-task-select" style="font-size:0.75rem;color:var(--muted)">Task turn</label><select id="model-graph-task-select" class="select" style="min-width:320px;max-width:100%">' + options + '</select></div>'
+      + '<div class="model-graph-wrap">'
+      + '<svg class="model-graph-svg" viewBox="0 0 680 320" preserveAspectRatio="xMidYMid meet">'
+      + '<text x="36" y="22" fill="var(--muted)" style="font-size:10px;font-family:var(--font-mono)">Candidates (ranked)</text>'
+      + '<text x="487" y="22" fill="var(--muted)" style="font-size:10px;font-family:var(--font-mono)">Selected</text>'
+      + laneGuides + edgeEls + nodeEls
+      + '</svg></div>'
+      + '<div id="model-graph-detail" class="model-graph-detail">' + esc(detail) + '</div>'
+      + '<div style="margin-top:0.5rem"><button class="btn secondary" id="model-graph-clear-focus" style="font-size:0.6875rem;padding:0.22rem 0.55rem">Clear focus</button></div>'
+      + '</div>';
+  }
   var HINTS_ENABLED_KEY = 'ic_hints_enabled';
   var HINTS_PROMPTED_KEY = 'ic_hints_prompted';
   var HINTS_DISMISSED_KEY = 'ic_hints_dismissed';
@@ -1171,6 +1428,11 @@
     _skillsTab: 'installed',
     _memorySessionId: '',
     _overviewShowDetails: false,
+    _routingProfileDraft: null,
+    _routingProfileDefaults: null,
+    _modelGraphFocusTurn: null,
+    _modelGraphFocusModel: null,
+    _modelGraphFocusEdge: null,
     ws: null,
     _resolveActiveAgentId: function() {
       var self = this;
@@ -2170,13 +2432,49 @@
     renderEfficiency: function() {
       var self = this;
       var period = this._effPeriod || '7d';
-      return api('/api/stats/efficiency?period=' + encodeURIComponent(period)).then(function(report) {
+      return Promise.all([
+        api('/api/stats/efficiency?period=' + encodeURIComponent(period)),
+        api('/api/models/selections?limit=80').catch(function() { return { events: [] }; }),
+        api('/api/models/routing-diagnostics').catch(function() { return { config: {} }; })
+      ]).then(function(arr) {
+        var report = arr[0] || {};
+        var modelSelections = (arr[1] && arr[1].events) ? arr[1].events : [];
+        var routingConfig = (arr[2] && arr[2].config) ? arr[2].config : {};
+        var routingProfile = deriveRoutingProfile(routingConfig);
+        App._routingProfileDefaults = normalizeRoutingProfile(routingProfile);
+        if (!App._routingProfileDraft) App._routingProfileDraft = normalizeRoutingProfile({ correctness: routingProfile.correctness, cost: routingProfile.cost, speed: routingProfile.speed });
+        App._routingProfileDraft = normalizeRoutingProfile(App._routingProfileDraft);
+
         var models = report.models || {};
         var ts = report.time_series || [];
         var totals = report.totals || {};
         var modelNames = Object.keys(models).sort(function(a, b) {
           return (models[b].cost.total || 0) - (models[a].cost.total || 0);
         });
+
+        var spider = renderRoutingSpiderSvg(App._routingProfileDraft || routingProfile);
+        var persistedLabel = '';
+        if (App._routingProfilePersistedAt) {
+          var savedAt = new Date(App._routingProfilePersistedAt);
+          var savedText = Number.isNaN(savedAt.getTime()) ? App._routingProfilePersistedAt : savedAt.toLocaleString();
+          persistedLabel = '<div style="margin-top:0.45rem;font-size:0.6875rem;color:var(--muted)">'
+            + (App._routingProfilePersisted ? 'Saved to config: ' : 'Applied: ')
+            + esc(savedText)
+            + '</div>';
+        }
+        var profileCard = '<div class="card" style="margin-bottom:1rem;padding-bottom:0.75rem"><div class="card-title">Routing Weights (Correctness / Cost / Speed)</div>'
+          + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.65rem">Operator profile mapped onto routing controls. Adjust and apply to persist to runtime config.</div>'
+          + '<div class="routing-profile-grid">'
+          + '<div id="routing-profile-spider-host">' + spider + '</div>'
+          + '<div>'
+          + '<div class="routing-slider-row"><label for="routing-slider-correctness"><span>Correctness</span><span id="routing-slider-correctness-val">' + round2((App._routingProfileDraft || routingProfile).correctness).toFixed(2) + '</span></label><input id="routing-slider-correctness" data-routing-slider="correctness" type="range" min="0" max="1" step="0.01" value="' + round2((App._routingProfileDraft || routingProfile).correctness).toFixed(2) + '"></div>'
+          + '<div class="routing-slider-row"><label for="routing-slider-cost"><span>Cost</span><span id="routing-slider-cost-val">' + round2((App._routingProfileDraft || routingProfile).cost).toFixed(2) + '</span></label><input id="routing-slider-cost" data-routing-slider="cost" type="range" min="0" max="1" step="0.01" value="' + round2((App._routingProfileDraft || routingProfile).cost).toFixed(2) + '"></div>'
+          + '<div class="routing-slider-row"><label for="routing-slider-speed"><span>Speed</span><span id="routing-slider-speed-val">' + round2((App._routingProfileDraft || routingProfile).speed).toFixed(2) + '</span></label><input id="routing-slider-speed" data-routing-slider="speed" type="range" min="0" max="1" step="0.01" value="' + round2((App._routingProfileDraft || routingProfile).speed).toFixed(2) + '"></div>'
+          + '<div style="font-size:0.72rem;color:var(--muted);margin-top:0.35rem">Total: <span id="routing-slider-total">' + routingProfileTotal((App._routingProfileDraft || routingProfile)).toFixed(2) + '</span> / 1.00</div>'
+          + '<div class="routing-profile-actions"><button class="btn" id="routing-profile-apply" style="font-size:0.6875rem;padding:0.3rem 0.7rem">Apply profile</button><button class="btn secondary" id="routing-profile-reset" style="font-size:0.6875rem;padding:0.3rem 0.7rem">Reset</button></div>'
+          + persistedLabel
+          + '</div></div></div>';
+        var decisionGraph = renderModelDecisionGraph(modelSelections, App._modelGraphFocusTurn, App._modelGraphFocusModel, App._modelGraphFocusEdge);
 
         // Period selector
         var periods = ['1h', '24h', '7d', '30d', 'all'];
@@ -2378,7 +2676,7 @@
         }
         tips += tipList.join('') + '</div></div>';
 
-        return periodBar + banner + cards + tsChart + table + assignmentSection + tips;
+        return profileCard + decisionGraph + periodBar + banner + cards + tsChart + table + assignmentSection + tips;
       });
     },
 
@@ -3953,6 +4251,52 @@
       App.navigate(navBtn.getAttribute('data-page-nav'));
       return;
     }
+    var graphNode = e.target.closest('[data-node-model]');
+    if (graphNode) {
+      App._modelGraphFocusModel = graphNode.getAttribute('data-node-model');
+      App._modelGraphFocusEdge = null;
+      App.navigate('efficiency');
+      return;
+    }
+    var graphEdge = e.target.closest('[data-edge-key]');
+    if (graphEdge) {
+      App._modelGraphFocusEdge = graphEdge.getAttribute('data-edge-key');
+      App._modelGraphFocusModel = null;
+      App.navigate('efficiency');
+      return;
+    }
+    if (e.target.closest('#model-graph-clear-focus')) {
+      App._modelGraphFocusModel = null;
+      App._modelGraphFocusEdge = null;
+      App.navigate('efficiency');
+      return;
+    }
+    if (e.target.closest('#routing-profile-reset')) {
+      App._routingProfileDraft = normalizeRoutingProfile(App._routingProfileDefaults
+        ? { correctness: App._routingProfileDefaults.correctness, cost: App._routingProfileDefaults.cost, speed: App._routingProfileDefaults.speed }
+        : { correctness: 0.0, cost: 0.0, speed: 0.0 });
+      App.navigate('efficiency');
+      return;
+    }
+    if (e.target.closest('#routing-profile-apply')) {
+      var applyBtn = e.target.closest('#routing-profile-apply');
+      if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Applying...'; }
+      var patch = projectRoutingPatchFromProfile(App._routingProfileDraft || App._routingProfileDefaults || { correctness: 0, cost: 0, speed: 0 });
+      api('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch)
+      }).then(function(resp) {
+        App._routingProfilePersistedAt = new Date().toISOString();
+        App._routingProfilePersisted = !!(resp && resp.persisted);
+        toast(App._routingProfilePersisted ? 'Routing profile applied and persisted.' : 'Routing profile applied.');
+        App.navigate('efficiency');
+      }).catch(function(err) {
+        if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Apply profile'; }
+        toast(err.message || 'Failed to apply routing profile');
+      });
+      return;
+    }
     if (e.target.closest('#ov-toggle-details')) {
       App._overviewShowDetails = !App._overviewShowDetails;
       var toggle = document.getElementById('ov-toggle-details');
@@ -5214,6 +5558,36 @@
       return;
     }
   });
+  if (content) content.addEventListener('change', function(e) {
+    if (!e.target || e.target.id !== 'model-graph-task-select') return;
+    App._modelGraphFocusTurn = e.target.value || null;
+    App._modelGraphFocusModel = null;
+    App._modelGraphFocusEdge = null;
+    App.navigate('efficiency');
+  });
+  if (content) content.addEventListener('input', function(e) {
+    var slider = e.target.closest('[data-routing-slider]');
+    if (!slider) return;
+    var key = slider.getAttribute('data-routing-slider');
+    if (!key) return;
+    if (!App._routingProfileDraft) {
+      App._routingProfileDraft = App._routingProfileDefaults
+        ? { correctness: App._routingProfileDefaults.correctness, cost: App._routingProfileDefaults.cost, speed: App._routingProfileDefaults.speed }
+        : { correctness: 0.0, cost: 0.0, speed: 0.0 };
+    }
+    App._routingProfileDraft[key] = clamp01(slider.value);
+    App._routingProfileDraft = normalizeRoutingProfile(App._routingProfileDraft, key);
+    ['correctness', 'cost', 'speed'].forEach(function(k) {
+      var valEl = document.getElementById('routing-slider-' + k + '-val');
+      if (valEl) valEl.textContent = App._routingProfileDraft[k].toFixed(2);
+      var sliderEl = document.getElementById('routing-slider-' + k);
+      if (sliderEl) sliderEl.value = App._routingProfileDraft[k].toFixed(2);
+    });
+    var totalEl = document.getElementById('routing-slider-total');
+    if (totalEl) totalEl.textContent = routingProfileTotal(App._routingProfileDraft).toFixed(2);
+    var spiderHost = document.getElementById('routing-profile-spider-host');
+    if (spiderHost) spiderHost.innerHTML = renderRoutingSpiderSvg(App._routingProfileDraft);
+  });
   if (content) content.addEventListener('input', function(e) {
     if (!e.target || e.target.id !== 'catalog-filter-input') return;
     var needle = String(e.target.value || '').trim().toLowerCase();
@@ -6113,9 +6487,9 @@
             }
           }
         }
-        if (event && event.type === 'model_selection') {
-          if (App.page === 'metrics') {
-            App.navigate('metrics');
+        if (event && (event.type === 'model_selection' || event.type === 'model_shift')) {
+          if (App.page === 'efficiency') {
+            App.navigate('efficiency');
           } else if (App.page === 'context' && App._ctxActiveTurn && event.turn_id === App._ctxActiveTurn.id) {
             App.navigate('context');
           }

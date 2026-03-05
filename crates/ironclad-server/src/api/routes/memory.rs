@@ -196,11 +196,9 @@ pub async fn knowledge_ingest(
         let cfg = state.config.read().await;
         cfg.agent.workspace.clone()
     };
-    if !workspace.exists()
-        && let Err(e) = std::fs::create_dir_all(&workspace)
-    {
+    if !workspace.exists() {
         return Err(bad_request(format!(
-            "workspace root '{}' cannot be created: {e}",
+            "workspace root '{}' does not exist",
             workspace.display()
         )));
     }

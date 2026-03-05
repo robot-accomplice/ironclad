@@ -103,11 +103,15 @@ LLM model selection and routing.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mode` | `String` | `"heuristic"` | Routing strategy: `heuristic`, `rule`, `ml` |
+| `mode` | `String` | `"metascore"` | Routing strategy: `primary` or `metascore` (`heuristic` is accepted as a deprecated alias and normalized to `metascore`) |
 | `confidence_threshold` | `f64` | `0.9` | Minimum confidence for local model routing |
 | `local_first` | `bool` | `true` | Prefer local models when confidence is sufficient |
 | `cost_aware` | `bool` | `false` | Factor cost into routing decisions |
 | `estimated_output_tokens` | `u32` | `500` | Estimated output tokens for cost calculations |
+
+Dashboard note:
+- The routing profile UI maps `correctness`, `cost`, and `speed` to these fields.
+- UI guardrails enforce `correctness + cost + speed <= 1.0` before sending `PUT /api/config`.
 
 ### `[models.tiered_inference]`
 

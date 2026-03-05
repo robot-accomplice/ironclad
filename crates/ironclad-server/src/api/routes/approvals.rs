@@ -39,6 +39,7 @@ pub async fn create_approval(
         &body.tool_name,
         &body.tool_input,
         body.session_id.as_deref(),
+        InputAuthority::Creator,
     ) {
         Ok(req) => {
             if let Err(e) = ironclad_db::approvals::record_approval_request(
@@ -117,7 +118,7 @@ pub async fn approve_approval(
                     &replay_req.tool_name,
                     &params,
                     &replay_turn_id,
-                    InputAuthority::Creator,
+                    replay_req.requested_authority,
                     None,
                 )
                 .await;
