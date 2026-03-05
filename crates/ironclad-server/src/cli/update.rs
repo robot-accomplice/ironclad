@@ -321,8 +321,7 @@ struct GitHubAsset {
 fn core_version(s: &str) -> &str {
     let s = s.trim_start_matches('v');
     let s = s.split_once('+').map(|(core, _)| core).unwrap_or(s);
-    let s = s.split_once('-').map(|(core, _)| core).unwrap_or(s);
-    s
+    s.split_once('-').map(|(core, _)| core).unwrap_or(s)
 }
 
 fn select_archive_asset_name(release: &GitHubRelease, version: &str) -> Option<String> {
