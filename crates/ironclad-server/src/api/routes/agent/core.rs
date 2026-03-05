@@ -21,9 +21,9 @@ use super::guards::{
     enforce_model_identity_truth_guard, enforce_non_repetition, enforce_subagent_claim_guard,
 };
 use super::intents::{
-    requests_acknowledgement, requests_cron, requests_current_events, requests_delegation,
-    requests_execution, requests_file_distribution, requests_introspection,
-    requests_random_tool_use,
+    requests_acknowledgement, requests_capability_summary, requests_cron, requests_current_events,
+    requests_delegation, requests_execution, requests_file_distribution, requests_introspection,
+    requests_personality_profile, requests_provider_inventory, requests_random_tool_use,
 };
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
@@ -431,8 +431,117 @@ async fn try_execution_shortcut(
     if !requests_execution(user_prompt)
         && !requests_current_events(user_prompt)
         && !requests_introspection(user_prompt)
+        && !requests_provider_inventory(user_prompt)
+        && !requests_personality_profile(user_prompt)
+        && !requests_capability_summary(user_prompt)
     {
         return None;
+    }
+
+    // Outage-safe capability summary from runtime state.
+    if requests_capability_summary(user_prompt) {
+        let mut names = state
+            .tools
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect::<Vec<_>>();
+        names.sort();
+        let sample = names
+            .iter()
+            .take(16)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let subagent_total = match ironclad_db::agents::list_sub_agents(&state.db) {
+            Ok(rows) => rows.into_iter().filter(|r| r.enabled).count(),
+            Err(_) => 0,
+        };
+        let primary_model = {
+            let cfg = state.config.read().await;
+            cfg.models.primary.clone()
+        };
+        return Some(InferenceOutput {
+            content: format!(
+                "I can execute tools, inspect runtime state, run shell/file workflows, schedule cron jobs, and delegate to subagents. Active model: {}. Enabled subagents: {}. Tool sample: {}.",
+                primary_model, subagent_total, sample
+            ),
+            model: prepared_model.to_string(),
+            tokens_in: 0,
+            tokens_out: 0,
+            cost: 0.0,
+            react_turns: 1,
+            latency_ms: 0,
+            quality_score: 1.0,
+            escalated: false,
+            tool_results: vec![],
+        });
+    }
+
+    // Outage-safe personality response from loaded soul/firmware identity.
+    if requests_personality_profile(user_prompt) {
+        let identity = {
+            let cfg = state.config.read().await;
+            cfg.agent.name.clone()
+        };
+        return Some(InferenceOutput {
+            content: format!(
+                "I’m {}. My operating style is loyal, direct, execution-first, and concise. I acknowledge requests, prioritize verified tool-backed actions, and avoid claiming work I did not execute.",
+                identity
+            ),
+            model: prepared_model.to_string(),
+            tokens_in: 0,
+            tokens_out: 0,
+            cost: 0.0,
+            react_turns: 1,
+            latency_ms: 0,
+            quality_score: 1.0,
+            escalated: false,
+            tool_results: vec![],
+        });
+    }
+
+    // Outage-safe provider inventory from configured/loaded provider prefixes.
+    if requests_provider_inventory(user_prompt) {
+        let (primary, providers) = {
+            let cfg = state.config.read().await;
+            let primary = cfg.models.primary.clone();
+            drop(cfg);
+            let llm = state.llm.read().await;
+            let mut uniq = std::collections::BTreeSet::new();
+            for provider in llm.providers.list() {
+                uniq.insert(provider.name.clone());
+            }
+            let providers = uniq.into_iter().collect::<Vec<_>>();
+            (primary, providers)
+        };
+        let sample = providers
+            .iter()
+            .take(24)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(InferenceOutput {
+            content: format!(
+                "Current primary model: {}. Configured provider families: {}{}",
+                primary,
+                sample,
+                if providers.len() > 24 {
+                    format!(" ({} total)", providers.len())
+                } else {
+                    String::new()
+                }
+            ),
+            model: prepared_model.to_string(),
+            tokens_in: 0,
+            tokens_out: 0,
+            cost: 0.0,
+            react_turns: 1,
+            latency_ms: 0,
+            quality_score: 1.0,
+            escalated: false,
+            tool_results: vec![],
+        });
     }
 
     // 0) Geopolitical sitrep request — force real delegated execution.
@@ -1215,7 +1324,14 @@ pub(super) async fn execute_inference_pipeline(
     delegation_provenance: &mut DelegationProvenance,
 ) -> Result<PipelineResult, String> {
     // 1. Cache check
-    let cached = if requests_execution(user_content) || requests_current_events(user_content) {
+    let cached = if requests_execution(user_content)
+        || requests_current_events(user_content)
+        || requests_introspection(user_content)
+        || requests_provider_inventory(user_content)
+        || requests_personality_profile(user_content)
+        || requests_capability_summary(user_content)
+        || requests_acknowledgement(user_content)
+    {
         None
     } else {
         check_cache(

@@ -111,6 +111,28 @@ pub(super) fn requests_acknowledgement(prompt: &str) -> bool {
         && (lower.contains("one sentence") || lower.contains("then wait"))
 }
 
+pub(super) fn requests_provider_inventory(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("which llm providers")
+        || lower.contains("what llm providers")
+        || lower.contains("which providers")
+        || lower.contains("what providers")
+}
+
+pub(super) fn requests_personality_profile(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    (lower.contains("personality") && (lower.contains("your") || lower.contains("you")))
+        || lower.contains("who are you")
+}
+
+pub(super) fn requests_capability_summary(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("what are you able to do")
+        || lower.contains("what can you do")
+        || lower.contains("what are you able")
+        || lower.contains("what can you help")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +192,23 @@ mod tests {
             "acknowledge this in one sentence and then wait for my next command"
         ));
         assert!(!requests_acknowledgement("please acknowledge receipt"));
+    }
+
+    #[test]
+    fn provider_inventory_markers_match_expected_prompts() {
+        assert!(requests_provider_inventory("which llm providers?"));
+        assert!(requests_provider_inventory("what providers are configured"));
+        assert!(!requests_provider_inventory("what model are you using"));
+    }
+
+    #[test]
+    fn personality_and_capability_markers_match_expected_prompts() {
+        assert!(requests_personality_profile(
+            "Tell me about your personality"
+        ));
+        assert!(requests_personality_profile("who are you"));
+        assert!(requests_capability_summary(
+            "Duncan, what are you able to do for me right now?"
+        ));
     }
 }
