@@ -234,6 +234,19 @@ fn personality_integrity_guard_requests_context_for_release_copy_when_empty_afte
     assert!(guarded.contains("need concrete Ironclad 0.9.5 context"));
 }
 
+#[test]
+fn personality_integrity_guard_strips_text_interface_boilerplate() {
+    let prompt = "How many image files are in my Pictures folder?";
+    let response = "As an AI text-based interface, I cannot access your local files.".to_string();
+    let guarded =
+        enforce_personality_integrity_guard(prompt, response, "Duncan", "openrouter/auto");
+    assert!(
+        !guarded
+            .to_ascii_lowercase()
+            .contains("as an ai text-based interface")
+    );
+}
+
 // ── repeat_tokens tests ──────────────────────────────────────
 
 #[test]

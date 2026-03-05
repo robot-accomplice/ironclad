@@ -39,10 +39,24 @@ fn is_internal_delegation_metadata_line(line: &str) -> bool {
     false
 }
 
+fn is_internal_orchestration_narrative_line(line: &str) -> bool {
+    let t = line.trim().to_ascii_lowercase();
+    t.starts_with("centralized delegation is sensible")
+        || t.starts_with("decomposition gate decision")
+        || t.starts_with("expected_utility_margin=")
+        || t.starts_with("expected utility margin")
+        || t.starts_with("delegation decision:")
+        || t.starts_with("rationale:")
+        || t.starts_with("subtasks:")
+}
+
 pub(super) fn strip_internal_delegation_metadata(content: &str) -> String {
     let filtered = content
         .lines()
-        .filter(|line| !is_internal_delegation_metadata_line(line))
+        .filter(|line| {
+            !is_internal_delegation_metadata_line(line)
+                && !is_internal_orchestration_narrative_line(line)
+        })
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
@@ -52,6 +66,29 @@ pub(super) fn strip_internal_delegation_metadata(content: &str) -> String {
     } else {
         filtered
     }
+}
+
+fn strip_numeric_bracket_citations(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '[' {
+            let mut j = i + 1;
+            let mut has_digit = false;
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                has_digit = true;
+                j += 1;
+            }
+            if has_digit && j < chars.len() && chars[j] == ']' {
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 fn normalize_telegram_text(content: &str) -> String {
@@ -72,9 +109,54 @@ fn normalize_telegram_text(content: &str) -> String {
             .replace("**", "")
             .replace("__", "")
             .replace('`', "");
+        normalized = strip_numeric_bracket_citations(&normalized);
         out.push(normalized);
     }
     out.join("\n").trim().to_string()
+}
+
+fn is_short_followup_for_previous_reply(user_content: &str) -> bool {
+    let lower = user_content.trim().to_ascii_lowercase();
+    if lower.len() > 80 {
+        return false;
+    }
+    let markers = [
+        "what's that from",
+        "what is that from",
+        "where is that from",
+        "no, your quote",
+        "your quote",
+        "what quote",
+        "source?",
+    ];
+    markers.iter().any(|m| lower.contains(m))
+}
+
+async fn contextualize_short_followup(
+    state: &AppState,
+    session_id: &str,
+    user_content: &str,
+) -> String {
+    if !is_short_followup_for_previous_reply(user_content) {
+        return user_content.to_string();
+    }
+    let Ok(history) = ironclad_db::sessions::list_messages(&state.db, session_id, Some(20)) else {
+        return user_content.to_string();
+    };
+    let previous_assistant = history
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .map(|m| m.content.trim())
+        .filter(|s| !s.is_empty());
+    let Some(previous_assistant) = previous_assistant else {
+        return user_content.to_string();
+    };
+    let quote = previous_assistant.chars().take(360).collect::<String>();
+    format!(
+        "User follow-up references your immediately previous reply. Answer specifically what that prior reply/quote is from.\nPrevious assistant reply excerpt:\n\"{}\"\n\nUser question:\n{}",
+        quote, user_content
+    )
 }
 
 pub(super) fn format_channel_reply_for_delivery(platform: &str, content: &str) -> String {
@@ -158,7 +240,7 @@ pub async fn process_channel_message(
             .ok();
         return Ok(());
     }
-    let user_content = if threat.is_caution() {
+    let mut user_content = if threat.is_caution() {
         tracing::info!(score = threat.value(), platform = %platform, "Sanitizing caution-level channel input");
         ironclad_agent::injection::sanitize(&inbound.content)
     } else {
@@ -208,6 +290,7 @@ pub async fn process_channel_message(
         drop(llm);
         return Err(e.to_string());
     }
+    user_content = contextualize_short_followup(state, &session_id, &user_content).await;
     if let Some(reply) =
         maybe_handle_specialist_creation_controls(state, &session_id, &user_content).await
     {

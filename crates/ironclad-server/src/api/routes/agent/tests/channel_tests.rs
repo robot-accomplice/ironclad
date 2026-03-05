@@ -158,6 +158,31 @@ Key point two";
 }
 
 #[test]
+fn strip_internal_delegation_metadata_removes_orchestration_narrative_lines() {
+    let raw = "\
+Centralized delegation is sensible for a simple, single-step task.\n\
+Expected utility margin: -0.10\n\
+Rationale: task is single-step\n\
+Subtasks:\n\
+- collect data\n\
+Actual user-facing answer.";
+    let cleaned = strip_internal_delegation_metadata(raw);
+    assert!(
+        !cleaned
+            .to_ascii_lowercase()
+            .contains("centralized delegation")
+    );
+    assert!(
+        !cleaned
+            .to_ascii_lowercase()
+            .contains("expected utility margin")
+    );
+    assert!(!cleaned.to_ascii_lowercase().contains("rationale:"));
+    assert!(!cleaned.to_ascii_lowercase().contains("subtasks:"));
+    assert!(cleaned.contains("Actual user-facing answer."));
+}
+
+#[test]
 fn format_channel_reply_for_delivery_normalizes_telegram_markdown() {
     let raw = "\
 # Heading\n\
@@ -173,4 +198,15 @@ line";
     assert!(out.contains("Heading"));
     assert!(out.contains("bold and code"));
     assert!(out.contains("line"));
+}
+
+#[test]
+fn format_channel_reply_for_delivery_strips_numeric_citations_for_telegram() {
+    let raw = "Situation remains tense across regions.[1][2]\nKey trend: supply chain splits.[14]";
+    let out = format_channel_reply_for_delivery("telegram", raw);
+    assert!(!out.contains("[1]"));
+    assert!(!out.contains("[2]"));
+    assert!(!out.contains("[14]"));
+    assert!(out.contains("Situation remains tense across regions."));
+    assert!(out.contains("Key trend: supply chain splits."));
 }
