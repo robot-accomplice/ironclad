@@ -1106,6 +1106,58 @@ pub struct ServiceFulfillRequest {
     pub fulfillment_output: String,
 }
 
+#[derive(Deserialize)]
+pub struct RevenueOpportunityIntakeRequest {
+    pub source: String,
+    pub strategy: String,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub expected_revenue_usdc: f64,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+#[derive(Deserialize)]
+pub struct RevenueOpportunityQualifyRequest {
+    pub approved: bool,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Deserialize)]
+pub struct RevenueOpportunityPlanRequest {
+    #[serde(default)]
+    pub plan: Value,
+}
+
+#[derive(Deserialize)]
+pub struct RevenueOpportunityFulfillRequest {
+    #[serde(default)]
+    pub evidence: Value,
+}
+
+#[derive(Deserialize)]
+pub struct RevenueOpportunitySettleRequest {
+    pub settlement_ref: String,
+    pub amount_usdc: f64,
+    #[serde(default = "default_settlement_currency")]
+    pub currency: String,
+}
+
+fn default_settlement_currency() -> String {
+    "USDC".to_string()
+}
+
+#[derive(Deserialize)]
+pub struct MicroBountyIntakeRequest {
+    #[serde(default)]
+    pub request_id: Option<String>,
+    pub expected_revenue_usdc: f64,
+    #[serde(default)]
+    pub payload: Value,
+}
+
 pub async fn list_services_catalog() -> impl IntoResponse {
     let items: Vec<Value> = revenue_catalog()
         .iter()
@@ -1298,6 +1350,209 @@ pub async fn fulfill_service_request(
         "request_id": id,
         "status": ironclad_db::service_revenue::STATUS_COMPLETED,
         "fulfilled": true,
+    })))
+}
+
+pub async fn intake_revenue_opportunity(
+    State(state): State<AppState>,
+    Json(req): Json<RevenueOpportunityIntakeRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let source = req.source.trim().to_ascii_lowercase();
+    let strategy = req.strategy.trim().to_ascii_lowercase();
+    validate_short("source", &source)?;
+    validate_short("strategy", &strategy)?;
+    if source.is_empty() || strategy.is_empty() {
+        return Err(bad_request("source and strategy must be non-empty"));
+    }
+    if req.expected_revenue_usdc <= 0.0 {
+        return Err(bad_request("expected_revenue_usdc must be positive"));
+    }
+
+    let opportunity_id = format!("ro_{}", uuid::Uuid::new_v4().simple());
+    let payload_json = serde_json::to_string(&req.payload)
+        .map_err(|e| bad_request(format!("invalid payload: {e}")))?;
+    let new_opp = ironclad_db::service_revenue::NewRevenueOpportunity {
+        id: &opportunity_id,
+        source: &source,
+        strategy: &strategy,
+        payload_json: &payload_json,
+        expected_revenue_usdc: req.expected_revenue_usdc,
+        request_id: req.request_id.as_deref(),
+    };
+    ironclad_db::service_revenue::create_revenue_opportunity(&state.db, &new_opp)
+        .map_err(|e| internal_err(&e))?;
+
+    Ok(axum::Json(json!({
+        "opportunity_id": opportunity_id,
+        "status": ironclad_db::service_revenue::OPPORTUNITY_STATUS_INTAKE,
+        "source": source,
+        "strategy": strategy,
+        "expected_revenue_usdc": req.expected_revenue_usdc,
+    })))
+}
+
+pub async fn intake_micro_bounty_opportunity(
+    State(state): State<AppState>,
+    Json(req): Json<MicroBountyIntakeRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    // Shared lifecycle adapter: normalize micro-bounty into canonical intake.
+    let adapted = RevenueOpportunityIntakeRequest {
+        source: "micro_bounty_board".to_string(),
+        strategy: "micro_bounty".to_string(),
+        request_id: req.request_id,
+        expected_revenue_usdc: req.expected_revenue_usdc,
+        payload: req.payload,
+    };
+    intake_revenue_opportunity(State(state), Json(adapted)).await
+}
+
+pub async fn get_revenue_opportunity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, JsonError> {
+    let row = ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
+        .map_err(|e| internal_err(&e))?
+        .ok_or_else(|| not_found(format!("revenue opportunity '{}' not found", id)))?;
+    Ok(axum::Json(json!({
+        "id": row.id,
+        "source": row.source,
+        "strategy": row.strategy,
+        "payload": serde_json::from_str::<Value>(&row.payload_json).unwrap_or_else(|_| json!({"raw": row.payload_json})),
+        "expected_revenue_usdc": row.expected_revenue_usdc,
+        "status": row.status,
+        "qualification_reason": row.qualification_reason,
+        "plan": row.plan_json.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
+        "evidence": row.evidence_json.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
+        "request_id": row.request_id,
+        "settlement_ref": row.settlement_ref,
+        "settled_amount_usdc": row.settled_amount_usdc,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    })))
+}
+
+pub async fn qualify_revenue_opportunity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RevenueOpportunityQualifyRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let reason = req.reason.trim();
+    let updated = ironclad_db::service_revenue::qualify_revenue_opportunity(
+        &state.db,
+        &id,
+        req.approved,
+        if reason.is_empty() {
+            None
+        } else {
+            Some(reason)
+        },
+    )
+    .map_err(|e| internal_err(&e))?;
+    if !updated {
+        return Err(bad_request(
+            "revenue opportunity must be in intake state to qualify/reject",
+        ));
+    }
+    Ok(axum::Json(json!({
+        "opportunity_id": id,
+        "status": if req.approved {
+            ironclad_db::service_revenue::OPPORTUNITY_STATUS_QUALIFIED
+        } else {
+            ironclad_db::service_revenue::OPPORTUNITY_STATUS_REJECTED
+        },
+    })))
+}
+
+pub async fn plan_revenue_opportunity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RevenueOpportunityPlanRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let plan_json =
+        serde_json::to_string(&req.plan).map_err(|e| bad_request(format!("invalid plan: {e}")))?;
+    let updated =
+        ironclad_db::service_revenue::plan_revenue_opportunity(&state.db, &id, &plan_json)
+            .map_err(|e| internal_err(&e))?;
+    if !updated {
+        return Err(bad_request(
+            "revenue opportunity must be qualified before planning",
+        ));
+    }
+    Ok(axum::Json(json!({
+        "opportunity_id": id,
+        "status": ironclad_db::service_revenue::OPPORTUNITY_STATUS_PLANNED,
+    })))
+}
+
+pub async fn fulfill_revenue_opportunity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RevenueOpportunityFulfillRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let evidence_json = serde_json::to_string(&req.evidence)
+        .map_err(|e| bad_request(format!("invalid evidence: {e}")))?;
+    let updated = ironclad_db::service_revenue::mark_revenue_opportunity_fulfilled(
+        &state.db,
+        &id,
+        &evidence_json,
+    )
+    .map_err(|e| internal_err(&e))?;
+    if !updated {
+        return Err(bad_request(
+            "revenue opportunity must be planned before fulfillment",
+        ));
+    }
+    Ok(axum::Json(json!({
+        "opportunity_id": id,
+        "status": ironclad_db::service_revenue::OPPORTUNITY_STATUS_FULFILLED,
+    })))
+}
+
+pub async fn settle_revenue_opportunity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RevenueOpportunitySettleRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let settlement_ref = req.settlement_ref.trim();
+    if settlement_ref.is_empty() {
+        return Err(bad_request("settlement_ref cannot be empty"));
+    }
+    if req.amount_usdc <= 0.0 {
+        return Err(bad_request("amount_usdc must be positive"));
+    }
+    if !req.currency.eq_ignore_ascii_case("USDC") {
+        return Err(bad_request("only USDC settlement is supported in v0.9.5"));
+    }
+
+    let result = ironclad_db::service_revenue::settle_revenue_opportunity(
+        &state.db,
+        &id,
+        settlement_ref,
+        req.amount_usdc,
+    )
+    .map_err(|e| internal_err(&e))?;
+    if matches!(
+        result,
+        ironclad_db::service_revenue::SettlementResult::Settled
+    ) {
+        ironclad_db::metrics::record_transaction(
+            &state.db,
+            "revenue_settlement",
+            req.amount_usdc,
+            "USDC",
+            Some("revenue_control_plane"),
+            Some(settlement_ref),
+        )
+        .map_err(|e| internal_err(&e))?;
+    }
+
+    Ok(axum::Json(json!({
+        "opportunity_id": id,
+        "status": ironclad_db::service_revenue::OPPORTUNITY_STATUS_SETTLED,
+        "idempotent": matches!(
+            result,
+            ironclad_db::service_revenue::SettlementResult::AlreadySettled
+        ),
     })))
 }
 

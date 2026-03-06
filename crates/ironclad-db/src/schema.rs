@@ -217,6 +217,26 @@ CREATE TABLE IF NOT EXISTS service_requests (
 CREATE INDEX IF NOT EXISTS idx_service_requests_status ON service_requests(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_service_requests_service ON service_requests(service_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS revenue_opportunities (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    expected_revenue_usdc REAL NOT NULL,
+    status TEXT NOT NULL,
+    qualification_reason TEXT,
+    plan_json TEXT,
+    evidence_json TEXT,
+    request_id TEXT,
+    settlement_ref TEXT UNIQUE,
+    settled_amount_usdc REAL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_revenue_opportunities_status ON revenue_opportunities(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_revenue_opportunities_strategy ON revenue_opportunities(strategy, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_revenue_opportunities_request ON revenue_opportunities(request_id);
+
 CREATE TABLE IF NOT EXISTS inference_costs (
     id TEXT PRIMARY KEY,
     model TEXT NOT NULL,
@@ -470,7 +490,7 @@ CREATE INDEX IF NOT EXISTS idx_abuse_events_actor ON abuse_events(actor_id, crea
 CREATE INDEX IF NOT EXISTS idx_abuse_events_origin ON abuse_events(origin, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_created ON abuse_events(created_at DESC);
 "#;
-const EMBEDDED_SCHEMA_VERSION: i64 = 14;
+const EMBEDDED_SCHEMA_VERSION: i64 = 15;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {
@@ -809,8 +829,8 @@ mod tests {
         let count = table_count(&db).unwrap();
         // 30 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback
         // + context_snapshots + model_selection_events + abuse_events
-        // + shadow_routing_predictions (v0.9.4) + service_requests (v0.9.5) = 37
-        assert_eq!(count, 37, "expected 37 user-defined tables, got {count}");
+        // + shadow_routing_predictions (v0.9.4) + service_requests + revenue_opportunities (v0.9.5) = 38
+        assert_eq!(count, 38, "expected 38 user-defined tables, got {count}");
     }
 
     #[test]
@@ -819,7 +839,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 37);
+        assert_eq!(count, 38);
     }
 
     #[test]

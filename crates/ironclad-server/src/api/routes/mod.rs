@@ -459,17 +459,19 @@ pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, breaker_open, breaker_reset, breaker_status, browser_action, browser_start,
         browser_status, browser_stop, change_agent_model, create_service_quote,
-        delete_provider_key, execute_plugin_tool, fulfill_service_request, generate_deep_analysis,
-        get_agents, get_available_models, get_cache_stats, get_capacity_stats, get_config,
-        get_config_apply_status, get_config_capabilities, get_costs, get_efficiency,
-        get_mcp_runtime, get_overview_timeseries, get_plugins, get_recommendations,
+        delete_provider_key, execute_plugin_tool, fulfill_revenue_opportunity,
+        fulfill_service_request, generate_deep_analysis, get_agents, get_available_models,
+        get_cache_stats, get_capacity_stats, get_config, get_config_apply_status,
+        get_config_capabilities, get_costs, get_efficiency, get_mcp_runtime,
+        get_overview_timeseries, get_plugins, get_recommendations, get_revenue_opportunity,
         get_routing_dataset, get_routing_diagnostics, get_runtime_surfaces, get_service_request,
-        get_throttle_stats, get_transactions, list_discovered_agents, list_paired_devices,
+        get_throttle_stats, get_transactions, intake_micro_bounty_opportunity,
+        intake_revenue_opportunity, list_discovered_agents, list_paired_devices,
         list_services_catalog, mcp_client_disconnect, mcp_client_discover, pair_device,
-        register_discovered_agent, roster, run_routing_eval, set_provider_key, start_agent,
-        stop_agent, toggle_plugin, unpair_device, update_config, verify_discovered_agent,
-        verify_paired_device, verify_service_payment, wallet_address, wallet_balance,
-        workspace_state,
+        plan_revenue_opportunity, qualify_revenue_opportunity, register_discovered_agent, roster,
+        run_routing_eval, set_provider_key, settle_revenue_opportunity, start_agent, stop_agent,
+        toggle_plugin, unpair_device, update_config, verify_discovered_agent, verify_paired_device,
+        verify_service_payment, wallet_address, wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
@@ -567,6 +569,34 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/services/requests/{id}/fulfill",
             post(fulfill_service_request),
+        )
+        .route(
+            "/api/services/opportunities/intake",
+            post(intake_revenue_opportunity),
+        )
+        .route(
+            "/api/services/opportunities/adapters/micro-bounty/intake",
+            post(intake_micro_bounty_opportunity),
+        )
+        .route(
+            "/api/services/opportunities/{id}",
+            get(get_revenue_opportunity),
+        )
+        .route(
+            "/api/services/opportunities/{id}/qualify",
+            post(qualify_revenue_opportunity),
+        )
+        .route(
+            "/api/services/opportunities/{id}/plan",
+            post(plan_revenue_opportunity),
+        )
+        .route(
+            "/api/services/opportunities/{id}/fulfill",
+            post(fulfill_revenue_opportunity),
+        )
+        .route(
+            "/api/services/opportunities/{id}/settle",
+            post(settle_revenue_opportunity),
         )
         .route("/api/stats/cache", get(get_cache_stats))
         .route("/api/stats/capacity", get(get_capacity_stats))
@@ -1769,6 +1799,207 @@ primary = "ollama/qwen3:8b"
                 .unwrap_or_default()
                 .contains("recipient does not match")
         );
+    }
+
+    #[tokio::test]
+    async fn revenue_opportunity_happy_path_intake_to_settle() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/adapters/micro-bounty/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"request_id":"job_42","expected_revenue_usdc":3.0,"payload":{"title":"fix docs typo"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(intake_resp.status(), StatusCode::OK);
+        let intake_body = json_body(intake_resp).await;
+        let id = intake_body["opportunity_id"].as_str().unwrap().to_string();
+
+        let qualify_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/qualify"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"approved":true,"reason":"eligible"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(qualify_resp.status(), StatusCode::OK);
+
+        let plan_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/plan"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"plan":{"executor":"self","retry_budget":1}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(plan_resp.status(), StatusCode::OK);
+
+        let fulfill_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/fulfill"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"evidence":{"artifact":"report.md"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fulfill_resp.status(), StatusCode::OK);
+
+        let settle_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/settle"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"settlement_ref":"tx_settle_1","amount_usdc":3.0,"currency":"USDC"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(settle_resp.status(), StatusCode::OK);
+        let settle_body = json_body(settle_resp).await;
+        assert_eq!(settle_body["status"], "settled");
+        assert_eq!(settle_body["idempotent"], false);
+    }
+
+    #[tokio::test]
+    async fn revenue_opportunity_gate_rejects_invalid_expected_revenue() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":0,"payload":{}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(intake_resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(intake_resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("expected_revenue_usdc must be positive")
+        );
+    }
+
+    #[tokio::test]
+    async fn revenue_settlement_is_idempotent_for_duplicate_ref() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":2.2,"payload":{"issue":"abc"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/qualify"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"approved":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/plan"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"plan":{"executor":"self"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/fulfill"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"evidence":{"ok":true}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/settle"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"settlement_ref":"tx_settle_idem","amount_usdc":2.2,"currency":"USDC"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/settle"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"settlement_ref":"tx_settle_idem","amount_usdc":2.2,"currency":"USDC"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        let body = json_body(second).await;
+        assert_eq!(body["idempotent"], true);
     }
 
     #[tokio::test]

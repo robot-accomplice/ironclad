@@ -120,6 +120,21 @@ Persistence:
 - `service_requests` table (status transitions: `quoted -> payment_verified -> completed`)
 - revenue ledger entry via `transactions` (`tx_type = service_revenue`)
 
+## Phase 2 Continuation (v0.9.5 forward)
+
+Shared control-plane primitives to add before strategy expansion:
+
+- `opportunity intake`: normalize all new opportunities to one schema
+- `qualification gate`: enforce policy/safety/eligibility before planning
+- first micro-bounty intake adapter bound to the same lifecycle (no strategy-specific bypass path)
+- settlement idempotency keyed by request/job ID
+
+Mechanic support hooks:
+
+- revenue control-plane probe
+- ledger/request reconciliation
+- orphan-job repair path
+
 ## Acceptance Criteria
 
 - Service flow survives restart (DB-backed state)
