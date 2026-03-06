@@ -188,6 +188,11 @@ def check_delegation_evidence(resp: Dict[str, object], content: str) -> Tuple[bo
     )
     return ok, "delegation path evidence present"
 
+def check_count_only_output(_resp: Dict[str, object], content: str) -> Tuple[bool, str]:
+    stripped = content.strip()
+    ok = bool(re.fullmatch(r"\d+", stripped))
+    return ok, "returns count-only numeric output"
+
 
 def check_cron(resp: Dict[str, object], content: str) -> Tuple[bool, str]:
     ok = "scheduled cron job" in content.lower() and "*/5 * * * *" in content
@@ -292,7 +297,7 @@ SCENARIOS = [
         [
             check_latency,
             check_no_exec_block,
-            check_delegation_evidence,
+            check_count_only_output,
             check_no_stale,
             check_no_internal_metadata,
             check_no_foreign_identity,
