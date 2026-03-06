@@ -27,9 +27,9 @@ use super::intents::{
     requests_acknowledgement, requests_capability_summary, requests_cron, requests_current_events,
     requests_delegation, requests_email_triage, requests_execution, requests_file_distribution,
     requests_folder_scan, requests_image_count_scan, requests_introspection,
-    requests_literary_quote_context, requests_obsidian_insights, requests_personality_profile,
-    requests_provider_inventory, requests_random_tool_use, requests_wallet_address_scan,
-    should_bypass_cache_for_prompt,
+    requests_literary_quote_context, requests_markdown_count_scan, requests_obsidian_insights,
+    requests_personality_profile, requests_provider_inventory, requests_random_tool_use,
+    requests_wallet_address_scan, should_bypass_cache_for_prompt,
 };
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
@@ -606,6 +606,15 @@ fn build_image_count_command(path: &str) -> String {
     )
 }
 
+fn requests_count_only_numeric_output(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("only the number")
+        || lower.contains("just the number")
+        || lower.contains("number only")
+        || lower.contains("count only")
+        || lower.contains("return only")
+}
+
 fn default_obsidian_vault_path() -> Option<String> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
@@ -1105,7 +1114,74 @@ async fn try_execution_shortcut(
         }
     }
 
-    // 3) Folder scan / file distribution request (supports '~' and absolute paths).
+    // 3) Markdown count request — recursively count .md files.
+    if requests_markdown_count_scan(user_prompt) {
+        let path = extract_path_hint(user_prompt).unwrap_or_else(|| "~/code".to_string());
+        let resolved_path = expand_user_path(&path);
+        let cmd = build_markdown_count_command(&path);
+        let params = serde_json::json!({
+            "command": cmd,
+            "cwd": ".",
+            "timeout_seconds": 60
+        });
+        let out =
+            execute_tool_call(state, "bash", &params, turn_id, authority, channel_label).await;
+        let mut tool_results = Vec::new();
+        match out {
+            Ok(output) => {
+                tool_results.push(("bash".to_string(), output.clone()));
+                let numeric = output
+                    .chars()
+                    .filter(|c| c.is_ascii_digit())
+                    .collect::<String>();
+                let count = if numeric.is_empty() {
+                    "0".to_string()
+                } else {
+                    numeric
+                };
+                let content = if requests_count_only_numeric_output(user_prompt) {
+                    count.clone()
+                } else {
+                    format!(
+                        "Found {} markdown files under {} (resolved: {}).",
+                        count, path, resolved_path
+                    )
+                };
+                return Some(InferenceOutput {
+                    content,
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 1.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+            Err(err) => {
+                tool_results.push(("bash".to_string(), format!("error: {err}")));
+                return Some(InferenceOutput {
+                    content: format!(
+                        "I attempted to count markdown files under {} (resolved: {}), but the command failed: {}",
+                        path, resolved_path, err
+                    ),
+                    model: prepared_model.to_string(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                    react_turns: 1,
+                    latency_ms: 0,
+                    quality_score: 0.0,
+                    escalated: false,
+                    tool_results,
+                });
+            }
+        }
+    }
+
+    // 4) Folder scan / file distribution request (supports '~' and absolute paths).
     if requests_file_distribution(user_prompt) || requests_folder_scan(user_prompt) {
         let path = extract_path_hint(user_prompt).unwrap_or_else(|| ".".to_string());
         let resolved_path = expand_user_path(&path);

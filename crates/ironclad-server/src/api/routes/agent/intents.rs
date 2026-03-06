@@ -195,6 +195,20 @@ pub(super) fn requests_image_count_scan(prompt: &str) -> bool {
     asks_for_count && mentions_images
 }
 
+pub(super) fn requests_markdown_count_scan(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    let asks_for_count = lower.contains("how many")
+        || lower.contains("count")
+        || lower.contains("number of")
+        || lower.contains("total");
+    let mentions_markdown = lower.contains("markdown file")
+        || lower.contains("markdown files")
+        || lower.contains(".md files")
+        || lower.contains("md files")
+        || lower.contains("files ending in .md");
+    asks_for_count && mentions_markdown
+}
+
 pub(super) fn requests_obsidian_insights(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
     let mentions_vault = lower.contains("obsidian") || lower.contains("vault");
@@ -254,6 +268,7 @@ pub(super) fn should_bypass_cache_for_prompt(prompt: &str) -> bool {
         || requests_acknowledgement(prompt)
         || requests_wallet_address_scan(prompt)
         || requests_image_count_scan(prompt)
+        || requests_markdown_count_scan(prompt)
         || requests_obsidian_insights(prompt)
         || requests_email_triage(prompt)
         || requests_literary_quote_context(prompt)
@@ -394,6 +409,19 @@ mod tests {
             "count images in ~/Downloads recursively"
         ));
         assert!(!requests_image_count_scan("show me photos from yesterday"));
+    }
+
+    #[test]
+    fn markdown_count_markers_match_expected_prompts() {
+        assert!(requests_markdown_count_scan(
+            "Count markdown files recursively in /Users/jmachen/code and return only the number."
+        ));
+        assert!(requests_markdown_count_scan(
+            "how many .md files are in ~/code?"
+        ));
+        assert!(!requests_markdown_count_scan(
+            "count image files in ~/Pictures"
+        ));
     }
 
     #[test]

@@ -272,6 +272,8 @@ def check_affirmative_continuation(_resp: Dict[str, object], content: str) -> Tu
         or "daily-progress-template" in lower
         or "paste-ready markdown" in lower
         or "next concrete step" in lower
+        or "vault scaffold created" in lower
+        or ("governance" in lower and "ledger" in lower and "subagents" in lower)
     )
     return (not blocked and useful), "affirmative follow-up continues concrete work"
 
