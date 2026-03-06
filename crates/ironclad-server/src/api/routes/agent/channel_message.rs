@@ -11,9 +11,168 @@ use super::decomposition::{
     apply_decomposition_decision, build_gate_system_note, evaluate_decomposition_gate,
     maybe_handle_specialist_creation_controls,
 };
+use super::intents::{
+    requests_cron, requests_current_events, requests_delegation, requests_execution,
+    requests_file_distribution, requests_introspection,
+};
+use super::strip_internal_delegation_metadata;
 use ironclad_core::InputAuthority;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+fn strip_numeric_bracket_citations(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '[' {
+            let mut j = i + 1;
+            let mut has_digit = false;
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                has_digit = true;
+                j += 1;
+            }
+            if has_digit && j < chars.len() && chars[j] == ']' {
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn normalize_telegram_text(content: &str) -> String {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        let mut normalized = if in_fence {
+            line.to_string()
+        } else {
+            line.trim_start_matches('#').trim_start().to_string()
+        };
+        normalized = normalized
+            .replace("**", "")
+            .replace("__", "")
+            .replace('`', "");
+        normalized = strip_numeric_bracket_citations(&normalized);
+        out.push(normalized);
+    }
+    out.join("\n").trim().to_string()
+}
+
+fn is_short_followup_for_previous_reply(user_content: &str) -> bool {
+    let lower = user_content.trim().to_ascii_lowercase();
+    if lower.len() > 80 {
+        return false;
+    }
+    let markers = [
+        "what's that from",
+        "what is that from",
+        "where is that from",
+        "no, your quote",
+        "your quote",
+        "what quote",
+        "source?",
+    ];
+    markers.iter().any(|m| lower.contains(m))
+}
+
+fn is_short_reactive_sarcasm(user_content: &str) -> bool {
+    let lower = user_content.trim().to_ascii_lowercase();
+    if lower.len() > 32 {
+        return false;
+    }
+    let markers = [
+        "wow",
+        "great",
+        "fantastic",
+        "amazing",
+        "incredible",
+        "brilliant",
+        "sure",
+        "right",
+    ];
+    markers
+        .iter()
+        .any(|m| lower == *m || lower == format!("{m}.") || lower == format!("{m}..."))
+}
+
+fn is_short_contradiction_followup(user_content: &str) -> bool {
+    let lower = user_content.trim().to_ascii_lowercase();
+    if lower.len() > 48 {
+        return false;
+    }
+    let markers = [
+        "that's not true",
+        "that is not true",
+        "not true",
+        "that's wrong",
+        "that is wrong",
+        "incorrect",
+    ];
+    markers
+        .iter()
+        .any(|m| lower == *m || lower == format!("{m}.") || lower.contains(m))
+}
+
+async fn contextualize_short_followup(
+    state: &AppState,
+    session_id: &str,
+    user_content: &str,
+) -> String {
+    if !is_short_followup_for_previous_reply(user_content)
+        && !is_short_reactive_sarcasm(user_content)
+        && !is_short_contradiction_followup(user_content)
+    {
+        return user_content.to_string();
+    }
+    let Ok(history) = ironclad_db::sessions::list_messages(&state.db, session_id, Some(20)) else {
+        return user_content.to_string();
+    };
+    let previous_assistant = history
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .map(|m| m.content.trim())
+        .filter(|s| !s.is_empty());
+    let Some(previous_assistant) = previous_assistant else {
+        return user_content.to_string();
+    };
+    if is_short_reactive_sarcasm(user_content) {
+        return format!(
+            "User likely reacted with sarcasm/frustration to your previous reply. Acknowledge the miss directly, do not treat it as praise, and correct course.\nPrevious assistant reply excerpt:\n\"{}\"\n\nUser reaction:\n{}",
+            previous_assistant.chars().take(240).collect::<String>(),
+            user_content
+        );
+    }
+    if is_short_contradiction_followup(user_content) {
+        return format!(
+            "User directly disputed your previous reply as incorrect. Acknowledge the error and provide a corrected answer grounded in available tools/delegation.\nPrevious assistant reply excerpt:\n\"{}\"\n\nUser follow-up:\n{}",
+            previous_assistant.chars().take(240).collect::<String>(),
+            user_content
+        );
+    }
+    let quote = previous_assistant.chars().take(360).collect::<String>();
+    format!(
+        "User follow-up references your immediately previous reply. Answer specifically what that prior reply/quote is from.\nPrevious assistant reply excerpt:\n\"{}\"\n\nUser question:\n{}",
+        quote, user_content
+    )
+}
+
+pub(super) fn format_channel_reply_for_delivery(platform: &str, content: &str) -> String {
+    let cleaned = strip_internal_delegation_metadata(content);
+    if platform.eq_ignore_ascii_case("telegram") {
+        return normalize_telegram_text(&cleaned);
+    }
+    cleaned
+}
 
 pub async fn process_channel_message(
     state: &AppState,
@@ -63,6 +222,7 @@ pub async fn process_channel_message(
         && let Some(reply) =
             super::handle_bot_command(state, &inbound.content, Some(&inbound)).await
     {
+        let reply = format_channel_reply_for_delivery(&platform, &reply);
         state
             .channel_router
             .send_reply(&platform, &chat_id, reply)
@@ -87,7 +247,7 @@ pub async fn process_channel_message(
             .ok();
         return Ok(());
     }
-    let user_content = if threat.is_caution() {
+    let mut user_content = if threat.is_caution() {
         tracing::info!(score = threat.value(), platform = %platform, "Sanitizing caution-level channel input");
         ironclad_agent::injection::sanitize(&inbound.content)
     } else {
@@ -137,9 +297,11 @@ pub async fn process_channel_message(
         drop(llm);
         return Err(e.to_string());
     }
+    user_content = contextualize_short_followup(state, &session_id, &user_content).await;
     if let Some(reply) =
         maybe_handle_specialist_creation_controls(state, &session_id, &user_content).await
     {
+        let reply = format_channel_reply_for_delivery(&platform, &reply);
         state
             .channel_router
             .send_reply(&platform, &chat_id, reply)
@@ -312,6 +474,7 @@ pub async fn process_channel_message(
         .await
         {
             Ok(output) => {
+                let output = strip_internal_delegation_metadata(&output);
                 precomputed_delegation_provenance.subagent_task_started = true;
                 precomputed_delegation_provenance.subagent_task_completed = true;
                 precomputed_delegation_provenance.subagent_result_attached =
@@ -342,6 +505,7 @@ pub async fn process_channel_message(
         )
         .await
     {
+        let skill_reply = format_channel_reply_for_delivery(&platform, &skill_reply);
         state
             .channel_router
             .send_reply(&platform, &chat_id, skill_reply)
@@ -405,7 +569,33 @@ pub async fn process_channel_message(
 
     // ── Thinking/typing indicator ────────────────────────────────────
     let thinking_sent = Arc::new(AtomicBool::new(false));
+    let typing_keepalive_stop = Arc::new(AtomicBool::new(false));
     {
+        // Start visual feedback immediately for every inbound message so the
+        // user sees responsive behavior even when we avoid textual pre-acks.
+        send_typing_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
+        let keepalive_state = state.clone();
+        let keepalive_platform = platform.clone();
+        let keepalive_chat_id = chat_id.clone();
+        let keepalive_metadata = inbound.metadata.clone();
+        let keepalive_stop = Arc::clone(&typing_keepalive_stop);
+        tokio::spawn(async move {
+            // Keep signaling liveness for long-running turns until completion.
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                if keepalive_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                send_typing_indicator(
+                    &keepalive_state,
+                    &keepalive_platform,
+                    &keepalive_chat_id,
+                    keepalive_metadata.as_ref(),
+                )
+                .await;
+            }
+        });
+
         if let Some(notice) = model_switch_notice.as_ref() {
             state
                 .channel_router
@@ -414,6 +604,20 @@ pub async fn process_channel_message(
                 .inspect_err(|e| tracing::warn!(error = %e, "failed to send model switch notice"))
                 .ok();
         }
+        let should_pre_ack = platform == "telegram"
+            && (requests_execution(&user_content)
+                || requests_current_events(&user_content)
+                || requests_delegation(&user_content)
+                || requests_introspection(&user_content)
+                || requests_file_distribution(&user_content)
+                || requests_cron(&user_content));
+        if should_pre_ack {
+            // Keep immediate feedback channel-native (typing + ephemeral thinking),
+            // not repeated textual pre-acks that pollute dialogue continuity.
+            send_thinking_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
+            thinking_sent.store(true, Ordering::Release);
+        }
+
         let estimated_latency = estimate_inference_latency(
             prepared.tier,
             user_content.len(),
@@ -423,23 +627,10 @@ pub async fn process_channel_message(
         )
         .await;
 
-        if estimated_latency >= thinking_threshold {
-            if platform == "telegram" {
-                state
-                    .channel_router
-                    .send_reply(
-                        &platform,
-                        &chat_id,
-                        "Acknowledged. Working on that now.".to_string(),
-                    )
-                    .await
-                    .inspect_err(|e| tracing::warn!(error = %e, "failed to send acknowledgment"))
-                    .ok();
-            }
+        if !should_pre_ack && estimated_latency >= thinking_threshold {
             send_thinking_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
             thinking_sent.store(true, Ordering::Release);
-        } else {
-            send_typing_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
+        } else if !should_pre_ack {
             let delayed_state = state.clone();
             let delayed_platform = platform.clone();
             let delayed_chat_id = chat_id.clone();
@@ -449,20 +640,6 @@ pub async fn process_channel_message(
                 tokio::time::sleep(std::time::Duration::from_secs(thinking_threshold)).await;
                 if delayed_guard.load(Ordering::Acquire) {
                     return;
-                }
-                if delayed_platform == "telegram" {
-                    delayed_state
-                        .channel_router
-                        .send_reply(
-                            &delayed_platform,
-                            &delayed_chat_id,
-                            "Acknowledged. Working on that now.".to_string(),
-                        )
-                        .await
-                        .inspect_err(
-                            |e| tracing::warn!(error = %e, "failed to send delayed acknowledgment"),
-                        )
-                        .ok();
                 }
                 send_thinking_indicator(
                     &delayed_state,
@@ -492,6 +669,7 @@ pub async fn process_channel_message(
     {
         Ok(r) => r,
         Err(msg) => {
+            typing_keepalive_stop.store(true, Ordering::Release);
             thinking_sent.store(true, Ordering::Release);
             let mut llm = state.llm.write().await;
             llm.dedup.release(&dedup_fp);
@@ -501,17 +679,20 @@ pub async fn process_channel_message(
     };
 
     // Send reply to channel
+    let outbound = format_channel_reply_for_delivery(&platform, &result.content);
     if let Err(e) = state
         .channel_router
-        .send_reply(&platform, &chat_id, result.content.clone())
+        .send_reply(&platform, &chat_id, outbound)
         .await
     {
+        typing_keepalive_stop.store(true, Ordering::Release);
         thinking_sent.store(true, Ordering::Release);
         let mut llm = state.llm.write().await;
         llm.dedup.release(&dedup_fp);
         drop(llm);
         return Err(e.to_string());
     }
+    typing_keepalive_stop.store(true, Ordering::Release);
     thinking_sent.store(true, Ordering::Release);
 
     // Release dedup tracking

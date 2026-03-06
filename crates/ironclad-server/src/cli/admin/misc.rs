@@ -1,6 +1,6 @@
 use super::*;
 use ironclad_llm::oauth::check_and_repair_oauth_storage;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -127,6 +127,336 @@ fn count_occurrences(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
 }
 
+const INTERNALIZED_SKILLS: &[&str] = &[
+    "update-and-rollback",
+    "workflow-design",
+    "skill-creation",
+    "session-operator",
+    "claims-auditor",
+    "efficacy-assessment",
+    "fast-cache",
+    "model-routing-tuner",
+];
+
+#[derive(Debug, Default, Clone)]
+struct InternalizedSkillCleanupReport {
+    stale_db_skills: Vec<String>,
+    stale_files: Vec<PathBuf>,
+    stale_dirs: Vec<PathBuf>,
+    removed_db_skills: Vec<String>,
+    removed_paths: Vec<PathBuf>,
+}
+
+fn find_path_case_insensitive(base: &Path, candidate: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(base).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.eq_ignore_ascii_case(candidate) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn cleanup_internalized_skill_artifacts(
+    state_db_path: &Path,
+    skills_dir: &Path,
+    repair: bool,
+) -> InternalizedSkillCleanupReport {
+    let mut report = InternalizedSkillCleanupReport::default();
+
+    if state_db_path.exists()
+        && let Ok(db) = ironclad_db::Database::new(state_db_path.to_string_lossy().as_ref())
+        && let Ok(skills) = ironclad_db::skills::list_skills(&db)
+    {
+        for skill in skills {
+            if INTERNALIZED_SKILLS
+                .iter()
+                .any(|name| skill.name.eq_ignore_ascii_case(name))
+            {
+                report.stale_db_skills.push(skill.name.clone());
+                if repair && ironclad_db::skills::delete_skill(&db, &skill.id).is_ok() {
+                    report.removed_db_skills.push(skill.name);
+                }
+            }
+        }
+    }
+
+    if skills_dir.exists() {
+        for skill_name in INTERNALIZED_SKILLS {
+            let md_name = format!("{skill_name}.md");
+            if let Some(path) = find_path_case_insensitive(skills_dir, &md_name) {
+                report.stale_files.push(path.clone());
+                if repair && std::fs::remove_file(&path).is_ok() {
+                    report.removed_paths.push(path);
+                }
+            }
+            if let Some(path) = find_path_case_insensitive(skills_dir, skill_name)
+                && path.is_dir()
+            {
+                report.stale_dirs.push(path.clone());
+                if repair && std::fs::remove_dir_all(&path).is_ok() {
+                    report.removed_paths.push(path);
+                }
+            }
+        }
+    }
+
+    report
+}
+
+const BUILTIN_SKILLS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/builtin-skills.json"));
+
+#[derive(Debug, Deserialize)]
+struct BuiltinSkillCatalogEntry {
+    name: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CapabilitySkillParityItem {
+    capability: &'static str,
+    skills: &'static [&'static str],
+}
+
+const CAPABILITY_SKILL_PARITY_ITEMS: &[CapabilitySkillParityItem] = &[
+    CapabilitySkillParityItem {
+        capability: "runtime introspection and truthful capability disclosure",
+        skills: &["introspection"],
+    },
+    CapabilitySkillParityItem {
+        capability: "delegation and specialist orchestration",
+        skills: &["supervisor-protocol", "local-subagents"],
+    },
+    CapabilitySkillParityItem {
+        capability: "routing controls and fallback tuning",
+        skills: &["model-management", "model-routing-tuner"],
+    },
+    CapabilitySkillParityItem {
+        capability: "diagnostics, repair, and operator continuity",
+        skills: &[
+            "runtime-diagnostics",
+            "self-diagnostics",
+            "session-operator",
+        ],
+    },
+    CapabilitySkillParityItem {
+        capability: "revenue autonomy operations",
+        skills: &["self-funding", "claims-auditor", "efficacy-assessment"],
+    },
+];
+
+#[derive(Debug, Default, Clone)]
+struct CapabilitySkillParityReport {
+    missing_in_registry: Vec<String>,
+    missing_in_db: Vec<String>,
+}
+
+fn evaluate_capability_skill_parity(state_db_path: &Path) -> CapabilitySkillParityReport {
+    let mut report = CapabilitySkillParityReport::default();
+    let registry_skills: std::collections::HashSet<String> =
+        serde_json::from_str::<Vec<BuiltinSkillCatalogEntry>>(BUILTIN_SKILLS_JSON)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.name.to_ascii_lowercase())
+            .collect();
+
+    let db_skills: std::collections::HashSet<String> = if state_db_path.exists() {
+        if let Ok(db) = ironclad_db::Database::new(state_db_path.to_string_lossy().as_ref()) {
+            ironclad_db::skills::list_skills(&db)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| s.enabled)
+                .map(|s| s.name.to_ascii_lowercase())
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        }
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    for item in CAPABILITY_SKILL_PARITY_ITEMS {
+        for skill in item.skills {
+            if !registry_skills.contains(&skill.to_ascii_lowercase()) {
+                report
+                    .missing_in_registry
+                    .push(format!("{} -> {}", item.capability, skill));
+            }
+            if !db_skills.is_empty() && !db_skills.contains(&skill.to_ascii_lowercase()) {
+                report
+                    .missing_in_db
+                    .push(format!("{} -> {}", item.capability, skill));
+            }
+        }
+    }
+
+    report
+}
+
+#[derive(Debug, Clone)]
+struct ProviderHealthRow {
+    name: String,
+    status: String,
+    count: u64,
+    error: Option<String>,
+}
+
+fn provider_scan_hint(provider: Option<&str>) -> String {
+    match provider {
+        Some(name) if !name.trim().is_empty() => format!("ironclad models scan {}", name.trim()),
+        _ => "ironclad models scan".to_string(),
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct RevenueControlPlaneHealth {
+    opportunities_total: i64,
+    opportunities_settled: i64,
+    orphan_jobs: i64,
+    missing_settlement_ledger: i64,
+    repaired_orphans: i64,
+    reconciled_ledger_rows: i64,
+}
+
+fn sqlite_table_exists(conn: &rusqlite::Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count > 0)
+    .unwrap_or(false)
+}
+
+fn probe_revenue_control_plane(
+    state_db_path: &Path,
+    repair: bool,
+) -> Result<RevenueControlPlaneHealth, Box<dyn std::error::Error>> {
+    if !state_db_path.exists() {
+        return Ok(RevenueControlPlaneHealth::default());
+    }
+    let db = ironclad_db::Database::new(state_db_path.to_string_lossy().as_ref())?;
+    let conn = db.conn();
+
+    if !sqlite_table_exists(&conn, "revenue_opportunities") {
+        return Ok(RevenueControlPlaneHealth::default());
+    }
+
+    let opportunities_total: i64 =
+        conn.query_row("SELECT COUNT(*) FROM revenue_opportunities", [], |row| {
+            row.get(0)
+        })?;
+    let opportunities_settled: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM revenue_opportunities WHERE status = 'settled'",
+        [],
+        |row| row.get(0),
+    )?;
+    let orphan_jobs: i64 = conn.query_row(
+        "SELECT COUNT(*) \
+         FROM revenue_opportunities ro \
+         WHERE ro.request_id IS NOT NULL \
+           AND ro.request_id != '' \
+           AND NOT EXISTS (SELECT 1 FROM service_requests sr WHERE sr.id = ro.request_id)",
+        [],
+        |row| row.get(0),
+    )?;
+    let missing_settlement_ledger: i64 = conn.query_row(
+        "SELECT COUNT(*) \
+         FROM revenue_opportunities ro \
+         WHERE ro.status = 'settled' \
+           AND ro.settlement_ref IS NOT NULL \
+           AND ro.settlement_ref != '' \
+           AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.tx_type='revenue_settlement' AND t.tx_hash = ro.settlement_ref)",
+        [],
+        |row| row.get(0),
+    )?;
+
+    let mut repaired_orphans = 0i64;
+    let mut reconciled_ledger_rows = 0i64;
+
+    if repair {
+        repaired_orphans = conn.execute(
+            "UPDATE revenue_opportunities \
+             SET status = 'failed', qualification_reason = COALESCE(qualification_reason, 'mechanic orphan repair: missing linked request'), updated_at = datetime('now') \
+             WHERE request_id IS NOT NULL \
+               AND request_id != '' \
+               AND status IN ('qualified', 'planned', 'fulfilled') \
+               AND NOT EXISTS (SELECT 1 FROM service_requests sr WHERE sr.id = request_id)",
+            [],
+        )? as i64;
+
+        reconciled_ledger_rows = conn.execute(
+            "INSERT INTO transactions (id, tx_type, amount, currency, counterparty, tx_hash, metadata_json, created_at) \
+             SELECT 'tx_rec_' || hex(randomblob(8)), \
+                    'revenue_settlement', \
+                    COALESCE(ro.settled_amount_usdc, 0), \
+                    'USDC', \
+                    'revenue_control_plane', \
+                    ro.settlement_ref, \
+                    json_object('reconciled_by','mechanic','opportunity_id',ro.id), \
+                    datetime('now') \
+             FROM revenue_opportunities ro \
+             WHERE ro.status = 'settled' \
+               AND ro.settlement_ref IS NOT NULL \
+               AND ro.settlement_ref != '' \
+               AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.tx_type='revenue_settlement' AND t.tx_hash = ro.settlement_ref)",
+            [],
+        )? as i64;
+    }
+
+    Ok(RevenueControlPlaneHealth {
+        opportunities_total,
+        opportunities_settled,
+        orphan_jobs,
+        missing_settlement_ledger,
+        repaired_orphans,
+        reconciled_ledger_rows,
+    })
+}
+
+async fn fetch_provider_health(
+    base_url: &str,
+) -> Result<Vec<ProviderHealthRow>, Box<dyn std::error::Error>> {
+    let resp = super::http_client()?
+        .get(format!(
+            "{base_url}/api/models/available?validation_level=zero"
+        ))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(std::io::Error::other(format!(
+            "provider models endpoint returned HTTP {}",
+            resp.status()
+        ))
+        .into());
+    }
+    let body: serde_json::Value = resp.json().await?;
+    let mut rows = Vec::new();
+    let providers = body
+        .get("providers")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    for (name, report) in providers {
+        rows.push(ProviderHealthRow {
+            name,
+            status: report
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            count: report.get("count").and_then(|v| v.as_u64()).unwrap_or(0),
+            error: report
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        });
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(rows)
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct MechanicRepairPlan {
     description: String,
@@ -152,6 +482,7 @@ struct RepairActionSummary {
     config_created: bool,
     permissions_hardened: Vec<String>,
     schema_normalized: bool,
+    internalized_skills_cleaned: Vec<String>,
     paused_jobs_reenabled: Vec<String>,
     security_configured: bool,
 }
@@ -355,6 +686,94 @@ async fn cmd_mechanic_json(
         findings.push(finding);
     }
 
+    let skills_cleanup = cleanup_internalized_skill_artifacts(
+        &ironclad_dir.join("state.db"),
+        &ironclad_dir.join("skills"),
+        repair,
+    );
+    if !skills_cleanup.stale_db_skills.is_empty()
+        || !skills_cleanup.stale_files.is_empty()
+        || !skills_cleanup.stale_dirs.is_empty()
+    {
+        let stale_db = if skills_cleanup.stale_db_skills.is_empty() {
+            "none".to_string()
+        } else {
+            skills_cleanup.stale_db_skills.join(", ")
+        };
+        let stale_fs_items: Vec<String> = skills_cleanup
+            .stale_files
+            .iter()
+            .chain(skills_cleanup.stale_dirs.iter())
+            .map(|p| p.display().to_string())
+            .collect();
+        let stale_fs = if stale_fs_items.is_empty() {
+            "none".to_string()
+        } else {
+            stale_fs_items.join(", ")
+        };
+        let mut f = finding(
+            "internalized-skill-drift",
+            "medium",
+            0.98,
+            "Internalized skills still exist as external artifacts",
+            format!("stale_db=[{stale_db}]; stale_fs=[{stale_fs}]"),
+            "Remove obsolete externalized skill entries/files for internalized skills.",
+            vec!["ironclad mechanic --repair".to_string()],
+            true,
+            false,
+        );
+        if repair
+            && (!skills_cleanup.removed_db_skills.is_empty()
+                || !skills_cleanup.removed_paths.is_empty())
+        {
+            f.auto_repaired = true;
+            actions.internalized_skills_cleaned.extend(
+                skills_cleanup
+                    .removed_db_skills
+                    .iter()
+                    .map(|s| format!("db:{s}"))
+                    .chain(
+                        skills_cleanup
+                            .removed_paths
+                            .iter()
+                            .map(|p| format!("fs:{}", p.display())),
+                    ),
+            );
+        }
+        findings.push(f);
+    }
+
+    let capability_skill_parity = evaluate_capability_skill_parity(&ironclad_dir.join("state.db"));
+    if !capability_skill_parity.missing_in_registry.is_empty() {
+        findings.push(finding(
+            "capability-skill-parity-registry-gap",
+            "high",
+            0.97,
+            "Capability-to-skill parity gap in builtin skill registry",
+            capability_skill_parity.missing_in_registry.join("; "),
+            "Add missing builtin skills to registry/builtin-skills.json for declared runtime capabilities.",
+            vec!["Update registry/builtin-skills.json and reload skills".to_string()],
+            false,
+            false,
+        ));
+    }
+    if !capability_skill_parity.missing_in_db.is_empty() {
+        findings.push(finding(
+            "capability-skill-parity-db-gap",
+            "medium",
+            0.95,
+            "Capability-to-skill parity gap in loaded skill database",
+            capability_skill_parity.missing_in_db.join("; "),
+            "Reload/reconcile skills so builtin capability skills are active in DB.",
+            vec![
+                "ironclad skills reload".to_string(),
+                "ironclad mechanic --repair".to_string(),
+            ],
+            true,
+            false,
+        ));
+    }
+
     let gateway = super::http_client()?
         .get(format!("{base_url}/api/health"))
         .send()
@@ -441,6 +860,136 @@ async fn cmd_mechanic_json(
                     false,
                 ));
             }
+        }
+
+        match fetch_provider_health(base_url).await {
+            Ok(rows) if rows.is_empty() => {
+                findings.push(finding(
+                    "provider-health-empty",
+                    "medium",
+                    0.85,
+                    "Provider health check returned no providers",
+                    "No provider status records were returned by /api/models/available.",
+                    "Verify providers are configured and reachable from the runtime.",
+                    vec![provider_scan_hint(None)],
+                    false,
+                    false,
+                ));
+            }
+            Ok(rows) => {
+                for row in rows {
+                    match row.status.as_str() {
+                        "ok" if row.count > 0 => {}
+                        "ok" => findings.push(finding(
+                            "provider-health-no-models",
+                            "medium",
+                            0.88,
+                            format!("Provider '{}' reachable but no models discovered", row.name),
+                            "Provider endpoint responded successfully but model list is empty.",
+                            "Check provider model inventory and credentials.",
+                            vec![provider_scan_hint(Some(&row.name))],
+                            false,
+                            false,
+                        )),
+                        "unreachable" | "error" => findings.push(finding(
+                            "provider-health-unavailable",
+                            "high",
+                            0.93,
+                            format!("Provider '{}' is {}", row.name, row.status),
+                            row.error.unwrap_or_else(|| "provider route is not healthy".to_string()),
+                            "Restore provider connectivity/auth so fallback routing can continue automatically.",
+                            vec![
+                                provider_scan_hint(Some(&row.name)),
+                                "ironclad mechanic --repair".to_string(),
+                            ],
+                            false,
+                            false,
+                        )),
+                        other => findings.push(finding(
+                            "provider-health-unknown",
+                            "medium",
+                            0.8,
+                            format!("Provider '{}' reported status '{}'", row.name, other),
+                            row.error.unwrap_or_else(|| "unknown provider health state".to_string()),
+                            "Inspect provider configuration and discovery path.",
+                            vec![provider_scan_hint(Some(&row.name))],
+                            false,
+                            false,
+                        )),
+                    }
+                }
+            }
+            Err(e) => {
+                findings.push(finding(
+                    "provider-health-check-failed",
+                    "medium",
+                    0.9,
+                    "Provider health check failed",
+                    format!("Could not query /api/models/available: {e}"),
+                    "Inspect gateway and provider discovery endpoint health.",
+                    vec![provider_scan_hint(None)],
+                    false,
+                    false,
+                ));
+            }
+        }
+
+        let revenue_probe = probe_revenue_control_plane(&ironclad_dir.join("state.db"), repair);
+        match revenue_probe {
+            Ok(health) if health.opportunities_total == 0 => {}
+            Ok(health) => {
+                if health.orphan_jobs > 0 {
+                    findings.push(finding(
+                        "revenue-orphan-jobs",
+                        "high",
+                        0.92,
+                        format!(
+                            "Revenue control plane has {} orphan opportunity job(s)",
+                            health.orphan_jobs
+                        ),
+                        "Opportunities reference missing service request IDs, breaking end-to-end lifecycle consistency.",
+                        "Run mechanic repair to mark orphaned revenue jobs failed and restore consistency.",
+                        vec!["ironclad mechanic --repair".to_string()],
+                        true,
+                        health.repaired_orphans > 0,
+                    ));
+                }
+                if health.missing_settlement_ledger > 0 {
+                    findings.push(finding(
+                        "revenue-ledger-reconcile",
+                        "medium",
+                        0.9,
+                        format!(
+                            "Revenue settlement ledger missing {} entr{}",
+                            health.missing_settlement_ledger,
+                            if health.missing_settlement_ledger == 1 {
+                                "y"
+                            } else {
+                                "ies"
+                            }
+                        ),
+                        "Settled opportunities exist without corresponding revenue_settlement transactions.",
+                        "Run mechanic repair to reconcile missing settlement ledger rows.",
+                        vec!["ironclad mechanic --repair".to_string()],
+                        true,
+                        health.reconciled_ledger_rows > 0,
+                    ));
+                }
+            }
+            Err(e) => findings.push(finding(
+                "revenue-probe-failed",
+                "medium",
+                0.85,
+                "Revenue control-plane probe failed",
+                format!("{e}"),
+                "Inspect state.db health and revenue tables.",
+                vec![
+                    "ironclad defrag".to_string(),
+                    "ironclad mechanic".to_string(),
+                ],
+                false,
+                false,
+            )),
         }
 
         if repair && !allow_jobs.is_empty() {
@@ -1529,6 +2078,66 @@ pub async fn cmd_mechanic(
         }
     }
 
+    let skills_cleanup = cleanup_internalized_skill_artifacts(
+        &ironclad_dir.join("state.db"),
+        &ironclad_dir.join("skills"),
+        repair,
+    );
+    if !skills_cleanup.stale_db_skills.is_empty()
+        || !skills_cleanup.stale_files.is_empty()
+        || !skills_cleanup.stale_dirs.is_empty()
+    {
+        println!(
+            "  {WARN} Internalized skills still present as external artifacts (DB/filesystem drift)"
+        );
+        if !skills_cleanup.stale_db_skills.is_empty() {
+            println!(
+                "    {DETAIL} Stale DB rows: {}",
+                skills_cleanup.stale_db_skills.join(", ")
+            );
+        }
+        let stale_paths: Vec<String> = skills_cleanup
+            .stale_files
+            .iter()
+            .chain(skills_cleanup.stale_dirs.iter())
+            .map(|p| p.display().to_string())
+            .collect();
+        if !stale_paths.is_empty() {
+            println!(
+                "    {DETAIL} Stale skill artifacts: {}",
+                stale_paths.join(", ")
+            );
+        }
+        if repair {
+            let removed_count =
+                skills_cleanup.removed_db_skills.len() + skills_cleanup.removed_paths.len();
+            if removed_count > 0 {
+                println!(
+                    "  {ACTION} Cleaned {removed_count} internalized-skill artifact{}",
+                    if removed_count == 1 { "" } else { "s" }
+                );
+                fixed += removed_count as u32;
+            }
+        } else {
+            println!("    {DETAIL} Run `ironclad mechanic --repair` to remove stale artifacts.");
+        }
+    }
+
+    let capability_skill_parity = evaluate_capability_skill_parity(&ironclad_dir.join("state.db"));
+    if !capability_skill_parity.missing_in_registry.is_empty() {
+        println!("  {ERR} Capability-to-skill parity gap in builtin registry");
+        println!(
+            "    {DETAIL} Missing mappings: {}",
+            capability_skill_parity.missing_in_registry.join("; ")
+        );
+        println!(
+            "    {DETAIL} Add missing skills to registry/builtin-skills.json before shipping."
+        );
+    }
+    if capability_skill_parity.missing_in_registry.is_empty() {
+        println!("  {OK} Capability-to-skill parity checks passed");
+    }
+
     // Check gateway reachability first -- all subsequent server checks depend on this
     let gateway_up = match super::http_client()?
         .get(format!("{base_url}/api/health"))
@@ -1634,6 +2243,13 @@ pub async fn cmd_mechanic(
                     );
                 } else {
                     println!("  {OK} Skills loaded ({count} skills)");
+                }
+                let db_parity = evaluate_capability_skill_parity(&ironclad_dir.join("state.db"));
+                if db_parity.missing_in_db.is_empty() {
+                    println!("  {OK} Loaded skill DB satisfies capability-to-skill parity");
+                } else {
+                    println!("  {WARN} Loaded skill DB missing required capability skills");
+                    println!("    {DETAIL} {}", db_parity.missing_in_db.join("; "));
                 }
             }
             Ok(resp) => {
@@ -1786,6 +2402,116 @@ pub async fn cmd_mechanic(
             }
             Err(e) => {
                 println!("  {WARN} Channels check failed: {e}");
+            }
+        }
+
+        // Provider route health (reachability + discovered model counts)
+        match fetch_provider_health(base_url).await {
+            Ok(rows) if rows.is_empty() => {
+                println!("  {WARN} Provider health check returned no providers");
+            }
+            Ok(rows) => {
+                println!(
+                    "  {OK} Provider health check completed ({} provider{})",
+                    rows.len(),
+                    if rows.len() == 1 { "" } else { "s" }
+                );
+                for row in rows {
+                    match row.status.as_str() {
+                        "ok" if row.count > 0 => {
+                            println!(
+                                "    {OK} {}: reachable ({} model{})",
+                                row.name,
+                                row.count,
+                                if row.count == 1 { "" } else { "s" }
+                            );
+                        }
+                        "ok" => {
+                            println!(
+                                "    {WARN} {}: reachable but no models discovered",
+                                row.name
+                            );
+                            println!(
+                                "      {DETAIL} Probe route: `{}`",
+                                provider_scan_hint(Some(&row.name))
+                            );
+                        }
+                        "unreachable" | "error" => {
+                            let detail = row.error.as_deref().unwrap_or("unknown provider error");
+                            println!("    {WARN} {}: {} ({detail})", row.name, row.status);
+                            println!(
+                                "      {DETAIL} Probe route: `{}`",
+                                provider_scan_hint(Some(&row.name))
+                            );
+                        }
+                        other => {
+                            let detail = row.error.as_deref().unwrap_or("no extra detail");
+                            println!("    {WARN} {}: {other} ({detail})", row.name);
+                            println!(
+                                "      {DETAIL} Probe route: `{}`",
+                                provider_scan_hint(Some(&row.name))
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  {WARN} Provider health check failed: {e}");
+            }
+        }
+
+        match probe_revenue_control_plane(&ironclad_dir.join("state.db"), repair) {
+            Ok(health) if health.opportunities_total == 0 => {
+                println!("  {OK} Revenue control plane: no opportunities recorded yet");
+            }
+            Ok(health) => {
+                println!(
+                    "  {OK} Revenue control plane: {} opportunities ({} settled)",
+                    health.opportunities_total, health.opportunities_settled
+                );
+                if health.orphan_jobs > 0 {
+                    println!(
+                        "    {WARN} Found {} orphan revenue opportunit{}",
+                        health.orphan_jobs,
+                        if health.orphan_jobs == 1 { "y" } else { "ies" }
+                    );
+                    if repair && health.repaired_orphans > 0 {
+                        println!(
+                            "    {ACTION} Repaired {} orphan opportunit{} (marked failed)",
+                            health.repaired_orphans,
+                            if health.repaired_orphans == 1 {
+                                "y"
+                            } else {
+                                "ies"
+                            }
+                        );
+                    }
+                }
+                if health.missing_settlement_ledger > 0 {
+                    println!(
+                        "    {WARN} Found {} settled opportunit{} missing ledger entries",
+                        health.missing_settlement_ledger,
+                        if health.missing_settlement_ledger == 1 {
+                            "y"
+                        } else {
+                            "ies"
+                        }
+                    );
+                    if repair && health.reconciled_ledger_rows > 0 {
+                        println!(
+                            "    {ACTION} Reconciled {} missing revenue settlement ledger entr{}",
+                            health.reconciled_ledger_rows,
+                            if health.reconciled_ledger_rows == 1 {
+                                "y"
+                            } else {
+                                "ies"
+                            }
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  {WARN} Revenue control-plane probe failed: {e}");
             }
         }
 
@@ -1943,6 +2669,134 @@ pub async fn cmd_mechanic(
         }
     } else {
         println!("    {DETAIL} Skipping server checks (config, skills, wallet, channels)");
+    }
+
+    if repair {
+        println!("\n  {BOLD}Mechanic Integrated Sweep{RESET}\n");
+
+        // Update availability probe
+        match super::http_client() {
+            Ok(client) => match crate::cli::update::check_binary_version(&client).await {
+                Ok(Some(latest))
+                    if crate::cli::update::is_newer(&latest, env!("CARGO_PKG_VERSION")) =>
+                {
+                    println!(
+                        "  {WARN} Update available: v{latest} (current v{})",
+                        env!("CARGO_PKG_VERSION")
+                    );
+                }
+                Ok(Some(latest)) => {
+                    println!("  {OK} Binary version current (latest v{latest})");
+                }
+                Ok(None) => {
+                    println!("  {WARN} Update check unavailable (could not query release source)");
+                }
+                Err(e) => {
+                    println!("  {WARN} Update check failed: {e}");
+                }
+            },
+            Err(e) => {
+                println!("  {WARN} Update check setup failed: {e}");
+            }
+        }
+
+        // Defrag sweep summary
+        let workspace = ironclad_dir.join("workspace");
+        if workspace.exists() {
+            let passes = [
+                crate::cli::defrag::pass_refs(&workspace),
+                crate::cli::defrag::pass_drift(&workspace),
+                crate::cli::defrag::pass_artifacts(&workspace),
+                crate::cli::defrag::pass_stale(&workspace),
+                crate::cli::defrag::pass_identity(&workspace),
+                crate::cli::defrag::pass_scripts(&workspace),
+            ];
+            let total_findings: usize = passes.iter().map(std::vec::Vec::len).sum();
+            let fixable_findings: usize = passes.iter().flatten().filter(|f| f.fixable).count();
+
+            if total_findings == 0 {
+                println!("  {OK} Defrag sweep clean (0 findings)");
+            } else {
+                println!(
+                    "  {WARN} Defrag sweep found {total_findings} finding(s), {fixable_findings} fixable"
+                );
+                println!(
+                    "    {DETAIL} Run `ironclad defrag --fix --yes` to apply fixable defrag repairs."
+                );
+            }
+        } else {
+            println!(
+                "  {WARN} Defrag sweep skipped: workspace directory missing ({})",
+                workspace.display()
+            );
+        }
+
+        // Circuit status summary
+        if gateway_up {
+            match super::http_client() {
+                Ok(client) => match client
+                    .get(format!("{base_url}/api/breaker/status"))
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                        let providers = body
+                            .get("providers")
+                            .and_then(|v| v.as_object())
+                            .cloned()
+                            .unwrap_or_default();
+                        if providers.is_empty() {
+                            println!("  {OK} Circuit status: no providers registered");
+                        } else {
+                            let mut open_or_half = 0usize;
+                            for status in providers.values() {
+                                let state = status
+                                    .get("state")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                if state.eq_ignore_ascii_case("open")
+                                    || state.eq_ignore_ascii_case("half_open")
+                                    || state.eq_ignore_ascii_case("half-open")
+                                {
+                                    open_or_half += 1;
+                                }
+                            }
+                            if open_or_half == 0 {
+                                println!(
+                                    "  {OK} Circuit status healthy ({} provider{} closed)",
+                                    providers.len(),
+                                    if providers.len() == 1 { "" } else { "s" }
+                                );
+                            } else {
+                                println!(
+                                    "  {WARN} Circuit status degraded ({open_or_half}/{} provider{} open or half-open)",
+                                    providers.len(),
+                                    if providers.len() == 1 { "" } else { "s" }
+                                );
+                                println!(
+                                    "    {DETAIL} Run `ironclad circuit status` for per-provider state."
+                                );
+                            }
+                        }
+                    }
+                    Ok(resp) => {
+                        println!(
+                            "  {WARN} Circuit status check failed (HTTP {})",
+                            resp.status()
+                        );
+                    }
+                    Err(e) => {
+                        println!("  {WARN} Circuit status check failed: {e}");
+                    }
+                },
+                Err(e) => {
+                    println!("  {WARN} Circuit status check setup failed: {e}");
+                }
+            }
+        } else {
+            println!("  {WARN} Circuit status check skipped: gateway unavailable");
+        }
     }
 
     // ── Security configuration audit ─────────────────────────────
@@ -2354,38 +3208,52 @@ pub fn cmd_completion(shell: &str) -> Result<(), Box<dyn std::error::Error>> {
             println!("# Ironclad bash completion");
             println!("# Add to ~/.bashrc: eval \"$(ironclad completion bash)\"");
             println!(
-                "complete -W \"serve init check version status sessions memory skills cron metrics wallet config breaker channels plugins mechanic daemon completion\" ironclad"
+                "complete -W \"agents auth channels check circuit completion config daemon defrag ingest init keystore logs mechanic memory metrics migrate models plugins reset schedule security serve sessions setup skills status uninstall update version wallet web\" ironclad"
             );
         }
         "zsh" => {
             println!("# Ironclad zsh completion");
             println!("# Add to ~/.zshrc: eval \"$(ironclad completion zsh)\"");
             println!(
-                "compctl -k \"(serve init check version status sessions memory skills cron metrics wallet config breaker channels plugins mechanic daemon completion)\" ironclad"
+                "compctl -k \"(agents auth channels check circuit completion config daemon defrag ingest init keystore logs mechanic memory metrics migrate models plugins reset schedule security serve sessions setup skills status uninstall update version wallet web)\" ironclad"
             );
         }
         "fish" => {
             println!("# Ironclad fish completion");
             println!("# Run: ironclad completion fish | source");
             for cmd in [
-                "serve",
-                "init",
-                "check",
-                "version",
-                "status",
-                "sessions",
-                "memory",
-                "skills",
-                "cron",
-                "metrics",
-                "wallet",
-                "config",
-                "breaker",
+                "agents",
+                "auth",
                 "channels",
-                "plugins",
-                "mechanic",
-                "daemon",
+                "check",
+                "circuit",
                 "completion",
+                "config",
+                "daemon",
+                "defrag",
+                "ingest",
+                "init",
+                "keystore",
+                "logs",
+                "mechanic",
+                "memory",
+                "metrics",
+                "migrate",
+                "models",
+                "plugins",
+                "reset",
+                "schedule",
+                "security",
+                "serve",
+                "sessions",
+                "setup",
+                "skills",
+                "status",
+                "uninstall",
+                "update",
+                "version",
+                "wallet",
+                "web",
             ] {
                 println!("complete -c ironclad -a {cmd}");
             }
@@ -2502,6 +3370,31 @@ pub async fn cmd_metrics(
             let costs = data["costs"].as_array();
             match costs {
                 Some(arr) if !arr.is_empty() => {
+                    let mut suppressed_zero_rows = 0usize;
+                    let filtered: Vec<&serde_json::Value> = arr
+                        .iter()
+                        .filter(|c| {
+                            let tin = c["tokens_in"].as_i64().unwrap_or(0);
+                            let tout = c["tokens_out"].as_i64().unwrap_or(0);
+                            let cost = c["cost"].as_f64().unwrap_or(0.0);
+                            let cached = c["cached"].as_bool().unwrap_or(false);
+                            let keep = cached || tin != 0 || tout != 0 || cost > 0.0;
+                            if !keep {
+                                suppressed_zero_rows += 1;
+                            }
+                            keep
+                        })
+                        .collect();
+                    if filtered.is_empty() {
+                        empty_state(
+                            "No billable/non-empty inference costs recorded (all recent rows were zero-token/no-cost events)",
+                        );
+                        if suppressed_zero_rows > 0 {
+                            kv("Suppressed Zero Rows", &suppressed_zero_rows.to_string());
+                        }
+                        return Ok(());
+                    }
+
                     let widths = [20, 16, 10, 10, 10, 8];
                     table_header(
                         &[
@@ -2519,7 +3412,7 @@ pub async fn cmd_metrics(
                     let mut total_in = 0i64;
                     let mut total_out = 0i64;
 
-                    for c in arr {
+                    for c in &filtered {
                         let model = truncate_id(c["model"].as_str().unwrap_or(""), 17);
                         let provider = c["provider"].as_str().unwrap_or("").to_string();
                         let tin = c["tokens_in"].as_i64().unwrap_or(0);
@@ -2551,11 +3444,14 @@ pub async fn cmd_metrics(
                     eprintln!();
                     kv_accent("Total Cost", &format!("${total_cost:.4}"));
                     kv("Total Tokens", &format!("{total_in} in / {total_out} out"));
-                    kv("Requests", &arr.len().to_string());
-                    if !arr.is_empty() {
+                    kv("Requests", &filtered.len().to_string());
+                    if suppressed_zero_rows > 0 {
+                        kv("Suppressed Zero Rows", &suppressed_zero_rows.to_string());
+                    }
+                    if !filtered.is_empty() {
                         kv(
                             "Avg Cost/Request",
-                            &format!("${:.4}", total_cost / arr.len() as f64),
+                            &format!("${:.4}", total_cost / filtered.len() as f64),
                         );
                     }
                 }
@@ -2792,6 +3688,14 @@ pub async fn cmd_logs(
 
 // ── Security audit ─────────────────────────────────────────────
 
+fn resolve_security_audit_config_path(config_path: &str) -> std::path::PathBuf {
+    if config_path == "ironclad.toml" {
+        return ironclad_core::resolve_config_path(None)
+            .unwrap_or_else(|| std::path::PathBuf::from("ironclad.toml"));
+    }
+    std::path::PathBuf::from(config_path)
+}
+
 pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
@@ -2803,7 +3707,8 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
     let mut fail_count = 0u32;
 
     // 1. Check config file permissions
-    let config_file = std::path::Path::new(config_path);
+    let resolved_config_path = resolve_security_audit_config_path(config_path);
+    let config_file = resolved_config_path.as_path();
     if config_file.exists() {
         #[cfg(unix)]
         {
@@ -2815,7 +3720,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
                     "  {RED}{ERR} FAIL{RESET} Config file is world/group-readable (mode {:o})",
                     mode & 0o777
                 );
-                println!("         Fix: chmod 600 {config_path}");
+                println!("         Fix: chmod 600 {}", config_file.display());
                 fail_count += 1;
             } else {
                 println!("  {OK} Config file permissions (mode {:o})", mode & 0o777);
@@ -2828,7 +3733,7 @@ pub fn cmd_security_audit(config_path: &str) -> Result<(), Box<dyn std::error::E
             warn_count += 1;
         }
     } else {
-        println!("  {WARN} Config file not found: {config_path}");
+        println!("  {WARN} Config file not found: {}", config_file.display());
         warn_count += 1;
     }
 
@@ -3053,6 +3958,145 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_internalized_skill_artifacts_detects_db_and_filesystem_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+        let skills_dir = dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("workflow-design.md"), "# legacy").unwrap();
+        std::fs::create_dir_all(skills_dir.join("fast-cache")).unwrap();
+
+        let db = ironclad_db::Database::new(db_path.to_string_lossy().as_ref()).unwrap();
+        ironclad_db::skills::register_skill(
+            &db,
+            "workflow-design",
+            "instruction",
+            Some("legacy externalized form"),
+            "/tmp/workflow-design.md",
+            "h1",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let report = cleanup_internalized_skill_artifacts(&db_path, &skills_dir, false);
+        assert!(
+            report
+                .stale_db_skills
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case("workflow-design"))
+        );
+        assert!(
+            report
+                .stale_files
+                .iter()
+                .any(|p| p.file_name().and_then(|n| n.to_str()) == Some("workflow-design.md"))
+        );
+        assert!(
+            report
+                .stale_dirs
+                .iter()
+                .any(|p| p.file_name().and_then(|n| n.to_str()) == Some("fast-cache"))
+        );
+        assert!(report.removed_db_skills.is_empty());
+        assert!(report.removed_paths.is_empty());
+    }
+
+    #[test]
+    fn cleanup_internalized_skill_artifacts_repair_removes_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+        let skills_dir = dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("session-operator.md"), "# legacy").unwrap();
+
+        let db = ironclad_db::Database::new(db_path.to_string_lossy().as_ref()).unwrap();
+        let skill_id = ironclad_db::skills::register_skill(
+            &db,
+            "session-operator",
+            "instruction",
+            Some("legacy externalized form"),
+            "/tmp/session-operator.md",
+            "h1",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            ironclad_db::skills::get_skill(&db, &skill_id)
+                .unwrap()
+                .is_some()
+        );
+
+        let report = cleanup_internalized_skill_artifacts(&db_path, &skills_dir, true);
+        assert!(
+            report
+                .removed_db_skills
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case("session-operator"))
+        );
+        assert!(
+            report
+                .removed_paths
+                .iter()
+                .any(|p| { p.file_name().and_then(|n| n.to_str()) == Some("session-operator.md") })
+        );
+        assert!(!skills_dir.join("session-operator.md").exists());
+        let db = ironclad_db::Database::new(db_path.to_string_lossy().as_ref()).unwrap();
+        assert!(
+            ironclad_db::skills::get_skill(&db, &skill_id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn capability_skill_parity_registry_has_required_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("missing-state.db");
+        let report = evaluate_capability_skill_parity(&db_path);
+        assert!(
+            report.missing_in_registry.is_empty(),
+            "builtin registry should include all parity skills: {:?}",
+            report.missing_in_registry
+        );
+    }
+
+    #[test]
+    fn capability_skill_parity_detects_db_gaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+        let db = ironclad_db::Database::new(db_path.to_string_lossy().as_ref()).unwrap();
+        ironclad_db::skills::register_skill(
+            &db,
+            "introspection",
+            "instruction",
+            Some("present"),
+            "/tmp/introspection.md",
+            "h1",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let report = evaluate_capability_skill_parity(&db_path);
+        assert!(report.missing_in_registry.is_empty());
+        assert!(
+            !report.missing_in_db.is_empty(),
+            "expected DB parity gaps when only one required skill is loaded"
+        );
+    }
+
+    #[test]
     fn normalize_schema_safe_updates_legacy_subagent_rows() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("state.db");
@@ -3093,6 +4137,44 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sub_agents", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total_rows, 1);
+    }
+
+    #[test]
+    fn normalize_schema_safe_converts_invalid_subagent_model_to_auto() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sub_agents (role TEXT, model TEXT, skills_json TEXT);
+             INSERT INTO sub_agents (role, model, skills_json) VALUES ('subagent', 'orca-ata', '[]');
+             INSERT INTO sub_agents (role, model, skills_json) VALUES ('subagent', 'openai/gpt-4o', '[]');
+             INSERT INTO sub_agents (role, model, skills_json) VALUES ('subagent', 'auto', '[]');",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(normalize_schema_safe(&db_path).unwrap());
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+        let m1: String = conn
+            .query_row("SELECT model FROM sub_agents WHERE rowid = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let m2: String = conn
+            .query_row("SELECT model FROM sub_agents WHERE rowid = 2", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let m3: String = conn
+            .query_row("SELECT model FROM sub_agents WHERE rowid = 3", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(m1, "auto");
+        assert_eq!(m2, "openai/gpt-4o");
+        assert_eq!(m3, "auto");
     }
 
     #[test]
@@ -3467,5 +4549,19 @@ primary = "ollama/qwen3:8b"
         .unwrap();
 
         cmd_security_audit(cfg_path.to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn resolve_security_audit_config_path_falls_back_to_home_default() {
+        let _lock = env_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
+        let ironclad_dir = home.path().join(".ironclad");
+        std::fs::create_dir_all(&ironclad_dir).unwrap();
+        let home_cfg = ironclad_dir.join("ironclad.toml");
+        std::fs::write(&home_cfg, "[server]\nport = 18789\n").unwrap();
+
+        let resolved = resolve_security_audit_config_path("ironclad.toml");
+        assert_eq!(resolved, home_cfg);
     }
 }

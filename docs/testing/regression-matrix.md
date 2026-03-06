@@ -65,6 +65,17 @@ Legend:
 | R-REL-02 | Install surfaces remain aligned with shipped release metadata | `install.sh`, `install.ps1`, `scripts/run-release-doc-gate.sh` | L3 |
 | R-REL-03 | Provenance manifest generation and self-test stay release-blocking | `scripts/generate-provenance.sh`, `.github/workflows/release.yml` | L3 |
 
+## R-LS: Live Source Soak (Behavior Contract)
+
+| ID | Regression Class | Primary Coverage | Layer |
+| --- | --- | --- | --- |
+| R-LS-01 | Internal orchestration/delegation metadata must never leak to user-visible replies | `crates/ironclad-server/src/api/routes/agent/guards.rs`, `crates/ironclad-server/src/api/routes/agent/channel_message.rs`, `crates/ironclad-server/src/api/routes/agent/core.rs` | L1/L2/L3 |
+| R-LS-02 | Filesystem agency prompts (`~`, Downloads/Documents/Pictures folders) must route to executable shortcuts, not model-only refusals | `crates/ironclad-server/src/api/routes/agent/intents.rs`, `crates/ironclad-server/src/api/routes/agent/core.rs` | L1/L2/L3 |
+| R-LS-03 | Foreign assistant identity/persona bleed must be stripped consistently | `crates/ironclad-server/src/api/routes/agent/guards.rs` | L1/L2/L3 |
+| R-LS-04 | Geopolitical/delegation replies must include no stale-memory disclaimers and no execution-fabrication blocks | `crates/ironclad-server/src/api/routes/agent/core.rs`, `crates/ironclad-server/src/api/routes/agent/guards.rs`, `scripts/run-agent-behavior-soak.py` | L2/L3 |
+
+Reference matrix (prompt-level, operator-observed failures): `docs/testing/live-source-soak-matrix.md`.
+
 ## Governance
 
 - Every bugfix PR should add or update at least one regression ID above.

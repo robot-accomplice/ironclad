@@ -74,57 +74,44 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    // ── Lifecycle ────────────────────────────────────────────
-    /// Boot the Ironclad runtime
-    #[command(alias = "start", alias = "run", next_help_heading = "Lifecycle")]
-    Serve {
-        /// Override bind port
-        #[arg(short, long)]
-        port: Option<u16>,
-        /// Override bind address
-        #[arg(short, long)]
-        bind: Option<String>,
-    },
-    /// Initialize a new workspace
-    #[command(next_help_heading = "Lifecycle")]
-    Init {
-        /// Directory to initialize
-        #[arg(default_value = ".")]
-        path: String,
-    },
-    /// Interactive setup wizard
-    #[command(alias = "onboard", next_help_heading = "Lifecycle")]
-    Setup,
-    /// Validate configuration
-    #[command(next_help_heading = "Lifecycle")]
-    Check,
-    /// Report firmware version and build
-    #[command(next_help_heading = "Lifecycle")]
-    Version,
-    /// Check for and install updates
-    #[command(alias = "upgrade", next_help_heading = "Lifecycle")]
+    // ── A-C ────────────────────────────────────────────────
+    /// Manage agents
+    #[command(next_help_heading = "A-C")]
     #[command(subcommand)]
-    Update(UpdateCmd),
-
-    // ── Operations ──────────────────────────────────────────
-    /// Display system status
-    #[command(next_help_heading = "Operations")]
-    Status,
-    /// Run diagnostics and self-repair
-    #[command(alias = "doctor", next_help_heading = "Operations")]
-    Mechanic {
-        /// Attempt to auto-repair issues
-        #[arg(long, short = 'r', alias = "rep")]
-        repair: bool,
-        /// Emit machine-readable JSON findings
-        #[arg(long)]
-        json: bool,
-        /// Allowlisted paused cron job names to re-enable in --repair mode
-        #[arg(long = "allow-job", value_delimiter = ',')]
-        allow_job: Vec<String>,
+    Agents(AgentsCmd),
+    /// Manage OAuth authentication for providers
+    #[command(next_help_heading = "A-C")]
+    #[command(subcommand)]
+    Auth(AuthCmd),
+    /// Inspect channel adapters
+    #[command(next_help_heading = "A-C")]
+    #[command(subcommand)]
+    Channels(ChannelsCmd),
+    /// Validate configuration
+    #[command(next_help_heading = "A-C")]
+    Check,
+    /// Inspect circuit breaker state
+    #[command(next_help_heading = "A-C")]
+    #[command(subcommand)]
+    Circuit(CircuitCmd),
+    /// Generate shell completions
+    #[command(next_help_heading = "A-C")]
+    Completion {
+        /// Shell: bash, zsh, fish
+        shell: String,
     },
+    /// Read and write configuration
+    #[command(next_help_heading = "A-C")]
+    #[command(subcommand)]
+    Config(ConfigCmd),
+
+    // ── D-L ────────────────────────────────────────────────
+    /// Manage daemon service
+    #[command(next_help_heading = "D-L")]
+    #[command(subcommand)]
+    Daemon(DaemonCmd),
     /// Scan workspace for stale references, config drift, and orphaned artifacts
-    #[command(next_help_heading = "Operations")]
+    #[command(next_help_heading = "D-L")]
     Defrag {
         /// Auto-fix fixable findings
         #[arg(long)]
@@ -133,8 +120,28 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
+    /// Ingest documents into the knowledge system
+    #[command(next_help_heading = "D-L")]
+    Ingest {
+        /// File or directory path to ingest
+        path: String,
+        /// Emit machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Initialize a new workspace
+    #[command(next_help_heading = "D-L")]
+    Init {
+        /// Directory to initialize
+        #[arg(default_value = ".")]
+        path: String,
+    },
+    /// Manage encrypted credential store
+    #[command(next_help_heading = "D-L")]
+    #[command(subcommand)]
+    Keystore(KeystoreCmd),
     /// View and tail logs
-    #[command(next_help_heading = "Operations")]
+    #[command(next_help_heading = "D-L")]
     Logs {
         /// Number of lines to show
         #[arg(short = 'n', long, default_value = "50")]
@@ -146,118 +153,103 @@ enum Commands {
         #[arg(short, long, default_value = "info")]
         level: String,
     },
-    /// Inspect circuit breaker state
-    #[command(next_help_heading = "Operations")]
-    #[command(subcommand)]
-    Circuit(CircuitCmd),
 
-    // ── Data ────────────────────────────────────────────────
-    /// Manage sessions
-    #[command(next_help_heading = "Data")]
-    #[command(subcommand)]
-    Sessions(SessionsCmd),
-    /// Browse and search memory banks
-    #[command(next_help_heading = "Data")]
-    #[command(subcommand)]
-    Memory(MemoryCmd),
-    /// Ingest documents into the knowledge system
-    #[command(next_help_heading = "Data")]
-    Ingest {
-        /// File or directory path to ingest
-        path: String,
-        /// Emit machine-readable JSON output
+    // ── M-R ────────────────────────────────────────────────
+    /// Run diagnostics and self-repair
+    #[command(alias = "doctor", next_help_heading = "M-R")]
+    Mechanic {
+        /// Attempt to auto-repair issues
+        #[arg(long, short = 'r', alias = "rep")]
+        repair: bool,
+        /// Emit machine-readable JSON findings
         #[arg(long)]
         json: bool,
+        /// Allowlisted paused cron job names to re-enable in --repair mode
+        #[arg(long = "allow-job", value_delimiter = ',')]
+        allow_job: Vec<String>,
     },
-    /// Manage skills
-    #[command(next_help_heading = "Data")]
+    /// Browse and search memory banks
+    #[command(next_help_heading = "M-R")]
     #[command(subcommand)]
-    Skills(SkillsCmd),
-    /// View and manage scheduled tasks
-    #[command(alias = "cron", next_help_heading = "Data")]
-    #[command(subcommand)]
-    Schedule(ScheduleCmd),
+    Memory(MemoryCmd),
     /// View metrics and cost telemetry
-    #[command(next_help_heading = "Data")]
+    #[command(next_help_heading = "M-R")]
     #[command(subcommand)]
     Metrics(MetricsCmd),
-    /// Inspect wallet and treasury
-    #[command(next_help_heading = "Data")]
+    /// Migrate between Legacy and Ironclad
+    #[command(next_help_heading = "M-R")]
     #[command(subcommand)]
-    Wallet(WalletCmd),
-
-    // ── Authentication ──────────────────────────────────────
-    /// Manage OAuth authentication for providers
-    #[command(next_help_heading = "Authentication")]
-    #[command(subcommand)]
-    Auth(AuthCmd),
-
-    // ── Configuration ───────────────────────────────────────
-    /// Read and write configuration
-    #[command(next_help_heading = "Configuration")]
-    #[command(subcommand)]
-    Config(ConfigCmd),
+    Migrate(MigrateCmd),
     /// Discover and manage models
-    #[command(next_help_heading = "Configuration")]
+    #[command(next_help_heading = "M-R")]
     #[command(subcommand)]
     Models(ModelsCmd),
     /// Manage plugins
-    #[command(next_help_heading = "Configuration")]
+    #[command(next_help_heading = "M-R")]
     #[command(subcommand)]
     Plugins(PluginsCmd),
-    /// Manage agents
-    #[command(next_help_heading = "Configuration")]
-    #[command(subcommand)]
-    Agents(AgentsCmd),
-    /// Inspect channel adapters
-    #[command(next_help_heading = "Configuration")]
-    #[command(subcommand)]
-    Channels(ChannelsCmd),
-    /// Security audit and hardening
-    #[command(next_help_heading = "Configuration")]
-    #[command(subcommand)]
-    Security(SecurityCmd),
-
-    // ── Credentials ──────────────────────────────────────
-    /// Manage encrypted credential store
-    #[command(next_help_heading = "Credentials")]
-    #[command(subcommand)]
-    Keystore(KeystoreCmd),
-
-    // ── Migration ────────────────────────────────────────
-    /// Migrate between OpenClaw and Ironclad
-    #[command(next_help_heading = "Migration")]
-    #[command(subcommand)]
-    Migrate(MigrateCmd),
-
-    // ── System ──────────────────────────────────────────────
-    /// Manage daemon service
-    #[command(next_help_heading = "System")]
-    #[command(subcommand)]
-    Daemon(DaemonCmd),
-    /// Open the web dashboard
-    #[command(next_help_heading = "System")]
-    Web,
     /// Reset state to factory defaults
-    #[command(next_help_heading = "System")]
+    #[command(next_help_heading = "M-R")]
     Reset {
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
     },
+
+    // ── S-Z ────────────────────────────────────────────────
+    /// View and manage scheduled tasks
+    #[command(alias = "cron", next_help_heading = "S-Z")]
+    #[command(subcommand)]
+    Schedule(ScheduleCmd),
+    /// Security audit and hardening
+    #[command(next_help_heading = "S-Z")]
+    #[command(subcommand)]
+    Security(SecurityCmd),
+    /// Boot the Ironclad runtime
+    #[command(alias = "start", alias = "run", next_help_heading = "S-Z")]
+    Serve {
+        /// Override bind port
+        #[arg(short, long)]
+        port: Option<u16>,
+        /// Override bind address
+        #[arg(short, long)]
+        bind: Option<String>,
+    },
+    /// Manage sessions
+    #[command(next_help_heading = "S-Z")]
+    #[command(subcommand)]
+    Sessions(SessionsCmd),
+    /// Interactive setup wizard
+    #[command(alias = "onboard", next_help_heading = "S-Z")]
+    Setup,
+    /// Manage skills
+    #[command(next_help_heading = "S-Z")]
+    #[command(subcommand)]
+    Skills(SkillsCmd),
+    /// Display system status
+    #[command(next_help_heading = "S-Z")]
+    Status,
     /// Uninstall Ironclad daemon and data
-    #[command(next_help_heading = "System")]
+    #[command(next_help_heading = "S-Z")]
     Uninstall {
         /// Also remove ~/.ironclad/ data directory
         #[arg(long)]
         purge: bool,
     },
-    /// Generate shell completions
-    #[command(next_help_heading = "System")]
-    Completion {
-        /// Shell: bash, zsh, fish
-        shell: String,
-    },
+    /// Check for and install updates
+    #[command(alias = "upgrade", next_help_heading = "S-Z")]
+    #[command(subcommand)]
+    Update(UpdateCmd),
+    /// Report firmware version and build
+    #[command(next_help_heading = "S-Z")]
+    Version,
+    /// Inspect wallet and treasury
+    #[command(next_help_heading = "S-Z")]
+    #[command(subcommand)]
+    Wallet(WalletCmd),
+    /// Open the web dashboard
+    #[command(next_help_heading = "S-Z")]
+    Web,
 }
 
 // ── Subcommand enums ────────────────────────────────────────
@@ -511,9 +503,9 @@ enum SkillsCmd {
         /// Optional skill names for operator context
         skills: Vec<String>,
     },
-    /// Import skills from an OpenClaw workspace or archive
+    /// Import skills from an Legacy workspace or archive
     Import {
-        /// Path to OpenClaw workspace/skills directory or .tar.gz archive
+        /// Path to Legacy workspace/skills directory or .tar.gz archive
         source: String,
         /// Skip safety checks (dangerous)
         #[arg(long)]
@@ -534,9 +526,9 @@ enum SkillsCmd {
 
 #[derive(Subcommand)]
 enum MigrateCmd {
-    /// Import data from an OpenClaw workspace into Ironclad
+    /// Import data from an Legacy workspace into Ironclad
     Import {
-        /// Path to OpenClaw workspace root
+        /// Path to Legacy workspace root
         source: String,
         /// Specific areas to import (default: all)
         #[arg(short, long, value_delimiter = ',')]
@@ -548,9 +540,9 @@ enum MigrateCmd {
         #[arg(long)]
         no_safety_check: bool,
     },
-    /// Export Ironclad data to OpenClaw format
+    /// Export Ironclad data to Legacy format
     Export {
-        /// Output directory for the OpenClaw workspace
+        /// Output directory for the Legacy workspace
         target: String,
         /// Specific areas to export (default: all)
         #[arg(short, long, value_delimiter = ',')]

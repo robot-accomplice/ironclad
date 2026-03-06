@@ -262,6 +262,17 @@ pub fn update_job(
     Ok(changed > 0)
 }
 
+pub fn update_job_description(db: &Database, id: &str, description: Option<&str>) -> Result<bool> {
+    let conn = db.conn();
+    let changed = conn
+        .execute(
+            "UPDATE cron_jobs SET description = ?1 WHERE id = ?2",
+            rusqlite::params![description, id],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(changed > 0)
+}
+
 /// Attempts to acquire a 60-second lease for `instance_id` on the given job.
 /// Returns `true` if the lease was acquired (no existing valid lease or expired).
 pub fn acquire_lease(db: &Database, job_id: &str, instance_id: &str) -> Result<bool> {

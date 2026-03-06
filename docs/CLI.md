@@ -320,7 +320,7 @@ The dashboard `Skills` page also exposes this flow with catalog checkboxes and a
 
 #### `ironclad skills import <SOURCE>`
 
-Import skills from an OpenClaw workspace or `.tar.gz` archive.
+Import skills from an Legacy workspace or `.tar.gz` archive.
 
 | Flag | Description |
 |------|-------------|
@@ -631,11 +631,11 @@ Change the keystore passphrase. Prompts interactively for the new passphrase.
 
 ### `ironclad migrate`
 
-Migrate data between OpenClaw and Ironclad formats.
+Migrate data between Legacy and Ironclad formats.
 
 #### `ironclad migrate import <SOURCE>`
 
-Import data from an OpenClaw workspace into Ironclad.
+Import data from an Legacy workspace into Ironclad.
 
 | Flag | Description |
 |------|-------------|
@@ -645,7 +645,7 @@ Import data from an OpenClaw workspace into Ironclad.
 
 #### `ironclad migrate export <TARGET>`
 
-Export Ironclad data to OpenClaw format.
+Export Ironclad data to Legacy format.
 
 | Flag | Description |
 |------|-------------|

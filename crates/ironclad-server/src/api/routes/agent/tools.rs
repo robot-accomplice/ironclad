@@ -170,11 +170,13 @@ pub(super) fn provider_failure_user_message(
     let category = classify_provider_error(last_error);
     if message_already_stored {
         format!(
-            "I encountered an error reaching all LLM providers ({category}). \
-             Your message has been stored and I'll retry when a provider is available."
+            "Acknowledged. I hit provider routing failure across all LLM providers ({category}). \
+             Your message is stored and I will retry as soon as a provider path is healthy."
         )
     } else {
-        format!("I encountered an error reaching all LLM providers ({category}). Please try again.")
+        format!(
+            "Acknowledged. I hit provider routing failure across all LLM providers ({category}). Please retry."
+        )
     }
 }
 

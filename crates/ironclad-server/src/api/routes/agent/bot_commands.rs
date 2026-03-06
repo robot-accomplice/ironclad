@@ -77,7 +77,8 @@ async fn resolve_command_authority(
                     !tg.allowed_chat_ids.is_empty(),
                 )
             } else {
-                (false, false)
+                // Closed-by-default: channel configured as absent means no command authority grant.
+                (false, true)
             }
         }
         "whatsapp" => {
@@ -88,7 +89,7 @@ async fn resolve_command_authority(
                     !wa.allowed_numbers.is_empty(),
                 )
             } else {
-                (false, false)
+                (false, true)
             }
         }
         "discord" => {
@@ -99,7 +100,7 @@ async fn resolve_command_authority(
                     !dc.allowed_guild_ids.is_empty(),
                 )
             } else {
-                (false, false)
+                (false, true)
             }
         }
         "signal" => {
@@ -110,7 +111,7 @@ async fn resolve_command_authority(
                     !sig.allowed_numbers.is_empty(),
                 )
             } else {
-                (false, false)
+                (false, true)
             }
         }
         "email" => {
@@ -127,7 +128,8 @@ async fn resolve_command_authority(
                 !config.channels.email.allowed_senders.is_empty(),
             )
         }
-        _ => (false, false),
+        // Unknown channel types never inherit allow-list grants.
+        _ => (false, true),
     };
     drop(config);
 

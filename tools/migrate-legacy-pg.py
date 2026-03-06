@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-One-time migration: OpenClaw PostgreSQL → Ironclad SQLite.
+One-time migration: Legacy PostgreSQL → Ironclad SQLite.
 
-Most OpenClaw instances don't have a PostgreSQL database.  Ours does (two of
+Most Legacy instances don't have a PostgreSQL database.  Ours does (two of
 them: `mentat` and `agentic_bot`).  This script pulls everything worth keeping
 into Ironclad's state.db so nothing is lost when we retire the PG databases.
 
 Usage:
-    python3 tools/migrate-openclaw-pg.py                # dry-run (prints what it would do)
-    python3 tools/migrate-openclaw-pg.py --commit       # actually write to SQLite
-    python3 tools/migrate-openclaw-pg.py --commit --db ~/custom/state.db
+    python3 tools/migrate-legacy-pg.py                # dry-run (prints what it would do)
+    python3 tools/migrate-legacy-pg.py --commit       # actually write to SQLite
+    python3 tools/migrate-legacy-pg.py --commit --db ~/custom/state.db
 
 Requires: psycopg2 (pip install psycopg2-binary)
 """
@@ -702,7 +702,7 @@ def import_db_index(pg, sl, stats: Stats):
 # ── Orchestrator ──────────────────────────────────────────────────────
 
 def run(db_path: Path, dry_run: bool):
-    print(f"\n  ╭─ OpenClaw PostgreSQL → Ironclad SQLite ──────────")
+    print(f"\n  ╭─ Legacy PostgreSQL → Ironclad SQLite ──────────")
     print(f"  │ Target: {db_path}")
     print(f"  │ Mode:   {'DRY RUN (no writes)' if dry_run else 'COMMIT'}")
     print(f"  │")
@@ -812,7 +812,7 @@ def run(db_path: Path, dry_run: bool):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="One-time migration: OpenClaw PostgreSQL → Ironclad SQLite"
+        description="One-time migration: Legacy PostgreSQL → Ironclad SQLite"
     )
     parser.add_argument(
         "--commit", action="store_true",

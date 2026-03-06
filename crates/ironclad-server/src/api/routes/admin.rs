@@ -1,5 +1,7 @@
 //! Config, stats, circuit breaker, wallet, plugins, browser, agents, workspace, A2A.
 
+use std::collections::HashMap;
+
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -7,6 +9,7 @@ use axum::{
     http::header,
     response::IntoResponse,
 };
+use chrono::{Duration, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -1059,6 +1062,500 @@ pub async fn get_transactions(
     }
 }
 
+#[derive(Debug, Clone)]
+struct RevenueServiceSpec {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    price_usdc: f64,
+}
+
+const GEO_SITREP_VERIFIED: RevenueServiceSpec = RevenueServiceSpec {
+    id: "geopolitical-sitrep-verified",
+    name: "Geopolitical Sitrep (Verified)",
+    description: "Collects current web sources, applies veracity checks, and returns a concise sitrep.",
+    price_usdc: 0.25,
+};
+
+fn revenue_catalog() -> &'static [RevenueServiceSpec] {
+    &[GEO_SITREP_VERIFIED]
+}
+
+fn find_revenue_service(id: &str) -> Option<&'static RevenueServiceSpec> {
+    revenue_catalog().iter().find(|svc| svc.id == id)
+}
+
+#[derive(Deserialize)]
+pub struct ServiceQuoteRequest {
+    pub service_id: String,
+    #[serde(default)]
+    pub requester: String,
+    #[serde(default)]
+    pub parameters: Value,
+}
+
+#[derive(Deserialize)]
+pub struct ServicePaymentVerifyRequest {
+    pub tx_hash: String,
+    pub amount_usdc: f64,
+    pub recipient: String,
+}
+
+#[derive(Deserialize)]
+pub struct ServiceFulfillRequest {
+    pub fulfillment_output: String,
+}
+
+#[derive(Deserialize)]
+pub struct RevenueOpportunityIntakeRequest {
+    pub source: String,
+    pub strategy: String,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub expected_revenue_usdc: f64,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+#[derive(Deserialize)]
+pub struct RevenueOpportunityQualifyRequest {
+    pub approved: bool,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Deserialize)]
+pub struct RevenueOpportunityPlanRequest {
+    #[serde(default)]
+    pub plan: Value,
+}
+
+#[derive(Deserialize)]
+pub struct RevenueOpportunityFulfillRequest {
+    #[serde(default)]
+    pub evidence: Value,
+}
+
+#[derive(Deserialize)]
+pub struct RevenueOpportunitySettleRequest {
+    pub settlement_ref: String,
+    pub amount_usdc: f64,
+    #[serde(default = "default_settlement_currency")]
+    pub currency: String,
+}
+
+fn default_settlement_currency() -> String {
+    "USDC".to_string()
+}
+
+#[derive(Deserialize)]
+pub struct MicroBountyIntakeRequest {
+    #[serde(default)]
+    pub request_id: Option<String>,
+    pub expected_revenue_usdc: f64,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+pub async fn list_services_catalog() -> impl IntoResponse {
+    let items: Vec<Value> = revenue_catalog()
+        .iter()
+        .map(|svc| {
+            json!({
+                "id": svc.id,
+                "name": svc.name,
+                "description": svc.description,
+                "price_usdc": svc.price_usdc,
+                "currency": "USDC",
+            })
+        })
+        .collect();
+    axum::Json(json!({ "services": items }))
+}
+
+pub async fn create_service_quote(
+    State(state): State<AppState>,
+    Json(req): Json<ServiceQuoteRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let svc = find_revenue_service(req.service_id.trim())
+        .ok_or_else(|| not_found(format!("unknown service '{}'", req.service_id)))?;
+    let requester = req.requester.trim();
+    validate_short("requester", requester)?;
+    if requester.len() > 64 {
+        return Err(bad_request("requester exceeds max length of 64 characters"));
+    }
+    if requester.is_empty() {
+        return Err(bad_request("requester cannot be empty"));
+    }
+
+    let request_id = format!("sr_{}", uuid::Uuid::new_v4().simple());
+    let recipient = state.wallet.wallet.address().to_string();
+    let quote_expires_at = (Utc::now() + Duration::hours(24)).to_rfc3339();
+    let parameters_json = serde_json::to_string(&req.parameters)
+        .map_err(|e| bad_request(format!("invalid parameters: {e}")))?;
+
+    let new_req = ironclad_db::service_revenue::NewServiceRequest {
+        id: &request_id,
+        service_id: svc.id,
+        requester,
+        parameters_json: &parameters_json,
+        quoted_amount: svc.price_usdc,
+        currency: "USDC",
+        recipient: &recipient,
+        quote_expires_at: &quote_expires_at,
+    };
+    ironclad_db::service_revenue::create_service_request(&state.db, &new_req)
+        .map_err(|e| internal_err(&e))?;
+
+    Ok(axum::Json(json!({
+        "request_id": request_id,
+        "service_id": svc.id,
+        "status": ironclad_db::service_revenue::STATUS_QUOTED,
+        "amount_usdc": svc.price_usdc,
+        "currency": "USDC",
+        "recipient": recipient,
+        "quote_expires_at": quote_expires_at,
+    })))
+}
+
+pub async fn get_service_request(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, JsonError> {
+    let req = ironclad_db::service_revenue::get_service_request(&state.db, &id)
+        .map_err(|e| internal_err(&e))?
+        .ok_or_else(|| not_found(format!("service request '{}' not found", id)))?;
+    Ok(axum::Json(json!({
+        "id": req.id,
+        "service_id": req.service_id,
+        "requester": req.requester,
+        "parameters": serde_json::from_str::<Value>(&req.parameters_json).unwrap_or_else(|_| json!({ "raw": req.parameters_json })),
+        "status": req.status,
+        "quoted_amount": req.quoted_amount,
+        "currency": req.currency,
+        "recipient": req.recipient,
+        "quote_expires_at": req.quote_expires_at,
+        "payment_tx_hash": req.payment_tx_hash,
+        "paid_amount": req.paid_amount,
+        "payment_verified_at": req.payment_verified_at,
+        "fulfillment_output": req.fulfillment_output,
+        "fulfilled_at": req.fulfilled_at,
+        "failure_reason": req.failure_reason,
+        "created_at": req.created_at,
+        "updated_at": req.updated_at,
+    })))
+}
+
+pub async fn verify_service_payment(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ServicePaymentVerifyRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let tx_hash = req.tx_hash.trim();
+    let recipient = req.recipient.trim();
+    if tx_hash.is_empty() || tx_hash.len() > 128 {
+        return Err(bad_request("tx_hash must be non-empty and <= 128 chars"));
+    }
+    if req.amount_usdc <= 0.0 {
+        return Err(bad_request("amount_usdc must be positive"));
+    }
+
+    let existing = ironclad_db::service_revenue::get_service_request(&state.db, &id)
+        .map_err(|e| internal_err(&e))?
+        .ok_or_else(|| not_found(format!("service request '{}' not found", id)))?;
+
+    if !existing
+        .status
+        .eq_ignore_ascii_case(ironclad_db::service_revenue::STATUS_QUOTED)
+    {
+        return Err(bad_request(format!(
+            "service request '{}' is not in quoted state",
+            id
+        )));
+    }
+    if !existing.recipient.eq_ignore_ascii_case(recipient) {
+        return Err(bad_request("recipient does not match quoted recipient"));
+    }
+    if (existing.quoted_amount - req.amount_usdc).abs() > 0.000001 {
+        return Err(bad_request(format!(
+            "amount_usdc mismatch: expected {} got {}",
+            existing.quoted_amount, req.amount_usdc
+        )));
+    }
+
+    let updated = ironclad_db::service_revenue::mark_payment_verified(
+        &state.db,
+        &id,
+        tx_hash,
+        req.amount_usdc,
+    )
+    .map_err(|e| internal_err(&e))?;
+    if !updated {
+        return Err(bad_request("service request state transition rejected"));
+    }
+
+    ironclad_db::metrics::record_transaction(
+        &state.db,
+        "service_revenue",
+        req.amount_usdc,
+        "USDC",
+        Some(existing.requester.as_str()),
+        Some(tx_hash),
+    )
+    .map_err(|e| internal_err(&e))?;
+
+    Ok(axum::Json(json!({
+        "request_id": id,
+        "status": ironclad_db::service_revenue::STATUS_PAYMENT_VERIFIED,
+        "verified": true,
+    })))
+}
+
+pub async fn fulfill_service_request(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ServiceFulfillRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let output = req.fulfillment_output.trim();
+    if output.is_empty() {
+        return Err(bad_request("fulfillment_output cannot be empty"));
+    }
+    validate_short("fulfillment_output", output)?;
+    if output.len() > 8000 {
+        return Err(bad_request(
+            "fulfillment_output exceeds max length of 8000 characters",
+        ));
+    }
+
+    let updated = ironclad_db::service_revenue::mark_fulfilled(&state.db, &id, output)
+        .map_err(|e| internal_err(&e))?;
+    if !updated {
+        return Err(bad_request(
+            "service request must be payment_verified before fulfillment",
+        ));
+    }
+
+    ironclad_db::metrics::record_transaction(
+        &state.db,
+        "service_delivery",
+        0.0,
+        "USDC",
+        Some("service_engine"),
+        None,
+    )
+    .map_err(|e| internal_err(&e))?;
+
+    Ok(axum::Json(json!({
+        "request_id": id,
+        "status": ironclad_db::service_revenue::STATUS_COMPLETED,
+        "fulfilled": true,
+    })))
+}
+
+pub async fn intake_revenue_opportunity(
+    State(state): State<AppState>,
+    Json(req): Json<RevenueOpportunityIntakeRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let source = req.source.trim().to_ascii_lowercase();
+    let strategy = req.strategy.trim().to_ascii_lowercase();
+    validate_short("source", &source)?;
+    validate_short("strategy", &strategy)?;
+    if source.is_empty() || strategy.is_empty() {
+        return Err(bad_request("source and strategy must be non-empty"));
+    }
+    if req.expected_revenue_usdc <= 0.0 {
+        return Err(bad_request("expected_revenue_usdc must be positive"));
+    }
+
+    let opportunity_id = format!("ro_{}", uuid::Uuid::new_v4().simple());
+    let payload_json = serde_json::to_string(&req.payload)
+        .map_err(|e| bad_request(format!("invalid payload: {e}")))?;
+    let new_opp = ironclad_db::service_revenue::NewRevenueOpportunity {
+        id: &opportunity_id,
+        source: &source,
+        strategy: &strategy,
+        payload_json: &payload_json,
+        expected_revenue_usdc: req.expected_revenue_usdc,
+        request_id: req.request_id.as_deref(),
+    };
+    ironclad_db::service_revenue::create_revenue_opportunity(&state.db, &new_opp)
+        .map_err(|e| internal_err(&e))?;
+
+    Ok(axum::Json(json!({
+        "opportunity_id": opportunity_id,
+        "status": ironclad_db::service_revenue::OPPORTUNITY_STATUS_INTAKE,
+        "source": source,
+        "strategy": strategy,
+        "expected_revenue_usdc": req.expected_revenue_usdc,
+    })))
+}
+
+pub async fn intake_micro_bounty_opportunity(
+    State(state): State<AppState>,
+    Json(req): Json<MicroBountyIntakeRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    // Shared lifecycle adapter: normalize micro-bounty into canonical intake.
+    let adapted = RevenueOpportunityIntakeRequest {
+        source: "micro_bounty_board".to_string(),
+        strategy: "micro_bounty".to_string(),
+        request_id: req.request_id,
+        expected_revenue_usdc: req.expected_revenue_usdc,
+        payload: req.payload,
+    };
+    intake_revenue_opportunity(State(state), Json(adapted)).await
+}
+
+pub async fn get_revenue_opportunity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, JsonError> {
+    let row = ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
+        .map_err(|e| internal_err(&e))?
+        .ok_or_else(|| not_found(format!("revenue opportunity '{}' not found", id)))?;
+    Ok(axum::Json(json!({
+        "id": row.id,
+        "source": row.source,
+        "strategy": row.strategy,
+        "payload": serde_json::from_str::<Value>(&row.payload_json).unwrap_or_else(|_| json!({"raw": row.payload_json})),
+        "expected_revenue_usdc": row.expected_revenue_usdc,
+        "status": row.status,
+        "qualification_reason": row.qualification_reason,
+        "plan": row.plan_json.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
+        "evidence": row.evidence_json.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
+        "request_id": row.request_id,
+        "settlement_ref": row.settlement_ref,
+        "settled_amount_usdc": row.settled_amount_usdc,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    })))
+}
+
+pub async fn qualify_revenue_opportunity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RevenueOpportunityQualifyRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let reason = req.reason.trim();
+    let updated = ironclad_db::service_revenue::qualify_revenue_opportunity(
+        &state.db,
+        &id,
+        req.approved,
+        if reason.is_empty() {
+            None
+        } else {
+            Some(reason)
+        },
+    )
+    .map_err(|e| internal_err(&e))?;
+    if !updated {
+        return Err(bad_request(
+            "revenue opportunity must be in intake state to qualify/reject",
+        ));
+    }
+    Ok(axum::Json(json!({
+        "opportunity_id": id,
+        "status": if req.approved {
+            ironclad_db::service_revenue::OPPORTUNITY_STATUS_QUALIFIED
+        } else {
+            ironclad_db::service_revenue::OPPORTUNITY_STATUS_REJECTED
+        },
+    })))
+}
+
+pub async fn plan_revenue_opportunity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RevenueOpportunityPlanRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let plan_json =
+        serde_json::to_string(&req.plan).map_err(|e| bad_request(format!("invalid plan: {e}")))?;
+    let updated =
+        ironclad_db::service_revenue::plan_revenue_opportunity(&state.db, &id, &plan_json)
+            .map_err(|e| internal_err(&e))?;
+    if !updated {
+        return Err(bad_request(
+            "revenue opportunity must be qualified before planning",
+        ));
+    }
+    Ok(axum::Json(json!({
+        "opportunity_id": id,
+        "status": ironclad_db::service_revenue::OPPORTUNITY_STATUS_PLANNED,
+    })))
+}
+
+pub async fn fulfill_revenue_opportunity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RevenueOpportunityFulfillRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let evidence_json = serde_json::to_string(&req.evidence)
+        .map_err(|e| bad_request(format!("invalid evidence: {e}")))?;
+    let updated = ironclad_db::service_revenue::mark_revenue_opportunity_fulfilled(
+        &state.db,
+        &id,
+        &evidence_json,
+    )
+    .map_err(|e| internal_err(&e))?;
+    if !updated {
+        return Err(bad_request(
+            "revenue opportunity must be planned before fulfillment",
+        ));
+    }
+    Ok(axum::Json(json!({
+        "opportunity_id": id,
+        "status": ironclad_db::service_revenue::OPPORTUNITY_STATUS_FULFILLED,
+    })))
+}
+
+pub async fn settle_revenue_opportunity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RevenueOpportunitySettleRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let settlement_ref = req.settlement_ref.trim();
+    if settlement_ref.is_empty() {
+        return Err(bad_request("settlement_ref cannot be empty"));
+    }
+    if req.amount_usdc <= 0.0 {
+        return Err(bad_request("amount_usdc must be positive"));
+    }
+    if !req.currency.eq_ignore_ascii_case("USDC") {
+        return Err(bad_request("only USDC settlement is supported in v0.9.5"));
+    }
+
+    let result = ironclad_db::service_revenue::settle_revenue_opportunity(
+        &state.db,
+        &id,
+        settlement_ref,
+        req.amount_usdc,
+    )
+    .map_err(|e| internal_err(&e))?;
+    if matches!(
+        result,
+        ironclad_db::service_revenue::SettlementResult::Settled
+    ) {
+        ironclad_db::metrics::record_transaction(
+            &state.db,
+            "revenue_settlement",
+            req.amount_usdc,
+            "USDC",
+            Some("revenue_control_plane"),
+            Some(settlement_ref),
+        )
+        .map_err(|e| internal_err(&e))?;
+    }
+
+    Ok(axum::Json(json!({
+        "opportunity_id": id,
+        "status": ironclad_db::service_revenue::OPPORTUNITY_STATUS_SETTLED,
+        "idempotent": matches!(
+            result,
+            ironclad_db::service_revenue::SettlementResult::AlreadySettled
+        ),
+    })))
+}
+
 pub async fn get_cache_stats(State(state): State<AppState>) -> impl IntoResponse {
     let llm = state.llm.read().await;
     let hits = llm.cache.hit_count() as u64;
@@ -1845,6 +2342,34 @@ fn derive_workspace_activity(
         return (Some(workstation), activity, Some(tool_name));
     }
 
+    // Subagents execute through delegated orchestration calls recorded under the
+    // orchestrator session. Attribute recent delegated tool activity back to the
+    // selected subagent so workspace animation reflects real delegated execution.
+    let latest_delegated: Option<(String, String)> = conn
+        .query_row(
+            "SELECT tc.tool_name, tc.created_at
+             FROM tool_calls tc
+             WHERE tc.output LIKE ('%delegated_subagent=' || ?1 || '%')
+             ORDER BY tc.created_at DESC
+             LIMIT 1",
+            [agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .inspect_err(|e| {
+            tracing::debug!(
+                error = %e,
+                subagent = %agent_id,
+                "failed to query delegated tool activity for workspace state"
+            )
+        })
+        .ok();
+    if let Some((tool_name, created_at)) = latest_delegated
+        && is_recent_activity(&created_at, now)
+    {
+        let (workstation, activity) = workstation_for_tool(&tool_name);
+        return (Some(workstation), activity, Some(tool_name));
+    }
+
     let latest_turn_created: Option<String> = conn
         .query_row(
             "SELECT t.created_at
@@ -1884,7 +2409,7 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
         json!({ "id": "blockchain", "name": "Blockchain",      "kind": "Blockchain",  "x": 0.82, "y": 0.78 }),
         json!({ "id": "web",        "name": "Web / APIs",      "kind": "Tool",        "x": 0.50, "y": 0.12 }),
         json!({ "id": "files",      "name": "File System",     "kind": "Tool",        "x": 0.50, "y": 0.88 }),
-        json!({ "id": "standby",    "name": "Standby Bay",     "kind": "Standby",     "x": 0.08, "y": 0.50 }),
+        json!({ "id": "shelter",    "name": "Shelter",         "kind": "Shelter",     "x": 0.035, "y": 0.50 }),
     ];
 
     let skills = ironclad_db::skills::list_skills(&state.db)
@@ -2096,19 +2621,12 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         let color = WORKSPACE_PALETTE[(i + 1) % WORKSPACE_PALETTE.len()];
         let fallback_models =
             crate::api::routes::subagents::parse_fallback_models_json(sa.fallback_models_json.as_deref());
-        // Merge per-agent skills with workspace-level enabled skills
-        let mut agent_skills: Vec<String> = sa.skills_json.as_ref().map(|s| {
+        let fixed_skills: Vec<String> = sa.skills_json.as_ref().map(|s| {
             serde_json::from_str::<Vec<String>>(s).unwrap_or_else(|e| {
                 tracing::warn!(agent = %sa.name, error = %e, "corrupt skills_json, defaulting to []");
                 Vec::new()
             })
         }).unwrap_or_default();
-        for ws_skill in &enabled_skills {
-            let ws = ws_skill.to_string();
-            if !agent_skills.iter().any(|s| s == &ws) {
-                agent_skills.push(ws);
-            }
-        }
         json!({
             "id": sa.id,
             "name": sa.name,
@@ -2123,7 +2641,9 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
             "state": state_str,
             "session_count": session_counts.get(&sa.name).copied().unwrap_or(sa.session_count),
             "description": sa.description,
-            "skills": agent_skills,
+            "skills": fixed_skills.clone(),
+            "fixed_skills": fixed_skills,
+            "shared_skills": enabled_skills.clone(),
             "supervisor": config.agent.id,
         })
     }).collect();
@@ -2254,6 +2774,7 @@ pub async fn change_agent_model(
                     format!("agent '{agent_name}' not found"),
                 )
             })?;
+        crate::api::routes::subagents::validate_subagent_model_for_role(&existing.role, &model)?;
         old_model = existing.model.clone();
         let mut updated = existing.clone();
         updated.model = model.clone();
@@ -3105,11 +3626,47 @@ pub async fn get_routing_diagnostics(State(state): State<AppState>) -> impl Into
         &llm_read.breakers,
     );
 
+    // Trace-backed confidence inputs from executed turns (selected model -> observed quality).
+    let trace_quality_by_model: HashMap<String, (i64, Option<f64>)> = {
+        let conn = state.db.conn();
+        let mut map = HashMap::new();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT mse.selected_model, COUNT(*) AS obs, AVG(ic.quality_score) AS avg_quality
+             FROM model_selection_events mse
+             INNER JOIN inference_costs ic ON ic.turn_id = mse.turn_id
+             WHERE ic.quality_score IS NOT NULL
+             GROUP BY mse.selected_model",
+        ) && let Ok(rows) = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Option<f64>>(2)?,
+            ))
+        }) {
+            for (model, obs, avg_quality) in rows.flatten() {
+                map.insert(model, (obs, avg_quality));
+            }
+        }
+        map
+    };
+
     // Compute metascores at a representative complexity (0.5 = medium).
     let profile_diagnostics: Vec<Value> = profiles
         .iter()
         .map(|p| {
             let breakdown = p.metascore_with_cost_weight(0.5, cost_aware, cost_weight);
+            let (trace_obs, trace_avg_quality) = trace_quality_by_model
+                .get(&p.model_name)
+                .copied()
+                .unwrap_or((0, None));
+            let confidence_trace_backed =
+                trace_obs >= accuracy_min_obs as i64 && trace_avg_quality.is_some();
+            let confidence = if confidence_trace_backed {
+                let observed = trace_avg_quality.unwrap_or(0.0).clamp(0.0, 1.0);
+                Some(((breakdown.confidence + observed) / 2.0).clamp(0.0, 1.0))
+            } else {
+                None
+            };
             json!({
                 "model": p.model_name,
                 "is_local": p.is_local,
@@ -3125,7 +3682,11 @@ pub async fn get_routing_diagnostics(State(state): State<AppState>) -> impl Into
                     "cost": breakdown.cost,
                     "availability": breakdown.availability,
                     "locality": breakdown.locality,
-                    "confidence": breakdown.confidence,
+                    "confidence": confidence,
+                    "confidence_raw": breakdown.confidence,
+                    "confidence_trace_backed": confidence_trace_backed,
+                    "confidence_trace_observations": trace_obs,
+                    "confidence_trace_avg_quality": trace_avg_quality,
                 },
                 "blocked_by_config": blocked_models.contains(&p.model_name),
             })
