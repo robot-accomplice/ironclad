@@ -147,7 +147,10 @@ impl Browser {
             }
         };
 
-        if initial.success || !should_attempt_session_recovery(&initial) {
+        if initial.success
+            || !should_attempt_session_recovery(action, &initial)
+            || !is_idempotent_recovery_action(action)
+        {
             return initial;
         }
 
@@ -184,7 +187,10 @@ impl Browser {
     }
 }
 
-fn should_attempt_session_recovery(result: &actions::ActionResult) -> bool {
+fn should_attempt_session_recovery(
+    _action: &actions::BrowserAction,
+    result: &actions::ActionResult,
+) -> bool {
     if result.success {
         return false;
     }
@@ -201,6 +207,21 @@ fn should_attempt_session_recovery(result: &actions::ActionResult) -> bool {
         || e.contains("broken pipe")
         || e.contains("cdp read error")
         || e.contains("cdp send failed")
+}
+
+fn is_idempotent_recovery_action(action: &actions::BrowserAction) -> bool {
+    matches!(
+        action,
+        actions::BrowserAction::Navigate { .. }
+            | actions::BrowserAction::Screenshot
+            | actions::BrowserAction::Pdf
+            | actions::BrowserAction::Evaluate { .. }
+            | actions::BrowserAction::GetCookies
+            | actions::BrowserAction::ReadPage
+            | actions::BrowserAction::GoBack
+            | actions::BrowserAction::GoForward
+            | actions::BrowserAction::Reload
+    )
 }
 
 /// Thread-safe wrapper for shared ownership.
@@ -359,25 +380,52 @@ mod tests {
 
     #[test]
     fn session_recovery_detection_for_disconnect_signatures() {
+        let action = actions::BrowserAction::Navigate {
+            url: "https://example.com".to_string(),
+        };
         let recoverable =
             actions::ActionResult::err("Navigate", "CDP WebSocket closed unexpectedly".to_string());
-        assert!(should_attempt_session_recovery(&recoverable));
+        assert!(should_attempt_session_recovery(&action, &recoverable));
 
         let non_recoverable =
             actions::ActionResult::err("Navigate", "browser not started".to_string());
-        assert!(!should_attempt_session_recovery(&non_recoverable));
+        assert!(!should_attempt_session_recovery(&action, &non_recoverable));
     }
 
     #[test]
     fn session_recovery_detection_ignores_policy_errors() {
+        let action = actions::BrowserAction::Navigate {
+            url: "https://example.com".to_string(),
+        };
         let blocked = actions::ActionResult::err(
             "Navigate",
             "URL scheme is blocked for security: file:///etc/passwd".to_string(),
         );
         assert!(
-            !should_attempt_session_recovery(&blocked),
+            !should_attempt_session_recovery(&action, &blocked),
             "security/policy denials should not trigger recovery loops"
         );
+    }
+
+    #[test]
+    fn session_recovery_replay_is_limited_to_idempotent_actions() {
+        assert!(is_idempotent_recovery_action(
+            &actions::BrowserAction::ReadPage
+        ));
+        assert!(!is_idempotent_recovery_action(
+            &actions::BrowserAction::Click {
+                selector: "#submit".to_string(),
+            }
+        ));
+        assert!(!is_idempotent_recovery_action(
+            &actions::BrowserAction::Type {
+                selector: "input".to_string(),
+                text: "abc".to_string(),
+            }
+        ));
+        assert!(!is_idempotent_recovery_action(
+            &actions::BrowserAction::ClearCookies
+        ));
     }
 
     #[test]

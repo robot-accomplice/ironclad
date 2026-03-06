@@ -386,6 +386,21 @@ mod tests {
     }
 
     #[test]
+    fn speculation_policy_gate_never_allows_approval_or_forbidden_risks() {
+        let risky = [
+            ironclad_core::RiskLevel::Caution,
+            ironclad_core::RiskLevel::Dangerous,
+            ironclad_core::RiskLevel::Forbidden,
+        ];
+        for risk in risky {
+            assert!(
+                !is_safe_for_speculation(&risk),
+                "speculative execution must remain Safe-only; got {risk:?}"
+            );
+        }
+    }
+
+    #[test]
     fn predictions_sorted_by_confidence() {
         let predictor = ToolPredictor::new(0.3);
         let recent = vec!["list_directory".to_string()];

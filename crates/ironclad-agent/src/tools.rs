@@ -401,6 +401,25 @@ impl ScriptRunnerTool {
     }
 }
 
+fn classify_script_runner_error(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("timed out") {
+        "SCRIPT_TIMEOUT"
+    } else if lower.contains("absolute script paths are not allowed")
+        || lower.contains("escapes skills_dir")
+        || lower.contains("not a file")
+        || lower.contains("world-writable")
+    {
+        "SCRIPT_PATH_INVALID"
+    } else if lower.contains("not in whitelist") || lower.contains("cannot infer interpreter") {
+        "SCRIPT_INTERPRETER_DENIED"
+    } else if lower.contains("failed to spawn") {
+        "SCRIPT_SPAWN_FAILED"
+    } else {
+        "SCRIPT_RUNTIME_ERROR"
+    }
+}
+
 #[async_trait]
 impl Tool for ScriptRunnerTool {
     fn name(&self) -> &str {
@@ -456,7 +475,7 @@ impl Tool for ScriptRunnerTool {
                 if result.exit_code != 0 {
                     return Err(ToolError {
                         message: format!(
-                            "script exited with code {}: {}",
+                            "SCRIPT_EXIT_NONZERO: script exited with code {}: {}",
                             result.exit_code, result.stderr
                         ),
                     });
@@ -464,14 +483,22 @@ impl Tool for ScriptRunnerTool {
                 Ok(ToolResult {
                     output: result.stdout,
                     metadata: Some(serde_json::json!({
+                        "adapter": "script_runner",
+                        "schema_version": 1,
+                        "status": "ok",
+                        "error_class": null,
                         "exit_code": result.exit_code,
                         "duration_ms": result.duration_ms,
                     })),
                 })
             }
-            Err(e) => Err(ToolError {
-                message: e.to_string(),
-            }),
+            Err(e) => {
+                let msg = e.to_string();
+                let class = classify_script_runner_error(&msg);
+                Err(ToolError {
+                    message: format!("{class}: {msg}"),
+                })
+            }
         }
     }
 }
@@ -2600,6 +2627,59 @@ mod tests {
         assert_eq!(tool.risk_level(), RiskLevel::Caution);
     }
 
+    #[test]
+    fn script_runner_error_classification() {
+        assert_eq!(
+            classify_script_runner_error("script timed out after 30s"),
+            "SCRIPT_TIMEOUT"
+        );
+        assert_eq!(
+            classify_script_runner_error("absolute script paths are not allowed"),
+            "SCRIPT_PATH_INVALID"
+        );
+        assert_eq!(
+            classify_script_runner_error("interpreter 'ruby' not in whitelist"),
+            "SCRIPT_INTERPRETER_DENIED"
+        );
+        assert_eq!(
+            classify_script_runner_error("failed to spawn bash"),
+            "SCRIPT_SPAWN_FAILED"
+        );
+        assert_eq!(
+            classify_script_runner_error("some generic failure"),
+            "SCRIPT_RUNTIME_ERROR"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_script_tool_success_metadata_is_typed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("ok.sh");
+        std::fs::write(&script_path, "#!/bin/bash\necho ok").unwrap();
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let cfg = SkillsConfig {
+            skills_dir: dir.path().to_path_buf(),
+            allowed_interpreters: vec!["bash".to_string()],
+            ..Default::default()
+        };
+        let tool = ScriptRunnerTool::new(cfg);
+        let ctx = test_ctx();
+        let out = tool
+            .execute(serde_json::json!({"path": "ok.sh"}), &ctx)
+            .await
+            .unwrap();
+        let meta = out.metadata.expect("metadata expected");
+        assert_eq!(meta["adapter"], "script_runner");
+        assert_eq!(meta["schema_version"], 1);
+        assert_eq!(meta["status"], "ok");
+        assert!(meta["error_class"].is_null());
+        assert_eq!(meta["exit_code"], 0);
+        assert!(meta["duration_ms"].is_u64());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn run_script_tool_nonzero_exit_is_error() {
@@ -2621,6 +2701,7 @@ mod tests {
             .execute(serde_json::json!({"path": "fail.sh"}), &ctx)
             .await
             .unwrap_err();
+        assert!(err.message.starts_with("SCRIPT_EXIT_NONZERO:"));
         assert!(err.message.contains("script exited with code 7"));
     }
 
