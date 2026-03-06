@@ -563,11 +563,32 @@ pub(super) fn strip_internal_delegation_metadata(content: &str) -> String {
         .trim()
         .to_string();
     if filtered.is_empty() {
-        "I suppressed internal execution metadata. Ask for the user-facing result and I will return it plainly."
+        "I suppressed internal execution metadata and will continue with a plain user-facing result."
             .to_string()
     } else {
         filtered
     }
+}
+
+pub(super) fn enforce_internal_protocol_guard(response: String, agent_name: &str) -> String {
+    let lower = response.to_ascii_lowercase();
+    if !lower.contains("\"tool_call\"")
+        && !lower.contains("unexecuted_streaming_tool_call")
+        && !lower.contains("delegated_subagent=")
+        && !lower.contains("selected_subagent=")
+        && !lower.contains("subtask ")
+    {
+        return response;
+    }
+
+    let stripped = strip_internal_delegation_metadata(&response);
+    if stripped.starts_with("I suppressed internal execution metadata") {
+        return format!(
+            "{} here. I filtered internal execution protocol and will continue with user-facing output only.",
+            agent_name
+        );
+    }
+    stripped
 }
 
 // ── Scope validation ──────────────────────────────────────────

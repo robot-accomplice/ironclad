@@ -18,7 +18,8 @@ use super::decomposition::DelegationProvenance;
 use super::diagnostics::{collect_runtime_diagnostics, diagnostics_system_note};
 use super::guards::{
     enforce_current_events_truth_guard, enforce_execution_truth_guard,
-    enforce_internal_jargon_guard, enforce_model_identity_truth_guard, enforce_non_repetition,
+    enforce_internal_jargon_guard, enforce_internal_protocol_guard,
+    enforce_model_identity_truth_guard, enforce_non_repetition,
     enforce_personality_integrity_guard, enforce_subagent_claim_guard, is_low_value_response,
     is_overbroad_sensitive_conflict_refusal, is_parroting_user_prompt,
 };
@@ -1870,6 +1871,11 @@ pub(super) async fn run_inference_and_react(
         }
     }
 
+    final_content = enforce_internal_protocol_guard(final_content, &agent_name);
+    if final_content.contains("filtered internal execution protocol") {
+        final_content = deterministic_quality_fallback(user_prompt, &agent_name);
+    }
+
     InferenceOutput {
         content: final_content,
         model: resolved_model,
@@ -2074,6 +2080,12 @@ pub(super) async fn execute_inference_pipeline(
             &cached.model,
         );
         let cached_content = enforce_internal_jargon_guard(cached_content, &agent_name);
+        let cached_content = enforce_internal_protocol_guard(cached_content, &agent_name);
+        let cached_content = if cached_content.contains("filtered internal execution protocol") {
+            deterministic_quality_fallback(user_content, &agent_name)
+        } else {
+            cached_content
+        };
         let guarded_cached_content = enforce_non_repetition(
             user_content,
             cached_content,
