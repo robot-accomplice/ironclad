@@ -1847,6 +1847,34 @@ fn derive_workspace_activity(
         return (Some(workstation), activity, Some(tool_name));
     }
 
+    // Subagents execute through delegated orchestration calls recorded under the
+    // orchestrator session. Attribute recent delegated tool activity back to the
+    // selected subagent so workspace animation reflects real delegated execution.
+    let latest_delegated: Option<(String, String)> = conn
+        .query_row(
+            "SELECT tc.tool_name, tc.created_at
+             FROM tool_calls tc
+             WHERE tc.output LIKE ('%delegated_subagent=' || ?1 || '%')
+             ORDER BY tc.created_at DESC
+             LIMIT 1",
+            [agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .inspect_err(|e| {
+            tracing::debug!(
+                error = %e,
+                subagent = %agent_id,
+                "failed to query delegated tool activity for workspace state"
+            )
+        })
+        .ok();
+    if let Some((tool_name, created_at)) = latest_delegated
+        && is_recent_activity(&created_at, now)
+    {
+        let (workstation, activity) = workstation_for_tool(&tool_name);
+        return (Some(workstation), activity, Some(tool_name));
+    }
+
     let latest_turn_created: Option<String> = conn
         .query_row(
             "SELECT t.created_at
@@ -1886,7 +1914,7 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
         json!({ "id": "blockchain", "name": "Blockchain",      "kind": "Blockchain",  "x": 0.82, "y": 0.78 }),
         json!({ "id": "web",        "name": "Web / APIs",      "kind": "Tool",        "x": 0.50, "y": 0.12 }),
         json!({ "id": "files",      "name": "File System",     "kind": "Tool",        "x": 0.50, "y": 0.88 }),
-        json!({ "id": "standby",    "name": "Standby Bay",     "kind": "Standby",     "x": 0.08, "y": 0.50 }),
+        json!({ "id": "shelter",    "name": "Shelter",         "kind": "Shelter",     "x": 0.035, "y": 0.50 }),
     ];
 
     let skills = ironclad_db::skills::list_skills(&state.db)
@@ -2098,19 +2126,12 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
         let color = WORKSPACE_PALETTE[(i + 1) % WORKSPACE_PALETTE.len()];
         let fallback_models =
             crate::api::routes::subagents::parse_fallback_models_json(sa.fallback_models_json.as_deref());
-        // Merge per-agent skills with workspace-level enabled skills
-        let mut agent_skills: Vec<String> = sa.skills_json.as_ref().map(|s| {
+        let fixed_skills: Vec<String> = sa.skills_json.as_ref().map(|s| {
             serde_json::from_str::<Vec<String>>(s).unwrap_or_else(|e| {
                 tracing::warn!(agent = %sa.name, error = %e, "corrupt skills_json, defaulting to []");
                 Vec::new()
             })
         }).unwrap_or_default();
-        for ws_skill in &enabled_skills {
-            let ws = ws_skill.to_string();
-            if !agent_skills.iter().any(|s| s == &ws) {
-                agent_skills.push(ws);
-            }
-        }
         json!({
             "id": sa.id,
             "name": sa.name,
@@ -2125,7 +2146,9 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
             "state": state_str,
             "session_count": session_counts.get(&sa.name).copied().unwrap_or(sa.session_count),
             "description": sa.description,
-            "skills": agent_skills,
+            "skills": fixed_skills.clone(),
+            "fixed_skills": fixed_skills,
+            "shared_skills": enabled_skills.clone(),
             "supervisor": config.agent.id,
         })
     }).collect();

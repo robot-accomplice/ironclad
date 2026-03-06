@@ -5848,7 +5848,7 @@
         { id: 'blockchain', name: 'Blockchain', kind: 'Blockchain', x: 0.82, y: 0.78 },
         { id: 'web', name: 'Web / APIs', kind: 'Tool', x: 0.50, y: 0.12 },
         { id: 'files', name: 'File System', kind: 'Tool', x: 0.50, y: 0.88 },
-        { id: 'standby', name: 'Standby Bay', kind: 'Standby', x: 0.08, y: 0.50 }
+        { id: 'shelter', name: 'Shelter', kind: 'Shelter', x: 0.035, y: 0.50 }
       ];
     }
     var self = this;
@@ -5902,7 +5902,7 @@
         existing.activeSkill = incoming.active_skill || null;
         existing.currentStation = incoming.current_workstation || existing.currentStation || null;
         var runtimeActive = this._isRuntimeActive(existing.activity);
-        var stationedActive = !!existing.currentStation && existing.currentStation !== 'standby';
+        var stationedActive = !!existing.currentStation && existing.currentStation !== 'standby' && existing.currentStation !== 'shelter';
         if (existing.animState !== 'walking') existing.animState = (existing.activeSkill || runtimeActive || stationedActive) ? 'working' : 'idle';
       }
       var st = this._stationById(existing.currentStation);
@@ -5929,7 +5929,7 @@
   WorkspaceEngine.prototype.layoutStandby = function() {
     var standby = this.stations.find(function(s) {
       var k = (s.kind || '').toLowerCase();
-      return s.id === 'standby' || k === 'standby';
+      return s.id === 'shelter' || s.id === 'standby' || k === 'shelter' || k === 'standby';
     });
     if (!standby) return;
     var idleBots = this.bots.filter(function(b) {
@@ -5940,14 +5940,14 @@
     var yGap = 0.06;
     for (var i = 0; i < idleBots.length; i++) {
       var b = idleBots[i];
-      if (b.currentStation && b.currentStation !== 'standby') continue;
+      if (b.currentStation && b.currentStation !== 'standby' && b.currentStation !== 'shelter') continue;
       var col = i % cols;
       var row = Math.floor(i / cols);
       var x = standby.x + (col === 0 ? -xGap : xGap);
       var y = standby.y - 0.06 + row * yGap;
-      b.targetX = Math.max(0.05, Math.min(0.18, x));
+      b.targetX = Math.max(0.005, Math.min(0.13, x));
       b.targetY = Math.max(0.2, Math.min(0.85, y));
-      b.currentStation = 'standby';
+      b.currentStation = 'shelter';
     }
   };
 
@@ -6017,7 +6017,7 @@
       var ws = this.stations.find(function(s) { return s.id === bot.currentStation; });
       return ws ? ('Working at ' + ws.name + '.') : 'Working on a task.';
     }
-    if (bot.currentStation === 'standby') return 'Idle in the standby bay, waiting for work.';
+    if (bot.currentStation === 'standby' || bot.currentStation === 'shelter') return 'Idle in the shelter, waiting for work.';
     if (bot.animState === 'walking') return 'Moving to the next workstation.';
     return 'Idle and waiting for the next task.';
   };
@@ -6102,7 +6102,7 @@
       else { bot.skillFade = Math.max(0, bot.skillFade - dt * 2); }
       if (bot.animState !== 'walking') {
         var runtimeActive = self._isRuntimeActive(bot.activity);
-        var stationedActive = !!bot.currentStation && bot.currentStation !== 'standby';
+        var stationedActive = !!bot.currentStation && bot.currentStation !== 'standby' && bot.currentStation !== 'shelter';
         bot.animState = (bot.activeSkill || runtimeActive || stationedActive) ? 'working' : 'idle';
       }
     });
@@ -6181,7 +6181,7 @@
         ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-22, -18, 44, 34, 4); ctx.fill(); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.12)'; ctx.fillRect(-22, -18, 44, 8); ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(-16, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#eab308'; ctx.beginPath(); ctx.arc(-10, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(-4, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.6)'; ctx.font = 'bold 8px monospace'; ctx.textAlign = 'left'; ctx.fillText('$_', -17, -2); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.25)'; ctx.fillRect(-8, -6, 20 * pulse, 2); ctx.fillRect(-17, 3, 26, 1.5); ctx.fillRect(-17, 8, 18, 1.5); if (Math.sin(self.time * 4) > 0) { ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.8)'; ctx.fillRect(-10, -6, 6, 8); }
       } else if (kind === 'blockchain') {
         ctx.save(); var hexR = 16; ctx.beginPath(); for (var hi = 0; hi < 6; hi++) { var angle = Math.PI / 6 + hi * Math.PI / 3; var hx = Math.cos(angle) * hexR, hy = Math.sin(angle) * hexR; if (hi === 0) ctx.moveTo(hx, hy); else ctx.lineTo(hx, hy); } ctx.closePath(); ctx.fillStyle = tc.surface; ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.35 + 0.15 * pulse) + ')'; ctx.lineWidth = 1.5; ctx.stroke(); var innerR = 10; ctx.beginPath(); for (var hi = 0; hi < 6; hi++) { var angle = Math.PI / 6 + hi * Math.PI / 3; ctx.lineTo(Math.cos(angle) * innerR, Math.sin(angle) * innerR); } ctx.closePath(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.2)'; ctx.lineWidth = 1; ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.5 + 0.3 * pulse) + ')'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('\u25c8', 0, 0); ctx.restore();
-      } else if (kind === 'standby') {
+      } else if (kind === 'standby' || kind === 'shelter') {
         ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.35)'; ctx.lineWidth = 1.2;
         ctx.beginPath(); ctx.roundRect(-24, -12, 48, 24, 6); ctx.fill(); ctx.stroke();
         ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.16)';
@@ -6190,6 +6190,22 @@
         ctx.beginPath(); ctx.arc(-10, 2, 3, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.arc(0, 2, 3, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.arc(10, 2, 3, 0, Math.PI * 2); ctx.fill();
+        var sheltered = self.bots.filter(function(b) {
+          var idle = !b.activeSkill && (b.animState === 'idle' || b.animState === 'walking');
+          return idle && (b.currentStation === 'shelter' || b.currentStation === 'standby');
+        }).length;
+        var badge = String(sheltered);
+        ctx.font = 'bold 9px ' + getComputedStyle(document.body).fontFamily;
+        var badgeW = Math.max(14, ctx.measureText(badge).width + 8);
+        ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.22)';
+        ctx.beginPath(); ctx.roundRect(14, -22, badgeW, 12, 6); ctx.fill();
+        ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.45)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.roundRect(14, -22, badgeW, 12, 6); ctx.stroke();
+        ctx.fillStyle = tc.text;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badge, 14 + badgeW / 2, -16);
       } else {
         ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.3)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-22, -18, 44, 34, 4); ctx.fill(); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.1)'; ctx.fillRect(-22, -18, 44, 9); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.25)'; ctx.beginPath(); ctx.arc(-17, -13.5, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(-12, -13.5, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.3 + 0.15 * pulse) + ')'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 3, 9, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.ellipse(0, 3, 4, 9, 0, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-9, 3); ctx.lineTo(9, 3); ctx.stroke();
       }
