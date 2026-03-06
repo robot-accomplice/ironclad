@@ -5807,6 +5807,13 @@
     return this.stations.find(function(s) { return s.id === id; }) || null;
   };
 
+  WorkspaceEngine.prototype._idleWarehouseStation = function() {
+    return this.stations.find(function(s) {
+      var k = (s.kind || '').toLowerCase();
+      return s.id === 'shelter' || s.id === 'standby' || k === 'shelter' || k === 'standby';
+    }) || null;
+  };
+
   WorkspaceEngine.prototype._isRuntimeActive = function(activity) {
     var a = (activity || '').toLowerCase();
     return a === 'inference' || a === 'working' || a === 'tool_execution' || a === 'tooling' || a === 'moving' || a === 'walking' || a === 'talking';
@@ -5848,7 +5855,7 @@
         { id: 'blockchain', name: 'Blockchain', kind: 'Blockchain', x: 0.82, y: 0.78 },
         { id: 'web', name: 'Web / APIs', kind: 'Tool', x: 0.50, y: 0.12 },
         { id: 'files', name: 'File System', kind: 'Tool', x: 0.50, y: 0.88 },
-        { id: 'shelter', name: 'Shelter', kind: 'Shelter', x: 0.035, y: 0.50 }
+        { id: 'shelter', name: 'Idle Bots Warehouse', kind: 'Shelter', x: 0.035, y: 0.50 }
       ];
     }
     var self = this;
@@ -5927,10 +5934,7 @@
   };
 
   WorkspaceEngine.prototype.layoutStandby = function() {
-    var standby = this.stations.find(function(s) {
-      var k = (s.kind || '').toLowerCase();
-      return s.id === 'shelter' || s.id === 'standby' || k === 'shelter' || k === 'standby';
-    });
+    var standby = this._idleWarehouseStation();
     if (!standby) return;
     var idleBots = this.bots.filter(function(b) {
       return !b.activeSkill && (b.animState === 'idle' || b.animState === 'walking');
@@ -6265,9 +6269,21 @@
     });
 
     this.tethers.forEach(function(t) {
+      var subordinateActive = !!t.to && (
+        !!t.to.activeSkill ||
+        self._isRuntimeActive(t.to.activity) ||
+        t.to.animState === 'working' ||
+        t.to.animState === 'walking' ||
+        !!(t.to.currentStation && t.to.currentStation !== 'standby' && t.to.currentStation !== 'shelter')
+      );
+      if (!subordinateActive) return;
+      var fromX = t.from.x * W;
+      var fromY = t.from.y * H;
+      var toX = t.to.x * W;
+      var toY = t.to.y * H;
       ctx.save(); ctx.setLineDash([4, 6]); ctx.lineDashOffset = -self.time * 15;
       ctx.strokeStyle = t.color + '25'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(t.from.x * W, t.from.y * H); ctx.lineTo(t.to.x * W, t.to.y * H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(fromX, fromY); ctx.lineTo(toX, toY); ctx.stroke();
       ctx.setLineDash([]); ctx.restore();
     });
 

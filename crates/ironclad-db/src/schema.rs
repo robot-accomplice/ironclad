@@ -809,8 +809,8 @@ mod tests {
         let count = table_count(&db).unwrap();
         // 30 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback
         // + context_snapshots + model_selection_events + abuse_events
-        // + shadow_routing_predictions (v0.9.4) = 36
-        assert_eq!(count, 36, "expected 36 user-defined tables, got {count}");
+        // + shadow_routing_predictions (v0.9.4) + service_requests (v0.9.5) = 37
+        assert_eq!(count, 37, "expected 37 user-defined tables, got {count}");
     }
 
     #[test]
@@ -819,7 +819,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 36);
+        assert_eq!(count, 37);
     }
 
     #[test]

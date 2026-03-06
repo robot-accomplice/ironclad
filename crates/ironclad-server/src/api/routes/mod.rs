@@ -5089,7 +5089,12 @@ params = { path = "README.md" }
         let msgs = sent.lock().await.clone();
         assert_eq!(msgs.len(), 2);
         assert!(msgs[0].contains("System status unchanged"));
-        assert!(msgs[1].contains("fresh check now"));
+        assert!(!msgs[1].trim().is_empty());
+        assert_ne!(msgs[1], msgs[0], "second channel reply should be rewritten");
+        assert!(
+            !msgs[1].contains("System status unchanged"),
+            "second reply should avoid verbatim repetition"
+        );
 
         mock_task.abort();
     }
