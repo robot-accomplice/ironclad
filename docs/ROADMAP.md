@@ -334,6 +334,8 @@ Both skills: register as tools in the `ToolRegistry` so the agent can invoke the
 
 **Current state**: Routing knobs exist in config (`accuracy_floor`, `cost_weight`, `confidence_threshold`), but operators cannot tune tradeoffs quickly from the dashboard, and model-routing continuity is hard to inspect visually.
 
+**v0.9.5 prep update (2026-03-06)**: Runtime continuity tuning is in progress and validated in live source soak. Inference fallback budgets were widened and per-hop timeout reduced to improve continuity under provider latency spikes, with fallback ordering adjusted for known healthy paths in operator environments.
+
 **Target**: Add a dashboard control surface with correctness/cost/speed sliders and a spider graph, plus an explorable graph of recent model-routing transitions.
 
 **Builds on**: `/api/config` runtime apply path, `GET /api/models/selections`, `GET /api/models/routing-diagnostics`, websocket telemetry (`model_selection`, `model_shift`).

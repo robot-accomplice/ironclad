@@ -510,15 +510,15 @@ pub(super) struct InferenceBudget {
 }
 
 pub(super) const INTERACTIVE_INFERENCE_BUDGET: InferenceBudget = InferenceBudget {
-    max_fallback_attempts: 4,
-    max_total_inference_time: Duration::from_secs(45),
-    per_provider_timeout: Duration::from_secs(25),
+    max_fallback_attempts: 6,
+    max_total_inference_time: Duration::from_secs(75),
+    per_provider_timeout: Duration::from_secs(15),
 };
 
 pub(super) const DELEGATED_INFERENCE_BUDGET: InferenceBudget = InferenceBudget {
-    max_fallback_attempts: 5,
-    max_total_inference_time: Duration::from_secs(80),
-    per_provider_timeout: Duration::from_secs(20),
+    max_fallback_attempts: 6,
+    max_total_inference_time: Duration::from_secs(110),
+    per_provider_timeout: Duration::from_secs(18),
 };
 
 /// Attempt inference on the selected model, falling back through the configured
