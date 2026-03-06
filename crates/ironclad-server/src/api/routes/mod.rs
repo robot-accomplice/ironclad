@@ -1503,6 +1503,33 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn create_cron_job_persists_description_field() {
+        let state = test_state();
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/cron/jobs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"name":"morning-briefing","description":"summarize overnight events","agent_id":"test","schedule_kind":"cron","schedule_expr":"0 9 * * *"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let job_id = body["job_id"].as_str().unwrap().to_string();
+
+        let job = ironclad_db::cron::get_job(&state.db, &job_id)
+            .unwrap()
+            .expect("job should exist");
+        assert_eq!(
+            job.description.as_deref(),
+            Some("summarize overnight events")
+        );
+    }
+
+    #[tokio::test]
     async fn get_cron_job_returns_detail() {
         let state = test_state();
         let job_id = ironclad_db::cron::create_job(

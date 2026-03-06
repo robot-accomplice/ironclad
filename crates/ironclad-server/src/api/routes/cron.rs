@@ -5,11 +5,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{AppState, JsonError, bad_request, internal_err, not_found, validate_short};
+use super::{AppState, JsonError, bad_request, internal_err, not_found, validate_long, validate_short};
 
 #[derive(Deserialize)]
 pub struct CreateCronJobRequest {
     pub name: String,
+    pub description: Option<String>,
     pub agent_id: Option<String>,
     pub schedule_kind: String,
     #[serde(alias = "schedule")]
@@ -40,6 +41,7 @@ pub struct CronRunItem {
 #[derive(Deserialize)]
 pub struct UpdateCronJobRequest {
     pub name: Option<String>,
+    pub description: Option<String>,
     pub schedule_kind: Option<String>,
     pub schedule_expr: Option<String>,
     pub enabled: Option<bool>,
@@ -78,6 +80,9 @@ pub async fn create_cron_job(
     axum::Json(body): axum::Json<CreateCronJobRequest>,
 ) -> impl IntoResponse {
     validate_short("name", &body.name)?;
+    if let Some(ref d) = body.description {
+        validate_long("description", d)?;
+    }
     if let Some(ref a) = body.agent_id {
         validate_short("agent_id", a)?;
     }
@@ -142,7 +147,15 @@ pub async fn create_cron_job(
         schedule_expr.as_deref(),
         &payload,
     ) {
-        Ok(id) => Ok(axum::Json(serde_json::json!({ "job_id": id }))),
+        Ok(id) => {
+            let desc = body.description.as_deref().map(str::trim);
+            if let Some(d) = desc {
+                if !d.is_empty() {
+                    let _ = ironclad_db::cron::update_job_description(&state.db, &id, Some(d));
+                }
+            }
+            Ok(axum::Json(serde_json::json!({ "job_id": id })))
+        }
         Err(e) => Err(internal_err(&e)),
     }
 }
@@ -232,6 +245,9 @@ pub async fn update_cron_job(
         .as_deref()
         .map(normalize_schedule_kind)
         .map(str::to_string);
+    if let Some(ref d) = body.description {
+        validate_long("description", d)?;
+    }
     let schedule_expr = normalize_schedule_expr(
         schedule_kind
             .as_deref()
@@ -247,8 +263,24 @@ pub async fn update_cron_job(
         schedule_expr.as_deref(),
         body.enabled,
     ) {
-        Ok(true) => Ok(axum::Json(serde_json::json!({ "updated": true, "id": id }))),
-        Ok(false) => Err(not_found(format!("cron job {id} not found"))),
+        Ok(base_updated) => {
+            let mut updated = base_updated;
+            if body.description.is_some() {
+                let desc = body.description.as_deref().map(str::trim);
+                let changed = ironclad_db::cron::update_job_description(
+                    &state.db,
+                    &id,
+                    desc.filter(|d| !d.is_empty()),
+                )
+                .map_err(|e| internal_err(&e))?;
+                updated = updated || changed;
+            }
+            if updated {
+                Ok(axum::Json(serde_json::json!({ "updated": true, "id": id })))
+            } else {
+                Err(not_found(format!("cron job {id} not found")))
+            }
+        }
         Err(e) => Err(internal_err(&e)),
     }
 }

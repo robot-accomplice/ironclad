@@ -5380,7 +5380,7 @@
     var editBtn = e.target.closest('[data-cal-edit]');
     if (editBtn) {
       var idx = Number(editBtn.getAttribute('data-cal-edit')); var j = _cachedCronJobs[idx];
-      if (j) { App._calModalMode = 'edit'; App._calEditJob = { name: j.name, description: App._cronIntentFromJob(j), schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
+      if (j) { App._calModalMode = 'edit'; App._calEditJob = { name: j.name, description: (j.description || App._cronIntentFromJob(j) || ''), schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
       return;
     }
     var delBtn = e.target.closest('[data-cal-delete]');
@@ -5401,7 +5401,7 @@
       var sched = App._readSchedFromUI(); var cron = App._schedToCron(sched);
       var descEl = document.getElementById('cal-job-description'); var intent = (descEl && descEl.value || '').trim();
       var payloadObj = { action: 'log', message: intent || ('scheduled job: ' + name) };
-      var jobData = { name: name, schedule_kind: cron.kind, schedule_expr: cron.expr, payload_json: JSON.stringify(payloadObj), agent_id: App._activeAgentId || 'ironclad' };
+      var jobData = { name: name, description: intent || null, schedule_kind: cron.kind, schedule_expr: cron.expr, payload_json: JSON.stringify(payloadObj), agent_id: App._activeAgentId || 'ironclad' };
       if (App._calModalMode === 'add') {
         api('/api/cron/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jobData) }).then(function() { toast('Added "' + name + '"'); App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Add failed'); });
       } else {
@@ -5422,7 +5422,7 @@
       }
       var jobName = evtChip.getAttribute('data-evt-job');
       var idx = _cachedCronJobs.findIndex(function(j) { return j.name === jobName; });
-      if (idx >= 0) { var j = _cachedCronJobs[idx]; App._calModalMode = 'edit'; App._calEditJob = { name: j.name, description: App._cronIntentFromJob(j), schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
+      if (idx >= 0) { var j = _cachedCronJobs[idx]; App._calModalMode = 'edit'; App._calEditJob = { name: j.name, description: (j.description || App._cronIntentFromJob(j) || ''), schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
       return;
     }
     var calDay = e.target.closest('.cal-day[data-date]');
