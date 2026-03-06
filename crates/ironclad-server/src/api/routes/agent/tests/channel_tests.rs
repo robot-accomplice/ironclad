@@ -1,6 +1,5 @@
-use super::super::channel_message::{
-    format_channel_reply_for_delivery, strip_internal_delegation_metadata,
-};
+use super::super::channel_message::format_channel_reply_for_delivery;
+use super::super::strip_internal_delegation_metadata;
 use super::*;
 
 // ── metadata_str tests ───────────────────────────────────────

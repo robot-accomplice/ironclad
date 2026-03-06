@@ -15,58 +15,10 @@ use super::intents::{
     requests_cron, requests_current_events, requests_delegation, requests_execution,
     requests_file_distribution, requests_introspection,
 };
+use super::strip_internal_delegation_metadata;
 use ironclad_core::InputAuthority;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-fn is_internal_delegation_metadata_line(line: &str) -> bool {
-    let t = line.trim();
-    if t.starts_with("delegated_subagent=")
-        || t.starts_with("selected_subagent=")
-        || t.starts_with("fallback_models=")
-        || t.starts_with("notes=")
-    {
-        return true;
-    }
-    if let Some(rest) = t.strip_prefix("subtask ") {
-        let mut parts = rest.splitn(2, " -> ");
-        if let (Some(left), Some(_)) = (parts.next(), parts.next())
-            && left.chars().all(|c| c.is_ascii_digit())
-        {
-            return true;
-        }
-    }
-    false
-}
-
-fn is_internal_orchestration_narrative_line(line: &str) -> bool {
-    let t = line.trim().to_ascii_lowercase();
-    t.starts_with("centralized delegation is sensible")
-        || t.starts_with("decomposition gate decision")
-        || t.starts_with("expected_utility_margin=")
-        || t.starts_with("expected utility margin")
-        || t.starts_with("delegation decision:")
-        || t.starts_with("rationale:")
-        || t.starts_with("subtasks:")
-}
-
-pub(super) fn strip_internal_delegation_metadata(content: &str) -> String {
-    let filtered = content
-        .lines()
-        .filter(|line| {
-            !is_internal_delegation_metadata_line(line)
-                && !is_internal_orchestration_narrative_line(line)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string();
-    if filtered.is_empty() {
-        content.trim().to_string()
-    } else {
-        filtered
-    }
-}
 
 fn strip_numeric_bracket_citations(input: &str) -> String {
     let mut out = String::with_capacity(input.len());

@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::intents::{
-    requests_cron, requests_current_events, requests_delegation, requests_execution,
-    requests_model_identity,
+    requests_acknowledgement, requests_cron, requests_current_events, requests_delegation,
+    requests_execution, requests_model_identity,
 };
 
 /// RAII guard that releases a dedup fingerprint when dropped.
@@ -142,6 +142,98 @@ pub(super) fn enforce_non_repetition(
         return response;
     }
     response
+}
+
+pub(super) fn is_low_value_response(user_prompt: &str, response: &str) -> bool {
+    if requests_acknowledgement(user_prompt) {
+        return false;
+    }
+    let trimmed = response.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "ready"
+        || lower == "on it"
+        || lower == "working on that now"
+        || lower == "working on that now."
+        || lower == "i await your insights"
+        || lower == "i await your insights."
+    {
+        return true;
+    }
+
+    // Reject status-only loops that contain no substantive content.
+    let noise_markers = [
+        "ready",
+        "i await your insights",
+        "acknowledged. working on that now.",
+        "acknowledged. working on that now",
+        "duncan here. understood. i’ll report back with verified results.",
+        "duncan here. understood. i'll report back with verified results.",
+        "⚔️ duncan is on it…",
+        "⚔️ duncan is on it...",
+        "🤖🧠…",
+        "🤖🧠...",
+    ];
+    let lines = trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>();
+    if !lines.is_empty()
+        && lines.iter().all(|line| {
+            let low = line.to_ascii_lowercase();
+            noise_markers.iter().any(|m| low == *m)
+        })
+    {
+        return true;
+    }
+
+    false
+}
+
+fn prompt_allows_echo(user_prompt: &str) -> bool {
+    let lower = user_prompt.to_ascii_lowercase();
+    let markers = [
+        "repeat",
+        "echo",
+        "quote",
+        "verbatim",
+        "paraphrase",
+        "summarize what i said",
+        "summarize my message",
+    ];
+    markers.iter().any(|m| lower.contains(m))
+}
+
+pub(super) fn is_parroting_user_prompt(user_prompt: &str, response: &str) -> bool {
+    if prompt_allows_echo(user_prompt) {
+        return false;
+    }
+    let u = user_prompt.trim();
+    let r = response.trim();
+    if u.is_empty() || r.is_empty() {
+        return false;
+    }
+    let u_lower = u.to_ascii_lowercase();
+    let r_lower = r.to_ascii_lowercase();
+    if r_lower == u_lower {
+        return true;
+    }
+
+    // If response mostly mirrors prompt tokens and adds little, treat as parroting.
+    let ut = repeat_tokens(&u_lower);
+    let rt = repeat_tokens(&r_lower);
+    if ut.is_empty() || rt.is_empty() {
+        return false;
+    }
+    let overlap = ut.intersection(&rt).count() as f64;
+    let overlap_vs_prompt = overlap / ut.len() as f64;
+    let prefix_ratio = common_prefix_ratio(&u_lower, &r_lower);
+    let length_ratio = (r.len() as f64 / u.len().max(1) as f64).clamp(0.0, 10.0);
+
+    overlap_vs_prompt >= 0.88 && prefix_ratio >= 0.55 && length_ratio <= 1.35
 }
 
 fn looks_like_unexecuted_claim(response: &str) -> bool {
@@ -383,6 +475,55 @@ pub(super) fn enforce_internal_jargon_guard(response: String, agent_name: &str) 
         );
     }
     cleaned
+}
+
+fn is_internal_delegation_metadata_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with("delegated_subagent=")
+        || t.starts_with("selected_subagent=")
+        || t.starts_with("fallback_models=")
+        || t.starts_with("notes=")
+    {
+        return true;
+    }
+    if let Some(rest) = t.strip_prefix("subtask ") {
+        let mut parts = rest.splitn(2, " -> ");
+        if let (Some(left), Some(_)) = (parts.next(), parts.next())
+            && left.chars().all(|c| c.is_ascii_digit())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_internal_orchestration_narrative_line(line: &str) -> bool {
+    let t = line.trim().to_ascii_lowercase();
+    t.starts_with("centralized delegation is sensible")
+        || t.starts_with("decomposition gate decision")
+        || t.starts_with("expected_utility_margin=")
+        || t.starts_with("expected utility margin")
+        || t.starts_with("delegation decision:")
+        || t.starts_with("rationale:")
+        || t.starts_with("subtasks:")
+}
+
+pub(super) fn strip_internal_delegation_metadata(content: &str) -> String {
+    let filtered = content
+        .lines()
+        .filter(|line| {
+            !is_internal_delegation_metadata_line(line)
+                && !is_internal_orchestration_narrative_line(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    if filtered.is_empty() {
+        content.trim().to_string()
+    } else {
+        filtered
+    }
 }
 
 // ── Scope validation ──────────────────────────────────────────

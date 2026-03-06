@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::routes::agent::guards::{is_low_value_response, is_parroting_user_prompt};
 
 // ── subagent claim guard tests ───────────────────────────────
 
@@ -99,6 +100,51 @@ fn non_repetition_guard_keeps_repetition_when_delta_not_requested() {
     let current = prev;
     let guarded = enforce_non_repetition("Thanks, makes sense.", current.to_string(), Some(prev));
     assert_eq!(guarded, current);
+}
+
+#[test]
+fn low_value_response_detector_flags_ready_and_status_loops() {
+    assert!(is_low_value_response(
+        "brainstorm revenue streams for agent self-funding",
+        "ready"
+    ));
+    assert!(is_low_value_response(
+        "brainstorm revenue streams for agent self-funding",
+        "I await your insights"
+    ));
+    assert!(is_low_value_response(
+        "brainstorm revenue streams for agent self-funding",
+        "Duncan here. Understood. I’ll report back with verified results.\n\n⚔️ Duncan is on it…\n\nready"
+    ));
+}
+
+#[test]
+fn low_value_response_detector_allows_ack_only_prompts() {
+    assert!(!is_low_value_response(
+        "Acknowledge this request in one sentence and then wait.",
+        "By your command, I acknowledge this request and will hold for your next instruction."
+    ));
+}
+
+#[test]
+fn parroting_detector_flags_exact_echo() {
+    let prompt = "I want a brainstorm on low-risk self-funding mechanisms.";
+    let response = "I want a brainstorm on low-risk self-funding mechanisms.";
+    assert!(is_parroting_user_prompt(prompt, response));
+}
+
+#[test]
+fn parroting_detector_allows_explicit_repeat_requests() {
+    let prompt = "Repeat exactly what I said.";
+    let response = "Repeat exactly what I said.";
+    assert!(!is_parroting_user_prompt(prompt, response));
+}
+
+#[test]
+fn parroting_detector_allows_substantive_extension() {
+    let prompt = "Brainstorm low-risk self-funding mechanisms.";
+    let response = "Start with A2A micropaid services, narrow paid monitoring, and recurring reporting. Prioritize stable demand and strict cost caps.";
+    assert!(!is_parroting_user_prompt(prompt, response));
 }
 
 // ── execution truth guard tests ──────────────────────────────

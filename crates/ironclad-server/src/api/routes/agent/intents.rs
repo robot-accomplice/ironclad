@@ -55,6 +55,23 @@ pub(super) fn requests_file_distribution(prompt: &str) -> bool {
     lower.contains("file distribution")
 }
 
+pub(super) fn requests_folder_scan(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    let asks_scan = lower.contains("look in")
+        || lower.contains("check my")
+        || lower.contains("search")
+        || lower.contains("scan")
+        || lower.contains("inspect");
+    let mentions_folder = lower.contains("folder")
+        || lower.contains("directory")
+        || lower.contains("~/downloads")
+        || lower.contains("~/documents")
+        || lower.contains("~/pictures")
+        || lower.contains("~/photos")
+        || lower.contains("~/desktop");
+    asks_scan && mentions_folder
+}
+
 pub(super) fn requests_random_tool_use(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
     lower.contains("tools you can use")
@@ -238,6 +255,7 @@ pub(super) fn should_bypass_cache_for_prompt(prompt: &str) -> bool {
         || requests_obsidian_insights(prompt)
         || requests_email_triage(prompt)
         || requests_literary_quote_context(prompt)
+        || requests_folder_scan(prompt)
 }
 
 #[cfg(test)]
@@ -374,6 +392,17 @@ mod tests {
             "count images in ~/Downloads recursively"
         ));
         assert!(!requests_image_count_scan("show me photos from yesterday"));
+    }
+
+    #[test]
+    fn folder_scan_markers_match_expected_prompts() {
+        assert!(requests_folder_scan(
+            "Now look in my Downloads folder and summarize what is there"
+        ));
+        assert!(requests_folder_scan(
+            "please check my ~/Documents folder for wallet credentials"
+        ));
+        assert!(!requests_folder_scan("what's your personality?"));
     }
 
     #[test]

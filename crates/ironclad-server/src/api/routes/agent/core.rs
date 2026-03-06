@@ -19,15 +19,16 @@ use super::diagnostics::{collect_runtime_diagnostics, diagnostics_system_note};
 use super::guards::{
     enforce_current_events_truth_guard, enforce_execution_truth_guard,
     enforce_internal_jargon_guard, enforce_model_identity_truth_guard, enforce_non_repetition,
-    enforce_personality_integrity_guard, enforce_subagent_claim_guard,
-    is_overbroad_sensitive_conflict_refusal,
+    enforce_personality_integrity_guard, enforce_subagent_claim_guard, is_low_value_response,
+    is_overbroad_sensitive_conflict_refusal, is_parroting_user_prompt,
 };
 use super::intents::{
     requests_acknowledgement, requests_capability_summary, requests_cron, requests_current_events,
-    requests_delegation, requests_email_triage, requests_file_distribution,
-    requests_image_count_scan, requests_introspection, requests_literary_quote_context,
-    requests_obsidian_insights, requests_personality_profile, requests_provider_inventory,
-    requests_random_tool_use, requests_wallet_address_scan, should_bypass_cache_for_prompt,
+    requests_delegation, requests_email_triage, requests_execution, requests_file_distribution,
+    requests_folder_scan, requests_image_count_scan, requests_introspection,
+    requests_literary_quote_context, requests_obsidian_insights, requests_personality_profile,
+    requests_provider_inventory, requests_random_tool_use, requests_wallet_address_scan,
+    should_bypass_cache_for_prompt,
 };
 use super::routing::{
     infer_with_fallback, persist_model_selection_audit, select_routed_model_with_audit,
@@ -600,8 +601,7 @@ async fn try_execution_shortcut(
 ) -> Option<InferenceOutput> {
     if requests_acknowledgement(user_prompt) {
         return Some(InferenceOutput {
-            content: "Acknowledged. By your command, I’ll hold for your next instruction."
-                .to_string(),
+            content: "By your command, I acknowledge this request and will hold for your next instruction.".to_string(),
             model: prepared_model.to_string(),
             tokens_in: 0,
             tokens_out: 0,
@@ -749,7 +749,7 @@ async fn try_execution_shortcut(
                 delegation_provenance.subagent_result_attached = !output.trim().is_empty();
                 tool_results.push(("orchestrate-subagents".to_string(), output.clone()));
                 return Some(InferenceOutput {
-                    content: output,
+                    content: super::strip_internal_delegation_metadata(&output),
                     model: prepared_model.to_string(),
                     tokens_in: 0,
                     tokens_out: 0,
@@ -875,7 +875,7 @@ async fn try_execution_shortcut(
                 delegation_provenance.subagent_result_attached = !output.trim().is_empty();
                 tool_results.push(("orchestrate-subagents".to_string(), output.clone()));
                 return Some(InferenceOutput {
-                    content: output,
+                    content: super::strip_internal_delegation_metadata(&output),
                     model: prepared_model.to_string(),
                     tokens_in: 0,
                     tokens_out: 0,
@@ -1061,8 +1061,8 @@ async fn try_execution_shortcut(
         }
     }
 
-    // 3) File distribution request (supports '~' and absolute paths).
-    if requests_file_distribution(user_prompt) {
+    // 3) Folder scan / file distribution request (supports '~' and absolute paths).
+    if requests_file_distribution(user_prompt) || requests_folder_scan(user_prompt) {
         let path = extract_path_hint(user_prompt).unwrap_or_else(|| ".".to_string());
         let resolved_path = expand_user_path(&path);
         let cmd = build_distribution_command(&path);
@@ -1077,9 +1077,15 @@ async fn try_execution_shortcut(
         match out {
             Ok(output) => {
                 tool_results.push(("bash".to_string(), output.clone()));
+                let label = if requests_folder_scan(user_prompt) {
+                    "Folder scan"
+                } else {
+                    "File distribution"
+                };
                 return Some(InferenceOutput {
                     content: format!(
-                        "File distribution for {} (resolved: {}):\n{}",
+                        "{} for {} (resolved: {}):\n{}",
+                        label,
                         path,
                         resolved_path,
                         output.trim()
@@ -1097,10 +1103,15 @@ async fn try_execution_shortcut(
             }
             Err(err) => {
                 tool_results.push(("bash".to_string(), format!("error: {err}")));
+                let label = if requests_folder_scan(user_prompt) {
+                    "folder scan"
+                } else {
+                    "file distribution"
+                };
                 return Some(InferenceOutput {
                     content: format!(
-                        "I attempted to compute file distribution for {} (resolved: {}), but the command failed: {}",
-                        path, resolved_path, err
+                        "I attempted to compute {} for {} (resolved: {}), but the command failed: {}",
+                        label, path, resolved_path, err
                     ),
                     model: prepared_model.to_string(),
                     tokens_in: 0,
@@ -1333,7 +1344,7 @@ async fn try_execution_shortcut(
                 delegation_provenance.subagent_result_attached = !output.trim().is_empty();
                 tool_results.push(("orchestrate-subagents".to_string(), output.clone()));
                 return Some(InferenceOutput {
-                    content: output,
+                    content: super::strip_internal_delegation_metadata(&output),
                     model: prepared_model.to_string(),
                     tokens_in: 0,
                     tokens_out: 0,
@@ -1715,6 +1726,64 @@ pub(super) async fn run_inference_and_react(
         final_content,
         prepared.previous_assistant.as_deref(),
     );
+    if (is_low_value_response(user_prompt, &final_content)
+        || is_parroting_user_prompt(user_prompt, &final_content))
+        && tool_results_acc.is_empty()
+        && !requests_execution(user_prompt)
+    {
+        tracing::warn!("low-value placeholder response detected; running one-shot quality retry");
+        let mut retry_messages = prepared.request.messages.clone();
+        retry_messages.push(ironclad_llm::format::UnifiedMessage {
+            role: "user".into(),
+            content: "Operator directive: your previous response was placeholder/status-only. Provide a concrete, complete answer to the original user request now. Do not output placeholder lines such as 'ready' or status-only acknowledgements."
+                .into(),
+            parts: None,
+        });
+        let retry_req = ironclad_llm::format::UnifiedRequest {
+            model: prepared.request.model.clone(),
+            messages: retry_messages,
+            max_tokens: prepared.request.max_tokens.or(Some(768)),
+            temperature: prepared.request.temperature,
+            system: None,
+            quality_target: prepared.request.quality_target,
+            tools: vec![],
+        };
+        match infer_with_fallback(state, &retry_req, &prepared.model).await {
+            Ok(result) => {
+                resolved_model = result.model.clone();
+                total_in += result.tokens_in;
+                total_out += result.tokens_out;
+                total_cost += result.cost;
+                let retried = sanitize_model_output(result.content, state.hmac_secret.as_ref());
+                let retried = enforce_personality_integrity_guard(
+                    user_prompt,
+                    retried,
+                    &agent_name,
+                    &resolved_model,
+                );
+                let retried = enforce_internal_jargon_guard(retried, &agent_name);
+                final_content = enforce_non_repetition(
+                    user_prompt,
+                    retried,
+                    prepared.previous_assistant.as_deref(),
+                );
+                if is_low_value_response(user_prompt, &final_content)
+                    || is_parroting_user_prompt(user_prompt, &final_content)
+                {
+                    final_content = format!(
+                        "{} here. The prior generation degraded into non-substantive output. Re-run your request and I will return concrete results.",
+                        agent_name
+                    );
+                }
+            }
+            Err(_) => {
+                final_content = format!(
+                    "{} here. I rejected a low-value placeholder response and the quality retry failed. Re-run your request and I will return concrete output.",
+                    agent_name
+                );
+            }
+        }
+    }
 
     InferenceOutput {
         content: final_content,
@@ -1754,7 +1823,10 @@ pub(super) async fn store_in_cache(
     model: &str,
     tokens_out: i64,
 ) {
-    if tokens_out > 0 {
+    if tokens_out > 0
+        && !is_low_value_response(user_content, content)
+        && !is_parroting_user_prompt(user_content, content)
+    {
         let entry = ironclad_llm::CachedResponse {
             content: content.to_string(),
             model: model.to_string(),
@@ -1922,69 +1994,75 @@ pub(super) async fn execute_inference_pipeline(
             cached_content,
             prepared.previous_assistant.as_deref(),
         );
-        let cached_provider_prefix = cached
-            .model
-            .split('/')
-            .next()
-            .unwrap_or("unknown")
-            .to_string();
-        record_cost(
-            state,
-            &cached.model,
-            &cached_provider_prefix,
-            0,
-            0,
-            0.0,
-            Some("cached"),
-            true,
-            Some(0),
-            None,
-            false,
-            Some(turn_id),
-        );
-        let asst_id = ironclad_db::sessions::append_message(
-            &state.db,
-            session_id,
-            "assistant",
-            &guarded_cached_content,
-        )
-        .map_err(|e| format!("failed to store cached response: {e}"))?;
-        if cached.model != prepared.model {
-            state.event_bus.publish(
-                serde_json::json!({
-                    "type": "model_shift",
-                    "turn_id": turn_id,
-                    "session_id": session_id,
-                    "channel": channel_label.unwrap_or("unknown"),
-                    "selected_model": prepared.model,
-                    "executed_model": cached.model,
-                    "reason": "cache_hit",
-                })
-                .to_string(),
+        if is_low_value_response(user_content, &guarded_cached_content)
+            || is_parroting_user_prompt(user_content, &guarded_cached_content)
+        {
+            tracing::warn!("discarding low-value cache hit and forcing fresh inference");
+        } else {
+            let cached_provider_prefix = cached
+                .model
+                .split('/')
+                .next()
+                .unwrap_or("unknown")
+                .to_string();
+            record_cost(
+                state,
+                &cached.model,
+                &cached_provider_prefix,
+                0,
+                0,
+                0.0,
+                Some("cached"),
+                true,
+                Some(0),
+                None,
+                false,
+                Some(turn_id),
             );
-        }
+            let asst_id = ironclad_db::sessions::append_message(
+                &state.db,
+                session_id,
+                "assistant",
+                &guarded_cached_content,
+            )
+            .map_err(|e| format!("failed to store cached response: {e}"))?;
+            if cached.model != prepared.model {
+                state.event_bus.publish(
+                    serde_json::json!({
+                        "type": "model_shift",
+                        "turn_id": turn_id,
+                        "session_id": session_id,
+                        "channel": channel_label.unwrap_or("unknown"),
+                        "selected_model": prepared.model,
+                        "executed_model": cached.model,
+                        "reason": "cache_hit",
+                    })
+                    .to_string(),
+                );
+            }
 
-        return Ok(PipelineResult {
-            content: guarded_cached_content,
-            selected_model: prepared.model.clone(),
-            model: cached.model.clone(),
-            model_shift_from: if cached.model != prepared.model {
-                Some(prepared.model.clone())
-            } else {
-                None
-            },
-            tokens_in: 0,
-            tokens_out: 0,
-            cost: 0.0,
-            react_turns: 0,
-            latency_ms: 0,
-            quality_score: 0.0,
-            escalated: false,
-            cached: true,
-            tokens_saved: cached.tokens_saved,
-            assistant_message_id: asst_id,
-            tool_results: vec![],
-        });
+            return Ok(PipelineResult {
+                content: guarded_cached_content,
+                selected_model: prepared.model.clone(),
+                model: cached.model.clone(),
+                model_shift_from: if cached.model != prepared.model {
+                    Some(prepared.model.clone())
+                } else {
+                    None
+                },
+                tokens_in: 0,
+                tokens_out: 0,
+                cost: 0.0,
+                react_turns: 0,
+                latency_ms: 0,
+                quality_score: 0.0,
+                escalated: false,
+                cached: true,
+                tokens_saved: cached.tokens_saved,
+                assistant_message_id: asst_id,
+                tool_results: vec![],
+            });
+        }
     }
 
     // 2. Inference + ReAct loop

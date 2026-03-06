@@ -36,7 +36,6 @@ pub use self::diagnostics::agent_status;
 use self::diagnostics::is_model_proxy_role;
 #[cfg(test)]
 use self::diagnostics::{RuntimeDiagnostics, diagnostics_system_note, sanitize_diag_token};
-use self::guards::resolve_web_scope;
 #[cfg(test)]
 use self::guards::{
     MAX_SCOPE_ID, claims_unverified_subagent_output, common_prefix_ratio,
@@ -45,6 +44,7 @@ use self::guards::{
     enforce_personality_integrity_guard, enforce_subagent_claim_guard,
     is_overbroad_sensitive_conflict_refusal, looks_repetitive, repeat_tokens,
 };
+use self::guards::{resolve_web_scope, strip_internal_delegation_metadata};
 pub use self::handlers::agent_message;
 use self::orchestration::{execute_virtual_orchestration_tool, is_virtual_orchestration_tool};
 pub(crate) use self::poll_loops::CHANNEL_PROCESSING_ERROR_REPLY;
