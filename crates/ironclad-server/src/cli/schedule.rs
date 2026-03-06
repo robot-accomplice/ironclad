@@ -12,13 +12,18 @@ pub async fn cmd_schedule_list(url: &str) -> Result<(), Box<dyn std::error::Erro
     let jobs = data["jobs"].as_array();
     match jobs {
         Some(arr) if !arr.is_empty() => {
-            let widths = [22, 12, 22, 10, 8];
+            let widths = [22, 24, 12, 22, 10, 8];
             table_header(
-                &["Name", "Schedule", "Last Run", "Status", "Errors"],
+                &["Name", "Intent", "Schedule", "Last Run", "Status", "Errors"],
                 &widths,
             );
             for j in arr {
                 let name = j["name"].as_str().unwrap_or("").to_string();
+                let intent = j["description"]
+                    .as_str()
+                    .map(|d| d.trim())
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or("no description");
                 let kind = j["schedule_kind"].as_str().unwrap_or("?");
                 let expr = j["schedule_expr"].as_str().unwrap_or("");
                 let schedule = format!("{kind}: {expr}");
@@ -32,6 +37,7 @@ pub async fn cmd_schedule_list(url: &str) -> Result<(), Box<dyn std::error::Erro
                 table_row(
                     &[
                         format!("{ACCENT}{name}{RESET}"),
+                        format!("{DIM}{}{RESET}", truncate_id(intent, 24)),
                         truncate_id(&schedule, 12),
                         format!("{DIM}{last_run}{RESET}"),
                         status_badge(status),

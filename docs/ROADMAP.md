@@ -4,6 +4,17 @@
 
 ---
 
+## Deferred Capability Policy
+
+Deferred capability governance is defined in
+`docs/architecture/deferred-capability-policy.md` and is binding for active release execution.
+
+Current explicit deferment under this policy:
+
+- Conway integration is intentionally deferred and out of active release scope.
+
+---
+
 ## Tier 1 — Wire the Last Mile
 
 Capabilities where the core code exists but isn't fully connected. High impact, low-to-medium effort.
@@ -195,6 +206,8 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 **Current state**: Browser automation is implemented via Ironclad's native browser tooling (`1.3`) and does not yet support the external `agent-browser` runtime/CLI contract.
 
+**v0.9.5 prep update (2026-03-06)**: Native browser runtime hardening and non-panic failure paths are in place, with targeted tests validating safe failure behavior when session/runtime is unavailable. Full external `agent-browser` backend parity remains open for the post-v0.9.5 slice.
+
 **Target**: Add optional `agent-browser` compatibility so browser actions can run through the external runtime while preserving Ironclad policy controls, provenance, and auditability.
 
 **Builds on**: `1.3 Browser as agent tool`, tool registry, command safety/policy engine, runtime config + dashboard observability.
@@ -287,6 +300,8 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 **Current state**: Ironclad's skill system supports user-created scripts in bash/python/node, loaded from the skills directory. There are no built-in skills that ship with the agent for delegating tasks to external CLI-based AI tools.
 
+**v0.9.5 prep update (2026-03-06)**: Built-in skill catalog/registry hygiene and capability-to-skill parity checks are active (`ironclad mechanic` parity gate + tests). External CLI skill adapters remain on the roadmap as typed runtime adapters rather than ad hoc script glue.
+
 **Target**: Ship built-in skills that let the agent delegate subtasks to Claude Code (`claude`) and OpenAI Codex CLI (`codex`) when they are installed on the host. These skills act as typed tool interfaces — the agent can invoke them with structured parameters (task description, working directory, file scope) and receive structured output, enabling Ironclad to orchestrate external AI tools as subagent-style subprocesses.
 
 **Builds on**: `SkillLoader`/`SkillRegistry`, existing skill manifest format, script execution sandbox (`skills.sandbox_env`), tool registry.
@@ -322,6 +337,8 @@ Both skills: register as tools in the `ToolRegistry` so the agent can invoke the
 ### 1.26 User-Tunable Routing Profile + Spider Graph
 
 **Current state**: Routing knobs exist in config (`accuracy_floor`, `cost_weight`, `confidence_threshold`), but operators cannot tune tradeoffs quickly from the dashboard, and model-routing continuity is hard to inspect visually.
+
+**v0.9.5 prep update (2026-03-06)**: Runtime continuity tuning is in progress and validated in live source soak. Inference fallback budgets were widened and per-hop timeout reduced to improve continuity under provider latency spikes, with fallback ordering adjusted for known healthy paths in operator environments. Scheduler reliability hardening is now in place: new cron jobs default to executable payloads, calendar view projects planned occurrences before first run, and job intent is persisted/surfaced as first-class cron description metadata across API/UI/CLI.
 
 **Target**: Add a dashboard control surface with correctness/cost/speed sliders and a spider graph, plus an explorable graph of recent model-routing transitions.
 
@@ -383,6 +400,8 @@ Features that require significant new code but have clear implementation paths. 
 ### 2.4 Speculative Execution
 
 **Current state**: The agent loop is strictly sequential: send prompt → wait for response → evaluate tool calls → execute tools → next turn.
+
+**v0.9.5 prep update (2026-03-06)**: Speculative scaffolding exists (`ironclad-agent/speculative.rs`) with explicit `RiskLevel::Safe` gating and concurrency caps. Global duration-budget guardrails and cancellation/reconciliation coverage remain open checklist items before declaring this slice release-complete.
 
 **Target**: While waiting for an LLM response, speculatively pre-fetch results for likely tool calls (read-only tools only). When the LLM requests a pre-fetched tool, return instantly.
 

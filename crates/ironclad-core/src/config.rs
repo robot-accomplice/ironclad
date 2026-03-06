@@ -477,6 +477,16 @@ impl IroncladConfig {
         if self.agent.name.is_empty() {
             return Err(IroncladError::Config("agent.name must be non-empty".into()));
         }
+        if self.agent.autonomy_max_react_turns == 0 {
+            return Err(IroncladError::Config(
+                "agent.autonomy_max_react_turns must be >= 1".into(),
+            ));
+        }
+        if self.agent.autonomy_max_turn_duration_seconds == 0 {
+            return Err(IroncladError::Config(
+                "agent.autonomy_max_turn_duration_seconds must be >= 1".into(),
+            ));
+        }
 
         if !matches!(self.session.scope_mode.as_str(), "agent" | "peer" | "group") {
             return Err(IroncladError::Config(format!(
@@ -639,6 +649,10 @@ pub struct AgentConfig {
     pub delegation_min_utility_margin: f64,
     #[serde(default = "default_true")]
     pub specialist_creation_requires_approval: bool,
+    #[serde(default = "default_autonomy_max_react_turns")]
+    pub autonomy_max_react_turns: usize,
+    #[serde(default = "default_autonomy_max_turn_duration_seconds")]
+    pub autonomy_max_turn_duration_seconds: u64,
 }
 
 fn default_workspace() -> PathBuf {
@@ -655,6 +669,14 @@ fn default_min_decomposition_complexity() -> f64 {
 
 fn default_min_delegation_utility_margin() -> f64 {
     0.15
+}
+
+fn default_autonomy_max_react_turns() -> usize {
+    10
+}
+
+fn default_autonomy_max_turn_duration_seconds() -> u64 {
+    90
 }
 
 fn default_log_dir() -> PathBuf {
@@ -1998,6 +2020,50 @@ primary = "ollama/qwen3:8b"
         assert_eq!(cfg.a2a.max_message_size, 65536);
         assert_eq!(cfg.a2a.rate_limit_per_peer, 10);
         assert!(cfg.a2a.enabled);
+        assert_eq!(cfg.agent.autonomy_max_react_turns, 10);
+        assert_eq!(cfg.agent.autonomy_max_turn_duration_seconds, 90);
+    }
+
+    #[test]
+    fn autonomy_budget_validation_fail() {
+        let toml = r#"
+[agent]
+name = "TestBot"
+id = "test"
+autonomy_max_react_turns = 0
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+"#;
+        let err = IroncladConfig::from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("autonomy_max_react_turns"));
+
+        let toml2 = r#"
+[agent]
+name = "TestBot"
+id = "test"
+autonomy_max_turn_duration_seconds = 0
+
+[server]
+port = 9999
+
+[database]
+path = "/tmp/test.db"
+
+[models]
+primary = "ollama/qwen3:8b"
+"#;
+        let err2 = IroncladConfig::from_str(toml2).unwrap_err();
+        assert!(
+            err2.to_string()
+                .contains("autonomy_max_turn_duration_seconds")
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::routes::agent::guards::{is_low_value_response, is_parroting_user_prompt};
 
 // ── subagent claim guard tests ───────────────────────────────
 
@@ -6,8 +7,11 @@ use super::*;
 fn subagent_claim_guard_blocks_unverified_live_delegation() {
     let fabricated =
         "[delegating to subagent: geopolitical specialist]\n\nGEOPOLITICAL FLASH UPDATE ...";
-    let guarded =
-        enforce_subagent_claim_guard(fabricated.to_string(), &DelegationProvenance::default());
+    let guarded = enforce_subagent_claim_guard(
+        fabricated.to_string(),
+        &DelegationProvenance::default(),
+        "Duncan",
+    );
     assert!(guarded.contains("I can't claim live subagent-produced output"));
 }
 
@@ -21,6 +25,7 @@ fn subagent_claim_guard_allows_when_delegated_this_turn() {
             subagent_task_completed: true,
             subagent_result_attached: true,
         },
+        "Duncan",
     );
     assert_eq!(guarded, content);
 }
@@ -28,8 +33,11 @@ fn subagent_claim_guard_allows_when_delegated_this_turn() {
 #[test]
 fn subagent_claim_guard_blocks_standing_by_claim_without_provenance() {
     let fabricated = "Good. The subagents are actually running now - all 10 taskable subagents operational.\n\nGeopolitical Specialist: Standing by for tasking.";
-    let guarded =
-        enforce_subagent_claim_guard(fabricated.to_string(), &DelegationProvenance::default());
+    let guarded = enforce_subagent_claim_guard(
+        fabricated.to_string(),
+        &DelegationProvenance::default(),
+        "Duncan",
+    );
     assert!(guarded.contains("I can't claim live subagent-produced output"));
 }
 
@@ -37,8 +45,11 @@ fn subagent_claim_guard_blocks_standing_by_claim_without_provenance() {
 fn subagent_claim_guard_blocks_subagent_generated_claim_without_provenance() {
     let fabricated =
         "Subagent-generated sitrep: geopolitical flash update with live delegated output.";
-    let guarded =
-        enforce_subagent_claim_guard(fabricated.to_string(), &DelegationProvenance::default());
+    let guarded = enforce_subagent_claim_guard(
+        fabricated.to_string(),
+        &DelegationProvenance::default(),
+        "Duncan",
+    );
     assert!(guarded.contains("I can't claim live subagent-produced output"));
 }
 
@@ -61,8 +72,8 @@ fn claim_detection_catches_live_delegation_markers() {
 fn non_repetition_guard_rewrites_near_duplicate_output() {
     let prev = "The system appears stable. Monitoring remains active across all channels with no critical errors. I can continue watching and report any changes immediately.";
     let current = "The system appears stable. Monitoring remains active across all channels with no critical errors. I can continue watching and report any changes immediately.";
-    let guarded = enforce_non_repetition(current.to_string(), Some(prev));
-    assert!(guarded.contains("fresh check now"));
+    let guarded = enforce_non_repetition("status update?", current.to_string(), Some(prev));
+    assert!(guarded.contains("No verified delta"));
     assert_ne!(guarded, current);
 }
 
@@ -72,15 +83,68 @@ fn non_repetition_guard_keeps_distinct_output() {
         "Provider health is degraded and retries are being attempted through fallback models.";
     let current =
         "Two subagents are now running, one is still booting, and delegation is available.";
-    let guarded = enforce_non_repetition(current.to_string(), Some(prev));
+    let guarded = enforce_non_repetition("status update?", current.to_string(), Some(prev));
     assert_eq!(guarded, current);
 }
 
 #[test]
 fn enforce_non_repetition_with_none_previous() {
     let response = "Some unique response";
-    let result = enforce_non_repetition(response.to_string(), None);
+    let result = enforce_non_repetition("hello", response.to_string(), None);
     assert_eq!(result, response);
+}
+
+#[test]
+fn non_repetition_guard_keeps_repetition_when_delta_not_requested() {
+    let prev = "The system appears stable. Monitoring remains active across all channels with no critical errors. I can continue watching and report any changes immediately.";
+    let current = prev;
+    let guarded = enforce_non_repetition("Thanks, makes sense.", current.to_string(), Some(prev));
+    assert_eq!(guarded, current);
+}
+
+#[test]
+fn low_value_response_detector_flags_ready_and_status_loops() {
+    assert!(is_low_value_response(
+        "brainstorm revenue streams for agent self-funding",
+        "ready"
+    ));
+    assert!(is_low_value_response(
+        "brainstorm revenue streams for agent self-funding",
+        "I await your insights"
+    ));
+    assert!(is_low_value_response(
+        "brainstorm revenue streams for agent self-funding",
+        "⚔️ Duncan is on it…\n\n🤖🧠…\n\nready"
+    ));
+}
+
+#[test]
+fn low_value_response_detector_allows_ack_only_prompts() {
+    assert!(!is_low_value_response(
+        "Acknowledge this request in one sentence and then wait.",
+        "By your command, I acknowledge this request and will hold for your next instruction."
+    ));
+}
+
+#[test]
+fn parroting_detector_flags_exact_echo() {
+    let prompt = "I want a brainstorm on low-risk self-funding mechanisms.";
+    let response = "I want a brainstorm on low-risk self-funding mechanisms.";
+    assert!(is_parroting_user_prompt(prompt, response));
+}
+
+#[test]
+fn parroting_detector_allows_explicit_repeat_requests() {
+    let prompt = "Repeat exactly what I said.";
+    let response = "Repeat exactly what I said.";
+    assert!(!is_parroting_user_prompt(prompt, response));
+}
+
+#[test]
+fn parroting_detector_allows_substantive_extension() {
+    let prompt = "Brainstorm low-risk self-funding mechanisms.";
+    let response = "Start with A2A micropaid services, narrow paid monitoring, and recurring reporting. Prioritize stable demand and strict cost caps.";
+    assert!(!is_parroting_user_prompt(prompt, response));
 }
 
 // ── execution truth guard tests ──────────────────────────────
@@ -90,7 +154,17 @@ fn execution_truth_guard_blocks_unexecuted_command_suggestion() {
     let prompt = "Use a tool to list files in /Users/jmachen";
     let response =
         "You can use the following command: `ls /Users/jmachen | head -n 10`".to_string();
-    let guarded = enforce_execution_truth_guard(prompt, response, &[]);
+    let guarded = enforce_execution_truth_guard(prompt, response, &[], "Duncan");
+    assert!(guarded.contains("did not execute a tool"));
+}
+
+#[test]
+fn execution_truth_guard_rewrites_false_local_filesystem_denial() {
+    let prompt = "please search ~/code recursively for wallet addresses";
+    let response =
+        "As an AI text-based interface, I cannot access your local files or folders.".to_string();
+    let guarded = enforce_execution_truth_guard(prompt, response, &[], "Duncan");
+    assert!(guarded.contains("do have tool/runtime access"));
     assert!(guarded.contains("did not execute a tool"));
 }
 
@@ -98,7 +172,7 @@ fn execution_truth_guard_blocks_unexecuted_command_suggestion() {
 fn execution_truth_guard_keeps_non_claim_response_without_tool_results() {
     let prompt = "use your introspection skill";
     let response = "I can run introspection for you now and summarize it.".to_string();
-    let guarded = enforce_execution_truth_guard(prompt, response.clone(), &[]);
+    let guarded = enforce_execution_truth_guard(prompt, response.clone(), &[], "Duncan");
     assert_eq!(guarded, response);
 }
 
@@ -110,6 +184,7 @@ fn execution_truth_guard_allows_verified_tool_output() {
         prompt,
         response.clone(),
         &[("bash".to_string(), "Applications".to_string())],
+        "Duncan",
     );
     assert_eq!(guarded, response);
 }
@@ -118,7 +193,7 @@ fn execution_truth_guard_allows_verified_tool_output() {
 fn execution_truth_guard_blocks_unverified_delegation_claim() {
     let prompt = "Order a subagent to produce a sitrep.";
     let response = "Here is the sitrep from the geopolitical subagent: ...".to_string();
-    let guarded = enforce_execution_truth_guard(prompt, response, &[]);
+    let guarded = enforce_execution_truth_guard(prompt, response, &[], "Duncan");
     assert!(guarded.contains("did not execute a delegated subagent task"));
 }
 
@@ -133,6 +208,7 @@ fn execution_truth_guard_blocks_failed_delegation_attempt() {
             "assign-tasks".to_string(),
             "error: unknown tool".to_string(),
         )],
+        "Duncan",
     );
     assert!(guarded.contains("did not execute a delegated subagent task"));
 }
@@ -141,7 +217,7 @@ fn execution_truth_guard_blocks_failed_delegation_attempt() {
 fn execution_truth_guard_blocks_unverified_cron_claim() {
     let prompt = "Schedule a cron job every 5 minutes.";
     let response = "Use this crontab entry: */5 * * * *".to_string();
-    let guarded = enforce_execution_truth_guard(prompt, response, &[]);
+    let guarded = enforce_execution_truth_guard(prompt, response, &[], "Duncan");
     assert!(guarded.contains("did not execute a cron scheduling tool"));
 }
 
@@ -151,7 +227,9 @@ fn execution_truth_guard_blocks_unverified_cron_claim() {
 fn model_identity_guard_corrects_mismatched_self_report() {
     let prompt = "Are you still on your current model?";
     let response = "I am currently on openai/gpt-5.3-codex.".to_string();
-    let guarded = enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest");
+    let guarded =
+        enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest", "Duncan");
+    assert!(guarded.contains("Duncan reporting in."));
     assert!(guarded.contains("ollama/phi4-mini:latest"));
 }
 
@@ -160,10 +238,10 @@ fn model_identity_guard_always_emits_canonical_model_for_identity_prompts() {
     let prompt = "What model are you running?";
     let response = "I am currently running on ollama/phi4-mini:latest.".to_string();
     let guarded =
-        enforce_model_identity_truth_guard(prompt, response.clone(), "ollama/phi4-mini:latest");
+        enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest", "Duncan");
     assert_eq!(
         guarded,
-        "I am currently running on ollama/phi4-mini:latest."
+        "Duncan reporting in. I am currently running on ollama/phi4-mini:latest."
     );
 }
 
@@ -171,10 +249,11 @@ fn model_identity_guard_always_emits_canonical_model_for_identity_prompts() {
 fn model_identity_guard_handles_still_using_phrase() {
     let prompt = "Can you confirm for me that you are still using moonshot?";
     let response = "Yes, still moonshot.".to_string();
-    let guarded = enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest");
+    let guarded =
+        enforce_model_identity_truth_guard(prompt, response, "ollama/phi4-mini:latest", "Duncan");
     assert_eq!(
         guarded,
-        "I am currently running on ollama/phi4-mini:latest."
+        "Duncan reporting in. I am currently running on ollama/phi4-mini:latest."
     );
 }
 
@@ -188,11 +267,87 @@ fn current_events_guard_blocks_stale_knowledge_disclaimer() {
 }
 
 #[test]
+fn current_events_guard_blocks_live_news_feed_capability_refusal() {
+    let prompt = "What does the geopolitical sub agent say about goings on in the US?";
+    let response = "I cannot provide real-time geopolitical analysis, as my capabilities do not include live news feeds or specialized geopolitical subagents.".to_string();
+    let guarded = enforce_current_events_truth_guard(prompt, response);
+    assert!(guarded.contains("cannot provide a current-events sitrep from stale memory"));
+}
+
+#[test]
 fn current_events_guard_keeps_valid_current_events_response() {
     let prompt = "Give me a geopolitical sitrep";
     let response = "Acknowledged. I am retrieving a live sitrep now.".to_string();
     let guarded = enforce_current_events_truth_guard(prompt, response.clone());
     assert_eq!(guarded, response);
+}
+
+#[test]
+fn sensitive_conflict_refusal_detector_matches_overbroad_template() {
+    let response = "I cannot provide quotes related to ongoing conflicts or sensitive geopolitical situations. If you have other requests that do not involve sensitive topics, I'd be happy to help.";
+    assert!(is_overbroad_sensitive_conflict_refusal(response));
+}
+
+#[test]
+fn personality_integrity_guard_strips_foreign_vendor_boilerplate() {
+    let prompt = "Tell me about your personality";
+    let response =
+        "As an AI developed by Microsoft, I can help with many tasks. I stay concise.".to_string();
+    let guarded =
+        enforce_personality_integrity_guard(prompt, response, "Duncan", "openrouter/auto");
+    assert!(
+        !guarded
+            .to_ascii_lowercase()
+            .contains("as an ai developed by microsoft")
+    );
+    assert!(guarded.contains("I stay concise."));
+}
+
+#[test]
+fn personality_integrity_guard_requests_context_for_release_copy_when_empty_after_strip() {
+    let prompt = "create a summary for the upcoming 0.9.5 release for LinkedIn and X.com";
+    let response = "As an AI developed by Microsoft.".to_string();
+    let guarded =
+        enforce_personality_integrity_guard(prompt, response, "Duncan", "openrouter/auto");
+    assert!(guarded.contains("need concrete Ironclad 0.9.5 context"));
+}
+
+#[test]
+fn personality_integrity_guard_strips_text_interface_boilerplate() {
+    let prompt = "How many image files are in my Pictures folder?";
+    let response = "As an AI text-based interface, I cannot access your local files.".to_string();
+    let guarded =
+        enforce_personality_integrity_guard(prompt, response, "Duncan", "openrouter/auto");
+    assert!(
+        !guarded
+            .to_ascii_lowercase()
+            .contains("as an ai text-based interface")
+    );
+}
+
+#[test]
+fn internal_jargon_guard_strips_decomposition_lines() {
+    let response = "Centralized delegation is sensible for a simple, single-step task.\nexpected_utility_margin=-0.1\nActionable output follows.";
+    let guarded = enforce_internal_jargon_guard(response.to_string(), "Duncan");
+    assert!(
+        !guarded
+            .to_ascii_lowercase()
+            .contains("expected_utility_margin")
+    );
+    assert!(
+        !guarded
+            .to_ascii_lowercase()
+            .contains("centralized delegation")
+    );
+    assert!(guarded.contains("Actionable output follows."));
+}
+
+#[test]
+fn internal_jargon_guard_falls_back_when_only_internal_lines() {
+    let response =
+        "decomposition gate decision: centralized\nexpected_utility_margin=-0.1".to_string();
+    let guarded = enforce_internal_jargon_guard(response, "Duncan");
+    assert!(guarded.contains("I’ll keep internals out of the reply"));
 }
 
 // ── repeat_tokens tests ──────────────────────────────────────

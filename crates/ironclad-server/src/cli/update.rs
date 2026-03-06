@@ -1533,7 +1533,7 @@ mod tests {
     struct MockRegistry {
         manifest: String,
         providers: String,
-        skill_hello: String,
+        skill_payload: String,
     }
 
     struct EnvGuard {
@@ -1569,10 +1569,10 @@ mod tests {
 
     async fn start_mock_registry(
         providers: String,
-        skill_hello: String,
+        skill_draft: String,
     ) -> (String, tokio::task::JoinHandle<()>) {
         let providers_hash = bytes_sha256(providers.as_bytes());
-        let hello_hash = bytes_sha256(skill_hello.as_bytes());
+        let draft_hash = bytes_sha256(skill_draft.as_bytes());
         let manifest = serde_json::json!({
             "version": "0.8.0",
             "packs": {
@@ -1584,7 +1584,7 @@ mod tests {
                     "sha256": null,
                     "path": "registry/skills/",
                     "files": {
-                        "hello.md": hello_hash
+                        "draft.md": draft_hash
                     }
                 }
             }
@@ -1594,7 +1594,7 @@ mod tests {
         let state = MockRegistry {
             manifest,
             providers,
-            skill_hello,
+            skill_payload: skill_draft,
         };
 
         async fn manifest_h(State(st): State<MockRegistry>) -> Json<serde_json::Value> {
@@ -1604,13 +1604,13 @@ mod tests {
             st.providers
         }
         async fn skill_h(State(st): State<MockRegistry>) -> String {
-            st.skill_hello
+            st.skill_payload
         }
 
         let app = Router::new()
             .route("/manifest.json", get(manifest_h))
             .route("/registry/providers.toml", get(providers_h))
-            .route("/registry/skills/hello.md", get(skill_h))
+            .route("/registry/skills/draft.md", get(skill_h))
             .with_state(state);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1639,8 +1639,8 @@ mod tests {
                     version: "0.2.0".into(),
                     files: {
                         let mut m = HashMap::new();
-                        m.insert("hello.md".into(), "hash1".into());
-                        m.insert("plan.md".into(), "hash2".into());
+                        m.insert("draft.md".into(), "hash1".into());
+                        m.insert("rust.md".into(), "hash2".into());
                         m
                     },
                     installed_at: "2026-02-20T00:00:00Z".into(),
@@ -1738,8 +1738,8 @@ mod tests {
                     "sha256": null,
                     "path": "registry/skills/",
                     "files": {
-                        "hello.md": "hash1",
-                        "summarize.md": "hash2"
+                        "draft.md": "hash1",
+                        "rust.md": "hash2"
                     }
                 }
             }
@@ -1748,7 +1748,7 @@ mod tests {
         assert_eq!(manifest.version, "0.2.0");
         assert_eq!(manifest.packs.providers.sha256, "abc123");
         assert_eq!(manifest.packs.skills.files.len(), 2);
-        assert_eq!(manifest.packs.skills.files["hello.md"], "hash1");
+        assert_eq!(manifest.packs.skills.files["draft.md"], "hash1");
     }
 
     #[test]
@@ -2116,10 +2116,10 @@ def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
         )
         .unwrap();
 
-        let hello = "# hello\nfrom registry\n".to_string();
+        let draft = "# draft\nfrom registry\n".to_string();
         let (registry_url, handle) = start_mock_registry(
             "[providers.openai]\nurl=\"https://api.openai.com\"\n".to_string(),
-            hello.clone(),
+            draft.clone(),
         )
         .await;
 
@@ -2128,8 +2128,8 @@ def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
             .unwrap();
         assert!(changed);
         assert_eq!(
-            std::fs::read_to_string(skills_dir.join("hello.md")).unwrap(),
-            hello
+            std::fs::read_to_string(skills_dir.join("draft.md")).unwrap(),
+            draft
         );
 
         let changed_second =
