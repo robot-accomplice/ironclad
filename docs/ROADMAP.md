@@ -4,6 +4,17 @@
 
 ---
 
+## Deferred Capability Policy
+
+Deferred capability governance is defined in
+`docs/architecture/deferred-capability-policy.md` and is binding for active release execution.
+
+Current explicit deferment under this policy:
+
+- Conway integration is intentionally deferred and out of active release scope.
+
+---
+
 ## Tier 1 — Wire the Last Mile
 
 Capabilities where the core code exists but isn't fully connected. High impact, low-to-medium effort.
