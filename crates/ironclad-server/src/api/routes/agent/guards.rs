@@ -551,7 +551,7 @@ fn is_internal_tool_protocol_line(line: &str) -> bool {
 }
 
 pub(super) fn strip_internal_delegation_metadata(content: &str) -> String {
-    let filtered = content
+    content
         .lines()
         .filter(|line| {
             !is_internal_delegation_metadata_line(line)
@@ -561,8 +561,7 @@ pub(super) fn strip_internal_delegation_metadata(content: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
-        .to_string();
-    filtered
+        .to_string()
 }
 
 pub(super) fn enforce_internal_protocol_guard(response: String, agent_name: &str) -> String {

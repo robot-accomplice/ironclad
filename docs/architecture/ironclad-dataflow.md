@@ -314,6 +314,32 @@ flowchart TD
 
 ---
 
+## 4.1 Behavior Guard + Deterministic Shortcut Dataflow
+<!-- last_updated: 2026-03-06, version: 0.9.5-prep -->
+
+High-frequency operator prompts with deterministic intent (for example, filesystem counts and direct capability checks) now prefer the execution-shortcut path. Guardrails sanitize internal protocol metadata and force user-facing fallbacks when model output degrades.
+
+```mermaid
+flowchart TD
+    U["User Prompt"] --> I["Intent Classifier (intents.rs)"]
+    I --> B{"Bypass cache?"}
+    B -->|yes| S{"Deterministic shortcut match?"}
+    S -->|yes| T["Execute tool/runtime shortcut<br/>(core::try_execution_shortcut)"]
+    T --> R["Verified result + tool evidence"]
+    S -->|no| M["LLM inference path"]
+    B -->|no| M
+    M --> G1["Execution truth guard"]
+    G1 --> G2["Personality + jargon guards"]
+    G2 --> G3["Internal protocol guard<br/>(strip delegation/tool metadata)"]
+    G3 --> F{"Content empty/degraded?"}
+    F -->|yes| D["Deterministic quality fallback"]
+    F -->|no| R
+    D --> R
+    R --> O["Channel formatter + delivery"]
+```
+
+---
+
 ## 5. Zero-Trust Agent-to-Agent Communication Dataflow
 <!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
