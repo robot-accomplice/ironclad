@@ -5,7 +5,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{AppState, JsonError, bad_request, internal_err, not_found, validate_long, validate_short};
+use super::{
+    AppState, JsonError, bad_request, internal_err, not_found, validate_long, validate_short,
+};
 
 #[derive(Deserialize)]
 pub struct CreateCronJobRequest {

@@ -262,11 +262,7 @@ pub fn update_job(
     Ok(changed > 0)
 }
 
-pub fn update_job_description(
-    db: &Database,
-    id: &str,
-    description: Option<&str>,
-) -> Result<bool> {
+pub fn update_job_description(db: &Database, id: &str, description: Option<&str>) -> Result<bool> {
     let conn = db.conn();
     let changed = conn
         .execute(
