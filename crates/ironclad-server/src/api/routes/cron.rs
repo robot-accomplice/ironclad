@@ -242,6 +242,13 @@ pub async fn update_cron_job(
     Path(id): Path<String>,
     axum::Json(body): axum::Json<UpdateCronJobRequest>,
 ) -> Result<impl IntoResponse, JsonError> {
+    let exists_before = ironclad_db::cron::get_job(&state.db, &id)
+        .map_err(|e| internal_err(&e))?
+        .is_some();
+    if !exists_before {
+        return Err(not_found(format!("cron job {id} not found")));
+    }
+
     let schedule_kind = body
         .schedule_kind
         .as_deref()
@@ -277,11 +284,9 @@ pub async fn update_cron_job(
                 .map_err(|e| internal_err(&e))?;
                 updated = updated || changed;
             }
-            if updated {
-                Ok(axum::Json(serde_json::json!({ "updated": true, "id": id })))
-            } else {
-                Err(not_found(format!("cron job {id} not found")))
-            }
+            // Keep update idempotent: existing job + noop update still returns success.
+            let _ = updated;
+            Ok(axum::Json(serde_json::json!({ "updated": true, "id": id })))
         }
         Err(e) => Err(internal_err(&e)),
     }
