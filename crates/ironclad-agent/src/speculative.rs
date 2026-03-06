@@ -113,7 +113,16 @@ impl SpeculationCache {
 
     /// Try to reserve a speculation slot. Returns true if the slot was acquired.
     pub fn start_speculation(&self) -> bool {
-        self.reserve_slot().is_some()
+        let prev = self
+            .active_count
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if prev >= self.max_concurrent {
+            self.active_count
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            false
+        } else {
+            true
+        }
     }
 
     /// Reserve a speculation slot and get an RAII guard that releases it on drop.
