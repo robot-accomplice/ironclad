@@ -54,6 +54,7 @@ pub struct PageContent {
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::warn;
 
 use ironclad_core::Result;
 
@@ -133,18 +134,73 @@ impl Browser {
     }
 
     pub async fn execute_action(&self, action: &actions::BrowserAction) -> actions::ActionResult {
+        let initial = {
+            let session_guard = self.session.read().await;
+            match session_guard.as_ref() {
+                Some(sess) => actions::ActionExecutor::execute(sess, action).await,
+                None => {
+                    return actions::ActionResult::err(
+                        &format!("{:?}", action),
+                        "browser not started".into(),
+                    );
+                }
+            }
+        };
+
+        if initial.success || !should_attempt_session_recovery(&initial) {
+            return initial;
+        }
+
+        if let Err(err) = self.recover_session().await {
+            warn!(error = %err, "browser session recovery failed");
+            return actions::ActionResult::err(
+                &format!("{:?}", action),
+                format!(
+                    "browser session recovery failed: {err}; original error: {}",
+                    initial
+                        .error
+                        .unwrap_or_else(|| "unknown browser error".to_string())
+                ),
+            );
+        }
+
         let session_guard = self.session.read().await;
         match session_guard.as_ref() {
             Some(sess) => actions::ActionExecutor::execute(sess, action).await,
-            None => {
-                actions::ActionResult::err(&format!("{:?}", action), "browser not started".into())
-            }
+            None => actions::ActionResult::err(
+                &format!("{:?}", action),
+                "browser session unavailable after recovery".into(),
+            ),
         }
     }
 
     pub fn cdp_port(&self) -> u16 {
         self.config.cdp_port
     }
+
+    async fn recover_session(&self) -> Result<()> {
+        let _ = self.stop().await;
+        self.start().await
+    }
+}
+
+fn should_attempt_session_recovery(result: &actions::ActionResult) -> bool {
+    if result.success {
+        return false;
+    }
+    let Some(err) = result.error.as_deref() else {
+        return false;
+    };
+    let e = err.to_ascii_lowercase();
+    if e.contains("not started") {
+        return false;
+    }
+    e.contains("websocket")
+        || e.contains("closed")
+        || e.contains("connection reset")
+        || e.contains("broken pipe")
+        || e.contains("cdp read error")
+        || e.contains("cdp send failed")
 }
 
 /// Thread-safe wrapper for shared ownership.
@@ -299,6 +355,29 @@ mod tests {
                 result.error
             );
         }
+    }
+
+    #[test]
+    fn session_recovery_detection_for_disconnect_signatures() {
+        let recoverable =
+            actions::ActionResult::err("Navigate", "CDP WebSocket closed unexpectedly".to_string());
+        assert!(should_attempt_session_recovery(&recoverable));
+
+        let non_recoverable =
+            actions::ActionResult::err("Navigate", "browser not started".to_string());
+        assert!(!should_attempt_session_recovery(&non_recoverable));
+    }
+
+    #[test]
+    fn session_recovery_detection_ignores_policy_errors() {
+        let blocked = actions::ActionResult::err(
+            "Navigate",
+            "URL scheme is blocked for security: file:///etc/passwd".to_string(),
+        );
+        assert!(
+            !should_attempt_session_recovery(&blocked),
+            "security/policy denials should not trigger recovery loops"
+        );
     }
 
     #[test]
