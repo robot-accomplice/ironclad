@@ -567,6 +567,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn sandbox_env_strips_secrets() {
         let _env_guard = ENV_LOCK.lock().expect("env lock poisoned");
@@ -606,6 +607,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn sandbox_env_keeps_minimal_runtime_vars_only() {
         let _env_guard = ENV_LOCK.lock().expect("env lock poisoned");
