@@ -47,6 +47,16 @@ FOREIGN_IDENTITY_MARKERS = [
     "i'm chatgpt",
 ]
 
+FILESYSTEM_DENIAL_MARKERS = [
+    "can't access your files",
+    "cannot access your files",
+    "can't access your folders",
+    "cannot access your folders",
+    "don't have access to your files",
+    "as an ai, i don't have access to your files",
+    "as an ai text-based interface, i'm not able to directly access",
+]
+
 
 def send_message(prompt: str, session_id: str = None, retries: int = 6) -> Dict[str, object]:
     payload: Dict[str, object] = {"content": prompt}
@@ -229,6 +239,26 @@ def check_quote_safety(_resp: Dict[str, object], content: str) -> Tuple[bool, st
     ok = not any(m in lower for m in blocked_markers)
     return ok, "quote context handled without overbroad refusal"
 
+
+def check_no_filesystem_denial(_resp: Dict[str, object], content: str) -> Tuple[bool, str]:
+    lower = content.lower()
+    ok = not any(m in lower for m in FILESYSTEM_DENIAL_MARKERS)
+    return ok, "no false filesystem-access denial"
+
+
+def check_subagent_capability_answer(_resp: Dict[str, object], content: str) -> Tuple[bool, str]:
+    lower = content.lower()
+    useful_markers = [
+        "subagent",
+        "delegate",
+        "research",
+        "monitor",
+        "report",
+        "planner",
+    ]
+    ok = len(content.strip()) > 40 and any(m in lower for m in useful_markers)
+    return ok, "subagent capability answer is substantive"
+
 def check_affirmative_continuation(_resp: Dict[str, object], content: str) -> Tuple[bool, str]:
     lower = content.lower()
     blocked = (
@@ -363,6 +393,29 @@ SCENARIOS = [
             check_latency,
             check_no_exec_block,
             check_folder_scan("Downloads"),
+            check_no_filesystem_denial,
+            check_no_foreign_identity,
+        ],
+    ),
+    Scenario(
+        "filesystem_count_only",
+        "Count markdown files recursively in /Users/jmachen/code and return only the number.",
+        [
+            check_latency,
+            check_no_exec_block,
+            check_no_filesystem_denial,
+            check_count_only_output,
+            check_no_foreign_identity,
+        ],
+    ),
+    Scenario(
+        "subagent_capabilities",
+        "What can your subagents do?",
+        [
+            check_latency,
+            check_no_exec_block,
+            check_subagent_capability_answer,
+            check_no_stale,
             check_no_foreign_identity,
         ],
     ),
