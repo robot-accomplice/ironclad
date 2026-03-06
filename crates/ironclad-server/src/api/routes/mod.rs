@@ -1476,6 +1476,33 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn create_cron_job_defaults_payload_to_log_action() {
+        let state = test_state();
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/cron/jobs")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"name":"morning-briefing","agent_id":"test","schedule_kind":"cron","schedule_expr":"0 9 * * *"}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let job_id = body["job_id"].as_str().unwrap().to_string();
+
+        let job = ironclad_db::cron::get_job(&state.db, &job_id)
+            .unwrap()
+            .expect("job should exist");
+        let payload: serde_json::Value =
+            serde_json::from_str(&job.payload_json).expect("payload should be valid JSON");
+        assert_eq!(payload["action"], "log");
+        assert_eq!(payload["message"], "scheduled job: morning-briefing");
+    }
+
+    #[tokio::test]
     async fn get_cron_job_returns_detail() {
         let state = test_state();
         let job_id = ironclad_db::cron::create_job(

@@ -2214,7 +2214,7 @@
     },
     _parseCronToSched: function(kind, expr) {
       var s = { freq: 'daily', interval: 5, intervalUnit: 'minutes', hour: '02', minute: '00', days: [1,2,3,4,5,6,0] };
-      if (kind === 'interval') {
+      if (kind === 'interval' || kind === 'every') {
         var m = expr.match(/^(\d+)(s|m|h)$/);
         if (m) { s.freq = 'interval'; s.interval = parseInt(m[1]); s.intervalUnit = m[2] === 's' ? 'seconds' : m[2] === 'h' ? 'hours' : 'minutes'; }
         return s;
@@ -2248,6 +2248,45 @@
       var dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; var time = s.hour + ':' + s.minute;
       if (s.freq === 'weekly') return 'Weekly on ' + s.days.map(function(i) { return dayNames[i]; }).join(', ') + ' at ' + time;
       return 'Daily at ' + time;
+    },
+    _cronIntentFromJob: function(job) {
+      if (!job || !job.payload_json) return '';
+      try {
+        var payload = JSON.parse(job.payload_json);
+        return String(payload.message || '').trim();
+      } catch (_) {
+        return '';
+      }
+    },
+    _projectCronDaysInMonth: function(job, year, month) {
+      var days = [];
+      if (!job || !job.schedule_kind || !job.schedule_expr) return days;
+      var maxDay = new Date(year, month + 1, 0).getDate();
+      var sched = this._parseCronToSched(job.schedule_kind, job.schedule_expr);
+      // Interval/hourly jobs are frequent: show as "scheduled" every day.
+      if (sched.freq === 'interval' || sched.freq === 'hourly') {
+        for (var d = 1; d <= maxDay; d++) {
+          days.push(year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0'));
+        }
+        return days;
+      }
+      if (sched.freq === 'daily') {
+        for (var d2 = 1; d2 <= maxDay; d2++) {
+          days.push(year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d2).padStart(2, '0'));
+        }
+        return days;
+      }
+      if (sched.freq === 'weekly') {
+        var allowed = {};
+        (sched.days || []).forEach(function(x) { allowed[String(x)] = true; });
+        for (var d3 = 1; d3 <= maxDay; d3++) {
+          var jsDay = new Date(year, month, d3).getDay(); // 0=Sun
+          if (allowed[String(jsDay)]) {
+            days.push(year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d3).padStart(2, '0'));
+          }
+        }
+      }
+      return days;
     },
 
     renderScheduler: function() {
@@ -2289,7 +2328,7 @@
           var grouped = {};
           cronRuns[day].forEach(function(r) {
             var key = r.job_id || r.job;
-            if (!grouped[key]) grouped[key] = { job: r.job, job_id: r.job_id, count: 0, success_count: 0, error_count: 0, status: 'success' };
+            if (!grouped[key]) grouped[key] = { job: r.job, job_id: r.job_id, count: 0, success_count: 0, error_count: 0, status: 'success', scheduled_only: false };
             grouped[key].count += 1;
             if (r.status === 'error') grouped[key].error_count += 1;
             else grouped[key].success_count += 1;
@@ -2301,6 +2340,29 @@
             else g.status = 'success';
           });
           cronRuns[day] = Object.keys(grouped).map(function(k) { return grouped[k]; });
+        });
+
+        // Project scheduled occurrences into the month grid so newly created jobs
+        // are visible before first execution.
+        jobs.forEach(function(j) {
+          var projected = self._projectCronDaysInMonth(j, year, month);
+          projected.forEach(function(day) {
+            if (!cronRuns[day]) cronRuns[day] = [];
+            var exists = cronRuns[day].some(function(r) {
+              return (r.job_id && j.id && r.job_id === j.id) || r.job === j.name;
+            });
+            if (!exists) {
+              cronRuns[day].push({
+                job: j.name,
+                job_id: j.id,
+                count: 0,
+                success_count: 0,
+                error_count: 0,
+                status: 'scheduled',
+                scheduled_only: true
+              });
+            }
+          });
         });
 
         var jobMap = {}; jobs.forEach(function(j) { jobMap[j.name] = j; if (j.id) jobMap[j.id] = j; });
@@ -2318,7 +2380,7 @@
           var evtHtml = '';
           if (dayRuns.length > 0) {
             evtHtml = '<div class="cal-events">';
-            dayRuns.forEach(function(r) { var job = jobMap[r.job_id || r.job]; var color = job ? job.color : '#71717a'; var failCls = r.status === 'error' ? ' fail' : ''; var pastCls = isPast ? ' past' : ''; var pastAttr = isPast ? ' data-past="true"' : ''; evtHtml += '<div class="cal-evt' + failCls + pastCls + '" style="background:' + color + '" title="' + esc(r.job) + ' (' + r.count + ' runs, status: ' + r.status + ')' + '"' + pastAttr + ' data-evt-job="' + esc(r.job) + '">' + esc(r.job) + '</div>'; });
+            dayRuns.forEach(function(r) { var job = jobMap[r.job_id || r.job]; var color = job ? job.color : '#71717a'; var failCls = r.status === 'error' ? ' fail' : ''; var scheduledCls = r.status === 'scheduled' ? ' past' : ''; var pastCls = isPast ? ' past' : ''; var pastAttr = isPast ? ' data-past="true"' : ''; var statusText = r.status === 'scheduled' ? 'scheduled' : r.status; evtHtml += '<div class="cal-evt' + failCls + scheduledCls + pastCls + '" style="background:' + color + '" title="' + esc(r.job) + ' (' + r.count + ' runs, status: ' + statusText + ')' + '"' + pastAttr + ' data-evt-job="' + esc(r.job) + '">' + esc(r.job) + '</div>'; });
             evtHtml += '</div>';
           }
           calCells += '<div class="' + cls + '" data-date="' + dateKey + '"><div class="cal-day-num">' + dayNum + '</div>' + evtHtml + '</div>';
@@ -2336,14 +2398,14 @@
           var selRuns = cronRuns[self._calSelected] || [];
           if (selRuns.length > 0) {
             var histLabel = selIsPast ? '<div style="font-size:0.625rem;color:var(--muted);margin-bottom:0.375rem;text-transform:uppercase;letter-spacing:0.06em">Historical runs</div>' : '';
-            var runItems = selRuns.map(function(r) { var job = jobMap[r.job_id || r.job]; var color = job ? job.color : '#71717a'; var stCls = r.status === 'error' ? 'error' : 'success'; return '<div class="cal-detail-run"><div class="cal-detail-dot" style="background:' + color + '"></div><span style="flex:1">' + esc(r.job) + '</span><span class="card-mono" style="color:var(--muted)">' + r.count + 'x</span><span class="badge ' + stCls + '" style="font-size:0.5625rem">' + r.status + '</span></div>'; }).join('');
+            var runItems = selRuns.map(function(r) { var job = jobMap[r.job_id || r.job]; var color = job ? job.color : '#71717a'; var stCls = r.status === 'error' ? 'error' : (r.status === 'scheduled' ? 'muted' : 'success'); var countLabel = r.status === 'scheduled' ? 'planned' : (r.count + 'x'); return '<div class="cal-detail-run"><div class="cal-detail-dot" style="background:' + color + '"></div><span style="flex:1">' + esc(r.job) + '</span><span class="card-mono" style="color:var(--muted)">' + countLabel + '</span><span class="badge ' + stCls + '" style="font-size:0.5625rem">' + r.status + '</span></div>'; }).join('');
             detail = '<div class="cal-detail"><div class="cal-detail-title">' + esc(self._calSelected) + '</div>' + histLabel + runItems + '</div>';
           } else { detail = '<div class="cal-detail"><div class="cal-detail-title">' + esc(self._calSelected) + '</div><div style="color:var(--muted);font-size:0.75rem">No runs on this day</div></div>'; }
         }
 
         var modal = '';
         if (self._calModalMode) {
-          var job = self._calEditJob || { name: '', schedule_kind: 'cron', schedule_expr: '' };
+          var job = self._calEditJob || { name: '', description: '', schedule_kind: 'cron', schedule_expr: '' };
           var titleText = self._calModalMode === 'add' ? 'New Scheduled Job' : 'Edit Job';
           var sched = self._parseCronToSched(job.schedule_kind, job.schedule_expr);
           var freqOpts = [['interval','Repeating'],['hourly','Hourly'],['daily','Daily'],['weekly','Weekly']];
@@ -2358,7 +2420,7 @@
           var summary = self._schedSummary(sched);
           var editNotice = '';
           if (self._calModalMode === 'edit') { editNotice = '<div class="cal-edit-info"><strong>Note:</strong> Changes to the schedule will only apply to <strong>future</strong> executions. Historical run records are preserved as-is and cannot be modified.</div>'; }
-          modal = '<div class="cal-modal-overlay" data-cal-overlay><div class="cal-modal"><div class="cal-modal-header"><h3>' + titleText + '</h3><button class="cal-modal-close" data-cal-modal-close>\u00d7</button></div><div class="cal-modal-body">' + editNotice + '<div class="cal-modal-row"><label class="cal-modal-label">Name</label><input class="cal-modal-input" id="cal-job-name" value="' + esc(job.name) + '" placeholder="e.g. health-check"></div><div class="cal-modal-row"><label class="cal-modal-label">Recurrence</label>' + freqSelect + '</div>' + intervalRow + timeRow + daysRow + '<div class="cal-sched-summary" id="cal-sched-summary">' + esc(summary) + '</div></div><div class="cal-modal-footer"><button class="btn secondary" data-cal-modal-close>Cancel</button><button class="btn" id="cal-modal-save">' + (self._calModalMode === 'add' ? 'Add Job' : 'Save') + '</button></div></div></div>';
+          modal = '<div class="cal-modal-overlay" data-cal-overlay><div class="cal-modal"><div class="cal-modal-header"><h3>' + titleText + '</h3><button class="cal-modal-close" data-cal-modal-close>\u00d7</button></div><div class="cal-modal-body">' + editNotice + '<div class="cal-modal-row"><label class="cal-modal-label">Name</label><input class="cal-modal-input" id="cal-job-name" value="' + esc(job.name) + '" placeholder="e.g. health-check"></div><div class="cal-modal-row"><label class="cal-modal-label">Intent</label><input class="cal-modal-input" id="cal-job-description" value="' + esc(job.description || '') + '" placeholder="e.g. summarize overnight events and pending tasks"></div><div class="cal-modal-row"><label class="cal-modal-label">Recurrence</label>' + freqSelect + '</div>' + intervalRow + timeRow + daysRow + '<div class="cal-sched-summary" id="cal-sched-summary">' + esc(summary) + '</div></div><div class="cal-modal-footer"><button class="btn secondary" data-cal-modal-close>Cancel</button><button class="btn" id="cal-modal-save">' + (self._calModalMode === 'add' ? 'Add Job' : 'Save') + '</button></div></div></div>';
         }
 
         return '<div class="cal-wrap"><div class="cal-header"><div class="cal-header-left"><div class="cal-title">' + months[month] + ' ' + year + '</div><div class="cal-nav"><button data-cal-nav="prev">\u25c0</button><button data-cal-nav="today">\u25cf</button><button data-cal-nav="next">\u25b6</button></div></div><div class="cal-header-right"><button class="btn" style="font-size:0.75rem;padding:0.3rem 0.75rem" data-cal-add>+ Add Job</button></div></div><div class="cal-body"><div class="cal-grid-wrap"><div class="cal-dow-row">' + dowHeaders + '</div><div class="cal-grid">' + calCells + '</div></div><div class="cal-sidebar"><div class="cal-sidebar-section"><div class="cal-sidebar-title">Scheduled Jobs (' + jobs.length + ')</div>' + legend + '</div>' + (detail ? '<div class="cal-sidebar-section">' + detail + '</div>' : '') + '</div></div>' + modal + '</div>';
@@ -5318,7 +5380,7 @@
     var editBtn = e.target.closest('[data-cal-edit]');
     if (editBtn) {
       var idx = Number(editBtn.getAttribute('data-cal-edit')); var j = _cachedCronJobs[idx];
-      if (j) { App._calModalMode = 'edit'; App._calEditJob = { name: j.name, schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
+      if (j) { App._calModalMode = 'edit'; App._calEditJob = { name: j.name, description: App._cronIntentFromJob(j), schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
       return;
     }
     var delBtn = e.target.closest('[data-cal-delete]');
@@ -5337,7 +5399,9 @@
       var nameEl = document.getElementById('cal-job-name'); var name = (nameEl && nameEl.value || '').trim();
       if (!name) { toast('Name is required'); return; }
       var sched = App._readSchedFromUI(); var cron = App._schedToCron(sched);
-      var jobData = { name: name, schedule_kind: cron.kind, schedule_expr: cron.expr, agent_id: App._activeAgentId || 'ironclad' };
+      var descEl = document.getElementById('cal-job-description'); var intent = (descEl && descEl.value || '').trim();
+      var payloadObj = { action: 'log', message: intent || ('scheduled job: ' + name) };
+      var jobData = { name: name, schedule_kind: cron.kind, schedule_expr: cron.expr, payload_json: JSON.stringify(payloadObj), agent_id: App._activeAgentId || 'ironclad' };
       if (App._calModalMode === 'add') {
         api('/api/cron/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jobData) }).then(function() { toast('Added "' + name + '"'); App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Add failed'); });
       } else {
@@ -5358,7 +5422,7 @@
       }
       var jobName = evtChip.getAttribute('data-evt-job');
       var idx = _cachedCronJobs.findIndex(function(j) { return j.name === jobName; });
-      if (idx >= 0) { var j = _cachedCronJobs[idx]; App._calModalMode = 'edit'; App._calEditJob = { name: j.name, schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
+      if (idx >= 0) { var j = _cachedCronJobs[idx]; App._calModalMode = 'edit'; App._calEditJob = { name: j.name, description: App._cronIntentFromJob(j), schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
       return;
     }
     var calDay = e.target.closest('.cal-day[data-date]');

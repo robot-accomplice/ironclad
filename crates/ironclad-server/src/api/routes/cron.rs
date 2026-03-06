@@ -59,6 +59,7 @@ pub async fn list_cron_jobs(State(state): State<AppState>) -> impl IntoResponse 
                         "schedule_kind": j.schedule_kind,
                         "schedule_expr": j.schedule_expr,
                         "agent_id": j.agent_id,
+                        "payload_json": j.payload_json,
                         "last_run_at": j.last_run_at,
                         "last_status": j.last_status,
                         "consecutive_errors": j.consecutive_errors,
@@ -81,10 +82,21 @@ pub async fn create_cron_job(
         validate_short("agent_id", a)?;
     }
     // BUG-013: Validate payload_json is valid JSON before storing.
-    let payload = body.payload_json.as_deref().unwrap_or("{}");
-    if serde_json::from_str::<serde_json::Value>(payload).is_err() {
-        return Err(bad_request("payload_json must be valid JSON"));
-    }
+    // Default to a valid executable payload so newly created jobs do useful work
+    // instead of entering unknown-action failure loops.
+    let payload = match body.payload_json.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => {
+            if serde_json::from_str::<serde_json::Value>(raw).is_err() {
+                return Err(bad_request("payload_json must be valid JSON"));
+            }
+            raw.to_string()
+        }
+        _ => serde_json::json!({
+            "action": "log",
+            "message": format!("scheduled job: {}", body.name)
+        })
+        .to_string(),
+    };
     // BUG-012: Validate schedule_kind is a known value.
     let schedule_kind = normalize_schedule_kind(&body.schedule_kind);
     if !matches!(schedule_kind, "cron" | "every" | "once") {
@@ -128,7 +140,7 @@ pub async fn create_cron_job(
         agent_id,
         &schedule_kind,
         schedule_expr.as_deref(),
-        payload,
+        &payload,
     ) {
         Ok(id) => Ok(axum::Json(serde_json::json!({ "job_id": id }))),
         Err(e) => Err(internal_err(&e)),
