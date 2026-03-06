@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use super::intents::{
     requests_acknowledgement, requests_cron, requests_current_events, requests_delegation,
-    requests_execution, requests_model_identity,
+    requests_email_triage, requests_execution, requests_file_distribution, requests_folder_scan,
+    requests_image_count_scan, requests_model_identity, requests_obsidian_insights,
+    requests_wallet_address_scan,
 };
 
 /// RAII guard that releases a dedup fingerprint when dropped.
@@ -136,7 +138,7 @@ pub(super) fn enforce_non_repetition(
 ) -> String {
     if previous_assistant.is_some_and(|prev| looks_repetitive(&response, prev)) {
         if user_requests_fresh_delta(user_prompt) {
-            return "Duncan here. No verified delta from my last report yet. Give me a concrete check and I’ll run it now."
+            return "No verified delta since my last report. Name the exact check you want and I will run it now."
                 .to_string();
         }
         return response;
@@ -169,8 +171,6 @@ pub(super) fn is_low_value_response(user_prompt: &str, response: &str) -> bool {
         "i await your insights",
         "acknowledged. working on that now.",
         "acknowledged. working on that now",
-        "duncan here. understood. i’ll report back with verified results.",
-        "duncan here. understood. i'll report back with verified results.",
         "⚔️ duncan is on it…",
         "⚔️ duncan is on it...",
         "🤖🧠…",
@@ -246,12 +246,40 @@ fn looks_like_unexecuted_claim(response: &str) -> bool {
         || lower.contains("unable to directly execute")
 }
 
+fn denies_local_runtime_capability(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    (lower.contains("can't access your files")
+        || lower.contains("cannot access your files")
+        || lower.contains("can't access your local files")
+        || lower.contains("cannot access your local files")
+        || lower.contains("can't access your folders")
+        || lower.contains("cannot access your folders")
+        || lower.contains("can't browse your files")
+        || lower.contains("cannot browse your files")
+        || lower.contains("can't write directly to your local filesystem")
+        || lower.contains("cannot write directly to your local filesystem")
+        || lower.contains("i'm not able to directly access")
+        || lower.contains("i am not able to directly access"))
+        && (lower.contains("folder")
+            || lower.contains("filesystem")
+            || lower.contains("device")
+            || lower.contains("local"))
+}
+
 pub(super) fn enforce_execution_truth_guard(
     user_prompt: &str,
     response: String,
     tool_results: &[(String, String)],
     agent_name: &str,
 ) -> String {
+    let runtime_execution_prompt = requests_execution(user_prompt)
+        || requests_file_distribution(user_prompt)
+        || requests_folder_scan(user_prompt)
+        || requests_wallet_address_scan(user_prompt)
+        || requests_image_count_scan(user_prompt)
+        || requests_obsidian_insights(user_prompt)
+        || requests_email_triage(user_prompt);
+
     if requests_delegation(user_prompt)
         && !tool_results.iter().any(|(name, output)| {
             let n = name.to_ascii_lowercase();
@@ -280,7 +308,7 @@ pub(super) fn enforce_execution_truth_guard(
         );
     }
 
-    if !requests_execution(user_prompt) {
+    if !runtime_execution_prompt {
         return response;
     }
     if !tool_results.is_empty() {
@@ -298,6 +326,12 @@ pub(super) fn enforce_execution_truth_guard(
         tracing::warn!("execution truth guard rewrote unverified execution-style response");
         return format!(
             "{agent_name}: by your command, execution truth is strict. I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
+        );
+    }
+    if denies_local_runtime_capability(&response) {
+        tracing::warn!("execution truth guard rewrote false local-runtime capability denial");
+        return format!(
+            "{agent_name}: execution truth is strict. I do have tool/runtime access for local operations, but I did not execute a tool in that turn. Give me the exact path/action and I will run it."
         );
     }
     // If there is no explicit execution claim, keep the response.
@@ -508,19 +542,29 @@ fn is_internal_orchestration_narrative_line(line: &str) -> bool {
         || t.starts_with("subtasks:")
 }
 
+fn is_internal_tool_protocol_line(line: &str) -> bool {
+    let t = line.trim().to_ascii_lowercase();
+    t.contains(r#""tool_call""#)
+        || t.starts_with("unexecuted_streaming_tool_call:")
+        || t.starts_with("tool_call:")
+        || t.starts_with("{\"tool_call\"")
+}
+
 pub(super) fn strip_internal_delegation_metadata(content: &str) -> String {
     let filtered = content
         .lines()
         .filter(|line| {
             !is_internal_delegation_metadata_line(line)
                 && !is_internal_orchestration_narrative_line(line)
+                && !is_internal_tool_protocol_line(line)
         })
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
         .to_string();
     if filtered.is_empty() {
-        content.trim().to_string()
+        "I suppressed internal execution metadata. Ask for the user-facing result and I will return it plainly."
+            .to_string()
     } else {
         filtered
     }

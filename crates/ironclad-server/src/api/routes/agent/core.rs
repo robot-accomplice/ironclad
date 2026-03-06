@@ -86,6 +86,29 @@ pub(super) struct InferenceOutput {
     pub tool_results: Vec<(String, String)>,
 }
 
+fn deterministic_quality_fallback(user_prompt: &str, agent_name: &str) -> String {
+    if requests_current_events(user_prompt) {
+        return format!(
+            "{agent_name} here. I failed to produce a reliable live sitrep in that turn. I can still provide a concrete briefing now if you specify scope (global, US, or region) and I will return it with dated caveats."
+        );
+    }
+    if requests_capability_summary(user_prompt) {
+        return "I can execute tools for filesystem/command tasks, delegate to subagents, inspect runtime state, schedule jobs, and report outcomes with evidence from executed steps.".to_string();
+    }
+    if requests_personality_profile(user_prompt) {
+        return format!(
+            "{agent_name}: concise, direct, and execution-first. I acknowledge quickly, act with tools when needed, and avoid fabricated claims."
+        );
+    }
+    if requests_provider_inventory(user_prompt) {
+        return "I can list active provider/model routing from runtime state. Ask me for a provider inventory and I will return the current configured primary and fallback chain."
+            .to_string();
+    }
+    format!(
+        "{agent_name} here. The prior generation degraded. I am returning a concrete fallback: state the exact outcome format you want (for example: bullet summary, command output, or action plan) and I will deliver it directly."
+    )
+}
+
 /// Build a `PreparedInference` from the caller's `InferenceInput`.
 ///
 /// Handles: model routing, embedding, RAG retrieval, history, system prompt,
@@ -1770,17 +1793,11 @@ pub(super) async fn run_inference_and_react(
                 if is_low_value_response(user_prompt, &final_content)
                     || is_parroting_user_prompt(user_prompt, &final_content)
                 {
-                    final_content = format!(
-                        "{} here. The prior generation degraded into non-substantive output. Re-run your request and I will return concrete results.",
-                        agent_name
-                    );
+                    final_content = deterministic_quality_fallback(user_prompt, &agent_name);
                 }
             }
             Err(_) => {
-                final_content = format!(
-                    "{} here. I rejected a low-value placeholder response and the quality retry failed. Re-run your request and I will return concrete output.",
-                    agent_name
-                );
+                final_content = deterministic_quality_fallback(user_prompt, &agent_name);
             }
         }
     }

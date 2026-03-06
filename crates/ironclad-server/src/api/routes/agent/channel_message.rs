@@ -2,8 +2,8 @@
 
 use super::AppState;
 use super::channel_helpers::{
-    build_personality_ack_text, estimate_inference_latency, resolve_channel_chat_id,
-    resolve_channel_scope, send_thinking_indicator, send_typing_indicator,
+    estimate_inference_latency, resolve_channel_chat_id, resolve_channel_scope,
+    send_thinking_indicator, send_typing_indicator,
 };
 use super::core;
 use super::decomposition::{
@@ -596,7 +596,6 @@ pub async fn process_channel_message(
             }
         });
 
-        let ack_text = build_personality_ack_text(state).await;
         if let Some(notice) = model_switch_notice.as_ref() {
             state
                 .channel_router
@@ -613,12 +612,8 @@ pub async fn process_channel_message(
                 || requests_file_distribution(&user_content)
                 || requests_cron(&user_content));
         if should_pre_ack {
-            state
-                .channel_router
-                .send_reply(&platform, &chat_id, ack_text.clone())
-                .await
-                .inspect_err(|e| tracing::warn!(error = %e, "failed to send pre-acknowledgment"))
-                .ok();
+            // Keep immediate feedback channel-native (typing + ephemeral thinking),
+            // not repeated textual pre-acks that pollute dialogue continuity.
             send_thinking_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
             thinking_sent.store(true, Ordering::Release);
         }

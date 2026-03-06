@@ -182,6 +182,25 @@ Actual user-facing answer.";
 }
 
 #[test]
+fn strip_internal_delegation_metadata_removes_tool_protocol_leakage() {
+    let raw = "\
+{\"tool_call\":{\"name\":\"bash\",\"params\":{\"command\":\"ls\"}}}\n\
+unexecuted_streaming_tool_call: {\"command\":\"ls\"}\n\
+Visible answer line.";
+    let cleaned = strip_internal_delegation_metadata(raw);
+    assert!(!cleaned.contains("\"tool_call\""));
+    assert!(!cleaned.contains("unexecuted_streaming_tool_call"));
+    assert!(cleaned.contains("Visible answer line."));
+}
+
+#[test]
+fn strip_internal_delegation_metadata_returns_suppression_message_when_all_internal() {
+    let raw = "delegated_subagent=geo model=x fallback_models=[]\nsubtask 1 -> geo";
+    let cleaned = strip_internal_delegation_metadata(raw);
+    assert!(cleaned.contains("suppressed internal execution metadata"));
+}
+
+#[test]
 fn format_channel_reply_for_delivery_normalizes_telegram_markdown() {
     let raw = "\
 # Heading\n\

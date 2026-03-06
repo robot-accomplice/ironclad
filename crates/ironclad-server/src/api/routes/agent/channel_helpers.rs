@@ -155,14 +155,6 @@ pub(super) async fn send_thinking_indicator(
     }
 }
 
-pub(super) async fn build_personality_ack_text(state: &AppState) -> String {
-    let cfg = state.config.read().await;
-    format!(
-        "{} here. Understood. I’ll report back with verified results.",
-        cfg.agent.name
-    )
-}
-
 async fn build_personality_thinking_text(state: &AppState) -> String {
     let cfg = state.config.read().await;
     format!("⚔️ {} is on it…", cfg.agent.name)

@@ -68,7 +68,9 @@ pub(super) fn requests_folder_scan(prompt: &str) -> bool {
         || lower.contains("~/documents")
         || lower.contains("~/pictures")
         || lower.contains("~/photos")
-        || lower.contains("~/desktop");
+        || lower.contains("~/desktop")
+        || lower.contains("~/")
+        || lower.contains("/users/");
     asks_scan && mentions_folder
 }
 

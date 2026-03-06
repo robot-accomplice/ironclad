@@ -114,7 +114,7 @@ fn low_value_response_detector_flags_ready_and_status_loops() {
     ));
     assert!(is_low_value_response(
         "brainstorm revenue streams for agent self-funding",
-        "Duncan here. Understood. I’ll report back with verified results.\n\n⚔️ Duncan is on it…\n\nready"
+        "⚔️ Duncan is on it…\n\n🤖🧠…\n\nready"
     ));
 }
 
@@ -155,6 +155,16 @@ fn execution_truth_guard_blocks_unexecuted_command_suggestion() {
     let response =
         "You can use the following command: `ls /Users/jmachen | head -n 10`".to_string();
     let guarded = enforce_execution_truth_guard(prompt, response, &[], "Duncan");
+    assert!(guarded.contains("did not execute a tool"));
+}
+
+#[test]
+fn execution_truth_guard_rewrites_false_local_filesystem_denial() {
+    let prompt = "please search ~/code recursively for wallet addresses";
+    let response =
+        "As an AI text-based interface, I cannot access your local files or folders.".to_string();
+    let guarded = enforce_execution_truth_guard(prompt, response, &[], "Duncan");
+    assert!(guarded.contains("do have tool/runtime access"));
     assert!(guarded.contains("did not execute a tool"));
 }
 
