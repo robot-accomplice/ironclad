@@ -112,10 +112,34 @@ pub(super) fn looks_repetitive(current: &str, previous: &str) -> bool {
     overlap_ratio >= 0.86 || (overlap_ratio >= 0.72 && prefix_ratio >= 0.55)
 }
 
-pub(super) fn enforce_non_repetition(response: String, previous_assistant: Option<&str>) -> String {
+fn user_requests_fresh_delta(user_prompt: &str) -> bool {
+    let lower = user_prompt.to_ascii_lowercase();
+    let markers = [
+        "status",
+        "update",
+        "what changed",
+        "anything changed",
+        "fresh check",
+        "check again",
+        "still",
+        "latest",
+        "current",
+        "sitrep",
+    ];
+    markers.iter().any(|m| lower.contains(m))
+}
+
+pub(super) fn enforce_non_repetition(
+    user_prompt: &str,
+    response: String,
+    previous_assistant: Option<&str>,
+) -> String {
     if previous_assistant.is_some_and(|prev| looks_repetitive(&response, prev)) {
-        return "I don't have a new verified update beyond my previous reply. I can run a fresh check now and report only what changed."
-            .to_string();
+        if user_requests_fresh_delta(user_prompt) {
+            return "Duncan here. No verified delta from my last report yet. Give me a concrete check and I’ll run it now."
+                .to_string();
+        }
+        return response;
     }
     response
 }
@@ -296,6 +320,12 @@ fn looks_like_stale_knowledge_disclaimer(response: &str) -> bool {
         || lower.contains("as of my last training")
         || lower.contains("i cannot provide real-time updates")
         || lower.contains("i can't provide real-time updates")
+        || lower.contains("i cannot provide real-time geopolitical analysis")
+        || lower.contains("i can't provide real-time geopolitical analysis")
+        || lower.contains("do not include live news feeds")
+        || lower.contains("does not include live news feeds")
+        || lower.contains("no live news feeds")
+        || lower.contains("specialized geopolitical subagents")
         || lower.contains("as of early 2023")
         || lower.contains("as of 2023")
 }
@@ -310,6 +340,49 @@ pub(super) fn enforce_current_events_truth_guard(user_prompt: &str, response: St
     tracing::warn!("current-events guard blocked stale-knowledge disclaimer response");
     "Acknowledged. I cannot provide a current-events sitrep from stale memory. I will run live retrieval/delegation and return an up-to-date report with the current date."
         .to_string()
+}
+
+pub(super) fn is_overbroad_sensitive_conflict_refusal(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    let markers = [
+        "i cannot provide quotes related to ongoing conflicts",
+        "i can't provide quotes related to ongoing conflicts",
+        "i cannot provide quotes",
+        "sensitive geopolitical situations",
+        "helpful and harmless",
+        "avoiding engagement with potentially harmful or biased content",
+        "if you have other requests that do not involve sensitive topics",
+    ];
+    markers.iter().any(|m| lower.contains(m))
+}
+
+pub(super) fn enforce_internal_jargon_guard(response: String, agent_name: &str) -> String {
+    let mut kept = Vec::new();
+    let mut removed = false;
+    for line in response.lines() {
+        let t = line.trim();
+        let lower = t.to_ascii_lowercase();
+        let internal = lower.contains("decomposition gate decision")
+            || lower.contains("expected_utility_margin")
+            || lower.starts_with("centralized delegation is sensible")
+            || lower.starts_with("delegation gate decision");
+        if internal {
+            removed = true;
+            continue;
+        }
+        kept.push(line);
+    }
+    if !removed {
+        return response;
+    }
+    let cleaned = kept.join("\n").trim().to_string();
+    if cleaned.is_empty() {
+        return format!(
+            "{} here. I’ll keep internals out of the reply and focus on actionable results.",
+            agent_name
+        );
+    }
+    cleaned
 }
 
 // ── Scope validation ──────────────────────────────────────────

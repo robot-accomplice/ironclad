@@ -157,12 +157,15 @@ pub(super) async fn send_thinking_indicator(
 
 pub(super) async fn build_personality_ack_text(state: &AppState) -> String {
     let cfg = state.config.read().await;
-    format!("{} here. On it.", cfg.agent.name)
+    format!(
+        "{} here. Understood. I’ll report back with verified results.",
+        cfg.agent.name
+    )
 }
 
 async fn build_personality_thinking_text(state: &AppState) -> String {
     let cfg = state.config.read().await;
-    format!("⚔️ {} is working the task…", cfg.agent.name)
+    format!("⚔️ {} is on it…", cfg.agent.name)
 }
 
 /// Estimate expected inference latency in seconds based on model tier, input

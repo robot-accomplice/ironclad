@@ -127,6 +127,85 @@ fn count_occurrences(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
 }
 
+const INTERNALIZED_SKILLS: &[&str] = &[
+    "update-and-rollback",
+    "workflow-design",
+    "skill-creation",
+    "session-operator",
+    "claims-auditor",
+    "efficacy-assessment",
+    "fast-cache",
+    "model-routing-tuner",
+];
+
+#[derive(Debug, Default, Clone)]
+struct InternalizedSkillCleanupReport {
+    stale_db_skills: Vec<String>,
+    stale_files: Vec<PathBuf>,
+    stale_dirs: Vec<PathBuf>,
+    removed_db_skills: Vec<String>,
+    removed_paths: Vec<PathBuf>,
+}
+
+fn find_path_case_insensitive(base: &Path, candidate: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(base).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.eq_ignore_ascii_case(candidate) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn cleanup_internalized_skill_artifacts(
+    state_db_path: &Path,
+    skills_dir: &Path,
+    repair: bool,
+) -> InternalizedSkillCleanupReport {
+    let mut report = InternalizedSkillCleanupReport::default();
+
+    if state_db_path.exists()
+        && let Ok(db) = ironclad_db::Database::new(state_db_path.to_string_lossy().as_ref())
+        && let Ok(skills) = ironclad_db::skills::list_skills(&db)
+    {
+        for skill in skills {
+            if INTERNALIZED_SKILLS
+                .iter()
+                .any(|name| skill.name.eq_ignore_ascii_case(name))
+            {
+                report.stale_db_skills.push(skill.name.clone());
+                if repair && ironclad_db::skills::delete_skill(&db, &skill.id).is_ok() {
+                    report.removed_db_skills.push(skill.name);
+                }
+            }
+        }
+    }
+
+    if skills_dir.exists() {
+        for skill_name in INTERNALIZED_SKILLS {
+            let md_name = format!("{skill_name}.md");
+            if let Some(path) = find_path_case_insensitive(skills_dir, &md_name) {
+                report.stale_files.push(path.clone());
+                if repair && std::fs::remove_file(&path).is_ok() {
+                    report.removed_paths.push(path);
+                }
+            }
+            if let Some(path) = find_path_case_insensitive(skills_dir, skill_name)
+                && path.is_dir()
+            {
+                report.stale_dirs.push(path.clone());
+                if repair && std::fs::remove_dir_all(&path).is_ok() {
+                    report.removed_paths.push(path);
+                }
+            }
+        }
+    }
+
+    report
+}
+
 #[derive(Debug, Clone)]
 struct ProviderHealthRow {
     name: String,
@@ -202,6 +281,7 @@ struct RepairActionSummary {
     config_created: bool,
     permissions_hardened: Vec<String>,
     schema_normalized: bool,
+    internalized_skills_cleaned: Vec<String>,
     paused_jobs_reenabled: Vec<String>,
     security_configured: bool,
 }
@@ -403,6 +483,63 @@ async fn cmd_mechanic_json(
             finding.auto_repaired = true;
         }
         findings.push(finding);
+    }
+
+    let skills_cleanup = cleanup_internalized_skill_artifacts(
+        &ironclad_dir.join("state.db"),
+        &ironclad_dir.join("skills"),
+        repair,
+    );
+    if !skills_cleanup.stale_db_skills.is_empty()
+        || !skills_cleanup.stale_files.is_empty()
+        || !skills_cleanup.stale_dirs.is_empty()
+    {
+        let stale_db = if skills_cleanup.stale_db_skills.is_empty() {
+            "none".to_string()
+        } else {
+            skills_cleanup.stale_db_skills.join(", ")
+        };
+        let stale_fs_items: Vec<String> = skills_cleanup
+            .stale_files
+            .iter()
+            .chain(skills_cleanup.stale_dirs.iter())
+            .map(|p| p.display().to_string())
+            .collect();
+        let stale_fs = if stale_fs_items.is_empty() {
+            "none".to_string()
+        } else {
+            stale_fs_items.join(", ")
+        };
+        let mut f = finding(
+            "internalized-skill-drift",
+            "medium",
+            0.98,
+            "Internalized skills still exist as external artifacts",
+            format!("stale_db=[{stale_db}]; stale_fs=[{stale_fs}]"),
+            "Remove obsolete externalized skill entries/files for internalized skills.",
+            vec!["ironclad mechanic --repair".to_string()],
+            true,
+            false,
+        );
+        if repair
+            && (!skills_cleanup.removed_db_skills.is_empty()
+                || !skills_cleanup.removed_paths.is_empty())
+        {
+            f.auto_repaired = true;
+            actions.internalized_skills_cleaned.extend(
+                skills_cleanup
+                    .removed_db_skills
+                    .iter()
+                    .map(|s| format!("db:{s}"))
+                    .chain(
+                        skills_cleanup
+                            .removed_paths
+                            .iter()
+                            .map(|p| format!("fs:{}", p.display())),
+                    ),
+            );
+        }
+        findings.push(f);
     }
 
     let gateway = super::http_client()?
@@ -1648,6 +1785,51 @@ pub async fn cmd_mechanic(
                     println!("         Run `ironclad mechanic --repair` to add it with approval.");
                 }
             }
+        }
+    }
+
+    let skills_cleanup = cleanup_internalized_skill_artifacts(
+        &ironclad_dir.join("state.db"),
+        &ironclad_dir.join("skills"),
+        repair,
+    );
+    if !skills_cleanup.stale_db_skills.is_empty()
+        || !skills_cleanup.stale_files.is_empty()
+        || !skills_cleanup.stale_dirs.is_empty()
+    {
+        println!(
+            "  {WARN} Internalized skills still present as external artifacts (DB/filesystem drift)"
+        );
+        if !skills_cleanup.stale_db_skills.is_empty() {
+            println!(
+                "    {DETAIL} Stale DB rows: {}",
+                skills_cleanup.stale_db_skills.join(", ")
+            );
+        }
+        let stale_paths: Vec<String> = skills_cleanup
+            .stale_files
+            .iter()
+            .chain(skills_cleanup.stale_dirs.iter())
+            .map(|p| p.display().to_string())
+            .collect();
+        if !stale_paths.is_empty() {
+            println!(
+                "    {DETAIL} Stale skill artifacts: {}",
+                stale_paths.join(", ")
+            );
+        }
+        if repair {
+            let removed_count =
+                skills_cleanup.removed_db_skills.len() + skills_cleanup.removed_paths.len();
+            if removed_count > 0 {
+                println!(
+                    "  {ACTION} Cleaned {removed_count} internalized-skill artifact{}",
+                    if removed_count == 1 { "" } else { "s" }
+                );
+                fixed += removed_count as u32;
+            }
+        } else {
+            println!("    {DETAIL} Run `ironclad mechanic --repair` to remove stale artifacts.");
         }
     }
 
@@ -3394,6 +3576,105 @@ mod tests {
         assert!(f.repair_plan.safe_auto_repair);
         assert!(!f.repair_plan.requires_human_approval);
         assert_eq!(f.repair_plan.commands, vec!["cmd"]);
+    }
+
+    #[test]
+    fn cleanup_internalized_skill_artifacts_detects_db_and_filesystem_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+        let skills_dir = dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("workflow-design.md"), "# legacy").unwrap();
+        std::fs::create_dir_all(skills_dir.join("fast-cache")).unwrap();
+
+        let db = ironclad_db::Database::new(db_path.to_string_lossy().as_ref()).unwrap();
+        ironclad_db::skills::register_skill(
+            &db,
+            "workflow-design",
+            "instruction",
+            Some("legacy externalized form"),
+            "/tmp/workflow-design.md",
+            "h1",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let report = cleanup_internalized_skill_artifacts(&db_path, &skills_dir, false);
+        assert!(
+            report
+                .stale_db_skills
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case("workflow-design"))
+        );
+        assert!(
+            report
+                .stale_files
+                .iter()
+                .any(|p| p.file_name().and_then(|n| n.to_str()) == Some("workflow-design.md"))
+        );
+        assert!(
+            report
+                .stale_dirs
+                .iter()
+                .any(|p| p.file_name().and_then(|n| n.to_str()) == Some("fast-cache"))
+        );
+        assert!(report.removed_db_skills.is_empty());
+        assert!(report.removed_paths.is_empty());
+    }
+
+    #[test]
+    fn cleanup_internalized_skill_artifacts_repair_removes_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+        let skills_dir = dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("session-operator.md"), "# legacy").unwrap();
+
+        let db = ironclad_db::Database::new(db_path.to_string_lossy().as_ref()).unwrap();
+        let skill_id = ironclad_db::skills::register_skill(
+            &db,
+            "session-operator",
+            "instruction",
+            Some("legacy externalized form"),
+            "/tmp/session-operator.md",
+            "h1",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            ironclad_db::skills::get_skill(&db, &skill_id)
+                .unwrap()
+                .is_some()
+        );
+
+        let report = cleanup_internalized_skill_artifacts(&db_path, &skills_dir, true);
+        assert!(
+            report
+                .removed_db_skills
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case("session-operator"))
+        );
+        assert!(
+            report
+                .removed_paths
+                .iter()
+                .any(|p| { p.file_name().and_then(|n| n.to_str()) == Some("session-operator.md") })
+        );
+        assert!(!skills_dir.join("session-operator.md").exists());
+        let db = ironclad_db::Database::new(db_path.to_string_lossy().as_ref()).unwrap();
+        assert!(
+            ironclad_db::skills::get_skill(&db, &skill_id)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

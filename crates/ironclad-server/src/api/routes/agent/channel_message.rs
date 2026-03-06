@@ -132,12 +132,53 @@ fn is_short_followup_for_previous_reply(user_content: &str) -> bool {
     markers.iter().any(|m| lower.contains(m))
 }
 
+fn is_short_reactive_sarcasm(user_content: &str) -> bool {
+    let lower = user_content.trim().to_ascii_lowercase();
+    if lower.len() > 32 {
+        return false;
+    }
+    let markers = [
+        "wow",
+        "great",
+        "fantastic",
+        "amazing",
+        "incredible",
+        "brilliant",
+        "sure",
+        "right",
+    ];
+    markers
+        .iter()
+        .any(|m| lower == *m || lower == format!("{m}.") || lower == format!("{m}..."))
+}
+
+fn is_short_contradiction_followup(user_content: &str) -> bool {
+    let lower = user_content.trim().to_ascii_lowercase();
+    if lower.len() > 48 {
+        return false;
+    }
+    let markers = [
+        "that's not true",
+        "that is not true",
+        "not true",
+        "that's wrong",
+        "that is wrong",
+        "incorrect",
+    ];
+    markers
+        .iter()
+        .any(|m| lower == *m || lower == format!("{m}.") || lower.contains(m))
+}
+
 async fn contextualize_short_followup(
     state: &AppState,
     session_id: &str,
     user_content: &str,
 ) -> String {
-    if !is_short_followup_for_previous_reply(user_content) {
+    if !is_short_followup_for_previous_reply(user_content)
+        && !is_short_reactive_sarcasm(user_content)
+        && !is_short_contradiction_followup(user_content)
+    {
         return user_content.to_string();
     }
     let Ok(history) = ironclad_db::sessions::list_messages(&state.db, session_id, Some(20)) else {
@@ -152,6 +193,20 @@ async fn contextualize_short_followup(
     let Some(previous_assistant) = previous_assistant else {
         return user_content.to_string();
     };
+    if is_short_reactive_sarcasm(user_content) {
+        return format!(
+            "User likely reacted with sarcasm/frustration to your previous reply. Acknowledge the miss directly, do not treat it as praise, and correct course.\nPrevious assistant reply excerpt:\n\"{}\"\n\nUser reaction:\n{}",
+            previous_assistant.chars().take(240).collect::<String>(),
+            user_content
+        );
+    }
+    if is_short_contradiction_followup(user_content) {
+        return format!(
+            "User directly disputed your previous reply as incorrect. Acknowledge the error and provide a corrected answer grounded in available tools/delegation.\nPrevious assistant reply excerpt:\n\"{}\"\n\nUser follow-up:\n{}",
+            previous_assistant.chars().take(240).collect::<String>(),
+            user_content
+        );
+    }
     let quote = previous_assistant.chars().take(360).collect::<String>();
     format!(
         "User follow-up references your immediately previous reply. Answer specifically what that prior reply/quote is from.\nPrevious assistant reply excerpt:\n\"{}\"\n\nUser question:\n{}",
@@ -562,7 +617,33 @@ pub async fn process_channel_message(
 
     // ── Thinking/typing indicator ────────────────────────────────────
     let thinking_sent = Arc::new(AtomicBool::new(false));
+    let typing_keepalive_stop = Arc::new(AtomicBool::new(false));
     {
+        // Start visual feedback immediately for every inbound message so the
+        // user sees responsive behavior even when we avoid textual pre-acks.
+        send_typing_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
+        let keepalive_state = state.clone();
+        let keepalive_platform = platform.clone();
+        let keepalive_chat_id = chat_id.clone();
+        let keepalive_metadata = inbound.metadata.clone();
+        let keepalive_stop = Arc::clone(&typing_keepalive_stop);
+        tokio::spawn(async move {
+            // Keep signaling liveness for long-running turns until completion.
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                if keepalive_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                send_typing_indicator(
+                    &keepalive_state,
+                    &keepalive_platform,
+                    &keepalive_chat_id,
+                    keepalive_metadata.as_ref(),
+                )
+                .await;
+            }
+        });
+
         let ack_text = build_personality_ack_text(state).await;
         if let Some(notice) = model_switch_notice.as_ref() {
             state
@@ -600,38 +681,18 @@ pub async fn process_channel_message(
         .await;
 
         if !should_pre_ack && estimated_latency >= thinking_threshold {
-            if platform == "telegram" {
-                state
-                    .channel_router
-                    .send_reply(&platform, &chat_id, ack_text.clone())
-                    .await
-                    .inspect_err(|e| tracing::warn!(error = %e, "failed to send acknowledgment"))
-                    .ok();
-            }
             send_thinking_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
             thinking_sent.store(true, Ordering::Release);
         } else if !should_pre_ack {
-            send_typing_indicator(state, &platform, &chat_id, inbound.metadata.as_ref()).await;
             let delayed_state = state.clone();
             let delayed_platform = platform.clone();
             let delayed_chat_id = chat_id.clone();
             let delayed_metadata = inbound.metadata.clone();
             let delayed_guard = Arc::clone(&thinking_sent);
-            let delayed_ack = ack_text.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(thinking_threshold)).await;
                 if delayed_guard.load(Ordering::Acquire) {
                     return;
-                }
-                if delayed_platform == "telegram" {
-                    delayed_state
-                        .channel_router
-                        .send_reply(&delayed_platform, &delayed_chat_id, delayed_ack)
-                        .await
-                        .inspect_err(
-                            |e| tracing::warn!(error = %e, "failed to send delayed acknowledgment"),
-                        )
-                        .ok();
                 }
                 send_thinking_indicator(
                     &delayed_state,
@@ -661,6 +722,7 @@ pub async fn process_channel_message(
     {
         Ok(r) => r,
         Err(msg) => {
+            typing_keepalive_stop.store(true, Ordering::Release);
             thinking_sent.store(true, Ordering::Release);
             let mut llm = state.llm.write().await;
             llm.dedup.release(&dedup_fp);
@@ -676,12 +738,14 @@ pub async fn process_channel_message(
         .send_reply(&platform, &chat_id, outbound)
         .await
     {
+        typing_keepalive_stop.store(true, Ordering::Release);
         thinking_sent.store(true, Ordering::Release);
         let mut llm = state.llm.write().await;
         llm.dedup.release(&dedup_fp);
         drop(llm);
         return Err(e.to_string());
     }
+    typing_keepalive_stop.store(true, Ordering::Release);
     thinking_sent.store(true, Ordering::Release);
 
     // Release dedup tracking

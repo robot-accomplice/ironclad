@@ -2,60 +2,9 @@ use super::*;
 
 // ── Setup wizard & starter skills ─────────────────────────────
 
-pub const STARTER_SKILLS: &[(&str, &str)] = &[
-    (
-        "hello.md",
-        r#"---
-name: hello
-description: Greet the user and introduce the agent
-triggers:
-  keywords: [hello, hi, greet, introduce, who are you]
-priority: 5
----
-
-Greet the user warmly. Introduce yourself by name and briefly describe what you can do.
-Keep it concise -- one or two sentences. If the user seems new, mention they can
-ask for help at any time.
-"#,
-    ),
-    (
-        "summarize.md",
-        r#"---
-name: summarize
-description: Summarize text, articles, or conversations
-triggers:
-  keywords: [summarize, summary, tldr, recap, brief]
-priority: 7
----
-
-Summarize the provided content clearly and concisely. Structure your summary as:
-1. A one-sentence overview
-2. Key points (3-5 bullets)
-3. Any action items or decisions mentioned
-
-If no content is provided, ask the user what they'd like summarized.
-Preserve important details like names, dates, and numbers.
-"#,
-    ),
-    (
-        "explain.md",
-        r#"---
-name: explain
-description: Explain concepts, code, or ideas in plain language
-triggers:
-  keywords: [explain, what is, how does, break down, eli5, teach]
-priority: 7
----
-
-Explain the topic clearly, adjusting depth to the user's apparent level of expertise.
-Start with a simple one-sentence definition, then expand with relevant details.
-Use analogies when helpful. If explaining code, walk through the logic step by step.
-If the concept is complex, break it into numbered parts.
-"#,
-    ),
-    (
-        "draft.md",
-        r#"---
+pub const STARTER_SKILLS: &[(&str, &str)] = &[(
+    "draft.md",
+    r#"---
 name: draft
 description: Draft emails, messages, documents, or other written content
 triggers:
@@ -67,61 +16,7 @@ Draft the requested content based on the user's description. Ask clarifying ques
 if the audience, tone, or purpose is unclear. Default to a professional but approachable
 tone unless told otherwise. Present the draft clearly and offer to revise.
 "#,
-    ),
-    (
-        "review.md",
-        r#"---
-name: review
-description: Review code, text, or plans and provide constructive feedback
-triggers:
-  keywords: [review, check, feedback, critique, improve, proofread]
-priority: 7
----
-
-Review the provided content carefully. Organize your feedback into:
-- **Issues**: things that are wrong or could cause problems
-- **Suggestions**: improvements that would make it better
-- **Strengths**: what's already working well
-
-Be specific -- reference exact lines or passages. Prioritize the most impactful
-feedback first. Keep the tone constructive.
-"#,
-    ),
-    (
-        "plan.md",
-        r#"---
-name: plan
-description: Break down tasks or projects into actionable steps
-triggers:
-  keywords: [plan, steps, breakdown, roadmap, how to, strategy, approach]
-priority: 6
----
-
-Break the task into clear, actionable steps. For each step:
-1. State what to do
-2. Note any prerequisites or dependencies
-3. Estimate relative effort (quick / moderate / significant) if helpful
-
-Order steps logically. Flag any risks or decisions that need to be made before
-proceeding. Keep the plan practical -- prefer concrete actions over vague guidance.
-"#,
-    ),
-    (
-        "search.md",
-        r#"---
-name: search
-description: Help find information, files, or answers
-triggers:
-  keywords: [find, search, look up, locate, where is, which]
-priority: 5
----
-
-Help the user find what they're looking for. If you have access to relevant tools
-or context, use them. If the query is ambiguous, ask one clarifying question before
-searching. Present results clearly with sources or locations when available.
-"#,
-    ),
-];
+)];
 
 pub fn write_starter_skills(skills_dir: &std::path::Path) -> std::io::Result<usize> {
     let mut written = 0;

@@ -71,8 +71,8 @@ fn claim_detection_catches_live_delegation_markers() {
 fn non_repetition_guard_rewrites_near_duplicate_output() {
     let prev = "The system appears stable. Monitoring remains active across all channels with no critical errors. I can continue watching and report any changes immediately.";
     let current = "The system appears stable. Monitoring remains active across all channels with no critical errors. I can continue watching and report any changes immediately.";
-    let guarded = enforce_non_repetition(current.to_string(), Some(prev));
-    assert!(guarded.contains("fresh check now"));
+    let guarded = enforce_non_repetition("status update?", current.to_string(), Some(prev));
+    assert!(guarded.contains("No verified delta"));
     assert_ne!(guarded, current);
 }
 
@@ -82,15 +82,23 @@ fn non_repetition_guard_keeps_distinct_output() {
         "Provider health is degraded and retries are being attempted through fallback models.";
     let current =
         "Two subagents are now running, one is still booting, and delegation is available.";
-    let guarded = enforce_non_repetition(current.to_string(), Some(prev));
+    let guarded = enforce_non_repetition("status update?", current.to_string(), Some(prev));
     assert_eq!(guarded, current);
 }
 
 #[test]
 fn enforce_non_repetition_with_none_previous() {
     let response = "Some unique response";
-    let result = enforce_non_repetition(response.to_string(), None);
+    let result = enforce_non_repetition("hello", response.to_string(), None);
     assert_eq!(result, response);
+}
+
+#[test]
+fn non_repetition_guard_keeps_repetition_when_delta_not_requested() {
+    let prev = "The system appears stable. Monitoring remains active across all channels with no critical errors. I can continue watching and report any changes immediately.";
+    let current = prev;
+    let guarded = enforce_non_repetition("Thanks, makes sense.", current.to_string(), Some(prev));
+    assert_eq!(guarded, current);
 }
 
 // ── execution truth guard tests ──────────────────────────────
@@ -203,11 +211,25 @@ fn current_events_guard_blocks_stale_knowledge_disclaimer() {
 }
 
 #[test]
+fn current_events_guard_blocks_live_news_feed_capability_refusal() {
+    let prompt = "What does the geopolitical sub agent say about goings on in the US?";
+    let response = "I cannot provide real-time geopolitical analysis, as my capabilities do not include live news feeds or specialized geopolitical subagents.".to_string();
+    let guarded = enforce_current_events_truth_guard(prompt, response);
+    assert!(guarded.contains("cannot provide a current-events sitrep from stale memory"));
+}
+
+#[test]
 fn current_events_guard_keeps_valid_current_events_response() {
     let prompt = "Give me a geopolitical sitrep";
     let response = "Acknowledged. I am retrieving a live sitrep now.".to_string();
     let guarded = enforce_current_events_truth_guard(prompt, response.clone());
     assert_eq!(guarded, response);
+}
+
+#[test]
+fn sensitive_conflict_refusal_detector_matches_overbroad_template() {
+    let response = "I cannot provide quotes related to ongoing conflicts or sensitive geopolitical situations. If you have other requests that do not involve sensitive topics, I'd be happy to help.";
+    assert!(is_overbroad_sensitive_conflict_refusal(response));
 }
 
 #[test]
@@ -245,6 +267,31 @@ fn personality_integrity_guard_strips_text_interface_boilerplate() {
             .to_ascii_lowercase()
             .contains("as an ai text-based interface")
     );
+}
+
+#[test]
+fn internal_jargon_guard_strips_decomposition_lines() {
+    let response = "Centralized delegation is sensible for a simple, single-step task.\nexpected_utility_margin=-0.1\nActionable output follows.";
+    let guarded = enforce_internal_jargon_guard(response.to_string(), "Duncan");
+    assert!(
+        !guarded
+            .to_ascii_lowercase()
+            .contains("expected_utility_margin")
+    );
+    assert!(
+        !guarded
+            .to_ascii_lowercase()
+            .contains("centralized delegation")
+    );
+    assert!(guarded.contains("Actionable output follows."));
+}
+
+#[test]
+fn internal_jargon_guard_falls_back_when_only_internal_lines() {
+    let response =
+        "decomposition gate decision: centralized\nexpected_utility_margin=-0.1".to_string();
+    let guarded = enforce_internal_jargon_guard(response, "Duncan");
+    assert!(guarded.contains("I’ll keep internals out of the reply"));
 }
 
 // ── repeat_tokens tests ──────────────────────────────────────

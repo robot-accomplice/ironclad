@@ -31,15 +31,18 @@ pub(super) fn requests_delegation(prompt: &str) -> bool {
     if lower.contains("delegate") || lower.contains("orchestrate") {
         return true;
     }
-    if lower.contains("assign") && lower.contains("subagent") {
+    if lower.contains("assign") && (lower.contains("subagent") || lower.contains("sub agent")) {
         return true;
     }
-    lower.contains("subagent")
+    (lower.contains("subagent") || lower.contains("sub agent"))
         && (lower.contains("order")
+            || lower.contains("ask")
             || lower.contains("task")
             || lower.contains("run ")
             || lower.contains("to a subagent")
-            || lower.contains("to the subagent"))
+            || lower.contains("to a sub agent")
+            || lower.contains("to the subagent")
+            || lower.contains("to the sub agent"))
 }
 
 pub(super) fn requests_cron(prompt: &str) -> bool {
@@ -74,12 +77,17 @@ pub(super) fn requests_current_events(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
     [
         "geopolitical situation",
+        "geopolitical",
+        "geo political",
         "geopolitical sitrep",
         "sitrep",
         "current events",
         "latest news",
         "what's happening",
         "what is happening",
+        "goings on",
+        "going on in the",
+        "what does the",
         "today's",
         "as of today",
     ]
@@ -180,6 +188,43 @@ pub(super) fn requests_obsidian_insights(prompt: &str) -> bool {
     mentions_vault && asks_for_summary
 }
 
+pub(super) fn requests_email_triage(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    let email_markers = [
+        "check my email",
+        "check email",
+        "inbox",
+        "mailbox",
+        "important email",
+        "important emails",
+        "scan my email",
+        "email triage",
+        "email digest",
+    ];
+    let bridge_markers = ["proton bridge", "protonbridge", "himalaya"];
+    email_markers.iter().any(|m| lower.contains(m))
+        || (lower.contains("email") && bridge_markers.iter().any(|m| lower.contains(m)))
+}
+
+pub(super) fn requests_literary_quote_context(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    if lower.contains("what's that from") || lower.contains("what is that from") {
+        return true;
+    }
+    let asks_for_quote = lower.contains("quote")
+        || lower.contains("line from")
+        || lower.contains("appropriate line")
+        || lower.contains("what quote");
+    let literary_source = lower.contains("dune")
+        || lower.contains("frank herbert")
+        || lower.contains("litany against fear");
+    let contextual_target = lower.contains("conflict")
+        || lower.contains("iran")
+        || lower.contains("geopolitical")
+        || lower.contains("situation");
+    asks_for_quote && (literary_source || contextual_target)
+}
+
 pub(super) fn should_bypass_cache_for_prompt(prompt: &str) -> bool {
     requests_execution(prompt)
         || requests_current_events(prompt)
@@ -191,6 +236,8 @@ pub(super) fn should_bypass_cache_for_prompt(prompt: &str) -> bool {
         || requests_wallet_address_scan(prompt)
         || requests_image_count_scan(prompt)
         || requests_obsidian_insights(prompt)
+        || requests_email_triage(prompt)
+        || requests_literary_quote_context(prompt)
 }
 
 #[cfg(test)]
@@ -209,6 +256,7 @@ mod tests {
     #[test]
     fn delegation_and_cron_markers_match_expected_prompts() {
         assert!(requests_delegation("order a subagent to do this"));
+        assert!(requests_delegation("ask the sub agent to do this"));
         assert!(!requests_delegation(
             "use your introspection tool to discover current subagent functionality"
         ));
@@ -229,6 +277,9 @@ mod tests {
             "What's the geopolitical situation?"
         ));
         assert!(requests_current_events("Give me a geopolitical sitrep"));
+        assert!(requests_current_events(
+            "What does the geo political sub agent say about goings on in the US?"
+        ));
         assert!(requests_current_events("What are today's current events?"));
     }
 
@@ -241,6 +292,28 @@ mod tests {
             "use your introspection tool to discover current subagent functionality"
         ));
         assert!(requests_introspection("what tools do you have available?"));
+    }
+
+    #[test]
+    fn email_triage_markers_match_expected_prompts() {
+        assert!(requests_email_triage(
+            "Can you have a subagent check my email for anything important?"
+        ));
+        assert!(requests_email_triage(
+            "Use proton bridge and triage inbox for urgent items"
+        ));
+        assert!(!requests_email_triage("Check my calendar for tomorrow"));
+    }
+
+    #[test]
+    fn literary_quote_markers_match_expected_prompts() {
+        assert!(requests_literary_quote_context(
+            "Give me an appropriate dune quote for the conflict in Iran"
+        ));
+        assert!(requests_literary_quote_context("What's that from?"));
+        assert!(!requests_literary_quote_context(
+            "Give me a geopolitical situation update"
+        ));
     }
 
     #[test]
