@@ -1115,7 +1115,7 @@ async fn try_execution_shortcut(
     }
 
     // 3) Markdown count request — recursively count .md files.
-    if requests_markdown_count_scan(user_prompt) {
+    if requests_markdown_count_scan(user_prompt) && !requests_delegation(user_prompt) {
         let path = extract_path_hint(user_prompt).unwrap_or_else(|| "~/code".to_string());
         let resolved_path = expand_user_path(&path);
         let cmd = build_markdown_count_command(&path);
