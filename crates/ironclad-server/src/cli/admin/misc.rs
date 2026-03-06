@@ -302,6 +302,13 @@ struct ProviderHealthRow {
     error: Option<String>,
 }
 
+fn provider_scan_hint(provider: Option<&str>) -> String {
+    match provider {
+        Some(name) if !name.trim().is_empty() => format!("ironclad models scan {}", name.trim()),
+        _ => "ironclad models scan".to_string(),
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 struct RevenueControlPlaneHealth {
     opportunities_total: i64,
@@ -864,7 +871,7 @@ async fn cmd_mechanic_json(
                     "Provider health check returned no providers",
                     "No provider status records were returned by /api/models/available.",
                     "Verify providers are configured and reachable from the runtime.",
-                    vec!["ironclad models scan".to_string()],
+                    vec![provider_scan_hint(None)],
                     false,
                     false,
                 ));
@@ -880,7 +887,7 @@ async fn cmd_mechanic_json(
                             format!("Provider '{}' reachable but no models discovered", row.name),
                             "Provider endpoint responded successfully but model list is empty.",
                             "Check provider model inventory and credentials.",
-                            vec![format!("ironclad models scan --provider {}", row.name)],
+                            vec![provider_scan_hint(Some(&row.name))],
                             false,
                             false,
                         )),
@@ -892,7 +899,7 @@ async fn cmd_mechanic_json(
                             row.error.unwrap_or_else(|| "provider route is not healthy".to_string()),
                             "Restore provider connectivity/auth so fallback routing can continue automatically.",
                             vec![
-                                format!("ironclad models scan --provider {}", row.name),
+                                provider_scan_hint(Some(&row.name)),
                                 "ironclad mechanic --repair".to_string(),
                             ],
                             false,
@@ -905,7 +912,7 @@ async fn cmd_mechanic_json(
                             format!("Provider '{}' reported status '{}'", row.name, other),
                             row.error.unwrap_or_else(|| "unknown provider health state".to_string()),
                             "Inspect provider configuration and discovery path.",
-                            vec![format!("ironclad models scan --provider {}", row.name)],
+                            vec![provider_scan_hint(Some(&row.name))],
                             false,
                             false,
                         )),
@@ -920,7 +927,7 @@ async fn cmd_mechanic_json(
                     "Provider health check failed",
                     format!("Could not query /api/models/available: {e}"),
                     "Inspect gateway and provider discovery endpoint health.",
-                    vec!["ironclad models scan".to_string()],
+                    vec![provider_scan_hint(None)],
                     false,
                     false,
                 ));
@@ -2424,14 +2431,26 @@ pub async fn cmd_mechanic(
                                 "    {WARN} {}: reachable but no models discovered",
                                 row.name
                             );
+                            println!(
+                                "      {DETAIL} Probe route: `{}`",
+                                provider_scan_hint(Some(&row.name))
+                            );
                         }
                         "unreachable" | "error" => {
                             let detail = row.error.as_deref().unwrap_or("unknown provider error");
                             println!("    {WARN} {}: {} ({detail})", row.name, row.status);
+                            println!(
+                                "      {DETAIL} Probe route: `{}`",
+                                provider_scan_hint(Some(&row.name))
+                            );
                         }
                         other => {
                             let detail = row.error.as_deref().unwrap_or("no extra detail");
                             println!("    {WARN} {}: {other} ({detail})", row.name);
+                            println!(
+                                "      {DETAIL} Probe route: `{}`",
+                                provider_scan_hint(Some(&row.name))
+                            );
                         }
                     }
                 }
