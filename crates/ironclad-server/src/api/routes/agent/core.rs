@@ -89,7 +89,10 @@ pub(super) struct InferenceOutput {
 
 fn deterministic_quality_fallback(user_prompt: &str, agent_name: &str) -> String {
     let lower = user_prompt.trim().to_ascii_lowercase();
-    if matches!(lower.as_str(), "awesome" | "great" | "nice" | "perfect" | "go ahead") {
+    if matches!(
+        lower.as_str(),
+        "awesome" | "great" | "nice" | "perfect" | "go ahead"
+    ) {
         return "Copy. Next concrete step: I can produce paste-ready markdown bodies for Wallet-Defaults.md, Cadence-and-Approvals.md, and Daily-Progress-Template.md right now."
             .to_string();
     }

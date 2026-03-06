@@ -229,6 +229,22 @@ def check_quote_safety(_resp: Dict[str, object], content: str) -> Tuple[bool, st
     ok = not any(m in lower for m in blocked_markers)
     return ok, "quote context handled without overbroad refusal"
 
+def check_affirmative_continuation(_resp: Dict[str, object], content: str) -> Tuple[bool, str]:
+    lower = content.lower()
+    blocked = (
+        "prior generation degraded" in lower
+        or "state the exact outcome format" in lower
+        or "how can i assist you further" in lower
+    )
+    useful = (
+        "wallet-defaults" in lower
+        or "cadence-and-approvals" in lower
+        or "daily-progress-template" in lower
+        or "paste-ready markdown" in lower
+        or "next concrete step" in lower
+    )
+    return (not blocked and useful), "affirmative follow-up continues concrete work"
+
 
 def check_geopolitical_quality(_resp: Dict[str, object], content: str) -> Tuple[bool, str]:
     lower = content.lower()
@@ -354,6 +370,16 @@ SCENARIOS = [
         "dune_quote_context",
         "Give me an appropriate dune quote for the conflict in Iran",
         [check_latency, check_quote_safety, check_no_foreign_identity],
+    ),
+    Scenario(
+        "affirmative_continuation",
+        "We just agreed to build an Obsidian vault scaffold with Governance/Ledger/Subagents/Data/Reports files. awesome",
+        [
+            check_latency,
+            check_affirmative_continuation,
+            check_no_foreign_identity,
+            check_no_stale,
+        ],
     ),
 ]
 
