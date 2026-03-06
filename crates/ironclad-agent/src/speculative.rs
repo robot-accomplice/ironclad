@@ -47,6 +47,17 @@ pub struct SpeculationCache {
     active_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+pub struct SpeculationSlotGuard {
+    active_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Drop for SpeculationSlotGuard {
+    fn drop(&mut self) {
+        self.active_count
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 impl SpeculationCache {
     #[must_use]
     pub fn new(max_concurrent: usize) -> Self {
@@ -102,15 +113,24 @@ impl SpeculationCache {
 
     /// Try to reserve a speculation slot. Returns true if the slot was acquired.
     pub fn start_speculation(&self) -> bool {
+        self.reserve_slot().is_some()
+    }
+
+    /// Reserve a speculation slot and get an RAII guard that releases it on drop.
+    ///
+    /// Prefer this over start/end pairs to guarantee cleanup on cancellation/panic.
+    pub fn reserve_slot(&self) -> Option<SpeculationSlotGuard> {
         let prev = self
             .active_count
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         if prev >= self.max_concurrent {
             self.active_count
                 .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-            false
+            None
         } else {
-            true
+            Some(SpeculationSlotGuard {
+                active_count: Arc::clone(&self.active_count),
+            })
         }
     }
 
@@ -429,6 +449,42 @@ mod tests {
         cache.end_speculation();
         assert_eq!(cache.active_count(), 0);
         assert!(cache.start_speculation(), "slot should be available again");
+    }
+
+    #[test]
+    fn reserve_slot_guard_releases_on_drop() {
+        let cache = SpeculationCache::new(1);
+        let guard = cache.reserve_slot().expect("first reserve should succeed");
+        assert_eq!(cache.active_count(), 1);
+        drop(guard);
+        assert_eq!(
+            cache.active_count(),
+            0,
+            "dropping guard must release speculation slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn reserve_slot_guard_releases_on_task_abort() {
+        let cache = Arc::new(SpeculationCache::new(1));
+        let cache_for_task = Arc::clone(&cache);
+        let task = tokio::spawn(async move {
+            let _guard = cache_for_task
+                .reserve_slot()
+                .expect("slot should be available");
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert_eq!(cache.active_count(), 1);
+        task.abort();
+        // Wait for cancellation propagation and drop handling.
+        let _ = task.await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert_eq!(
+            cache.active_count(),
+            0,
+            "aborted task must not leak active speculation slots"
+        );
     }
 
     #[test]
