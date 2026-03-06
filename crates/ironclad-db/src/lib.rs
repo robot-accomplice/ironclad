@@ -48,6 +48,7 @@ pub mod model_selection;
 pub mod policy;
 pub mod routing_dataset;
 pub mod schema;
+pub mod service_revenue;
 pub mod sessions;
 pub mod shadow_routing;
 pub mod skills;

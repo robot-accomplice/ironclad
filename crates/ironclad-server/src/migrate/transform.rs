@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{AreaResult, MigrationArea, SafetyVerdict, copy_dir_recursive, scan_directory_safety};
 
-// ── OpenClaw data structures ───────────────────────────────────────────
+// ── Legacy data structures ───────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct OpenClawConfig {
+pub(crate) struct LegacyConfig {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -27,16 +27,16 @@ pub(crate) struct OpenClawConfig {
     #[serde(default)]
     pub system_prompt: Option<String>,
     #[serde(default)]
-    pub channels: Option<OpenClawChannels>,
+    pub channels: Option<LegacyChannels>,
     #[serde(default, deserialize_with = "deserialize_cron")]
-    pub cron: Option<Vec<OpenClawCronJob>>,
+    pub cron: Option<Vec<LegacyCronJob>>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
 
-/// OpenClaw's `cron` field can be either a list of jobs or an object like
+/// Legacy's `cron` field can be either a list of jobs or an object like
 /// `{"enabled": true}`. Accept both without failing deserialization.
-fn deserialize_cron<'de, D>(deserializer: D) -> Result<Option<Vec<OpenClawCronJob>>, D::Error>
+fn deserialize_cron<'de, D>(deserializer: D) -> Result<Option<Vec<LegacyCronJob>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -44,7 +44,7 @@ where
     match value {
         None => Ok(None),
         Some(serde_json::Value::Array(arr)) => {
-            let jobs: Vec<OpenClawCronJob> =
+            let jobs: Vec<LegacyCronJob> =
                 serde_json::from_value(serde_json::Value::Array(arr)).unwrap_or_default();
             Ok(Some(jobs))
         }
@@ -54,17 +54,17 @@ where
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
-pub(crate) struct OpenClawChannels {
+pub(crate) struct LegacyChannels {
     #[serde(default)]
-    pub telegram: Option<OpenClawTelegramChannel>,
+    pub telegram: Option<LegacyTelegramChannel>,
     #[serde(default)]
-    pub whatsapp: Option<OpenClawWhatsappChannel>,
+    pub whatsapp: Option<LegacyWhatsappChannel>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct OpenClawTelegramChannel {
+pub(crate) struct LegacyTelegramChannel {
     #[serde(default, alias = "botToken")]
     pub token: Option<String>,
     #[serde(default)]
@@ -74,7 +74,7 @@ pub(crate) struct OpenClawTelegramChannel {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct OpenClawWhatsappChannel {
+pub(crate) struct LegacyWhatsappChannel {
     #[serde(default)]
     pub token: Option<String>,
     #[serde(default, alias = "phoneNumberId")]
@@ -86,7 +86,7 @@ pub(crate) struct OpenClawWhatsappChannel {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct OpenClawCronJob {
+pub(crate) struct LegacyCronJob {
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
@@ -103,15 +103,15 @@ pub(crate) struct OpenClawCronJob {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
-/// Wrapper for `~/.openclaw/cron/jobs.json` which uses `{"version": N, "jobs": [...]}`
+/// Wrapper for `~/.legacy/cron/jobs.json` which uses `{"version": N, "jobs": [...]}`
 #[derive(Debug, Deserialize)]
-pub(crate) struct OpenClawJobsFile {
+pub(crate) struct LegacyJobsFile {
     #[serde(default)]
-    pub jobs: Vec<OpenClawCronJob>,
+    pub jobs: Vec<LegacyCronJob>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct OpenClawSession {
+pub(crate) struct LegacySession {
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
@@ -119,11 +119,11 @@ pub(crate) struct OpenClawSession {
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
-    pub messages: Option<Vec<OpenClawMessage>>,
+    pub messages: Option<Vec<LegacyMessage>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct OpenClawMessage {
+pub(crate) struct LegacyMessage {
     #[serde(default)]
     pub role: Option<String>,
     #[serde(default)]
@@ -132,9 +132,9 @@ pub(crate) struct OpenClawMessage {
     pub timestamp: Option<String>,
 }
 
-/// Real OpenClaw JSONL line wrapper: `{"type":"message","message":{...}}`
+/// Real Legacy JSONL line wrapper: `{"type":"message","message":{...}}`
 #[derive(Debug, Deserialize)]
-struct OpenClawJSONLLine {
+struct LegacyJSONLLine {
     #[serde(default, rename = "type")]
     line_type: Option<String>,
     #[allow(dead_code)]
@@ -143,11 +143,11 @@ struct OpenClawJSONLLine {
     #[serde(default)]
     timestamp: Option<String>,
     #[serde(default)]
-    message: Option<OpenClawJSONLMessage>,
+    message: Option<LegacyJSONLMessage>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenClawJSONLMessage {
+struct LegacyJSONLMessage {
     #[serde(default)]
     role: Option<String>,
     #[serde(default)]
@@ -156,8 +156,8 @@ struct OpenClawJSONLMessage {
     timestamp: Option<serde_json::Value>,
 }
 
-impl OpenClawJSONLMessage {
-    fn into_message(self, line_ts: Option<&str>) -> Option<OpenClawMessage> {
+impl LegacyJSONLMessage {
+    fn into_message(self, line_ts: Option<&str>) -> Option<LegacyMessage> {
         let role = self.role?;
         let content = match self.content? {
             serde_json::Value::String(s) => s,
@@ -181,7 +181,7 @@ impl OpenClawJSONLMessage {
                 _ => None,
             })
             .or_else(|| line_ts.map(String::from));
-        Some(OpenClawMessage {
+        Some(LegacyMessage {
             role: Some(role),
             content: Some(content),
             timestamp: ts,
@@ -195,11 +195,11 @@ impl OpenClawJSONLMessage {
 
 pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
     let ks_path = ic_root.join("keystore.enc");
-    let config_path = oc_root.join("openclaw.json");
+    let config_path = oc_root.join("legacy.json");
     if !config_path.exists() {
         return err(
             MigrationArea::Config,
-            format!("openclaw.json not found at {}", config_path.display()),
+            format!("legacy.json not found at {}", config_path.display()),
         );
     }
 
@@ -208,16 +208,16 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
         Err(e) => {
             return err(
                 MigrationArea::Config,
-                format!("Failed to read openclaw.json: {e}"),
+                format!("Failed to read legacy.json: {e}"),
             );
         }
     };
-    let oc_cfg: OpenClawConfig = match serde_json::from_str(&content) {
+    let oc_cfg: LegacyConfig = match serde_json::from_str(&content) {
         Ok(c) => c,
         Err(e) => {
             return err(
                 MigrationArea::Config,
-                format!("Failed to parse openclaw.json: {e}"),
+                format!("Failed to parse legacy.json: {e}"),
             );
         }
     };
@@ -323,7 +323,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
     ));
     toml.push(String::new());
 
-    // Parse the rich `models.providers` structure from openclaw.json.
+    // Parse the rich `models.providers` structure from legacy.json.
     let oc_providers: Vec<(String, serde_json::Value)> = oc_cfg
         .extra
         .get("models")
@@ -382,7 +382,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
                 toml.push(format!("primary = {}", qt(model)));
             } else {
                 toml.push("primary = \"gpt-4\"".into());
-                warnings.push("No model specified in OpenClaw config, defaulting to gpt-4".into());
+                warnings.push("No model specified in Legacy config, defaulting to gpt-4".into());
             }
         }
 
@@ -394,7 +394,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
         toml.push(format!("primary = {}", qt(model)));
     } else {
         toml.push("primary = \"gpt-4\"".into());
-        warnings.push("No model specified in OpenClaw config, defaulting to gpt-4".into());
+        warnings.push("No model specified in Legacy config, defaulting to gpt-4".into());
     }
     if let Some(temp) = oc_cfg.temperature {
         toml.push(format!("temperature = {temp}"));
@@ -413,7 +413,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
                 toml.push(format!("url = {}", qt(url)));
             }
 
-            // Map OpenClaw API format to Ironclad format
+            // Map Legacy API format to Ironclad format
             let oc_api = prov
                 .get("api")
                 .and_then(|v| v.as_str())
@@ -455,7 +455,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
                 toml.push("is_local = true".into());
             }
 
-            // Costs (per-million in OpenClaw → per-token in Ironclad)
+            // Costs (per-million in Legacy → per-token in Ironclad)
             let cost_in = prov
                 .get("models")
                 .and_then(|m| m.as_array())
@@ -691,8 +691,8 @@ pub(crate) fn export_config(ic_root: &Path, oc_root: &Path) -> AreaResult {
         }
     }
 
-    // Deep-merge with existing openclaw.json if present
-    let oc_config_path = oc_root.join("openclaw.json");
+    // Deep-merge with existing legacy.json if present
+    let oc_config_path = oc_root.join("legacy.json");
     let mut merged: serde_json::Map<String, serde_json::Value> = if oc_config_path.exists() {
         fs::read_to_string(&oc_config_path)
             .ok()
@@ -723,7 +723,7 @@ pub(crate) fn export_config(ic_root: &Path, oc_root: &Path) -> AreaResult {
     if let Err(e) = fs::write(&oc_config_path, &json) {
         return err(
             MigrationArea::Config,
-            format!("Failed to write openclaw.json: {e}"),
+            format!("Failed to write legacy.json: {e}"),
         );
     }
 
@@ -882,7 +882,7 @@ pub(crate) fn export_personality(ic_root: &Path, oc_root: &Path) -> AreaResult {
 
 pub(crate) fn markdown_to_personality_toml(md: &str, kind: &str) -> String {
     let mut lines = vec![
-        format!("# Converted from OpenClaw {kind} markdown"),
+        format!("# Converted from Legacy {kind} markdown"),
         format!("[{kind}]"),
     ];
     // Preserve full original as prompt_text for round-trip fidelity
@@ -985,7 +985,7 @@ pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path, no_safety_check: boo
             area: MigrationArea::Skills,
             success: true,
             items_processed: 0,
-            warnings: vec!["No skills directory found in OpenClaw workspace".into()],
+            warnings: vec!["No skills directory found in Legacy workspace".into()],
             error: None,
         };
     }
@@ -1023,8 +1023,8 @@ pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path, no_safety_check: boo
         warnings.push("Safety checks skipped (--no-safety-check)".into());
     }
 
-    // Read skills.entries from openclaw.json for enabled/disabled state
-    let skill_entries: HashMap<String, bool> = fs::read_to_string(oc_root.join("openclaw.json"))
+    // Read skills.entries from legacy.json for enabled/disabled state
+    let skill_entries: HashMap<String, bool> = fs::read_to_string(oc_root.join("legacy.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| {
@@ -1236,14 +1236,14 @@ pub(crate) fn export_skills(ic_root: &Path, oc_root: &Path) -> AreaResult {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub(crate) fn import_sessions(oc_root: &Path, ic_root: &Path) -> AreaResult {
-    let mut all_sessions: Vec<OpenClawSession> = Vec::new();
+    let mut all_sessions: Vec<LegacySession> = Vec::new();
     let mut warnings = Vec::new();
 
     // sessions.json (top-level array)
     let sessions_json = oc_root.join("sessions.json");
     if sessions_json.exists() {
         match fs::read_to_string(&sessions_json) {
-            Ok(c) => match serde_json::from_str::<Vec<OpenClawSession>>(&c) {
+            Ok(c) => match serde_json::from_str::<Vec<LegacySession>>(&c) {
                 Ok(s) => all_sessions.extend(s),
                 Err(e) => warnings.push(format!("Failed to parse sessions.json: {e}")),
             },
@@ -1268,11 +1268,11 @@ pub(crate) fn import_sessions(oc_root: &Path, ic_root: &Path) -> AreaResult {
                         Some("jsonl") => {
                             if let Ok(content) = fs::read_to_string(&path) {
                                 let mut created_at: Option<String> = None;
-                                let mut msgs: Vec<OpenClawMessage> = Vec::new();
+                                let mut msgs: Vec<LegacyMessage> = Vec::new();
                                 for line in content.lines() {
                                     // Try new wrapper format first (must have an explicit "type" field)
                                     if let Ok(wrapper) =
-                                        serde_json::from_str::<OpenClawJSONLLine>(line)
+                                        serde_json::from_str::<LegacyJSONLLine>(line)
                                         && let Some(lt) = wrapper.line_type.as_deref()
                                     {
                                         if lt == "session" {
@@ -1288,12 +1288,12 @@ pub(crate) fn import_sessions(oc_root: &Path, ic_root: &Path) -> AreaResult {
                                         continue;
                                     }
                                     // Fallback: simple `{"role":"...","content":"..."}` format
-                                    if let Ok(msg) = serde_json::from_str::<OpenClawMessage>(line) {
+                                    if let Ok(msg) = serde_json::from_str::<LegacyMessage>(line) {
                                         msgs.push(msg);
                                     }
                                 }
                                 if !msgs.is_empty() {
-                                    all_sessions.push(OpenClawSession {
+                                    all_sessions.push(LegacySession {
                                         id: Some(
                                             path.file_stem()
                                                 .unwrap_or_default()
@@ -1311,7 +1311,7 @@ pub(crate) fn import_sessions(oc_root: &Path, ic_root: &Path) -> AreaResult {
                         }
                         Some("json") => {
                             if let Ok(content) = fs::read_to_string(&path)
-                                && let Ok(s) = serde_json::from_str::<OpenClawSession>(&content)
+                                && let Ok(s) = serde_json::from_str::<LegacySession>(&content)
                             {
                                 all_sessions.push(s);
                             }
@@ -1509,9 +1509,9 @@ pub(crate) fn import_cron(oc_root: &Path, ic_root: &Path) -> AreaResult {
         match fs::read_to_string(&candidate) {
             Ok(c) => {
                 // First try the wrapped format `{"version": N, "jobs": [...]}`
-                if let Ok(wrapper) = serde_json::from_str::<OpenClawJobsFile>(&c) {
+                if let Ok(wrapper) = serde_json::from_str::<LegacyJobsFile>(&c) {
                     jobs.extend(wrapper.jobs);
-                } else if let Ok(parsed) = serde_json::from_str::<Vec<OpenClawCronJob>>(&c) {
+                } else if let Ok(parsed) = serde_json::from_str::<Vec<LegacyCronJob>>(&c) {
                     jobs.extend(parsed);
                 } else {
                     warnings.push(format!("Failed to parse {}", candidate.display()));
@@ -1521,10 +1521,10 @@ pub(crate) fn import_cron(oc_root: &Path, ic_root: &Path) -> AreaResult {
         }
     }
 
-    let config_path = oc_root.join("openclaw.json");
+    let config_path = oc_root.join("legacy.json");
     if config_path.exists()
         && let Ok(c) = fs::read_to_string(&config_path)
-        && let Ok(cfg) = serde_json::from_str::<OpenClawConfig>(&c)
+        && let Ok(cfg) = serde_json::from_str::<LegacyConfig>(&c)
         && let Some(cj) = cfg.cron
     {
         jobs.extend(cj);
@@ -1710,13 +1710,13 @@ pub(crate) fn export_cron(ic_root: &Path, oc_root: &Path) -> AreaResult {
 
 pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
     let ks_path = ic_root.join("keystore.enc");
-    let config_path = oc_root.join("openclaw.json");
+    let config_path = oc_root.join("legacy.json");
     if !config_path.exists() {
         return AreaResult {
             area: MigrationArea::Channels,
             success: true,
             items_processed: 0,
-            warnings: vec!["No openclaw.json found; skipping channel import".into()],
+            warnings: vec!["No legacy.json found; skipping channel import".into()],
             error: None,
         };
     }
@@ -1725,16 +1725,16 @@ pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
         Err(e) => {
             return err(
                 MigrationArea::Channels,
-                format!("Failed to read openclaw.json: {e}"),
+                format!("Failed to read legacy.json: {e}"),
             );
         }
     };
-    let oc_cfg: OpenClawConfig = match serde_json::from_str(&content) {
+    let oc_cfg: LegacyConfig = match serde_json::from_str(&content) {
         Ok(c) => c,
         Err(e) => {
             return err(
                 MigrationArea::Channels,
-                format!("Failed to parse openclaw.json: {e}"),
+                format!("Failed to parse legacy.json: {e}"),
             );
         }
     };
@@ -1800,7 +1800,7 @@ pub(crate) fn import_channels(oc_root: &Path, ic_root: &Path) -> AreaResult {
             area: MigrationArea::Channels,
             success: true,
             items_processed: 0,
-            warnings: vec!["No channel configuration found in OpenClaw config".into()],
+            warnings: vec!["No channel configuration found in Legacy config".into()],
             error: None,
         };
     }
@@ -1919,22 +1919,22 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
         };
     }
 
-    // Merge into existing openclaw.json
-    let oc_config_path = oc_root.join("openclaw.json");
+    // Merge into existing legacy.json
+    let oc_config_path = oc_root.join("legacy.json");
     let mut oc_config: serde_json::Map<String, serde_json::Value> = if oc_config_path.exists() {
         match fs::read_to_string(&oc_config_path) {
             Ok(c) => match serde_json::from_str(&c) {
                 Ok(map) => map,
                 Err(e) => {
                     warnings.push(format!(
-                        "Could not parse existing openclaw.json: {e}; starting fresh"
+                        "Could not parse existing legacy.json: {e}; starting fresh"
                     ));
                     serde_json::Map::new()
                 }
             },
             Err(e) => {
                 warnings.push(format!(
-                    "Could not read existing openclaw.json: {e}; starting fresh"
+                    "Could not read existing legacy.json: {e}; starting fresh"
                 ));
                 serde_json::Map::new()
             }
@@ -1955,14 +1955,14 @@ pub(crate) fn export_channels(ic_root: &Path, oc_root: &Path) -> AreaResult {
         Err(e) => {
             return err(
                 MigrationArea::Channels,
-                format!("Failed to serialize openclaw.json: {e}"),
+                format!("Failed to serialize legacy.json: {e}"),
             );
         }
     };
     if let Err(e) = fs::write(&oc_config_path, &serialized) {
         return err(
             MigrationArea::Channels,
-            format!("Failed to write openclaw.json: {e}"),
+            format!("Failed to write legacy.json: {e}"),
         );
     }
 
@@ -2036,7 +2036,7 @@ pub(crate) fn import_agents(oc_root: &Path, ic_root: &Path) -> AreaResult {
             area: MigrationArea::Agents,
             success: true,
             items_processed: 0,
-            warnings: vec!["No agents directory found in OpenClaw root".into()],
+            warnings: vec!["No agents directory found in Legacy root".into()],
             error: None,
         };
     }
@@ -2198,7 +2198,7 @@ fn store_in_keystore(key: &str, value: &str, ks_path: &Path) -> Result<(), Strin
     ks.set(key, value).map_err(|e| e.to_string())
 }
 
-/// Read a credential from the keystore (for export back to OpenClaw format).
+/// Read a credential from the keystore (for export back to Legacy format).
 /// The `ks_path` should be derived from the Ironclad root directory.
 fn read_from_keystore(key: &str, ks_path: &Path) -> Option<String> {
     let ks = ironclad_core::keystore::Keystore::new(ks_path.to_path_buf());
@@ -2250,7 +2250,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn setup_openclaw(dir: &Path) {
+    fn setup_legacy(dir: &Path) {
         fs::create_dir_all(dir.join("workspace/skills")).unwrap();
         fs::create_dir_all(dir.join("agents/duncan/sessions")).unwrap();
 
@@ -2271,7 +2271,7 @@ mod tests {
             ]
         });
         fs::write(
-            dir.join("openclaw.json"),
+            dir.join("legacy.json"),
             serde_json::to_string_pretty(&config).unwrap(),
         )
         .unwrap();
@@ -2333,7 +2333,7 @@ mod tests {
     fn import_config_succeeds() {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
-        setup_openclaw(oc.path());
+        setup_legacy(oc.path());
         let r = import_config(oc.path(), ic.path());
         assert!(r.success);
         assert_eq!(r.items_processed, 1);
@@ -2360,7 +2360,7 @@ mod tests {
         setup_ironclad(ic.path());
         let r = export_config(ic.path(), oc.path());
         assert!(r.success);
-        let content = fs::read_to_string(oc.path().join("openclaw.json")).unwrap();
+        let content = fs::read_to_string(oc.path().join("legacy.json")).unwrap();
         assert!(content.contains("Duncan Idaho"));
         assert!(content.contains("gpt-4"));
     }
@@ -2370,11 +2370,11 @@ mod tests {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
         let oc2 = TempDir::new().unwrap();
-        setup_openclaw(oc.path());
+        setup_legacy(oc.path());
         assert!(import_config(oc.path(), ic.path()).success);
         assert!(export_config(ic.path(), oc2.path()).success);
         let exported: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(oc2.path().join("openclaw.json")).unwrap())
+            serde_json::from_str(&fs::read_to_string(oc2.path().join("legacy.json")).unwrap())
                 .unwrap();
         assert_eq!(exported["name"], "Duncan Idaho");
         assert_eq!(exported["model"], "gpt-4");
@@ -2386,14 +2386,14 @@ mod tests {
         let oc = TempDir::new().unwrap();
         setup_ironclad(ic.path());
         fs::write(
-            oc.path().join("openclaw.json"),
+            oc.path().join("legacy.json"),
             r#"{"custom_field":"preserved","name":"old"}"#,
         )
         .unwrap();
         let r = export_config(ic.path(), oc.path());
         assert!(r.success);
         let exported: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(oc.path().join("openclaw.json")).unwrap())
+            serde_json::from_str(&fs::read_to_string(oc.path().join("legacy.json")).unwrap())
                 .unwrap();
         assert_eq!(exported["custom_field"], "preserved");
         assert_eq!(exported["name"], "Duncan Idaho");
@@ -2405,7 +2405,7 @@ mod tests {
     fn import_personality_succeeds() {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
-        setup_openclaw(oc.path());
+        setup_legacy(oc.path());
         let r = import_personality(oc.path(), ic.path());
         assert!(r.success);
         assert_eq!(r.items_processed, 2);
@@ -2430,7 +2430,7 @@ mod tests {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
         let oc2 = TempDir::new().unwrap();
-        setup_openclaw(oc.path());
+        setup_legacy(oc.path());
         assert!(import_personality(oc.path(), ic.path()).success);
         assert!(export_personality(ic.path(), oc2.path()).success);
         let original = fs::read_to_string(oc.path().join("workspace/SOUL.md")).unwrap();
@@ -2455,7 +2455,7 @@ mod tests {
     fn import_skills_succeeds() {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
-        setup_openclaw(oc.path());
+        setup_legacy(oc.path());
         let r = import_skills(oc.path(), ic.path(), true);
         assert!(r.success);
         assert_eq!(r.items_processed, 2);
@@ -2485,7 +2485,7 @@ mod tests {
     fn import_sessions_from_json() {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
-        setup_openclaw(oc.path());
+        setup_legacy(oc.path());
         let r = import_sessions(oc.path(), ic.path());
         assert!(r.success);
         assert!(r.items_processed >= 1);
@@ -2496,7 +2496,7 @@ mod tests {
     fn import_sessions_from_jsonl() {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
-        setup_openclaw(oc.path());
+        setup_legacy(oc.path());
         fs::remove_file(oc.path().join("sessions.json")).unwrap();
         let r = import_sessions(oc.path(), ic.path());
         assert!(r.success);
@@ -2507,7 +2507,7 @@ mod tests {
     fn export_sessions_succeeds() {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
-        setup_openclaw(oc.path());
+        setup_legacy(oc.path());
         import_sessions(oc.path(), ic.path());
         let out = TempDir::new().unwrap();
         let r = export_sessions(ic.path(), out.path());
@@ -2531,7 +2531,7 @@ mod tests {
     fn import_cron_from_config() {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
-        setup_openclaw(oc.path());
+        setup_legacy(oc.path());
         let r = import_cron(oc.path(), ic.path());
         assert!(r.success);
         assert_eq!(r.items_processed, 2);
@@ -2556,7 +2556,7 @@ mod tests {
     fn export_cron_succeeds() {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
-        setup_openclaw(oc.path());
+        setup_legacy(oc.path());
         import_cron(oc.path(), ic.path());
         let out = TempDir::new().unwrap();
         let r = export_cron(ic.path(), out.path());
@@ -2578,7 +2578,7 @@ mod tests {
     fn import_channels_succeeds() {
         let oc = TempDir::new().unwrap();
         let ic = TempDir::new().unwrap();
-        setup_openclaw(oc.path());
+        setup_legacy(oc.path());
         let r = import_channels(oc.path(), ic.path());
         assert!(r.success);
         assert_eq!(r.items_processed, 2);

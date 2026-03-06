@@ -279,6 +279,9 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn test_config() -> SkillsConfig {
         SkillsConfig {
@@ -562,5 +565,89 @@ mod tests {
             result.stdout.len() <= 1024,
             "stdout should be truncated to max_output_bytes"
         );
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn sandbox_env_strips_secrets() {
+        let _env_guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("print_secret.sh");
+        fs::write(
+            &script,
+            "#!/bin/bash\nprintf \"%s\" \"${OPENAI_API_KEY:-MISSING}\"",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // This variable should never leak to script env when sandbox_env=true.
+        // SAFETY: test-only env mutation is serialized via ENV_LOCK.
+        unsafe {
+            std::env::set_var("OPENAI_API_KEY", "top-secret-test-value");
+        }
+
+        let mut cfg = test_config();
+        cfg.sandbox_env = true;
+        cfg.skills_dir = dir.path().to_path_buf();
+        let runner = ScriptRunner::new(cfg);
+        let result = runner
+            .execute(Path::new("print_secret.sh"), &[])
+            .await
+            .expect("script should execute");
+
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(
+            result.stdout.trim(),
+            "MISSING",
+            "sandboxed script must not inherit secret env vars"
+        );
+        // SAFETY: test-only env mutation is serialized via ENV_LOCK.
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+        }
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn sandbox_env_keeps_minimal_runtime_vars_only() {
+        let _env_guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("print_env_subset.sh");
+        fs::write(
+            &script,
+            "#!/bin/bash\nprintf \"PATH=%s\\nHOME=%s\\nTMP=%s\\nLANG=%s\\nTOKEN=%s\" \"${PATH:-}\" \"${HOME:-}\" \"${TMP:-}\" \"${LANG:-}\" \"${SECRET_TOKEN:-MISSING}\"",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // SAFETY: test-only env mutation is serialized via ENV_LOCK.
+        unsafe {
+            std::env::set_var("SECRET_TOKEN", "definitely-secret");
+            std::env::set_var("LANG", "en_US.UTF-8");
+        }
+
+        let mut cfg = test_config();
+        cfg.sandbox_env = true;
+        cfg.skills_dir = dir.path().to_path_buf();
+        let runner = ScriptRunner::new(cfg);
+        let result = runner
+            .execute(Path::new("print_env_subset.sh"), &[])
+            .await
+            .expect("script should execute");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stdout.contains("PATH="));
+        assert!(result.stdout.contains("HOME="));
+        assert!(result.stdout.contains("TMP="));
+        assert!(result.stdout.contains("LANG=en_US.UTF-8"));
+        assert!(
+            result.stdout.ends_with("TOKEN=MISSING"),
+            "non-allowlisted secrets must not be present"
+        );
+        // SAFETY: test-only env mutation is serialized via ENV_LOCK.
+        unsafe {
+            std::env::remove_var("SECRET_TOKEN");
+            std::env::remove_var("LANG");
+        }
     }
 }

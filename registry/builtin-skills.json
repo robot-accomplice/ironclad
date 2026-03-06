@@ -4,8 +4,16 @@
     "description": "Guide first-run installation, workspace init, and setup wizard flow."
   },
   {
+    "name": "update-and-rollback",
+    "description": "Internalized update orchestration, validation, and rollback safety controls."
+  },
+  {
     "name": "runtime-diagnostics",
     "description": "Diagnose runtime health, logs, and breaker state with recovery actions."
+  },
+  {
+    "name": "session-operator",
+    "description": "Internalized session lifecycle operations and continuity controls."
   },
   {
     "name": "provider-auth-troubleshooter",
@@ -14,6 +22,26 @@
   {
     "name": "context-continuity",
     "description": "Preserve continuity across sessions and long-running workflows."
+  },
+  {
+    "name": "workflow-design",
+    "description": "Internalized workflow composition and orchestration planning guidance."
+  },
+  {
+    "name": "skill-creation",
+    "description": "Internalized skill authoring and validation guidance."
+  },
+  {
+    "name": "claims-auditor",
+    "description": "Internalized evidence/claim validation heuristics and reporting policy."
+  },
+  {
+    "name": "efficacy-assessment",
+    "description": "Internalized quality/latency/cost efficacy evaluation routines."
+  },
+  {
+    "name": "fast-cache",
+    "description": "Internalized cache behavior tuning and validation controls."
   },
   {
     "name": "conway-security",
@@ -42,6 +70,10 @@
   {
     "name": "model-management",
     "description": "Model routing and fallback strategy management."
+  },
+  {
+    "name": "model-routing-tuner",
+    "description": "Internalized routing-weight and fallback-tuning capability."
   },
   {
     "name": "obsidian-vault",

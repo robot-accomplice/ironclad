@@ -76,6 +76,12 @@ test-soak-fuzz:
 test-agent-behavior-soak:
     python3 scripts/run-agent-behavior-soak.py
 
+# Legacy parity soak (live side-by-side quality/latency gate)
+# Env knobs:
+#   IRONCLAD_BASE_URL=http://127.0.0.1:18789 LEGACY_BASE_URL=http://127.0.0.1:8787 just test-legacy-parity-soak
+test-legacy-parity-soak:
+    python3 scripts/run-legacy-parity-soak.py
+
 # CLI UAT smoke against a running server
 # Env knobs:
 #   BASE_URL=http://127.0.0.1:18789 API_KEY=... just test-uat-cli

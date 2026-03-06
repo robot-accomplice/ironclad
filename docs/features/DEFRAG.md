@@ -55,17 +55,17 @@ Each pass is an independent scanner that produces findings. Passes run in order;
 Scan all `.md`, `.sh`, `.py`, `.js`, `.toml`, `.json` files in the workspace and skills directories for references that don't resolve.
 
 **Checks:**
-- Filesystem paths that don't exist (e.g., `~/.openclaw/workspace` after migration)
+- Filesystem paths that don't exist (e.g., `~/.legacy/workspace` after migration)
 - References to deleted skill directories
 - CLI commands for platforms that aren't installed
 - URLs pointing at localhost ports that don't match config
 
 **Fix strategy:** Pattern-based replacement using a migration map. The map is built from:
-1. **Hardcoded known migrations** (openclaw→ironclad paths, CLI commands)
+1. **Hardcoded known migrations** (legacy→ironclad paths, CLI commands)
 2. **Config-derived mappings** (read `ironclad.toml` to know current paths, ports, model names)
 3. **User-supplied overrides** via `[defrag.mappings]` in config
 
-**Derived from:** Phase 3-6 of the manual cleanup (271 openclaw→ironclad replacements across 40 files).
+**Derived from:** Phase 3-6 of the manual cleanup (271 legacy→ironclad replacements across 40 files).
 
 ### Pass 2: `drift` — Config Drift Detection
 
@@ -120,12 +120,12 @@ Verify that identity strings are consistent across the workspace.
 **Checks:**
 - Agent name in `ironclad.toml` vs. OS.toml vs. skill references
 - `generated_by` fields that reference old platforms
-- Brand/product name consistency (no stale "OpenClaw" or other platform names)
+- Brand/product name consistency (no stale "Legacy" or other platform names)
 - Workspace path consistency in scripts vs. actual path
 
 **Fix strategy:** Replace with canonical values from `ironclad.toml` and `OS.toml`.
 
-**Derived from:** Phase 2b (OS.toml `generated_by = "openclaw-migration"` → `"ironclad"`).
+**Derived from:** Phase 2b (OS.toml `generated_by = "legacy-migration"` → `"ironclad"`).
 
 ### Pass 6: `scripts` — Script Health
 
@@ -139,7 +139,7 @@ Validate that executable scripts in skills reference real commands and paths.
 
 **Fix strategy:** Report only — script fixes require manual review. Flag with severity.
 
-**Derived from:** Phase 5 (model-switch.sh referencing openclaw.json format, collect_verified.sh calling `has_cmd openclaw`).
+**Derived from:** Phase 5 (model-switch.sh referencing legacy.json format, collect_verified.sh calling `has_cmd legacy`).
 
 ## Output Format
 
@@ -172,7 +172,7 @@ Validate that executable scripts in skills reference real commands and paths.
           "file": "skills/cron-efficiency/SKILL.md",
           "line": 42,
           "severity": "warn",
-          "message": "Reference to ~/.openclaw/cron/jobs.json — path does not exist",
+          "message": "Reference to ~/.legacy/cron/jobs.json — path does not exist",
           "fixable": true,
           "fix": "Replace with `ironclad schedule list`"
         }
@@ -268,6 +268,6 @@ This feature was designed from three manual cleanup sessions on a real Ironclad 
 |---------|-------|----------|-------|
 | Skills deduplication | 19 duplicate/stub skill files | 19 deletions | artifacts, stale |
 | PostgreSQL purge | ~35 stale database references | 35 edits across 16 files | refs, drift |
-| OpenClaw→Ironclad migration | 271 stale platform references | 271 replacements across 40 files, 6 config fixes, 3 file deletions | refs, identity, artifacts, stale, drift, scripts |
+| Legacy→Ironclad migration | 271 stale platform references | 271 replacements across 40 files, 6 config fixes, 3 file deletions | refs, identity, artifacts, stale, drift, scripts |
 
 Every defrag pass directly corresponds to a category of manual work performed during these sessions.

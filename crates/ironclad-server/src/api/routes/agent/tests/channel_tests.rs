@@ -1,3 +1,5 @@
+use super::super::channel_message::format_channel_reply_for_delivery;
+use super::super::strip_internal_delegation_metadata;
 use super::*;
 
 // ── metadata_str tests ───────────────────────────────────────
@@ -133,4 +135,96 @@ fn parse_skills_json_handles_none_invalid_and_valid_payloads() {
     assert!(parse_skills_json(Some("not-json")).is_empty());
     let parsed = parse_skills_json(Some(r#"["geo","risk-analysis"]"#));
     assert_eq!(parsed, vec!["geo".to_string(), "risk-analysis".to_string()]);
+}
+
+// ── channel output sanitation tests ──────────────────────────
+
+#[test]
+fn strip_internal_delegation_metadata_removes_internal_lines() {
+    let raw = "\
+delegated_subagent=geopolitical-sitrep model=openrouter/auto fallback_models=[\"a\",\"b\"]\n\
+subtask 1 -> geopolitical-sitrep\n\
+**Global update**\n\
+notes=timeout guardrail rerouted\n\
+Key point one\n\
+Key point two";
+    let cleaned = strip_internal_delegation_metadata(raw);
+    assert!(!cleaned.contains("delegated_subagent="));
+    assert!(!cleaned.contains("subtask 1 ->"));
+    assert!(!cleaned.contains("notes="));
+    assert!(cleaned.contains("Global update"));
+    assert!(cleaned.contains("Key point one"));
+}
+
+#[test]
+fn strip_internal_delegation_metadata_removes_orchestration_narrative_lines() {
+    let raw = "\
+Centralized delegation is sensible for a simple, single-step task.\n\
+Expected utility margin: -0.10\n\
+Rationale: task is single-step\n\
+Subtasks:\n\
+- collect data\n\
+Actual user-facing answer.";
+    let cleaned = strip_internal_delegation_metadata(raw);
+    assert!(
+        !cleaned
+            .to_ascii_lowercase()
+            .contains("centralized delegation")
+    );
+    assert!(
+        !cleaned
+            .to_ascii_lowercase()
+            .contains("expected utility margin")
+    );
+    assert!(!cleaned.to_ascii_lowercase().contains("rationale:"));
+    assert!(!cleaned.to_ascii_lowercase().contains("subtasks:"));
+    assert!(cleaned.contains("Actual user-facing answer."));
+}
+
+#[test]
+fn strip_internal_delegation_metadata_removes_tool_protocol_leakage() {
+    let raw = "\
+{\"tool_call\":{\"name\":\"bash\",\"params\":{\"command\":\"ls\"}}}\n\
+unexecuted_streaming_tool_call: {\"command\":\"ls\"}\n\
+Visible answer line.";
+    let cleaned = strip_internal_delegation_metadata(raw);
+    assert!(!cleaned.contains("\"tool_call\""));
+    assert!(!cleaned.contains("unexecuted_streaming_tool_call"));
+    assert!(cleaned.contains("Visible answer line."));
+}
+
+#[test]
+fn strip_internal_delegation_metadata_returns_empty_when_all_internal() {
+    let raw = "delegated_subagent=geo model=x fallback_models=[]\nsubtask 1 -> geo";
+    let cleaned = strip_internal_delegation_metadata(raw);
+    assert!(cleaned.is_empty());
+}
+
+#[test]
+fn format_channel_reply_for_delivery_normalizes_telegram_markdown() {
+    let raw = "\
+# Heading\n\
+**bold** and `code`\n\
+delegated_subagent=geo model=x fallback_models=[]\n\
+subtask 1 -> geo\n\
+line";
+    let out = format_channel_reply_for_delivery("telegram", raw);
+    assert!(!out.contains("**"));
+    assert!(!out.contains('`'));
+    assert!(!out.contains("delegated_subagent="));
+    assert!(!out.contains("subtask 1 ->"));
+    assert!(out.contains("Heading"));
+    assert!(out.contains("bold and code"));
+    assert!(out.contains("line"));
+}
+
+#[test]
+fn format_channel_reply_for_delivery_strips_numeric_citations_for_telegram() {
+    let raw = "Situation remains tense across regions.[1][2]\nKey trend: supply chain splits.[14]";
+    let out = format_channel_reply_for_delivery("telegram", raw);
+    assert!(!out.contains("[1]"));
+    assert!(!out.contains("[2]"));
+    assert!(!out.contains("[14]"));
+    assert!(out.contains("Situation remains tense across regions."));
+    assert!(out.contains("Key trend: supply chain splits."));
 }

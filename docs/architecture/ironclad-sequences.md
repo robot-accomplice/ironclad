@@ -282,6 +282,39 @@ sequenceDiagram
 
 ---
 
+## 3.1 Deterministic Shortcut + Guarded Response Sequence
+
+This sequence captures the v0.9.5-prep behavior path used to prevent low-value/fabricated replies on execution-intent prompts.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Route as agent/core.rs
+    participant Intents as agent/intents.rs
+    participant Tools as agent/tools.rs
+    participant Guards as agent/guards.rs
+    participant Channel as channel formatter
+
+    User->>Route: Prompt
+    Route->>Intents: classify prompt intent
+    alt deterministic shortcut match
+        Route->>Tools: execute_tool_call(...)
+        Tools-->>Route: verified tool output
+        Route-->>Channel: user-facing deterministic result
+    else LLM path
+        Route->>Route: run inference + react loop
+        Route->>Guards: execution_truth + protocol stripping
+        Guards-->>Route: sanitized content
+        alt content degraded/empty
+            Route->>Route: deterministic_quality_fallback(...)
+        end
+        Route-->>Channel: user-facing guarded response
+    end
+    Channel-->>User: Final reply
+```
+
+---
+
 ## 4. 12-Step Bootstrap Sequence
 
 Server `main()` initializing all crates in dependency order with error handling at each step.

@@ -58,19 +58,19 @@
     }
     .layout { display: flex; width: 100%; height: 100%; }
     .sidebar {
-      width: 240px; min-width: 240px; background: var(--surface);
+      width: 252px; min-width: 252px; background: var(--surface);
       border-right: 1px solid var(--border); display: flex; flex-direction: column;
       flex-shrink: 0; transition: width 0.2s, min-width 0.2s; overflow: hidden;
     }
     .sidebar.collapsed { width: 56px; min-width: 56px; }
-    .sidebar-header { padding: 1.25rem; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 0.75rem; white-space: nowrap; overflow: hidden; transition: padding 0.2s, justify-content 0.2s; }
+    .sidebar-header { padding: 1.25rem; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 0.75rem; white-space: normal; overflow: hidden; transition: padding 0.2s, justify-content 0.2s; }
     .sidebar.collapsed .sidebar-header { padding: 0.75rem; justify-content: center; align-items: center; gap: 0; }
-    .sidebar-brand { display: flex; flex-direction: column; overflow: hidden; transition: width 0.2s, opacity 0.2s; }
+    .sidebar-brand { display: flex; flex-direction: column; min-width: 0; overflow: hidden; transition: width 0.2s, opacity 0.2s; }
     .sidebar.collapsed .sidebar-brand { opacity: 0; width: 0; overflow: hidden; margin: 0; padding: 0; }
     .sidebar-title { font-size: 1.125rem; font-weight: 600; margin-bottom: 0.25rem; letter-spacing: 0.15em; text-transform: uppercase; }
-    .sidebar-subtitle { font-size: 0.7rem; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+    .sidebar-subtitle { font-size: 0.66rem; line-height: 1.25; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; white-space: normal; overflow-wrap: anywhere; }
     .robot-icon { flex-shrink: 0; margin-top: 2px; }
-    .agent-badge { display: inline-flex; align-items: center; gap: 0.375rem; margin-top: 0.75rem; padding: 0.375rem 0.75rem; background: var(--accent-dim); border-radius: 3px; font-size: 0.8125rem; white-space: nowrap; }
+    .agent-badge { display: inline-flex; align-items: center; gap: 0.375rem; margin-top: 0.75rem; padding: 0.375rem 0.75rem; max-width: 100%; background: var(--accent-dim); border-radius: 3px; font-size: 0.8125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sidebar.collapsed .agent-badge { display: none; }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex-shrink: 0; animation: statusPulse 2s ease-in-out infinite; }
     .status-dot.warning { background: var(--warning); animation: none; }
@@ -105,7 +105,7 @@
     .sidebar-collapse-btn .collapse-icon { width: 16px; height: 16px; flex-shrink: 0; transition: transform 0.2s; }
     .sidebar.collapsed .sidebar-collapse-btn .collapse-icon { transform: rotate(180deg); }
     .sidebar.collapsed .sidebar-collapse-btn .collapse-label { display: none; }
-    .sidebar-footer { padding: 1rem 1.25rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); white-space: nowrap; overflow: hidden; }
+    .sidebar-footer { padding: 1rem 1.25rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); white-space: normal; overflow: visible; }
     .sidebar.collapsed .sidebar-footer { text-align: center; padding: 0.75rem 0.5rem; }
     .main-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100%; overflow: hidden; }
     .header-bar { height: 56px; padding: 0 1.5rem; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
@@ -522,7 +522,7 @@
     }
     @keyframes crtFlicker { 0% { opacity: 0.95; } 5% { opacity: 1; } 10% { opacity: 0.96; } 14% { opacity: 1; } 20% { opacity: 0.98; } 55% { opacity: 1; } 62% { opacity: 0.97; } 67% { opacity: 1; } 80% { opacity: 0.96; } 85% { opacity: 1; } 92% { opacity: 0.98; } 100% { opacity: 1; } }
     @media (max-width: 768px) {
-      .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 200; margin-left: -240px; }
+      .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 200; margin-left: -252px; }
       .sidebar.open { margin-left: 0; }
       .mobile-nav { display: flex; }
       .content { padding-bottom: 4rem; }
@@ -1189,6 +1189,31 @@
       });
   }
 
+  function applySidebarIdentity(agentStatus, health) {
+    var agent = agentStatus || {};
+    var healthData = health || {};
+    if (agent.name) setAgentDisplayName(agent.name);
+    else if (healthData.agent) setAgentDisplayName(healthData.agent);
+    var state = String(agent.state || healthData.status || 'unknown').toLowerCase();
+    var dotEl = document.getElementById('agent-dot');
+    if (dotEl) {
+      dotEl.className = 'status-dot' + (state === 'running' ? '' : state === 'sleeping' ? ' warning' : ' error');
+    }
+    var stateEl = document.getElementById('agent-state');
+    if (stateEl) stateEl.textContent = state || 'unknown';
+    var ve = document.getElementById('version');
+    if (ve) ve.textContent = healthData.version || 'unknown';
+  }
+
+  function refreshSidebarIdentity() {
+    return Promise.all([
+      api('/api/agent/status').catch(function() { return {}; }),
+      api('/api/health').catch(function() { return {}; })
+    ]).then(function(arr) {
+      applySidebarIdentity(arr[0], arr[1]);
+    }).catch(function() {});
+  }
+
   function repeatedSeries(count, value) {
     var pts = []; for (var i = 0; i < count; i++) pts.push(value); return pts;
   }
@@ -1639,13 +1664,8 @@
         _cachedWorkspace = wsState;
 
         var state = (agent.state || 'unknown').toLowerCase();
-        if (agent.name) setAgentDisplayName(agent.name);
-        else if (health.agent) setAgentDisplayName(health.agent);
+        applySidebarIdentity(agent, health);
         if (agent.agent_id) App._activeAgentId = String(agent.agent_id);
-        var dotEl = document.getElementById('agent-dot');
-        if (dotEl) dotEl.className = 'status-dot' + (state === 'running' ? '' : state === 'sleeping' ? ' warning' : ' error');
-        var stateEl = document.getElementById('agent-state'); if (stateEl) stateEl.textContent = state;
-        var ve = document.getElementById('version'); if (ve) ve.textContent = health.version || 'unknown';
 
         var sessionCount = (sessions.sessions || []).length;
         var skillList = skills.skills || [];
@@ -2066,7 +2086,13 @@
           return tabs + '<div style="display:flex;align-items:center;gap:1rem"><button class="btn" id="btn-reload-skills">' + uiBtnLabel('refresh', 'Reload skills') + '</button><span style="font-size:0.8125rem;color:var(--muted)">0 / 0 enabled</span></div><div class="card" style="margin-top:1rem;color:var(--muted)">No skills registered. Add skills on disk and click Reload skills.</div>';
         }
         var enabledCount = skills.filter(function(s) { return s.enabled; }).length;
-        var cards = skills.map(function(s) {
+        var sortedSkills = skills.slice().sort(function(a, b) {
+          var aBuiltIn = !!a.built_in || String(a.kind || '').toLowerCase() === 'builtin';
+          var bBuiltIn = !!b.built_in || String(b.kind || '').toLowerCase() === 'builtin';
+          if (aBuiltIn !== bBuiltIn) return aBuiltIn ? 1 : -1;
+          return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+        });
+        var cards = sortedSkills.map(function(s) {
           var kindColor = s.kind === 'tool' ? 'var(--accent)' : s.kind === 'cognitive' ? 'var(--success)' : s.kind === 'multimodal' ? 'var(--warning)' : 'var(--muted)';
           var actions = '';
           var builtIn = !!s.built_in || String(s.kind || '').toLowerCase() === 'builtin';
@@ -2188,7 +2214,7 @@
     },
     _parseCronToSched: function(kind, expr) {
       var s = { freq: 'daily', interval: 5, intervalUnit: 'minutes', hour: '02', minute: '00', days: [1,2,3,4,5,6,0] };
-      if (kind === 'interval') {
+      if (kind === 'interval' || kind === 'every') {
         var m = expr.match(/^(\d+)(s|m|h)$/);
         if (m) { s.freq = 'interval'; s.interval = parseInt(m[1]); s.intervalUnit = m[2] === 's' ? 'seconds' : m[2] === 'h' ? 'hours' : 'minutes'; }
         return s;
@@ -2222,6 +2248,45 @@
       var dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; var time = s.hour + ':' + s.minute;
       if (s.freq === 'weekly') return 'Weekly on ' + s.days.map(function(i) { return dayNames[i]; }).join(', ') + ' at ' + time;
       return 'Daily at ' + time;
+    },
+    _cronIntentFromJob: function(job) {
+      if (!job || !job.payload_json) return '';
+      try {
+        var payload = JSON.parse(job.payload_json);
+        return String(payload.message || '').trim();
+      } catch (_) {
+        return '';
+      }
+    },
+    _projectCronDaysInMonth: function(job, year, month) {
+      var days = [];
+      if (!job || !job.schedule_kind || !job.schedule_expr) return days;
+      var maxDay = new Date(year, month + 1, 0).getDate();
+      var sched = this._parseCronToSched(job.schedule_kind, job.schedule_expr);
+      // Interval/hourly jobs are frequent: show as "scheduled" every day.
+      if (sched.freq === 'interval' || sched.freq === 'hourly') {
+        for (var d = 1; d <= maxDay; d++) {
+          days.push(year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0'));
+        }
+        return days;
+      }
+      if (sched.freq === 'daily') {
+        for (var d2 = 1; d2 <= maxDay; d2++) {
+          days.push(year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d2).padStart(2, '0'));
+        }
+        return days;
+      }
+      if (sched.freq === 'weekly') {
+        var allowed = {};
+        (sched.days || []).forEach(function(x) { allowed[String(x)] = true; });
+        for (var d3 = 1; d3 <= maxDay; d3++) {
+          var jsDay = new Date(year, month, d3).getDay(); // 0=Sun
+          if (allowed[String(jsDay)]) {
+            days.push(year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d3).padStart(2, '0'));
+          }
+        }
+      }
+      return days;
     },
 
     renderScheduler: function() {
@@ -2263,7 +2328,7 @@
           var grouped = {};
           cronRuns[day].forEach(function(r) {
             var key = r.job_id || r.job;
-            if (!grouped[key]) grouped[key] = { job: r.job, job_id: r.job_id, count: 0, success_count: 0, error_count: 0, status: 'success' };
+            if (!grouped[key]) grouped[key] = { job: r.job, job_id: r.job_id, count: 0, success_count: 0, error_count: 0, status: 'success', scheduled_only: false };
             grouped[key].count += 1;
             if (r.status === 'error') grouped[key].error_count += 1;
             else grouped[key].success_count += 1;
@@ -2275,6 +2340,29 @@
             else g.status = 'success';
           });
           cronRuns[day] = Object.keys(grouped).map(function(k) { return grouped[k]; });
+        });
+
+        // Project scheduled occurrences into the month grid so newly created jobs
+        // are visible before first execution.
+        jobs.forEach(function(j) {
+          var projected = self._projectCronDaysInMonth(j, year, month);
+          projected.forEach(function(day) {
+            if (!cronRuns[day]) cronRuns[day] = [];
+            var exists = cronRuns[day].some(function(r) {
+              return (r.job_id && j.id && r.job_id === j.id) || r.job === j.name;
+            });
+            if (!exists) {
+              cronRuns[day].push({
+                job: j.name,
+                job_id: j.id,
+                count: 0,
+                success_count: 0,
+                error_count: 0,
+                status: 'scheduled',
+                scheduled_only: true
+              });
+            }
+          });
         });
 
         var jobMap = {}; jobs.forEach(function(j) { jobMap[j.name] = j; if (j.id) jobMap[j.id] = j; });
@@ -2292,7 +2380,7 @@
           var evtHtml = '';
           if (dayRuns.length > 0) {
             evtHtml = '<div class="cal-events">';
-            dayRuns.forEach(function(r) { var job = jobMap[r.job_id || r.job]; var color = job ? job.color : '#71717a'; var failCls = r.status === 'error' ? ' fail' : ''; var pastCls = isPast ? ' past' : ''; var pastAttr = isPast ? ' data-past="true"' : ''; evtHtml += '<div class="cal-evt' + failCls + pastCls + '" style="background:' + color + '" title="' + esc(r.job) + ' (' + r.count + ' runs, status: ' + r.status + ')' + '"' + pastAttr + ' data-evt-job="' + esc(r.job) + '">' + esc(r.job) + '</div>'; });
+            dayRuns.forEach(function(r) { var job = jobMap[r.job_id || r.job]; var color = job ? job.color : '#71717a'; var failCls = r.status === 'error' ? ' fail' : ''; var scheduledCls = r.status === 'scheduled' ? ' past' : ''; var pastCls = isPast ? ' past' : ''; var pastAttr = isPast ? ' data-past="true"' : ''; var statusText = r.status === 'scheduled' ? 'scheduled' : r.status; evtHtml += '<div class="cal-evt' + failCls + scheduledCls + pastCls + '" style="background:' + color + '" title="' + esc(r.job) + ' (' + r.count + ' runs, status: ' + statusText + ')' + '"' + pastAttr + ' data-evt-job="' + esc(r.job) + '">' + esc(r.job) + '</div>'; });
             evtHtml += '</div>';
           }
           calCells += '<div class="' + cls + '" data-date="' + dateKey + '"><div class="cal-day-num">' + dayNum + '</div>' + evtHtml + '</div>';
@@ -2310,14 +2398,14 @@
           var selRuns = cronRuns[self._calSelected] || [];
           if (selRuns.length > 0) {
             var histLabel = selIsPast ? '<div style="font-size:0.625rem;color:var(--muted);margin-bottom:0.375rem;text-transform:uppercase;letter-spacing:0.06em">Historical runs</div>' : '';
-            var runItems = selRuns.map(function(r) { var job = jobMap[r.job_id || r.job]; var color = job ? job.color : '#71717a'; var stCls = r.status === 'error' ? 'error' : 'success'; return '<div class="cal-detail-run"><div class="cal-detail-dot" style="background:' + color + '"></div><span style="flex:1">' + esc(r.job) + '</span><span class="card-mono" style="color:var(--muted)">' + r.count + 'x</span><span class="badge ' + stCls + '" style="font-size:0.5625rem">' + r.status + '</span></div>'; }).join('');
+            var runItems = selRuns.map(function(r) { var job = jobMap[r.job_id || r.job]; var color = job ? job.color : '#71717a'; var stCls = r.status === 'error' ? 'error' : (r.status === 'scheduled' ? 'muted' : 'success'); var countLabel = r.status === 'scheduled' ? 'planned' : (r.count + 'x'); return '<div class="cal-detail-run"><div class="cal-detail-dot" style="background:' + color + '"></div><span style="flex:1">' + esc(r.job) + '</span><span class="card-mono" style="color:var(--muted)">' + countLabel + '</span><span class="badge ' + stCls + '" style="font-size:0.5625rem">' + r.status + '</span></div>'; }).join('');
             detail = '<div class="cal-detail"><div class="cal-detail-title">' + esc(self._calSelected) + '</div>' + histLabel + runItems + '</div>';
           } else { detail = '<div class="cal-detail"><div class="cal-detail-title">' + esc(self._calSelected) + '</div><div style="color:var(--muted);font-size:0.75rem">No runs on this day</div></div>'; }
         }
 
         var modal = '';
         if (self._calModalMode) {
-          var job = self._calEditJob || { name: '', schedule_kind: 'cron', schedule_expr: '' };
+          var job = self._calEditJob || { name: '', description: '', schedule_kind: 'cron', schedule_expr: '' };
           var titleText = self._calModalMode === 'add' ? 'New Scheduled Job' : 'Edit Job';
           var sched = self._parseCronToSched(job.schedule_kind, job.schedule_expr);
           var freqOpts = [['interval','Repeating'],['hourly','Hourly'],['daily','Daily'],['weekly','Weekly']];
@@ -2332,7 +2420,7 @@
           var summary = self._schedSummary(sched);
           var editNotice = '';
           if (self._calModalMode === 'edit') { editNotice = '<div class="cal-edit-info"><strong>Note:</strong> Changes to the schedule will only apply to <strong>future</strong> executions. Historical run records are preserved as-is and cannot be modified.</div>'; }
-          modal = '<div class="cal-modal-overlay" data-cal-overlay><div class="cal-modal"><div class="cal-modal-header"><h3>' + titleText + '</h3><button class="cal-modal-close" data-cal-modal-close>\u00d7</button></div><div class="cal-modal-body">' + editNotice + '<div class="cal-modal-row"><label class="cal-modal-label">Name</label><input class="cal-modal-input" id="cal-job-name" value="' + esc(job.name) + '" placeholder="e.g. health-check"></div><div class="cal-modal-row"><label class="cal-modal-label">Recurrence</label>' + freqSelect + '</div>' + intervalRow + timeRow + daysRow + '<div class="cal-sched-summary" id="cal-sched-summary">' + esc(summary) + '</div></div><div class="cal-modal-footer"><button class="btn secondary" data-cal-modal-close>Cancel</button><button class="btn" id="cal-modal-save">' + (self._calModalMode === 'add' ? 'Add Job' : 'Save') + '</button></div></div></div>';
+          modal = '<div class="cal-modal-overlay" data-cal-overlay><div class="cal-modal"><div class="cal-modal-header"><h3>' + titleText + '</h3><button class="cal-modal-close" data-cal-modal-close>\u00d7</button></div><div class="cal-modal-body">' + editNotice + '<div class="cal-modal-row"><label class="cal-modal-label">Name</label><input class="cal-modal-input" id="cal-job-name" value="' + esc(job.name) + '" placeholder="e.g. health-check"></div><div class="cal-modal-row"><label class="cal-modal-label">Intent</label><input class="cal-modal-input" id="cal-job-description" value="' + esc(job.description || '') + '" placeholder="e.g. summarize overnight events and pending tasks"></div><div class="cal-modal-row"><label class="cal-modal-label">Recurrence</label>' + freqSelect + '</div>' + intervalRow + timeRow + daysRow + '<div class="cal-sched-summary" id="cal-sched-summary">' + esc(summary) + '</div></div><div class="cal-modal-footer"><button class="btn secondary" data-cal-modal-close>Cancel</button><button class="btn" id="cal-modal-save">' + (self._calModalMode === 'add' ? 'Add Job' : 'Save') + '</button></div></div></div>';
         }
 
         return '<div class="cal-wrap"><div class="cal-header"><div class="cal-header-left"><div class="cal-title">' + months[month] + ' ' + year + '</div><div class="cal-nav"><button data-cal-nav="prev">\u25c0</button><button data-cal-nav="today">\u25cf</button><button data-cal-nav="next">\u25b6</button></div></div><div class="cal-header-right"><button class="btn" style="font-size:0.75rem;padding:0.3rem 0.75rem" data-cal-add>+ Add Job</button></div></div><div class="cal-body"><div class="cal-grid-wrap"><div class="cal-dow-row">' + dowHeaders + '</div><div class="cal-grid">' + calCells + '</div></div><div class="cal-sidebar"><div class="cal-sidebar-section"><div class="cal-sidebar-title">Scheduled Jobs (' + jobs.length + ')</div>' + legend + '</div>' + (detail ? '<div class="cal-sidebar-section">' + detail + '</div>' : '') + '</div></div>' + modal + '</div>';
@@ -3283,7 +3371,7 @@
         if (specialists.length === 0) {
           html += '<div class="card" style="text-align:center;padding:3rem"><div style="font-size:2rem;margin-bottom:0.5rem">\uD83E\uDD16</div>';
           html += '<div style="color:var(--muted)">No taskable sub-agents configured</div>';
-          html += '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Run <code style="background:var(--surface);padding:0.1rem 0.4rem;border-radius:4px">ironclad migrate import ~/.openclaw --areas agents</code> or add one below</div>';
+          html += '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Run <code style="background:var(--surface);padding:0.1rem 0.4rem;border-radius:4px">ironclad migrate import ~/.legacy --areas agents</code> or add one below</div>';
           html += '</div>';
         }
 
@@ -4188,7 +4276,11 @@
     var hash = (window.location.hash || '#overview').slice(1) || 'overview';
     if (hash === 'roster') { hash = 'agents'; App._agentsTab = 'roster'; window.location.hash = 'agents'; return; }
     if (pages.indexOf(hash) === -1) hash = 'overview';
-    ensureAuth().then(function() { maybePromptHintPreference(); App.navigate(hash); });
+    ensureAuth().then(function() {
+      maybePromptHintPreference();
+      refreshSidebarIdentity();
+      App.navigate(hash);
+    });
   }
 
   document.querySelectorAll('.sidebar-nav a, .mobile-nav a').forEach(function(a) {
@@ -5288,7 +5380,7 @@
     var editBtn = e.target.closest('[data-cal-edit]');
     if (editBtn) {
       var idx = Number(editBtn.getAttribute('data-cal-edit')); var j = _cachedCronJobs[idx];
-      if (j) { App._calModalMode = 'edit'; App._calEditJob = { name: j.name, schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
+      if (j) { App._calModalMode = 'edit'; App._calEditJob = { name: j.name, description: (j.description || App._cronIntentFromJob(j) || ''), schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
       return;
     }
     var delBtn = e.target.closest('[data-cal-delete]');
@@ -5307,7 +5399,9 @@
       var nameEl = document.getElementById('cal-job-name'); var name = (nameEl && nameEl.value || '').trim();
       if (!name) { toast('Name is required'); return; }
       var sched = App._readSchedFromUI(); var cron = App._schedToCron(sched);
-      var jobData = { name: name, schedule_kind: cron.kind, schedule_expr: cron.expr, agent_id: App._activeAgentId || 'ironclad' };
+      var descEl = document.getElementById('cal-job-description'); var intent = (descEl && descEl.value || '').trim();
+      var payloadObj = { action: 'log', message: intent || ('scheduled job: ' + name) };
+      var jobData = { name: name, description: intent || null, schedule_kind: cron.kind, schedule_expr: cron.expr, payload_json: JSON.stringify(payloadObj), agent_id: App._activeAgentId || 'ironclad' };
       if (App._calModalMode === 'add') {
         api('/api/cron/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jobData) }).then(function() { toast('Added "' + name + '"'); App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Add failed'); });
       } else {
@@ -5328,7 +5422,7 @@
       }
       var jobName = evtChip.getAttribute('data-evt-job');
       var idx = _cachedCronJobs.findIndex(function(j) { return j.name === jobName; });
-      if (idx >= 0) { var j = _cachedCronJobs[idx]; App._calModalMode = 'edit'; App._calEditJob = { name: j.name, schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
+      if (idx >= 0) { var j = _cachedCronJobs[idx]; App._calModalMode = 'edit'; App._calEditJob = { name: j.name, description: (j.description || App._cronIntentFromJob(j) || ''), schedule_kind: j.schedule_kind, schedule_expr: j.schedule_expr, _idx: idx, _origName: j.name }; App.navigate('scheduler'); }
       return;
     }
     var calDay = e.target.closest('.cal-day[data-date]');
@@ -5777,6 +5871,13 @@
     return this.stations.find(function(s) { return s.id === id; }) || null;
   };
 
+  WorkspaceEngine.prototype._idleWarehouseStation = function() {
+    return this.stations.find(function(s) {
+      var k = (s.kind || '').toLowerCase();
+      return s.id === 'shelter' || s.id === 'standby' || k === 'shelter' || k === 'standby';
+    }) || null;
+  };
+
   WorkspaceEngine.prototype._isRuntimeActive = function(activity) {
     var a = (activity || '').toLowerCase();
     return a === 'inference' || a === 'working' || a === 'tool_execution' || a === 'tooling' || a === 'moving' || a === 'walking' || a === 'talking';
@@ -5818,7 +5919,7 @@
         { id: 'blockchain', name: 'Blockchain', kind: 'Blockchain', x: 0.82, y: 0.78 },
         { id: 'web', name: 'Web / APIs', kind: 'Tool', x: 0.50, y: 0.12 },
         { id: 'files', name: 'File System', kind: 'Tool', x: 0.50, y: 0.88 },
-        { id: 'standby', name: 'Standby Bay', kind: 'Standby', x: 0.08, y: 0.50 }
+        { id: 'shelter', name: 'Idle Bots Warehouse', kind: 'Shelter', x: 0.035, y: 0.50 }
       ];
     }
     var self = this;
@@ -5872,7 +5973,7 @@
         existing.activeSkill = incoming.active_skill || null;
         existing.currentStation = incoming.current_workstation || existing.currentStation || null;
         var runtimeActive = this._isRuntimeActive(existing.activity);
-        var stationedActive = !!existing.currentStation && existing.currentStation !== 'standby';
+        var stationedActive = !!existing.currentStation && existing.currentStation !== 'standby' && existing.currentStation !== 'shelter';
         if (existing.animState !== 'walking') existing.animState = (existing.activeSkill || runtimeActive || stationedActive) ? 'working' : 'idle';
       }
       var st = this._stationById(existing.currentStation);
@@ -5897,10 +5998,7 @@
   };
 
   WorkspaceEngine.prototype.layoutStandby = function() {
-    var standby = this.stations.find(function(s) {
-      var k = (s.kind || '').toLowerCase();
-      return s.id === 'standby' || k === 'standby';
-    });
+    var standby = this._idleWarehouseStation();
     if (!standby) return;
     var idleBots = this.bots.filter(function(b) {
       return !b.activeSkill && (b.animState === 'idle' || b.animState === 'walking');
@@ -5910,14 +6008,14 @@
     var yGap = 0.06;
     for (var i = 0; i < idleBots.length; i++) {
       var b = idleBots[i];
-      if (b.currentStation && b.currentStation !== 'standby') continue;
+      if (b.currentStation && b.currentStation !== 'standby' && b.currentStation !== 'shelter') continue;
       var col = i % cols;
       var row = Math.floor(i / cols);
       var x = standby.x + (col === 0 ? -xGap : xGap);
       var y = standby.y - 0.06 + row * yGap;
-      b.targetX = Math.max(0.05, Math.min(0.18, x));
+      b.targetX = Math.max(0.005, Math.min(0.13, x));
       b.targetY = Math.max(0.2, Math.min(0.85, y));
-      b.currentStation = 'standby';
+      b.currentStation = 'shelter';
     }
   };
 
@@ -5987,7 +6085,7 @@
       var ws = this.stations.find(function(s) { return s.id === bot.currentStation; });
       return ws ? ('Working at ' + ws.name + '.') : 'Working on a task.';
     }
-    if (bot.currentStation === 'standby') return 'Idle in the standby bay, waiting for work.';
+    if (bot.currentStation === 'standby' || bot.currentStation === 'shelter') return 'Idle in the shelter, waiting for work.';
     if (bot.animState === 'walking') return 'Moving to the next workstation.';
     return 'Idle and waiting for the next task.';
   };
@@ -6072,7 +6170,7 @@
       else { bot.skillFade = Math.max(0, bot.skillFade - dt * 2); }
       if (bot.animState !== 'walking') {
         var runtimeActive = self._isRuntimeActive(bot.activity);
-        var stationedActive = !!bot.currentStation && bot.currentStation !== 'standby';
+        var stationedActive = !!bot.currentStation && bot.currentStation !== 'standby' && bot.currentStation !== 'shelter';
         bot.animState = (bot.activeSkill || runtimeActive || stationedActive) ? 'working' : 'idle';
       }
     });
@@ -6151,7 +6249,7 @@
         ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-22, -18, 44, 34, 4); ctx.fill(); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.12)'; ctx.fillRect(-22, -18, 44, 8); ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(-16, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#eab308'; ctx.beginPath(); ctx.arc(-10, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(-4, -14, 2, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.6)'; ctx.font = 'bold 8px monospace'; ctx.textAlign = 'left'; ctx.fillText('$_', -17, -2); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.25)'; ctx.fillRect(-8, -6, 20 * pulse, 2); ctx.fillRect(-17, 3, 26, 1.5); ctx.fillRect(-17, 8, 18, 1.5); if (Math.sin(self.time * 4) > 0) { ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.8)'; ctx.fillRect(-10, -6, 6, 8); }
       } else if (kind === 'blockchain') {
         ctx.save(); var hexR = 16; ctx.beginPath(); for (var hi = 0; hi < 6; hi++) { var angle = Math.PI / 6 + hi * Math.PI / 3; var hx = Math.cos(angle) * hexR, hy = Math.sin(angle) * hexR; if (hi === 0) ctx.moveTo(hx, hy); else ctx.lineTo(hx, hy); } ctx.closePath(); ctx.fillStyle = tc.surface; ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.35 + 0.15 * pulse) + ')'; ctx.lineWidth = 1.5; ctx.stroke(); var innerR = 10; ctx.beginPath(); for (var hi = 0; hi < 6; hi++) { var angle = Math.PI / 6 + hi * Math.PI / 3; ctx.lineTo(Math.cos(angle) * innerR, Math.sin(angle) * innerR); } ctx.closePath(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.2)'; ctx.lineWidth = 1; ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.5 + 0.3 * pulse) + ')'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('\u25c8', 0, 0); ctx.restore();
-      } else if (kind === 'standby') {
+      } else if (kind === 'standby' || kind === 'shelter') {
         ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.35)'; ctx.lineWidth = 1.2;
         ctx.beginPath(); ctx.roundRect(-24, -12, 48, 24, 6); ctx.fill(); ctx.stroke();
         ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.16)';
@@ -6160,6 +6258,22 @@
         ctx.beginPath(); ctx.arc(-10, 2, 3, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.arc(0, 2, 3, 0, Math.PI * 2); ctx.fill();
         ctx.beginPath(); ctx.arc(10, 2, 3, 0, Math.PI * 2); ctx.fill();
+        var sheltered = self.bots.filter(function(b) {
+          var idle = !b.activeSkill && (b.animState === 'idle' || b.animState === 'walking');
+          return idle && (b.currentStation === 'shelter' || b.currentStation === 'standby');
+        }).length;
+        var badge = String(sheltered);
+        ctx.font = 'bold 9px ' + getComputedStyle(document.body).fontFamily;
+        var badgeW = Math.max(14, ctx.measureText(badge).width + 8);
+        ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.22)';
+        ctx.beginPath(); ctx.roundRect(14, -22, badgeW, 12, 6); ctx.fill();
+        ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.45)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.roundRect(14, -22, badgeW, 12, 6); ctx.stroke();
+        ctx.fillStyle = tc.text;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badge, 14 + badgeW / 2, -16);
       } else {
         ctx.fillStyle = tc.surface; ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.3)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(-22, -18, 44, 34, 4); ctx.fill(); ctx.stroke(); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.1)'; ctx.fillRect(-22, -18, 44, 9); ctx.fillStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',0.25)'; ctx.beginPath(); ctx.arc(-17, -13.5, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(-12, -13.5, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = 'rgba(' + aR + ',' + aG + ',' + aB + ',' + (0.3 + 0.15 * pulse) + ')'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 3, 9, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.ellipse(0, 3, 4, 9, 0, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-9, 3); ctx.lineTo(9, 3); ctx.stroke();
       }
@@ -6219,9 +6333,21 @@
     });
 
     this.tethers.forEach(function(t) {
+      var subordinateActive = !!t.to && (
+        !!t.to.activeSkill ||
+        self._isRuntimeActive(t.to.activity) ||
+        t.to.animState === 'working' ||
+        t.to.animState === 'walking' ||
+        !!(t.to.currentStation && t.to.currentStation !== 'standby' && t.to.currentStation !== 'shelter')
+      );
+      if (!subordinateActive) return;
+      var fromX = t.from.x * W;
+      var fromY = t.from.y * H;
+      var toX = t.to.x * W;
+      var toY = t.to.y * H;
       ctx.save(); ctx.setLineDash([4, 6]); ctx.lineDashOffset = -self.time * 15;
       ctx.strokeStyle = t.color + '25'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(t.from.x * W, t.from.y * H); ctx.lineTo(t.to.x * W, t.to.y * H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(fromX, fromY); ctx.lineTo(toX, toY); ctx.stroke();
       ctx.setLineDash([]); ctx.restore();
     });
 
@@ -6475,6 +6601,7 @@
       App._wsReconnectDelay = 1000;
       var d = document.getElementById('ws-dot'); if (d) d.classList.remove('off');
       var l = document.getElementById('ws-label'); if (l) l.textContent = 'Connected';
+      refreshSidebarIdentity();
     };
     ws.onclose = function() {
       var d = document.getElementById('ws-dot'); if (d) d.classList.add('off');
@@ -6548,6 +6675,7 @@
     } catch (err) { var d = document.getElementById('ws-dot'); if (d) d.classList.add('off'); var l = document.getElementById('ws-label'); if (l) l.textContent = 'No WebSocket'; }
   };
   App._connectWs();
+  setInterval(refreshSidebarIdentity, 30000);
 
   startModelsBackgroundRefresh(App);
   App._loadAvailableModels({ nonBlocking: true, validationLevel: 'zero' }).catch(function() {});

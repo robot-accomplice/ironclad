@@ -176,7 +176,7 @@ enum Commands {
     #[command(next_help_heading = "M-R")]
     #[command(subcommand)]
     Metrics(MetricsCmd),
-    /// Migrate between OpenClaw and Ironclad
+    /// Migrate between Legacy and Ironclad
     #[command(next_help_heading = "M-R")]
     #[command(subcommand)]
     Migrate(MigrateCmd),
@@ -503,9 +503,9 @@ enum SkillsCmd {
         /// Optional skill names for operator context
         skills: Vec<String>,
     },
-    /// Import skills from an OpenClaw workspace or archive
+    /// Import skills from an Legacy workspace or archive
     Import {
-        /// Path to OpenClaw workspace/skills directory or .tar.gz archive
+        /// Path to Legacy workspace/skills directory or .tar.gz archive
         source: String,
         /// Skip safety checks (dangerous)
         #[arg(long)]
@@ -526,9 +526,9 @@ enum SkillsCmd {
 
 #[derive(Subcommand)]
 enum MigrateCmd {
-    /// Import data from an OpenClaw workspace into Ironclad
+    /// Import data from an Legacy workspace into Ironclad
     Import {
-        /// Path to OpenClaw workspace root
+        /// Path to Legacy workspace root
         source: String,
         /// Specific areas to import (default: all)
         #[arg(short, long, value_delimiter = ',')]
@@ -540,9 +540,9 @@ enum MigrateCmd {
         #[arg(long)]
         no_safety_check: bool,
     },
-    /// Export Ironclad data to OpenClaw format
+    /// Export Ironclad data to Legacy format
     Export {
-        /// Output directory for the OpenClaw workspace
+        /// Output directory for the Legacy workspace
         target: String,
         /// Specific areas to export (default: all)
         #[arg(short, long, value_delimiter = ',')]

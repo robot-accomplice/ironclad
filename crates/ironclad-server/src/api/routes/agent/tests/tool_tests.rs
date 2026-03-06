@@ -225,7 +225,7 @@ fn provider_failure_message_varies_by_persistence_behavior() {
     assert!(msg_retry.contains("retry"));
 
     let msg_try_again = provider_failure_user_message("timeout", false);
-    assert!(msg_try_again.contains("Please try again"));
+    assert!(msg_try_again.contains("Please retry"));
 }
 
 #[test]
