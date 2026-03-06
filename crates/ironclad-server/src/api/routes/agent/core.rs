@@ -1632,6 +1632,13 @@ pub(super) async fn run_inference_and_react(
     channel_label: Option<&str>,
     delegation_provenance: &mut DelegationProvenance,
 ) -> InferenceOutput {
+    let (max_react_turns, max_turn_duration_seconds) = {
+        let cfg = state.config.read().await;
+        (
+            cfg.agent.autonomy_max_react_turns,
+            cfg.agent.autonomy_max_turn_duration_seconds,
+        )
+    };
     let user_prompt = prepared
         .request
         .messages
@@ -1689,9 +1696,11 @@ pub(super) async fn run_inference_and_react(
     let initial_content = sanitize_model_output(initial_content, state.hmac_secret.as_ref());
 
     // ReAct loop — supports multiple tool calls per LLM turn
-    let mut react_loop = AgentLoop::new(10);
+    let mut react_loop = AgentLoop::new(max_react_turns);
     let mut final_content = initial_content.clone();
     let mut tool_results_acc: Vec<(String, String)> = Vec::new();
+    let react_deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(max_turn_duration_seconds);
 
     let mut pending_calls = parse_tool_calls(&initial_content);
     // Fall back to single-parse for edge cases (e.g. embedded JSON)
@@ -1711,6 +1720,15 @@ pub(super) async fn run_inference_and_react(
         });
 
         while !pending_calls.is_empty() {
+            if std::time::Instant::now() >= react_deadline {
+                final_content = format!(
+                    "I stopped this turn after reaching the autonomy duration limit ({}s). \
+Please continue with a narrower or next-step command.",
+                    max_turn_duration_seconds
+                );
+                pending_calls.clear();
+                break;
+            }
             let mut observations = Vec::new();
             let mut batch_aborted = false;
 

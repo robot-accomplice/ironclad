@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Roadmap/release traceability**: `docs/releases/v0.9.5.md` and `docs/ROADMAP.md` updated with current v0.9.5 prep status for speculative execution, browser runtime support, CLI skill roadmap slice, and behavior continuity validation.
 - **Architecture documentation**: Added explicit v0.9.5-prep control/dataflow coverage for deterministic execution shortcuts and guarded response sanitization in `docs/architecture/ironclad-dataflow.md` and `docs/architecture/ironclad-sequences.md`.
 - **Browser runtime continuity**: Browser action execution now attempts a single stop/start session recovery when CDP disconnect/closed-socket errors are detected, reducing user-visible failures during transient browser runtime drops.
+- **Autonomy turn-budget controls**: Added configurable agent-level ReAct budget controls (`autonomy_max_react_turns`, `autonomy_max_turn_duration_seconds`) and wired enforcement into the runtime loop.
 
 ### Fixed
 
