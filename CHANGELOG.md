@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-03-06
+
 ### Changed
 
 - **Behavior soak hardening**: `scripts/run-agent-behavior-soak.py` now includes regression checks for filesystem capability truthfulness, subagent capability response quality, and affirmative continuation quality, with rubric updates to score substantive outcomes over brittle phrase matching.
