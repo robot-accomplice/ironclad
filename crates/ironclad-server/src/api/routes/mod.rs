@@ -458,16 +458,18 @@ async fn security_headers_layer(
 pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, breaker_open, breaker_reset, breaker_status, browser_action, browser_start,
-        browser_status, browser_stop, change_agent_model, delete_provider_key, execute_plugin_tool,
-        generate_deep_analysis, get_agents, get_available_models, get_cache_stats,
-        get_capacity_stats, get_config, get_config_apply_status, get_config_capabilities,
-        get_costs, get_efficiency, get_mcp_runtime, get_overview_timeseries, get_plugins,
-        get_recommendations, get_routing_dataset, get_routing_diagnostics, get_runtime_surfaces,
+        browser_status, browser_stop, change_agent_model, create_service_quote,
+        delete_provider_key, execute_plugin_tool, fulfill_service_request, generate_deep_analysis,
+        get_agents, get_available_models, get_cache_stats, get_capacity_stats, get_config,
+        get_config_apply_status, get_config_capabilities, get_costs, get_efficiency,
+        get_mcp_runtime, get_overview_timeseries, get_plugins, get_recommendations,
+        get_routing_dataset, get_routing_diagnostics, get_runtime_surfaces, get_service_request,
         get_throttle_stats, get_transactions, list_discovered_agents, list_paired_devices,
-        mcp_client_disconnect, mcp_client_discover, pair_device, register_discovered_agent, roster,
-        run_routing_eval, set_provider_key, start_agent, stop_agent, toggle_plugin, unpair_device,
-        update_config, verify_discovered_agent, verify_paired_device, wallet_address,
-        wallet_balance, workspace_state,
+        list_services_catalog, mcp_client_disconnect, mcp_client_discover, pair_device,
+        register_discovered_agent, roster, run_routing_eval, set_provider_key, start_agent,
+        stop_agent, toggle_plugin, unpair_device, update_config, verify_discovered_agent,
+        verify_paired_device, verify_service_payment, wallet_address, wallet_balance,
+        workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
@@ -555,6 +557,17 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/stats/efficiency", get(get_efficiency))
         .route("/api/recommendations", get(get_recommendations))
         .route("/api/stats/transactions", get(get_transactions))
+        .route("/api/services/catalog", get(list_services_catalog))
+        .route("/api/services/quote", post(create_service_quote))
+        .route("/api/services/requests/{id}", get(get_service_request))
+        .route(
+            "/api/services/requests/{id}/payment/verify",
+            post(verify_service_payment),
+        )
+        .route(
+            "/api/services/requests/{id}/fulfill",
+            post(fulfill_service_request),
+        )
         .route("/api/stats/cache", get(get_cache_stats))
         .route("/api/stats/capacity", get(get_capacity_stats))
         .route("/api/stats/throttle", get(get_throttle_stats))
@@ -1594,6 +1607,168 @@ primary = "ollama/qwen3:8b"
 
         let body = json_body(resp).await;
         assert!(body["transactions"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn service_catalog_returns_single_paid_service() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services/catalog")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        let services = body["services"].as_array().unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0]["id"], "geopolitical-sitrep-verified");
+        assert_eq!(services[0]["price_usdc"], 0.25);
+    }
+
+    #[tokio::test]
+    async fn service_quote_to_fulfillment_records_revenue_and_completion() {
+        let app = build_router(test_state());
+
+        let quote_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/quote")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"service_id":"geopolitical-sitrep-verified","requester":"operator","parameters":{"scope":"us"}} "#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(quote_resp.status(), StatusCode::OK);
+        let quote_body = json_body(quote_resp).await;
+        let request_id = quote_body["request_id"].as_str().unwrap().to_string();
+        let recipient = quote_body["recipient"].as_str().unwrap().to_string();
+
+        let verify_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/services/requests/{request_id}/payment/verify"
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"tx_hash":"0xabc123","amount_usdc":0.25,"recipient":"{recipient}"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(verify_resp.status(), StatusCode::OK);
+        let verify_body = json_body(verify_resp).await;
+        assert_eq!(verify_body["status"], "payment_verified");
+
+        let fulfill_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/requests/{request_id}/fulfill"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"fulfillment_output":"verified sitrep delivered"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fulfill_resp.status(), StatusCode::OK);
+        let fulfill_body = json_body(fulfill_resp).await;
+        assert_eq!(fulfill_body["status"], "completed");
+
+        let get_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/services/requests/{request_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let get_body = json_body(get_resp).await;
+        assert_eq!(get_body["status"], "completed");
+        assert_eq!(get_body["payment_tx_hash"], "0xabc123");
+        assert_eq!(get_body["fulfillment_output"], "verified sitrep delivered");
+
+        let tx_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/transactions?hours=24")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tx_resp.status(), StatusCode::OK);
+        let tx_body = json_body(tx_resp).await;
+        let txs = tx_body["transactions"].as_array().unwrap();
+        assert!(
+            txs.iter()
+                .any(|t| t["tx_type"] == "service_revenue" && t["amount"] == 0.25),
+            "expected service_revenue transaction in ledger"
+        );
+    }
+
+    #[tokio::test]
+    async fn service_payment_verify_rejects_recipient_mismatch() {
+        let app = build_router(test_state());
+        let quote_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/quote")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"service_id":"geopolitical-sitrep-verified","requester":"operator","parameters":{}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(quote_resp.status(), StatusCode::OK);
+        let request_id = json_body(quote_resp).await["request_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let verify_resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/requests/{request_id}/payment/verify"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"tx_hash":"0xabc123","amount_usdc":0.25,"recipient":"0x0000000000000000000000000000000000000000"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(verify_resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(verify_resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("recipient does not match")
+        );
     }
 
     #[tokio::test]
