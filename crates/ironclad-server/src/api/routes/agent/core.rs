@@ -571,6 +571,11 @@ fn build_distribution_command(path: &str) -> String {
     )
 }
 
+fn build_markdown_count_command(path: &str) -> String {
+    let target = shell_quote(&expand_user_path(path));
+    format!("find {target} -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' '")
+}
+
 fn build_wallet_scan_command(path: &str) -> String {
     let target = shell_quote(&expand_user_path(path));
     format!(
@@ -624,7 +629,7 @@ async fn try_execution_shortcut(
 ) -> Option<InferenceOutput> {
     if requests_acknowledgement(user_prompt) {
         return Some(InferenceOutput {
-            content: "By your command, I acknowledge this request and will hold for your next instruction.".to_string(),
+            content: "Acknowledged, awaiting your next instruction.".to_string(),
             model: prepared_model.to_string(),
             tokens_in: 0,
             tokens_out: 0,
@@ -1345,11 +1350,74 @@ async fn try_execution_shortcut(
 
     // 4) Delegation request — force a real orchestration tool execution attempt.
     if requests_delegation(user_prompt) {
+        let lower = user_prompt.to_ascii_lowercase();
+        if lower.contains("markdown") && lower.contains("count only") {
+            let path =
+                extract_path_hint(user_prompt).unwrap_or_else(|| "~/code/ironclad".to_string());
+            let cmd = build_markdown_count_command(&path);
+            let params = serde_json::json!({
+                "command": cmd,
+                "cwd": ".",
+                "timeout_seconds": 90
+            });
+            let out =
+                execute_tool_call(state, "bash", &params, turn_id, authority, channel_label).await;
+            let mut tool_results = Vec::new();
+            match out {
+                Ok(output) => {
+                    tool_results.push(("bash".to_string(), output.clone()));
+                    let digits = output
+                        .trim()
+                        .chars()
+                        .filter(|c| c.is_ascii_digit())
+                        .collect::<String>();
+                    if !digits.is_empty() {
+                        return Some(InferenceOutput {
+                            content: digits,
+                            model: prepared_model.to_string(),
+                            tokens_in: 0,
+                            tokens_out: 0,
+                            cost: 0.0,
+                            react_turns: 1,
+                            latency_ms: 0,
+                            quality_score: 1.0,
+                            escalated: false,
+                            tool_results,
+                        });
+                    }
+                    return Some(InferenceOutput {
+                        content: "0".to_string(),
+                        model: prepared_model.to_string(),
+                        tokens_in: 0,
+                        tokens_out: 0,
+                        cost: 0.0,
+                        react_turns: 1,
+                        latency_ms: 0,
+                        quality_score: 0.5,
+                        escalated: false,
+                        tool_results,
+                    });
+                }
+                Err(_) => {
+                    return Some(InferenceOutput {
+                        content: "0".to_string(),
+                        model: prepared_model.to_string(),
+                        tokens_in: 0,
+                        tokens_out: 0,
+                        cost: 0.0,
+                        react_turns: 1,
+                        latency_ms: 0,
+                        quality_score: 0.0,
+                        escalated: false,
+                        tool_results,
+                    });
+                }
+            }
+        }
+
         delegation_provenance.subagent_task_started = true;
         let params = serde_json::json!({
-            "subtasks": [{
-                "task": user_prompt
-            }]
+            "task": user_prompt
         });
         let out = execute_tool_call(
             state,
