@@ -64,10 +64,10 @@ pub enum PassStatus {
 
 fn migration_map() -> HashMap<&'static str, &'static str> {
     let mut m = HashMap::new();
-    m.insert("openclaw", "ironclad");
-    m.insert("open_claw", "ironclad");
-    m.insert("OpenClaw", "Ironclad");
-    m.insert("oclaw", "ironclad");
+    m.insert("legacy", "ironclad");
+    m.insert("open_legacy", "ironclad");
+    m.insert("Legacy", "Ironclad");
+    m.insert("olegacy", "ironclad");
     m
 }
 
@@ -460,7 +460,7 @@ pub fn pass_scripts(workspace: &Path) -> Vec<DefragFinding> {
 
     let script_files = walk_files(&skills_dir, &["sh", "py", "rb", "pl"]);
     let shebang_re = Regex::new(r"^#!.+").unwrap();
-    let hardcoded_re = Regex::new(r"/usr/local/bin/openclaw").unwrap();
+    let hardcoded_re = Regex::new(r"/usr/local/bin/legacy").unwrap();
 
     for file in script_files {
         let content = match fs::read_to_string(&file) {
@@ -489,7 +489,7 @@ pub fn pass_scripts(workspace: &Path) -> Vec<DefragFinding> {
                     file: file.clone(),
                     line: Some(line_num + 1),
                     severity: Severity::Error,
-                    message: "hardcoded path '/usr/local/bin/openclaw'".to_string(),
+                    message: "hardcoded path '/usr/local/bin/legacy'".to_string(),
                     fix_description: None,
                     fixable: false,
                     pass_name: "scripts".to_string(),

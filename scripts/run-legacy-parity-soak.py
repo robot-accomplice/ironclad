@@ -11,13 +11,13 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Tuple
 
 IRONCLAD_BASE_URL = os.environ.get("IRONCLAD_BASE_URL", "http://127.0.0.1:18789").rstrip("/")
-OPENCLAW_BASE_URL = os.environ.get("OPENCLAW_BASE_URL", "http://127.0.0.1:8787").rstrip("/")
-OPENCLAW_MODE = os.environ.get("OPENCLAW_MODE", "auto").strip().lower()
-OPENCLAW_AGENT = os.environ.get("OPENCLAW_AGENT", "main").strip()
+LEGACY_BASE_URL = os.environ.get("LEGACY_BASE_URL", "http://127.0.0.1:8787").rstrip("/")
+LEGACY_MODE = os.environ.get("LEGACY_MODE", "auto").strip().lower()
+LEGACY_AGENT = os.environ.get("LEGACY_AGENT", "main").strip()
 TIMEOUT = int(os.environ.get("SOAK_TIMEOUT_SECONDS", "240"))
 MAX_LATENCY = float(os.environ.get("SOAK_MAX_LATENCY_SECONDS", "70"))
 REPORT_PATH = os.environ.get(
-    "PARITY_REPORT_PATH", "/tmp/ironclad-openclaw-parity-report.json"
+    "PARITY_REPORT_PATH", "/tmp/ironclad-legacy-parity-report.json"
 )
 
 STALE_MARKERS = [
@@ -87,7 +87,7 @@ def parse_first_json_object(raw: str) -> Dict[str, object]:
     return {}
 
 
-def extract_openclaw_content(payload: Dict[str, object]) -> str:
+def extract_legacy_content(payload: Dict[str, object]) -> str:
     candidates = [
         payload.get("content"),
         payload.get("response"),
@@ -118,15 +118,15 @@ def extract_openclaw_content(payload: Dict[str, object]) -> str:
     return ""
 
 
-def send_openclaw_cli(prompt: str, session_id: str = "") -> Dict[str, object]:
+def send_legacy_cli(prompt: str, session_id: str = "") -> Dict[str, object]:
     cmd = [
-        "openclaw",
+        "legacy",
         "--no-color",
         "agent",
         "--local",
         "--json",
         "--agent",
-        OPENCLAW_AGENT,
+        LEGACY_AGENT,
         "--message",
         prompt,
         "--timeout",
@@ -141,11 +141,11 @@ def send_openclaw_cli(prompt: str, session_id: str = "") -> Dict[str, object]:
     latency = round(time.time() - started, 2)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"openclaw cli failed rc={proc.returncode}: "
+            f"legacy cli failed rc={proc.returncode}: "
             f"{(proc.stderr or proc.stdout).strip()}"
         )
     parsed = parse_first_json_object(proc.stdout)
-    content = extract_openclaw_content(parsed)
+    content = extract_legacy_content(parsed)
     model = (
         parsed.get("model")
         or parsed.get("resolvedModel")
@@ -173,11 +173,11 @@ def send_openclaw_cli(prompt: str, session_id: str = "") -> Dict[str, object]:
     }
 
 
-def choose_openclaw_mode() -> str:
-    if OPENCLAW_MODE in ("api", "cli"):
-        return OPENCLAW_MODE
+def choose_legacy_mode() -> str:
+    if LEGACY_MODE in ("api", "cli"):
+        return LEGACY_MODE
     try:
-        send_message(OPENCLAW_BASE_URL, "ping")
+        send_message(LEGACY_BASE_URL, "ping")
         return "api"
     except Exception:
         return "cli"
@@ -396,7 +396,7 @@ def run_target(name: str, base_url: str, mode: str = "api") -> Dict[str, object]
 
     for scenario in SCENARIOS:
         if mode == "cli":
-            resp = send_openclaw_cli(scenario.prompt, session_id)
+            resp = send_legacy_cli(scenario.prompt, session_id)
         else:
             resp = send_message(base_url, scenario.prompt, session_id)
         session_id = str(resp.get("session_id") or session_id or "")
@@ -455,19 +455,19 @@ def run_target(name: str, base_url: str, mode: str = "api") -> Dict[str, object]
     }
 
 
-def print_summary(ironclad: Dict[str, object], openclaw: Dict[str, object]) -> None:
+def print_summary(ironclad: Dict[str, object], legacy: Dict[str, object]) -> None:
     print("\n[parity] summary")
     print("target      pass_rate   weighted_score   avg_latency_s   failed")
-    for t in (ironclad, openclaw):
+    for t in (ironclad, legacy):
         print(
             f"{t['target']:<11} {str(t['pass_rate'])+'%':<11} "
             f"{str(t['weighted_score'])+'%':<16} {t['avg_latency_s']:<14} {t['failed']}"
         )
 
-    delta_score = round(float(ironclad["weighted_score"]) - float(openclaw["weighted_score"]), 2)
-    delta_latency = round(float(ironclad["avg_latency_s"]) - float(openclaw["avg_latency_s"]), 2)
+    delta_score = round(float(ironclad["weighted_score"]) - float(legacy["weighted_score"]), 2)
+    delta_latency = round(float(ironclad["avg_latency_s"]) - float(legacy["avg_latency_s"]), 2)
     print(
-        f"[parity] delta ironclad-openclaw: score={delta_score}% latency={delta_latency}s"
+        f"[parity] delta ironclad-legacy: score={delta_score}% latency={delta_latency}s"
     )
 
 
@@ -477,23 +477,23 @@ def run() -> int:
         f"report={REPORT_PATH}"
     )
     ironclad = run_target("ironclad", IRONCLAD_BASE_URL, "api")
-    openclaw_mode = choose_openclaw_mode()
-    openclaw = run_target("openclaw", OPENCLAW_BASE_URL, openclaw_mode)
-    openclaw["mode"] = openclaw_mode
-    print_summary(ironclad, openclaw)
+    legacy_mode = choose_legacy_mode()
+    legacy = run_target("legacy", LEGACY_BASE_URL, legacy_mode)
+    legacy["mode"] = legacy_mode
+    print_summary(ironclad, legacy)
 
     report = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "timeout_s": TIMEOUT,
         "max_latency_s": MAX_LATENCY,
         "ironclad": ironclad,
-        "openclaw": openclaw,
+        "legacy": legacy,
         "comparison": {
             "score_delta": round(
-                float(ironclad["weighted_score"]) - float(openclaw["weighted_score"]), 2
+                float(ironclad["weighted_score"]) - float(legacy["weighted_score"]), 2
             ),
             "latency_delta_s": round(
-                float(ironclad["avg_latency_s"]) - float(openclaw["avg_latency_s"]), 2
+                float(ironclad["avg_latency_s"]) - float(legacy["avg_latency_s"]), 2
             ),
         },
     }
@@ -503,9 +503,9 @@ def run() -> int:
     print(f"[parity] wrote report: {REPORT_PATH}")
 
     # Gate policy:
-    # 1) ironclad must score >= openclaw
+    # 1) ironclad must score >= legacy
     # 2) ironclad must have zero stale-marker failures
-    score_ok = float(ironclad["weighted_score"]) >= float(openclaw["weighted_score"])
+    score_ok = float(ironclad["weighted_score"]) >= float(legacy["weighted_score"])
     stale_failures = 0
     for row in ironclad["results"]:
         for c in row["checks"]:

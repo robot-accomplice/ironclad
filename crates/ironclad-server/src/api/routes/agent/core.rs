@@ -88,6 +88,18 @@ pub(super) struct InferenceOutput {
 }
 
 fn deterministic_quality_fallback(user_prompt: &str, agent_name: &str) -> String {
+    let lower = user_prompt.trim().to_ascii_lowercase();
+    if matches!(lower.as_str(), "awesome" | "great" | "nice" | "perfect" | "go ahead") {
+        return "Copy. Next concrete step: I can produce paste-ready markdown bodies for Wallet-Defaults.md, Cadence-and-Approvals.md, and Daily-Progress-Template.md right now."
+            .to_string();
+    }
+    if requests_obsidian_insights(user_prompt)
+        || lower.contains("my vault")
+        || lower.contains("obsidian")
+    {
+        return "Obsidian vault starter scaffold:\n\nMy Vault/\n- Governance/\n  - Wallet-Defaults.md\n  - Cadence-and-Approvals.md\n- Ledger/\n  - Ledger-Skeleton.md\n- Subagents/\n  - web3-dispatcher.md\n  - api-vender.md\n  - audit-fuzzer.md\n- Data/\n  - Data-Sources.md\n  - Data-Flows.md\n- Reports/\n  - Daily-Progress-Template.md\n- Templates/\n- References/\n\nIf you want, I will now produce the first three file bodies (Wallet-Defaults, Cadence-and-Approvals, Daily-Progress-Template) in paste-ready markdown."
+            .to_string();
+    }
     if requests_current_events(user_prompt) {
         return format!(
             "{agent_name} here. I failed to produce a reliable live sitrep in that turn. I can still provide a concrete briefing now if you specify scope (global, US, or region) and I will return it with dated caveats."

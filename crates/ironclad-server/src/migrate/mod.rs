@@ -152,7 +152,7 @@ pub fn cmd_migrate_import(
 
     eprintln!();
     eprintln!(
-        "  \u{256d}\u{2500} OpenClaw \u{2192} Ironclad Import \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
+        "  \u{256d}\u{2500} Legacy \u{2192} Ironclad Import \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
     );
     eprintln!("  \u{2502} Source: {}", source_path.display());
     eprintln!("  \u{2502} Target: {}", ironclad_root.display());
@@ -218,7 +218,7 @@ pub fn cmd_migrate_export(
 
     eprintln!();
     eprintln!(
-        "  \u{256d}\u{2500} Ironclad \u{2192} OpenClaw Export \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
+        "  \u{256d}\u{2500} Ironclad \u{2192} Legacy Export \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"
     );
     eprintln!("  \u{2502} Source: {}", ironclad_root.display());
     eprintln!("  \u{2502} Target: {}", target_path.display());
@@ -659,7 +659,7 @@ mod tests {
             "model": "gpt-4"
         });
         fs::write(
-            oc.path().join("openclaw.json"),
+            oc.path().join("legacy.json"),
             serde_json::to_string(&config).unwrap(),
         )
         .unwrap();

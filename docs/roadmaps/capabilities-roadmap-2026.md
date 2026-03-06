@@ -24,7 +24,7 @@ A third layer, **embedded functionality**, lives in the [core project roadmap](.
 | **OpenAI Agents SDK** | Agents-as-tools (typed handoffs), hosted tools (Codex sandbox, file search), guardrails as first-class primitives, human-in-the-loop pause/resume, MCP integration | Proprietary, massive adoption |
 | **LangGraph** | Graph-based orchestration with typed state, interrupt/resume at any node, persistent checkpoints, conditional branching, "Agentic Mesh" vision | LangChain ecosystem |
 | **CrewAI** | Role-based multi-agent crews, dead-simple API, code interpreter integration, task delegation patterns | 44K+ GitHub stars |
-| **OpenClaw** | Local-first personal agent, 2,800+ community skills (ClawHub), heartbeat/cron proactive execution, markdown-based skill format, Docker sandbox, multi-channel (Signal/Telegram/Discord/WhatsApp/Slack/iMessage) | 140K+ GitHub stars, viral growth |
+| **Legacy** | Local-first personal agent, 2,800+ community skills (SkillHub), heartbeat/cron proactive execution, markdown-based skill format, Docker sandbox, multi-channel (Signal/Telegram/Discord/WhatsApp/Slack/iMessage) | 140K+ GitHub stars, viral growth |
 | **Claude MCP ecosystem** | Tool Search (85% token reduction), MCP Apps (interactive UI), donated to Linux Foundation as open standard, massive connector expansion | 97M+ monthly SDK downloads |
 
 ### Where Ironclad is strong
@@ -32,16 +32,16 @@ A third layer, **embedded functionality**, lives in the [core project roadmap](.
 - **Memory system**: 5-tier hybrid (FTS5 + vector) — more sophisticated than any competitor's persistence model
 - **Security posture**: Constant-time auth, RiskLevel gating, injection defense, abuse protection — structural, not bolted-on
 - **MCP server integration**: P.1 MCP Gateway server half implemented; ahead of CrewAI, on par with OpenAI
-- **Multi-channel delivery**: Telegram + WhatsApp wired with webhook auth; OpenClaw has more channels but less auth rigor
+- **Multi-channel delivery**: Telegram + WhatsApp wired with webhook auth; Legacy has more channels but less auth rigor
 - **WASM sandbox**: 2.7 shipped — capability-gated, memory-limited, JSON-oriented; ahead of CrewAI, on par with OpenAI Codex for lightweight sandboxing
 
 ### Gaps to close
 
 1. **Tool Search / Dynamic Selection** — critical once MCP client ships (Claude MCP ecosystem)
 2. **Agent Delegation** — agents-as-tools, industry convergence point (OpenAI, LangGraph)
-3. **Container Execution** — Docker/nsjail for heavyweight sandboxing beyond WASM (OpenAI, CrewAI, OpenClaw)
-4. **Proactive Background Execution** — OpenClaw heartbeat/cron model (addressed by P.7 Sensor Mesh)
-5. **Community Skill Distribution** — OpenClaw ClawHub (2,800+ skills); core infra ships v0.9.6, P.10 adds trust layer
+3. **Container Execution** — Docker/nsjail for heavyweight sandboxing beyond WASM (OpenAI, CrewAI, Legacy)
+4. **Proactive Background Execution** — Legacy heartbeat/cron model (addressed by P.7 Sensor Mesh)
+5. **Community Skill Distribution** — Legacy SkillHub (2,800+ skills); core infra ships v0.9.6, P.10 adds trust layer
 6. **Graph-Based Orchestration** — LangGraph directed graphs vs our linear tool-call loop
 
 ---
@@ -356,7 +356,7 @@ Merged `plugins-roadmap-2026.md` and `skills-roadmap-2026.md` into this unified 
 
 ## Competitive Research Sources
 
-- [OpenClaw](https://openclaw.ai/) — local-first AI agent, 140K+ stars, ClawHub marketplace
-- [OpenClaw Architecture (DeepWiki)](https://deepwiki.com/openclaw/openclaw/3-agents) — agent/heartbeat/workspace model
-- [OpenClaw Skills Guide (DigitalOcean)](https://www.digitalocean.com/resources/articles/what-are-openclaw-skills) — skill.md format, ClawHub ecosystem
-- [OpenClaw Wikipedia](https://en.wikipedia.org/wiki/OpenClaw) — project history and community metrics
+- [Legacy](https://legacy.ai/) — local-first AI agent, 140K+ stars, SkillHub marketplace
+- [Legacy Architecture (DeepWiki)](https://deepwiki.com/legacy/legacy/3-agents) — agent/heartbeat/workspace model
+- [Legacy Skills Guide (DigitalOcean)](https://www.digitalocean.com/resources/articles/what-are-legacy-skills) — skill.md format, SkillHub ecosystem
+- [Legacy Wikipedia](https://en.wikipedia.org/wiki/Legacy) — project history and community metrics
