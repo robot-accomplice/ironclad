@@ -1887,7 +1887,9 @@ pub(super) async fn run_inference_and_react(
     }
 
     final_content = enforce_internal_protocol_guard(final_content, &agent_name);
-    if final_content.contains("filtered internal execution protocol") {
+    if final_content.trim().is_empty()
+        || final_content.contains("filtered internal execution protocol")
+    {
         final_content = deterministic_quality_fallback(user_prompt, &agent_name);
     }
 
@@ -2096,7 +2098,9 @@ pub(super) async fn execute_inference_pipeline(
         );
         let cached_content = enforce_internal_jargon_guard(cached_content, &agent_name);
         let cached_content = enforce_internal_protocol_guard(cached_content, &agent_name);
-        let cached_content = if cached_content.contains("filtered internal execution protocol") {
+        let cached_content = if cached_content.trim().is_empty()
+            || cached_content.contains("filtered internal execution protocol")
+        {
             deterministic_quality_fallback(user_content, &agent_name)
         } else {
             cached_content

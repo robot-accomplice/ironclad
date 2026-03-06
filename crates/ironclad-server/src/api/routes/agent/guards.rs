@@ -562,12 +562,7 @@ pub(super) fn strip_internal_delegation_metadata(content: &str) -> String {
         .join("\n")
         .trim()
         .to_string();
-    if filtered.is_empty() {
-        "I suppressed internal execution metadata and will continue with a plain user-facing result."
-            .to_string()
-    } else {
-        filtered
-    }
+    filtered
 }
 
 pub(super) fn enforce_internal_protocol_guard(response: String, agent_name: &str) -> String {
@@ -582,7 +577,7 @@ pub(super) fn enforce_internal_protocol_guard(response: String, agent_name: &str
     }
 
     let stripped = strip_internal_delegation_metadata(&response);
-    if stripped.starts_with("I suppressed internal execution metadata") {
+    if stripped.is_empty() {
         return format!(
             "{} here. I filtered internal execution protocol and will continue with user-facing output only.",
             agent_name

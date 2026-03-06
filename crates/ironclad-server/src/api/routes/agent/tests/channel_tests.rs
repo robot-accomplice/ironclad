@@ -194,10 +194,10 @@ Visible answer line.";
 }
 
 #[test]
-fn strip_internal_delegation_metadata_returns_suppression_message_when_all_internal() {
+fn strip_internal_delegation_metadata_returns_empty_when_all_internal() {
     let raw = "delegated_subagent=geo model=x fallback_models=[]\nsubtask 1 -> geo";
     let cleaned = strip_internal_delegation_metadata(raw);
-    assert!(cleaned.contains("suppressed internal execution metadata"));
+    assert!(cleaned.is_empty());
 }
 
 #[test]
