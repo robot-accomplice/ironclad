@@ -150,7 +150,7 @@ fn collect_mechanic_json_security_and_plugin_findings(
                                     "{name} is enabled but has no allowed IDs and deny_on_empty_allowlist = true. \
                                      No one can send messages via this channel."
                                 ),
-                                format!("Add allowed IDs for {name} or set deny_on_empty_allowlist = false."),
+                                format!("Add allowed IDs for {name} or disable the channel until an allow-list is configured."),
                                 vec!["ironclad mechanic --repair".to_string()],
                                 false,
                                 true,
@@ -163,10 +163,10 @@ fn collect_mechanic_json_security_and_plugin_findings(
                                 0.99,
                                 format!("{name} is open to the entire internet"),
                                 format!(
-                                    "{name} is enabled with an empty allow-list and deny_on_empty_allowlist = false. \
-                                     Anyone on the internet can message your agent."
+                                    "{name} is enabled with an empty allow-list under a deprecated insecure configuration. \
+                                     Runtime startup now rejects this state; migrate to an explicit allow-list or disable the channel."
                                 ),
-                                format!("Add allowed IDs for {name} or set deny_on_empty_allowlist = true."),
+                                format!("Add allowed IDs for {name}, then rerun mechanic repair, or disable the channel."),
                                 vec!["ironclad mechanic --repair".to_string()],
                                 false,
                                 true,

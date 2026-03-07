@@ -84,7 +84,7 @@ C4Container
 
 ## Implementation Notes
 
-- **Routing**: Heuristic classifier in `ironclad-llm/src/router.rs` (weighted message length, tool calls, depth). No ONNX or ML models. Config `mode` accepts `"primary"`, `"metascore"`, and `"heuristic"`; `"heuristic"` currently aliases metascore routing behavior.
+- **Routing**: Heuristic classifier in `ironclad-llm/src/router.rs` (weighted message length, tool calls, depth). No ONNX or ML models. Runtime config accepts `"primary"` and `"metascore"`; legacy values must be migrated by update/mechanic before startup.
 - **Cache**: `SemanticCache` in `ironclad-llm/src/cache.rs` (HashMap, L1 exact / L2 semantic cosine / L3 tool TTL). Persisted to SQLite via `ironclad-db/src/cache.rs` — loaded on boot, flushed every 5 minutes.
 - **Policy rules**: Six rules in `ironclad-agent/src/policy.rs`: AuthorityRule, CommandSafetyRule, FinancialRule, PathProtectionRule, RateLimitRule, ValidationRule. Server bootstrap wires AuthorityRule and CommandSafetyRule by default.
 - **FTS**: `memory_fts` FTS5 virtual table with columns `content`, `category`, `source_table`, `source_id`. Synced via trigger for episodic; working and semantic inserts in `ironclad-db/src/memory.rs`.

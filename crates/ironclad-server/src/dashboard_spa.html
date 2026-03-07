@@ -3416,7 +3416,7 @@
         if (specialists.length === 0) {
           html += '<div class="card" style="text-align:center;padding:3rem"><div style="font-size:2rem;margin-bottom:0.5rem">\uD83E\uDD16</div>';
           html += '<div style="color:var(--muted)">No taskable sub-agents configured</div>';
-          html += '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Run <code style="background:var(--surface);padding:0.1rem 0.4rem;border-radius:4px">ironclad migrate import ~/.legacy --areas agents</code> or add one below</div>';
+          html += '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Import a prior agent export with <code style="background:var(--surface);padding:0.1rem 0.4rem;border-radius:4px">ironclad migrate import &lt;export-root&gt; --areas agents</code> or add one below</div>';
           html += '</div>';
         }
 
