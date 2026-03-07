@@ -2363,7 +2363,9 @@ primary = "ollama/qwen3:8b"
                     .method("POST")
                     .uri(format!("/api/services/opportunities/{id}/feedback"))
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"grade":4.5,"source":"operator","comment":"worth repeating"}"#))
+                    .body(Body::from(
+                        r#"{"grade":4.5,"source":"operator","comment":"worth repeating"}"#,
+                    ))
                     .unwrap(),
             )
             .await
@@ -2381,7 +2383,10 @@ primary = "ollama/qwen3:8b"
             .unwrap();
         assert_eq!(wallet_resp.status(), StatusCode::OK);
         let body = json_body(wallet_resp).await;
-        assert_eq!(body["revenue_feedback_summary"][0]["strategy"], "oracle_feed");
+        assert_eq!(
+            body["revenue_feedback_summary"][0]["strategy"],
+            "oracle_feed"
+        );
         assert_eq!(body["revenue_feedback_summary"][0]["feedback_count"], 1);
     }
 

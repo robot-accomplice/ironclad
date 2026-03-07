@@ -2948,6 +2948,30 @@
         + chainRows
         + '</div>';
     },
+    _renderRevenueStrategySummaryCard: function(rows) {
+      var items = Array.isArray(rows) ? rows : [];
+      var body = items.length
+        ? items.map(function(row) {
+            return '<div class="settings-row">'
+              + '<div><div style="font-weight:600;font-size:0.8125rem">' + esc(row.strategy || 'unknown') + '</div><div style="font-size:0.625rem;color:var(--muted)">' + esc(String(row.settled_jobs || 0)) + ' settled / ' + esc(String(row.total_jobs || 0)) + ' total</div></div>'
+              + '<div style="text-align:right;font-family:var(--font-mono)"><div>$' + Number(row.net_profit_usdc || 0).toFixed(2) + '</div><div style="font-size:0.625rem;color:var(--muted)">priority ' + Number(row.avg_priority_score || 0).toFixed(1) + '</div></div>'
+              + '</div>';
+          }).join('')
+        : '<div style="font-size:0.75rem;color:var(--muted)">No settled strategy data yet.</div>';
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Strategy Summary</div>' + body + '</div>';
+    },
+    _renderRevenueFeedbackSummaryCard: function(rows) {
+      var items = Array.isArray(rows) ? rows : [];
+      var body = items.length
+        ? items.map(function(row) {
+            return '<div class="settings-row">'
+              + '<div><div style="font-weight:600;font-size:0.8125rem">' + esc(row.strategy || 'unknown') + '</div><div style="font-size:0.625rem;color:var(--muted)">' + esc(String(row.feedback_count || 0)) + ' feedback signals</div></div>'
+              + '<div style="text-align:right;font-family:var(--font-mono)"><div>' + Number(row.avg_grade || 0).toFixed(2) + ' / 5.00</div><div style="font-size:0.625rem;color:var(--muted)">' + esc((row.latest_feedback_at || '').replace('T', ' ').slice(0, 19) || '\u2014') + '</div></div>'
+              + '</div>';
+          }).join('')
+        : '<div style="font-size:0.75rem;color:var(--muted)">No feedback recorded yet.</div>';
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Feedback Summary</div>' + body + '</div>';
+    },
     _renderRevenueSwapSettings: function(revenueSwap) {
       var cfg = revenueSwap || {};
       var chains = Array.isArray(cfg.chains) ? cfg.chains : [];
@@ -3027,8 +3051,10 @@
           '<div class="settings-row"><div class="settings-label">Minimum reserve</div><div style="font-family:var(--font-mono)">$' + (treasury.minimum_reserve || 0).toFixed(2) + '</div></div>' +
           '</div>';
         var revenueSwapCard = self._renderRevenueSwapSummaryCard(treasury.revenue_swap || {});
+        var strategySummaryCard = self._renderRevenueStrategySummaryCard(bal.revenue_strategy_summary || []);
+        var feedbackSummaryCard = self._renderRevenueFeedbackSummaryCard(bal.revenue_feedback_summary || []);
 
-        return addrSection + balancesCard + treasuryCard + revenueSwapCard +
+        return addrSection + balancesCard + treasuryCard + revenueSwapCard + strategySummaryCard + feedbackSummaryCard +
           '<div class="card-title">Transaction history</div><div class="table-wrap"><table><thead><tr><th>Type</th><th>Amount</th><th>Date</th></tr></thead><tbody>' + txRows + '</tbody></table></div>';
       });
     },
