@@ -4,16 +4,23 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
     let chain_id = state.wallet.wallet.chain_id();
     let network = state.wallet.wallet.network_name();
     let config = state.config.read().await;
-    let revenue_accounting = ironclad_db::revenue_accounting::revenue_accounting_summary(&state.db)
-        .unwrap_or_default();
-    let revenue_swap_queue = ironclad_db::revenue_accounting::revenue_swap_queue_summary(&state.db)
-        .unwrap_or_default();
+    let revenue_accounting =
+        ironclad_db::revenue_accounting::revenue_accounting_summary(&state.db).unwrap_or_default();
+    let revenue_swap_queue =
+        ironclad_db::revenue_accounting::revenue_swap_queue_summary(&state.db).unwrap_or_default();
     let revenue_strategy_summary =
         ironclad_db::revenue_strategy_summary::revenue_strategy_summary(&state.db)
             .unwrap_or_default();
     let revenue_feedback_summary =
         ironclad_db::revenue_feedback::revenue_feedback_summary_by_strategy(&state.db)
             .unwrap_or_default();
+    let default_swap_chain = config.treasury.revenue_swap.default_chain.clone();
+    let default_swap_chain_cfg = config
+        .treasury
+        .revenue_swap
+        .chains
+        .iter()
+        .find(|c| c.chain.trim().eq_ignore_ascii_case(&default_swap_chain));
     let revenue_swap_chains: Vec<serde_json::Value> = config
         .treasury
         .revenue_swap
@@ -49,6 +56,27 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
             })
         })
         .collect();
+    let stable_balance = balances
+        .iter()
+        .filter(|b| matches!(b.symbol.as_str(), "USDC" | "USDT" | "DAI"))
+        .map(|b| b.balance)
+        .sum::<f64>();
+    let seed_target_usdc = 50.0;
+    let seed_readiness = json!({
+        "seed_target_usdc": seed_target_usdc,
+        "stable_balance_usdc": stable_balance,
+        "meets_seed_target": stable_balance >= seed_target_usdc,
+        "minimum_reserve_configured": config.treasury.minimum_reserve > 0.0,
+        "swap_enabled": config.treasury.revenue_swap.enabled,
+        "default_chain": default_swap_chain,
+        "default_chain_has_target_contract": default_swap_chain_cfg
+            .map(|c| !c.target_contract_address.trim().is_empty())
+            .unwrap_or(false),
+        "default_chain_has_swap_contract": default_swap_chain_cfg
+            .and_then(|c| c.swap_contract_address.as_deref())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false),
+    });
 
     axum::Json(json!({
         "balance": format!("{usdc_balance:.2}"),
@@ -93,6 +121,7 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
         },
         "revenue_strategy_summary": revenue_strategy_summary,
         "revenue_feedback_summary": revenue_feedback_summary,
+        "seed_exercise_readiness": seed_readiness,
     }))
 }
 

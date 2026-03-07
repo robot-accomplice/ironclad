@@ -155,9 +155,7 @@ fn parse_receipt_status_response(body: &serde_json::Value) -> Result<Option<bool
     let status = result
         .get("status")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            IroncladError::Wallet("transaction receipt missing status field".into())
-        })?;
+        .ok_or_else(|| IroncladError::Wallet("transaction receipt missing status field".into()))?;
     match status {
         "0x1" | "0x01" | "1" => Ok(Some(true)),
         "0x0" | "0x00" | "0" => Ok(Some(false)),

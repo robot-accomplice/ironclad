@@ -26,6 +26,7 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
         .as_array()
         .cloned()
         .unwrap_or_default();
+    let seed_readiness = &balance["seed_exercise_readiness"];
     kv_accent("Balance", &format!("{bal} {currency}"));
     kv_mono("Address", addr);
     if swap.is_object() {
@@ -122,6 +123,29 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
             ),
         );
     }
+    if seed_readiness.is_object() {
+        kv(
+            "$50 Seed Readiness",
+            if seed_readiness["meets_seed_target"]
+                .as_bool()
+                .unwrap_or(false)
+            {
+                "ready"
+            } else {
+                "not ready"
+            },
+        );
+        kv(
+            "Stable Balance",
+            &format!(
+                "{:.2} / {:.2} USDC target",
+                seed_readiness["stable_balance_usdc"]
+                    .as_f64()
+                    .unwrap_or(0.0),
+                seed_readiness["seed_target_usdc"].as_f64().unwrap_or(50.0)
+            ),
+        );
+    }
     if let Some(note) = balance["note"].as_str() {
         eprintln!();
         eprintln!("    {DIM}\u{2139}  {note}{RESET}");
@@ -167,6 +191,7 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
         .as_array()
         .cloned()
         .unwrap_or_default();
+    let seed_readiness = &balance["seed_exercise_readiness"];
     eprintln!();
     kv_accent("Balance", &format!("{bal} {currency}"));
     if swap.is_object() {
@@ -232,6 +257,19 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
                 top["avg_grade"].as_f64().unwrap_or(0.0),
                 top["feedback_count"].as_i64().unwrap_or(0)
             ),
+        );
+    }
+    if seed_readiness.is_object() {
+        kv(
+            "Seed Readiness",
+            if seed_readiness["meets_seed_target"]
+                .as_bool()
+                .unwrap_or(false)
+            {
+                "ready"
+            } else {
+                "not ready"
+            },
         );
     }
     eprintln!();

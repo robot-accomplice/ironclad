@@ -470,13 +470,12 @@ pub fn build_router(state: AppState) -> Router {
         intake_revenue_opportunity, list_discovered_agents, list_paired_devices,
         list_revenue_opportunities, list_revenue_swap_tasks, list_services_catalog,
         mcp_client_disconnect, mcp_client_discover, pair_device, plan_revenue_opportunity,
-        qualify_revenue_opportunity, record_revenue_opportunity_feedback,
-        reconcile_revenue_swap_task,
-        register_discovered_agent, roster, run_routing_eval, score_revenue_opportunity,
-        set_provider_key, settle_revenue_opportunity, start_agent, start_revenue_swap_task,
-        stop_agent, submit_revenue_swap_task, toggle_plugin, unpair_device, update_config,
-        verify_discovered_agent, verify_paired_device, verify_service_payment, wallet_address,
-        wallet_balance, workspace_state,
+        qualify_revenue_opportunity, reconcile_revenue_swap_task,
+        record_revenue_opportunity_feedback, register_discovered_agent, roster, run_routing_eval,
+        score_revenue_opportunity, set_provider_key, settle_revenue_opportunity, start_agent,
+        start_revenue_swap_task, stop_agent, submit_revenue_swap_task, toggle_plugin,
+        unpair_device, update_config, verify_discovered_agent, verify_paired_device,
+        verify_service_payment, wallet_address, wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
@@ -2975,6 +2974,11 @@ primary = "ollama/qwen3:8b"
         );
         assert_eq!(body["treasury"]["revenue_swap"]["default_chain"], "ETH");
         assert!(body["treasury"]["revenue_swap"]["chains"].is_array());
+        assert_eq!(body["seed_exercise_readiness"]["seed_target_usdc"], 50.0);
+        assert!(body["seed_exercise_readiness"]["stable_balance_usdc"].is_number());
+        assert_eq!(body["seed_exercise_readiness"]["default_chain"], "ETH");
+        assert!(body["seed_exercise_readiness"]["default_chain_has_target_contract"].is_boolean());
+        assert!(body["seed_exercise_readiness"]["default_chain_has_swap_contract"].is_boolean());
     }
 
     #[tokio::test]
