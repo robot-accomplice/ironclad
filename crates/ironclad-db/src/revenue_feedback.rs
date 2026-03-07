@@ -2,6 +2,12 @@ use crate::Database;
 use ironclad_core::{IroncladError, Result};
 use serde_json::{Value, json};
 
+#[derive(Debug, Clone, Copy)]
+pub struct RevenueFeedbackSignal {
+    pub feedback_count: i64,
+    pub avg_grade: f64,
+}
+
 pub fn record_revenue_feedback(
     db: &Database,
     opportunity_id: &str,
@@ -56,6 +62,28 @@ pub fn revenue_feedback_summary_by_strategy(db: &Database) -> Result<Vec<Value>>
         .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
+pub fn revenue_feedback_signal_for_strategy(
+    db: &Database,
+    strategy: &str,
+) -> Result<Option<RevenueFeedbackSignal>> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT COUNT(*), AVG(grade) \
+         FROM revenue_feedback \
+         WHERE strategy = ?1",
+        [strategy],
+        |row| {
+            let feedback_count = row.get::<_, i64>(0)?;
+            let avg_grade = row.get::<_, Option<f64>>(1)?;
+            Ok(avg_grade.map(|avg_grade| RevenueFeedbackSignal {
+                feedback_count,
+                avg_grade,
+            }))
+        },
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +117,31 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["strategy"], "oracle_feed");
         assert_eq!(rows[0]["feedback_count"], 2);
+    }
+
+    #[test]
+    fn revenue_feedback_signal_returns_count_and_average() {
+        let db = Database::new(":memory:").unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO revenue_opportunities (id, source, strategy, payload_json, expected_revenue_usdc, status) VALUES ('ro_1','a','oracle_feed','{}',5.0,'settled')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO revenue_opportunities (id, source, strategy, payload_json, expected_revenue_usdc, status) VALUES ('ro_2','b','oracle_feed','{}',4.0,'settled')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        record_revenue_feedback(&db, "ro_1", 5.0, "operator", None).unwrap();
+        record_revenue_feedback(&db, "ro_2", 3.0, "operator", None).unwrap();
+
+        let signal = revenue_feedback_signal_for_strategy(&db, "oracle_feed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(signal.feedback_count, 2);
+        assert!((signal.avg_grade - 4.0).abs() < f64::EPSILON);
     }
 }

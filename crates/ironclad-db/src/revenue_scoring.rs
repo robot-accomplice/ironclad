@@ -24,6 +24,21 @@ pub struct RevenueOpportunityScore {
 pub fn score_revenue_opportunity(
     input: &RevenueOpportunityScoreInput<'_>,
 ) -> RevenueOpportunityScore {
+    score_revenue_opportunity_from_signal(input, None)
+}
+
+pub fn score_revenue_opportunity_with_feedback(
+    db: &Database,
+    input: &RevenueOpportunityScoreInput<'_>,
+) -> Result<RevenueOpportunityScore> {
+    let signal = crate::revenue_feedback::revenue_feedback_signal_for_strategy(db, input.strategy)?;
+    Ok(score_revenue_opportunity_from_signal(input, signal))
+}
+
+fn score_revenue_opportunity_from_signal(
+    input: &RevenueOpportunityScoreInput<'_>,
+    feedback_signal: Option<crate::revenue_feedback::RevenueFeedbackSignal>,
+) -> RevenueOpportunityScore {
     let payload = serde_json::from_str::<Value>(input.payload_json).unwrap_or(Value::Null);
     let strategy = input.strategy.trim().to_ascii_lowercase();
     let source = input.source.trim().to_ascii_lowercase();
@@ -88,6 +103,12 @@ pub fn score_revenue_opportunity(
         effort += 0.15;
         risk += 0.10;
     }
+    if let Some(signal) = feedback_signal {
+        let sample_weight = (signal.feedback_count as f64 / 5.0).clamp(0.0, 1.0);
+        let grade_weight = ((signal.avg_grade - 3.0) / 2.0).clamp(-1.0, 1.0);
+        confidence += 0.10 * sample_weight * grade_weight;
+        risk -= 0.08 * sample_weight * grade_weight;
+    }
 
     confidence = confidence.clamp(0.0, 1.0);
     effort = effort.clamp(0.0, 1.0);
@@ -100,9 +121,13 @@ pub fn score_revenue_opportunity(
         * 100.0;
     let recommended_approved = confidence >= 0.55 && risk <= 0.60 && effort <= 0.70;
     let reason = format!(
-        "strategy={strategy}; confidence={confidence:.2}; risk={risk:.2}; effort={effort:.2}; source={source}; scope_marker={}; multi_repo={}",
+        "strategy={strategy}; confidence={confidence:.2}; risk={risk:.2}; effort={effort:.2}; source={source}; scope_marker={}; multi_repo={}; feedback_count={}; feedback_avg={}",
         if has_scope_marker { "yes" } else { "no" },
-        if multi_repo { "yes" } else { "no" }
+        if multi_repo { "yes" } else { "no" },
+        feedback_signal.map(|s| s.feedback_count).unwrap_or(0),
+        feedback_signal
+            .map(|s| format!("{:.2}", s.avg_grade))
+            .unwrap_or_else(|| "n/a".to_string())
     );
 
     RevenueOpportunityScore {
@@ -171,5 +196,38 @@ mod tests {
         assert!(!score.recommended_approved);
         assert!(score.risk_score >= 0.45);
         assert!(score.effort_score >= 0.45);
+    }
+
+    #[test]
+    fn scoring_uses_negative_feedback_to_reduce_priority() {
+        let db = Database::new(":memory:").unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO revenue_opportunities (id, source, strategy, payload_json, expected_revenue_usdc, status) VALUES ('ro_1','a','micro_bounty','{}',3.0,'settled')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO revenue_opportunities (id, source, strategy, payload_json, expected_revenue_usdc, status) VALUES ('ro_2','b','micro_bounty','{}',3.0,'settled')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        crate::revenue_feedback::record_revenue_feedback(&db, "ro_1", 1.5, "operator", None)
+            .unwrap();
+        crate::revenue_feedback::record_revenue_feedback(&db, "ro_2", 2.0, "operator", None)
+            .unwrap();
+
+        let input = RevenueOpportunityScoreInput {
+            source: "external_board",
+            strategy: "micro_bounty",
+            payload_json: r#"{"repo":"example","action":"single repo audit"}"#,
+            expected_revenue_usdc: 8.0,
+            request_id: Some("job_1"),
+        };
+        let baseline = score_revenue_opportunity(&input);
+        let adjusted = score_revenue_opportunity_with_feedback(&db, &input).unwrap();
+        assert!(adjusted.priority_score < baseline.priority_score);
+        assert!(adjusted.score_reason.contains("feedback_count=2"));
     }
 }

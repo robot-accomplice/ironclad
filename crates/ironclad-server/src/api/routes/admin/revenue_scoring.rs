@@ -53,13 +53,17 @@ pub(super) fn score_revenue_payload(
     expected_revenue_usdc: f64,
     request_id: Option<&str>,
 ) -> Result<ironclad_db::revenue_scoring::RevenueOpportunityScore, JsonError> {
-    let score = ironclad_db::revenue_scoring::score_revenue_opportunity(&score_input_from_request(
-        source,
-        strategy,
-        payload_json,
-        expected_revenue_usdc,
-        request_id,
-    ));
+    let score = ironclad_db::revenue_scoring::score_revenue_opportunity_with_feedback(
+        db,
+        &score_input_from_request(
+            source,
+            strategy,
+            payload_json,
+            expected_revenue_usdc,
+            request_id,
+        ),
+    )
+    .map_err(|e| internal_err(&e))?;
     ironclad_db::revenue_scoring::persist_revenue_opportunity_score(db, id, &score)
         .map_err(|e| internal_err(&e))?;
     Ok(score)
@@ -83,7 +87,11 @@ pub async fn list_revenue_opportunities(
     State(state): State<AppState>,
     Query(query): Query<RevenueOpportunityListParams>,
 ) -> Result<impl IntoResponse, JsonError> {
-    let status = query.status.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let status = query
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let rows = ironclad_db::revenue_opportunity_queries::list_revenue_opportunities(
         &state.db,
