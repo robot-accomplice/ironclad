@@ -11,6 +11,16 @@ pub struct RevenueAccountingSummary {
     pub retained_earnings_usdc: f64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RevenueSwapQueueSummary {
+    pub total: i64,
+    pub pending: i64,
+    pub in_progress: i64,
+    pub failed: i64,
+    pub completed: i64,
+    pub stale_in_progress: i64,
+}
+
 pub fn revenue_accounting_summary(db: &Database) -> Result<RevenueAccountingSummary> {
     let conn = db.conn();
     conn.query_row(
@@ -32,6 +42,43 @@ pub fn revenue_accounting_summary(db: &Database) -> Result<RevenueAccountingSumm
                 net_profit_usdc: row.get(3)?,
                 tax_paid_usdc: row.get(4)?,
                 retained_earnings_usdc: row.get(5)?,
+            })
+        },
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))
+}
+
+pub fn revenue_swap_queue_summary(db: &Database) -> Result<RevenueSwapQueueSummary> {
+    let conn = db.conn();
+    let tasks_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tasks'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    if tasks_exists == 0 {
+        return Ok(RevenueSwapQueueSummary::default());
+    }
+    conn.query_row(
+        "SELECT \
+            COUNT(*), \
+            COALESCE(SUM(CASE WHEN lower(status) = 'pending' THEN 1 ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN lower(status) = 'in_progress' THEN 1 ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN lower(status) = 'failed' THEN 1 ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN lower(status) IN ('completed', 'done', 'settled') THEN 1 ELSE 0 END), 0), \
+            COALESCE(SUM(CASE WHEN lower(status) = 'in_progress' AND datetime(COALESCE(updated_at, created_at)) < datetime('now','-24 hours') THEN 1 ELSE 0 END), 0) \
+         FROM tasks \
+         WHERE lower(COALESCE(source, '')) LIKE '%\"type\":\"revenue_swap\"%'",
+        [],
+        |row| {
+            Ok(RevenueSwapQueueSummary {
+                total: row.get(0)?,
+                pending: row.get(1)?,
+                in_progress: row.get(2)?,
+                failed: row.get(3)?,
+                completed: row.get(4)?,
+                stale_in_progress: row.get(5)?,
             })
         },
     )
@@ -61,5 +108,31 @@ mod tests {
         assert!((summary.net_profit_usdc - 3.5).abs() < f64::EPSILON);
         assert!((summary.tax_paid_usdc - 0.7).abs() < f64::EPSILON);
         assert!((summary.retained_earnings_usdc - 2.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn revenue_swap_queue_summary_counts_swap_tasks() {
+        let db = Database::new(":memory:").unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, priority, source, created_at, updated_at) \
+             VALUES \
+             ('s1','swap 1','pending',95,'{\"type\":\"revenue_swap\"}',datetime('now'),datetime('now')), \
+             ('s2','swap 2','in_progress',95,'{\"type\":\"revenue_swap\"}',datetime('now','-2 days'),datetime('now','-2 days')), \
+             ('s3','swap 3','failed',95,'{\"type\":\"revenue_swap\"}',datetime('now'),datetime('now')), \
+             ('s4','swap 4','completed',95,'{\"type\":\"revenue_swap\"}',datetime('now'),datetime('now')), \
+             ('x1','other','pending',10,'{\"type\":\"other\"}',datetime('now'),datetime('now'))",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let summary = revenue_swap_queue_summary(&db).unwrap();
+        assert_eq!(summary.total, 4);
+        assert_eq!(summary.pending, 1);
+        assert_eq!(summary.in_progress, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.completed, 1);
+        assert_eq!(summary.stale_in_progress, 1);
     }
 }

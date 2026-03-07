@@ -28,6 +28,41 @@
     }
 
     #[test]
+    fn revenue_probe_detects_and_repairs_stale_revenue_swap_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+        let db = ironclad_db::Database::new(db_path.to_string_lossy().as_ref()).unwrap();
+        drop(db);
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, priority, source, created_at, updated_at) \
+             VALUES ('rev_swap:ro_1','Swap settlement','in_progress',95,'{\"origin\":\"revenue_settlement\",\"type\":\"revenue_swap\"}',datetime('now','-2 days'),datetime('now','-2 days'))",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let before = probe_revenue_control_plane(&db_path, false).unwrap();
+        assert_eq!(before.revenue_swap_tasks_total, 1);
+        assert_eq!(before.stale_revenue_swap_tasks, 1);
+        assert_eq!(before.reset_stale_revenue_swap_tasks, 0);
+
+        let repaired = probe_revenue_control_plane(&db_path, true).unwrap();
+        assert_eq!(repaired.stale_revenue_swap_tasks, 1);
+        assert_eq!(repaired.reset_stale_revenue_swap_tasks, 1);
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM tasks WHERE id='rev_swap:ro_1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "pending");
+    }
+
+    #[test]
     fn capability_skill_parity_registry_has_required_skills() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("missing-state.db");

@@ -189,9 +189,15 @@ struct RevenueControlPlaneHealth {
     opportunities_settled: i64,
     orphan_jobs: i64,
     missing_settlement_ledger: i64,
+    revenue_swap_tasks_total: i64,
+    revenue_swap_tasks_pending: i64,
+    revenue_swap_tasks_in_progress: i64,
+    revenue_swap_tasks_failed: i64,
+    stale_revenue_swap_tasks: i64,
     stale_revenue_tasks: i64,
     repaired_orphans: i64,
     reconciled_ledger_rows: i64,
+    reset_stale_revenue_swap_tasks: i64,
     reset_stale_revenue_tasks: i64,
 }
 
@@ -247,6 +253,36 @@ fn probe_revenue_control_plane(
         [],
         |row| row.get(0),
     )?;
+    let (
+        revenue_swap_tasks_total,
+        revenue_swap_tasks_pending,
+        revenue_swap_tasks_in_progress,
+        revenue_swap_tasks_failed,
+        stale_revenue_swap_tasks,
+    ) = if sqlite_table_exists(&conn, "tasks") {
+        conn.query_row(
+            "SELECT \
+                COUNT(*), \
+                COALESCE(SUM(CASE WHEN lower(status) = 'pending' THEN 1 ELSE 0 END), 0), \
+                COALESCE(SUM(CASE WHEN lower(status) = 'in_progress' THEN 1 ELSE 0 END), 0), \
+                COALESCE(SUM(CASE WHEN lower(status) = 'failed' THEN 1 ELSE 0 END), 0), \
+                COALESCE(SUM(CASE WHEN lower(status) = 'in_progress' AND datetime(COALESCE(updated_at, created_at)) < datetime('now','-24 hours') THEN 1 ELSE 0 END), 0) \
+             FROM tasks \
+             WHERE lower(COALESCE(source, '')) LIKE '%\"type\":\"revenue_swap\"%'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )?
+    } else {
+        (0, 0, 0, 0, 0)
+    };
 
     let mut repaired_orphans = 0i64;
     let mut reconciled_ledger_rows = 0i64;
@@ -266,6 +302,7 @@ fn probe_revenue_control_plane(
         0
     };
     let mut reset_stale_revenue_tasks = 0i64;
+    let mut reset_stale_revenue_swap_tasks = 0i64;
 
     if repair {
         repaired_orphans = conn.execute(
@@ -297,6 +334,14 @@ fn probe_revenue_control_plane(
         )? as i64;
 
         if sqlite_table_exists(&conn, "tasks") {
+            reset_stale_revenue_swap_tasks = conn.execute(
+                "UPDATE tasks \
+                 SET status = 'pending', updated_at = datetime('now') \
+                 WHERE lower(status) = 'in_progress' \
+                   AND datetime(COALESCE(updated_at, created_at)) < datetime('now','-24 hours') \
+                   AND lower(COALESCE(source,'')) LIKE '%\"type\":\"revenue_swap\"%'",
+                [],
+            )? as i64;
             reset_stale_revenue_tasks = conn.execute(
                 "UPDATE tasks \
                  SET status = 'pending', updated_at = datetime('now') \
@@ -315,9 +360,15 @@ fn probe_revenue_control_plane(
         opportunities_settled,
         orphan_jobs,
         missing_settlement_ledger,
+        revenue_swap_tasks_total,
+        revenue_swap_tasks_pending,
+        revenue_swap_tasks_in_progress,
+        revenue_swap_tasks_failed,
+        stale_revenue_swap_tasks,
         stale_revenue_tasks,
         repaired_orphans,
         reconciled_ledger_rows,
+        reset_stale_revenue_swap_tasks,
         reset_stale_revenue_tasks,
     })
 }
@@ -363,4 +414,3 @@ async fn fetch_provider_health(
     rows.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(rows)
 }
-

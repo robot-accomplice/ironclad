@@ -196,13 +196,15 @@ pub async fn settle_revenue_opportunity(
 
             queue_revenue_swap(
                 &state.db,
-                &id,
-                req.amount_usdc,
-                settlement_currency.as_str(),
-                target_symbol.as_str(),
-                target_chain.as_str(),
-                target_contract_address,
-                swap_contract_address.as_deref(),
+                RevenueSwapTask {
+                    opportunity_id: &id,
+                    amount: req.amount_usdc,
+                    from_currency: settlement_currency.as_str(),
+                    target_symbol: target_symbol.as_str(),
+                    target_chain: target_chain.as_str(),
+                    target_contract_address,
+                    swap_contract_address: swap_contract_address.as_deref(),
+                },
             )
             .map_err(|e| internal_err(&e))?;
             swap_queued = true;
@@ -230,34 +232,38 @@ pub async fn settle_revenue_opportunity(
     })))
 }
 
+struct RevenueSwapTask<'a> {
+    opportunity_id: &'a str,
+    amount: f64,
+    from_currency: &'a str,
+    target_symbol: &'a str,
+    target_chain: &'a str,
+    target_contract_address: &'a str,
+    swap_contract_address: Option<&'a str>,
+}
+
 fn queue_revenue_swap(
     db: &ironclad_db::Database,
-    opportunity_id: &str,
-    amount: f64,
-    from_currency: &str,
-    target_symbol: &str,
-    target_chain: &str,
-    target_contract_address: &str,
-    swap_contract_address: Option<&str>,
+    task: RevenueSwapTask<'_>,
 ) -> std::result::Result<(), ironclad_core::IroncladError> {
     let conn = db.conn();
     let source_json = json!({
         "origin": "revenue_settlement",
         "type": "revenue_swap",
-        "from_currency": from_currency,
-        "target_asset": target_symbol,
-        "target_chain": target_chain,
-        "target_contract_address": target_contract_address,
-        "swap_contract_address": swap_contract_address,
-        "amount": amount,
-        "opportunity_id": opportunity_id,
+        "from_currency": task.from_currency,
+        "target_asset": task.target_symbol,
+        "target_chain": task.target_chain,
+        "target_contract_address": task.target_contract_address,
+        "swap_contract_address": task.swap_contract_address,
+        "amount": task.amount,
+        "opportunity_id": task.opportunity_id,
     })
     .to_string();
     let title = format!(
         "Swap {} {:.6} to {} on {}",
-        from_currency, amount, target_symbol, target_chain
+        task.from_currency, task.amount, task.target_symbol, task.target_chain
     );
-    let task_id = format!("rev_swap:{opportunity_id}");
+    let task_id = format!("rev_swap:{}", task.opportunity_id);
     conn.execute(
         "INSERT INTO tasks (id, title, description, status, priority, source, created_at, updated_at) \
          VALUES (?1, ?2, ?3, 'pending', 95, ?4, datetime('now'), datetime('now')) \

@@ -77,9 +77,38 @@ pub async fn get_revenue_opportunity(
         "tax_amount_usdc": row.tax_amount_usdc,
         "retained_earnings_usdc": row.retained_earnings_usdc,
         "tax_destination_wallet": row.tax_destination_wallet,
+        "swap_task": revenue_swap_task_status(&state.db, &id)
+            .map_err(|e| internal_err(&e))?,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     })))
+}
+
+fn revenue_swap_task_status(
+    db: &ironclad_db::Database,
+    opportunity_id: &str,
+) -> Result<Option<Value>, ironclad_core::IroncladError> {
+    let conn = db.conn();
+    let task_id = format!("rev_swap:{opportunity_id}");
+    match conn.query_row(
+        "SELECT id, title, status, source, created_at, updated_at \
+         FROM tasks WHERE id = ?1",
+        [task_id.as_str()],
+        |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "title": row.get::<_, String>(1)?,
+                "status": row.get::<_, String>(2)?,
+                "source": row.get::<_, Option<String>>(3)?,
+                "created_at": row.get::<_, String>(4)?,
+                "updated_at": row.get::<_, String>(5)?,
+            }))
+        },
+    ) {
+        Ok(value) => Ok(Some(value)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(ironclad_core::IroncladError::Database(e.to_string())),
+    }
 }
 
 pub async fn qualify_revenue_opportunity(

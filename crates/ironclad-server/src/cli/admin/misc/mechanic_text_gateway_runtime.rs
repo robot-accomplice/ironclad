@@ -334,6 +334,37 @@ async fn run_gateway_provider_and_revenue_checks(base_url: &str, ironclad_dir: &
                     );
                 }
             }
+            if health.revenue_swap_tasks_total > 0 {
+                println!(
+                    "    {OK} Revenue swap queue: total={} pending={} in_progress={} failed={}",
+                    health.revenue_swap_tasks_total,
+                    health.revenue_swap_tasks_pending,
+                    health.revenue_swap_tasks_in_progress,
+                    health.revenue_swap_tasks_failed
+                );
+            }
+            if health.stale_revenue_swap_tasks > 0 {
+                println!(
+                    "    {WARN} Found {} stale revenue swap task{} stuck in in_progress",
+                    health.stale_revenue_swap_tasks,
+                    if health.stale_revenue_swap_tasks == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                );
+                if repair && health.reset_stale_revenue_swap_tasks > 0 {
+                    println!(
+                        "    {ACTION} Reset {} stale revenue swap task{} back to pending",
+                        health.reset_stale_revenue_swap_tasks,
+                        if health.reset_stale_revenue_swap_tasks == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    );
+                }
+            }
             if health.stale_revenue_tasks > 0 {
                 println!(
                     "    {WARN} Found {} stale revenue task{} stuck in in_progress",

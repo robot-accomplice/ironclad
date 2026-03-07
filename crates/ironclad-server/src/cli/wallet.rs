@@ -17,6 +17,7 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let swap = &treasury["revenue_swap"];
     let tax = &balance["self_funding"]["tax"];
     let accounting = &balance["revenue_accounting"];
+    let swap_queue = &balance["revenue_swap_queue"];
     kv_accent("Balance", &format!("{bal} {currency}"));
     kv_mono("Address", addr);
     if swap.is_object() {
@@ -77,6 +78,19 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
             ),
         );
     }
+    if swap_queue.is_object() {
+        kv(
+            "Swap Queue",
+            &format!(
+                "total={} pending={} in_progress={} failed={} stale={}",
+                swap_queue["total"].as_i64().unwrap_or(0),
+                swap_queue["pending"].as_i64().unwrap_or(0),
+                swap_queue["in_progress"].as_i64().unwrap_or(0),
+                swap_queue["failed"].as_i64().unwrap_or(0),
+                swap_queue["stale_in_progress"].as_i64().unwrap_or(0),
+            ),
+        );
+    }
     if let Some(note) = balance["note"].as_str() {
         eprintln!();
         eprintln!("    {DIM}\u{2139}  {note}{RESET}");
@@ -113,6 +127,7 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
     let swap = &balance["treasury"]["revenue_swap"];
     let tax = &balance["self_funding"]["tax"];
     let accounting = &balance["revenue_accounting"];
+    let swap_queue = &balance["revenue_swap_queue"];
     eprintln!();
     kv_accent("Balance", &format!("{bal} {currency}"));
     if swap.is_object() {
@@ -143,6 +158,17 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
             &format!(
                 "{:.2} USDC",
                 accounting["net_profit_usdc"].as_f64().unwrap_or(0.0)
+            ),
+        );
+    }
+    if swap_queue.is_object() {
+        kv(
+            "Swap Queue",
+            &format!(
+                "pending={} in_progress={} failed={}",
+                swap_queue["pending"].as_i64().unwrap_or(0),
+                swap_queue["in_progress"].as_i64().unwrap_or(0),
+                swap_queue["failed"].as_i64().unwrap_or(0),
             ),
         );
     }

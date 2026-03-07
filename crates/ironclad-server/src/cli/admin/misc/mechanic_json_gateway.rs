@@ -207,6 +207,23 @@ async fn collect_mechanic_json_gateway_findings(
                         health.reconciled_ledger_rows > 0,
                     ));
                 }
+                if health.stale_revenue_swap_tasks > 0 {
+                    findings.push(finding(
+                        "revenue-swap-stale",
+                        "medium",
+                        0.9,
+                        format!(
+                            "Revenue swap queue has {} stale in-progress task{}",
+                            health.stale_revenue_swap_tasks,
+                            if health.stale_revenue_swap_tasks == 1 { "" } else { "s" }
+                        ),
+                        "Queued swap work has stalled after settlement, so post-settlement asset routing is not progressing.",
+                        "Run mechanic repair to reset stale revenue swap tasks back to pending.",
+                        vec!["ironclad mechanic --repair".to_string()],
+                        true,
+                        health.reset_stale_revenue_swap_tasks > 0,
+                    ));
+                }
             }
             Err(e) => findings.push(finding(
                 "revenue-probe-failed",
@@ -282,4 +299,3 @@ async fn collect_mechanic_json_gateway_findings(
     }
     Ok(())
 }
-

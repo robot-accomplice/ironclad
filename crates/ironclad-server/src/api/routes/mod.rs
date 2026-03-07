@@ -2236,6 +2236,97 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn revenue_opportunity_get_exposes_swap_task_and_accounting() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":4.5,"payload":{"issue":"swap-telemetry"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/qualify"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"approved":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/plan"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"plan":{"executor":"self"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/fulfill"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"evidence":{"ok":true}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let settle_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/settle"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"settlement_ref":"tx_swap_visibility","amount_usdc":4.5,"attributable_costs_usdc":1.2,"currency":"USDC"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(settle_resp.status(), StatusCode::OK);
+
+        let get_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/services/opportunities/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = json_body(get_resp).await;
+        assert_eq!(body["settled_amount_usdc"], 4.5);
+        assert_eq!(body["attributable_costs_usdc"], 1.2);
+        assert_eq!(body["net_profit_usdc"], 3.3);
+        assert_eq!(body["swap_task"]["id"], format!("rev_swap:{id}"));
+        assert_eq!(body["swap_task"]["status"], "pending");
+    }
+
+    #[tokio::test]
     async fn get_cache_stats_returns_json() {
         let app = build_router(test_state());
         let req = Request::builder()

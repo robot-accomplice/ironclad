@@ -6,6 +6,8 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
     let config = state.config.read().await;
     let revenue_accounting = ironclad_db::revenue_accounting::revenue_accounting_summary(&state.db)
         .unwrap_or_default();
+    let revenue_swap_queue = ironclad_db::revenue_accounting::revenue_swap_queue_summary(&state.db)
+        .unwrap_or_default();
     let revenue_swap_chains: Vec<serde_json::Value> = config
         .treasury
         .revenue_swap
@@ -74,6 +76,14 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
             "net_profit_usdc": revenue_accounting.net_profit_usdc,
             "tax_paid_usdc": revenue_accounting.tax_paid_usdc,
             "retained_earnings_usdc": revenue_accounting.retained_earnings_usdc,
+        },
+        "revenue_swap_queue": {
+            "total": revenue_swap_queue.total,
+            "pending": revenue_swap_queue.pending,
+            "in_progress": revenue_swap_queue.in_progress,
+            "failed": revenue_swap_queue.failed,
+            "completed": revenue_swap_queue.completed,
+            "stale_in_progress": revenue_swap_queue.stale_in_progress,
         },
     }))
 }
