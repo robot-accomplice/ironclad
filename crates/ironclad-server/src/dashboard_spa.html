@@ -3049,7 +3049,7 @@
     _renderRevenueSwapTasksCard: function(rows) {
       var items = Array.isArray(rows) ? rows : [];
       var body = items.length
-        ? '<div class="table-wrap"><table><thead><tr><th>Opportunity</th><th>Status</th><th>Target</th><th>Tx</th><th>Updated</th></tr></thead><tbody>'
+        ? '<div class="table-wrap"><table><thead><tr><th>Opportunity</th><th>Status</th><th>Target</th><th>Tx</th><th>Updated</th><th>Actions</th></tr></thead><tbody>'
           + items.map(function(row) {
               var source = row.source || {};
               var target = (source.target_asset || 'unknown') + ' on ' + (source.target_chain || 'unknown');
@@ -3057,12 +3057,22 @@
                 ? '<span class="card-mono" style="font-size:0.625rem">' + esc(String(source.swap_tx_hash).slice(0, 18)) + '\u2026</span>'
                 : '<span style="color:var(--muted)">\u2014</span>';
               var updated = row.updated_at ? String(row.updated_at).replace('T', ' ').slice(0, 19) : '\u2014';
+              var actions = [];
+              if (row.status === 'pending') {
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="swap" data-revenue-task-action="start" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Start</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="swap" data-revenue-task-action="submit" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Submit</button>');
+              } else if (row.status === 'in_progress') {
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="swap" data-revenue-task-action="reconcile" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Reconcile</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="swap" data-revenue-task-action="confirm" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Confirm</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="swap" data-revenue-task-action="fail" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Fail</button>');
+              }
               return '<tr>'
                 + '<td><div style="font-weight:600">' + esc(row.opportunity_id || row.id || 'unknown') + '</div><div style="font-size:0.625rem;color:var(--muted)">' + esc(row.title || '') + '</div></td>'
                 + '<td>' + esc(row.status || 'unknown') + '</td>'
                 + '<td>' + esc(target) + '</td>'
                 + '<td>' + txHash + '</td>'
                 + '<td style="color:var(--muted)">' + esc(updated) + '</td>'
+                + '<td><div style="display:flex;flex-wrap:wrap;gap:0.25rem">' + (actions.join('') || '<span style="color:var(--muted)">—</span>') + '</div></td>'
                 + '</tr>';
             }).join('')
           + '</tbody></table></div>'
@@ -3072,7 +3082,7 @@
     _renderRevenueTaxTasksCard: function(rows) {
       var items = Array.isArray(rows) ? rows : [];
       var body = items.length
-        ? '<div class="table-wrap"><table><thead><tr><th>Opportunity</th><th>Status</th><th>Destination</th><th>Tx</th><th>Updated</th></tr></thead><tbody>'
+        ? '<div class="table-wrap"><table><thead><tr><th>Opportunity</th><th>Status</th><th>Destination</th><th>Tx</th><th>Updated</th><th>Actions</th></tr></thead><tbody>'
           + items.map(function(row) {
               var source = row.source || {};
               var dest = (source.destination_wallet || 'unknown') + ' on ' + (source.target_chain || 'unknown');
@@ -3080,12 +3090,22 @@
                 ? '<span class="card-mono" style="font-size:0.625rem">' + esc(String(source.tax_tx_hash).slice(0, 18)) + '…</span>'
                 : '<span style="color:var(--muted)">—</span>';
               var updated = row.updated_at ? String(row.updated_at).replace('T', ' ').slice(0, 19) : '—';
+              var actions = [];
+              if (row.status === 'pending') {
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="tax" data-revenue-task-action="start" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Start</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="tax" data-revenue-task-action="submit" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Submit</button>');
+              } else if (row.status === 'in_progress') {
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="tax" data-revenue-task-action="reconcile" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Reconcile</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="tax" data-revenue-task-action="confirm" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Confirm</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="tax" data-revenue-task-action="fail" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Fail</button>');
+              }
               return '<tr>'
                 + '<td><div style="font-weight:600">' + esc(row.opportunity_id || row.id || 'unknown') + '</div><div style="font-size:0.625rem;color:var(--muted)">' + esc(row.title || '') + '</div></td>'
                 + '<td>' + esc(row.status || 'unknown') + '</td>'
                 + '<td>' + esc(dest) + '</td>'
                 + '<td>' + txHash + '</td>'
                 + '<td style="color:var(--muted)">' + esc(updated) + '</td>'
+                + '<td><div style="display:flex;flex-wrap:wrap;gap:0.25rem">' + (actions.join('') || '<span style="color:var(--muted)">—</span>') + '</div></td>'
                 + '</tr>';
             }).join('')
           + '</tbody></table></div>'
@@ -5258,6 +5278,48 @@
     if (e.target.closest('#copy-address')) {
       var pre = document.getElementById('wallet-addr');
       if (pre && pre.textContent) navigator.clipboard.writeText(pre.textContent).then(function() { toast('Address copied'); });
+      return;
+    }
+    var revenueTaskBtn = e.target.closest('[data-revenue-task-action][data-opportunity-id][data-revenue-task-kind]');
+    if (revenueTaskBtn) {
+      var taskKind = revenueTaskBtn.getAttribute('data-revenue-task-kind');
+      var taskAction = revenueTaskBtn.getAttribute('data-revenue-task-action');
+      var opportunityId = revenueTaskBtn.getAttribute('data-opportunity-id');
+      if (!taskKind || !taskAction || !opportunityId) { toast('Missing revenue task metadata'); return; }
+      var basePath = taskKind === 'tax' ? '/api/services/tax-payouts/' : '/api/services/swaps/';
+      var request = { method: 'POST' };
+      if (taskAction === 'confirm') {
+        var txHash = window.prompt('Enter the transaction hash to confirm:', '');
+        if (!txHash || !txHash.trim()) return;
+        request.headers = { 'Content-Type': 'application/json' };
+        request.body = JSON.stringify({ tx_hash: txHash.trim() });
+      } else if (taskAction === 'fail') {
+        var reason = window.prompt('Enter the failure reason:', '');
+        if (!reason || !reason.trim()) return;
+        request.headers = { 'Content-Type': 'application/json' };
+        request.body = JSON.stringify({ reason: reason.trim() });
+      } else if (taskAction === 'submit') {
+        var calldata = window.prompt('Enter calldata (0x...) for submission:', '');
+        if (!calldata || !calldata.trim()) return;
+        var contractAddress = window.prompt('Optional contract address override (leave blank to use configured task source):', '') || '';
+        request.headers = { 'Content-Type': 'application/json' };
+        request.body = JSON.stringify({
+          calldata: calldata.trim(),
+          contract_address: contractAddress.trim() || null
+        });
+      }
+      api(basePath + encodeURIComponent(opportunityId) + '/' + taskAction, request)
+        .then(function(resp) {
+          var msg = taskKind === 'tax' ? 'Tax payout ' : 'Swap ';
+          msg += taskAction + ' completed';
+          if (resp && resp.receipt_status) msg += ' — receipt ' + resp.receipt_status;
+          if (resp && resp.tx_hash) msg += ' — ' + String(resp.tx_hash).slice(0, 18) + '…';
+          toast(msg);
+          App.navigate('wallet');
+        })
+        .catch(function(err) {
+          toast(err.message || ('Revenue task ' + taskAction + ' failed'));
+        });
       return;
     }
     if (e.target.closest('#memory-search-btn')) {
