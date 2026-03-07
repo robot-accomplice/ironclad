@@ -44,7 +44,7 @@ primary = "ollama/qwen3:8b"
 fallbacks = ["ollama/llama3:8b"]
 
 [models.routing]
-mode = "heuristic"
+mode = "metascore"
 confidence_threshold = 0.85
 local_first = true
 "#;
