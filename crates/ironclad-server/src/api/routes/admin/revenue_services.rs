@@ -222,6 +222,13 @@ pub async fn verify_service_payment(
             id
         )));
     }
+    let now = chrono::Utc::now().to_rfc3339();
+    if existing.quote_expires_at < now {
+        return Err(bad_request(format!(
+            "service quote '{}' has expired (expired at {})",
+            id, existing.quote_expires_at
+        )));
+    }
     if !existing.recipient.eq_ignore_ascii_case(recipient) {
         return Err(bad_request("recipient does not match quoted recipient"));
     }
@@ -257,6 +264,35 @@ pub async fn verify_service_payment(
         "request_id": id,
         "status": ironclad_db::service_revenue::STATUS_PAYMENT_VERIFIED,
         "verified": true,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct ServiceFailRequest {
+    pub reason: String,
+}
+
+pub async fn fail_service_request(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ServiceFailRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let reason = req.reason.trim();
+    if reason.is_empty() {
+        return Err(bad_request("reason must be non-empty"));
+    }
+    let updated = ironclad_db::service_revenue::mark_service_request_failed(&state.db, &id, reason)
+        .map_err(|e| internal_err(&e))?;
+    if !updated {
+        return Err(not_found(format!(
+            "service request '{}' not found or already completed/failed",
+            id
+        )));
+    }
+    Ok(axum::Json(json!({
+        "request_id": id,
+        "status": ironclad_db::service_revenue::STATUS_FAILED,
+        "reason": reason,
     })))
 }
 

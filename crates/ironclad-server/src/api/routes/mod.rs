@@ -462,24 +462,24 @@ pub fn build_router(state: AppState) -> Router {
         a2a_hello, breaker_open, breaker_reset, breaker_status, browser_action, browser_start,
         browser_status, browser_stop, change_agent_model, confirm_revenue_swap_task,
         confirm_revenue_tax_task, create_service_quote, delete_provider_key, execute_plugin_tool,
-        fail_revenue_swap_task, fail_revenue_tax_task, fulfill_revenue_opportunity,
-        fulfill_service_request, generate_deep_analysis, get_agents, get_available_models,
-        get_cache_stats, get_capacity_stats, get_config, get_config_apply_status,
-        get_config_capabilities, get_costs, get_efficiency, get_mcp_runtime,
-        get_overview_timeseries, get_plugins, get_recommendations, get_revenue_opportunity,
-        get_routing_dataset, get_routing_diagnostics, get_runtime_surfaces, get_service_request,
-        get_throttle_stats, get_transactions, intake_micro_bounty_opportunity,
-        intake_oracle_feed_opportunity, intake_revenue_opportunity, list_discovered_agents,
-        list_paired_devices, list_revenue_opportunities, list_revenue_swap_tasks,
-        list_revenue_tax_tasks, list_services_catalog, mcp_client_disconnect, mcp_client_discover,
-        pair_device, plan_revenue_opportunity, qualify_revenue_opportunity,
-        reconcile_revenue_swap_task, reconcile_revenue_tax_task,
-        record_revenue_opportunity_feedback, register_discovered_agent, roster, run_routing_eval,
-        score_revenue_opportunity, set_provider_key, settle_revenue_opportunity, start_agent,
-        start_revenue_swap_task, start_revenue_tax_task, stop_agent, submit_revenue_swap_task,
-        submit_revenue_tax_task, toggle_plugin, unpair_device, update_config,
-        verify_discovered_agent, verify_paired_device, verify_service_payment, wallet_address,
-        wallet_balance, workspace_state,
+        fail_revenue_swap_task, fail_revenue_tax_task, fail_service_request,
+        fulfill_revenue_opportunity, fulfill_service_request, generate_deep_analysis, get_agents,
+        get_available_models, get_cache_stats, get_capacity_stats, get_config,
+        get_config_apply_status, get_config_capabilities, get_costs, get_efficiency,
+        get_mcp_runtime, get_overview_timeseries, get_plugins, get_recommendations,
+        get_revenue_opportunity, get_routing_dataset, get_routing_diagnostics,
+        get_runtime_surfaces, get_service_request, get_throttle_stats, get_transactions,
+        intake_micro_bounty_opportunity, intake_oracle_feed_opportunity,
+        intake_revenue_opportunity, list_discovered_agents, list_paired_devices,
+        list_revenue_opportunities, list_revenue_swap_tasks, list_revenue_tax_tasks,
+        list_services_catalog, mcp_client_disconnect, mcp_client_discover, pair_device,
+        plan_revenue_opportunity, qualify_revenue_opportunity, reconcile_revenue_swap_task,
+        reconcile_revenue_tax_task, record_revenue_opportunity_feedback, register_discovered_agent,
+        roster, run_routing_eval, score_revenue_opportunity, set_provider_key,
+        settle_revenue_opportunity, start_agent, start_revenue_swap_task, start_revenue_tax_task,
+        stop_agent, submit_revenue_swap_task, submit_revenue_tax_task, toggle_plugin,
+        unpair_device, update_config, verify_discovered_agent, verify_paired_device,
+        verify_service_payment, wallet_address, wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
@@ -581,6 +581,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/services/requests/{id}/fulfill",
             post(fulfill_service_request),
+        )
+        .route(
+            "/api/services/requests/{id}/fail",
+            post(fail_service_request),
         )
         .route(
             "/api/services/opportunities/intake",
@@ -2370,6 +2374,20 @@ primary = "ollama/qwen3:8b"
                 .unwrap();
         }
 
+        // Transition swap task to in_progress before submit
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/swaps/{id}/start"))
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
         let resp = app
             .oneshot(
                 Request::builder()
@@ -2407,6 +2425,20 @@ primary = "ollama/qwen3:8b"
             .unwrap();
         }
         let app = build_router(state);
+        // Transition swap task to in_progress before submit
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/swaps/ro_submit_no_contract/start")
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
         let resp = app
             .oneshot(
                 Request::builder()

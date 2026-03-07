@@ -100,11 +100,6 @@ fn default_revenue_swap_chains() -> Vec<RevenueSwapChainConfig> {
             swap_contract_address: None,
         },
         RevenueSwapChainConfig {
-            chain: "SOLANA".into(),
-            target_contract_address: "9muem3X58Ztm2nimxEftLH4X9qSx6tJRd7njsdZuY1rQ".into(),
-            swap_contract_address: None,
-        },
-        RevenueSwapChainConfig {
             chain: "BSC".into(),
             target_contract_address: "0xFAF0cEe6B20e2Aaa4B80748a6AF4CD89609a3d78".into(),
             swap_contract_address: None,

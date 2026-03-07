@@ -76,6 +76,12 @@ pub async fn submit_revenue_swap_task(
                 opportunity_id
             ))
         })?;
+    if !task.status.eq_ignore_ascii_case("in_progress") {
+        return Err(bad_request(format!(
+            "revenue swap task must be in_progress before submission (current: {})",
+            task.status
+        )));
+    }
     let source = task
         .source_json
         .as_deref()
@@ -154,6 +160,11 @@ pub async fn submit_revenue_swap_task(
     .await
     .map_err(|e| bad_request(e.to_string()))?;
 
+    tracing::info!(
+        opportunity_id = %opportunity_id,
+        tx_hash = %tx_hash,
+        "swap EVM transaction submitted; persisting tx_hash"
+    );
     let updated =
         ironclad_db::revenue_swap_tasks::mark_revenue_swap_submitted(&state.db, &opportunity_id, &tx_hash)
             .map_err(|e| internal_err(&e))?;

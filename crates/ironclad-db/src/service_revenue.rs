@@ -207,6 +207,25 @@ pub fn mark_fulfilled(db: &Database, id: &str, fulfillment_output: &str) -> Resu
     Ok(updated > 0)
 }
 
+pub fn mark_service_request_failed(db: &Database, id: &str, reason: &str) -> Result<bool> {
+    let conn = db.conn();
+    let updated = conn
+        .execute(
+            "UPDATE service_requests \
+             SET status = ?2, failure_reason = ?3, updated_at = datetime('now') \
+             WHERE id = ?1 AND status IN (?4, ?5)",
+            rusqlite::params![
+                id,
+                STATUS_FAILED,
+                reason,
+                STATUS_QUOTED,
+                STATUS_PAYMENT_VERIFIED
+            ],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(updated > 0)
+}
+
 pub fn create_revenue_opportunity(db: &Database, opp: &NewRevenueOpportunity<'_>) -> Result<()> {
     let conn = db.conn();
     conn.execute(

@@ -59,6 +59,12 @@ pub async fn submit_revenue_tax_task(
     let task = ironclad_db::revenue_tax_tasks::get_revenue_tax_task(&state.db, &opportunity_id)
         .map_err(|e| internal_err(&e))?
         .ok_or_else(|| not_found(format!("revenue tax task for opportunity '{}' not found", opportunity_id)))?;
+    if !task.status.eq_ignore_ascii_case("in_progress") {
+        return Err(bad_request(format!(
+            "revenue tax task must be in_progress before submission (current: {})",
+            task.status
+        )));
+    }
     let source = task
         .source_json
         .as_deref()
@@ -127,6 +133,11 @@ pub async fn submit_revenue_tax_task(
     .await
     .map_err(|e| bad_request(e.to_string()))?;
 
+    tracing::info!(
+        opportunity_id = %opportunity_id,
+        tx_hash = %tx_hash,
+        "tax payout EVM transaction submitted; persisting tx_hash"
+    );
     let updated = ironclad_db::revenue_tax_tasks::mark_revenue_tax_submitted(&state.db, &opportunity_id, &tx_hash)
         .map_err(|e| internal_err(&e))?;
     if !updated {

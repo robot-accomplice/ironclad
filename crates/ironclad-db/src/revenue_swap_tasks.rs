@@ -88,7 +88,14 @@ pub fn mark_revenue_swap_in_progress(db: &Database, opportunity_id: &str) -> Res
 }
 
 pub fn mark_revenue_swap_failed(db: &Database, opportunity_id: &str, reason: &str) -> Result<bool> {
-    update_revenue_swap_status(db, opportunity_id, "failed", Some(reason), None)
+    update_revenue_swap_status(
+        db,
+        opportunity_id,
+        "failed",
+        Some(reason),
+        None,
+        &["pending", "in_progress"],
+    )
 }
 
 pub fn mark_revenue_swap_confirmed(
@@ -96,7 +103,14 @@ pub fn mark_revenue_swap_confirmed(
     opportunity_id: &str,
     tx_hash: &str,
 ) -> Result<bool> {
-    update_revenue_swap_status(db, opportunity_id, "completed", None, Some(tx_hash))
+    update_revenue_swap_status(
+        db,
+        opportunity_id,
+        "completed",
+        None,
+        Some(tx_hash),
+        &["in_progress"],
+    )
 }
 
 pub fn mark_revenue_swap_submitted(
@@ -104,7 +118,14 @@ pub fn mark_revenue_swap_submitted(
     opportunity_id: &str,
     tx_hash: &str,
 ) -> Result<bool> {
-    update_revenue_swap_status(db, opportunity_id, "in_progress", None, Some(tx_hash))
+    update_revenue_swap_status(
+        db,
+        opportunity_id,
+        "in_progress",
+        None,
+        Some(tx_hash),
+        &["in_progress"],
+    )
 }
 
 fn update_revenue_swap_status(
@@ -113,20 +134,27 @@ fn update_revenue_swap_status(
     status: &str,
     failure_reason: Option<&str>,
     tx_hash: Option<&str>,
+    allowed_from_statuses: &[&str],
 ) -> Result<bool> {
     let conn = db.conn();
     let task_id = format!("rev_swap:{opportunity_id}");
-    let existing: Option<String> = conn
+    let existing: Option<(String, String)> = conn
         .query_row(
-            "SELECT source FROM tasks WHERE id = ?1",
+            "SELECT source, status FROM tasks WHERE id = ?1",
             [task_id.as_str()],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
-    let Some(existing_source_json) = existing else {
+    let Some((existing_source_json, current_status)) = existing else {
         return Ok(false);
     };
+    if !allowed_from_statuses
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(&current_status))
+    {
+        return Ok(false);
+    }
     let mut source_value = serde_json::from_str::<Value>(&existing_source_json)
         .unwrap_or_else(|_| json!({ "type": "revenue_swap", "opportunity_id": opportunity_id }));
     if let Some(obj) = source_value.as_object_mut() {

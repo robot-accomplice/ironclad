@@ -168,14 +168,21 @@ pub async fn settle_revenue_opportunity(
             )
             .map_err(|e| internal_err(&e))?;
             if let Some(destination_wallet) = tax_destination_wallet {
+                let tax_chain_config = swap_policy
+                    .chains
+                    .iter()
+                    .find(|c| c.chain.trim().eq_ignore_ascii_case(&target_chain));
+                let tax_contract_address = tax_chain_config
+                    .map(|c| c.target_contract_address.as_str());
                 queue_revenue_tax_payout(
                     &state.db,
                     RevenueTaxPayoutTask {
                         opportunity_id: &id,
                         amount: tax_amount_usdc,
                         currency: settlement_currency.as_str(),
-                        target_chain: wallet_chain_label(state.wallet.wallet.chain_id()),
+                        target_chain: target_chain.as_str(),
                         destination_wallet,
+                        contract_address: tax_contract_address,
                     },
                 )
                 .map_err(|e| internal_err(&e))?;
@@ -261,6 +268,7 @@ struct RevenueTaxPayoutTask<'a> {
     currency: &'a str,
     target_chain: &'a str,
     destination_wallet: &'a str,
+    contract_address: Option<&'a str>,
 }
 
 fn queue_revenue_swap(
@@ -285,6 +293,10 @@ fn queue_revenue_swap(
         task.from_currency, task.amount, task.target_symbol, task.target_chain
     );
     let task_id = format!("rev_swap:{}", task.opportunity_id);
+    let description = format!(
+        "Auto-queued stablecoin conversion to {} on {} after revenue settlement",
+        task.target_symbol, task.target_chain
+    );
     conn.execute(
         "INSERT INTO tasks (id, title, description, status, priority, source, created_at, updated_at) \
          VALUES (?1, ?2, ?3, 'pending', 95, ?4, datetime('now'), datetime('now')) \
@@ -293,7 +305,7 @@ fn queue_revenue_swap(
         rusqlite::params![
             task_id,
             title,
-            "Auto-queued immediate stablecoin conversion to Palm USD after revenue settlement",
+            description,
             source_json
         ],
     )
@@ -312,6 +324,7 @@ fn queue_revenue_tax_payout(
         "currency": task.currency,
         "target_chain": task.target_chain,
         "destination_wallet": task.destination_wallet,
+        "contract_address": task.contract_address,
         "amount": task.amount,
         "opportunity_id": task.opportunity_id,
     })

@@ -8,6 +8,7 @@ use crate::api::{AppState, execute_scheduled_agent_task, subagent_integrity};
 
 pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
     let mut interval = tokio::time::interval(Duration::from_secs(60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let concurrency = Arc::new(Semaphore::new(4));
     tracing::info!("Server cron worker started");
 
@@ -262,17 +263,24 @@ async fn execute_named_agent_task(
     agent_id: &str,
     task: &str,
 ) -> CronExecutionResult {
-    if let Ok(subagents) = ironclad_db::agents::list_sub_agents(&state.db)
-        && let Some(sa) = subagents
-            .into_iter()
-            .find(|sa| sa.name.eq_ignore_ascii_case(agent_id) && sa.enabled)
-        && let Err(err) = subagent_integrity::ensure_taskable_subagent_ready(state, &sa).await
-    {
-        return CronExecutionResult {
-            status: "error",
-            error: Some(format!("subagent integrity repair failed: {err}")),
-            output: None,
-        };
+    match ironclad_db::agents::list_sub_agents(&state.db) {
+        Ok(subagents) => {
+            if let Some(sa) = subagents
+                .into_iter()
+                .find(|sa| sa.name.eq_ignore_ascii_case(agent_id) && sa.enabled)
+                && let Err(err) =
+                    subagent_integrity::ensure_taskable_subagent_ready(state, &sa).await
+            {
+                return CronExecutionResult {
+                    status: "error",
+                    error: Some(format!("subagent integrity repair failed: {err}")),
+                    output: None,
+                };
+            }
+        }
+        Err(e) => {
+            tracing::warn!(agent_id, error = %e, "failed to list sub-agents for cron task; proceeding without integrity check");
+        }
     }
     match execute_scheduled_agent_task(state, agent_id, task).await {
         Ok(output) => CronExecutionResult {
@@ -299,7 +307,9 @@ fn implied_agent_task(job: &ironclad_db::cron::CronJob, payload: &Value) -> Opti
         .and_then(|v| v.as_str())
         .map(str::trim)
         .unwrap_or("");
-    if message.eq_ignore_ascii_case(description) || message.starts_with("scheduled job:") {
+    if message.eq_ignore_ascii_case(description)
+        || message.to_ascii_lowercase().starts_with("scheduled job:")
+    {
         return Some(description.to_string());
     }
     None

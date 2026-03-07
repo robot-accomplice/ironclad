@@ -6,16 +6,6 @@ use super::AppState;
 use super::subagents::{ROLE_SUBAGENT, normalize_role, resolve_taskable_subagent_runtime_model};
 
 const BUILTIN_SKILLS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/builtin-skills.json"));
-const INTERNALIZED_SKILLS: &[&str] = &[
-    "update-and-rollback",
-    "workflow-design",
-    "skill-creation",
-    "session-operator",
-    "claims-auditor",
-    "efficacy-assessment",
-    "fast-cache",
-    "model-routing-tuner",
-];
 
 fn parse_skills_json(skills_json: Option<&str>) -> Vec<String> {
     skills_json
@@ -54,7 +44,6 @@ fn skill_registry_names(state: &AppState) -> BTreeSet<String> {
             .into_iter()
             .map(|entry| entry.name.to_ascii_lowercase())
             .collect();
-    out.extend(INTERNALIZED_SKILLS.iter().map(|s| s.to_ascii_lowercase()));
     if let Ok(db_skills) = ironclad_db::skills::list_skills(&state.db) {
         out.extend(
             db_skills
@@ -178,7 +167,7 @@ pub(crate) async fn ensure_taskable_subagent_ready(
 
     let mut updated = agent.clone();
     let mut changed = false;
-    if !integrity.has_fixed_skills && !repair_skills.is_empty() {
+    if !integrity.has_fixed_skills {
         updated.skills_json =
             Some(serde_json::to_string(&repair_skills).unwrap_or_else(|_| "[]".to_string()));
         changed = true;
