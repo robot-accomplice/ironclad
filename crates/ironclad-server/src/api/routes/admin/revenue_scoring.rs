@@ -7,6 +7,14 @@ pub struct OracleFeedIntakeRequest {
     pub payload: Value,
 }
 
+#[derive(Deserialize, Default)]
+pub struct RevenueOpportunityListParams {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 fn score_input_from_request<'a>(
     source: &'a str,
     strategy: &'a str,
@@ -69,6 +77,23 @@ pub async fn intake_oracle_feed_opportunity(
         payload: req.payload,
     };
     intake_revenue_opportunity(State(state), Json(adapted)).await
+}
+
+pub async fn list_revenue_opportunities(
+    State(state): State<AppState>,
+    Query(query): Query<RevenueOpportunityListParams>,
+) -> Result<impl IntoResponse, JsonError> {
+    let status = query.status.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let rows = ironclad_db::revenue_opportunity_queries::list_revenue_opportunities(
+        &state.db,
+        ironclad_db::revenue_opportunity_queries::RevenueOpportunityListQuery { status, limit },
+    )
+    .map_err(|e| internal_err(&e))?;
+    Ok(axum::Json(json!({
+        "opportunities": rows,
+        "count": rows.len(),
+    })))
 }
 
 pub async fn score_revenue_opportunity(

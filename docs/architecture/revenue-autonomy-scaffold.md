@@ -120,13 +120,29 @@ Persistence:
 - `service_requests` table (status transitions: `quoted -> payment_verified -> completed`)
 - revenue ledger entry via `transactions` (`tx_type = service_revenue`)
 
+Current shared-lifecycle revenue control-plane primitives:
+
+- canonical opportunity record persisted in `revenue_opportunities`
+- restart-safe status progression (`intake -> qualified/rejected -> planned -> fulfilled -> settled`)
+- persisted opportunity scoring:
+  - `confidence_score`
+  - `effort_score`
+  - `risk_score`
+  - `priority_score`
+  - `recommended_approved`
+  - `score_reason`
+- current concrete adapters:
+  - `micro_bounty`
+  - `oracle_feed`
+- recommendation-aware qualification, with explicit override still allowed
+
 ## Phase 2 Continuation (v0.9.5 forward)
 
 Shared control-plane primitives to add before strategy expansion:
 
 - `opportunity intake`: normalize all new opportunities to one schema
 - `qualification gate`: enforce policy/safety/eligibility before planning
-- first micro-bounty intake adapter bound to the same lifecycle (no strategy-specific bypass path)
+- strategy adapters bound to the same lifecycle (no strategy-specific bypass path)
 - settlement idempotency keyed by request/job ID
 
 Mechanic support hooks:

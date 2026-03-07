@@ -467,12 +467,13 @@ pub fn build_router(state: AppState) -> Router {
         get_routing_dataset, get_routing_diagnostics, get_runtime_surfaces, get_service_request,
         get_throttle_stats, get_transactions, intake_micro_bounty_opportunity,
         intake_oracle_feed_opportunity, intake_revenue_opportunity, list_discovered_agents,
-        list_paired_devices, list_services_catalog, mcp_client_disconnect, mcp_client_discover,
-        pair_device, plan_revenue_opportunity, qualify_revenue_opportunity,
-        register_discovered_agent, roster, run_routing_eval, score_revenue_opportunity,
-        set_provider_key, settle_revenue_opportunity, start_agent, stop_agent, toggle_plugin,
-        unpair_device, update_config, verify_discovered_agent, verify_paired_device,
-        verify_service_payment, wallet_address, wallet_balance, workspace_state,
+        list_paired_devices, list_revenue_opportunities, list_services_catalog,
+        mcp_client_disconnect, mcp_client_discover, pair_device, plan_revenue_opportunity,
+        qualify_revenue_opportunity, register_discovered_agent, roster, run_routing_eval,
+        score_revenue_opportunity, set_provider_key, settle_revenue_opportunity, start_agent,
+        stop_agent, toggle_plugin, unpair_device, update_config, verify_discovered_agent,
+        verify_paired_device, verify_service_payment, wallet_address, wallet_balance,
+        workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
@@ -573,7 +574,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/services/opportunities/intake",
-            post(intake_revenue_opportunity),
+            get(list_revenue_opportunities).post(intake_revenue_opportunity),
         )
         .route(
             "/api/services/opportunities/adapters/micro-bounty/intake",
@@ -2053,6 +2054,53 @@ primary = "ollama/qwen3:8b"
                 .unwrap_or_default()
                 > 0.6
         );
+    }
+
+    #[tokio::test]
+    async fn list_revenue_opportunities_orders_by_priority() {
+        let app = build_router(test_state());
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/adapters/micro-bounty/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"expected_revenue_usdc":2.0,"payload":{"action":"multi-repo audit"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/adapters/oracle-feed/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"expected_revenue_usdc":8.0,"payload":{"pair":"ETH/USD","source_url":"https://example.com/feed"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services/opportunities/intake?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["count"], 2);
+        assert_eq!(body["opportunities"][0]["strategy"], "oracle_feed");
     }
 
     #[tokio::test]
