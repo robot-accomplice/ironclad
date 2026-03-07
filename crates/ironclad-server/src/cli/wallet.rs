@@ -22,6 +22,10 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
         .as_array()
         .cloned()
         .unwrap_or_default();
+    let feedback_summary = balance["revenue_feedback_summary"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     kv_accent("Balance", &format!("{bal} {currency}"));
     kv_mono("Address", addr);
     if swap.is_object() {
@@ -106,6 +110,18 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
             ),
         );
     }
+    if !feedback_summary.is_empty() {
+        let top = &feedback_summary[0];
+        kv(
+            "Top Feedback Strategy",
+            &format!(
+                "{} ({:.2}/5 over {} signals)",
+                top["strategy"].as_str().unwrap_or("unknown"),
+                top["avg_grade"].as_f64().unwrap_or(0.0),
+                top["feedback_count"].as_i64().unwrap_or(0)
+            ),
+        );
+    }
     if let Some(note) = balance["note"].as_str() {
         eprintln!();
         eprintln!("    {DIM}\u{2139}  {note}{RESET}");
@@ -144,6 +160,10 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
     let accounting = &balance["revenue_accounting"];
     let swap_queue = &balance["revenue_swap_queue"];
     let strategy_summary = balance["revenue_strategy_summary"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let feedback_summary = balance["revenue_feedback_summary"]
         .as_array()
         .cloned()
         .unwrap_or_default();
@@ -199,6 +219,18 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
                 "{} ({:.2} USDC net)",
                 top["strategy"].as_str().unwrap_or("unknown"),
                 top["net_profit_usdc"].as_f64().unwrap_or(0.0)
+            ),
+        );
+    }
+    if !feedback_summary.is_empty() {
+        let top = &feedback_summary[0];
+        kv(
+            "Top Feedback",
+            &format!(
+                "{} ({:.2}/5 over {} signals)",
+                top["strategy"].as_str().unwrap_or("unknown"),
+                top["avg_grade"].as_f64().unwrap_or(0.0),
+                top["feedback_count"].as_i64().unwrap_or(0)
             ),
         );
     }
