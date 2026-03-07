@@ -3291,6 +3291,9 @@ primary = "ollama/qwen3:8b"
         assert!(body["seed_exercise_progress"]["phase_3_tax_reconciled"].is_boolean());
         assert!(body["seed_exercise_progress"]["phase_4_mechanic_clear"].is_boolean());
         assert!(body["seed_exercise_progress"]["next_action"].is_string());
+        assert!(body["seed_exercise_plan"]["phases"].is_array());
+        assert!(body["seed_exercise_plan"]["abort_conditions"].is_array());
+        assert!(body["seed_exercise_plan"]["operator_guidance"].is_array());
         assert_eq!(body["revenue_tax_queue"]["total"], 1);
         assert_eq!(body["revenue_tax_queue"]["pending"], 1);
     }

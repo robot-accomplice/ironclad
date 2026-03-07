@@ -3023,6 +3023,29 @@
         + rows
         + '</div>';
     },
+    _renderSeedExercisePlanCard: function(plan) {
+      var p = plan || {};
+      var phases = Array.isArray(p.phases) ? p.phases : [];
+      var phaseRows = phases.length
+        ? phases.map(function(phase) {
+            return '<div class="settings-nested" style="margin-top:0.6rem">'
+              + '<div class="settings-row"><div class="settings-label">' + esc(phase.label || phase.id || 'phase') + '</div><div><span class="badge">' + esc(String(Number(phase.max_spend_usdc || 0).toFixed(2))) + ' USDC cap</span></div></div>'
+              + '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.35rem">' + esc(phase.goal || '') + '</div>'
+              + '<div style="font-size:0.6875rem;color:var(--muted);margin-top:0.35rem">Success signal: ' + esc(phase.success_signal || '') + '</div>'
+              + '</div>';
+          }).join('')
+        : '<div style="font-size:0.75rem;color:var(--muted)">No seed exercise plan is available.</div>';
+      var aborts = Array.isArray(p.abort_conditions) ? p.abort_conditions : [];
+      var guidance = Array.isArray(p.operator_guidance) ? p.operator_guidance : [];
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">$50 Seed Exercise Plan</div>'
+        + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">Constrained live-funds validation plan for treasury, settlement, routing, and repair.</div>'
+        + phaseRows
+        + '<div style="margin-top:0.9rem;font-size:0.75rem;color:var(--muted)">Abort conditions</div>'
+        + (aborts.length ? '<ul style="margin:0.35rem 0 0 1rem;padding:0;color:var(--text)">' + aborts.map(function(item) { return '<li style="margin:0.3rem 0">' + esc(item) + '</li>'; }).join('') + '</ul>' : '<div style="font-size:0.75rem;color:var(--muted)">No abort conditions defined.</div>')
+        + '<div style="margin-top:0.9rem;font-size:0.75rem;color:var(--muted)">Operator guidance</div>'
+        + (guidance.length ? '<ul style="margin:0.35rem 0 0 1rem;padding:0;color:var(--text)">' + guidance.map(function(item) { return '<li style="margin:0.3rem 0">' + esc(item) + '</li>'; }).join('') + '</ul>' : '<div style="font-size:0.75rem;color:var(--muted)">No operator guidance defined.</div>')
+        + '</div>';
+    },
     _renderRevenueSwapTasksCard: function(rows) {
       var items = Array.isArray(rows) ? rows : [];
       var body = items.length
@@ -3152,11 +3175,13 @@
         var revenueSwapCard = self._renderRevenueSwapSummaryCard(treasury.revenue_swap || {});
         var seedReadinessCard = self._renderSeedExerciseReadinessCard(bal.seed_exercise_readiness || {});
         var seedProgressCard = self._renderSeedExerciseProgressCard(bal.seed_exercise_progress || {});
+        var seedPlanCard = self._renderSeedExercisePlanCard(bal.seed_exercise_plan || {});
         var strategySummaryCard = self._renderRevenueStrategySummaryCard(bal.revenue_strategy_summary || []);
         var feedbackSummaryCard = self._renderRevenueFeedbackSummaryCard(bal.revenue_feedback_summary || []);
         var swapTasksCard = self._renderRevenueSwapTasksCard(swaps);
+        var taxTasksCard = self._renderRevenueTaxTasksCard(taxTasks);
 
-        return addrSection + balancesCard + treasuryCard + revenueSwapCard + seedReadinessCard + seedProgressCard + strategySummaryCard + feedbackSummaryCard + swapTasksCard +
+        return addrSection + balancesCard + treasuryCard + revenueSwapCard + seedReadinessCard + seedProgressCard + seedPlanCard + strategySummaryCard + feedbackSummaryCard + swapTasksCard + taxTasksCard +
           '<div class="card-title">Transaction history</div><div class="table-wrap"><table><thead><tr><th>Type</th><th>Amount</th><th>Date</th></tr></thead><tbody>' + txRows + '</tbody></table></div>';
       });
     },

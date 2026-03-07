@@ -29,6 +29,10 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default();
     let seed_readiness = &balance["seed_exercise_readiness"];
     let seed_progress = &balance["seed_exercise_progress"];
+    let seed_plan = balance["seed_exercise_plan"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
     kv_accent("Balance", &format!("{bal} {currency}"));
     kv_mono("Address", addr);
     if swap.is_object() {
@@ -169,6 +173,15 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or("no action available"),
         );
     }
+    if let Some(phases) = seed_plan.get("phases").and_then(|v| v.as_array()) {
+        kv("Seed Exercise Phases", &phases.len().to_string());
+        if let Some(first) = phases.first() {
+            kv(
+                "Seed First Phase",
+                first["label"].as_str().unwrap_or("no phase available"),
+            );
+        }
+    }
     if let Some(note) = balance["note"].as_str() {
         eprintln!();
         eprintln!("    {DIM}\u{2139}  {note}{RESET}");
@@ -217,6 +230,10 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
         .unwrap_or_default();
     let seed_readiness = &balance["seed_exercise_readiness"];
     let seed_progress = &balance["seed_exercise_progress"];
+    let seed_plan = balance["seed_exercise_plan"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
     eprintln!();
     kv_accent("Balance", &format!("{bal} {currency}"));
     if swap.is_object() {
@@ -316,6 +333,9 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
                 .as_str()
                 .unwrap_or("no action available"),
         );
+    }
+    if let Some(phases) = seed_plan.get("phases").and_then(|v| v.as_array()) {
+        kv("Seed Exercise Phases", &phases.len().to_string());
     }
     eprintln!();
     Ok(())
