@@ -461,23 +461,25 @@ pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, breaker_open, breaker_reset, breaker_status, browser_action, browser_start,
         browser_status, browser_stop, change_agent_model, confirm_revenue_swap_task,
-        create_service_quote, delete_provider_key, execute_plugin_tool, fail_revenue_swap_task,
-        fulfill_revenue_opportunity, fulfill_service_request, generate_deep_analysis, get_agents,
-        get_available_models, get_cache_stats, get_capacity_stats, get_config,
-        get_config_apply_status, get_config_capabilities, get_costs, get_efficiency,
-        get_mcp_runtime, get_overview_timeseries, get_plugins, get_recommendations,
-        get_revenue_opportunity, get_routing_dataset, get_routing_diagnostics,
-        get_runtime_surfaces, get_service_request, get_throttle_stats, get_transactions,
-        intake_micro_bounty_opportunity, intake_oracle_feed_opportunity,
-        intake_revenue_opportunity, list_discovered_agents, list_paired_devices,
-        list_revenue_opportunities, list_revenue_swap_tasks, list_services_catalog,
-        mcp_client_disconnect, mcp_client_discover, pair_device, plan_revenue_opportunity,
-        qualify_revenue_opportunity, reconcile_revenue_swap_task,
+        confirm_revenue_tax_task, create_service_quote, delete_provider_key, execute_plugin_tool,
+        fail_revenue_swap_task, fail_revenue_tax_task, fulfill_revenue_opportunity,
+        fulfill_service_request, generate_deep_analysis, get_agents, get_available_models,
+        get_cache_stats, get_capacity_stats, get_config, get_config_apply_status,
+        get_config_capabilities, get_costs, get_efficiency, get_mcp_runtime,
+        get_overview_timeseries, get_plugins, get_recommendations, get_revenue_opportunity,
+        get_routing_dataset, get_routing_diagnostics, get_runtime_surfaces, get_service_request,
+        get_throttle_stats, get_transactions, intake_micro_bounty_opportunity,
+        intake_oracle_feed_opportunity, intake_revenue_opportunity, list_discovered_agents,
+        list_paired_devices, list_revenue_opportunities, list_revenue_swap_tasks,
+        list_revenue_tax_tasks, list_services_catalog, mcp_client_disconnect, mcp_client_discover,
+        pair_device, plan_revenue_opportunity, qualify_revenue_opportunity,
+        reconcile_revenue_swap_task, reconcile_revenue_tax_task,
         record_revenue_opportunity_feedback, register_discovered_agent, roster, run_routing_eval,
         score_revenue_opportunity, set_provider_key, settle_revenue_opportunity, start_agent,
-        start_revenue_swap_task, stop_agent, submit_revenue_swap_task, toggle_plugin,
-        unpair_device, update_config, verify_discovered_agent, verify_paired_device,
-        verify_service_payment, wallet_address, wallet_balance, workspace_state,
+        start_revenue_swap_task, start_revenue_tax_task, stop_agent, submit_revenue_swap_task,
+        submit_revenue_tax_task, toggle_plugin, unpair_device, update_config,
+        verify_discovered_agent, verify_paired_device, verify_service_payment, wallet_address,
+        wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
@@ -621,6 +623,7 @@ pub fn build_router(state: AppState) -> Router {
             post(settle_revenue_opportunity),
         )
         .route("/api/services/swaps", get(list_revenue_swap_tasks))
+        .route("/api/services/tax-payouts", get(list_revenue_tax_tasks))
         .route(
             "/api/services/swaps/{id}/start",
             post(start_revenue_swap_task),
@@ -640,6 +643,26 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/services/swaps/{id}/fail",
             post(fail_revenue_swap_task),
+        )
+        .route(
+            "/api/services/tax-payouts/{id}/start",
+            post(start_revenue_tax_task),
+        )
+        .route(
+            "/api/services/tax-payouts/{id}/submit",
+            post(submit_revenue_tax_task),
+        )
+        .route(
+            "/api/services/tax-payouts/{id}/reconcile",
+            post(reconcile_revenue_tax_task),
+        )
+        .route(
+            "/api/services/tax-payouts/{id}/confirm",
+            post(confirm_revenue_tax_task),
+        )
+        .route(
+            "/api/services/tax-payouts/{id}/fail",
+            post(fail_revenue_tax_task),
         )
         .route("/api/stats/cache", get(get_cache_stats))
         .route("/api/stats/capacity", get(get_capacity_stats))
@@ -2406,6 +2429,194 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn revenue_settlement_queues_tax_payout_when_tax_policy_enabled() {
+        let state = test_state();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.self_funding.tax.enabled = true;
+            cfg.self_funding.tax.rate = 0.25;
+            cfg.self_funding.tax.destination_wallet =
+                Some("0x1111111111111111111111111111111111111111".to_string());
+        }
+        let app = build_router(state);
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":8.0,"payload":{"issue":"tax-queue"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for (path, body) in [
+            (
+                format!("/api/services/opportunities/{id}/qualify"),
+                r#"{"approved":true}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/plan"),
+                r#"{"plan":{"executor":"self"}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/fulfill"),
+                r#"{"evidence":{"ok":true}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/settle"),
+                r#"{"settlement_ref":"tx_tax_queue","amount_usdc":8.0,"currency":"USDC","attributable_costs_usdc":2.0,"auto_swap":false}"#
+                    .to_string(),
+            ),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        let list_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services/tax-payouts?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body = json_body(list_resp).await;
+        assert_eq!(body["count"], 1);
+        assert_eq!(body["tax_tasks"][0]["opportunity_id"], id);
+        assert_eq!(body["tax_tasks"][0]["status"], "pending");
+        assert_eq!(
+            body["tax_tasks"][0]["source"]["destination_wallet"],
+            "0x1111111111111111111111111111111111111111"
+        );
+    }
+
+    #[tokio::test]
+    async fn revenue_tax_task_lifecycle_routes_work() {
+        let state = test_state();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.self_funding.tax.enabled = true;
+            cfg.self_funding.tax.rate = 0.25;
+            cfg.self_funding.tax.destination_wallet =
+                Some("0x1111111111111111111111111111111111111111".to_string());
+        }
+        let app = build_router(state);
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":8.0,"payload":{"issue":"tax-lifecycle"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for (path, body) in [
+            (
+                format!("/api/services/opportunities/{id}/qualify"),
+                r#"{"approved":true}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/plan"),
+                r#"{"plan":{"executor":"self"}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/fulfill"),
+                r#"{"evidence":{"ok":true}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/settle"),
+                r#"{"settlement_ref":"tx_tax_lifecycle","amount_usdc":8.0,"currency":"USDC","attributable_costs_usdc":2.0,"auto_swap":false}"#
+                    .to_string(),
+            ),
+        ] {
+            let _ = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let start_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/tax-payouts/{id}/start"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(start_resp.status(), StatusCode::OK);
+
+        let confirm_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/tax-payouts/{id}/confirm"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"tx_hash":"0xtax123"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(confirm_resp.status(), StatusCode::OK);
+
+        let list_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services/tax-payouts?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body = json_body(list_resp).await;
+        assert_eq!(body["count"], 1);
+        assert_eq!(body["tax_tasks"][0]["status"], "completed");
+        assert_eq!(body["tax_tasks"][0]["source"]["tax_tx_hash"], "0xtax123");
+    }
+
+    #[tokio::test]
     async fn revenue_feedback_route_records_and_surfaces_strategy_summary() {
         let app = build_router(test_state());
         let intake_resp = app
@@ -3020,7 +3231,32 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn wallet_balance_returns_real_data() {
-        let app = build_router(test_state());
+        let state = test_state();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.self_funding.tax.enabled = true;
+            cfg.self_funding.tax.rate = 0.25;
+            cfg.self_funding.tax.destination_wallet =
+                Some("0x1111111111111111111111111111111111111111".to_string());
+        }
+        let task_source = serde_json::json!({
+            "type": "revenue_tax_payout",
+            "opportunity_id": "wallet-balance-tax",
+            "currency": "USDC",
+            "target_chain": "BASE",
+            "destination_wallet": "0x1111111111111111111111111111111111111111",
+            "amount": 1.5
+        })
+        .to_string();
+        {
+            let conn = state.db.conn();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority, source) VALUES (?1, ?2, 'pending', 96, ?3)",
+                rusqlite::params!["rev_tax:wallet-balance-tax", "Tax payout", task_source],
+            )
+            .unwrap();
+        }
+        let app = build_router(state);
         let req = Request::builder()
             .uri("/api/wallet/balance")
             .body(Body::empty())
@@ -3051,8 +3287,12 @@ primary = "ollama/qwen3:8b"
         assert!(body["seed_exercise_progress"]["phase_2_revenue_cycle_complete"].is_boolean());
         assert!(body["seed_exercise_progress"]["phase_3_swap_submitted"].is_boolean());
         assert!(body["seed_exercise_progress"]["phase_3_swap_reconciled"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_3_tax_submitted"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_3_tax_reconciled"].is_boolean());
         assert!(body["seed_exercise_progress"]["phase_4_mechanic_clear"].is_boolean());
         assert!(body["seed_exercise_progress"]["next_action"].is_string());
+        assert_eq!(body["revenue_tax_queue"]["total"], 1);
+        assert_eq!(body["revenue_tax_queue"]["pending"], 1);
     }
 
     #[tokio::test]

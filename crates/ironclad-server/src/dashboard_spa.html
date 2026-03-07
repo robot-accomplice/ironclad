@@ -3008,6 +3008,8 @@
         ['Phase 2: revenue cycle complete', !!p.phase_2_revenue_cycle_complete],
         ['Phase 3: swap submitted', !!p.phase_3_swap_submitted],
         ['Phase 3: swap reconciled', !!p.phase_3_swap_reconciled],
+        ['Phase 3: tax submitted', !!p.phase_3_tax_submitted],
+        ['Phase 3: tax reconciled', !!p.phase_3_tax_reconciled],
         ['Phase 4: mechanic clear', !!p.phase_4_mechanic_clear]
       ];
       var rows = phases.map(function(phase) {
@@ -3044,6 +3046,29 @@
         : '<div style="font-size:0.75rem;color:var(--muted)">No revenue swap tasks yet.</div>';
       return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Swap Tasks</div>' + body + '</div>';
     },
+    _renderRevenueTaxTasksCard: function(rows) {
+      var items = Array.isArray(rows) ? rows : [];
+      var body = items.length
+        ? '<div class="table-wrap"><table><thead><tr><th>Opportunity</th><th>Status</th><th>Destination</th><th>Tx</th><th>Updated</th></tr></thead><tbody>'
+          + items.map(function(row) {
+              var source = row.source || {};
+              var dest = (source.destination_wallet || 'unknown') + ' on ' + (source.target_chain || 'unknown');
+              var txHash = source.tax_tx_hash
+                ? '<span class="card-mono" style="font-size:0.625rem">' + esc(String(source.tax_tx_hash).slice(0, 18)) + '…</span>'
+                : '<span style="color:var(--muted)">—</span>';
+              var updated = row.updated_at ? String(row.updated_at).replace('T', ' ').slice(0, 19) : '—';
+              return '<tr>'
+                + '<td><div style="font-weight:600">' + esc(row.opportunity_id || row.id || 'unknown') + '</div><div style="font-size:0.625rem;color:var(--muted)">' + esc(row.title || '') + '</div></td>'
+                + '<td>' + esc(row.status || 'unknown') + '</td>'
+                + '<td>' + esc(dest) + '</td>'
+                + '<td>' + txHash + '</td>'
+                + '<td style="color:var(--muted)">' + esc(updated) + '</td>'
+                + '</tr>';
+            }).join('')
+          + '</tbody></table></div>'
+        : '<div style="font-size:0.75rem;color:var(--muted)">No revenue tax tasks yet.</div>';
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Tax Tasks</div>' + body + '</div>';
+    },
     _renderRevenueSwapSettings: function(revenueSwap) {
       var cfg = revenueSwap || {};
       var chains = Array.isArray(cfg.chains) ? cfg.chains : [];
@@ -3071,9 +3096,10 @@
         api('/api/wallet/balance').catch(function() { return { balance: '0', currency: 'ETH', tokens: [], network: 'Unknown' }; }),
         api('/api/wallet/address').catch(function() { return { address: '', chain_id: 1, network: 'Unknown' }; }),
         api('/api/stats/transactions?hours=168').catch(function() { return { transactions: [] }; }),
-        api('/api/services/swaps?limit=10').catch(function() { return { swap_tasks: [] }; })
+        api('/api/services/swaps?limit=10').catch(function() { return { swap_tasks: [] }; }),
+        api('/api/services/tax-payouts?limit=10').catch(function() { return { tax_tasks: [] }; })
       ]).then(function(arr) {
-        var bal = arr[0], addr = arr[1], txs = (arr[2].transactions || []), swaps = (arr[3].swap_tasks || []);
+        var bal = arr[0], addr = arr[1], txs = (arr[2].transactions || []), swaps = (arr[3].swap_tasks || []), taxTasks = (arr[4].tax_tasks || []);
         var addrStr = (addr.address != null && addr.address !== '') ? addr.address : (addr.note || '\u2014');
         var network = bal.network || addr.network || 'Unknown';
         var chainId = addr.chain_id || bal.chain_id || 1;

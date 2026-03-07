@@ -18,6 +18,7 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let tax = &balance["self_funding"]["tax"];
     let accounting = &balance["revenue_accounting"];
     let swap_queue = &balance["revenue_swap_queue"];
+    let tax_queue = &balance["revenue_tax_queue"];
     let strategy_summary = balance["revenue_strategy_summary"]
         .as_array()
         .cloned()
@@ -98,6 +99,19 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
                 swap_queue["in_progress"].as_i64().unwrap_or(0),
                 swap_queue["failed"].as_i64().unwrap_or(0),
                 swap_queue["stale_in_progress"].as_i64().unwrap_or(0),
+            ),
+        );
+    }
+    if tax_queue.is_object() {
+        kv(
+            "Tax Queue",
+            &format!(
+                "total={} pending={} in_progress={} failed={} completed={}",
+                tax_queue["total"].as_i64().unwrap_or(0),
+                tax_queue["pending"].as_i64().unwrap_or(0),
+                tax_queue["in_progress"].as_i64().unwrap_or(0),
+                tax_queue["failed"].as_i64().unwrap_or(0),
+                tax_queue["completed"].as_i64().unwrap_or(0),
             ),
         );
     }
@@ -192,6 +206,7 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
     let tax = &balance["self_funding"]["tax"];
     let accounting = &balance["revenue_accounting"];
     let swap_queue = &balance["revenue_swap_queue"];
+    let tax_queue = &balance["revenue_tax_queue"];
     let strategy_summary = balance["revenue_strategy_summary"]
         .as_array()
         .cloned()
@@ -243,6 +258,18 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
                 swap_queue["pending"].as_i64().unwrap_or(0),
                 swap_queue["in_progress"].as_i64().unwrap_or(0),
                 swap_queue["failed"].as_i64().unwrap_or(0),
+            ),
+        );
+    }
+    if tax_queue.is_object() {
+        kv(
+            "Tax Queue",
+            &format!(
+                "pending={} in_progress={} failed={} completed={}",
+                tax_queue["pending"].as_i64().unwrap_or(0),
+                tax_queue["in_progress"].as_i64().unwrap_or(0),
+                tax_queue["failed"].as_i64().unwrap_or(0),
+                tax_queue["completed"].as_i64().unwrap_or(0),
             ),
         );
     }

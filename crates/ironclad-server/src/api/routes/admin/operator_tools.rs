@@ -17,6 +17,9 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
     let revenue_swap_tasks =
         ironclad_db::revenue_swap_tasks::list_revenue_swap_tasks(&state.db, 200)
             .unwrap_or_default();
+    let revenue_tax_tasks =
+        ironclad_db::revenue_tax_tasks::list_revenue_tax_tasks(&state.db, 200)
+            .unwrap_or_default();
     let default_swap_chain = config.treasury.revenue_swap.default_chain.clone();
     let default_swap_chain_cfg = config
         .treasury
@@ -77,6 +80,18 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
             .map(|s| matches!(s, "completed" | "failed"))
             .unwrap_or(false)
     });
+    let tax_submitted = revenue_tax_tasks.iter().any(|row| {
+        row["source"]["tax_tx_hash"]
+            .as_str()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+    });
+    let tax_reconciled = revenue_tax_tasks.iter().any(|row| {
+        row["status"]
+            .as_str()
+            .map(|s| matches!(s, "completed" | "failed"))
+            .unwrap_or(false)
+    });
     let seed_readiness = json!({
         "seed_target_usdc": seed_target_usdc,
         "stable_balance_usdc": stable_balance,
@@ -98,6 +113,8 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
         "phase_2_revenue_cycle_complete": revenue_accounting.settled_jobs > 0,
         "phase_3_swap_submitted": swap_submitted,
         "phase_3_swap_reconciled": swap_reconciled,
+        "phase_3_tax_submitted": tax_submitted,
+        "phase_3_tax_reconciled": tax_reconciled,
         "phase_4_mechanic_clear": revenue_swap_queue.stale_in_progress == 0,
         "next_action": if stable_balance < seed_target_usdc {
             "seed treasury to the $50 exercise target"
@@ -107,6 +124,10 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
             "submit the queued swap task"
         } else if !swap_reconciled {
             "reconcile the submitted swap receipt"
+        } else if config.self_funding.tax.enabled && !tax_submitted {
+            "submit the queued tax payout task"
+        } else if config.self_funding.tax.enabled && !tax_reconciled {
+            "reconcile the submitted tax payout receipt"
         } else {
             "run the failure-and-repair drill"
         },
@@ -152,6 +173,13 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
             "failed": revenue_swap_queue.failed,
             "completed": revenue_swap_queue.completed,
             "stale_in_progress": revenue_swap_queue.stale_in_progress,
+        },
+        "revenue_tax_queue": {
+            "total": revenue_tax_tasks.len(),
+            "pending": revenue_tax_tasks.iter().filter(|r| r["status"].as_str() == Some("pending")).count(),
+            "in_progress": revenue_tax_tasks.iter().filter(|r| r["status"].as_str() == Some("in_progress")).count(),
+            "failed": revenue_tax_tasks.iter().filter(|r| r["status"].as_str() == Some("failed")).count(),
+            "completed": revenue_tax_tasks.iter().filter(|r| r["status"].as_str() == Some("completed")).count(),
         },
         "revenue_strategy_summary": revenue_strategy_summary,
         "revenue_feedback_summary": revenue_feedback_summary,

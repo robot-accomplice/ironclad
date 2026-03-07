@@ -167,6 +167,19 @@ pub async fn settle_revenue_opportunity(
                 Some(&tax_metadata),
             )
             .map_err(|e| internal_err(&e))?;
+            if let Some(destination_wallet) = tax_destination_wallet {
+                queue_revenue_tax_payout(
+                    &state.db,
+                    RevenueTaxPayoutTask {
+                        opportunity_id: &id,
+                        amount: tax_amount_usdc,
+                        currency: settlement_currency.as_str(),
+                        target_chain: wallet_chain_label(state.wallet.wallet.chain_id()),
+                        destination_wallet,
+                    },
+                )
+                .map_err(|e| internal_err(&e))?;
+            }
         }
         let retained_metadata = json!({
             "opportunity_id": id,
@@ -242,6 +255,14 @@ struct RevenueSwapTask<'a> {
     swap_contract_address: Option<&'a str>,
 }
 
+struct RevenueTaxPayoutTask<'a> {
+    opportunity_id: &'a str,
+    amount: f64,
+    currency: &'a str,
+    target_chain: &'a str,
+    destination_wallet: &'a str,
+}
+
 fn queue_revenue_swap(
     db: &ironclad_db::Database,
     task: RevenueSwapTask<'_>,
@@ -273,6 +294,39 @@ fn queue_revenue_swap(
             task_id,
             title,
             "Auto-queued immediate stablecoin conversion to Palm USD after revenue settlement",
+            source_json
+        ],
+    )
+    .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+    Ok(())
+}
+
+fn queue_revenue_tax_payout(
+    db: &ironclad_db::Database,
+    task: RevenueTaxPayoutTask<'_>,
+) -> std::result::Result<(), ironclad_core::IroncladError> {
+    let conn = db.conn();
+    let source_json = json!({
+        "origin": "revenue_settlement",
+        "type": "revenue_tax_payout",
+        "currency": task.currency,
+        "target_chain": task.target_chain,
+        "destination_wallet": task.destination_wallet,
+        "amount": task.amount,
+        "opportunity_id": task.opportunity_id,
+    })
+    .to_string();
+    let title = format!(
+        "Tax payout {} {:.6} to {} on {}",
+        task.currency, task.amount, task.destination_wallet, task.target_chain
+    );
+    let task_id = format!("rev_tax:{}", task.opportunity_id);
+    conn.execute(
+        "INSERT INTO tasks (id, title, description, status, priority, source, created_at, updated_at)          VALUES (?1, ?2, ?3, 'pending', 96, ?4, datetime('now'), datetime('now'))          ON CONFLICT(id) DO UPDATE SET            title=excluded.title, description=excluded.description, status='pending', priority=96, source=excluded.source, updated_at=datetime('now')",
+        rusqlite::params![
+            task_id,
+            title,
+            "Auto-queued profit tax payout after revenue settlement",
             source_json
         ],
     )
