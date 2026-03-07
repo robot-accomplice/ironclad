@@ -241,6 +241,36 @@ async fn collect_mechanic_json_gateway_findings(
             )),
         }
 
+        match probe_revenue_swap_reconcile(base_url, repair).await {
+            Ok(health) if health.submitted_tasks == 0 => {}
+            Ok(health) => findings.push(finding(
+                "revenue-swap-reconcile",
+                if health.failed_repairs > 0 { "high" } else { "medium" },
+                0.88,
+                format!(
+                    "Revenue swap queue has {} submitted task{} with on-chain receipts to reconcile",
+                    health.submitted_tasks,
+                    if health.submitted_tasks == 1 { "" } else { "s" }
+                ),
+                "Submitted swaps have tx hashes recorded but their chain receipts have not yet been folded back into task state.",
+                "Run mechanic repair to reconcile submitted swap receipts against chain state.",
+                vec!["ironclad mechanic --repair".to_string()],
+                true,
+                health.confirmed_repairs > 0 || health.failed_repairs > 0,
+            )),
+            Err(e) => findings.push(finding(
+                "revenue-swap-reconcile-failed",
+                "medium",
+                0.8,
+                "Revenue swap reconcile probe failed",
+                format!("{e}"),
+                "Inspect swap task state and wallet RPC connectivity.",
+                vec!["ironclad mechanic".to_string()],
+                false,
+                false,
+            )),
+        }
+
         if repair && !allow_jobs.is_empty() {
             let jobs_resp = super::http_client()?
                 .get(format!("{base_url}/api/cron/jobs"))

@@ -62,6 +62,36 @@ pub async fn submit_evm_contract_call(wallet: &Wallet, call: &EvmContractCall) -
     Ok(format!("{:#x}", pending.tx_hash()))
 }
 
+pub async fn get_evm_transaction_receipt_status(
+    wallet: &Wallet,
+    tx_hash: &str,
+) -> Result<Option<bool>> {
+    let tx_hash = tx_hash.trim();
+    if tx_hash.is_empty() {
+        return Err(IroncladError::Wallet("tx_hash must be non-empty".into()));
+    }
+    let rpc_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "eth_getTransactionReceipt",
+        "params": [tx_hash],
+        "id": 1,
+    });
+    let resp = reqwest::Client::new()
+        .post(wallet.rpc_url())
+        .json(&rpc_body)
+        .send()
+        .await
+        .map_err(|e| IroncladError::Wallet(format!("RPC request failed: {e}")))?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| IroncladError::Wallet(format!("RPC response parse failed: {e}")))?;
+    if let Some(err) = body.get("error") {
+        return Err(IroncladError::Wallet(format!("RPC error: {err}")));
+    }
+    parse_receipt_status_response(&body)
+}
+
 fn parse_address(s: &str) -> Result<Address> {
     s.parse::<Address>()
         .map_err(|e| IroncladError::Wallet(format!("invalid destination address: {e}")))
@@ -113,6 +143,30 @@ fn parse_u128(value: &str) -> Result<u128> {
     }
 }
 
+fn parse_receipt_status_response(body: &serde_json::Value) -> Result<Option<bool>> {
+    let Some(result) = body.get("result") else {
+        return Err(IroncladError::Wallet(
+            "missing result in transaction receipt response".into(),
+        ));
+    };
+    if result.is_null() {
+        return Ok(None);
+    }
+    let status = result
+        .get("status")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            IroncladError::Wallet("transaction receipt missing status field".into())
+        })?;
+    match status {
+        "0x1" | "0x01" | "1" => Ok(Some(true)),
+        "0x0" | "0x00" | "0" => Ok(Some(false)),
+        other => Err(IroncladError::Wallet(format!(
+            "unexpected transaction receipt status '{other}'"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +187,23 @@ mod tests {
     fn parse_u128_accepts_hex_and_decimal() {
         assert_eq!(parse_u128("16").unwrap(), 16);
         assert_eq!(parse_u128("0x10").unwrap(), 16);
+    }
+
+    #[test]
+    fn parse_receipt_status_response_handles_pending_success_and_failure() {
+        assert_eq!(
+            parse_receipt_status_response(&serde_json::json!({"result": null})).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_receipt_status_response(&serde_json::json!({"result": {"status":"0x1"}}))
+                .unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            parse_receipt_status_response(&serde_json::json!({"result": {"status":"0x0"}}))
+                .unwrap(),
+            Some(false)
+        );
     }
 }

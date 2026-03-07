@@ -199,36 +199,80 @@ pub async fn confirm_revenue_swap_task(
     if tx_hash.is_empty() || tx_hash.len() > 128 {
         return Err(bad_request("tx_hash must be non-empty and <= 128 chars"));
     }
-    let updated =
-        ironclad_db::revenue_swap_tasks::mark_revenue_swap_confirmed(&state.db, &opportunity_id, tx_hash)
-            .map_err(|e| internal_err(&e))?;
-    if !updated {
-        return Err(not_found(format!(
-            "revenue swap task for opportunity '{}' not found",
-            opportunity_id
-        )));
-    }
-    ironclad_db::metrics::record_transaction_with_metadata(
-        &state.db,
-        "revenue_swap_execution",
-        0.0,
-        "USDC",
-        Some("revenue_swap"),
-        Some(tx_hash),
-        Some(
-            &serde_json::to_string(&json!({
-                "opportunity_id": opportunity_id,
-                "status": "completed",
-            }))
-            .map_err(|e| internal_err(&ironclad_core::IroncladError::Database(e.to_string())))?,
-        ),
-    )
-    .map_err(|e| internal_err(&e))?;
+    mark_swap_confirmed_with_metrics(&state.db, &opportunity_id, tx_hash)?;
     Ok(axum::Json(json!({
         "opportunity_id": opportunity_id,
         "status": "completed",
         "tx_hash": tx_hash,
     })))
+}
+
+pub async fn reconcile_revenue_swap_task(
+    State(state): State<AppState>,
+    Path(opportunity_id): Path<String>,
+) -> Result<impl IntoResponse, JsonError> {
+    let task = ironclad_db::revenue_swap_tasks::get_revenue_swap_task(&state.db, &opportunity_id)
+        .map_err(|e| internal_err(&e))?
+        .ok_or_else(|| {
+            not_found(format!(
+                "revenue swap task for opportunity '{}' not found",
+                opportunity_id
+            ))
+        })?;
+    let source = task
+        .source_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .ok_or_else(|| bad_request("revenue swap task source is missing or invalid JSON"))?;
+    let tx_hash = source
+        .get("swap_tx_hash")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| bad_request("revenue swap task does not have a submitted tx_hash"))?;
+    match ironclad_wallet::get_evm_transaction_receipt_status(&state.wallet.wallet, tx_hash)
+        .await
+        .map_err(|e| bad_request(e.to_string()))?
+    {
+        None => Ok(axum::Json(json!({
+            "opportunity_id": opportunity_id,
+            "status": task.status,
+            "tx_hash": tx_hash,
+            "reconciled": false,
+            "receipt_status": "pending",
+        }))),
+        Some(true) => {
+            mark_swap_confirmed_with_metrics(&state.db, &opportunity_id, tx_hash)?;
+            Ok(axum::Json(json!({
+                "opportunity_id": opportunity_id,
+                "status": "completed",
+                "tx_hash": tx_hash,
+                "reconciled": true,
+                "receipt_status": "confirmed",
+            })))
+        }
+        Some(false) => {
+            let updated = ironclad_db::revenue_swap_tasks::mark_revenue_swap_failed(
+                &state.db,
+                &opportunity_id,
+                "on-chain receipt status=failed",
+            )
+            .map_err(|e| internal_err(&e))?;
+            if !updated {
+                return Err(not_found(format!(
+                    "revenue swap task for opportunity '{}' not found",
+                    opportunity_id
+                )));
+            }
+            Ok(axum::Json(json!({
+                "opportunity_id": opportunity_id,
+                "status": "failed",
+                "tx_hash": tx_hash,
+                "reconciled": true,
+                "receipt_status": "failed",
+            })))
+        }
+    }
 }
 
 pub async fn fail_revenue_swap_task(
@@ -293,4 +337,37 @@ async fn current_source_balance(
             Ok(token.balance)
         }
     }
+}
+
+fn mark_swap_confirmed_with_metrics(
+    db: &ironclad_db::Database,
+    opportunity_id: &str,
+    tx_hash: &str,
+) -> Result<(), JsonError> {
+    let updated =
+        ironclad_db::revenue_swap_tasks::mark_revenue_swap_confirmed(db, opportunity_id, tx_hash)
+            .map_err(|e| internal_err(&e))?;
+    if !updated {
+        return Err(not_found(format!(
+            "revenue swap task for opportunity '{}' not found",
+            opportunity_id
+        )));
+    }
+    ironclad_db::metrics::record_transaction_with_metadata(
+        db,
+        "revenue_swap_execution",
+        0.0,
+        "USDC",
+        Some("revenue_swap"),
+        Some(tx_hash),
+        Some(
+            &serde_json::to_string(&json!({
+                "opportunity_id": opportunity_id,
+                "status": "completed",
+            }))
+            .map_err(|e| internal_err(&ironclad_core::IroncladError::Database(e.to_string())))?,
+        ),
+    )
+    .map_err(|e| internal_err(&e))?;
+    Ok(())
 }

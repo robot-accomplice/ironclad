@@ -471,6 +471,7 @@ pub fn build_router(state: AppState) -> Router {
         list_revenue_opportunities, list_revenue_swap_tasks, list_services_catalog,
         mcp_client_disconnect, mcp_client_discover, pair_device, plan_revenue_opportunity,
         qualify_revenue_opportunity, record_revenue_opportunity_feedback,
+        reconcile_revenue_swap_task,
         register_discovered_agent, roster, run_routing_eval, score_revenue_opportunity,
         set_provider_key, settle_revenue_opportunity, start_agent, start_revenue_swap_task,
         stop_agent, submit_revenue_swap_task, toggle_plugin, unpair_device, update_config,
@@ -622,6 +623,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/services/swaps/{id}/submit",
             post(submit_revenue_swap_task),
+        )
+        .route(
+            "/api/services/swaps/{id}/reconcile",
+            post(reconcile_revenue_swap_task),
         )
         .route(
             "/api/services/swaps/{id}/confirm",
@@ -2388,6 +2393,42 @@ primary = "ollama/qwen3:8b"
             "oracle_feed"
         );
         assert_eq!(body["revenue_feedback_summary"][0]["feedback_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn revenue_swap_reconcile_requires_submitted_tx_hash() {
+        let state = test_state();
+        {
+            let conn = state.db.conn();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority, source) VALUES (?1, ?2, 'pending', 95, ?3)",
+                rusqlite::params![
+                    "rev_swap:ro_reconcile_no_hash",
+                    "Swap settlement",
+                    r#"{"type":"revenue_swap","opportunity_id":"ro_reconcile_no_hash","from_currency":"USDC","target_asset":"PALM_USD","target_chain":"BASE","amount":4.0,"swap_contract_address":"0x1234567890123456789012345678901234567890"}"#
+                ],
+            )
+            .unwrap();
+        }
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/swaps/ro_reconcile_no_hash/reconcile")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("submitted tx_hash")
+        );
     }
 
     #[tokio::test]

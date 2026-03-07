@@ -28,7 +28,7 @@ pub mod wallet;
 pub mod x402;
 pub mod yield_engine;
 
-pub use evm_submit::{EvmContractCall, submit_evm_contract_call};
+pub use evm_submit::{EvmContractCall, get_evm_transaction_receipt_status, submit_evm_contract_call};
 pub use money::Money;
 pub use treasury::TreasuryPolicy;
 pub use wallet::{TokenBalance, Wallet};

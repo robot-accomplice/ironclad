@@ -142,6 +142,9 @@ Current shared-lifecycle revenue control-plane primitives:
   - queued swap tasks can be submitted through the wallet on the configured EVM chain
   - submission is rejected on chain mismatch or missing swap contract wiring
   - submission records a tx hash but final completion remains an explicit confirm/fail transition
+- receipt reconciliation:
+  - submitted swaps can be reconciled against `eth_getTransactionReceipt`
+  - mechanic repair can use the same reconcile path to fold confirmed/failed receipts back into task state
 
 ## Phase 2 Continuation (v0.9.5 forward)
 
