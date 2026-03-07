@@ -224,6 +224,57 @@ async fn collect_mechanic_json_gateway_findings(
                         health.reset_stale_revenue_swap_tasks > 0,
                     ));
                 }
+                if health.normalized_task_sources > 0 {
+                    findings.push(finding(
+                        "task-source-normalized",
+                        "low",
+                        0.92,
+                        format!(
+                            "Normalized {} malformed task source payload{}",
+                            health.normalized_task_sources,
+                            if health.normalized_task_sources == 1 { "" } else { "s" }
+                        ),
+                        "Task metadata contained legacy or escaped source payloads that were not canonical JSON objects.",
+                        "Run mechanic repair to normalize task source payloads in place.",
+                        vec!["ironclad mechanic --repair".to_string()],
+                        true,
+                        health.normalized_task_sources > 0,
+                    ));
+                }
+                if health.obvious_noise_tasks > 0 {
+                    findings.push(finding(
+                        "task-queue-noise",
+                        "medium",
+                        0.9,
+                        format!(
+                            "Open task queue has {} obvious test/noise task{}",
+                            health.obvious_noise_tasks,
+                            if health.obvious_noise_tasks == 1 { "" } else { "s" }
+                        ),
+                        "Low-value test tasks are mixed into the active queue and will pollute operator status and revenue control-plane views.",
+                        "Run mechanic repair to dismiss obvious test/noise tasks from the open queue.",
+                        vec!["ironclad mechanic --repair".to_string()],
+                        true,
+                        health.dismissed_noise_tasks > 0,
+                    ));
+                }
+                if health.stale_revenue_tasks > 0 {
+                    findings.push(finding(
+                        "revenue-task-stale",
+                        "medium",
+                        0.92,
+                        format!(
+                            "Revenue queue has {} stale in-progress task{}",
+                            health.stale_revenue_tasks,
+                            if health.stale_revenue_tasks == 1 { "" } else { "s" }
+                        ),
+                        "Revenue work is stuck in progress without recent activity and should be reviewed before it is treated as active.",
+                        "Run mechanic repair to mark stale revenue tasks as needs_review.",
+                        vec!["ironclad mechanic --repair".to_string()],
+                        true,
+                        health.marked_stale_revenue_tasks_needs_review > 0,
+                    ));
+                }
             }
             Err(e) => findings.push(finding(
                 "revenue-probe-failed",

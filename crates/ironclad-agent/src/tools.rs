@@ -1276,20 +1276,6 @@ impl Tool for GetSubagentStatusTool {
 
         // Query open tasks
         let tasks = {
-            fn normalize_task_source(raw: Option<String>) -> Value {
-                let Some(raw) = raw else {
-                    return Value::Null;
-                };
-                let trimmed = raw.trim();
-                if trimmed.is_empty() {
-                    return Value::Null;
-                }
-                match serde_json::from_str::<Value>(trimmed) {
-                    Ok(parsed) => parsed,
-                    Err(_) => Value::String(raw),
-                }
-            }
-
             let conn = db.conn();
             conn.prepare(
                 "SELECT id, title, status, priority, source, created_at \
@@ -1305,7 +1291,7 @@ impl Tool for GetSubagentStatusTool {
                         "title": row.get::<_, String>(1)?,
                         "status": row.get::<_, String>(2)?,
                         "priority": row.get::<_, i64>(3)?,
-                        "source": normalize_task_source(source_raw),
+                        "source": ironclad_db::tasks::normalize_task_source_value(source_raw.as_deref()),
                         "created_at": row.get::<_, String>(5)?,
                     }))
                 })
@@ -2887,7 +2873,7 @@ mod tests {
         // Priority DESC, so "Fix bug" (priority 2) comes first
         assert_eq!(v["tasks"][0]["title"], "Fix bug");
         assert_eq!(v["tasks"][1]["title"], "Write docs");
-        assert_eq!(v["tasks"][0]["source"], "pg:agentic_bot:tasks");
+        assert_eq!(v["tasks"][0]["source"]["origin"], "pg:agentic_bot:tasks");
         assert_eq!(v["tasks"][1]["source"]["origin"], "pg:mentat:tasks");
         assert_eq!(v["tasks"][1]["source"]["metadata"]["type"], "revenue");
     }

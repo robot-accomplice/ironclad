@@ -35,7 +35,11 @@ async fn run_mechanic_text_gateway_checks(
         run_gateway_plugin_checks(ironclad_dir, repair, fixed)?;
         run_gateway_wallet_and_channel_checks(base_url, &mut channels_status).await?;
         run_gateway_provider_and_revenue_checks(base_url, ironclad_dir, repair).await;
-        run_gateway_log_and_runtime_diagnostics(ironclad_dir, channels_status.as_ref(), runtime_diag.as_ref());
+        run_gateway_log_and_runtime_diagnostics(
+            ironclad_dir,
+            channels_status.as_ref(),
+            runtime_diag.as_ref(),
+        );
         run_gateway_allowlisted_job_recovery(base_url, repair, allow_jobs, fixed).await?;
     } else {
         println!("    {DETAIL} Skipping server checks (config, skills, wallet, channels)");
@@ -74,7 +78,10 @@ async fn run_gateway_config_and_diag_checks(
             *runtime_diag = body.get("diagnostics").cloned();
             println!("  {OK} Runtime diagnostics available");
         }
-        Ok(resp) => println!("  {WARN} Agent status endpoint returned HTTP {}", resp.status()),
+        Ok(resp) => println!(
+            "  {WARN} Agent status endpoint returned HTTP {}",
+            resp.status()
+        ),
         Err(e) => println!("  {WARN} Agent status check failed: {e}"),
     }
     Ok(())
@@ -98,7 +105,10 @@ async fn run_gateway_skill_checks(
                 println!("  {ACTION} Reloaded skills from disk to repair skill DB drift");
                 *fixed += 1;
             }
-            Ok(resp) => println!("  {WARN} Skills reload failed during repair (HTTP {})", resp.status()),
+            Ok(resp) => println!(
+                "  {WARN} Skills reload failed during repair (HTTP {})",
+                resp.status()
+            ),
             Err(e) => println!("  {WARN} Skills reload failed during repair: {e}"),
         }
     }
@@ -116,7 +126,9 @@ async fn run_gateway_skill_checks(
                 .map(|a| a.len())
                 .unwrap_or(0);
             if count == 0 {
-                println!("  {WARN} Skills loaded (0 skills) — builtin skills may be missing from DB");
+                println!(
+                    "  {WARN} Skills loaded (0 skills) — builtin skills may be missing from DB"
+                );
             } else {
                 println!("  {OK} Skills loaded ({count} skills)");
             }
@@ -186,7 +198,9 @@ fn run_gateway_plugin_checks(
                 }
             }
         } else {
-            println!("  {WARN} Orphan plugin directory: {dir_name} (no valid plugin.toml — use --repair to remove)");
+            println!(
+                "  {WARN} Orphan plugin directory: {dir_name} (no valid plugin.toml — use --repair to remove)"
+            );
         }
     }
 
@@ -194,7 +208,10 @@ fn run_gateway_plugin_checks(
     for (plugin_dir, manifest) in &valid_plugins {
         let report = manifest.vet(plugin_dir);
         if report.is_ok() && report.warnings.is_empty() {
-            println!("  {OK} Plugin '{}' v{} — healthy", manifest.name, manifest.version);
+            println!(
+                "  {OK} Plugin '{}' v{} — healthy",
+                manifest.name, manifest.version
+            );
         } else {
             for w in &report.warnings {
                 println!("  {WARN} Plugin '{}': {w}", manifest.name);
@@ -212,9 +229,13 @@ fn run_gateway_plugin_checks(
                 if src.exists() && !dest.exists() {
                     std::fs::create_dir_all(&skills_dir).ok();
                     if let Err(e) = std::fs::copy(&src, &dest) {
-                        println!("  {ERR} Failed to re-deploy companion skill {installed_name}: {e}");
+                        println!(
+                            "  {ERR} Failed to re-deploy companion skill {installed_name}: {e}"
+                        );
                     } else {
-                        println!("  {ACTION} Re-deployed missing companion skill: {installed_name}");
+                        println!(
+                            "  {ACTION} Re-deployed missing companion skill: {installed_name}"
+                        );
                         *fixed += 1;
                     }
                 }
@@ -248,7 +269,11 @@ async fn run_gateway_wallet_and_channel_checks(
             let body: Vec<serde_json::Value> = resp.json().await.unwrap_or_default();
             let active = body
                 .iter()
-                .filter(|c| c.get("connected").and_then(|v| v.as_bool()).unwrap_or(false))
+                .filter(|c| {
+                    c.get("connected")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                })
                 .count();
             println!("  {OK} Channels ({active}/{} connected)", body.len());
             *channels_status = Some(body);
@@ -259,10 +284,16 @@ async fn run_gateway_wallet_and_channel_checks(
     Ok(())
 }
 
-async fn run_gateway_provider_and_revenue_checks(base_url: &str, ironclad_dir: &Path, repair: bool) {
+async fn run_gateway_provider_and_revenue_checks(
+    base_url: &str,
+    ironclad_dir: &Path,
+    repair: bool,
+) {
     let (OK, ACTION, WARN, DETAIL, _) = icons();
     match fetch_provider_health(base_url).await {
-        Ok(rows) if rows.is_empty() => println!("  {WARN} Provider health check returned no providers"),
+        Ok(rows) if rows.is_empty() => {
+            println!("  {WARN} Provider health check returned no providers")
+        }
         Ok(rows) => {
             println!(
                 "  {OK} Provider health check completed ({} provider{})",
@@ -278,18 +309,30 @@ async fn run_gateway_provider_and_revenue_checks(base_url: &str, ironclad_dir: &
                         if row.count == 1 { "" } else { "s" }
                     ),
                     "ok" => {
-                        println!("    {WARN} {}: reachable but no models discovered", row.name);
-                        println!("      {DETAIL} Probe route: `{}`", provider_scan_hint(Some(&row.name)));
+                        println!(
+                            "    {WARN} {}: reachable but no models discovered",
+                            row.name
+                        );
+                        println!(
+                            "      {DETAIL} Probe route: `{}`",
+                            provider_scan_hint(Some(&row.name))
+                        );
                     }
                     "unreachable" | "error" => {
                         let detail = row.error.as_deref().unwrap_or("unknown provider error");
                         println!("    {WARN} {}: {} ({detail})", row.name, row.status);
-                        println!("      {DETAIL} Probe route: `{}`", provider_scan_hint(Some(&row.name)));
+                        println!(
+                            "      {DETAIL} Probe route: `{}`",
+                            provider_scan_hint(Some(&row.name))
+                        );
                     }
                     other => {
                         let detail = row.error.as_deref().unwrap_or("no extra detail");
                         println!("    {WARN} {}: {other} ({detail})", row.name);
-                        println!("      {DETAIL} Probe route: `{}`", provider_scan_hint(Some(&row.name)));
+                        println!(
+                            "      {DETAIL} Probe route: `{}`",
+                            provider_scan_hint(Some(&row.name))
+                        );
                     }
                 }
             }
@@ -316,7 +359,11 @@ async fn run_gateway_provider_and_revenue_checks(base_url: &str, ironclad_dir: &
                     println!(
                         "    {ACTION} Repaired {} orphan opportunit{} (marked failed)",
                         health.repaired_orphans,
-                        if health.repaired_orphans == 1 { "y" } else { "ies" }
+                        if health.repaired_orphans == 1 {
+                            "y"
+                        } else {
+                            "ies"
+                        }
                     );
                 }
             }
@@ -324,13 +371,21 @@ async fn run_gateway_provider_and_revenue_checks(base_url: &str, ironclad_dir: &
                 println!(
                     "    {WARN} Found {} settled opportunit{} missing ledger entries",
                     health.missing_settlement_ledger,
-                    if health.missing_settlement_ledger == 1 { "y" } else { "ies" }
+                    if health.missing_settlement_ledger == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    }
                 );
                 if repair && health.reconciled_ledger_rows > 0 {
                     println!(
                         "    {ACTION} Reconciled {} missing revenue settlement ledger entr{}",
                         health.reconciled_ledger_rows,
-                        if health.reconciled_ledger_rows == 1 { "y" } else { "ies" }
+                        if health.reconciled_ledger_rows == 1 {
+                            "y"
+                        } else {
+                            "ies"
+                        }
                     );
                 }
             }
@@ -365,17 +420,58 @@ async fn run_gateway_provider_and_revenue_checks(base_url: &str, ironclad_dir: &
                     );
                 }
             }
+            if health.normalized_task_sources > 0 {
+                println!(
+                    "    {ACTION} Normalized {} malformed task source payload{}",
+                    health.normalized_task_sources,
+                    if health.normalized_task_sources == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                );
+            }
+            if health.obvious_noise_tasks > 0 {
+                println!(
+                    "    {WARN} Found {} obvious test/noise task{} in the open queue",
+                    health.obvious_noise_tasks,
+                    if health.obvious_noise_tasks == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                );
+                if repair && health.dismissed_noise_tasks > 0 {
+                    println!(
+                        "    {ACTION} Dismissed {} obvious noise task{} from the open queue",
+                        health.dismissed_noise_tasks,
+                        if health.dismissed_noise_tasks == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    );
+                }
+            }
             if health.stale_revenue_tasks > 0 {
                 println!(
                     "    {WARN} Found {} stale revenue task{} stuck in in_progress",
                     health.stale_revenue_tasks,
-                    if health.stale_revenue_tasks == 1 { "" } else { "s" }
+                    if health.stale_revenue_tasks == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
                 );
-                if repair && health.reset_stale_revenue_tasks > 0 {
+                if repair && health.marked_stale_revenue_tasks_needs_review > 0 {
                     println!(
-                        "    {ACTION} Reset {} stale revenue task{} back to pending",
-                        health.reset_stale_revenue_tasks,
-                        if health.reset_stale_revenue_tasks == 1 { "" } else { "s" }
+                        "    {ACTION} Marked {} stale revenue task{} as needs_review",
+                        health.marked_stale_revenue_tasks_needs_review,
+                        if health.marked_stale_revenue_tasks_needs_review == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
                     );
                 }
             }
@@ -399,7 +495,11 @@ async fn run_gateway_provider_and_revenue_checks(base_url: &str, ironclad_dir: &
                     println!(
                         "    {ACTION} Confirmed {} submitted swap{} from chain receipts",
                         health.confirmed_repairs,
-                        if health.confirmed_repairs == 1 { "" } else { "s" }
+                        if health.confirmed_repairs == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
                     );
                 }
                 if health.failed_repairs > 0 {
@@ -413,7 +513,11 @@ async fn run_gateway_provider_and_revenue_checks(base_url: &str, ironclad_dir: &
                     println!(
                         "    {DETAIL} {} submitted swap receipt{} still pending on-chain",
                         health.pending_receipts,
-                        if health.pending_receipts == 1 { "" } else { "s" }
+                        if health.pending_receipts == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
                     );
                 }
             }
@@ -432,18 +536,23 @@ fn run_gateway_log_and_runtime_diagnostics(
     if let Some(snapshot) = log_snapshot.as_deref() {
         let tg_404_count =
             count_occurrences(snapshot, "Telegram API error\",\"status\":\"404 Not Found");
-        let tg_poll_err_count =
-            count_occurrences(snapshot, "Telegram poll error, backing off 5s");
+        let tg_poll_err_count = count_occurrences(snapshot, "Telegram poll error, backing off 5s");
         if tg_404_count >= 3 || tg_poll_err_count >= 3 {
-            println!("  {WARN} Detected repeated Telegram transport failures (404/poll backoff loop).");
+            println!(
+                "  {WARN} Detected repeated Telegram transport failures (404/poll backoff loop)."
+            );
             println!("         Likely cause: invalid/revoked Telegram bot token in keystore.");
-            println!("         Repair: `ironclad keystore set telegram_bot_token \"<TOKEN>\"` then `ironclad daemon restart`");
+            println!(
+                "         Repair: `ironclad keystore set telegram_bot_token \"<TOKEN>\"` then `ironclad daemon restart`"
+            );
         }
 
         let unknown_action_count = count_occurrences(snapshot, "unknown action: unknown");
         if unknown_action_count >= 3 {
             println!("  {WARN} Detected recurring scheduler failures: `unknown action: unknown`.");
-            println!("         Repair: run `ironclad schedule recover --all --dry-run` and re-enable trusted jobs.");
+            println!(
+                "         Repair: run `ironclad schedule recover --all --dry-run` and re-enable trusted jobs."
+            );
         }
     }
 
@@ -452,32 +561,65 @@ fn run_gateway_log_and_runtime_diagnostics(
             .iter()
             .find(|c| c.get("name").and_then(|v| v.as_str()) == Some("telegram"));
         if let Some(tg) = telegram {
-            let connected = tg.get("connected").and_then(|v| v.as_bool()).unwrap_or(false);
-            let received = tg.get("messages_received").and_then(|v| v.as_i64()).unwrap_or(0);
-            let sent = tg.get("messages_sent").and_then(|v| v.as_i64()).unwrap_or(0);
+            let connected = tg
+                .get("connected")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let received = tg
+                .get("messages_received")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let sent = tg
+                .get("messages_sent")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             if connected && received == 0 && sent == 0 {
                 println!("  {WARN} Telegram appears connected but has zero traffic.");
-                println!("         If this is unexpected, run `ironclad channels status` and inspect logs for poll/webhook errors.");
+                println!(
+                    "         If this is unexpected, run `ironclad channels status` and inspect logs for poll/webhook errors."
+                );
             }
         }
     }
 
     if let Some(diag) = runtime_diag {
-        let total = diag.get("taskable_subagents_total").and_then(|v| v.as_u64()).unwrap_or(0);
-        let enabled = diag.get("taskable_subagents_enabled").and_then(|v| v.as_u64()).unwrap_or(0);
-        let running = diag.get("taskable_subagents_running").and_then(|v| v.as_u64()).unwrap_or(0);
-        let error = diag.get("taskable_subagents_error").and_then(|v| v.as_u64()).unwrap_or(0);
+        let total = diag
+            .get("taskable_subagents_total")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let enabled = diag
+            .get("taskable_subagents_enabled")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let running = diag
+            .get("taskable_subagents_running")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let error = diag
+            .get("taskable_subagents_error")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
 
         if total > 0 && enabled > 0 && running == 0 {
-            println!("  {WARN} Delegation integrity risk: {enabled} taskable subagent(s) enabled, but 0 running.");
-            println!("         Any response attributed to a subagent cannot be runtime-verified right now.");
-            println!("         Repair: start/recover subagents and re-check with `ironclad status` / `ironclad mechanic`.");
+            println!(
+                "  {WARN} Delegation integrity risk: {enabled} taskable subagent(s) enabled, but 0 running."
+            );
+            println!(
+                "         Any response attributed to a subagent cannot be runtime-verified right now."
+            );
+            println!(
+                "         Repair: start/recover subagents and re-check with `ironclad status` / `ironclad mechanic`."
+            );
         } else if enabled > running {
-            println!("  {WARN} Delegation degradation: enabled subagents ({enabled}) exceed running ({running}).");
+            println!(
+                "  {WARN} Delegation degradation: enabled subagents ({enabled}) exceed running ({running})."
+            );
             if error > 0 {
                 println!("         {error} subagent(s) currently report error state.");
             }
-            println!("         Recommendation: treat subagent-attributed outputs as unverified until running count recovers.");
+            println!(
+                "         Recommendation: treat subagent-attributed outputs as unverified until running count recovers."
+            );
         }
     }
 }
@@ -511,7 +653,10 @@ async fn run_gateway_allowlisted_job_recovery(
             for job in jobs {
                 let name = job.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let id = job.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let paused = job.get("last_status").and_then(|v| v.as_str()).unwrap_or("")
+                let paused = job
+                    .get("last_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
                     == "paused_unknown_action";
                 if paused
                     && allowset.contains(name)
@@ -527,7 +672,10 @@ async fn run_gateway_allowlisted_job_recovery(
                 }
             }
             if !recovered.is_empty() {
-                println!("  {ACTION} Re-enabled allowlisted paused jobs: {}", recovered.join(", "));
+                println!(
+                    "  {ACTION} Re-enabled allowlisted paused jobs: {}",
+                    recovered.join(", ")
+                );
                 *fixed += recovered.len() as u32;
             }
         }

@@ -58,6 +58,7 @@ pub mod service_revenue;
 pub mod sessions;
 pub mod shadow_routing;
 pub mod skills;
+pub mod tasks;
 pub mod tools;
 
 use std::sync::{Arc, Mutex};
