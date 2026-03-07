@@ -28,6 +28,32 @@ impl Default for TreasuryConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfitTaxConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_profit_tax_rate")]
+    pub rate: f64,
+    #[serde(default)]
+    pub destination_wallet: Option<String>,
+}
+
+impl Default for ProfitTaxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rate: default_profit_tax_rate(),
+            destination_wallet: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SelfFundingConfig {
+    #[serde(default)]
+    pub tax: ProfitTaxConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevenueSwapChainConfig {
     pub chain: String,
     pub target_contract_address: String,
@@ -84,6 +110,10 @@ fn default_revenue_swap_chains() -> Vec<RevenueSwapChainConfig> {
             swap_contract_address: None,
         },
     ]
+}
+
+fn default_profit_tax_rate() -> f64 {
+    0.0
 }
 
 fn default_per_payment_cap() -> f64 {
@@ -197,4 +227,3 @@ fn default_chain_id() -> u64 {
 fn default_rpc_url() -> String {
     "https://mainnet.base.org".into()
 }
-

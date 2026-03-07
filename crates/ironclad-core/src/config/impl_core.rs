@@ -185,6 +185,26 @@ impl IroncladConfig {
                 "treasury.revenue_swap.default_chain must exist in treasury.revenue_swap.chains when enabled".into(),
             ));
         }
+        if !(0.0..=1.0).contains(&self.self_funding.tax.rate) {
+            return Err(IroncladError::Config(
+                "self_funding.tax.rate must be between 0.0 and 1.0".into(),
+            ));
+        }
+        if self.self_funding.tax.enabled
+            && self
+                .self_funding
+                .tax
+                .destination_wallet
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_none()
+        {
+            return Err(IroncladError::Config(
+                "self_funding.tax.destination_wallet must be set when profit tax is enabled"
+                    .into(),
+            ));
+        }
 
         if self.server.bind.parse::<std::net::IpAddr>().is_err() && self.server.bind != "localhost"
         {

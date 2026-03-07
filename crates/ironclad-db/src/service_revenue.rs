@@ -71,8 +71,23 @@ pub struct RevenueOpportunityRecord {
     pub request_id: Option<String>,
     pub settlement_ref: Option<String>,
     pub settled_amount_usdc: Option<f64>,
+    pub attributable_costs_usdc: f64,
+    pub net_profit_usdc: Option<f64>,
+    pub tax_rate: f64,
+    pub tax_amount_usdc: f64,
+    pub retained_earnings_usdc: Option<f64>,
+    pub tax_destination_wallet: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RevenueSettlementAccounting<'a> {
+    pub attributable_costs_usdc: f64,
+    pub tax_rate: f64,
+    pub tax_amount_usdc: f64,
+    pub retained_earnings_usdc: f64,
+    pub tax_destination_wallet: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,7 +229,8 @@ pub fn get_revenue_opportunity(
     let mut stmt = conn
         .prepare(
             "SELECT id, source, strategy, payload_json, expected_revenue_usdc, status, qualification_reason, \
-                    plan_json, evidence_json, request_id, settlement_ref, settled_amount_usdc, created_at, updated_at \
+                    plan_json, evidence_json, request_id, settlement_ref, settled_amount_usdc, attributable_costs_usdc, \
+                    net_profit_usdc, tax_rate, tax_amount_usdc, retained_earnings_usdc, tax_destination_wallet, created_at, updated_at \
              FROM revenue_opportunities WHERE id = ?1",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -233,8 +249,14 @@ pub fn get_revenue_opportunity(
                 request_id: row.get(9)?,
                 settlement_ref: row.get(10)?,
                 settled_amount_usdc: row.get(11)?,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
+                attributable_costs_usdc: row.get(12)?,
+                net_profit_usdc: row.get(13)?,
+                tax_rate: row.get(14)?,
+                tax_amount_usdc: row.get(15)?,
+                retained_earnings_usdc: row.get(16)?,
+                tax_destination_wallet: row.get(17)?,
+                created_at: row.get(18)?,
+                updated_at: row.get(19)?,
             })
         })
         .optional()
@@ -310,6 +332,7 @@ pub fn settle_revenue_opportunity(
     id: &str,
     settlement_ref: &str,
     settled_amount_usdc: f64,
+    accounting: &RevenueSettlementAccounting<'_>,
 ) -> Result<SettlementResult> {
     let conn = db.conn();
     let tx = conn
@@ -339,13 +362,20 @@ pub fn settle_revenue_opportunity(
     let updated = tx
         .execute(
             "UPDATE revenue_opportunities \
-             SET status = ?2, settlement_ref = ?3, settled_amount_usdc = ?4, updated_at = datetime('now') \
-             WHERE id = ?1 AND status = ?5",
+             SET status = ?2, settlement_ref = ?3, settled_amount_usdc = ?4, attributable_costs_usdc = ?5, \
+                 net_profit_usdc = (?4 - ?5), tax_rate = ?6, tax_amount_usdc = ?7, retained_earnings_usdc = ?8, \
+                 tax_destination_wallet = ?9, updated_at = datetime('now') \
+             WHERE id = ?1 AND status = ?10",
             rusqlite::params![
                 id,
                 OPPORTUNITY_STATUS_SETTLED,
                 settlement_ref,
                 settled_amount_usdc,
+                accounting.attributable_costs_usdc,
+                accounting.tax_rate,
+                accounting.tax_amount_usdc,
+                accounting.retained_earnings_usdc,
+                accounting.tax_destination_wallet,
                 OPPORTUNITY_STATUS_FULFILLED
             ],
         )
@@ -434,15 +464,43 @@ mod tests {
         assert!(plan_revenue_opportunity(&db, "ro_1", r#"{"executor":"self"}"#).unwrap());
         assert!(mark_revenue_opportunity_fulfilled(&db, "ro_1", r#"{"proof":"ok"}"#).unwrap());
         assert_eq!(
-            settle_revenue_opportunity(&db, "ro_1", "tx_1", 2.5).unwrap(),
+            settle_revenue_opportunity(
+                &db,
+                "ro_1",
+                "tx_1",
+                2.5,
+                &RevenueSettlementAccounting {
+                    attributable_costs_usdc: 0.5,
+                    tax_rate: 0.1,
+                    tax_amount_usdc: 0.2,
+                    retained_earnings_usdc: 1.8,
+                    tax_destination_wallet: Some("0x123"),
+                },
+            )
+            .unwrap(),
             SettlementResult::Settled
         );
         assert_eq!(
-            settle_revenue_opportunity(&db, "ro_1", "tx_1", 2.5).unwrap(),
+            settle_revenue_opportunity(
+                &db,
+                "ro_1",
+                "tx_1",
+                2.5,
+                &RevenueSettlementAccounting {
+                    attributable_costs_usdc: 0.5,
+                    tax_rate: 0.1,
+                    tax_amount_usdc: 0.2,
+                    retained_earnings_usdc: 1.8,
+                    tax_destination_wallet: Some("0x123"),
+                },
+            )
+            .unwrap(),
             SettlementResult::AlreadySettled
         );
         let row = get_revenue_opportunity(&db, "ro_1").unwrap().unwrap();
         assert_eq!(row.status, OPPORTUNITY_STATUS_SETTLED);
         assert_eq!(row.settlement_ref.as_deref(), Some("tx_1"));
+        assert!((row.attributable_costs_usdc - 0.5).abs() < f64::EPSILON);
+        assert_eq!(row.tax_destination_wallet.as_deref(), Some("0x123"));
     }
 }

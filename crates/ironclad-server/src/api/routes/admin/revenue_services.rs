@@ -76,6 +76,8 @@ pub struct RevenueOpportunityFulfillRequest {
 pub struct RevenueOpportunitySettleRequest {
     pub settlement_ref: String,
     pub amount_usdc: f64,
+    #[serde(default)]
+    pub attributable_costs_usdc: Option<f64>,
     #[serde(default = "default_settlement_currency")]
     pub currency: String,
     #[serde(default)]

@@ -71,6 +71,12 @@ pub async fn get_revenue_opportunity(
         "request_id": row.request_id,
         "settlement_ref": row.settlement_ref,
         "settled_amount_usdc": row.settled_amount_usdc,
+        "attributable_costs_usdc": row.attributable_costs_usdc,
+        "net_profit_usdc": row.net_profit_usdc,
+        "tax_rate": row.tax_rate,
+        "tax_amount_usdc": row.tax_amount_usdc,
+        "retained_earnings_usdc": row.retained_earnings_usdc,
+        "tax_destination_wallet": row.tax_destination_wallet,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     })))
@@ -152,4 +158,3 @@ pub async fn fulfill_revenue_opportunity(
         "status": ironclad_db::service_revenue::OPPORTUNITY_STATUS_FULFILLED,
     })))
 }
-

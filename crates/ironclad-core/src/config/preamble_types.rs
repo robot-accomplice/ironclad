@@ -136,6 +136,8 @@ pub struct IroncladConfig {
     #[serde(default)]
     pub treasury: TreasuryConfig,
     #[serde(default)]
+    pub self_funding: SelfFundingConfig,
+    #[serde(default)]
     pub r#yield: YieldConfig,
     #[serde(default)]
     pub wallet: WalletConfig,

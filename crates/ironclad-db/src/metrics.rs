@@ -61,12 +61,24 @@ pub fn record_transaction(
     counterparty: Option<&str>,
     tx_hash: Option<&str>,
 ) -> Result<String> {
+    record_transaction_with_metadata(db, tx_type, amount, currency, counterparty, tx_hash, None)
+}
+
+pub fn record_transaction_with_metadata(
+    db: &Database,
+    tx_type: &str,
+    amount: f64,
+    currency: &str,
+    counterparty: Option<&str>,
+    tx_hash: Option<&str>,
+    metadata_json: Option<&str>,
+) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO transactions (id, tx_type, amount, currency, counterparty, tx_hash) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![id, tx_type, amount, currency, counterparty, tx_hash],
+        "INSERT INTO transactions (id, tx_type, amount, currency, counterparty, tx_hash, metadata_json) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![id, tx_type, amount, currency, counterparty, tx_hash, metadata_json],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)

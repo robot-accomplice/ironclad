@@ -4,6 +4,8 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
     let chain_id = state.wallet.wallet.chain_id();
     let network = state.wallet.wallet.network_name();
     let config = state.config.read().await;
+    let revenue_accounting = ironclad_db::revenue_accounting::revenue_accounting_summary(&state.db)
+        .unwrap_or_default();
     let revenue_swap_chains: Vec<serde_json::Value> = config
         .treasury
         .revenue_swap
@@ -57,6 +59,21 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
                 "default_chain": config.treasury.revenue_swap.default_chain,
                 "chains": revenue_swap_chains,
             },
+        },
+        "self_funding": {
+            "tax": {
+                "enabled": config.self_funding.tax.enabled,
+                "rate": config.self_funding.tax.rate,
+                "destination_wallet": config.self_funding.tax.destination_wallet,
+            },
+        },
+        "revenue_accounting": {
+            "settled_jobs": revenue_accounting.settled_jobs,
+            "gross_revenue_usdc": revenue_accounting.gross_revenue_usdc,
+            "attributable_costs_usdc": revenue_accounting.attributable_costs_usdc,
+            "net_profit_usdc": revenue_accounting.net_profit_usdc,
+            "tax_paid_usdc": revenue_accounting.tax_paid_usdc,
+            "retained_earnings_usdc": revenue_accounting.retained_earnings_usdc,
         },
     }))
 }
@@ -289,4 +306,3 @@ const ROLE_SUBAGENT: &str = "subagent";
 const ROLE_MODEL_PROXY: &str = "model-proxy";
 
 const WORKSPACE_ACTIVITY_WINDOW_SECS: i64 = 120;
-

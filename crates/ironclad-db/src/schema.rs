@@ -230,6 +230,12 @@ CREATE TABLE IF NOT EXISTS revenue_opportunities (
     request_id TEXT,
     settlement_ref TEXT UNIQUE,
     settled_amount_usdc REAL,
+    attributable_costs_usdc REAL NOT NULL DEFAULT 0,
+    net_profit_usdc REAL,
+    tax_rate REAL NOT NULL DEFAULT 0,
+    tax_amount_usdc REAL NOT NULL DEFAULT 0,
+    retained_earnings_usdc REAL,
+    tax_destination_wallet TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -490,7 +496,7 @@ CREATE INDEX IF NOT EXISTS idx_abuse_events_actor ON abuse_events(actor_id, crea
 CREATE INDEX IF NOT EXISTS idx_abuse_events_origin ON abuse_events(origin, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_created ON abuse_events(created_at DESC);
 "#;
-const EMBEDDED_SCHEMA_VERSION: i64 = 15;
+const EMBEDDED_SCHEMA_VERSION: i64 = 16;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {
@@ -654,6 +660,48 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
     if has_column(&conn, "inference_costs", "turn_id")? {
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_inference_costs_turn ON inference_costs(turn_id)",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "attributable_costs_usdc")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN attributable_costs_usdc REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "net_profit_usdc")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN net_profit_usdc REAL",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "tax_rate")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN tax_rate REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "tax_amount_usdc")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN tax_amount_usdc REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "retained_earnings_usdc")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN retained_earnings_usdc REAL",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "tax_destination_wallet")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN tax_destination_wallet TEXT",
             [],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;

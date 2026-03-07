@@ -213,6 +213,7 @@ mod tests {
             daily_transfer_limit: 2000.0,
             minimum_reserve: 5.0,
             daily_inference_budget: 50.0,
+            revenue_swap: Default::default(),
         })
     }
 
@@ -371,6 +372,7 @@ mod tests {
             daily_transfer_limit: 0.0,
             minimum_reserve: 0.0,
             daily_inference_budget: 0.0,
+            revenue_swap: Default::default(),
         });
         assert!(policy.check_per_payment(0.01).is_err());
         assert!(policy.check_per_payment(1.0).is_err());
@@ -625,6 +627,7 @@ mod tests {
             daily_transfer_limit: 100_000_000.0,
             minimum_reserve: 0.0,
             daily_inference_budget: 1_000_000.0,
+            revenue_swap: Default::default(),
         });
         assert!(policy.check_per_payment(999_999.99).is_ok());
         assert!(policy.check_per_payment(1_000_000.0).is_ok());

@@ -10,6 +10,17 @@ pub async fn settle_revenue_opportunity(
     if req.amount_usdc <= 0.0 {
         return Err(bad_request("amount_usdc must be positive"));
     }
+    let attributable_costs_usdc = req.attributable_costs_usdc.unwrap_or(0.0);
+    if attributable_costs_usdc < 0.0 {
+        return Err(bad_request(
+            "attributable_costs_usdc must be non-negative",
+        ));
+    }
+    if attributable_costs_usdc > req.amount_usdc {
+        return Err(bad_request(
+            "attributable_costs_usdc cannot exceed amount_usdc",
+        ));
+    }
     let settlement_currency = req.currency.to_ascii_uppercase();
     if settlement_currency != "USDC"
         && settlement_currency != "USDT"
@@ -19,9 +30,12 @@ pub async fn settle_revenue_opportunity(
             "only USDC, USDT, or DAI settlements are supported",
         ));
     }
-    let swap_policy = {
+    let (swap_policy, tax_policy) = {
         let config = state.config.read().await;
-        config.treasury.revenue_swap.clone()
+        (
+            config.treasury.revenue_swap.clone(),
+            config.self_funding.tax.clone(),
+        )
     };
     let auto_swap = req.auto_swap.unwrap_or(swap_policy.enabled);
     let target_symbol = req
@@ -84,11 +98,28 @@ pub async fn settle_revenue_opportunity(
         None
     };
 
+    let net_profit_usdc = req.amount_usdc - attributable_costs_usdc;
+    let tax_rate = if tax_policy.enabled { tax_policy.rate } else { 0.0 };
+    let tax_amount_usdc = (net_profit_usdc.max(0.0) * tax_rate * 100.0).round() / 100.0;
+    let retained_earnings_usdc = (net_profit_usdc - tax_amount_usdc).max(0.0);
+    let tax_destination_wallet = tax_policy
+        .destination_wallet
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
     let result = ironclad_db::service_revenue::settle_revenue_opportunity(
         &state.db,
         &id,
         settlement_ref,
         req.amount_usdc,
+        &ironclad_db::service_revenue::RevenueSettlementAccounting {
+            attributable_costs_usdc,
+            tax_rate,
+            tax_amount_usdc,
+            retained_earnings_usdc,
+            tax_destination_wallet,
+        },
     )
     .map_err(|e| internal_err(&e))?;
     let mut swap_queued = false;
@@ -96,13 +127,62 @@ pub async fn settle_revenue_opportunity(
         result,
         ironclad_db::service_revenue::SettlementResult::Settled
     ) {
-        ironclad_db::metrics::record_transaction(
+        let settlement_metadata = json!({
+            "opportunity_id": id,
+            "settlement_ref": settlement_ref,
+            "gross_revenue_usdc": req.amount_usdc,
+            "attributable_costs_usdc": attributable_costs_usdc,
+            "net_profit_usdc": net_profit_usdc,
+            "tax_rate": tax_rate,
+            "tax_amount_usdc": tax_amount_usdc,
+            "retained_earnings_usdc": retained_earnings_usdc,
+        })
+        .to_string();
+        ironclad_db::metrics::record_transaction_with_metadata(
             &state.db,
             "revenue_settlement",
             req.amount_usdc,
             settlement_currency.as_str(),
             Some("revenue_control_plane"),
             Some(settlement_ref),
+            Some(&settlement_metadata),
+        )
+        .map_err(|e| internal_err(&e))?;
+        if tax_amount_usdc > 0.0 {
+            let tax_metadata = json!({
+                "opportunity_id": id,
+                "settlement_ref": settlement_ref,
+                "tax_rate": tax_rate,
+                "source_net_profit_usdc": net_profit_usdc,
+                "destination_wallet": tax_destination_wallet,
+            })
+            .to_string();
+            ironclad_db::metrics::record_transaction_with_metadata(
+                &state.db,
+                "revenue_tax",
+                tax_amount_usdc,
+                settlement_currency.as_str(),
+                tax_destination_wallet,
+                Some(settlement_ref),
+                Some(&tax_metadata),
+            )
+            .map_err(|e| internal_err(&e))?;
+        }
+        let retained_metadata = json!({
+            "opportunity_id": id,
+            "settlement_ref": settlement_ref,
+            "net_profit_usdc": net_profit_usdc,
+            "tax_amount_usdc": tax_amount_usdc,
+        })
+        .to_string();
+        ironclad_db::metrics::record_transaction_with_metadata(
+            &state.db,
+            "revenue_retained",
+            retained_earnings_usdc,
+            settlement_currency.as_str(),
+            Some("treasury"),
+            Some(settlement_ref),
+            Some(&retained_metadata),
         )
         .map_err(|e| internal_err(&e))?;
 
@@ -136,6 +216,13 @@ pub async fn settle_revenue_opportunity(
         "swap_target_asset": target_symbol,
         "swap_target_chain": target_chain,
         "auto_swap": auto_swap,
+        "gross_revenue_usdc": req.amount_usdc,
+        "attributable_costs_usdc": attributable_costs_usdc,
+        "net_profit_usdc": net_profit_usdc,
+        "tax_rate": tax_rate,
+        "tax_amount_usdc": tax_amount_usdc,
+        "retained_earnings_usdc": retained_earnings_usdc,
+        "tax_destination_wallet": tax_destination_wallet,
         "idempotent": matches!(
             result,
             ironclad_db::service_revenue::SettlementResult::AlreadySettled
@@ -186,4 +273,3 @@ fn queue_revenue_swap(
     .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
     Ok(())
 }
-
