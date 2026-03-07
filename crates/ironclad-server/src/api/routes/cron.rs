@@ -49,6 +49,13 @@ pub struct UpdateCronJobRequest {
     pub enabled: Option<bool>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RunCronJobResponse {
+    pub job_id: String,
+    pub status: String,
+    pub error: Option<String>,
+}
+
 pub async fn list_cron_jobs(State(state): State<AppState>) -> impl IntoResponse {
     match ironclad_db::cron::list_jobs(&state.db) {
         Ok(jobs) => {
@@ -98,11 +105,25 @@ pub async fn create_cron_job(
             }
             raw.to_string()
         }
-        _ => serde_json::json!({
-            "action": "log",
-            "message": format!("scheduled job: {}", body.name)
-        })
-        .to_string(),
+        _ => {
+            let task = body
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            match task {
+                Some(task) => serde_json::json!({
+                    "action": "agent_task",
+                    "task": task
+                })
+                .to_string(),
+                None => serde_json::json!({
+                    "action": "log",
+                    "message": format!("scheduled job: {}", body.name)
+                })
+                .to_string(),
+            }
+        }
     };
     // BUG-012: Validate schedule_kind is a known value.
     let schedule_kind = normalize_schedule_kind(&body.schedule_kind);
@@ -290,6 +311,32 @@ pub async fn update_cron_job(
         }
         Err(e) => Err(internal_err(&e)),
     }
+}
+
+pub async fn run_cron_job_now(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, JsonError> {
+    let Some(job) = ironclad_db::cron::get_job(&state.db, &id).map_err(|e| internal_err(&e))?
+    else {
+        return Err(not_found(format!("cron job {id} not found")));
+    };
+    let start = std::time::Instant::now();
+    let (status, error) = crate::cron_runtime::execute_cron_job_once(&state, &job).await;
+    let duration = start.elapsed().as_millis() as i64;
+    let _ = ironclad_db::cron::record_run(
+        &state.db,
+        &job.id,
+        status,
+        Some(duration),
+        error.as_deref(),
+    )
+    .map_err(|e| tracing::warn!(job_id = %job.id, error = %e, "failed to record manual cron run"));
+    Ok(axum::Json(RunCronJobResponse {
+        job_id: job.id,
+        status: status.to_string(),
+        error,
+    }))
 }
 
 pub async fn delete_cron_job(

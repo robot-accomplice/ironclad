@@ -282,6 +282,12 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
                             _ => {}
                         }
                     }
+                    let integrity =
+                        crate::api::routes::subagent_integrity::assess_subagent_integrity(
+                            &a,
+                            runtime_entry,
+                            session_count,
+                        );
                     serde_json::json!({
                         "id": a.id,
                         "name": a.name,
@@ -295,6 +301,15 @@ pub async fn list_sub_agents(State(state): State<AppState>) -> impl IntoResponse
                         "session_count": session_count,
                         "runtime_state": runtime_state,
                         "taskable": taskable,
+                        "integrity": {
+                            "hollow": !integrity.has_fixed_skills,
+                            "missing_session": integrity.missing_session,
+                            "runtime_registered": integrity.runtime_registered,
+                            "runtime_running": integrity.runtime_running,
+                            "runtime_state": integrity.runtime_state,
+                            "repairable": integrity.repairable,
+                            "inferred_skills": integrity.inferred_skills,
+                        }
                     })
                 })
                 .collect();

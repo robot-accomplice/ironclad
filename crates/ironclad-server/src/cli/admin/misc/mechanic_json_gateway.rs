@@ -38,6 +38,10 @@ async fn collect_mechanic_json_gateway_findings(
                 .get("taskable_subagents_running")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            let hollow = diag
+                .get("taskable_subagents_hollow")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             if enabled > 0 && running == 0 {
                 findings.push(finding(
                     "delegation-integrity-down",
@@ -52,7 +56,25 @@ async fn collect_mechanic_json_gateway_findings(
                     false,
                     false,
                 ));
+            } else if hollow > 0 {
+                findings.push(finding(
+                    "subagent-integrity-hollow",
+                    "high",
+                    0.94,
+                    format!("{hollow} enabled subagent(s) are hollow"),
+                    "One or more enabled taskable subagents have no fixed skills and will not delegate reliably until repaired.",
+                    "Repair hollow subagents by restoring inferred skills and ensuring a live session.",
+                    vec!["ironclad mechanic --repair".to_string()],
+                    true,
+                    false,
+                ));
             }
+        }
+
+        if let Ok(probe) = probe_subagent_integrity_via_gateway(base_url, repair).await
+            && probe.hollow_subagents > 0
+        {
+            actions.security_configured |= probe.repaired_skills > 0 || probe.repaired_sessions > 0;
         }
 
         let channels_resp = super::http_client()?

@@ -7,6 +7,8 @@ mod interview;
 mod memory;
 mod sessions;
 mod skills;
+pub(crate) mod subagent_integrity;
+pub(crate) use self::agent::execute_scheduled_agent_task;
 mod subagents;
 
 use std::collections::HashMap;
@@ -481,7 +483,7 @@ pub fn build_router(state: AppState) -> Router {
     use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
     use cron::{
         create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs, list_cron_runs,
-        update_cron_job,
+        run_cron_job_now, update_cron_job,
     };
     use health::{get_logs, health};
     use memory::{
@@ -557,6 +559,10 @@ pub fn build_router(state: AppState) -> Router {
             get(get_cron_job)
                 .put(update_cron_job)
                 .delete(delete_cron_job),
+        )
+        .route(
+            "/api/cron/jobs/{id}/run",
+            axum::routing::post(run_cron_job_now),
         )
         .route("/api/stats/costs", get(get_costs))
         .route("/api/stats/timeseries", get(get_overview_timeseries))
@@ -878,7 +884,7 @@ primary = "ollama/qwen3:8b"
 "#
     }
 
-    fn test_state() -> AppState {
+    pub(crate) fn test_state() -> AppState {
         let db = Database::new(":memory:").unwrap();
         let config = ironclad_core::IroncladConfig::from_str(test_config_str()).unwrap();
         let llm = LlmService::new(&config).unwrap();
@@ -1513,7 +1519,7 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
-    async fn create_cron_job_defaults_payload_to_log_action() {
+    async fn create_cron_job_defaults_payload_to_agent_task_when_description_present() {
         let state = test_state();
         let app = build_router(state.clone());
         let req = Request::builder()
@@ -1521,7 +1527,7 @@ primary = "ollama/qwen3:8b"
             .uri("/api/cron/jobs")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"name":"morning-briefing","agent_id":"test","schedule_kind":"cron","schedule_expr":"0 9 * * *"}"#,
+                r#"{"name":"morning-briefing","description":"summarize overnight events","agent_id":"test","schedule_kind":"cron","schedule_expr":"0 9 * * *"}"#,
             ))
             .unwrap();
 
@@ -1535,8 +1541,8 @@ primary = "ollama/qwen3:8b"
             .expect("job should exist");
         let payload: serde_json::Value =
             serde_json::from_str(&job.payload_json).expect("payload should be valid JSON");
-        assert_eq!(payload["action"], "log");
-        assert_eq!(payload["message"], "scheduled job: morning-briefing");
+        assert_eq!(payload["action"], "agent_task");
+        assert_eq!(payload["task"], "summarize overnight events");
     }
 
     #[tokio::test]
@@ -1604,6 +1610,37 @@ primary = "ollama/qwen3:8b"
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn run_cron_job_now_executes_and_records_run() {
+        let state = test_state();
+        let job_id = ironclad_db::cron::create_job(
+            &state.db,
+            "run-now",
+            "agent-1",
+            "cron",
+            Some("0 * * * *"),
+            r#"{"action":"noop"}"#,
+        )
+        .unwrap();
+
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/cron/jobs/{job_id}/run"))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["job_id"], job_id);
+        assert_eq!(body["status"], "success");
+
+        let runs = ironclad_db::cron::list_runs(&state.db, None, None, Some(&job_id), 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "success");
     }
 
     #[tokio::test]
@@ -5695,6 +5732,9 @@ params = { path = "README.md" }
             .expect("created subagent should be listed");
         assert!(created["runtime_state"].is_string());
         assert!(created["taskable"].is_boolean());
+        assert!(created["integrity"]["hollow"].is_boolean());
+        assert!(created["integrity"]["missing_session"].is_boolean());
+        assert!(created["integrity"]["repairable"].is_boolean());
     }
 
     #[tokio::test]

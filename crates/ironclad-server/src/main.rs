@@ -325,6 +325,11 @@ enum MemoryCmd {
 enum ScheduleCmd {
     /// List scheduled tasks
     List,
+    /// Execute a scheduled task once immediately
+    Run {
+        /// Cron job name or ID
+        job: String,
+    },
     /// Re-enable paused cron jobs after unknown-action containment
     Recover {
         /// Re-enable all paused jobs
@@ -876,6 +881,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Some(Commands::Schedule(sub)) => match sub {
             ScheduleCmd::List => cli::cmd_schedule_list(url).await,
+            ScheduleCmd::Run { job } => cli::cmd_schedule_run(url, &job).await,
             ScheduleCmd::Recover {
                 all,
                 names,

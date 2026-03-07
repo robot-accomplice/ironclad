@@ -104,13 +104,19 @@ pub fn run_state_hygiene(
         && has_column("cron_jobs", "payload_json")?
         && has_column("cron_jobs", "id")?
     {
-        let mut stmt = conn.prepare("SELECT id, payload_json FROM cron_jobs")?;
+        let mut stmt = conn.prepare("SELECT id, description, payload_json FROM cron_jobs")?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
         for row in rows {
-            let (id, payload_raw) = row?;
-            if let Some(payload_json) = normalize_cron_payload_json(&payload_raw) {
+            let (id, description, payload_raw) = row?;
+            if let Some(payload_json) =
+                normalize_cron_payload_json(description.as_deref(), &payload_raw)
+            {
                 conn.execute(
                     "UPDATE cron_jobs SET payload_json=?1 WHERE id=?2",
                     rusqlite::params![payload_json, id],
@@ -159,7 +165,7 @@ pub fn run_state_hygiene(
     Ok(report)
 }
 
-pub(crate) fn normalize_cron_payload_json(raw: &str) -> Option<String> {
+pub(crate) fn normalize_cron_payload_json(description: Option<&str>, raw: &str) -> Option<String> {
     let mut payload = match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(v) => v,
         Err(_) => return Some(r#"{"action":"noop"}"#.to_string()),
@@ -183,9 +189,35 @@ pub(crate) fn normalize_cron_payload_json(raw: &str) -> Option<String> {
         .get("action")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
+    if action == "log"
+        && let Some(desc) = description.map(str::trim).filter(|d| !d.is_empty())
+    {
+        let message = obj
+            .get("message")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        if message.eq_ignore_ascii_case(desc) || message.starts_with("scheduled job:") {
+            obj.insert(
+                "action".to_string(),
+                serde_json::Value::String("agent_task".to_string()),
+            );
+            obj.insert(
+                "task".to_string(),
+                serde_json::Value::String(desc.to_string()),
+            );
+            obj.remove("message");
+            return serde_json::to_string(&payload).ok();
+        }
+    }
     if matches!(
         action,
-        "log" | "metric_snapshot" | "expire_sessions" | "record_transaction" | "noop"
+        "log"
+            | "agent_task"
+            | "metric_snapshot"
+            | "expire_sessions"
+            | "record_transaction"
+            | "noop"
     ) {
         if changed {
             return serde_json::to_string(&payload).ok();

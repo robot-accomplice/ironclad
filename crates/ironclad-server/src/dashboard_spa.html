@@ -2253,7 +2253,7 @@
       if (!job || !job.payload_json) return '';
       try {
         var payload = JSON.parse(job.payload_json);
-        return String(payload.message || '').trim();
+        return String(payload.task || payload.prompt || payload.message || '').trim();
       } catch (_) {
         return '';
       }
@@ -5585,6 +5585,16 @@
       return;
     }
     var delBtn = e.target.closest('[data-cal-delete]');
+    var runBtn = e.target.closest('[data-cal-run]');
+    if (runBtn) {
+      var runIdx = Number(runBtn.getAttribute('data-cal-run')); var rj = _cachedCronJobs[runIdx];
+      if (rj && rj.id) {
+        api('/api/cron/jobs/' + encodeURIComponent(rj.id) + '/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+          .then(function(resp) { toast((resp.status === 'success' ? 'Ran ' : 'Run failed: ') + rj.name + (resp.error ? ' — ' + resp.error : '')); App.navigate('scheduler'); })
+          .catch(function(err) { toast(err.message || 'Run failed'); });
+      }
+      return;
+    }
     if (delBtn) {
       var idx = Number(delBtn.getAttribute('data-cal-delete')); var j = _cachedCronJobs[idx];
       if (j) {
@@ -5601,7 +5611,7 @@
       if (!name) { toast('Name is required'); return; }
       var sched = App._readSchedFromUI(); var cron = App._schedToCron(sched);
       var descEl = document.getElementById('cal-job-description'); var intent = (descEl && descEl.value || '').trim();
-      var payloadObj = { action: 'log', message: intent || ('scheduled job: ' + name) };
+      var payloadObj = intent ? { action: 'agent_task', task: intent } : { action: 'log', message: ('scheduled job: ' + name) };
       var jobData = { name: name, description: intent || null, schedule_kind: cron.kind, schedule_expr: cron.expr, payload_json: JSON.stringify(payloadObj), agent_id: App._activeAgentId || 'ironclad' };
       if (App._calModalMode === 'add') {
         api('/api/cron/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jobData) }).then(function() { toast('Added "' + name + '"'); App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Add failed'); });

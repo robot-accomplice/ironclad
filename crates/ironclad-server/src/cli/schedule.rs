@@ -179,3 +179,36 @@ pub async fn cmd_schedule_recover(
     eprintln!();
     Ok(())
 }
+
+pub async fn cmd_schedule_run(
+    url: &str,
+    name_or_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_DIM, _BOLD, ACCENT, GREEN, _YELLOW, RED, _CYAN, RESET, _MONO) = colors();
+    let (_OK, ACTION, _WARN, _DETAIL, _ERR) = icons();
+    let c = IroncladClient::new(url)?;
+    let data = c.get("/api/cron/jobs").await?;
+    let jobs = data["jobs"].as_array().cloned().unwrap_or_default();
+    let Some(job) = jobs
+        .into_iter()
+        .find(|j| j["id"].as_str() == Some(name_or_id) || j["name"].as_str() == Some(name_or_id))
+    else {
+        return Err(format!("cron job not found: {name_or_id}").into());
+    };
+    let id = job["id"].as_str().unwrap_or_default();
+    let name = job["name"].as_str().unwrap_or_default();
+    heading("Schedule Run");
+    eprintln!("    {ACTION} Running {ACCENT}{name}{RESET} now...");
+    let body = c
+        .post(&format!("/api/cron/jobs/{id}/run"), serde_json::json!({}))
+        .await?;
+    let status = body["status"].as_str().unwrap_or("unknown");
+    let error = body["error"].as_str().unwrap_or("");
+    if status == "success" {
+        eprintln!("    {GREEN}Ran successfully{RESET}");
+    } else {
+        eprintln!("    {RED}Run failed:{RESET} {}", error);
+    }
+    eprintln!();
+    Ok(())
+}

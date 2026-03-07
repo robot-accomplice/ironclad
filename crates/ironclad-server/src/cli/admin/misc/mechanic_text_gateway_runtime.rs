@@ -40,6 +40,23 @@ async fn run_mechanic_text_gateway_checks(
             channels_status.as_ref(),
             runtime_diag.as_ref(),
         );
+        match probe_subagent_integrity_via_gateway(base_url, repair).await {
+            Ok(probe) if probe.hollow_subagents == 0 => {}
+            Ok(probe) => {
+                if repair {
+                    println!(
+                        "  {ACTION} Repaired {} hollow subagent(s) (skills={}, sessions={})",
+                        probe.hollow_subagents, probe.repaired_skills, probe.repaired_sessions
+                    );
+                } else {
+                    println!(
+                        "  {WARN} Found {} hollow subagent(s); run `ironclad mechanic --repair` to restore skills/sessions.",
+                        probe.hollow_subagents
+                    );
+                }
+            }
+            Err(e) => println!("  {WARN} Could not inspect subagent integrity via gateway: {e}"),
+        }
         run_gateway_allowlisted_job_recovery(base_url, repair, allow_jobs, fixed).await?;
     } else {
         println!("    {DETAIL} Skipping server checks (config, skills, wallet, channels)");
@@ -599,6 +616,10 @@ fn run_gateway_log_and_runtime_diagnostics(
             .get("taskable_subagents_error")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        let hollow = diag
+            .get("taskable_subagents_hollow")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
 
         if total > 0 && enabled > 0 && running == 0 {
             println!(
@@ -617,11 +638,20 @@ fn run_gateway_log_and_runtime_diagnostics(
             if error > 0 {
                 println!("         {error} subagent(s) currently report error state.");
             }
+            if hollow > 0 {
+                println!("         {hollow} subagent(s) are hollow (no fixed skills).");
+            }
             println!(
                 "         Recommendation: treat subagent-attributed outputs as unverified until running count recovers."
             );
+        } else if hollow > 0 {
+            println!(
+                "  {WARN} Delegation integrity drift: {hollow} enabled taskable subagent(s) are hollow."
+            );
+            println!("         Repair: repopulate fixed skills and ensure agent sessions before relying on delegation.");
         }
     }
+
 }
 
 async fn run_gateway_allowlisted_job_recovery(

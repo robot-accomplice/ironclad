@@ -61,6 +61,7 @@ fn sample_diagnostics() -> RuntimeDiagnostics {
         taskable_subagents_booting: 0,
         taskable_subagents_running: 1,
         taskable_subagents_error: 0,
+        taskable_subagents_hollow: 0,
         delegation_tools_available: true,
         channels_total: 2,
         channels_with_errors: 0,

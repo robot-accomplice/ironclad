@@ -267,16 +267,27 @@ fn normalize_schema_safe_converts_invalid_subagent_model_to_auto() {
 }
 
 #[test]
+fn normalize_cron_payload_json_migrates_intentful_log_job_to_agent_task() {
+    let repaired = crate::state_hygiene::normalize_cron_payload_json(
+        Some("summarize overnight events"),
+        r#"{"action":"log","message":"scheduled job: morning-briefing"}"#,
+    )
+    .unwrap();
+    assert!(repaired.contains(r#""action":"agent_task""#));
+    assert!(repaired.contains(r#""task":"summarize overnight events""#));
+}
+
+#[test]
 fn normalize_cron_payload_json_repairs_invalid_and_unknown_actions() {
-    let repaired_invalid = crate::state_hygiene::normalize_cron_payload_json("not-json").unwrap();
+    let repaired_invalid = crate::state_hygiene::normalize_cron_payload_json(None, "not-json").unwrap();
     assert_eq!(repaired_invalid, r#"{"action":"noop"}"#);
 
     let repaired_unknown =
-        crate::state_hygiene::normalize_cron_payload_json(r#"{"action":"unknown"}"#).unwrap();
+        crate::state_hygiene::normalize_cron_payload_json(None, r#"{"action":"unknown"}"#).unwrap();
     assert_eq!(repaired_unknown, r#"{"action":"noop"}"#);
 
     let repaired_legacy =
-        crate::state_hygiene::normalize_cron_payload_json(r#"{"kind":"metricSnapshot"}"#).unwrap();
+        crate::state_hygiene::normalize_cron_payload_json(None, r#"{"kind":"metricSnapshot"}"#).unwrap();
     assert!(repaired_legacy.contains(r#""action":"metric_snapshot""#));
 }
 

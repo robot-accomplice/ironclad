@@ -38,6 +38,7 @@ pub mod auth;
 pub mod cli;
 pub mod config_maintenance;
 pub mod config_runtime;
+mod cron_runtime;
 pub mod daemon;
 pub mod dashboard;
 pub mod migrate;
@@ -908,10 +909,10 @@ pub async fn bootstrap_with_config_path(
 
     // Start cron worker
     {
-        let cron_db = state.db.clone();
         let instance_id = config.agent.id.clone();
+        let cron_state = state.clone();
         tokio::spawn(async move {
-            ironclad_schedule::run_cron_worker(cron_db, instance_id).await;
+            crate::cron_runtime::run_cron_worker(cron_state, instance_id).await;
         });
         tracing::info!("Cron worker spawned");
     }

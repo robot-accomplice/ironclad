@@ -13,6 +13,7 @@ mod intents;
 mod orchestration;
 mod poll_loops;
 mod routing;
+mod scheduled_tasks;
 mod streaming;
 #[cfg(test)]
 mod tests;
@@ -55,6 +56,7 @@ use self::routing::{DELEGATED_INFERENCE_BUDGET, infer_with_fallback_with_budget_
 #[cfg(test)]
 use self::routing::{estimate_cost_from_provider, fallback_candidates, summarize_user_excerpt};
 pub(crate) use self::routing::{infer_content_with_fallback, select_routed_model};
+pub(crate) use self::scheduled_tasks::execute_scheduled_agent_task;
 pub use self::streaming::agent_message_stream;
 pub(crate) use self::tools::{
     check_tool_policy, classify_provider_error, execute_tool_call, execute_tool_call_after_approval,
