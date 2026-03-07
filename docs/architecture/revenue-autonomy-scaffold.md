@@ -189,13 +189,19 @@ Required capabilities:
   - API visibility
   - dashboard controls and status
   - terminal visibility/configuration
+- constrained live-funds validation surfaces:
+  - `$50` seed readiness
+  - `$50` seed progress
+  - `$50` seed exercise plan with spend caps and abort conditions
 - mechanic repair coverage:
   - stale revenue task detection
   - orphan settlement detection
   - ledger/request mismatch reconciliation
   - swap-queue integrity checks
+  - tax-payout receipt reconciliation
 - honest execution boundaries:
   - EVM transaction submission supported on the configured wallet chain
+  - submitted tax payouts and swaps can be reconciled from on-chain receipts
   - non-EVM or cross-chain execution remains deferred until there is a real submission primitive
 
 Non-goals for the v0.9.6 debut:
