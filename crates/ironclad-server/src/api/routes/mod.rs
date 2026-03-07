@@ -2979,6 +2979,13 @@ primary = "ollama/qwen3:8b"
         assert_eq!(body["seed_exercise_readiness"]["default_chain"], "ETH");
         assert!(body["seed_exercise_readiness"]["default_chain_has_target_contract"].is_boolean());
         assert!(body["seed_exercise_readiness"]["default_chain_has_swap_contract"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_1_seeded_and_visible"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_1_meets_target"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_2_revenue_cycle_complete"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_3_swap_submitted"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_3_swap_reconciled"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_4_mechanic_clear"].is_boolean());
+        assert!(body["seed_exercise_progress"]["next_action"].is_string());
     }
 
     #[tokio::test]

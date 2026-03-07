@@ -14,6 +14,9 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
     let revenue_feedback_summary =
         ironclad_db::revenue_feedback::revenue_feedback_summary_by_strategy(&state.db)
             .unwrap_or_default();
+    let revenue_swap_tasks =
+        ironclad_db::revenue_swap_tasks::list_revenue_swap_tasks(&state.db, 200)
+            .unwrap_or_default();
     let default_swap_chain = config.treasury.revenue_swap.default_chain.clone();
     let default_swap_chain_cfg = config
         .treasury
@@ -62,6 +65,18 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
         .map(|b| b.balance)
         .sum::<f64>();
     let seed_target_usdc = 50.0;
+    let swap_submitted = revenue_swap_tasks.iter().any(|row| {
+        row["source"]["swap_tx_hash"]
+            .as_str()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+    });
+    let swap_reconciled = revenue_swap_tasks.iter().any(|row| {
+        row["status"]
+            .as_str()
+            .map(|s| matches!(s, "completed" | "failed"))
+            .unwrap_or(false)
+    });
     let seed_readiness = json!({
         "seed_target_usdc": seed_target_usdc,
         "stable_balance_usdc": stable_balance,
@@ -76,6 +91,25 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
             .and_then(|c| c.swap_contract_address.as_deref())
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false),
+    });
+    let seed_progress = json!({
+        "phase_1_seeded_and_visible": stable_balance > 0.0 && !address.trim().is_empty(),
+        "phase_1_meets_target": stable_balance >= seed_target_usdc,
+        "phase_2_revenue_cycle_complete": revenue_accounting.settled_jobs > 0,
+        "phase_3_swap_submitted": swap_submitted,
+        "phase_3_swap_reconciled": swap_reconciled,
+        "phase_4_mechanic_clear": revenue_swap_queue.stale_in_progress == 0,
+        "next_action": if stable_balance < seed_target_usdc {
+            "seed treasury to the $50 exercise target"
+        } else if revenue_accounting.settled_jobs <= 0 {
+            "run one low-cost opportunity through settlement"
+        } else if !swap_submitted {
+            "submit the queued swap task"
+        } else if !swap_reconciled {
+            "reconcile the submitted swap receipt"
+        } else {
+            "run the failure-and-repair drill"
+        },
     });
 
     axum::Json(json!({
@@ -122,6 +156,7 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
         "revenue_strategy_summary": revenue_strategy_summary,
         "revenue_feedback_summary": revenue_feedback_summary,
         "seed_exercise_readiness": seed_readiness,
+        "seed_exercise_progress": seed_progress,
     }))
 }
 

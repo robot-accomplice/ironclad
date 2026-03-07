@@ -3000,6 +3000,27 @@
         + rows
         + '</div>';
     },
+    _renderSeedExerciseProgressCard: function(progress) {
+      var p = progress || {};
+      var phases = [
+        ['Phase 1: seeded + visible', !!p.phase_1_seeded_and_visible],
+        ['Phase 1: target met', !!p.phase_1_meets_target],
+        ['Phase 2: revenue cycle complete', !!p.phase_2_revenue_cycle_complete],
+        ['Phase 3: swap submitted', !!p.phase_3_swap_submitted],
+        ['Phase 3: swap reconciled', !!p.phase_3_swap_reconciled],
+        ['Phase 4: mechanic clear', !!p.phase_4_mechanic_clear]
+      ];
+      var rows = phases.map(function(phase) {
+        return '<div class="settings-row">'
+          + '<div class="settings-label">' + esc(phase[0]) + '</div>'
+          + '<div><span class="badge ' + (phase[1] ? 'success' : 'warn') + '">' + (phase[1] ? 'done' : 'pending') + '</span></div>'
+          + '</div>';
+      }).join('');
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Seed Exercise Progress</div>'
+        + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">Next action: ' + esc(p.next_action || 'no action available') + '</div>'
+        + rows
+        + '</div>';
+    },
     _renderRevenueSwapTasksCard: function(rows) {
       var items = Array.isArray(rows) ? rows : [];
       var body = items.length
@@ -3104,11 +3125,12 @@
           '</div>';
         var revenueSwapCard = self._renderRevenueSwapSummaryCard(treasury.revenue_swap || {});
         var seedReadinessCard = self._renderSeedExerciseReadinessCard(bal.seed_exercise_readiness || {});
+        var seedProgressCard = self._renderSeedExerciseProgressCard(bal.seed_exercise_progress || {});
         var strategySummaryCard = self._renderRevenueStrategySummaryCard(bal.revenue_strategy_summary || []);
         var feedbackSummaryCard = self._renderRevenueFeedbackSummaryCard(bal.revenue_feedback_summary || []);
         var swapTasksCard = self._renderRevenueSwapTasksCard(swaps);
 
-        return addrSection + balancesCard + treasuryCard + revenueSwapCard + seedReadinessCard + strategySummaryCard + feedbackSummaryCard + swapTasksCard +
+        return addrSection + balancesCard + treasuryCard + revenueSwapCard + seedReadinessCard + seedProgressCard + strategySummaryCard + feedbackSummaryCard + swapTasksCard +
           '<div class="card-title">Transaction history</div><div class="table-wrap"><table><thead><tr><th>Type</th><th>Amount</th><th>Date</th></tr></thead><tbody>' + txRows + '</tbody></table></div>';
       });
     },
