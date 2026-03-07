@@ -466,11 +466,12 @@ pub fn build_router(state: AppState) -> Router {
         get_overview_timeseries, get_plugins, get_recommendations, get_revenue_opportunity,
         get_routing_dataset, get_routing_diagnostics, get_runtime_surfaces, get_service_request,
         get_throttle_stats, get_transactions, intake_micro_bounty_opportunity,
-        intake_revenue_opportunity, list_discovered_agents, list_paired_devices,
-        list_services_catalog, mcp_client_disconnect, mcp_client_discover, pair_device,
-        plan_revenue_opportunity, qualify_revenue_opportunity, register_discovered_agent, roster,
-        run_routing_eval, set_provider_key, settle_revenue_opportunity, start_agent, stop_agent,
-        toggle_plugin, unpair_device, update_config, verify_discovered_agent, verify_paired_device,
+        intake_oracle_feed_opportunity, intake_revenue_opportunity, list_discovered_agents,
+        list_paired_devices, list_services_catalog, mcp_client_disconnect, mcp_client_discover,
+        pair_device, plan_revenue_opportunity, qualify_revenue_opportunity,
+        register_discovered_agent, roster, run_routing_eval, score_revenue_opportunity,
+        set_provider_key, settle_revenue_opportunity, start_agent, stop_agent, toggle_plugin,
+        unpair_device, update_config, verify_discovered_agent, verify_paired_device,
         verify_service_payment, wallet_address, wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
@@ -579,8 +580,16 @@ pub fn build_router(state: AppState) -> Router {
             post(intake_micro_bounty_opportunity),
         )
         .route(
+            "/api/services/opportunities/adapters/oracle-feed/intake",
+            post(intake_oracle_feed_opportunity),
+        )
+        .route(
             "/api/services/opportunities/{id}",
             get(get_revenue_opportunity),
+        )
+        .route(
+            "/api/services/opportunities/{id}/score",
+            post(score_revenue_opportunity),
         )
         .route(
             "/api/services/opportunities/{id}/qualify",
@@ -1963,6 +1972,86 @@ primary = "ollama/qwen3:8b"
                 .as_str()
                 .unwrap_or_default()
                 .contains("expected_revenue_usdc must be positive")
+        );
+    }
+
+    #[tokio::test]
+    async fn revenue_opportunity_oracle_feed_adapter_scores_on_intake() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/adapters/oracle-feed/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"request_id":"feed_1","expected_revenue_usdc":9.5,"payload":{"pair":"ETH/USD","source_url":"https://example.com/feed"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["strategy"], "oracle_feed");
+        assert_eq!(body["score"]["recommended_approved"], true);
+        assert!(body["score"]["priority_score"].as_f64().unwrap_or_default() > 60.0);
+    }
+
+    #[tokio::test]
+    async fn revenue_opportunity_score_endpoint_persists_recommendation() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"trusted_feed_registry","strategy":"oracle_feed","expected_revenue_usdc":7.0,"payload":{"pair":"BTC/USD","source_url":"https://example.com/oracle"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let score_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/score"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(score_resp.status(), StatusCode::OK);
+        let score_body = json_body(score_resp).await;
+        assert_eq!(score_body["score"]["recommended_approved"], true);
+
+        let get_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/services/opportunities/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = json_body(get_resp).await;
+        assert_eq!(body["score"]["recommended_approved"], true);
+        assert!(
+            body["score"]["confidence_score"]
+                .as_f64()
+                .unwrap_or_default()
+                > 0.6
         );
     }
 

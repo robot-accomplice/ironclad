@@ -66,6 +66,12 @@ pub struct RevenueOpportunityRecord {
     pub expected_revenue_usdc: f64,
     pub status: String,
     pub qualification_reason: Option<String>,
+    pub confidence_score: f64,
+    pub effort_score: f64,
+    pub risk_score: f64,
+    pub priority_score: f64,
+    pub recommended_approved: bool,
+    pub score_reason: Option<String>,
     pub plan_json: Option<String>,
     pub evidence_json: Option<String>,
     pub request_id: Option<String>,
@@ -229,6 +235,7 @@ pub fn get_revenue_opportunity(
     let mut stmt = conn
         .prepare(
             "SELECT id, source, strategy, payload_json, expected_revenue_usdc, status, qualification_reason, \
+                    confidence_score, effort_score, risk_score, priority_score, recommended_approved, score_reason, \
                     plan_json, evidence_json, request_id, settlement_ref, settled_amount_usdc, attributable_costs_usdc, \
                     net_profit_usdc, tax_rate, tax_amount_usdc, retained_earnings_usdc, tax_destination_wallet, created_at, updated_at \
              FROM revenue_opportunities WHERE id = ?1",
@@ -244,19 +251,25 @@ pub fn get_revenue_opportunity(
                 expected_revenue_usdc: row.get(4)?,
                 status: row.get(5)?,
                 qualification_reason: row.get(6)?,
-                plan_json: row.get(7)?,
-                evidence_json: row.get(8)?,
-                request_id: row.get(9)?,
-                settlement_ref: row.get(10)?,
-                settled_amount_usdc: row.get(11)?,
-                attributable_costs_usdc: row.get(12)?,
-                net_profit_usdc: row.get(13)?,
-                tax_rate: row.get(14)?,
-                tax_amount_usdc: row.get(15)?,
-                retained_earnings_usdc: row.get(16)?,
-                tax_destination_wallet: row.get(17)?,
-                created_at: row.get(18)?,
-                updated_at: row.get(19)?,
+                confidence_score: row.get(7)?,
+                effort_score: row.get(8)?,
+                risk_score: row.get(9)?,
+                priority_score: row.get(10)?,
+                recommended_approved: row.get::<_, i64>(11)? != 0,
+                score_reason: row.get(12)?,
+                plan_json: row.get(13)?,
+                evidence_json: row.get(14)?,
+                request_id: row.get(15)?,
+                settlement_ref: row.get(16)?,
+                settled_amount_usdc: row.get(17)?,
+                attributable_costs_usdc: row.get(18)?,
+                net_profit_usdc: row.get(19)?,
+                tax_rate: row.get(20)?,
+                tax_amount_usdc: row.get(21)?,
+                retained_earnings_usdc: row.get(22)?,
+                tax_destination_wallet: row.get(23)?,
+                created_at: row.get(24)?,
+                updated_at: row.get(25)?,
             })
         })
         .optional()

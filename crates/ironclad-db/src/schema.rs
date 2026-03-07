@@ -225,6 +225,12 @@ CREATE TABLE IF NOT EXISTS revenue_opportunities (
     expected_revenue_usdc REAL NOT NULL,
     status TEXT NOT NULL,
     qualification_reason TEXT,
+    confidence_score REAL NOT NULL DEFAULT 0,
+    effort_score REAL NOT NULL DEFAULT 0,
+    risk_score REAL NOT NULL DEFAULT 0,
+    priority_score REAL NOT NULL DEFAULT 0,
+    recommended_approved INTEGER NOT NULL DEFAULT 0,
+    score_reason TEXT,
     plan_json TEXT,
     evidence_json TEXT,
     request_id TEXT,
@@ -496,7 +502,7 @@ CREATE INDEX IF NOT EXISTS idx_abuse_events_actor ON abuse_events(actor_id, crea
 CREATE INDEX IF NOT EXISTS idx_abuse_events_origin ON abuse_events(origin, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_created ON abuse_events(created_at DESC);
 "#;
-const EMBEDDED_SCHEMA_VERSION: i64 = 16;
+const EMBEDDED_SCHEMA_VERSION: i64 = 17;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {
@@ -702,6 +708,48 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
     if !has_column(&conn, "revenue_opportunities", "tax_destination_wallet")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN tax_destination_wallet TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "confidence_score")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN confidence_score REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "effort_score")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN effort_score REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "risk_score")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN risk_score REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "priority_score")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN priority_score REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "recommended_approved")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN recommended_approved INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "score_reason")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN score_reason TEXT",
             [],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;

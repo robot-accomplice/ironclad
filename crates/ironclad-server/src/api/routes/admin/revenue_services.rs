@@ -55,7 +55,8 @@ pub struct RevenueOpportunityIntakeRequest {
 
 #[derive(Deserialize)]
 pub struct RevenueOpportunityQualifyRequest {
-    pub approved: bool,
+    #[serde(default)]
+    pub approved: Option<bool>,
     #[serde(default)]
     pub reason: String,
 }

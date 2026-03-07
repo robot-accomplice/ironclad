@@ -26,6 +26,15 @@ pub async fn intake_revenue_opportunity(
     };
     ironclad_db::service_revenue::create_revenue_opportunity(&state.db, &new_opp)
         .map_err(|e| internal_err(&e))?;
+    let score = score_revenue_payload(
+        &state.db,
+        &opportunity_id,
+        &source,
+        &strategy,
+        &payload_json,
+        req.expected_revenue_usdc,
+        req.request_id.as_deref(),
+    )?;
 
     Ok(axum::Json(json!({
         "opportunity_id": opportunity_id,
@@ -33,6 +42,7 @@ pub async fn intake_revenue_opportunity(
         "source": source,
         "strategy": strategy,
         "expected_revenue_usdc": req.expected_revenue_usdc,
+        "score": score_response_json(&score),
     })))
 }
 
@@ -66,6 +76,14 @@ pub async fn get_revenue_opportunity(
         "expected_revenue_usdc": row.expected_revenue_usdc,
         "status": row.status,
         "qualification_reason": row.qualification_reason,
+        "score": {
+            "confidence_score": row.confidence_score,
+            "effort_score": row.effort_score,
+            "risk_score": row.risk_score,
+            "priority_score": row.priority_score,
+            "recommended_approved": row.recommended_approved,
+            "score_reason": row.score_reason,
+        },
         "plan": row.plan_json.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
         "evidence": row.evidence_json.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
         "request_id": row.request_id,
@@ -116,11 +134,19 @@ pub async fn qualify_revenue_opportunity(
     Path(id): Path<String>,
     Json(req): Json<RevenueOpportunityQualifyRequest>,
 ) -> Result<impl IntoResponse, JsonError> {
-    let reason = req.reason.trim();
+    let row = ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
+        .map_err(|e| internal_err(&e))?
+        .ok_or_else(|| not_found(format!("revenue opportunity '{}' not found", id)))?;
+    let approved = req.approved.unwrap_or(row.recommended_approved);
+    let reason = if req.reason.trim().is_empty() {
+        row.score_reason.as_deref().unwrap_or_default()
+    } else {
+        req.reason.trim()
+    };
     let updated = ironclad_db::service_revenue::qualify_revenue_opportunity(
         &state.db,
         &id,
-        req.approved,
+        approved,
         if reason.is_empty() {
             None
         } else {
@@ -135,7 +161,7 @@ pub async fn qualify_revenue_opportunity(
     }
     Ok(axum::Json(json!({
         "opportunity_id": id,
-        "status": if req.approved {
+        "status": if approved {
             ironclad_db::service_revenue::OPPORTUNITY_STATUS_QUALIFIED
         } else {
             ironclad_db::service_revenue::OPPORTUNITY_STATUS_REJECTED

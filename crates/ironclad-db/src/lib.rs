@@ -47,6 +47,7 @@ pub mod metrics;
 pub mod model_selection;
 pub mod policy;
 pub mod revenue_accounting;
+pub mod revenue_scoring;
 pub mod routing_dataset;
 pub mod schema;
 pub mod service_revenue;
