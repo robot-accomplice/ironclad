@@ -298,6 +298,10 @@ impl Wallet {
         &self.rpc_url
     }
 
+    pub(crate) fn private_key_bytes(&self) -> &[u8] {
+        &self.private_key
+    }
+
     pub async fn sign_message(&self, message: &str) -> Result<String> {
         let signing_key = SigningKey::from_slice(&self.private_key)
             .map_err(|e| IroncladError::Wallet(format!("failed to load signing key: {e}")))?;

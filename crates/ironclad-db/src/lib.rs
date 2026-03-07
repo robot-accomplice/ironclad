@@ -47,6 +47,7 @@ pub mod metrics;
 pub mod model_selection;
 pub mod policy;
 pub mod revenue_accounting;
+pub mod revenue_feedback;
 pub mod revenue_opportunity_queries;
 pub mod revenue_scoring;
 pub mod revenue_strategy_summary;

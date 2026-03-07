@@ -24,12 +24,14 @@
 pub mod money;
 pub mod treasury;
 pub mod wallet;
+pub mod evm_submit;
 pub mod x402;
 pub mod yield_engine;
 
 pub use money::Money;
 pub use treasury::TreasuryPolicy;
 pub use wallet::{TokenBalance, Wallet};
+pub use evm_submit::{EvmContractCall, submit_evm_contract_call};
 pub use x402::{PaymentRequirements, X402Handler};
 pub use yield_engine::YieldEngine;
 

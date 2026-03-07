@@ -99,6 +99,14 @@ pub fn mark_revenue_swap_confirmed(
     update_revenue_swap_status(db, opportunity_id, "completed", None, Some(tx_hash))
 }
 
+pub fn mark_revenue_swap_submitted(
+    db: &Database,
+    opportunity_id: &str,
+    tx_hash: &str,
+) -> Result<bool> {
+    update_revenue_swap_status(db, opportunity_id, "in_progress", None, Some(tx_hash))
+}
+
 fn update_revenue_swap_status(
     db: &Database,
     opportunity_id: &str,

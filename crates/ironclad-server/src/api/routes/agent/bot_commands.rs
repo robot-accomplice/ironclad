@@ -376,6 +376,7 @@ pub(super) async fn build_status_reply(state: &AppState) -> String {
     let mut lines = vec![
         format!("🤖 {} ({})", config.agent.name, config.agent.id),
         "  state: running".to_string(),
+        format!("  version: v{}", env!("CARGO_PKG_VERSION")),
         format!("  primary: {}", diag.primary_model),
     ];
     if diag.active_model != diag.primary_model {

@@ -131,10 +131,17 @@ Current shared-lifecycle revenue control-plane primitives:
   - `priority_score`
   - `recommended_approved`
   - `score_reason`
+- persisted opportunity feedback:
+  - operator/runtime grade records stored per opportunity
+  - strategy-level feedback summary aggregated from recorded outcomes
 - current concrete adapters:
   - `micro_bounty`
   - `oracle_feed`
 - recommendation-aware qualification, with explicit override still allowed
+- EVM swap execution submission:
+  - queued swap tasks can be submitted through the wallet on the configured EVM chain
+  - submission is rejected on chain mismatch or missing swap contract wiring
+  - submission records a tx hash but final completion remains an explicit confirm/fail transition
 
 ## Phase 2 Continuation (v0.9.5 forward)
 
@@ -160,10 +167,11 @@ Required capabilities:
 - multiple revenue strategies sharing one lifecycle:
   - paid service intake
   - micro-bounty intake
-  - scheduled/internal opportunity intake
+  - oracle-feed intake
 - profitability-aware qualification and scoring using expected revenue, attributable costs, confidence, and policy risk
 - restart-safe execution state for every revenue job
 - idempotent settlement keyed by job/request identifier
+- persisted feedback on realized outcomes, aggregated by strategy
 - configurable post-settlement asset routing:
   - default target asset `PALM_USD`
   - operator-controlled disable/override behavior
@@ -183,6 +191,9 @@ Required capabilities:
   - orphan settlement detection
   - ledger/request mismatch reconciliation
   - swap-queue integrity checks
+- honest execution boundaries:
+  - EVM transaction submission supported on the configured wallet chain
+  - non-EVM or cross-chain execution remains deferred until there is a real submission primitive
 
 Non-goals for the v0.9.6 debut:
 
@@ -206,3 +217,4 @@ Non-goals for the v0.9.6 debut:
 - automated micro-bounty intake adapters
 - profitability-aware strategy scheduler
 - tax destination transfers for realized profit
+- automatic cross-chain/non-EVM swap execution

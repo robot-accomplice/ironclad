@@ -11,6 +11,21 @@ pub struct RevenueSwapConfirmRequest {
 }
 
 #[derive(Deserialize)]
+pub struct RevenueSwapSubmitRequest {
+    pub calldata: String,
+    #[serde(default)]
+    pub contract_address: Option<String>,
+    #[serde(default)]
+    pub value_wei: Option<String>,
+    #[serde(default)]
+    pub gas_limit: Option<u64>,
+    #[serde(default)]
+    pub max_fee_per_gas_wei: Option<String>,
+    #[serde(default)]
+    pub max_priority_fee_per_gas_wei: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct RevenueSwapFailRequest {
     pub reason: String,
 }
@@ -45,6 +60,133 @@ pub async fn start_revenue_swap_task(
     Ok(axum::Json(json!({
         "opportunity_id": opportunity_id,
         "status": "in_progress",
+    })))
+}
+
+pub async fn submit_revenue_swap_task(
+    State(state): State<AppState>,
+    Path(opportunity_id): Path<String>,
+    Json(req): Json<RevenueSwapSubmitRequest>,
+) -> Result<impl IntoResponse, JsonError> {
+    let task = ironclad_db::revenue_swap_tasks::get_revenue_swap_task(&state.db, &opportunity_id)
+        .map_err(|e| internal_err(&e))?
+        .ok_or_else(|| {
+            not_found(format!(
+                "revenue swap task for opportunity '{}' not found",
+                opportunity_id
+            ))
+        })?;
+    let source = task
+        .source_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .ok_or_else(|| bad_request("revenue swap task source is missing or invalid JSON"))?;
+    let source_obj = source
+        .as_object()
+        .ok_or_else(|| bad_request("revenue swap task source must be a JSON object"))?;
+    let target_chain = source_obj
+        .get("target_chain")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| bad_request("revenue swap task is missing target_chain"))?;
+    let wallet_chain = wallet_chain_label(state.wallet.wallet.chain_id());
+    if !target_chain.eq_ignore_ascii_case(wallet_chain) {
+        return Err(bad_request(format!(
+            "wallet chain '{}' cannot submit swap for target_chain '{}'",
+            wallet_chain, target_chain
+        )));
+    }
+    let from_currency = source_obj
+        .get("from_currency")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| bad_request("revenue swap task is missing from_currency"))?;
+    let amount = source_obj
+        .get("amount")
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| bad_request("revenue swap task is missing amount"))?;
+    let contract_address = req
+        .contract_address
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            source_obj
+                .get("swap_contract_address")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .ok_or_else(|| {
+            bad_request(
+                "swap submission requires contract_address or configured swap_contract_address",
+            )
+        })?;
+    state
+        .wallet
+        .treasury
+        .check_per_payment(amount)
+        .map_err(|e| bad_request(e.to_string()))?;
+    let current_balance = current_source_balance(&state.wallet.wallet, from_currency)
+        .await
+        .map_err(|e| bad_request(e.to_string()))?;
+    state
+        .wallet
+        .treasury
+        .check_minimum_reserve(current_balance, amount)
+        .map_err(|e| bad_request(e.to_string()))?;
+
+    let tx_hash = ironclad_wallet::submit_evm_contract_call(
+        &state.wallet.wallet,
+        &ironclad_wallet::EvmContractCall {
+            to: contract_address.clone(),
+            data_hex: req.calldata.clone(),
+            value_wei: req.value_wei.clone(),
+            gas_limit: req.gas_limit,
+            max_fee_per_gas_wei: req.max_fee_per_gas_wei.clone(),
+            max_priority_fee_per_gas_wei: req.max_priority_fee_per_gas_wei.clone(),
+        },
+    )
+    .await
+    .map_err(|e| bad_request(e.to_string()))?;
+
+    let updated =
+        ironclad_db::revenue_swap_tasks::mark_revenue_swap_submitted(&state.db, &opportunity_id, &tx_hash)
+            .map_err(|e| internal_err(&e))?;
+    if !updated {
+        return Err(bad_request(
+            "revenue swap task must exist before submission metadata can be recorded",
+        ));
+    }
+
+    ironclad_db::metrics::record_transaction_with_metadata(
+        &state.db,
+        "revenue_swap_submission",
+        amount,
+        from_currency,
+        Some(contract_address.as_str()),
+        Some(tx_hash.as_str()),
+        Some(
+            &json!({
+                "opportunity_id": opportunity_id,
+                "target_chain": target_chain,
+                "status": "submitted",
+            })
+            .to_string(),
+        ),
+    )
+    .map_err(|e| internal_err(&e))?;
+
+    Ok(axum::Json(json!({
+        "opportunity_id": opportunity_id,
+        "status": "in_progress",
+        "tx_hash": tx_hash,
+        "target_chain": target_chain,
+        "wallet_chain": wallet_chain,
     })))
 }
 
@@ -115,4 +257,40 @@ pub async fn fail_revenue_swap_task(
         "status": "failed",
         "reason": reason,
     })))
+}
+
+fn wallet_chain_label(chain_id: u64) -> &'static str {
+    match chain_id {
+        1 => "ETH",
+        56 => "BSC",
+        10 => "OPTIMISM",
+        137 => "POLYGON",
+        42161 => "ARBITRUM",
+        8453 => "BASE",
+        _ => "UNKNOWN",
+    }
+}
+
+async fn current_source_balance(
+    wallet: &ironclad_wallet::Wallet,
+    from_currency: &str,
+) -> ironclad_core::Result<f64> {
+    match from_currency.to_ascii_uppercase().as_str() {
+        "USDC" => wallet.get_usdc_balance().await,
+        other => {
+            let token = wallet
+                .get_all_balances()
+                .await
+                .into_iter()
+                .find(|t| t.symbol.eq_ignore_ascii_case(other))
+                .ok_or_else(|| {
+                    ironclad_core::IroncladError::Wallet(format!(
+                        "source asset '{}' is not available on wallet chain '{}'",
+                        other,
+                        wallet.network_name()
+                    ))
+                })?;
+            Ok(token.balance)
+        }
+    }
 }

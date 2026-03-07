@@ -470,9 +470,10 @@ pub fn build_router(state: AppState) -> Router {
         intake_revenue_opportunity, list_discovered_agents, list_paired_devices,
         list_revenue_opportunities, list_revenue_swap_tasks, list_services_catalog,
         mcp_client_disconnect, mcp_client_discover, pair_device, plan_revenue_opportunity,
-        qualify_revenue_opportunity, register_discovered_agent, roster, run_routing_eval,
-        score_revenue_opportunity, set_provider_key, settle_revenue_opportunity, start_agent,
-        start_revenue_swap_task, stop_agent, toggle_plugin, unpair_device, update_config,
+        qualify_revenue_opportunity, record_revenue_opportunity_feedback,
+        register_discovered_agent, roster, run_routing_eval, score_revenue_opportunity,
+        set_provider_key, settle_revenue_opportunity, start_agent, start_revenue_swap_task,
+        stop_agent, submit_revenue_swap_task, toggle_plugin, unpair_device, update_config,
         verify_discovered_agent, verify_paired_device, verify_service_payment, wallet_address,
         wallet_balance, workspace_state,
     };
@@ -598,6 +599,10 @@ pub fn build_router(state: AppState) -> Router {
             post(qualify_revenue_opportunity),
         )
         .route(
+            "/api/services/opportunities/{id}/feedback",
+            post(record_revenue_opportunity_feedback),
+        )
+        .route(
             "/api/services/opportunities/{id}/plan",
             post(plan_revenue_opportunity),
         )
@@ -613,6 +618,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/services/swaps/{id}/start",
             post(start_revenue_swap_task),
+        )
+        .route(
+            "/api/services/swaps/{id}/submit",
+            post(submit_revenue_swap_task),
         )
         .route(
             "/api/services/swaps/{id}/confirm",
@@ -2211,6 +2220,169 @@ primary = "ollama/qwen3:8b"
         let body = json_body(list_resp).await;
         assert_eq!(body["count"], 1);
         assert_eq!(body["swap_tasks"][0]["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn revenue_swap_submit_rejects_chain_mismatch() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":4.0,"payload":{"issue":"swap-submit-chain-mismatch"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for (path, body) in [
+            (
+                format!("/api/services/opportunities/{id}/qualify"),
+                r#"{"approved":true}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/plan"),
+                r#"{"plan":{"executor":"self"}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/fulfill"),
+                r#"{"evidence":{"ok":true}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/settle"),
+                r#"{"settlement_ref":"tx_swap_submit_mismatch","amount_usdc":4.0,"currency":"USDC","auto_swap":true,"target_chain":"ETH","target_contract_address":"0xfaf0cee6b20e2aaa4b80748a6af4cd89609a3d78"}"#
+                    .to_string(),
+            ),
+        ] {
+            let _ = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/swaps/{id}/submit"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"calldata":"0x1234"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("wallet chain")
+        );
+    }
+
+    #[tokio::test]
+    async fn revenue_swap_submit_requires_contract_address() {
+        let state = test_state();
+        {
+            let conn = state.db.conn();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority, source) VALUES (?1, ?2, 'pending', 95, ?3)",
+                rusqlite::params![
+                    "rev_swap:ro_submit_no_contract",
+                    "Swap settlement",
+                    r#"{"type":"revenue_swap","opportunity_id":"ro_submit_no_contract","from_currency":"USDC","target_asset":"PALM_USD","target_chain":"BASE","amount":4.0}"#
+                ],
+            )
+            .unwrap();
+        }
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/swaps/ro_submit_no_contract/submit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"calldata":"0x1234"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("contract_address")
+        );
+    }
+
+    #[tokio::test]
+    async fn revenue_feedback_route_records_and_surfaces_strategy_summary() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/adapters/oracle-feed/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"feed_name":"fx-settlement","market":"fx","expected_revenue_usdc":6.0,"payload":{"cadence":"hourly","source":"trusted-oracle"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let feedback_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/feedback"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"grade":4.5,"source":"operator","comment":"worth repeating"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(feedback_resp.status(), StatusCode::OK);
+
+        let wallet_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/wallet/balance")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wallet_resp.status(), StatusCode::OK);
+        let body = json_body(wallet_resp).await;
+        assert_eq!(body["revenue_feedback_summary"][0]["strategy"], "oracle_feed");
+        assert_eq!(body["revenue_feedback_summary"][0]["feedback_count"], 1);
     }
 
     #[tokio::test]
@@ -5524,6 +5696,7 @@ params = { path = "README.md" }
         let reply = agent::handle_bot_command(&state, "/status", None)
             .await
             .unwrap();
+        assert!(reply.contains(&format!("version: v{}", env!("CARGO_PKG_VERSION"))));
         assert!(reply.contains("taskable subagents"));
         assert!(reply.contains("subagent taskability"));
     }

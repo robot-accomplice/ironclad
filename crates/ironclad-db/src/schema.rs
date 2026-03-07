@@ -249,6 +249,18 @@ CREATE INDEX IF NOT EXISTS idx_revenue_opportunities_status ON revenue_opportuni
 CREATE INDEX IF NOT EXISTS idx_revenue_opportunities_strategy ON revenue_opportunities(strategy, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_revenue_opportunities_request ON revenue_opportunities(request_id);
 
+CREATE TABLE IF NOT EXISTS revenue_feedback (
+    id TEXT PRIMARY KEY,
+    opportunity_id TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    grade REAL NOT NULL,
+    source TEXT NOT NULL,
+    comment TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_revenue_feedback_opportunity ON revenue_feedback(opportunity_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_revenue_feedback_strategy ON revenue_feedback(strategy, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS inference_costs (
     id TEXT PRIMARY KEY,
     model TEXT NOT NULL,
@@ -502,7 +514,7 @@ CREATE INDEX IF NOT EXISTS idx_abuse_events_actor ON abuse_events(actor_id, crea
 CREATE INDEX IF NOT EXISTS idx_abuse_events_origin ON abuse_events(origin, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_created ON abuse_events(created_at DESC);
 "#;
-const EMBEDDED_SCHEMA_VERSION: i64 = 17;
+const EMBEDDED_SCHEMA_VERSION: i64 = 18;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {
