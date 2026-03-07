@@ -1,7 +1,6 @@
 //! Model selection, inference fallback chain, and routing audit persistence.
 
 use std::collections::HashMap;
-use std::sync::Once;
 use std::time::{Duration, Instant};
 
 use ironclad_core::IroncladError;
@@ -9,8 +8,6 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::AppState;
-
-static HEURISTIC_ALIAS_NOTICE: Once = Once::new();
 
 #[allow(dead_code)] // model/provider reserved for future per-turn audit trails
 pub(super) struct InferenceResult {
@@ -248,16 +245,7 @@ pub(super) async fn select_routed_model_with_audit(
     // Phase 2: Metascore routing (2.19).
     // Build per-model profiles from current system state, score with metascore,
     // and select the highest-scoring candidate.
-    let routing_mode_effective = if routing_mode == "heuristic" {
-        HEURISTIC_ALIAS_NOTICE.call_once(|| {
-            tracing::info!("models.routing.mode=heuristic currently aliases metascore behavior");
-        });
-        "metascore"
-    } else {
-        routing_mode.as_str()
-    };
-
-    if routing_mode_effective != "primary" {
+    if routing_mode != "primary" {
         let features = ironclad_llm::extract_features(user_content, 0, 0);
         let complexity = ironclad_llm::classify_complexity(&features);
 

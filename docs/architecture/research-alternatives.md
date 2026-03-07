@@ -407,7 +407,7 @@ What Ironclad uses in practice:
 
 | Choice | Implementation |
 | -------- | ----------------- |
-| **Routing** | Heuristic classifier (message length, tool calls, depth). Configured modes are `"primary"`, `"metascore"`, and `"heuristic"` (heuristic currently aliases metascore behavior). No ONNX. |
+| **Routing** | Heuristic classifier (message length, tool calls, depth). Configured modes are `"primary"` and `"metascore"`. No ONNX. |
 | **Cache** | In-memory HashMap (`SemanticCache` in ironclad-llm). L1 exact hash, L3 tool TTL, L2 n-gram similarity. No SQLite cache, no Redis. |
 | **Database** | SQLite via **rusqlite** (not diesel). Single DB, WAL mode. |
 | **Server** | **Axum** (not Actix). |

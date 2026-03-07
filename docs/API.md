@@ -961,7 +961,7 @@ Create a new subagent.
 }
 ```
 
-`role` must be either `subagent` or `model-proxy` (legacy `specialist` is normalized to `subagent`).
+`role` must be either `subagent` or `model-proxy`. Historical rows are migrated during repair/update; runtime does not accept legacy role aliases.
 
 `model` supports:
 - a concrete provider/model string (fixed),

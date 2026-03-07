@@ -36,6 +36,7 @@ pub mod abuse;
 pub mod api;
 pub mod auth;
 pub mod cli;
+pub mod config_maintenance;
 pub mod config_runtime;
 pub mod daemon;
 pub mod dashboard;

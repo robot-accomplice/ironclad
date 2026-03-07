@@ -147,12 +147,6 @@ fn execute_cron_job(
     let action = payload
         .get("action")
         .and_then(|v| v.as_str())
-        .or_else(|| {
-            payload
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .and_then(legacy_kind_to_action)
-        })
         .unwrap_or("unknown");
 
     match action {
@@ -220,31 +214,10 @@ fn execute_cron_job(
             tracing::debug!(job = %job.name, "noop cron job");
             ("success", None)
         }
-        "agent_turn_legacy" => {
-            // Backward compatibility for imported legacy cron payloads from older runtimes.
-            // Ironclad's durable scheduler currently does not execute agent turns directly.
-            tracing::warn!(
-                job = %job.name,
-                "legacy agentTurn cron payload detected; treating as noop"
-            );
-            ("success", None)
-        }
         other => {
             tracing::warn!(job = %job.name, action = other, "unknown cron action");
             ("error", Some(format!("unknown action: {other}")))
         }
-    }
-}
-
-fn legacy_kind_to_action(kind: &str) -> Option<&'static str> {
-    match kind {
-        "agentTurn" => Some("agent_turn_legacy"),
-        "metricSnapshot" => Some("metric_snapshot"),
-        "expireSessions" => Some("expire_sessions"),
-        "recordTransaction" => Some("record_transaction"),
-        "log" => Some("log"),
-        "noop" => Some("noop"),
-        _ => None,
     }
 }
 
@@ -425,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_cron_job_accepts_legacy_agent_turn_kind() {
+    fn execute_cron_job_rejects_legacy_agent_turn_kind() {
         let db = test_db();
         let job = job_with_payload(
             &db,
@@ -433,49 +406,17 @@ mod tests {
             r#"{"kind":"agentTurn","message":"Do work"}"#,
         );
         let (status, error) = execute_cron_job(&db, &job);
-        assert_eq!(status, "success");
-        assert!(error.is_none());
+        assert_eq!(status, "error");
+        assert_eq!(error.as_deref(), Some("unknown action: unknown"));
     }
 
     #[test]
-    fn execute_cron_job_accepts_legacy_metric_snapshot_kind() {
+    fn execute_cron_job_rejects_legacy_metric_snapshot_kind() {
         let db = test_db();
         let job = job_with_payload(&db, "legacy-metrics", r#"{"kind":"metricSnapshot"}"#);
         let (status, error) = execute_cron_job(&db, &job);
-        assert_eq!(status, "success");
-        assert!(error.is_none());
-    }
-
-    // ── BUG-093: legacy_kind_to_action exhaustive coverage ─────────────
-    #[test]
-    fn legacy_kind_to_action_all_known_kinds() {
-        assert_eq!(
-            legacy_kind_to_action("agentTurn"),
-            Some("agent_turn_legacy")
-        );
-        assert_eq!(
-            legacy_kind_to_action("metricSnapshot"),
-            Some("metric_snapshot")
-        );
-        assert_eq!(
-            legacy_kind_to_action("expireSessions"),
-            Some("expire_sessions")
-        );
-        assert_eq!(
-            legacy_kind_to_action("recordTransaction"),
-            Some("record_transaction")
-        );
-        assert_eq!(legacy_kind_to_action("log"), Some("log"));
-        assert_eq!(legacy_kind_to_action("noop"), Some("noop"));
-    }
-
-    #[test]
-    fn legacy_kind_to_action_unknown_returns_none() {
-        assert_eq!(legacy_kind_to_action("unknown"), None);
-        assert_eq!(legacy_kind_to_action(""), None);
-        assert_eq!(legacy_kind_to_action("AgentTurn"), None); // case-sensitive
-        assert_eq!(legacy_kind_to_action("NOOP"), None);
-        assert_eq!(legacy_kind_to_action("agent_turn_legacy"), None);
+        assert_eq!(status, "error");
+        assert_eq!(error.as_deref(), Some("unknown action: unknown"));
     }
 
     // ── BUG-093: normalize_schedule_kind boundary cases ────────────────
@@ -573,9 +514,9 @@ mod tests {
         assert_eq!(txs[0].currency, "ETH");
     }
 
-    // ── execute_cron_job: legacy kind fallback paths ───────────────────
+    // ── execute_cron_job: action-dispatch success paths ───────────────────
     #[test]
-    fn execute_cron_job_legacy_expire_sessions_kind() {
+    fn execute_cron_job_expire_sessions_action() {
         let db = test_db();
         let job = job_with_payload(
             &db,
@@ -588,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_cron_job_legacy_record_transaction_kind() {
+    fn execute_cron_job_record_transaction_action() {
         let db = test_db();
         let job = job_with_payload(
             &db,
@@ -601,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_cron_job_legacy_log_kind() {
+    fn execute_cron_job_log_action() {
         let db = test_db();
         let job = job_with_payload(&db, "legacy-log", r#"{"kind":"log","message":"test"}"#);
         let (status, error) = execute_cron_job(&db, &job);
@@ -610,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_cron_job_legacy_noop_kind() {
+    fn execute_cron_job_noop_action() {
         let db = test_db();
         let job = job_with_payload(&db, "legacy-noop", r#"{"kind":"noop"}"#);
         let (status, error) = execute_cron_job(&db, &job);
@@ -618,9 +559,9 @@ mod tests {
         assert!(error.is_none());
     }
 
-    // ── execute_cron_job: unknown legacy kind falls through to unknown ──
+    // ── execute_cron_job: unknown action returns error ─────────────────────
     #[test]
-    fn execute_cron_job_unknown_legacy_kind() {
+    fn execute_cron_job_unknown_action() {
         let db = test_db();
         let job = job_with_payload(&db, "legacy-unknown", r#"{"kind":"foobar"}"#);
         let (status, error) = execute_cron_job(&db, &job);

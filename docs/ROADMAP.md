@@ -556,9 +556,19 @@ On first boot, `initialize_db()` populates the hippocampus with all system table
 
 **Target**: A realistic, low-overhead self-funding system that helps agents maintain strong runtime capacity while remaining compliance-first. Include an adjustable taxation paradigm that applies to net realized profit per completed paid job and automatically redirects the taxed amount to the user's affiliated wallet.
 
+**Release commitment**: `v0.9.6` is the target debut for the first complete self-funding mechanism. This is no longer a vague post-v0.9.x aspiration; the expectation is a user-operable, restart-safe, auditable end-to-end loop.
+
 **Builds on**: `ServiceManager`, wallet/treasury (`ironclad-wallet`), `transactions` ledger, A2A/service endpoints, subagent routing and capability matching.
 
-**Scope**: Ship a curated self-funding catalog of legal, repeatable service archetypes (monitoring/alerts, recurring summaries, narrow subagent deliverables) with transparent pricing templates. Add profit accounting primitives: `net_realized_profit = earned_revenue - attributable_costs` (inference, fulfillment payouts, network/settlement fees) at job completion. Add config and controls for `self_funding.tax.enabled`, `self_funding.tax.rate` (0.0-1.0), `self_funding.tax.destination_wallet`, and per-service opt-in/out. On each completed paid job, compute tax from net realized profit, create an auditable settlement record, and transfer/allocate funds to the configured affiliated wallet. Enforce safety rails: max transfer caps, minimum reserve floor, invalid-address rejection, and explicit no-op behavior when profit <= 0. Expose dashboard/API observability for gross revenue, attributable costs, net profit, tax paid, after-tax retained earnings, and payout history.
+**Scope**: Ship a curated self-funding catalog of legal, repeatable service archetypes (monitoring/alerts, recurring summaries, narrow subagent deliverables) with transparent pricing templates. Add profit accounting primitives: `net_realized_profit = earned_revenue - attributable_costs` (inference, fulfillment payouts, network/settlement fees) at job completion. Add config and controls for `self_funding.tax.enabled`, `self_funding.tax.rate` (0.0-1.0), `self_funding.tax.destination_wallet`, and per-service opt-in/out. On each completed paid job, compute tax from net realized profit, create an auditable settlement record, and transfer/allocate funds to the configured affiliated wallet. Enforce safety rails: max transfer caps, minimum reserve floor, invalid-address rejection, and explicit no-op behavior when profit <= 0. Expose dashboard/API observability for gross revenue, attributable costs, net profit, tax paid, after-tax retained earnings, and payout history. Post-settlement asset routing must be operator-configurable, default to `PALM_USD`, and support arbitrary chains when contract addresses are supplied.
+
+**v0.9.6 delivery bar**:
+
+- at least two strategy classes share one canonical revenue lifecycle
+- all revenue jobs are DB-backed, auditable, and restart-safe
+- settlement, tax allocation, and retained-earnings accounting are observable from API/dashboard/terminal
+- mechanic can detect and repair stale/orphaned revenue jobs and reconciliation mismatches
+- no strategy bypasses the shared intake -> qualification -> scoring -> planning -> fulfillment -> settlement path
 
 ---
 
@@ -717,7 +727,7 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ### 3.7 UniRoute Model Vectors
 
-**Current state**: Model routing uses a heuristic or (future) trained classifier that must be retrained for new models.
+**Current state**: Model routing uses a metascore router or (future) trained classifier that must be retrained for new models.
 
 **Target**: Represent each model as a feature vector derived from its capabilities, pricing, and benchmark performance. Route among unseen models without retraining.
 

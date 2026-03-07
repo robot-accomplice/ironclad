@@ -57,9 +57,12 @@ const BUILTIN_SKILLS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/builti
 
 fn builtin_skills() -> &'static Vec<BuiltinSkillRecord> {
     static BUILTIN_SKILLS: OnceLock<Vec<BuiltinSkillRecord>> = OnceLock::new();
-    BUILTIN_SKILLS.get_or_init(|| {
-        serde_json::from_str(BUILTIN_SKILLS_JSON)
-            .expect("registry/builtin-skills.json must be valid JSON")
+    BUILTIN_SKILLS.get_or_init(|| match serde_json::from_str(BUILTIN_SKILLS_JSON) {
+        Ok(skills) => skills,
+        Err(e) => {
+            tracing::error!(error = %e, "builtin skill registry JSON is invalid");
+            Vec::new()
+        }
     })
 }
 

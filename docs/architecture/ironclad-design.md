@@ -711,7 +711,7 @@ fallbacks = [
 ]
 
 [models.routing]
-mode = "metascore"  # "primary" or "metascore" ("heuristic" accepted as legacy alias)
+mode = "metascore"  # "primary" or "metascore"
 confidence_threshold = 0.9
 local_first = true
 
@@ -746,7 +746,6 @@ tier = "T1"
 threshold = 3
 window_seconds = 60
 cooldown_seconds = 60
-credit_cooldown_seconds = 300
 max_cooldown_seconds = 900
 
 [memory]

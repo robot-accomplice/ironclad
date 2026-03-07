@@ -250,6 +250,29 @@ fn run_mechanic_checks_maintenance(config_path: &str) {
     }
 }
 
+fn apply_removed_legacy_config_migration(
+    config_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(config_path);
+    let (_, _, WARN, DETAIL, _) = icons();
+    if let Some(report) = crate::config_maintenance::migrate_removed_legacy_config_file(path)? {
+        println!("    {WARN} Removed legacy config compatibility settings during update");
+        if report.renamed_server_host_to_bind {
+            println!("    {DETAIL} Renamed [server].host to [server].bind");
+        }
+        if report.routing_mode_heuristic_rewritten {
+            println!("    {DETAIL} Rewrote models.routing.mode from heuristic to metascore");
+        }
+        if report.deny_on_empty_allowlist_hardened {
+            println!("    {DETAIL} Hardened security.deny_on_empty_allowlist to true");
+        }
+        if report.removed_credit_cooldown_seconds {
+            println!("    {DETAIL} Removed deprecated circuit_breaker.credit_cooldown_seconds");
+        }
+    }
+    Ok(())
+}
+
 // ── Version comparison ───────────────────────────────────────
 
 fn parse_semver(v: &str) -> (u32, u32, u32) {
@@ -1301,6 +1324,9 @@ pub async fn cmd_update_all(
     apply_skills_update(yes, &registry_url, config_path).await?;
     run_oauth_storage_maintenance();
     run_mechanic_checks_maintenance(config_path);
+    if let Err(e) = apply_removed_legacy_config_migration(config_path) {
+        println!("    {WARN} Legacy config migration skipped: {e}");
+    }
 
     // ── Post-upgrade security config migration ─────────────────────
     // Detect pre-RBAC configs (no [security] section) and warn about

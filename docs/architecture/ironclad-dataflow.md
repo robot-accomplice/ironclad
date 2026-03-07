@@ -44,7 +44,7 @@ flowchart TD
 ```
 
 ## 1. Primary Request Dataflow
-<!-- last_updated: 2026-02-26, version: 0.8.0 -->
+<!-- last_updated: 2026-03-07, version: 0.9.5 -->
 
 End-to-end path from inbound user message to delivered response, entirely within one OS process.
 
@@ -216,7 +216,7 @@ flowchart TD
 
     MODE -->|"primary"| DIRECT["Use primary model<br/>(skip scoring)"]
 
-    MODE -->|"metascore / heuristic(alias)"| FEATURES["extract_features():<br/>message len, tool_call count, depth"]
+    MODE -->|"metascore"| FEATURES["extract_features():<br/>message len, tool_call count, depth"]
     FEATURES --> CLASSIFY["classify_complexity()<br/>weighted sum → score 0.0–1.0"]
 
     subgraph MetascoreRouting["Metascore Model Selection (v0.9.1)"]
@@ -561,7 +561,7 @@ flowchart TD
 
     subgraph Execution["③ Job Execution (tasks.rs)"]
         PAYLOAD_KIND{"payload_json.kind?"}
-        PAYLOAD_KIND -->|agentTurn| AGENT_NOOP["DEPRECATED: agent_turn_legacy<br/>(noop with warning log)"]
+        PAYLOAD_KIND -->|legacy kind| AGENT_NOOP["Rejected at runtime<br/>Mechanic/update migrates kind->action before execution"]
         PAYLOAD_KIND -->|systemEvent| SYS_EVENT["Process system event"]
     end
 

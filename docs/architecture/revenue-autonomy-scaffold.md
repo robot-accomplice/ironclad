@@ -1,4 +1,4 @@
-# Revenue Autonomy Scaffold (v0.9.5)
+# Revenue Autonomy Scaffold (v0.9.5 -> v0.9.6)
 
 ## Purpose
 
@@ -134,6 +134,45 @@ Mechanic support hooks:
 - revenue control-plane probe
 - ledger/request reconciliation
 - orphan-job repair path
+
+## v0.9.6 Debut Scope: Full Self-Funding Mechanism
+
+v0.9.6 is the point where this scaffold stops being partial infrastructure and becomes a user-visible, end-to-end self-funding system.
+
+Required capabilities:
+
+- multiple revenue strategies sharing one lifecycle:
+  - paid service intake
+  - micro-bounty intake
+  - scheduled/internal opportunity intake
+- profitability-aware qualification and scoring using expected revenue, attributable costs, confidence, and policy risk
+- restart-safe execution state for every revenue job
+- idempotent settlement keyed by job/request identifier
+- configurable post-settlement asset routing:
+  - default target asset `PALM_USD`
+  - operator-controlled disable/override behavior
+  - arbitrary chain support when contract addresses are supplied
+- profit accounting:
+  - gross revenue
+  - attributable costs
+  - net realized profit
+  - retained earnings
+  - tax allocation/destination when enabled
+- operator surfaces:
+  - API visibility
+  - dashboard controls and status
+  - terminal visibility/configuration
+- mechanic repair coverage:
+  - stale revenue task detection
+  - orphan settlement detection
+  - ledger/request mismatch reconciliation
+  - swap-queue integrity checks
+
+Non-goals for the v0.9.6 debut:
+
+- speculative or high-risk autonomous trading
+- bespoke strategy-specific settlement paths
+- unaudited fund movement outside policy-enforced treasury controls
 
 ## Acceptance Criteria
 

@@ -37,7 +37,7 @@ flowchart TB
 
     subgraph Execution ["Job Execution"]
         PAYLOAD_KIND{"payload_json.kind?"}
-        AGENT_TURN["agentTurn → DEPRECATED<br/>(noop with warning log;<br/>agent_turn_legacy)"]
+        AGENT_TURN["legacy kind → rejected at runtime<br/>(repair/update must migrate first)"]
         SYS_EVENT["systemEvent → handler"]
         PAYLOAD_KIND --> AGENT_TURN
         PAYLOAD_KIND --> SYS_EVENT

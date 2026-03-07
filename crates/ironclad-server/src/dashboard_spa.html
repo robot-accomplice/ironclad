@@ -2925,6 +2925,50 @@
     },
 
     _TOKEN_ICONS: { ETH: '\u039e', MATIC: '\u25c6', USDC: '\u0024', USDT: '\u0024', DAI: '\u25c7', WETH: '\u039e', WBTC: '\u20bf', cbBTC: '\u20bf' },
+    _renderRevenueSwapSummaryCard: function(revenueSwap) {
+      var cfg = revenueSwap || {};
+      var enabled = cfg.enabled !== false;
+      var target = cfg.target_symbol || 'PALM_USD';
+      var chain = cfg.default_chain || 'ETH';
+      var chains = Array.isArray(cfg.chains) ? cfg.chains : [];
+      var chainRows = chains.map(function(entry) {
+        var swapContract = entry.swap_contract_address
+          ? '<div style="font-size:0.625rem;color:var(--muted);margin-top:0.2rem">Swap contract: <span class="card-mono">' + esc(entry.swap_contract_address) + '</span></div>'
+          : '<div style="font-size:0.625rem;color:var(--muted);margin-top:0.2rem">Swap contract: <span class="card-mono">custom/no override</span></div>';
+        return '<div class="settings-nested" style="margin-top:0.6rem">'
+          + '<div class="settings-row"><div class="settings-label">' + esc(entry.chain || 'UNSPECIFIED') + '</div><div class="card-mono" style="font-size:0.7rem;word-break:break-all">' + esc(entry.target_contract_address || '\u2014') + '</div></div>'
+          + swapContract
+          + '</div>';
+      }).join('');
+      if (!chainRows) chainRows = '<div style="font-size:0.75rem;color:var(--muted);padding-top:0.35rem">No chain targets configured.</div>';
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Swap Policy</div>'
+        + '<div class="settings-row"><div class="settings-label">Auto-swap</div><div style="font-family:var(--font-mono)">' + (enabled ? 'enabled' : 'disabled') + '</div></div>'
+        + '<div class="settings-row"><div class="settings-label">Default target</div><div style="font-family:var(--font-mono)">' + esc(target) + '</div></div>'
+        + '<div class="settings-row"><div class="settings-label">Default chain</div><div style="font-family:var(--font-mono)">' + esc(chain) + '</div></div>'
+        + chainRows
+        + '</div>';
+    },
+    _renderRevenueSwapSettings: function(revenueSwap) {
+      var cfg = revenueSwap || {};
+      var chains = Array.isArray(cfg.chains) ? cfg.chains : [];
+      var rows = chains.map(function(entry, idx) {
+        return '<div class="settings-nested" style="margin-top:0.6rem">'
+          + '<div class="settings-row"><div class="settings-label">Chain</div><input class="settings-input" type="text" data-revenue-swap-chain-field="chain" data-revenue-swap-chain-index="' + idx + '" value="' + esc(entry.chain || '') + '" placeholder="ETH"></div>'
+          + '<div class="settings-row"><div class="settings-label">Target contract</div><input class="settings-input" type="text" data-revenue-swap-chain-field="target_contract_address" data-revenue-swap-chain-index="' + idx + '" value="' + esc(entry.target_contract_address || '') + '" placeholder="0x... or program id"></div>'
+          + '<div class="settings-row"><div class="settings-label">Swap contract</div><input class="settings-input" type="text" data-revenue-swap-chain-field="swap_contract_address" data-revenue-swap-chain-index="' + idx + '" value="' + esc(entry.swap_contract_address || '') + '" placeholder="optional"></div>'
+          + '<div style="display:flex;justify-content:flex-end"><button class="btn secondary" data-revenue-swap-remove-chain="' + idx + '">Remove chain</button></div>'
+          + '</div>';
+      }).join('');
+      if (!rows) rows = '<div style="font-size:0.75rem;color:var(--muted)">No chain targets configured yet. Add one below.</div>';
+      return '<div class="settings-section"><div class="settings-section-title">Revenue Swap</div>'
+        + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">Default post-settlement conversion policy. Users can disable auto-swap, change the target asset, or configure any chain so long as the contract addresses are supplied.</div>'
+        + '<div class="settings-row"><div class="settings-label">Auto-swap by default</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="treasury.revenue_swap.enabled"' + (cfg.enabled !== false ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (cfg.enabled !== false ? 'On' : 'Off') + '</span></div></div>'
+        + '<div class="settings-row"><div class="settings-label">Target symbol</div><input class="settings-input" type="text" data-settings-path="treasury.revenue_swap.target_symbol" value="' + esc(cfg.target_symbol || 'PALM_USD') + '" placeholder="PALM_USD"></div>'
+        + '<div class="settings-row"><div class="settings-label">Default chain</div><input class="settings-input" type="text" data-settings-path="treasury.revenue_swap.default_chain" value="' + esc(cfg.default_chain || 'ETH') + '" placeholder="ETH"></div>'
+        + '<div class="settings-row"><div class="settings-label">Configured chains</div><div style="width:100%">' + rows + '</div></div>'
+        + '<div class="model-order-add" style="margin-top:0.5rem"><input id="revenue-swap-chain-add" class="settings-input" type="text" placeholder="Add chain (e.g. ETH, SOLANA, BSC, ARBITRUM)"><button class="btn secondary" id="revenue-swap-chain-add-btn">Add chain</button></div>'
+        + '</div>';
+    },
     renderWallet: function() {
       var self = this;
       return Promise.all([
@@ -2982,8 +3026,9 @@
           '<div class="settings-row"><div class="settings-label">Daily inference budget</div><div style="font-family:var(--font-mono)">$' + (treasury.daily_inference_budget || 0).toFixed(2) + '</div></div>' +
           '<div class="settings-row"><div class="settings-label">Minimum reserve</div><div style="font-family:var(--font-mono)">$' + (treasury.minimum_reserve || 0).toFixed(2) + '</div></div>' +
           '</div>';
+        var revenueSwapCard = self._renderRevenueSwapSummaryCard(treasury.revenue_swap || {});
 
-        return addrSection + balancesCard + treasuryCard +
+        return addrSection + balancesCard + treasuryCard + revenueSwapCard +
           '<div class="card-title">Transaction history</div><div class="table-wrap"><table><thead><tr><th>Type</th><th>Amount</th><th>Date</th></tr></thead><tbody>' + txRows + '</tbody></table></div>';
       });
     },
@@ -3006,7 +3051,7 @@
     _buildMutableConfigPatch: function(draft) {
       var caps = this._configCapabilities || {};
       var immutable = {};
-      (caps.immutable_sections || ['server', 'treasury', 'a2a', 'wallet']).forEach(function(k) { immutable[k] = true; });
+      (caps.immutable_sections || ['server', 'a2a', 'wallet']).forEach(function(k) { immutable[k] = true; });
       var patch = {};
       Object.keys(draft || {}).forEach(function(k) {
         if (!immutable[k]) patch[k] = draft[k];
@@ -3706,7 +3751,7 @@
       var self = this;
       return Promise.all([
         api('/api/config'),
-        api('/api/config/capabilities').catch(function() { return { immutable_sections: ['server', 'treasury', 'a2a', 'wallet'] }; })
+        api('/api/config/capabilities').catch(function() { return { immutable_sections: ['server', 'a2a', 'wallet'] }; })
       ]).then(function(arr) {
         var cfg = arr[0] || {};
         var caps = arr[1] || {};
@@ -4227,6 +4272,25 @@
               }
             });
             html += '</div>';
+            return;
+          }
+
+          if (section === 'treasury') {
+            html += '<div class="settings-section"><div class="settings-section-title">Treasury</div>';
+            Object.keys(sectionData).forEach(function(key) {
+              if (key === 'revenue_swap') return;
+              var val = sectionData[key];
+              var path = section + '.' + key;
+              if (typeof val === 'boolean') {
+                html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(path) + '"' + (val ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (val ? 'On' : 'Off') + '</span></div></div>';
+              } else if (typeof val !== 'object') {
+                var type = typeof val === 'number' ? 'number' : 'text';
+                var sv = (val == null || val === '') ? '' : esc(String(val));
+                html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(path) + '" value="' + sv + '" placeholder="none"></div>';
+              }
+            });
+            html += '</div>';
+            html += self._renderRevenueSwapSettings(sectionData.revenue_swap || {});
             return;
           }
 
@@ -5265,6 +5329,41 @@
       App.navigate('settings');
       return;
     }
+    if (e.target.closest('#revenue-swap-chain-add-btn')) {
+      var chainInput = document.getElementById('revenue-swap-chain-add');
+      var chainName = (chainInput && chainInput.value || '').trim().toUpperCase();
+      if (!chainName) { toast('Enter a chain name'); return; }
+      var draftSwapAdd = App._getSettingsDraft();
+      if (!draftSwapAdd.treasury) draftSwapAdd.treasury = {};
+      if (!draftSwapAdd.treasury.revenue_swap) draftSwapAdd.treasury.revenue_swap = {};
+      if (!Array.isArray(draftSwapAdd.treasury.revenue_swap.chains)) draftSwapAdd.treasury.revenue_swap.chains = [];
+      var exists = draftSwapAdd.treasury.revenue_swap.chains.some(function(entry) {
+        return String((entry && entry.chain) || '').trim().toUpperCase() === chainName;
+      });
+      if (exists) { toast('Chain already configured'); return; }
+      draftSwapAdd.treasury.revenue_swap.chains.push({
+        chain: chainName,
+        target_contract_address: '',
+        swap_contract_address: ''
+      });
+      if (chainInput) chainInput.value = '';
+      App._settingsDirty = JSON.stringify(draftSwapAdd) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    var revenueSwapRemoveBtn = e.target.closest('[data-revenue-swap-remove-chain]');
+    if (revenueSwapRemoveBtn) {
+      var removeIdx = Number(revenueSwapRemoveBtn.getAttribute('data-revenue-swap-remove-chain'));
+      var draftSwapRemove = App._getSettingsDraft();
+      var swapChains = draftSwapRemove && draftSwapRemove.treasury && draftSwapRemove.treasury.revenue_swap && Array.isArray(draftSwapRemove.treasury.revenue_swap.chains)
+        ? draftSwapRemove.treasury.revenue_swap.chains
+        : null;
+      if (!swapChains || removeIdx < 0 || removeIdx >= swapChains.length) return;
+      swapChains.splice(removeIdx, 1);
+      App._settingsDirty = JSON.stringify(draftSwapRemove) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
     var modelPrimaryBtn = e.target.closest('[data-model-order-make-primary]');
     if (modelPrimaryBtn) {
       var pIdx = Number(modelPrimaryBtn.getAttribute('data-model-order-make-primary'));
@@ -5743,6 +5842,23 @@
       document.querySelectorAll('#settings-save,#settings-apply,#settings-cancel').forEach(function(b) { if (App._settingsDirty) { b.disabled = false; b.style.opacity = ''; b.style.pointerEvents = ''; } else { b.disabled = true; b.style.opacity = '0.4'; b.style.pointerEvents = 'none'; } });
       return;
     }
+    var revenueSwapChainInput = e.target.closest('[data-revenue-swap-chain-field]');
+    if (revenueSwapChainInput) {
+      var revenueField = revenueSwapChainInput.getAttribute('data-revenue-swap-chain-field');
+      var revenueIdx = Number(revenueSwapChainInput.getAttribute('data-revenue-swap-chain-index'));
+      var draftSwapField = App._getSettingsDraft();
+      if (!draftSwapField.treasury) draftSwapField.treasury = {};
+      if (!draftSwapField.treasury.revenue_swap) draftSwapField.treasury.revenue_swap = {};
+      if (!Array.isArray(draftSwapField.treasury.revenue_swap.chains)) draftSwapField.treasury.revenue_swap.chains = [];
+      if (!draftSwapField.treasury.revenue_swap.chains[revenueIdx]) draftSwapField.treasury.revenue_swap.chains[revenueIdx] = { chain: '', target_contract_address: '', swap_contract_address: '' };
+      var revenueVal = revenueSwapChainInput.value;
+      if (revenueField === 'chain') revenueVal = String(revenueVal || '').toUpperCase();
+      draftSwapField.treasury.revenue_swap.chains[revenueIdx][revenueField] = revenueVal;
+      App._settingsDirty = JSON.stringify(draftSwapField) !== JSON.stringify(_cachedConfig);
+      App._settingsJsonText = null;
+      document.querySelectorAll('#settings-save,#settings-apply,#settings-cancel').forEach(function(b) { if (App._settingsDirty) { b.disabled = false; b.style.opacity = ''; b.style.pointerEvents = ''; } else { b.disabled = true; b.style.opacity = '0.4'; b.style.pointerEvents = 'none'; } });
+      return;
+    }
   });
   if (content) content.addEventListener('dragstart', function(e) {
     var item = e.target.closest('[data-model-order-item]');
@@ -5788,6 +5904,7 @@
   if (content) content.addEventListener('keydown', function(e) {
     if (e.target.id === 'session-msg-input' && e.key === 'Enter') { e.preventDefault(); if (App._sendingMessage) return; var btn = document.getElementById('btn-send-msg'); if (btn && !btn.disabled) btn.click(); return; }
     if (e.target.id === 'model-order-add-input' && e.key === 'Enter') { e.preventDefault(); var addBtn = document.getElementById('model-order-add-btn'); if (addBtn) addBtn.click(); return; }
+    if (e.target.id === 'revenue-swap-chain-add' && e.key === 'Enter') { e.preventDefault(); var addRevenueSwapChainBtn = document.getElementById('revenue-swap-chain-add-btn'); if (addRevenueSwapChainBtn) addRevenueSwapChainBtn.click(); return; }
     if (e.target.id === 'add-provider-input' && e.key === 'Enter') { e.preventDefault(); var addProviderBtn = document.getElementById('add-provider'); if (addProviderBtn) addProviderBtn.click(); return; }
     if (e.target.id === 'trusted-sender-input' && e.key === 'Enter') { e.preventDefault(); var addSenderBtn = document.getElementById('trusted-sender-add'); if (addSenderBtn) addSenderBtn.click(); return; }
     if (e.target.id === 'telegram-allowed-chat-input' && e.key === 'Enter') { e.preventDefault(); var addTgBtn = document.getElementById('telegram-allowed-chat-add'); if (addTgBtn) addTgBtn.click(); return; }
@@ -5844,6 +5961,10 @@
       App._settingsDirty = JSON.stringify(draft) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
       if (formInput.type === 'checkbox') { var lbl = formInput.closest('.settings-toggle-wrap'); if (lbl) { var span = lbl.querySelector('.settings-toggle-label'); if (span) span.textContent = newVal ? 'On' : 'Off'; } }
       document.querySelectorAll('#settings-save,#settings-apply,#settings-cancel').forEach(function(b) { if (App._settingsDirty) { b.disabled = false; b.style.opacity = ''; b.style.pointerEvents = ''; } else { b.disabled = true; b.style.opacity = '0.4'; b.style.pointerEvents = 'none'; } });
+    }
+    var revenueSwapChainInput = e.target.closest('[data-revenue-swap-chain-field]');
+    if (revenueSwapChainInput && revenueSwapChainInput.getAttribute('data-revenue-swap-chain-field') === 'chain') {
+      revenueSwapChainInput.value = String(revenueSwapChainInput.value || '').toUpperCase();
     }
   });
 

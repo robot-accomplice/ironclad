@@ -1,0 +1,366 @@
+#[derive(Debug, Default, Clone)]
+struct InternalizedSkillCleanupReport {
+    stale_db_skills: Vec<String>,
+    stale_files: Vec<PathBuf>,
+    stale_dirs: Vec<PathBuf>,
+    removed_db_skills: Vec<String>,
+    removed_paths: Vec<PathBuf>,
+}
+
+fn find_path_case_insensitive(base: &Path, candidate: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(base).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.eq_ignore_ascii_case(candidate) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn cleanup_internalized_skill_artifacts(
+    state_db_path: &Path,
+    skills_dir: &Path,
+    repair: bool,
+) -> InternalizedSkillCleanupReport {
+    let mut report = InternalizedSkillCleanupReport::default();
+
+    if state_db_path.exists()
+        && let Ok(db) = ironclad_db::Database::new(state_db_path.to_string_lossy().as_ref())
+        && let Ok(skills) = ironclad_db::skills::list_skills(&db)
+    {
+        for skill in skills {
+            let is_internalized = INTERNALIZED_SKILLS
+                .iter()
+                .any(|name| skill.name.eq_ignore_ascii_case(name));
+            let is_deprecated_generic = DEPRECATED_GENERIC_SKILLS
+                .iter()
+                .any(|name| skill.name.eq_ignore_ascii_case(name));
+            if is_internalized || is_deprecated_generic {
+                report.stale_db_skills.push(skill.name.clone());
+                if repair && ironclad_db::skills::delete_skill(&db, &skill.id).is_ok() {
+                    report.removed_db_skills.push(skill.name);
+                }
+            }
+        }
+    }
+
+    if skills_dir.exists() {
+        let skill_targets = INTERNALIZED_SKILLS
+            .iter()
+            .chain(DEPRECATED_GENERIC_SKILLS.iter());
+        for skill_name in skill_targets {
+            let md_name = format!("{skill_name}.md");
+            if let Some(path) = find_path_case_insensitive(skills_dir, &md_name) {
+                report.stale_files.push(path.clone());
+                if repair && std::fs::remove_file(&path).is_ok() {
+                    report.removed_paths.push(path);
+                }
+            }
+            if let Some(path) = find_path_case_insensitive(skills_dir, skill_name)
+                && path.is_dir()
+            {
+                report.stale_dirs.push(path.clone());
+                if repair && std::fs::remove_dir_all(&path).is_ok() {
+                    report.removed_paths.push(path);
+                }
+            }
+        }
+    }
+
+    report
+}
+
+const BUILTIN_SKILLS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/builtin-skills.json"));
+
+#[derive(Debug, Deserialize)]
+struct BuiltinSkillCatalogEntry {
+    name: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CapabilitySkillParityItem {
+    capability: &'static str,
+    skills: &'static [&'static str],
+}
+
+const CAPABILITY_SKILL_PARITY_ITEMS: &[CapabilitySkillParityItem] = &[
+    CapabilitySkillParityItem {
+        capability: "runtime introspection and truthful capability disclosure",
+        skills: &["introspection"],
+    },
+    CapabilitySkillParityItem {
+        capability: "delegation and specialist orchestration",
+        skills: &["supervisor-protocol", "local-subagents"],
+    },
+    CapabilitySkillParityItem {
+        capability: "routing controls and fallback tuning",
+        skills: &["model-management", "model-routing-tuner"],
+    },
+    CapabilitySkillParityItem {
+        capability: "diagnostics, repair, and operator continuity",
+        skills: &[
+            "runtime-diagnostics",
+            "self-diagnostics",
+            "session-operator",
+        ],
+    },
+    CapabilitySkillParityItem {
+        capability: "revenue autonomy operations",
+        skills: &["self-funding", "claims-auditor", "efficacy-assessment"],
+    },
+];
+
+#[derive(Debug, Default, Clone)]
+struct CapabilitySkillParityReport {
+    missing_in_registry: Vec<String>,
+    missing_in_db: Vec<String>,
+}
+
+fn evaluate_capability_skill_parity(state_db_path: &Path) -> CapabilitySkillParityReport {
+    let mut report = CapabilitySkillParityReport::default();
+    let registry_skills: std::collections::HashSet<String> =
+        serde_json::from_str::<Vec<BuiltinSkillCatalogEntry>>(BUILTIN_SKILLS_JSON)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.name.to_ascii_lowercase())
+            .collect();
+
+    let mut db_skills: std::collections::HashSet<String> = if state_db_path.exists() {
+        if let Ok(db) = ironclad_db::Database::new(state_db_path.to_string_lossy().as_ref()) {
+            ironclad_db::skills::list_skills(&db)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| s.enabled)
+                .map(|s| s.name.to_ascii_lowercase())
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        }
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    // Internalized skills are satisfied by compiled/runtime behavior even when they
+    // no longer exist as external skill rows on disk or in the skill DB.
+    db_skills.extend(
+        INTERNALIZED_SKILLS
+            .iter()
+            .map(|skill| skill.to_ascii_lowercase()),
+    );
+
+    for item in CAPABILITY_SKILL_PARITY_ITEMS {
+        for skill in item.skills {
+            if !registry_skills.contains(&skill.to_ascii_lowercase()) {
+                report
+                    .missing_in_registry
+                    .push(format!("{} -> {}", item.capability, skill));
+            }
+            if !db_skills.is_empty() && !db_skills.contains(&skill.to_ascii_lowercase()) {
+                report
+                    .missing_in_db
+                    .push(format!("{} -> {}", item.capability, skill));
+            }
+        }
+    }
+
+    report
+}
+
+#[derive(Debug, Clone)]
+struct ProviderHealthRow {
+    name: String,
+    status: String,
+    count: u64,
+    error: Option<String>,
+}
+
+fn provider_scan_hint(provider: Option<&str>) -> String {
+    match provider {
+        Some(name) if !name.trim().is_empty() => format!("ironclad models scan {}", name.trim()),
+        _ => "ironclad models scan".to_string(),
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct RevenueControlPlaneHealth {
+    opportunities_total: i64,
+    opportunities_settled: i64,
+    orphan_jobs: i64,
+    missing_settlement_ledger: i64,
+    stale_revenue_tasks: i64,
+    repaired_orphans: i64,
+    reconciled_ledger_rows: i64,
+    reset_stale_revenue_tasks: i64,
+}
+
+fn sqlite_table_exists(conn: &rusqlite::Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count > 0)
+    .unwrap_or(false)
+}
+
+fn probe_revenue_control_plane(
+    state_db_path: &Path,
+    repair: bool,
+) -> Result<RevenueControlPlaneHealth, Box<dyn std::error::Error>> {
+    if !state_db_path.exists() {
+        return Ok(RevenueControlPlaneHealth::default());
+    }
+    let db = ironclad_db::Database::new(state_db_path.to_string_lossy().as_ref())?;
+    let conn = db.conn();
+
+    if !sqlite_table_exists(&conn, "revenue_opportunities") {
+        return Ok(RevenueControlPlaneHealth::default());
+    }
+
+    let opportunities_total: i64 =
+        conn.query_row("SELECT COUNT(*) FROM revenue_opportunities", [], |row| {
+            row.get(0)
+        })?;
+    let opportunities_settled: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM revenue_opportunities WHERE status = 'settled'",
+        [],
+        |row| row.get(0),
+    )?;
+    let orphan_jobs: i64 = conn.query_row(
+        "SELECT COUNT(*) \
+         FROM revenue_opportunities ro \
+         WHERE ro.request_id IS NOT NULL \
+           AND ro.request_id != '' \
+           AND NOT EXISTS (SELECT 1 FROM service_requests sr WHERE sr.id = ro.request_id)",
+        [],
+        |row| row.get(0),
+    )?;
+    let missing_settlement_ledger: i64 = conn.query_row(
+        "SELECT COUNT(*) \
+         FROM revenue_opportunities ro \
+         WHERE ro.status = 'settled' \
+           AND ro.settlement_ref IS NOT NULL \
+           AND ro.settlement_ref != '' \
+           AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.tx_type='revenue_settlement' AND t.tx_hash = ro.settlement_ref)",
+        [],
+        |row| row.get(0),
+    )?;
+
+    let mut repaired_orphans = 0i64;
+    let mut reconciled_ledger_rows = 0i64;
+    let stale_revenue_tasks: i64 = if sqlite_table_exists(&conn, "tasks") {
+        conn.query_row(
+            "SELECT COUNT(*) \
+             FROM tasks t \
+             WHERE lower(t.status) = 'in_progress' \
+               AND datetime(COALESCE(t.updated_at, t.created_at)) < datetime('now','-24 hours') \
+               AND (lower(COALESCE(t.source,'')) LIKE '%revenue%' \
+                    OR lower(COALESCE(t.source,'')) LIKE '%immunefi%' \
+                    OR lower(COALESCE(t.source,'')) LIKE '%bounty%')",
+            [],
+            |row| row.get(0),
+        )?
+    } else {
+        0
+    };
+    let mut reset_stale_revenue_tasks = 0i64;
+
+    if repair {
+        repaired_orphans = conn.execute(
+            "UPDATE revenue_opportunities \
+             SET status = 'failed', qualification_reason = COALESCE(qualification_reason, 'mechanic orphan repair: missing linked request'), updated_at = datetime('now') \
+             WHERE request_id IS NOT NULL \
+               AND request_id != '' \
+               AND status IN ('qualified', 'planned', 'fulfilled') \
+               AND NOT EXISTS (SELECT 1 FROM service_requests sr WHERE sr.id = request_id)",
+            [],
+        )? as i64;
+
+        reconciled_ledger_rows = conn.execute(
+            "INSERT INTO transactions (id, tx_type, amount, currency, counterparty, tx_hash, metadata_json, created_at) \
+             SELECT 'tx_rec_' || hex(randomblob(8)), \
+                    'revenue_settlement', \
+                    COALESCE(ro.settled_amount_usdc, 0), \
+                    'USDC', \
+                    'revenue_control_plane', \
+                    ro.settlement_ref, \
+                    json_object('reconciled_by','mechanic','opportunity_id',ro.id), \
+                    datetime('now') \
+             FROM revenue_opportunities ro \
+             WHERE ro.status = 'settled' \
+               AND ro.settlement_ref IS NOT NULL \
+               AND ro.settlement_ref != '' \
+               AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.tx_type='revenue_settlement' AND t.tx_hash = ro.settlement_ref)",
+            [],
+        )? as i64;
+
+        if sqlite_table_exists(&conn, "tasks") {
+            reset_stale_revenue_tasks = conn.execute(
+                "UPDATE tasks \
+                 SET status = 'pending', updated_at = datetime('now') \
+                 WHERE lower(status) = 'in_progress' \
+                   AND datetime(COALESCE(updated_at, created_at)) < datetime('now','-24 hours') \
+                   AND (lower(COALESCE(source,'')) LIKE '%revenue%' \
+                        OR lower(COALESCE(source,'')) LIKE '%immunefi%' \
+                        OR lower(COALESCE(source,'')) LIKE '%bounty%')",
+                [],
+            )? as i64;
+        }
+    }
+
+    Ok(RevenueControlPlaneHealth {
+        opportunities_total,
+        opportunities_settled,
+        orphan_jobs,
+        missing_settlement_ledger,
+        stale_revenue_tasks,
+        repaired_orphans,
+        reconciled_ledger_rows,
+        reset_stale_revenue_tasks,
+    })
+}
+
+async fn fetch_provider_health(
+    base_url: &str,
+) -> Result<Vec<ProviderHealthRow>, Box<dyn std::error::Error>> {
+    let resp = super::http_client()?
+        .get(format!(
+            "{base_url}/api/models/available?validation_level=zero"
+        ))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(std::io::Error::other(format!(
+            "provider models endpoint returned HTTP {}",
+            resp.status()
+        ))
+        .into());
+    }
+    let body: serde_json::Value = resp.json().await?;
+    let mut rows = Vec::new();
+    let providers = body
+        .get("providers")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    for (name, report) in providers {
+        rows.push(ProviderHealthRow {
+            name,
+            status: report
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            count: report.get("count").and_then(|v| v.as_u64()).unwrap_or(0),
+            error: report
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        });
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(rows)
+}
+

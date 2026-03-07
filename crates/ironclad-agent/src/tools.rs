@@ -1276,6 +1276,20 @@ impl Tool for GetSubagentStatusTool {
 
         // Query open tasks
         let tasks = {
+            fn normalize_task_source(raw: Option<String>) -> Value {
+                let Some(raw) = raw else {
+                    return Value::Null;
+                };
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return Value::Null;
+                }
+                match serde_json::from_str::<Value>(trimmed) {
+                    Ok(parsed) => parsed,
+                    Err(_) => Value::String(raw),
+                }
+            }
+
             let conn = db.conn();
             conn.prepare(
                 "SELECT id, title, status, priority, source, created_at \
@@ -1285,12 +1299,13 @@ impl Tool for GetSubagentStatusTool {
             .ok()
             .map(|mut stmt| {
                 stmt.query_map([], |row| {
+                    let source_raw: Option<String> = row.get(4)?;
                     Ok(serde_json::json!({
                         "id": row.get::<_, String>(0)?,
                         "title": row.get::<_, String>(1)?,
                         "status": row.get::<_, String>(2)?,
                         "priority": row.get::<_, i64>(3)?,
-                        "source": row.get::<_, Option<String>>(4)?,
+                        "source": normalize_task_source(source_raw),
                         "created_at": row.get::<_, String>(5)?,
                     }))
                 })
@@ -2836,11 +2851,11 @@ mod tests {
         {
             let conn = db.conn();
             conn.execute(
-                "INSERT INTO tasks (id, title, status, priority) VALUES ('t1', 'Fix bug', 'pending', 2)",
+                "INSERT INTO tasks (id, title, status, priority, source) VALUES ('t1', 'Fix bug', 'pending', 2, 'pg:agentic_bot:tasks')",
                 [],
             ).unwrap();
             conn.execute(
-                "INSERT INTO tasks (id, title, status, priority) VALUES ('t2', 'Write docs', 'in_progress', 1)",
+                "INSERT INTO tasks (id, title, status, priority, source) VALUES ('t2', 'Write docs', 'in_progress', 1, '{\"origin\":\"pg:mentat:tasks\",\"metadata\":{\"type\":\"revenue\"}}')",
                 [],
             ).unwrap();
             conn.execute(
@@ -2872,6 +2887,9 @@ mod tests {
         // Priority DESC, so "Fix bug" (priority 2) comes first
         assert_eq!(v["tasks"][0]["title"], "Fix bug");
         assert_eq!(v["tasks"][1]["title"], "Write docs");
+        assert_eq!(v["tasks"][0]["source"], "pg:agentic_bot:tasks");
+        assert_eq!(v["tasks"][1]["source"]["origin"], "pg:mentat:tasks");
+        assert_eq!(v["tasks"][1]["source"]["metadata"]["type"], "revenue");
     }
 
     // ── Data tools tests ───────────────────────────────────────────────

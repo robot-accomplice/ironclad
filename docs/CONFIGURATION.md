@@ -103,7 +103,7 @@ LLM model selection and routing.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mode` | `String` | `"metascore"` | Routing strategy: `primary` or `metascore` (`heuristic` is accepted as a deprecated alias and normalized to `metascore`) |
+| `mode` | `String` | `"metascore"` | Routing strategy: `primary` or `metascore` |
 | `confidence_threshold` | `f64` | `0.9` | Minimum confidence for local model routing |
 | `local_first` | `bool` | `true` | Prefer local models when confidence is sufficient |
 | `cost_aware` | `bool` | `false` | Factor cost into routing decisions |
@@ -170,7 +170,6 @@ Automatic provider failure detection and recovery.
 | `threshold` | `u32` | `3` | Consecutive failures before tripping the breaker |
 | `window_seconds` | `u64` | `60` | Failure counting window in seconds |
 | `cooldown_seconds` | `u64` | `60` | Cooldown after a normal failure trip |
-| `credit_cooldown_seconds` | `u64` | `300` | Cooldown after a credit/billing error trip |
 | `max_cooldown_seconds` | `u64` | `900` | Maximum cooldown duration (exponential backoff cap) |
 
 ---
@@ -287,7 +286,7 @@ Claim-based RBAC security policy. Controls how inbound messages are resolved to 
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `deny_on_empty_allowlist` | `bool` | `true` | When `true`, channels with empty allow-lists reject all messages (secure default). Set to `false` for legacy "empty = allow all" behavior |
+| `deny_on_empty_allowlist` | `bool` | `true` | When `true`, channels with empty allow-lists reject all messages (secure default). `false` is no longer supported and is migrated by update/mechanic repair. |
 | `allowlist_authority` | `InputAuthority` | `Peer` | Authority granted when sender passes a channel's allow-list. Options: `External`, `Peer`, `SelfGenerated`, `Creator` |
 | `trusted_authority` | `InputAuthority` | `Creator` | Authority granted when sender is in `channels.trusted_sender_ids`. Options: `External`, `Peer`, `SelfGenerated`, `Creator` |
 | `api_authority` | `InputAuthority` | `Creator` | Authority for HTTP API and WebSocket requests. Options: `External`, `Peer`, `SelfGenerated`, `Creator` |
