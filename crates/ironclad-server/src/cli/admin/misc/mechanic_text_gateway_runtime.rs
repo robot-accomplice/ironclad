@@ -541,6 +541,44 @@ async fn run_gateway_provider_and_revenue_checks(
         }
         Err(e) => println!("  {WARN} Revenue swap reconcile probe failed: {e}"),
     }
+
+    match probe_revenue_tax_reconcile(base_url, repair).await {
+        Ok(health) if health.submitted_tasks == 0 => {}
+        Ok(health) => {
+            println!(
+                "    {OK} Submitted tax payout receipts awaiting reconciliation: {}",
+                health.submitted_tasks
+            );
+            if !repair {
+                println!(
+                    "      {DETAIL} Run `ironclad mechanic --repair` to reconcile submitted tax payout receipts against chain state"
+                );
+            } else {
+                if health.confirmed_repairs > 0 {
+                    println!(
+                        "    {ACTION} Confirmed {} submitted tax payout{} from chain receipts",
+                        health.confirmed_repairs,
+                        if health.confirmed_repairs == 1 { "" } else { "s" }
+                    );
+                }
+                if health.failed_repairs > 0 {
+                    println!(
+                        "    {ACTION} Marked {} submitted tax payout{} failed from chain receipts",
+                        health.failed_repairs,
+                        if health.failed_repairs == 1 { "" } else { "s" }
+                    );
+                }
+                if health.pending_receipts > 0 {
+                    println!(
+                        "    {DETAIL} {} submitted tax payout receipt{} still pending on-chain",
+                        health.pending_receipts,
+                        if health.pending_receipts == 1 { "" } else { "s" }
+                    );
+                }
+            }
+        }
+        Err(e) => println!("  {WARN} Revenue tax reconcile probe failed: {e}"),
+    }
 }
 
 fn run_gateway_log_and_runtime_diagnostics(
