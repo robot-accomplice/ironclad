@@ -2972,6 +2972,29 @@
         : '<div style="font-size:0.75rem;color:var(--muted)">No feedback recorded yet.</div>';
       return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Feedback Summary</div>' + body + '</div>';
     },
+    _renderRevenueSwapTasksCard: function(rows) {
+      var items = Array.isArray(rows) ? rows : [];
+      var body = items.length
+        ? '<div class="table-wrap"><table><thead><tr><th>Opportunity</th><th>Status</th><th>Target</th><th>Tx</th><th>Updated</th></tr></thead><tbody>'
+          + items.map(function(row) {
+              var source = row.source || {};
+              var target = (source.target_asset || 'unknown') + ' on ' + (source.target_chain || 'unknown');
+              var txHash = source.swap_tx_hash
+                ? '<span class="card-mono" style="font-size:0.625rem">' + esc(String(source.swap_tx_hash).slice(0, 18)) + '\u2026</span>'
+                : '<span style="color:var(--muted)">\u2014</span>';
+              var updated = row.updated_at ? String(row.updated_at).replace('T', ' ').slice(0, 19) : '\u2014';
+              return '<tr>'
+                + '<td><div style="font-weight:600">' + esc(row.opportunity_id || row.id || 'unknown') + '</div><div style="font-size:0.625rem;color:var(--muted)">' + esc(row.title || '') + '</div></td>'
+                + '<td>' + esc(row.status || 'unknown') + '</td>'
+                + '<td>' + esc(target) + '</td>'
+                + '<td>' + txHash + '</td>'
+                + '<td style="color:var(--muted)">' + esc(updated) + '</td>'
+                + '</tr>';
+            }).join('')
+          + '</tbody></table></div>'
+        : '<div style="font-size:0.75rem;color:var(--muted)">No revenue swap tasks yet.</div>';
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Swap Tasks</div>' + body + '</div>';
+    },
     _renderRevenueSwapSettings: function(revenueSwap) {
       var cfg = revenueSwap || {};
       var chains = Array.isArray(cfg.chains) ? cfg.chains : [];
@@ -2998,9 +3021,10 @@
       return Promise.all([
         api('/api/wallet/balance').catch(function() { return { balance: '0', currency: 'ETH', tokens: [], network: 'Unknown' }; }),
         api('/api/wallet/address').catch(function() { return { address: '', chain_id: 1, network: 'Unknown' }; }),
-        api('/api/stats/transactions?hours=168').catch(function() { return { transactions: [] }; })
+        api('/api/stats/transactions?hours=168').catch(function() { return { transactions: [] }; }),
+        api('/api/services/swaps?limit=10').catch(function() { return { swap_tasks: [] }; })
       ]).then(function(arr) {
-        var bal = arr[0], addr = arr[1], txs = (arr[2].transactions || []);
+        var bal = arr[0], addr = arr[1], txs = (arr[2].transactions || []), swaps = (arr[3].swap_tasks || []);
         var addrStr = (addr.address != null && addr.address !== '') ? addr.address : (addr.note || '\u2014');
         var network = bal.network || addr.network || 'Unknown';
         var chainId = addr.chain_id || bal.chain_id || 1;
@@ -3053,8 +3077,9 @@
         var revenueSwapCard = self._renderRevenueSwapSummaryCard(treasury.revenue_swap || {});
         var strategySummaryCard = self._renderRevenueStrategySummaryCard(bal.revenue_strategy_summary || []);
         var feedbackSummaryCard = self._renderRevenueFeedbackSummaryCard(bal.revenue_feedback_summary || []);
+        var swapTasksCard = self._renderRevenueSwapTasksCard(swaps);
 
-        return addrSection + balancesCard + treasuryCard + revenueSwapCard + strategySummaryCard + feedbackSummaryCard +
+        return addrSection + balancesCard + treasuryCard + revenueSwapCard + strategySummaryCard + feedbackSummaryCard + swapTasksCard +
           '<div class="card-title">Transaction history</div><div class="table-wrap"><table><thead><tr><th>Type</th><th>Amount</th><th>Date</th></tr></thead><tbody>' + txRows + '</tbody></table></div>';
       });
     },
