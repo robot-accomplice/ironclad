@@ -204,8 +204,13 @@ pub async fn cmd_schedule_run(
         .await?;
     let status = body["status"].as_str().unwrap_or("unknown");
     let error = body["error"].as_str().unwrap_or("");
+    let output_text = body["output_text"].as_str().unwrap_or("").trim();
     if status == "success" {
         eprintln!("    {GREEN}Ran successfully{RESET}");
+        if !output_text.is_empty() {
+            eprintln!("    Output");
+            eprintln!("      {}", output_text.replace('\n', "\n      "));
+        }
     } else {
         eprintln!("    {RED}Run failed:{RESET} {}", error);
     }

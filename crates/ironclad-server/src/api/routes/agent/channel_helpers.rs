@@ -119,45 +119,7 @@ pub(super) async fn send_thinking_indicator(
     chat_id: &str,
     metadata: Option<&serde_json::Value>,
 ) {
-    let thinking_text = build_personality_thinking_text(state).await;
     send_typing_indicator(state, platform, chat_id, metadata).await;
-
-    match platform {
-        "telegram" => {
-            if let Some(ref tg) = state.telegram
-                && tg.send_ephemeral(chat_id, &thinking_text).await.is_none()
-            {
-                tracing::debug!(platform, chat_id, "thinking indicator send failed");
-            }
-        }
-        "whatsapp" => {
-            if let Some(ref wa) = state.whatsapp
-                && wa.send_ephemeral(chat_id, &thinking_text).await.is_none()
-            {
-                tracing::debug!(platform, chat_id, "thinking indicator send failed");
-            }
-        }
-        "discord" => {
-            if let Some(ref dc) = state.discord
-                && dc.send_ephemeral(chat_id, &thinking_text).await.is_none()
-            {
-                tracing::debug!(platform, chat_id, "thinking indicator send failed");
-            }
-        }
-        "signal" => {
-            if let Some(ref sig) = state.signal
-                && sig.send_ephemeral(chat_id, &thinking_text).await.is_none()
-            {
-                tracing::debug!(platform, chat_id, "thinking indicator send failed");
-            }
-        }
-        _ => {}
-    }
-}
-
-async fn build_personality_thinking_text(state: &AppState) -> String {
-    let cfg = state.config.read().await;
-    format!("⚔️ {} is on it…", cfg.agent.name)
 }
 
 /// Estimate expected inference latency in seconds based on model tier, input

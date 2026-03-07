@@ -5590,7 +5590,12 @@
       var runIdx = Number(runBtn.getAttribute('data-cal-run')); var rj = _cachedCronJobs[runIdx];
       if (rj && rj.id) {
         api('/api/cron/jobs/' + encodeURIComponent(rj.id) + '/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-          .then(function(resp) { toast((resp.status === 'success' ? 'Ran ' : 'Run failed: ') + rj.name + (resp.error ? ' — ' + resp.error : '')); App.navigate('scheduler'); })
+          .then(function(resp) {
+            var msg = (resp.status === 'success' ? 'Ran ' : 'Run failed: ') + rj.name + (resp.error ? ' — ' + resp.error : '');
+            if (resp.output_text) msg += ' — ' + String(resp.output_text).replace(/\s+/g, ' ').trim().slice(0, 160);
+            toast(msg);
+            App.navigate('scheduler');
+          })
           .catch(function(err) { toast(err.message || 'Run failed'); });
       }
       return;

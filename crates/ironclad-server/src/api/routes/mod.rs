@@ -1644,6 +1644,36 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn run_cron_job_now_returns_output_text_for_log_job() {
+        let state = test_state();
+        let job_id = ironclad_db::cron::create_job(
+            &state.db,
+            "run-now-log",
+            "agent-1",
+            "cron",
+            Some("0 * * * *"),
+            r#"{"action":"log","message":"hello from cron"}"#,
+        )
+        .unwrap();
+
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/cron/jobs/{job_id}/run"))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["status"], "success");
+        assert_eq!(body["output_text"], "hello from cron");
+
+        let runs = ironclad_db::cron::list_runs(&state.db, None, None, Some(&job_id), 10).unwrap();
+        assert_eq!(runs[0].output_text.as_deref(), Some("hello from cron"));
+    }
+
+    #[tokio::test]
     async fn delete_cron_job_removes_job() {
         let state = test_state();
         let job_id = ironclad_db::cron::create_job(
@@ -6989,8 +7019,9 @@ params = { path = "README.md" }
             "{}",
         )
         .unwrap();
-        ironclad_db::cron::record_run(&state.db, &job_id, "success", Some(150), None).unwrap();
-        ironclad_db::cron::record_run(&state.db, &job_id, "error", Some(20), Some("timeout"))
+        ironclad_db::cron::record_run(&state.db, &job_id, "success", Some(150), None, None)
+            .unwrap();
+        ironclad_db::cron::record_run(&state.db, &job_id, "error", Some(20), Some("timeout"), None)
             .unwrap();
 
         let app = build_router(state);

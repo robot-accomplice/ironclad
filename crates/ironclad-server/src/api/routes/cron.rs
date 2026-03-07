@@ -36,6 +36,7 @@ pub struct CronRunItem {
     pub status: String,
     pub duration_ms: Option<i64>,
     pub error: Option<String>,
+    pub output_text: Option<String>,
     pub created_at: String,
     pub day: String,
 }
@@ -54,6 +55,7 @@ pub struct RunCronJobResponse {
     pub job_id: String,
     pub status: String,
     pub error: Option<String>,
+    pub output_text: Option<String>,
 }
 
 pub async fn list_cron_jobs(State(state): State<AppState>) -> impl IntoResponse {
@@ -216,6 +218,7 @@ pub async fn list_cron_runs(
                         status: r.status,
                         duration_ms: r.duration_ms,
                         error: r.error,
+                        output_text: r.output_text,
                         created_at: r.created_at,
                         day,
                     }
@@ -322,20 +325,22 @@ pub async fn run_cron_job_now(
         return Err(not_found(format!("cron job {id} not found")));
     };
     let start = std::time::Instant::now();
-    let (status, error) = crate::cron_runtime::execute_cron_job_once(&state, &job).await;
+    let result = crate::cron_runtime::execute_cron_job_once(&state, &job).await;
     let duration = start.elapsed().as_millis() as i64;
     let _ = ironclad_db::cron::record_run(
         &state.db,
         &job.id,
-        status,
+        result.status,
         Some(duration),
-        error.as_deref(),
+        result.error.as_deref(),
+        result.output.as_deref(),
     )
     .map_err(|e| tracing::warn!(job_id = %job.id, error = %e, "failed to record manual cron run"));
     Ok(axum::Json(RunCronJobResponse {
         job_id: job.id,
-        status: status.to_string(),
-        error,
+        status: result.status.to_string(),
+        error: result.error,
+        output_text: result.output,
     }))
 }
 

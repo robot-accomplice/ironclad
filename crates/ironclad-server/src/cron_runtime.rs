@@ -61,14 +61,15 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                 continue;
             }
             let start = std::time::Instant::now();
-            let (status, error) = execute_cron_job_once(&state, job).await;
+            let result = execute_cron_job_once(&state, job).await;
             let duration = start.elapsed().as_millis() as i64;
             let _ = ironclad_db::cron::record_run(
                 &state.db,
                 &job.id,
-                status,
+                result.status,
                 Some(duration),
-                error.as_deref(),
+                result.error.as_deref(),
+                result.output.as_deref(),
             );
             let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
             let next = ironclad_schedule::DurableScheduler::calculate_next_run(
@@ -83,13 +84,25 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
     }
 }
 
+pub(crate) struct CronExecutionResult {
+    pub status: &'static str,
+    pub error: Option<String>,
+    pub output: Option<String>,
+}
+
 pub(crate) async fn execute_cron_job_once(
     state: &AppState,
     job: &ironclad_db::cron::CronJob,
-) -> (&'static str, Option<String>) {
+) -> CronExecutionResult {
     let payload: Value = match serde_json::from_str(&job.payload_json) {
         Ok(v) => v,
-        Err(e) => return ("error", Some(format!("invalid payload: {e}"))),
+        Err(e) => {
+            return CronExecutionResult {
+                status: "error",
+                error: Some(format!("invalid payload: {e}")),
+                output: None,
+            };
+        }
     };
     let action = payload
         .get("action")
@@ -101,15 +114,31 @@ pub(crate) async fn execute_cron_job_once(
             if let Some(task) = implied_agent_task(job, &payload) {
                 execute_named_agent_task(state, &job.agent_id, &task).await
             } else {
-                tracing::info!(job = %job.name, message = payload.get("message").and_then(|v| v.as_str()).unwrap_or("cron heartbeat"), "cron job executed");
-                ("success", None)
+                let message = payload
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("cron heartbeat");
+                tracing::info!(job = %job.name, message, "cron job executed");
+                CronExecutionResult {
+                    status: "success",
+                    error: None,
+                    output: Some(message.to_string()),
+                }
             }
         }
         "metric_snapshot" => {
             let snapshot = serde_json::json!({"job_id": job.id, "job_name": job.name, "schedule_kind": job.schedule_kind, "timestamp": chrono::Utc::now().to_rfc3339()});
             match ironclad_db::metrics::record_metric_snapshot(&state.db, &snapshot.to_string()) {
-                Ok(_) => ("success", None),
-                Err(e) => ("error", Some(format!("metric_snapshot failed: {e}"))),
+                Ok(_) => CronExecutionResult {
+                    status: "success",
+                    error: None,
+                    output: Some("metric snapshot recorded".to_string()),
+                },
+                Err(e) => CronExecutionResult {
+                    status: "error",
+                    error: Some(format!("metric_snapshot failed: {e}")),
+                    output: None,
+                },
             }
         }
         "expire_sessions" => {
@@ -118,8 +147,16 @@ pub(crate) async fn execute_cron_job_once(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(86_400);
             match ironclad_db::sessions::expire_stale_sessions(&state.db, ttl_seconds) {
-                Ok(_) => ("success", None),
-                Err(e) => ("error", Some(format!("expire_sessions failed: {e}"))),
+                Ok(expired) => CronExecutionResult {
+                    status: "success",
+                    error: None,
+                    output: Some(format!("expired {expired} stale sessions")),
+                },
+                Err(e) => CronExecutionResult {
+                    status: "error",
+                    error: Some(format!("expire_sessions failed: {e}")),
+                    output: None,
+                },
             }
         }
         "record_transaction" => {
@@ -145,12 +182,28 @@ pub(crate) async fn execute_cron_job_once(
                 counterparty,
                 tx_hash,
             ) {
-                Ok(_) => ("success", None),
-                Err(e) => ("error", Some(format!("record_transaction failed: {e}"))),
+                Ok(_) => CronExecutionResult {
+                    status: "success",
+                    error: None,
+                    output: Some(format!("transaction recorded: {amount} {currency}")),
+                },
+                Err(e) => CronExecutionResult {
+                    status: "error",
+                    error: Some(format!("record_transaction failed: {e}")),
+                    output: None,
+                },
             }
         }
-        "noop" => ("success", None),
-        other => ("error", Some(format!("unknown action: {other}"))),
+        "noop" => CronExecutionResult {
+            status: "success",
+            error: None,
+            output: None,
+        },
+        other => CronExecutionResult {
+            status: "error",
+            error: Some(format!("unknown action: {other}")),
+            output: None,
+        },
     }
 }
 
@@ -158,7 +211,7 @@ async fn execute_agent_task_for_job(
     state: &AppState,
     job: &ironclad_db::cron::CronJob,
     payload: &Value,
-) -> (&'static str, Option<String>) {
+) -> CronExecutionResult {
     let task = payload
         .get("task")
         .and_then(|v| v.as_str())
@@ -172,10 +225,11 @@ async fn execute_agent_task_for_job(
             .map(str::trim)
             .filter(|s| !s.is_empty()));
     let Some(task) = task else {
-        return (
-            "error",
-            Some("agent_task payload missing task/prompt/message".to_string()),
-        );
+        return CronExecutionResult {
+            status: "error",
+            error: Some("agent_task payload missing task/prompt/message".to_string()),
+            output: None,
+        };
     };
     execute_named_agent_task(state, &job.agent_id, task).await
 }
@@ -184,22 +238,31 @@ async fn execute_named_agent_task(
     state: &AppState,
     agent_id: &str,
     task: &str,
-) -> (&'static str, Option<String>) {
+) -> CronExecutionResult {
     if let Ok(subagents) = ironclad_db::agents::list_sub_agents(&state.db)
         && let Some(sa) = subagents
             .into_iter()
             .find(|sa| sa.name.eq_ignore_ascii_case(agent_id) && sa.enabled)
     {
         if let Err(err) = subagent_integrity::ensure_taskable_subagent_ready(state, &sa).await {
-            return (
-                "error",
-                Some(format!("subagent integrity repair failed: {err}")),
-            );
+            return CronExecutionResult {
+                status: "error",
+                error: Some(format!("subagent integrity repair failed: {err}")),
+                output: None,
+            };
         }
     }
     match execute_scheduled_agent_task(state, agent_id, task).await {
-        Ok(_) => ("success", None),
-        Err(err) => ("error", Some(err)),
+        Ok(output) => CronExecutionResult {
+            status: "success",
+            error: None,
+            output: Some(output),
+        },
+        Err(err) => CronExecutionResult {
+            status: "error",
+            error: Some(err),
+            output: None,
+        },
     }
 }
 

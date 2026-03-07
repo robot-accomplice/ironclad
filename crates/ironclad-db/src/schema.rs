@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS cron_runs (
     status TEXT NOT NULL,
     duration_ms INTEGER,
     error TEXT,
+    output_text TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -681,6 +682,10 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
             [],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "cron_runs", "output_text")? {
+        conn.execute("ALTER TABLE cron_runs ADD COLUMN output_text TEXT", [])
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
     }
     if !has_column(&conn, "revenue_opportunities", "attributable_costs_usdc")? {
         conn.execute(

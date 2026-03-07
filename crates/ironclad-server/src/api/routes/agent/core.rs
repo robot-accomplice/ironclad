@@ -944,7 +944,7 @@ async fn try_execution_shortcut(
                 tool_results.push(("orchestrate-subagents".to_string(), format!("error: {err}")));
                 return Some(InferenceOutput {
                     content: format!(
-                        "Duncan here. I attempted delegated email triage but the task failed: {}. \
+                        "I attempted delegated email triage but the task failed: {}. \
                          If Proton Bridge is expected, I can probe himalaya/bridge readiness and retry immediately.",
                         err
                     ),
@@ -1905,13 +1905,13 @@ Please continue with a narrower or next-step command.",
                 total_cost += result.cost;
                 let retried = sanitize_model_output(result.content, state.hmac_secret.as_ref());
                 final_content = if is_overbroad_sensitive_conflict_refusal(&retried) {
-                    "Duncan here: “Fear is the mind-killer.” In this context, the point is to resist panic and choose disciplined judgment.".to_string()
+                    "“Fear is the mind-killer.” In this context, the point is to resist panic and choose disciplined judgment.".to_string()
                 } else {
                     retried
                 };
             }
             Err(_) => {
-                final_content = "Duncan here: “Fear is the mind-killer.” In this context, the point is to resist panic and choose disciplined judgment.".to_string();
+                final_content = "“Fear is the mind-killer.” In this context, the point is to resist panic and choose disciplined judgment.".to_string();
             }
         }
     }

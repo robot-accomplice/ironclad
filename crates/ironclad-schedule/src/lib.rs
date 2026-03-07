@@ -110,6 +110,7 @@ pub async fn run_cron_worker(db: ironclad_db::Database, instance_id: String) {
                 result_status,
                 Some(duration),
                 error_msg.as_deref(),
+                None,
             ) {
                 tracing::warn!(job_id = %job.id, error = %e, "failed to record cron run");
             }
