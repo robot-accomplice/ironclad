@@ -1273,7 +1273,7 @@ async fn admin_endpoints_cover_config_wallet_breaker_and_stats() {
     let body = json_body(resp).await;
     assert_eq!(
         body["immutable_sections"],
-        serde_json::json!(["server", "treasury", "a2a", "wallet"])
+        serde_json::json!(["server", "a2a", "wallet"])
     );
     assert!(body["mutable_sections"].is_array());
 

@@ -344,6 +344,29 @@ fn mark_swap_confirmed_with_metrics(
     opportunity_id: &str,
     tx_hash: &str,
 ) -> Result<(), JsonError> {
+    let task = ironclad_db::revenue_swap_tasks::get_revenue_swap_task(db, opportunity_id)
+        .map_err(|e| internal_err(&e))?
+        .ok_or_else(|| {
+            not_found(format!(
+                "revenue swap task for opportunity '{}' not found",
+                opportunity_id
+            ))
+        })?;
+    let source = task
+        .source_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .ok_or_else(|| bad_request("revenue swap task source is missing or invalid JSON"))?;
+    let amount = source
+        .get("amount")
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| bad_request("revenue swap task is missing amount"))?;
+    let currency = source
+        .get("from_currency")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| bad_request("revenue swap task is missing from_currency"))?;
     let updated =
         ironclad_db::revenue_swap_tasks::mark_revenue_swap_confirmed(db, opportunity_id, tx_hash)
             .map_err(|e| internal_err(&e))?;
@@ -356,14 +379,16 @@ fn mark_swap_confirmed_with_metrics(
     ironclad_db::metrics::record_transaction_with_metadata(
         db,
         "revenue_swap_execution",
-        0.0,
-        "USDC",
+        amount,
+        currency,
         Some("revenue_swap"),
         Some(tx_hash),
         Some(
             &serde_json::to_string(&json!({
                 "opportunity_id": opportunity_id,
                 "status": "completed",
+                "amount": amount,
+                "currency": currency,
             }))
             .map_err(|e| internal_err(&ironclad_core::IroncladError::Database(e.to_string())))?,
         ),

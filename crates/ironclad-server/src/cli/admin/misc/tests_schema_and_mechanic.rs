@@ -300,17 +300,21 @@ fn normalize_schema_safe_repairs_cron_payloads_and_disables_invalid_cron() {
         "CREATE TABLE sub_agents (role TEXT, skills_json TEXT);
              CREATE TABLE cron_jobs (
                id TEXT PRIMARY KEY,
-               payload_json TEXT NOT NULL,
+               name TEXT NOT NULL,
+               description TEXT,
                enabled INTEGER NOT NULL DEFAULT 1,
                schedule_kind TEXT NOT NULL,
-               schedule_expr TEXT
+               schedule_expr TEXT,
+               agent_id TEXT NOT NULL DEFAULT '',
+               session_target TEXT NOT NULL DEFAULT 'main',
+               payload_json TEXT NOT NULL
              );
-             INSERT INTO cron_jobs (id, payload_json, enabled, schedule_kind, schedule_expr)
-               VALUES ('j1', '{\"action\":\"unknown\"}', 1, 'every', '5s');
-             INSERT INTO cron_jobs (id, payload_json, enabled, schedule_kind, schedule_expr)
-               VALUES ('j2', '{\"kind\":\"metricSnapshot\"}', 1, 'every', '5s');
-             INSERT INTO cron_jobs (id, payload_json, enabled, schedule_kind, schedule_expr)
-               VALUES ('j3', '{\"action\":\"log\"}', 1, 'cron', 'NOT_VALID_CRON');",
+             INSERT INTO cron_jobs (id, name, payload_json, enabled, schedule_kind, schedule_expr)
+               VALUES ('j1', 'job1', '{\"action\":\"unknown\"}', 1, 'every', '5s');
+             INSERT INTO cron_jobs (id, name, payload_json, enabled, schedule_kind, schedule_expr)
+               VALUES ('j2', 'job2', '{\"kind\":\"metricSnapshot\"}', 1, 'every', '5s');
+             INSERT INTO cron_jobs (id, name, payload_json, enabled, schedule_kind, schedule_expr)
+               VALUES ('j3', 'job3', '{\"action\":\"log\"}', 1, 'cron', 'NOT_VALID_CRON');",
     )
     .unwrap();
     drop(conn);

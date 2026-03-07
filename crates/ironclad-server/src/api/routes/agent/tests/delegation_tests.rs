@@ -39,7 +39,13 @@ async fn delegation_repairs_hollow_subagent_before_selection() {
     let repaired_skills = super::parse_skills_json(repaired.skills_json.as_deref());
     assert!(
         !repaired_skills.is_empty(),
-        "hollow subagent should be repaired with inferred skills"
+        "hollow subagent should be repaired with real skill names"
+    );
+    assert!(
+        repaired_skills
+            .iter()
+            .all(|skill| matches!(skill.as_str(), "context-continuity" | "self-diagnostics")),
+        "repair should persist actual known skills, not guessed capability tokens"
     );
     let runtime = state.registry.get_agent("moltbook-monitor").await.unwrap();
     assert_eq!(

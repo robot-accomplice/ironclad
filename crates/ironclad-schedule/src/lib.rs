@@ -521,8 +521,8 @@ mod tests {
         let db = test_db();
         let job = job_with_payload(
             &db,
-            "legacy-expire",
-            r#"{"kind":"expireSessions","ttl_seconds":3600}"#,
+            "expire-action",
+            r#"{"action":"expire_sessions","ttl_seconds":3600}"#,
         );
         let (status, error) = execute_cron_job(&db, &job);
         assert_eq!(status, "success");
@@ -534,8 +534,8 @@ mod tests {
         let db = test_db();
         let job = job_with_payload(
             &db,
-            "legacy-tx",
-            r#"{"kind":"recordTransaction","amount":5.0}"#,
+            "tx-action",
+            r#"{"action":"record_transaction","amount":5.0}"#,
         );
         let (status, error) = execute_cron_job(&db, &job);
         assert_eq!(status, "success");
@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn execute_cron_job_log_action() {
         let db = test_db();
-        let job = job_with_payload(&db, "legacy-log", r#"{"kind":"log","message":"test"}"#);
+        let job = job_with_payload(&db, "log-action", r#"{"action":"log","message":"test"}"#);
         let (status, error) = execute_cron_job(&db, &job);
         assert_eq!(status, "success");
         assert!(error.is_none());
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn execute_cron_job_noop_action() {
         let db = test_db();
-        let job = job_with_payload(&db, "legacy-noop", r#"{"kind":"noop"}"#);
+        let job = job_with_payload(&db, "noop-action", r#"{"action":"noop"}"#);
         let (status, error) = execute_cron_job(&db, &job);
         assert_eq!(status, "success");
         assert!(error.is_none());
@@ -883,17 +883,19 @@ mod tests {
         handle.abort();
         let _ = handle.await;
 
-        let success_count: i64 = db
+        // Legacy "kind" payloads are no longer mapped — they resolve to "unknown" action
+        // and produce an error run.
+        let error_count: i64 = db
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM cron_runs WHERE status = 'success'",
+                "SELECT COUNT(*) FROM cron_runs WHERE status = 'error'",
                 [],
                 |row| row.get(0),
             )
-            .expect("count success runs");
+            .expect("count error runs");
         assert!(
-            success_count >= 1,
-            "expected success run for legacy agent turn"
+            error_count >= 1,
+            "expected error run for unmapped legacy agent turn kind"
         );
     }
 

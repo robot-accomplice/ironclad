@@ -1,11 +1,14 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
+use tokio::sync::Semaphore;
 
 use crate::api::{AppState, execute_scheduled_agent_task, subagent_integrity};
 
 pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
     let mut interval = tokio::time::interval(Duration::from_secs(60));
+    let concurrency = Arc::new(Semaphore::new(4));
     tracing::info!("Server cron worker started");
 
     loop {
@@ -60,26 +63,46 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
             {
                 continue;
             }
-            let start = std::time::Instant::now();
-            let result = execute_cron_job_once(&state, job).await;
-            let duration = start.elapsed().as_millis() as i64;
-            let _ = ironclad_db::cron::record_run(
-                &state.db,
-                &job.id,
-                result.status,
-                Some(duration),
-                result.error.as_deref(),
-                result.output.as_deref(),
-            );
-            let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-            let next = ironclad_schedule::DurableScheduler::calculate_next_run(
-                kind,
-                job.schedule_expr.as_deref(),
-                job.schedule_every_ms,
-                &now_str,
-            );
-            let _ = ironclad_db::cron::update_next_run_at(&state.db, &job.id, next.as_deref());
-            let _ = ironclad_db::cron::release_lease(&state.db, &job.id, &instance_id);
+            let Ok(permit) = concurrency.clone().try_acquire_owned() else {
+                let _ = ironclad_db::cron::release_lease(&state.db, &job.id, &instance_id);
+                tracing::warn!(job=%job.name, "Cron worker saturated; deferring leased job to next tick");
+                continue;
+            };
+            let state_clone = state.clone();
+            let job_clone = job.clone();
+            let instance_id_clone = instance_id.clone();
+            let kind = kind.to_string();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let start = std::time::Instant::now();
+                let result = execute_cron_job_once(&state_clone, &job_clone).await;
+                let duration = start.elapsed().as_millis() as i64;
+                let _ = ironclad_db::cron::record_run(
+                    &state_clone.db,
+                    &job_clone.id,
+                    result.status,
+                    Some(duration),
+                    result.error.as_deref(),
+                    result.output.as_deref(),
+                );
+                let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+                let next = ironclad_schedule::DurableScheduler::calculate_next_run(
+                    &kind,
+                    job_clone.schedule_expr.as_deref(),
+                    job_clone.schedule_every_ms,
+                    &now_str,
+                );
+                let _ = ironclad_db::cron::update_next_run_at(
+                    &state_clone.db,
+                    &job_clone.id,
+                    next.as_deref(),
+                );
+                let _ = ironclad_db::cron::release_lease(
+                    &state_clone.db,
+                    &job_clone.id,
+                    &instance_id_clone,
+                );
+            });
         }
     }
 }
@@ -243,14 +266,13 @@ async fn execute_named_agent_task(
         && let Some(sa) = subagents
             .into_iter()
             .find(|sa| sa.name.eq_ignore_ascii_case(agent_id) && sa.enabled)
+        && let Err(err) = subagent_integrity::ensure_taskable_subagent_ready(state, &sa).await
     {
-        if let Err(err) = subagent_integrity::ensure_taskable_subagent_ready(state, &sa).await {
-            return CronExecutionResult {
-                status: "error",
-                error: Some(format!("subagent integrity repair failed: {err}")),
-                output: None,
-            };
-        }
+        return CronExecutionResult {
+            status: "error",
+            error: Some(format!("subagent integrity repair failed: {err}")),
+            output: None,
+        };
     }
     match execute_scheduled_agent_task(state, agent_id, task).await {
         Ok(output) => CronExecutionResult {

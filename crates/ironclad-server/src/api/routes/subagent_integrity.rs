@@ -5,6 +5,18 @@ use ironclad_agent::subagents::{AgentInstance, AgentInstanceConfig, AgentRunStat
 use super::AppState;
 use super::subagents::{ROLE_SUBAGENT, normalize_role, resolve_taskable_subagent_runtime_model};
 
+const BUILTIN_SKILLS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/builtin-skills.json"));
+const INTERNALIZED_SKILLS: &[&str] = &[
+    "update-and-rollback",
+    "workflow-design",
+    "skill-creation",
+    "session-operator",
+    "claims-auditor",
+    "efficacy-assessment",
+    "fast-cache",
+    "model-routing-tuner",
+];
+
 fn parse_skills_json(skills_json: Option<&str>) -> Vec<String> {
     skills_json
         .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
@@ -30,7 +42,31 @@ pub(crate) struct SubagentIntegrity {
     pub repairable: bool,
 }
 
-pub(crate) fn infer_subagent_skills(agent: &ironclad_db::agents::SubAgentRow) -> Vec<String> {
+#[derive(Debug, serde::Deserialize)]
+struct BuiltinSkillCatalogEntry {
+    name: String,
+}
+
+fn skill_registry_names(state: &AppState) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> =
+        serde_json::from_str::<Vec<BuiltinSkillCatalogEntry>>(BUILTIN_SKILLS_JSON)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| entry.name.to_ascii_lowercase())
+            .collect();
+    out.extend(INTERNALIZED_SKILLS.iter().map(|s| s.to_ascii_lowercase()));
+    if let Ok(db_skills) = ironclad_db::skills::list_skills(&state.db) {
+        out.extend(
+            db_skills
+                .into_iter()
+                .filter(|s| s.enabled)
+                .map(|s| s.name.to_ascii_lowercase()),
+        );
+    }
+    out
+}
+
+fn inferred_skill_tokens(agent: &ironclad_db::agents::SubAgentRow) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for token in capability_tokens(&agent.name.replace(['-', '_'], " ")) {
         out.insert(token);
@@ -45,7 +81,35 @@ pub(crate) fn infer_subagent_skills(agent: &ironclad_db::agents::SubAgentRow) ->
             out.insert(token);
         }
     }
-    out.into_iter().take(8).collect()
+    out
+}
+
+fn matched_repair_skills(
+    state: &AppState,
+    agent: &ironclad_db::agents::SubAgentRow,
+) -> Vec<String> {
+    let registry = skill_registry_names(state);
+    let tokens = inferred_skill_tokens(agent);
+    let mut scored: Vec<(String, usize)> = registry
+        .into_iter()
+        .map(|skill| {
+            let overlap = capability_tokens(&skill.replace('-', " "))
+                .into_iter()
+                .filter(|tok| tokens.contains(tok))
+                .count();
+            (skill, overlap)
+        })
+        .filter(|(_, overlap)| *overlap > 0)
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut matched: Vec<String> = scored.into_iter().map(|(skill, _)| skill).take(4).collect();
+    if matched.is_empty() {
+        matched = vec![
+            "context-continuity".to_string(),
+            "self-diagnostics".to_string(),
+        ];
+    }
+    matched
 }
 
 pub(crate) fn assess_subagent_integrity(
@@ -54,7 +118,7 @@ pub(crate) fn assess_subagent_integrity(
     session_count: i64,
 ) -> SubagentIntegrity {
     let fixed_skills = parse_skills_json(agent.skills_json.as_deref());
-    let inferred_skills = infer_subagent_skills(agent);
+    let inferred_skills = inferred_skill_tokens(agent).into_iter().take(8).collect();
     let runtime_state = runtime
         .map(|inst| match inst.state {
             AgentRunState::Idle => "idle",
@@ -69,9 +133,7 @@ pub(crate) fn assess_subagent_integrity(
     let runtime_running = runtime.is_some_and(|inst| inst.state == AgentRunState::Running);
     let missing_session = session_count <= 0;
     let has_fixed_skills = !fixed_skills.is_empty();
-    let repairable = normalize_role(&agent.role) == Some(ROLE_SUBAGENT)
-        && agent.enabled
-        && (has_fixed_skills || !inferred_skills.is_empty());
+    let repairable = normalize_role(&agent.role) == Some(ROLE_SUBAGENT) && agent.enabled;
 
     SubagentIntegrity {
         inferred_skills,
@@ -105,6 +167,7 @@ pub(crate) async fn ensure_taskable_subagent_ready(
         .copied()
         .unwrap_or(agent.session_count);
     let integrity = assess_subagent_integrity(agent, runtime.as_ref(), session_count);
+    let repair_skills = matched_repair_skills(state, agent);
 
     if !integrity.repairable {
         return Err(format!(
@@ -115,10 +178,9 @@ pub(crate) async fn ensure_taskable_subagent_ready(
 
     let mut updated = agent.clone();
     let mut changed = false;
-    if !integrity.has_fixed_skills {
-        updated.skills_json = Some(
-            serde_json::to_string(&integrity.inferred_skills).unwrap_or_else(|_| "[]".to_string()),
-        );
+    if !integrity.has_fixed_skills && !repair_skills.is_empty() {
+        updated.skills_json =
+            Some(serde_json::to_string(&repair_skills).unwrap_or_else(|_| "[]".to_string()));
         changed = true;
     }
     if changed {
