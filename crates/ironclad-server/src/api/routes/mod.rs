@@ -458,22 +458,23 @@ async fn security_headers_layer(
 pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, breaker_open, breaker_reset, breaker_status, browser_action, browser_start,
-        browser_status, browser_stop, change_agent_model, create_service_quote,
-        delete_provider_key, execute_plugin_tool, fulfill_revenue_opportunity,
-        fulfill_service_request, generate_deep_analysis, get_agents, get_available_models,
-        get_cache_stats, get_capacity_stats, get_config, get_config_apply_status,
-        get_config_capabilities, get_costs, get_efficiency, get_mcp_runtime,
-        get_overview_timeseries, get_plugins, get_recommendations, get_revenue_opportunity,
-        get_routing_dataset, get_routing_diagnostics, get_runtime_surfaces, get_service_request,
-        get_throttle_stats, get_transactions, intake_micro_bounty_opportunity,
-        intake_oracle_feed_opportunity, intake_revenue_opportunity, list_discovered_agents,
-        list_paired_devices, list_revenue_opportunities, list_services_catalog,
+        browser_status, browser_stop, change_agent_model, confirm_revenue_swap_task,
+        create_service_quote, delete_provider_key, execute_plugin_tool, fail_revenue_swap_task,
+        fulfill_revenue_opportunity, fulfill_service_request, generate_deep_analysis, get_agents,
+        get_available_models, get_cache_stats, get_capacity_stats, get_config,
+        get_config_apply_status, get_config_capabilities, get_costs, get_efficiency,
+        get_mcp_runtime, get_overview_timeseries, get_plugins, get_recommendations,
+        get_revenue_opportunity, get_routing_dataset, get_routing_diagnostics,
+        get_runtime_surfaces, get_service_request, get_throttle_stats, get_transactions,
+        intake_micro_bounty_opportunity, intake_oracle_feed_opportunity,
+        intake_revenue_opportunity, list_discovered_agents, list_paired_devices,
+        list_revenue_opportunities, list_revenue_swap_tasks, list_services_catalog,
         mcp_client_disconnect, mcp_client_discover, pair_device, plan_revenue_opportunity,
         qualify_revenue_opportunity, register_discovered_agent, roster, run_routing_eval,
         score_revenue_opportunity, set_provider_key, settle_revenue_opportunity, start_agent,
-        stop_agent, toggle_plugin, unpair_device, update_config, verify_discovered_agent,
-        verify_paired_device, verify_service_payment, wallet_address, wallet_balance,
-        workspace_state,
+        start_revenue_swap_task, stop_agent, toggle_plugin, unpair_device, update_config,
+        verify_discovered_agent, verify_paired_device, verify_service_payment, wallet_address,
+        wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
@@ -607,6 +608,19 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/services/opportunities/{id}/settle",
             post(settle_revenue_opportunity),
+        )
+        .route("/api/services/swaps", get(list_revenue_swap_tasks))
+        .route(
+            "/api/services/swaps/{id}/start",
+            post(start_revenue_swap_task),
+        )
+        .route(
+            "/api/services/swaps/{id}/confirm",
+            post(confirm_revenue_swap_task),
+        )
+        .route(
+            "/api/services/swaps/{id}/fail",
+            post(fail_revenue_swap_task),
         )
         .route("/api/stats/cache", get(get_cache_stats))
         .route("/api/stats/capacity", get(get_capacity_stats))
@@ -2101,6 +2115,102 @@ primary = "ollama/qwen3:8b"
         let body = json_body(resp).await;
         assert_eq!(body["count"], 2);
         assert_eq!(body["opportunities"][0]["strategy"], "oracle_feed");
+    }
+
+    #[tokio::test]
+    async fn revenue_swap_task_lifecycle_routes_work() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":4.0,"payload":{"issue":"swap-lifecycle"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for (path, body) in [
+            (
+                format!("/api/services/opportunities/{id}/qualify"),
+                r#"{"approved":true}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/plan"),
+                r#"{"plan":{"executor":"self"}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/fulfill"),
+                r#"{"evidence":{"ok":true}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/settle"),
+                r#"{"settlement_ref":"tx_swap_lifecycle","amount_usdc":4.0,"currency":"USDC"}"#
+                    .to_string(),
+            ),
+        ] {
+            let _ = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let start_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/swaps/{id}/start"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(start_resp.status(), StatusCode::OK);
+
+        let confirm_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/swaps/{id}/confirm"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"tx_hash":"0xswap123"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(confirm_resp.status(), StatusCode::OK);
+
+        let list_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services/swaps?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body = json_body(list_resp).await;
+        assert_eq!(body["count"], 1);
+        assert_eq!(body["swap_tasks"][0]["status"], "completed");
     }
 
     #[tokio::test]

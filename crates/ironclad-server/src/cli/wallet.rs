@@ -18,6 +18,10 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let tax = &balance["self_funding"]["tax"];
     let accounting = &balance["revenue_accounting"];
     let swap_queue = &balance["revenue_swap_queue"];
+    let strategy_summary = balance["revenue_strategy_summary"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     kv_accent("Balance", &format!("{bal} {currency}"));
     kv_mono("Address", addr);
     if swap.is_object() {
@@ -91,6 +95,17 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
             ),
         );
     }
+    if !strategy_summary.is_empty() {
+        let top = &strategy_summary[0];
+        kv(
+            "Top Revenue Strategy",
+            &format!(
+                "{} (net {:.2} USDC)",
+                top["strategy"].as_str().unwrap_or("unknown"),
+                top["net_profit_usdc"].as_f64().unwrap_or(0.0)
+            ),
+        );
+    }
     if let Some(note) = balance["note"].as_str() {
         eprintln!();
         eprintln!("    {DIM}\u{2139}  {note}{RESET}");
@@ -128,6 +143,10 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
     let tax = &balance["self_funding"]["tax"];
     let accounting = &balance["revenue_accounting"];
     let swap_queue = &balance["revenue_swap_queue"];
+    let strategy_summary = balance["revenue_strategy_summary"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     eprintln!();
     kv_accent("Balance", &format!("{bal} {currency}"));
     if swap.is_object() {
@@ -169,6 +188,17 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
                 swap_queue["pending"].as_i64().unwrap_or(0),
                 swap_queue["in_progress"].as_i64().unwrap_or(0),
                 swap_queue["failed"].as_i64().unwrap_or(0),
+            ),
+        );
+    }
+    if !strategy_summary.is_empty() {
+        let top = &strategy_summary[0];
+        kv(
+            "Top Strategy",
+            &format!(
+                "{} ({:.2} USDC net)",
+                top["strategy"].as_str().unwrap_or("unknown"),
+                top["net_profit_usdc"].as_f64().unwrap_or(0.0)
             ),
         );
     }
