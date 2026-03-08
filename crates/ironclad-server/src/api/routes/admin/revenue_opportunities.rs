@@ -9,13 +9,16 @@ pub async fn intake_revenue_opportunity(
     if source.is_empty() || strategy.is_empty() {
         return Err(bad_request("source and strategy must be non-empty"));
     }
-    if req.expected_revenue_usdc <= 0.0 {
+    if !req.expected_revenue_usdc.is_finite() || req.expected_revenue_usdc <= 0.0 {
         return Err(bad_request("expected_revenue_usdc must be positive"));
     }
 
     let opportunity_id = format!("ro_{}", uuid::Uuid::new_v4().simple());
     let payload_json = serde_json::to_string(&req.payload)
         .map_err(|e| bad_request(format!("invalid payload: {e}")))?;
+    if payload_json.len() > 65_536 {
+        return Err(bad_request("payload exceeds max size of 64KB"));
+    }
     let new_opp = ironclad_db::service_revenue::NewRevenueOpportunity {
         id: &opportunity_id,
         source: &source,
@@ -154,11 +157,7 @@ pub async fn qualify_revenue_opportunity(
         .map_err(|e| internal_err(&e))?
         .ok_or_else(|| not_found(format!("revenue opportunity '{}' not found", id)))?;
     let approved = req.approved.unwrap_or(row.recommended_approved);
-    let reason = if req.reason.trim().is_empty() {
-        row.score_reason.as_deref().unwrap_or_default()
-    } else {
-        req.reason.trim()
-    };
+    let reason = req.reason.trim();
     let updated = ironclad_db::service_revenue::qualify_revenue_opportunity(
         &state.db,
         &id,
@@ -192,6 +191,9 @@ pub async fn plan_revenue_opportunity(
 ) -> Result<impl IntoResponse, JsonError> {
     let plan_json =
         serde_json::to_string(&req.plan).map_err(|e| bad_request(format!("invalid plan: {e}")))?;
+    if plan_json.len() > 65_536 {
+        return Err(bad_request("plan payload exceeds max size of 64KB"));
+    }
     let updated =
         ironclad_db::service_revenue::plan_revenue_opportunity(&state.db, &id, &plan_json)
             .map_err(|e| internal_err(&e))?;
@@ -213,6 +215,9 @@ pub async fn fulfill_revenue_opportunity(
 ) -> Result<impl IntoResponse, JsonError> {
     let evidence_json = serde_json::to_string(&req.evidence)
         .map_err(|e| bad_request(format!("invalid evidence: {e}")))?;
+    if evidence_json.len() > 65_536 {
+        return Err(bad_request("evidence payload exceeds max size of 64KB"));
+    }
     let updated = ironclad_db::service_revenue::mark_revenue_opportunity_fulfilled(
         &state.db,
         &id,

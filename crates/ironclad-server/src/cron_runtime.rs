@@ -239,6 +239,13 @@ pub(crate) async fn execute_cron_job_once(
                     output: None,
                 };
             };
+            if !amount.is_finite() {
+                return CronExecutionResult {
+                    status: "error",
+                    error: Some("record_transaction amount must be finite".to_string()),
+                    output: None,
+                };
+            }
             let currency = payload
                 .get("currency")
                 .and_then(|v| v.as_str())

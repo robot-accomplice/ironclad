@@ -21,6 +21,16 @@ pub async fn record_revenue_opportunity_feedback(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or("operator");
+    if source.len() > 128 {
+        return Err(bad_request("source exceeds max length of 128 characters"));
+    }
+    if let Some(ref comment) = req.comment
+        && comment.len() > 2048
+    {
+        return Err(bad_request(
+            "comment exceeds max length of 2048 characters",
+        ));
+    }
     let feedback_id = ironclad_db::revenue_feedback::record_revenue_feedback(
         &state.db,
         &id,

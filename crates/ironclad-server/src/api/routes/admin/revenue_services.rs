@@ -142,6 +142,11 @@ pub async fn create_service_quote(
     let quote_expires_at = (Utc::now() + Duration::hours(24)).to_rfc3339();
     let parameters_json = serde_json::to_string(&req.parameters)
         .map_err(|e| bad_request(format!("invalid parameters: {e}")))?;
+    if parameters_json.len() > 65_536 {
+        return Err(bad_request(
+            "parameters payload exceeds max size of 64KB",
+        ));
+    }
 
     let new_req = ironclad_db::service_revenue::NewServiceRequest {
         id: &request_id,
@@ -208,8 +213,8 @@ pub async fn verify_service_payment(
     if tx_hash.is_empty() || tx_hash.len() > 128 {
         return Err(bad_request("tx_hash must be non-empty and <= 128 chars"));
     }
-    if req.amount_usdc <= 0.0 {
-        return Err(bad_request("amount_usdc must be positive"));
+    if !req.amount_usdc.is_finite() || req.amount_usdc <= 0.0 {
+        return Err(bad_request("amount_usdc must be a finite positive number"));
     }
 
     let existing = ironclad_db::service_revenue::get_service_request(&state.db, &id)

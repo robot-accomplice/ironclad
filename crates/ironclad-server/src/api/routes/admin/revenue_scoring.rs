@@ -64,8 +64,15 @@ pub(super) fn score_revenue_payload(
         ),
     )
     .map_err(|e| internal_err(&e))?;
-    ironclad_db::revenue_scoring::persist_revenue_opportunity_score(db, id, &score)
-        .map_err(|e| internal_err(&e))?;
+    let persisted =
+        ironclad_db::revenue_scoring::persist_revenue_opportunity_score(db, id, &score)
+            .map_err(|e| internal_err(&e))?;
+    if !persisted {
+        tracing::error!(opportunity_id = %id, "score computed but persist wrote 0 rows");
+        return Err(internal_err(
+            &"score persistence failed: opportunity not found during update",
+        ));
+    }
     Ok(score)
 }
 

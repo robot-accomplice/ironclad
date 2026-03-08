@@ -174,6 +174,10 @@ fn update_revenue_swap_status(
         if let Some(tx_hash) = tx_hash {
             obj.insert("swap_tx_hash".into(), json!(tx_hash));
         }
+    } else {
+        return Err(IroncladError::Database(format!(
+            "source JSON for swap task {task_id} is not a JSON object"
+        )));
     }
     // Include `AND status = ?4` to atomically guard against concurrent status changes
     // (closes the TOCTOU window between the SELECT above and this UPDATE).

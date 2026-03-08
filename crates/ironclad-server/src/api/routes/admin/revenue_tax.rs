@@ -78,6 +78,17 @@ pub async fn submit_revenue_tax_task(
     let source_obj = source
         .as_object()
         .ok_or_else(|| bad_request("revenue tax task source must be a JSON object"))?;
+    // F1: Prevent double-submission — if a tx_hash is already recorded, direct to reconcile
+    if source_obj
+        .get("tax_tx_hash")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .is_some()
+    {
+        return Err(bad_request(
+            "tax payout already submitted; use the reconcile endpoint to check on-chain status",
+        ));
+    }
     let target_chain = source_obj
         .get("target_chain")
         .and_then(|v| v.as_str())

@@ -395,6 +395,14 @@ pub fn settle_revenue_opportunity(
             .map_err(|e| IroncladError::Database(e.to_string()))?;
         return Ok(SettlementResult::AlreadySettled);
     }
+    if status.eq_ignore_ascii_case(OPPORTUNITY_STATUS_SETTLED) {
+        tx.commit()
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        return Ok(SettlementResult::WrongState(format!(
+            "revenue opportunity '{}' is already settled with a different settlement_ref",
+            id,
+        )));
+    }
     let updated = tx
         .execute(
             "UPDATE revenue_opportunities \

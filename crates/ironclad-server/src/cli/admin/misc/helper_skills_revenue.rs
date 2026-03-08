@@ -355,7 +355,7 @@ fn probe_revenue_control_plane(
                 "INSERT INTO transactions (id, tx_type, amount, currency, counterparty, tx_hash, metadata_json, created_at) \
                  SELECT 'tx_rec_' || hex(randomblob(8)), \
                         'revenue_settlement', \
-                        COALESCE(ro.settled_amount_usdc, 0), \
+                        ro.settled_amount_usdc, \
                         'USDC', \
                         'revenue_control_plane', \
                         ro.settlement_ref, \
@@ -365,6 +365,8 @@ fn probe_revenue_control_plane(
                  WHERE ro.status = 'settled' \
                    AND ro.settlement_ref IS NOT NULL \
                    AND ro.settlement_ref != '' \
+                   AND ro.settled_amount_usdc IS NOT NULL \
+                   AND ro.settled_amount_usdc > 0 \
                    AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.tx_type='revenue_settlement' AND t.tx_hash = ro.settlement_ref)",
                 [],
             )? as i64;

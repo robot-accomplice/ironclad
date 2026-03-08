@@ -7,6 +7,11 @@ pub async fn settle_revenue_opportunity(
     if settlement_ref.is_empty() {
         return Err(bad_request("settlement_ref cannot be empty"));
     }
+    if settlement_ref.len() > 256 {
+        return Err(bad_request(
+            "settlement_ref exceeds max length of 256 characters",
+        ));
+    }
     if !req.amount_usdc.is_finite() || req.amount_usdc <= 0.0 {
         return Err(bad_request(
             "amount_usdc must be a finite positive number",
@@ -256,17 +261,33 @@ pub async fn settle_revenue_opportunity(
         result,
         ironclad_db::service_revenue::SettlementResult::AlreadySettled
     ) {
+        // F3 fix: Use DB-persisted amounts for crash-recovery re-queue, NOT caller-supplied
+        // values. This prevents a replayed request with different amounts from queuing
+        // wrong-size on-chain swaps/tax payouts.
+        let db_row = ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
+            .map_err(|e| internal_err(&e))?
+            .ok_or_else(|| {
+                internal_err(&"AlreadySettled but opportunity not found in DB")
+            })?;
+        let db_tax_amount = db_row.tax_amount_usdc;
+        let db_settled_amount = db_row.settled_amount_usdc.unwrap_or(0.0);
+        let db_tax_wallet = db_row
+            .tax_destination_wallet
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         tracing::info!(
             opportunity_id = %id,
             settlement_ref = %settlement_ref,
             auto_swap = auto_swap,
-            tax_amount_usdc = tax_amount_usdc,
+            db_tax_amount_usdc = db_tax_amount,
+            db_settled_amount_usdc = db_settled_amount,
             "settlement idempotent replay: re-queuing swap/tax tasks for crash-recovery completeness"
         );
         // Re-queue swap/tax tasks idempotently (ON CONFLICT DO UPDATE) to close the
         // crash-recovery gap where the DB settlement committed but task INSERTs did not.
-        if tax_amount_usdc > 0.0
-            && let Some(destination_wallet) = tax_destination_wallet
+        if db_tax_amount > 0.0
+            && let Some(destination_wallet) = db_tax_wallet
         {
             let tax_chain_config = swap_policy
                 .chains
@@ -278,7 +299,7 @@ pub async fn settle_revenue_opportunity(
                 &state.db,
                 RevenueTaxPayoutTask {
                     opportunity_id: &id,
-                    amount: tax_amount_usdc,
+                    amount: db_tax_amount,
                     currency: settlement_currency.as_str(),
                     target_chain: target_chain.as_str(),
                     destination_wallet,
@@ -294,7 +315,7 @@ pub async fn settle_revenue_opportunity(
                 &state.db,
                 RevenueSwapTask {
                     opportunity_id: &id,
-                    amount: req.amount_usdc,
+                    amount: db_settled_amount,
                     from_currency: settlement_currency.as_str(),
                     target_symbol: target_symbol.as_str(),
                     target_chain: target_chain.as_str(),
