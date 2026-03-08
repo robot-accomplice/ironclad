@@ -118,6 +118,15 @@ pub async fn score_revenue_opportunity(
     let row = ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
         .map_err(|e| internal_err(&e))?
         .ok_or_else(|| not_found(format!("revenue opportunity '{}' not found", id)))?;
+    if matches!(
+        row.status.as_str(),
+        "settled" | "fulfilled" | "rejected"
+    ) {
+        return Err(bad_request(format!(
+            "cannot re-score opportunity '{}' in terminal state '{}'",
+            id, row.status
+        )));
+    }
     let score = score_revenue_payload(
         &state.db,
         &id,

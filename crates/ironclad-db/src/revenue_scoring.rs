@@ -170,12 +170,14 @@ pub fn persist_revenue_opportunity_score(
     score: &RevenueOpportunityScore,
 ) -> Result<bool> {
     let conn = db.conn();
+    // Guard: do NOT overwrite score fields on settled/fulfilled/rejected records.
+    // These are terminal states whose score columns form part of the audit trail.
     let updated = conn
         .execute(
             "UPDATE revenue_opportunities \
              SET confidence_score = ?2, effort_score = ?3, risk_score = ?4, priority_score = ?5, \
                  recommended_approved = ?6, score_reason = ?7, updated_at = datetime('now') \
-             WHERE id = ?1",
+             WHERE id = ?1 AND status NOT IN ('settled', 'fulfilled', 'rejected')",
             rusqlite::params![
                 id,
                 score.confidence_score,

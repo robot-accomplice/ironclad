@@ -400,7 +400,9 @@ fn queue_revenue_swap(
          ON CONFLICT(id) DO UPDATE SET \
            title=excluded.title, description=excluded.description, \
            status = CASE WHEN tasks.status IN ('completed','failed') THEN 'pending' ELSE tasks.status END, \
-           priority=95, source=excluded.source, updated_at=datetime('now')",
+           priority=95, \
+           source = CASE WHEN tasks.status IN ('completed','failed') THEN excluded.source ELSE tasks.source END, \
+           updated_at=datetime('now')",
         rusqlite::params![
             task_id,
             title,
@@ -439,7 +441,9 @@ fn queue_revenue_tax_payout(
          ON CONFLICT(id) DO UPDATE SET \
            title=excluded.title, description=excluded.description, \
            status = CASE WHEN tasks.status IN ('completed','failed') THEN 'pending' ELSE tasks.status END, \
-           priority=96, source=excluded.source, updated_at=datetime('now')",
+           priority=96, \
+           source = CASE WHEN tasks.status IN ('completed','failed') THEN excluded.source ELSE tasks.source END, \
+           updated_at=datetime('now')",
         rusqlite::params![
             task_id,
             title,

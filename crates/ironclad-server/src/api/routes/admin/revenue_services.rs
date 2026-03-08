@@ -313,7 +313,6 @@ pub async fn fulfill_service_request(
     if output.is_empty() {
         return Err(bad_request("fulfillment_output cannot be empty"));
     }
-    validate_short("fulfillment_output", output)?;
     if output.len() > 8000 {
         return Err(bad_request(
             "fulfillment_output exceeds max length of 8000 characters",

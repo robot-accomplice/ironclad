@@ -119,8 +119,11 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                     );
                 }
                 let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+                // Map "every" back to "interval" for calculate_next_run, which matches
+                // on the DB-canonical "interval" string, not the dispatch alias "every".
+                let next_kind = if kind == "every" { "interval" } else { &kind };
                 let next = ironclad_schedule::DurableScheduler::calculate_next_run(
-                    &kind,
+                    next_kind,
                     job_clone.schedule_expr.as_deref(),
                     job_clone.schedule_every_ms,
                     &now_str,
