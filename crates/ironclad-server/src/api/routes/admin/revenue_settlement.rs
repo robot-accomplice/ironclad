@@ -7,13 +7,15 @@ pub async fn settle_revenue_opportunity(
     if settlement_ref.is_empty() {
         return Err(bad_request("settlement_ref cannot be empty"));
     }
-    if req.amount_usdc <= 0.0 {
-        return Err(bad_request("amount_usdc must be positive"));
+    if !req.amount_usdc.is_finite() || req.amount_usdc <= 0.0 {
+        return Err(bad_request(
+            "amount_usdc must be a finite positive number",
+        ));
     }
     let attributable_costs_usdc = req.attributable_costs_usdc.unwrap_or(0.0);
-    if attributable_costs_usdc < 0.0 {
+    if !attributable_costs_usdc.is_finite() || attributable_costs_usdc < 0.0 {
         return Err(bad_request(
-            "attributable_costs_usdc must be non-negative",
+            "attributable_costs_usdc must be a finite non-negative number",
         ));
     }
     if attributable_costs_usdc > req.amount_usdc {
@@ -375,7 +377,9 @@ fn queue_revenue_swap(
         "INSERT INTO tasks (id, title, description, status, priority, source, created_at, updated_at) \
          VALUES (?1, ?2, ?3, 'pending', 95, ?4, datetime('now'), datetime('now')) \
          ON CONFLICT(id) DO UPDATE SET \
-           title=excluded.title, description=excluded.description, status='pending', priority=95, source=excluded.source, updated_at=datetime('now')",
+           title=excluded.title, description=excluded.description, \
+           status = CASE WHEN tasks.status IN ('completed','failed') THEN 'pending' ELSE tasks.status END, \
+           priority=95, source=excluded.source, updated_at=datetime('now')",
         rusqlite::params![
             task_id,
             title,
@@ -409,7 +413,12 @@ fn queue_revenue_tax_payout(
     );
     let task_id = format!("rev_tax:{}", task.opportunity_id);
     conn.execute(
-        "INSERT INTO tasks (id, title, description, status, priority, source, created_at, updated_at)          VALUES (?1, ?2, ?3, 'pending', 96, ?4, datetime('now'), datetime('now'))          ON CONFLICT(id) DO UPDATE SET            title=excluded.title, description=excluded.description, status='pending', priority=96, source=excluded.source, updated_at=datetime('now')",
+        "INSERT INTO tasks (id, title, description, status, priority, source, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, 'pending', 96, ?4, datetime('now'), datetime('now')) \
+         ON CONFLICT(id) DO UPDATE SET \
+           title=excluded.title, description=excluded.description, \
+           status = CASE WHEN tasks.status IN ('completed','failed') THEN 'pending' ELSE tasks.status END, \
+           priority=96, source=excluded.source, updated_at=datetime('now')",
         rusqlite::params![
             task_id,
             title,

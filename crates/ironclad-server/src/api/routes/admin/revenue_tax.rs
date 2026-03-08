@@ -56,6 +56,11 @@ pub async fn submit_revenue_tax_task(
     Path(opportunity_id): Path<String>,
     Json(req): Json<RevenueTaxSubmitRequest>,
 ) -> Result<impl IntoResponse, JsonError> {
+    if req.calldata.trim().len() > 131_072 {
+        return Err(bad_request(
+            "calldata exceeds maximum length of 131072 hex characters",
+        ));
+    }
     let task = ironclad_db::revenue_tax_tasks::get_revenue_tax_task(&state.db, &opportunity_id)
         .map_err(|e| internal_err(&e))?
         .ok_or_else(|| not_found(format!("revenue tax task for opportunity '{}' not found", opportunity_id)))?;
@@ -80,15 +85,13 @@ pub async fn submit_revenue_tax_task(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| bad_request("revenue tax task is missing target_chain"))?;
     let wallet_chain = wallet_chain_label(state.wallet.wallet.chain_id())
-        .ok_or_else(|| bad_request(format!(
-            "wallet chain_id {} is not a supported chain for tax payout submissions",
-            state.wallet.wallet.chain_id()
-        )))?;
+        .ok_or_else(|| bad_request(
+            "wallet is not configured for a supported chain",
+        ))?;
     if !target_chain.eq_ignore_ascii_case(wallet_chain) {
-        return Err(bad_request(format!(
-            "wallet chain '{}' cannot submit tax payout for target_chain '{}'",
-            wallet_chain, target_chain
-        )));
+        return Err(bad_request(
+            "wallet is not configured for the requested target chain",
+        ));
     }
     let currency = source_obj
         .get("currency")

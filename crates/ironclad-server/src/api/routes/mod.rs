@@ -2405,7 +2405,9 @@ primary = "ollama/qwen3:8b"
             body["error"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("wallet chain")
+                .contains("wallet is not configured"),
+            "expected generic chain-mismatch error, got: {:?}",
+            body["error"]
         );
     }
 

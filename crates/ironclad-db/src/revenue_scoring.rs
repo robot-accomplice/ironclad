@@ -39,6 +39,17 @@ fn score_revenue_opportunity_from_signal(
     input: &RevenueOpportunityScoreInput<'_>,
     feedback_signal: Option<crate::revenue_feedback::RevenueFeedbackSignal>,
 ) -> RevenueOpportunityScore {
+    // Guard against NaN/Inf in revenue input — clamp() propagates NaN, so sanitize early.
+    let expected_revenue_usdc = if input.expected_revenue_usdc.is_finite() {
+        input.expected_revenue_usdc
+    } else {
+        tracing::warn!(
+            source = %input.source, strategy = %input.strategy,
+            raw = %input.expected_revenue_usdc,
+            "non-finite expected_revenue_usdc in scoring; treating as 0.0"
+        );
+        0.0
+    };
     let (payload, payload_parse_failed) = match serde_json::from_str::<Value>(input.payload_json) {
         Ok(v) => (v, false),
         Err(e) => {
@@ -99,10 +110,10 @@ fn score_revenue_opportunity_from_signal(
     if source.contains("trusted") || source.contains("board") || source.contains("feed") {
         confidence += 0.05;
     }
-    if input.expected_revenue_usdc >= 5.0 {
+    if expected_revenue_usdc >= 5.0 {
         confidence += 0.05;
     }
-    if input.expected_revenue_usdc > 500.0 {
+    if expected_revenue_usdc > 500.0 {
         risk += 0.10;
     }
     if multi_repo {
@@ -123,7 +134,7 @@ fn score_revenue_opportunity_from_signal(
     confidence = confidence.clamp(0.0, 1.0);
     effort = effort.clamp(0.0, 1.0);
     risk = risk.clamp(0.0, 1.0);
-    let revenue_weight = (input.expected_revenue_usdc / 1000.0).clamp(0.0, 1.0);
+    let revenue_weight = (expected_revenue_usdc / 1000.0).clamp(0.0, 1.0);
     let priority = ((confidence * 0.45)
         + ((1.0 - risk) * 0.25)
         + ((1.0 - effort) * 0.15)

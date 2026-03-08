@@ -368,10 +368,11 @@ fn parse_interval_expr_to_ms(expr: &str) -> Option<i64> {
     }
     let (unit_byte_offset, unit) = expr.char_indices().last()?;
     let qty = expr[..unit_byte_offset].parse::<i64>().ok()?;
-    Some(match unit {
+    let ms = match unit {
         's' | 'S' => qty.saturating_mul(1_000),
         'm' | 'M' => qty.saturating_mul(60_000),
         'h' | 'H' => qty.saturating_mul(3_600_000),
         _ => return None,
-    })
+    };
+    if ms > 0 { Some(ms) } else { None }
 }

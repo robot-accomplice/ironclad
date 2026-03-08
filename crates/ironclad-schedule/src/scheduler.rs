@@ -56,7 +56,11 @@ impl DurableScheduler {
     }
 
     /// Returns true if enough time has elapsed since `last_run` (or if there was no previous run).
+    /// Returns false for zero/negative intervals to prevent fire storms.
     pub fn evaluate_interval(last_run: Option<&str>, interval_ms: i64, now: &str) -> bool {
+        if interval_ms <= 0 {
+            return false;
+        }
         let now_dt = match parse_iso(now) {
             Some(dt) => dt,
             None => return false,

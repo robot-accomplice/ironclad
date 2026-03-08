@@ -13,7 +13,8 @@ pub fn revenue_strategy_summary(db: &Database) -> Result<Vec<Value>> {
                     AVG(priority_score) AS avg_priority_score \
              FROM revenue_opportunities \
              GROUP BY strategy \
-             ORDER BY net_profit_usdc DESC, gross_revenue_usdc DESC, strategy ASC",
+             ORDER BY net_profit_usdc DESC, gross_revenue_usdc DESC, strategy ASC \
+             LIMIT 200",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     let rows = stmt

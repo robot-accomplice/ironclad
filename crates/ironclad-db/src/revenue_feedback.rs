@@ -45,7 +45,8 @@ pub fn revenue_feedback_summary_by_strategy(db: &Database) -> Result<Vec<Value>>
             "SELECT strategy, COUNT(*), AVG(grade), MAX(created_at) \
              FROM revenue_feedback \
              GROUP BY strategy \
-             ORDER BY AVG(grade) DESC, COUNT(*) DESC, strategy ASC",
+             ORDER BY AVG(grade) DESC, COUNT(*) DESC, strategy ASC \
+             LIMIT 200",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     let rows = stmt

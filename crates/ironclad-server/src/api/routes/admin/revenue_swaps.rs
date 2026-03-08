@@ -68,6 +68,13 @@ pub async fn submit_revenue_swap_task(
     Path(opportunity_id): Path<String>,
     Json(req): Json<RevenueSwapSubmitRequest>,
 ) -> Result<impl IntoResponse, JsonError> {
+    // Cap calldata length to prevent gas-griefing with oversized EVM payloads.
+    // 131072 hex chars = 64KB decoded, well above any legitimate EVM transaction.
+    if req.calldata.trim().len() > 131_072 {
+        return Err(bad_request(
+            "calldata exceeds maximum length of 131072 hex characters",
+        ));
+    }
     let task = ironclad_db::revenue_swap_tasks::get_revenue_swap_task(&state.db, &opportunity_id)
         .map_err(|e| internal_err(&e))?
         .ok_or_else(|| {
@@ -97,15 +104,13 @@ pub async fn submit_revenue_swap_task(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| bad_request("revenue swap task is missing target_chain"))?;
     let wallet_chain = wallet_chain_label(state.wallet.wallet.chain_id())
-        .ok_or_else(|| bad_request(format!(
-            "wallet chain_id {} is not a supported chain for swap submissions",
-            state.wallet.wallet.chain_id()
-        )))?;
+        .ok_or_else(|| bad_request(
+            "wallet is not configured for a supported chain",
+        ))?;
     if !target_chain.eq_ignore_ascii_case(wallet_chain) {
-        return Err(bad_request(format!(
-            "wallet chain '{}' cannot submit swap for target_chain '{}'",
-            wallet_chain, target_chain
-        )));
+        return Err(bad_request(
+            "wallet is not configured for the requested target chain",
+        ));
     }
     let from_currency = source_obj
         .get("from_currency")
