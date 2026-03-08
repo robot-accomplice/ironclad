@@ -128,7 +128,7 @@ pub fn mark_revenue_tax_submitted(
         "in_progress",
         None,
         Some(tx_hash),
-        &["pending"],
+        &["in_progress"],
     )
 }
 

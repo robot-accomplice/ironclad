@@ -151,6 +151,7 @@ pub async fn settle_revenue_opportunity(
         _ => {}
     }
     let mut swap_queued = false;
+    let mut idempotent_db_row: Option<ironclad_db::service_revenue::RevenueOpportunityRecord> = None;
     if matches!(
         result,
         ironclad_db::service_revenue::SettlementResult::Settled
@@ -264,11 +265,16 @@ pub async fn settle_revenue_opportunity(
         // F3 fix: Use DB-persisted amounts for crash-recovery re-queue, NOT caller-supplied
         // values. This prevents a replayed request with different amounts from queuing
         // wrong-size on-chain swaps/tax payouts.
-        let db_row = ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
-            .map_err(|e| internal_err(&e))?
-            .ok_or_else(|| {
-                internal_err(&"AlreadySettled but opportunity not found in DB")
-            })?;
+        // R4 fix: Single DB fetch for both re-queue logic and response construction
+        // (eliminates TOCTOU gap and redundant round-trip).
+        idempotent_db_row = Some(
+            ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
+                .map_err(|e| internal_err(&e))?
+                .ok_or_else(|| {
+                    internal_err(&"AlreadySettled but opportunity not found in DB")
+                })?,
+        );
+        let db_row = idempotent_db_row.as_ref().unwrap();
         let db_tax_amount = db_row.tax_amount_usdc;
         let db_settled_amount = db_row.settled_amount_usdc.unwrap_or(0.0);
         let db_tax_wallet = db_row
@@ -335,12 +341,7 @@ pub async fn settle_revenue_opportunity(
     // For idempotent replays, return DB-persisted financial values (not caller-supplied)
     // to prevent the response from misrepresenting the actual settlement amounts.
     let (resp_gross, resp_costs, resp_net, resp_tax_rate, resp_tax, resp_retained, resp_tax_wallet) =
-        if is_idempotent {
-            let db_row = ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
-                .map_err(|e| internal_err(&e))?
-                .ok_or_else(|| {
-                    internal_err(&"AlreadySettled but opportunity not found in DB for response")
-                })?;
+        if let Some(db_row) = idempotent_db_row {
             (
                 db_row.settled_amount_usdc.unwrap_or(0.0),
                 db_row.attributable_costs_usdc,

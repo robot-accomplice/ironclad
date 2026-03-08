@@ -333,14 +333,14 @@ pub fn record_run(
 
     if status == "success" {
         tx.execute(
-            "UPDATE cron_jobs SET last_run_at = datetime('now'), last_status = ?1, \
+            "UPDATE cron_jobs SET last_run_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), last_status = ?1, \
              last_duration_ms = ?2, consecutive_errors = 0, last_error = NULL WHERE id = ?3",
             rusqlite::params![status, duration_ms, job_id],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     } else {
         tx.execute(
-            "UPDATE cron_jobs SET last_run_at = datetime('now'), last_status = ?1, \
+            "UPDATE cron_jobs SET last_run_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), last_status = ?1, \
              last_duration_ms = ?2, consecutive_errors = consecutive_errors + 1, \
              last_error = ?3 WHERE id = ?4",
             rusqlite::params![status, duration_ms, error, job_id],

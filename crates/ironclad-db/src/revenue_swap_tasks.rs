@@ -130,7 +130,7 @@ pub fn mark_revenue_swap_submitted(
         "in_progress",
         None,
         Some(tx_hash),
-        &["pending"],
+        &["in_progress"],
     )
 }
 
