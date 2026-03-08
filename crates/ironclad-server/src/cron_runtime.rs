@@ -44,12 +44,23 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                     }
                 },
                 "every" => {
-                    let interval_ms = job
+                    let raw_interval = job
                         .schedule_every_ms
                         .or_else(|| {
                             parse_interval_expr_to_ms(job.schedule_expr.as_deref().unwrap_or(""))
                         })
                         .unwrap_or(60_000);
+                    // Guard against zero/negative intervals that would fire every tick.
+                    let interval_ms = if raw_interval < 1_000 {
+                        tracing::warn!(
+                            job_id = %job.id, job_name = %job.name,
+                            raw_interval_ms = raw_interval,
+                            "clamping dangerously low interval to 60s minimum"
+                        );
+                        60_000
+                    } else {
+                        raw_interval
+                    };
                     ironclad_schedule::DurableScheduler::evaluate_interval(
                         job.last_run_at.as_deref(),
                         interval_ms,

@@ -153,7 +153,10 @@ pub fn recent_quality_scores(db: &Database, limit: i64) -> Result<Vec<(String, f
             Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
         })
         .map_err(|e| IroncladError::Database(e.to_string()))?
-        .filter_map(|r| r.ok())
+        .filter_map(|r| {
+            r.inspect_err(|e| tracing::warn!(error = %e, "metrics: skipping malformed cost row"))
+                .ok()
+        })
         .collect();
     // Reverse so oldest comes first (ring buffer insertion order).
     let mut rows = rows;

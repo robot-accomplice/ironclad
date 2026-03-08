@@ -111,7 +111,11 @@ fn score_revenue_opportunity_from_signal(
     }
     if let Some(signal) = feedback_signal {
         let sample_weight = (signal.feedback_count as f64 / 5.0).clamp(0.0, 1.0);
-        let grade_weight = ((signal.avg_grade - 3.0) / 2.0).clamp(-1.0, 1.0);
+        let grade_weight = if signal.avg_grade.is_finite() {
+            ((signal.avg_grade - 3.0) / 2.0).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
         confidence += 0.10 * sample_weight * grade_weight;
         risk -= 0.08 * sample_weight * grade_weight;
     }

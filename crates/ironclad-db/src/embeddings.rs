@@ -91,7 +91,11 @@ fn load_embedding_from_row(blob: Option<Vec<u8>>, json_text: &str) -> Option<Vec
         return Some(blob_to_embedding(&b));
     }
     if !json_text.is_empty() {
-        return serde_json::from_str(json_text).ok();
+        return serde_json::from_str(json_text)
+            .inspect_err(
+                |e| tracing::warn!(error = %e, "embeddings: failed to parse JSON embedding"),
+            )
+            .ok();
     }
     None
 }

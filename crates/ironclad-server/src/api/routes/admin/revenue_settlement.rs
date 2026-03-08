@@ -100,8 +100,20 @@ pub async fn settle_revenue_opportunity(
 
     let net_profit_usdc = req.amount_usdc - attributable_costs_usdc;
     let tax_rate = if tax_policy.enabled { tax_policy.rate } else { 0.0 };
+    if !tax_rate.is_finite() || !(0.0..=1.0).contains(&tax_rate) {
+        return Err(bad_request(format!(
+            "configured tax rate {tax_rate} is invalid; must be finite and in [0.0, 1.0]"
+        )));
+    }
     let tax_amount_usdc = (net_profit_usdc.max(0.0) * tax_rate * 100.0).round() / 100.0;
     let retained_earnings_usdc = (net_profit_usdc - tax_amount_usdc).max(0.0);
+    // Final NaN fence — should never trigger after the guards above, but prevents
+    // silent corruption if upstream arithmetic changes.
+    if !tax_amount_usdc.is_finite() || !retained_earnings_usdc.is_finite() {
+        return Err(internal_err(
+            &"tax or retained earnings calculation produced non-finite value",
+        ));
+    }
     let tax_destination_wallet = tax_policy
         .destination_wallet
         .as_deref()
