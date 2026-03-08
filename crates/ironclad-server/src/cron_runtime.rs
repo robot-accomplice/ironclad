@@ -122,10 +122,18 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                 // Map "every" back to "interval" for calculate_next_run, which matches
                 // on the DB-canonical "interval" string, not the dispatch alias "every".
                 let next_kind = if kind == "every" { "interval" } else { &kind };
+                // Resolve the effective interval_ms the same way the due-time
+                // evaluation does: prefer schedule_every_ms, fall back to
+                // parsing schedule_expr (e.g. "30m").  Without this, expr-based
+                // interval jobs pass None and calculate_next_run returns None,
+                // leaving next_run_at permanently NULL.
+                let resolved_every_ms = job_clone.schedule_every_ms.or_else(|| {
+                    parse_interval_expr_to_ms(job_clone.schedule_expr.as_deref().unwrap_or(""))
+                });
                 let next = ironclad_schedule::DurableScheduler::calculate_next_run(
                     next_kind,
                     job_clone.schedule_expr.as_deref(),
-                    job_clone.schedule_every_ms,
+                    resolved_every_ms,
                     &now_str,
                 );
                 if let Err(e) = ironclad_db::cron::update_next_run_at(

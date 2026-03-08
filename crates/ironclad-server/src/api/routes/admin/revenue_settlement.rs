@@ -328,6 +328,39 @@ pub async fn settle_revenue_opportunity(
         }
     }
 
+    let is_idempotent = matches!(
+        result,
+        ironclad_db::service_revenue::SettlementResult::AlreadySettled
+    );
+    // For idempotent replays, return DB-persisted financial values (not caller-supplied)
+    // to prevent the response from misrepresenting the actual settlement amounts.
+    let (resp_gross, resp_costs, resp_net, resp_tax_rate, resp_tax, resp_retained, resp_tax_wallet) =
+        if is_idempotent {
+            let db_row = ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
+                .map_err(|e| internal_err(&e))?
+                .ok_or_else(|| {
+                    internal_err(&"AlreadySettled but opportunity not found in DB for response")
+                })?;
+            (
+                db_row.settled_amount_usdc.unwrap_or(0.0),
+                db_row.attributable_costs_usdc,
+                db_row.net_profit_usdc.unwrap_or(0.0),
+                db_row.tax_rate,
+                db_row.tax_amount_usdc,
+                db_row.retained_earnings_usdc.unwrap_or(0.0),
+                db_row.tax_destination_wallet,
+            )
+        } else {
+            (
+                req.amount_usdc,
+                attributable_costs_usdc,
+                net_profit_usdc,
+                tax_rate,
+                tax_amount_usdc,
+                retained_earnings_usdc,
+                tax_destination_wallet.map(str::to_string),
+            )
+        };
     Ok(axum::Json(json!({
         "opportunity_id": id,
         "status": ironclad_db::service_revenue::OPPORTUNITY_STATUS_SETTLED,
@@ -335,17 +368,14 @@ pub async fn settle_revenue_opportunity(
         "swap_target_asset": target_symbol,
         "swap_target_chain": target_chain,
         "auto_swap": auto_swap,
-        "gross_revenue_usdc": req.amount_usdc,
-        "attributable_costs_usdc": attributable_costs_usdc,
-        "net_profit_usdc": net_profit_usdc,
-        "tax_rate": tax_rate,
-        "tax_amount_usdc": tax_amount_usdc,
-        "retained_earnings_usdc": retained_earnings_usdc,
-        "tax_destination_wallet": tax_destination_wallet,
-        "idempotent": matches!(
-            result,
-            ironclad_db::service_revenue::SettlementResult::AlreadySettled
-        ),
+        "gross_revenue_usdc": resp_gross,
+        "attributable_costs_usdc": resp_costs,
+        "net_profit_usdc": resp_net,
+        "tax_rate": resp_tax_rate,
+        "tax_amount_usdc": resp_tax,
+        "retained_earnings_usdc": resp_retained,
+        "tax_destination_wallet": resp_tax_wallet,
+        "idempotent": is_idempotent,
     })))
 }
 

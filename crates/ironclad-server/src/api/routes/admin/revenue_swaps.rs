@@ -421,8 +421,10 @@ fn mark_swap_confirmed_with_metrics(
         ironclad_db::revenue_swap_tasks::mark_revenue_swap_confirmed(db, opportunity_id, tx_hash)
             .map_err(|e| internal_err(&e))?;
     if !updated {
-        return Err(not_found(format!(
-            "revenue swap task for opportunity '{}' not found",
+        // Task was already fetched above (would have returned 404 if missing),
+        // so !updated means status is not in_progress (already completed/failed).
+        return Err(bad_request(format!(
+            "revenue swap task for opportunity '{}' is not in_progress; may already be completed or failed",
             opportunity_id
         )));
     }
