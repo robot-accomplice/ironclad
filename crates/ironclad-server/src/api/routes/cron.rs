@@ -327,15 +327,17 @@ pub async fn run_cron_job_now(
     let start = std::time::Instant::now();
     let result = crate::cron_runtime::execute_cron_job_once(&state, &job).await;
     let duration = start.elapsed().as_millis() as i64;
-    let _ = ironclad_db::cron::record_run(
+    if let Err(e) = ironclad_db::cron::record_run(
         &state.db,
         &job.id,
         result.status,
         Some(duration),
         result.error.as_deref(),
         result.output.as_deref(),
-    )
-    .map_err(|e| tracing::warn!(job_id = %job.id, error = %e, "failed to record manual cron run"));
+    ) {
+        tracing::error!(job_id = %job.id, job_name = %job.name, error = %e,
+            "failed to record manual cron run; audit trail incomplete");
+    }
     Ok(axum::Json(RunCronJobResponse {
         job_id: job.id,
         status: result.status.to_string(),

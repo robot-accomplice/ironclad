@@ -122,6 +122,15 @@ pub async fn settle_revenue_opportunity(
         },
     )
     .map_err(|e| internal_err(&e))?;
+    match &result {
+        ironclad_db::service_revenue::SettlementResult::NotFound => {
+            return Err(not_found(format!("revenue opportunity '{id}' not found")));
+        }
+        ironclad_db::service_revenue::SettlementResult::WrongState(reason) => {
+            return Err(bad_request(reason.clone()));
+        }
+        _ => {}
+    }
     let mut swap_queued = false;
     if matches!(
         result,
@@ -229,6 +238,18 @@ pub async fn settle_revenue_opportunity(
             .map_err(|e| internal_err(&e))?;
             swap_queued = true;
         }
+    } else if matches!(
+        result,
+        ironclad_db::service_revenue::SettlementResult::AlreadySettled
+    ) {
+        tracing::info!(
+            opportunity_id = %id,
+            settlement_ref = %settlement_ref,
+            auto_swap = auto_swap,
+            tax_amount_usdc = tax_amount_usdc,
+            "settlement idempotent replay: secondary accounting (metrics, swap/tax task queuing) \
+             was skipped; verify swap/tax tasks exist if this was a crash-recovery retry"
+        );
     }
 
     Ok(axum::Json(json!({

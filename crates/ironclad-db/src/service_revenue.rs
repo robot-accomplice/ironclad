@@ -96,10 +96,14 @@ pub struct RevenueSettlementAccounting<'a> {
     pub tax_destination_wallet: Option<&'a str>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettlementResult {
     Settled,
     AlreadySettled,
+    /// The opportunity exists but is not in a valid state for settlement.
+    WrongState(String),
+    /// The opportunity was not found.
+    NotFound,
 }
 
 pub fn create_service_request(db: &Database, req: &NewServiceRequest<'_>) -> Result<()> {
@@ -380,9 +384,9 @@ pub fn settle_revenue_opportunity(
         .optional()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     let Some((status, existing_ref)) = existing else {
-        return Err(IroncladError::Database(format!(
-            "revenue opportunity '{id}' not found"
-        )));
+        tx.commit()
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        return Ok(SettlementResult::NotFound);
     };
     if status.eq_ignore_ascii_case(OPPORTUNITY_STATUS_SETTLED)
         && existing_ref.as_deref() == Some(settlement_ref)
@@ -413,9 +417,12 @@ pub fn settle_revenue_opportunity(
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     if updated == 0 {
-        return Err(IroncladError::Database(
-            "revenue opportunity must be fulfilled before settlement".to_string(),
-        ));
+        tx.commit()
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        return Ok(SettlementResult::WrongState(format!(
+            "revenue opportunity '{}' is in status '{}'; must be '{}' before settlement",
+            id, status, OPPORTUNITY_STATUS_FULFILLED
+        )));
     }
     tx.commit()
         .map_err(|e| IroncladError::Database(e.to_string()))?;

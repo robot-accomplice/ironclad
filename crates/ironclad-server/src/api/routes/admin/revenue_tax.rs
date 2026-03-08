@@ -79,7 +79,11 @@ pub async fn submit_revenue_tax_task(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| bad_request("revenue tax task is missing target_chain"))?;
-    let wallet_chain = wallet_chain_label(state.wallet.wallet.chain_id());
+    let wallet_chain = wallet_chain_label(state.wallet.wallet.chain_id())
+        .ok_or_else(|| bad_request(format!(
+            "wallet chain_id {} is not a supported chain for tax payout submissions",
+            state.wallet.wallet.chain_id()
+        )))?;
     if !target_chain.eq_ignore_ascii_case(wallet_chain) {
         return Err(bad_request(format!(
             "wallet chain '{}' cannot submit tax payout for target_chain '{}'",
@@ -139,9 +143,31 @@ pub async fn submit_revenue_tax_task(
         "tax payout EVM transaction submitted; persisting tx_hash"
     );
     let updated = ironclad_db::revenue_tax_tasks::mark_revenue_tax_submitted(&state.db, &opportunity_id, &tx_hash)
-        .map_err(|e| internal_err(&e))?;
+        .map_err(|e| {
+            tracing::error!(
+                opportunity_id = %opportunity_id,
+                tx_hash = %tx_hash,
+                error = %e,
+                "CRITICAL: EVM tax payout tx was submitted on-chain but DB write failed; tx_hash may be lost"
+            );
+            internal_err(&e)
+        })?;
     if !updated {
-        return Err(bad_request("revenue tax task must exist before submission metadata can be recorded"));
+        // EVM transaction already submitted on-chain — we MUST return the tx_hash
+        // even though the DB status guard rejected the write (concurrent status change).
+        tracing::error!(
+            opportunity_id = %opportunity_id,
+            tx_hash = %tx_hash,
+            "CRITICAL: tax payout EVM tx submitted but mark_submitted returned false; \
+             concurrent status change likely caused tx_hash persistence failure"
+        );
+        return Ok(axum::Json(json!({
+            "opportunity_id": opportunity_id,
+            "status": "submitted_but_untracked",
+            "tx_hash": tx_hash,
+            "warning": "EVM transaction was submitted but the task status could not be updated; \
+                        use reconcile endpoint to recover",
+        })));
     }
 
     ironclad_db::metrics::record_transaction_with_metadata(

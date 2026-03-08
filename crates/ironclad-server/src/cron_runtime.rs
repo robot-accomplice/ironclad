@@ -17,7 +17,7 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
         let jobs = match ironclad_db::cron::list_jobs(&state.db) {
             Ok(j) => j,
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to list cron jobs");
+                tracing::error!(error = %e, "Failed to list cron jobs; ALL scheduled jobs are paused this tick");
                 continue;
             }
         };
@@ -31,17 +31,18 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                 other => other,
             };
             let due = match kind {
-                "cron" => job
-                    .schedule_expr
-                    .as_deref()
-                    .map(|expr| {
-                        ironclad_schedule::DurableScheduler::evaluate_cron(
-                            expr,
-                            job.last_run_at.as_deref(),
-                            &now,
-                        )
-                    })
-                    .unwrap_or(false),
+                "cron" => match job.schedule_expr.as_deref() {
+                    Some(expr) => ironclad_schedule::DurableScheduler::evaluate_cron(
+                        expr,
+                        job.last_run_at.as_deref(),
+                        &now,
+                    ),
+                    None => {
+                        tracing::warn!(job_id = %job.id, job_name = %job.name,
+                            "cron-type job has no schedule_expr; will never fire");
+                        false
+                    }
+                },
                 "every" => {
                     let interval_ms = job
                         .schedule_every_ms
@@ -55,17 +56,32 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                         &now,
                     )
                 }
-                _ => false,
+                other_kind => {
+                    tracing::warn!(job_id = %job.id, job_name = %job.name, schedule_kind = other_kind,
+                        "unrecognized schedule_kind; job will not be scheduled");
+                    false
+                }
             };
             if !due {
                 continue;
             }
-            if !ironclad_db::cron::acquire_lease(&state.db, &job.id, &instance_id).unwrap_or(false)
-            {
+            let lease_acquired =
+                match ironclad_db::cron::acquire_lease(&state.db, &job.id, &instance_id) {
+                    Ok(acquired) => acquired,
+                    Err(e) => {
+                        tracing::error!(job_id = %job.id, job_name = %job.name, error = %e,
+                        "failed to acquire cron lease due to database error");
+                        continue;
+                    }
+                };
+            if !lease_acquired {
                 continue;
             }
             let Ok(permit) = concurrency.clone().try_acquire_owned() else {
-                let _ = ironclad_db::cron::release_lease(&state.db, &job.id, &instance_id);
+                if let Err(e) = ironclad_db::cron::release_lease(&state.db, &job.id, &instance_id) {
+                    tracing::error!(job_id = %job.id, job_name = %job.name, error = %e,
+                        "failed to release cron lease after semaphore saturation; job may freeze until lease expiry");
+                }
                 tracing::warn!(job=%job.name, "Cron worker saturated; deferring leased job to next tick");
                 continue;
             };
@@ -78,14 +94,19 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                 let start = std::time::Instant::now();
                 let result = execute_cron_job_once(&state_clone, &job_clone).await;
                 let duration = start.elapsed().as_millis() as i64;
-                let _ = ironclad_db::cron::record_run(
+                if let Err(e) = ironclad_db::cron::record_run(
                     &state_clone.db,
                     &job_clone.id,
                     result.status,
                     Some(duration),
                     result.error.as_deref(),
                     result.output.as_deref(),
-                );
+                ) {
+                    tracing::error!(
+                        job_id = %job_clone.id, job_name = %job_clone.name, error = %e,
+                        "CRITICAL: failed to record cron run audit trail"
+                    );
+                }
                 let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
                 let next = ironclad_schedule::DurableScheduler::calculate_next_run(
                     &kind,
@@ -93,16 +114,26 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                     job_clone.schedule_every_ms,
                     &now_str,
                 );
-                let _ = ironclad_db::cron::update_next_run_at(
+                if let Err(e) = ironclad_db::cron::update_next_run_at(
                     &state_clone.db,
                     &job_clone.id,
                     next.as_deref(),
-                );
-                let _ = ironclad_db::cron::release_lease(
+                ) {
+                    tracing::error!(
+                        job_id = %job_clone.id, job_name = %job_clone.name, error = %e,
+                        "CRITICAL: failed to update next_run_at; job may re-fire prematurely"
+                    );
+                }
+                if let Err(e) = ironclad_db::cron::release_lease(
                     &state_clone.db,
                     &job_clone.id,
                     &instance_id_clone,
-                );
+                ) {
+                    tracing::error!(
+                        job_id = %job_clone.id, job_name = %job_clone.name, error = %e,
+                        "CRITICAL: failed to release cron lease; job may freeze until lease expiry"
+                    );
+                }
             });
         }
     }
@@ -188,10 +219,15 @@ pub(crate) async fn execute_cron_job_once(
                 .get("tx_type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("cron");
-            let amount = payload
-                .get("amount")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
+            let Some(amount) = payload.get("amount").and_then(|v| v.as_f64()) else {
+                return CronExecutionResult {
+                    status: "error",
+                    error: Some(
+                        "record_transaction payload missing or invalid 'amount' field".to_string(),
+                    ),
+                    output: None,
+                };
+            };
             let currency = payload
                 .get("currency")
                 .and_then(|v| v.as_str())
@@ -279,7 +315,7 @@ async fn execute_named_agent_task(
             }
         }
         Err(e) => {
-            tracing::warn!(agent_id, error = %e, "failed to list sub-agents for cron task; proceeding without integrity check");
+            tracing::error!(agent_id, error = %e, "failed to list sub-agents for cron task; proceeding without integrity check");
         }
     }
     match execute_scheduled_agent_task(state, agent_id, task).await {

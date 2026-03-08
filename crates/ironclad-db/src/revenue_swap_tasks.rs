@@ -29,10 +29,13 @@ pub fn list_revenue_swap_tasks(db: &Database, limit: usize) -> Result<Vec<Value>
         .query_map([limit], |row| {
             let id: String = row.get(0)?;
             let source_json: Option<String> = row.get(3)?;
-            let source_value = source_json
-                .as_deref()
-                .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                .unwrap_or(Value::Null);
+            let source_value = match source_json.as_deref() {
+                Some(s) => match serde_json::from_str::<Value>(s) {
+                    Ok(v) => v,
+                    Err(_) => json!({"_raw": s, "_error": "invalid JSON in source column"}),
+                },
+                None => Value::Null,
+            };
             Ok(json!({
                 "id": id,
                 "opportunity_id": id.strip_prefix("rev_swap:").unwrap_or(&id),
@@ -155,8 +158,11 @@ fn update_revenue_swap_status(
     {
         return Ok(false);
     }
-    let mut source_value = serde_json::from_str::<Value>(&existing_source_json)
-        .unwrap_or_else(|_| json!({ "type": "revenue_swap", "opportunity_id": opportunity_id }));
+    let mut source_value = serde_json::from_str::<Value>(&existing_source_json).map_err(|e| {
+        IroncladError::Database(format!(
+            "corrupted source JSON for swap task {task_id}: {e}"
+        ))
+    })?;
     if let Some(obj) = source_value.as_object_mut() {
         obj.insert("status".into(), json!(status));
         if let Some(reason) = failure_reason {

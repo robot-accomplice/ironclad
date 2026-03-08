@@ -47,7 +47,10 @@ pub fn canonical_task_source_json(raw: Option<&str>) -> Option<String> {
     if normalized.is_null() {
         None
     } else {
-        serde_json::to_string(&normalized).ok()
+        Some(
+            serde_json::to_string(&normalized)
+                .expect("serde_json::to_string on a parsed Value cannot fail"),
+        )
     }
 }
 

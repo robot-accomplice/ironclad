@@ -39,7 +39,10 @@ fn score_revenue_opportunity_from_signal(
     input: &RevenueOpportunityScoreInput<'_>,
     feedback_signal: Option<crate::revenue_feedback::RevenueFeedbackSignal>,
 ) -> RevenueOpportunityScore {
-    let payload = serde_json::from_str::<Value>(input.payload_json).unwrap_or(Value::Null);
+    let (payload, payload_parse_failed) = match serde_json::from_str::<Value>(input.payload_json) {
+        Ok(v) => (v, false),
+        Err(_) => (Value::Null, true),
+    };
     let strategy = input.strategy.trim().to_ascii_lowercase();
     let source = input.source.trim().to_ascii_lowercase();
     let has_scope_marker = [
@@ -120,7 +123,7 @@ fn score_revenue_opportunity_from_signal(
         + (revenue_weight * 0.15))
         * 100.0;
     let recommended_approved = confidence >= 0.55 && risk <= 0.60 && effort <= 0.70;
-    let reason = format!(
+    let mut reason = format!(
         "strategy={strategy}; confidence={confidence:.2}; risk={risk:.2}; effort={effort:.2}; source={source}; scope_marker={}; multi_repo={}; feedback_count={}; feedback_avg={}",
         if has_scope_marker { "yes" } else { "no" },
         if multi_repo { "yes" } else { "no" },
@@ -129,6 +132,9 @@ fn score_revenue_opportunity_from_signal(
             .map(|s| format!("{:.2}", s.avg_grade))
             .unwrap_or_else(|| "n/a".to_string())
     );
+    if payload_parse_failed {
+        reason.push_str("; WARNING: payload_json was unparseable");
+    }
 
     RevenueOpportunityScore {
         confidence_score: confidence,
