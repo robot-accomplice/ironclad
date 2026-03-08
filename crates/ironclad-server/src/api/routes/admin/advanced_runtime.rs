@@ -383,7 +383,9 @@ pub async fn get_routing_diagnostics(State(state): State<AppState>) -> impl Into
 
     // Shadow prediction summary (if any data exists).
     let shadow_summary =
-        ironclad_db::shadow_routing::shadow_agreement_summary(&state.db, None).ok();
+        ironclad_db::shadow_routing::shadow_agreement_summary(&state.db, None)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load shadow agreement summary"))
+            .ok();
 
     let shadow_json = shadow_summary.map(|s| {
         json!({

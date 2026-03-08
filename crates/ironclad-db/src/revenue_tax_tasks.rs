@@ -32,7 +32,10 @@ pub fn list_revenue_tax_tasks(db: &Database, limit: usize) -> Result<Vec<Value>>
             let source_value = match source_json.as_deref() {
                 Some(s) => match serde_json::from_str::<Value>(s) {
                     Ok(v) => v,
-                    Err(_) => json!({"_raw": s, "_error": "invalid JSON in source column"}),
+                    Err(e) => {
+                        tracing::warn!(task_id = %id, error = %e, "tax task source column contains invalid JSON");
+                        json!({"_raw": s, "_error": "invalid JSON in source column"})
+                    }
                 },
                 None => Value::Null,
             };
@@ -168,14 +171,18 @@ fn update_revenue_tax_status(
             obj.insert("tax_tx_hash".into(), json!(tx_hash));
         }
     }
+    // Include `AND status = ?4` to atomically guard against concurrent status changes
+    // (closes the TOCTOU window between the SELECT above and this UPDATE).
     let updated = conn
         .execute(
-            "UPDATE tasks SET status = ?2, source = ?3, updated_at = datetime('now') WHERE id = ?1",
+            "UPDATE tasks SET status = ?2, source = ?3, updated_at = datetime('now') \
+             WHERE id = ?1 AND status = ?4",
             rusqlite::params![
                 task_id,
                 status,
                 serde_json::to_string(&source_value)
                     .map_err(|e| IroncladError::Database(e.to_string()))?,
+                current_status,
             ],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;

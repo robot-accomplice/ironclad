@@ -117,11 +117,18 @@ pub async fn submit_revenue_tax_task(
         })
         .ok_or_else(|| bad_request("tax payout submission requires contract_address"))?;
 
-    state.wallet.treasury.check_per_payment(amount).map_err(|e| bad_request(e.to_string()))?;
     let current_balance = current_source_balance(&state.wallet.wallet, currency)
         .await
         .map_err(|e| bad_request(e.to_string()))?;
-    state.wallet.treasury.check_minimum_reserve(current_balance, amount).map_err(|e| bad_request(e.to_string()))?;
+    let hourly_total = ironclad_db::metrics::sum_transaction_amounts(&state.db, 1)
+        .map_err(|e| internal_err(&e))?;
+    let daily_total = ironclad_db::metrics::sum_transaction_amounts(&state.db, 24)
+        .map_err(|e| internal_err(&e))?;
+    state
+        .wallet
+        .treasury
+        .check_all(amount, current_balance, hourly_total, daily_total)
+        .map_err(|e| bad_request(e.to_string()))?;
 
     let tx_hash = ironclad_wallet::submit_evm_contract_call(
         &state.wallet.wallet,

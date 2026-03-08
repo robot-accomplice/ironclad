@@ -178,7 +178,10 @@ pub async fn get_service_request(
         "id": req.id,
         "service_id": req.service_id,
         "requester": req.requester,
-        "parameters": serde_json::from_str::<Value>(&req.parameters_json).unwrap_or_else(|_| json!({ "raw": req.parameters_json })),
+        "parameters": serde_json::from_str::<Value>(&req.parameters_json).unwrap_or_else(|e| {
+            tracing::warn!(request_id = %id, error = %e, "parameters_json contains invalid JSON");
+            json!({ "raw": req.parameters_json })
+        }),
         "status": req.status,
         "quoted_amount": req.quoted_amount,
         "currency": req.currency,

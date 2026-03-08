@@ -41,7 +41,10 @@ fn score_revenue_opportunity_from_signal(
 ) -> RevenueOpportunityScore {
     let (payload, payload_parse_failed) = match serde_json::from_str::<Value>(input.payload_json) {
         Ok(v) => (v, false),
-        Err(_) => (Value::Null, true),
+        Err(e) => {
+            tracing::warn!(source = %input.source, strategy = %input.strategy, error = %e, "payload_json parse failed during scoring");
+            (Value::Null, true)
+        }
     };
     let strategy = input.strategy.trim().to_ascii_lowercase();
     let source = input.source.trim().to_ascii_lowercase();

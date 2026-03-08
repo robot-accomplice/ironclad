@@ -150,7 +150,9 @@ pub(super) async fn prepare_inference(
         &model_audit,
     )
     .await;
-    let _ = ironclad_db::sessions::update_model(&state.db, input.session_id, &model);
+    if let Err(e) = ironclad_db::sessions::update_model(&state.db, input.session_id, &model) {
+        tracing::warn!(session_id = %input.session_id, model = %model, error = %e, "failed to update session model");
+    }
 
     // Tier resolution
     let tier = {
@@ -688,7 +690,10 @@ async fn try_execution_shortcut(
             .join(", ");
         let subagent_total = match ironclad_db::agents::list_sub_agents(&state.db) {
             Ok(rows) => rows.into_iter().filter(|r| r.enabled).count(),
-            Err(_) => 0,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to list sub-agents for capability summary");
+                0
+            }
         };
         let primary_model = {
             let cfg = state.config.read().await;
@@ -1490,7 +1495,8 @@ async fn try_execution_shortcut(
                         tool_results,
                     });
                 }
-                Err(_) => {
+                Err(e) => {
+                    tracing::warn!(model = %prepared_model, error = %e, "numeric inference failed; returning zero");
                     return Some(InferenceOutput {
                         content: "0".to_string(),
                         model: prepared_model.to_string(),
@@ -1910,7 +1916,8 @@ Please continue with a narrower or next-step command.",
                     retried
                 };
             }
-            Err(_) => {
+            Err(e) => {
+                tracing::warn!(error = %e, "conflict-refusal quality retry failed; using deterministic fallback");
                 final_content = "“Fear is the mind-killer.” In this context, the point is to resist panic and choose disciplined judgment.".to_string();
             }
         }
@@ -1974,7 +1981,8 @@ Please continue with a narrower or next-step command.",
                     final_content = deterministic_quality_fallback(user_prompt, &agent_name);
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                tracing::warn!(error = %e, "low-value quality retry failed; using deterministic fallback");
                 final_content = deterministic_quality_fallback(user_prompt, &agent_name);
             }
         }

@@ -372,7 +372,8 @@ async fn run_llm_recommendation_analysis(
     drop(llm);
 
     let unified =
-        ironclad_llm::format::translate_response(&resp, provider.format).unwrap_or_else(|_| {
+        ironclad_llm::format::translate_response(&resp, provider.format).unwrap_or_else(|e| {
+            tracing::warn!(model = %model, error = %e, "translate_response failed in efficiency recommendation");
             ironclad_llm::format::UnifiedResponse {
                 content: "(no response)".into(),
                 model: model.clone(),

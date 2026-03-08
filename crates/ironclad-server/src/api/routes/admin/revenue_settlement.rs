@@ -247,9 +247,50 @@ pub async fn settle_revenue_opportunity(
             settlement_ref = %settlement_ref,
             auto_swap = auto_swap,
             tax_amount_usdc = tax_amount_usdc,
-            "settlement idempotent replay: secondary accounting (metrics, swap/tax task queuing) \
-             was skipped; verify swap/tax tasks exist if this was a crash-recovery retry"
+            "settlement idempotent replay: re-queuing swap/tax tasks for crash-recovery completeness"
         );
+        // Re-queue swap/tax tasks idempotently (ON CONFLICT DO UPDATE) to close the
+        // crash-recovery gap where the DB settlement committed but task INSERTs did not.
+        if tax_amount_usdc > 0.0
+            && let Some(destination_wallet) = tax_destination_wallet
+        {
+            let tax_chain_config = swap_policy
+                .chains
+                .iter()
+                .find(|c| c.chain.trim().eq_ignore_ascii_case(&target_chain));
+            let tax_contract_address = tax_chain_config
+                .map(|c| c.target_contract_address.as_str());
+            queue_revenue_tax_payout(
+                &state.db,
+                RevenueTaxPayoutTask {
+                    opportunity_id: &id,
+                    amount: tax_amount_usdc,
+                    currency: settlement_currency.as_str(),
+                    target_chain: target_chain.as_str(),
+                    destination_wallet,
+                    contract_address: tax_contract_address,
+                },
+            )
+            .map_err(|e| internal_err(&e))?;
+        }
+        if auto_swap
+            && let Some((target_contract_address, swap_contract_address)) = planned_swap.as_ref()
+        {
+            queue_revenue_swap(
+                &state.db,
+                RevenueSwapTask {
+                    opportunity_id: &id,
+                    amount: req.amount_usdc,
+                    from_currency: settlement_currency.as_str(),
+                    target_symbol: target_symbol.as_str(),
+                    target_chain: target_chain.as_str(),
+                    target_contract_address,
+                    swap_contract_address: swap_contract_address.as_deref(),
+                },
+            )
+            .map_err(|e| internal_err(&e))?;
+            swap_queued = true;
+        }
     }
 
     Ok(axum::Json(json!({

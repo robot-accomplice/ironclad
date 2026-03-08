@@ -7,7 +7,9 @@ pub async fn roster(State(state): State<AppState>) -> impl IntoResponse {
     let firmware = ironclad_core::personality::load_firmware(workspace);
     let directives = ironclad_core::personality::load_directives(workspace);
 
-    let skills = ironclad_db::skills::list_skills(&state.db).unwrap_or_default();
+    let skills = ironclad_db::skills::list_skills(&state.db)
+        .inspect_err(|e| tracing::warn!(error = %e, "failed to load skills for roster"))
+        .unwrap_or_default();
     let enabled_skills: Vec<&str> = skills
         .iter()
         .filter(|s| s.enabled)

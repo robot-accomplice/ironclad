@@ -57,7 +57,10 @@ pub async fn approve_request(
             let replay_state = state.clone();
             tokio::spawn(async move {
                 let params: serde_json::Value = serde_json::from_str(&replay_req.tool_input)
-                    .unwrap_or_else(|_| json!({ "raw_input": replay_req.tool_input }));
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(request_id = %replay_req.id, error = %e, "tool_input JSON parse failed in approval replay");
+                        json!({ "raw_input": replay_req.tool_input })
+                    });
                 let replay_turn_id = replay_req
                     .session_id
                     .clone()

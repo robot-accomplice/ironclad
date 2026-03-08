@@ -176,8 +176,9 @@ pub async fn create_cron_job(
             let desc = body.description.as_deref().map(str::trim);
             if let Some(d) = desc
                 && !d.is_empty()
+                && let Err(e) = ironclad_db::cron::update_job_description(&state.db, &id, Some(d))
             {
-                let _ = ironclad_db::cron::update_job_description(&state.db, &id, Some(d));
+                tracing::warn!(job_id = %id, error = %e, "failed to update cron job description");
             }
             Ok(axum::Json(serde_json::json!({ "job_id": id })))
         }

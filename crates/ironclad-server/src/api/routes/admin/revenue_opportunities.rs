@@ -68,11 +68,27 @@ pub async fn get_revenue_opportunity(
     let row = ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
         .map_err(|e| internal_err(&e))?
         .ok_or_else(|| not_found(format!("revenue opportunity '{}' not found", id)))?;
+    let payload_value = serde_json::from_str::<Value>(&row.payload_json).unwrap_or_else(|e| {
+        tracing::warn!(opportunity_id = %id, error = %e, "payload_json contains invalid JSON");
+        json!({"raw": row.payload_json})
+    });
+    let plan_value = row.plan_json.and_then(|v| {
+        serde_json::from_str::<Value>(&v).map_err(|e| {
+            tracing::warn!(opportunity_id = %id, error = %e, "plan_json contains invalid JSON");
+            e
+        }).ok()
+    });
+    let evidence_value = row.evidence_json.and_then(|v| {
+        serde_json::from_str::<Value>(&v).map_err(|e| {
+            tracing::warn!(opportunity_id = %id, error = %e, "evidence_json contains invalid JSON");
+            e
+        }).ok()
+    });
     Ok(axum::Json(json!({
         "id": row.id,
         "source": row.source,
         "strategy": row.strategy,
-        "payload": serde_json::from_str::<Value>(&row.payload_json).unwrap_or_else(|_| json!({"raw": row.payload_json})),
+        "payload": payload_value,
         "expected_revenue_usdc": row.expected_revenue_usdc,
         "status": row.status,
         "qualification_reason": row.qualification_reason,
@@ -84,8 +100,8 @@ pub async fn get_revenue_opportunity(
             "recommended_approved": row.recommended_approved,
             "score_reason": row.score_reason,
         },
-        "plan": row.plan_json.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
-        "evidence": row.evidence_json.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
+        "plan": plan_value,
+        "evidence": evidence_value,
         "request_id": row.request_id,
         "settlement_ref": row.settlement_ref,
         "settled_amount_usdc": row.settled_amount_usdc,

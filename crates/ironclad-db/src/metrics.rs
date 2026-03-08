@@ -118,6 +118,23 @@ pub fn query_transactions(db: &Database, hours: i64) -> Result<Vec<TransactionRe
         .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
+/// Sum transaction amounts within the given time window (in hours).
+/// Used by treasury policy enforcement to check hourly/daily rate limits.
+pub fn sum_transaction_amounts(db: &Database, hours: i64) -> Result<f64> {
+    let hours = hours.unsigned_abs().max(1);
+    let conn = db.conn();
+    let offset = format!("-{hours} hours");
+    let total: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(amount), 0.0) FROM transactions \
+             WHERE created_at >= datetime('now', ?1)",
+            [&offset],
+            |row| row.get(0),
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(total)
+}
+
 /// Return the most recent quality observations from `inference_costs`, ordered
 /// oldest-first so that the caller can feed them into a ring buffer in chronological
 /// order. Each row is `(model, quality_score)`.

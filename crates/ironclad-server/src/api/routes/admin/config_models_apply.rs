@@ -93,7 +93,10 @@ pub async fn get_available_models(
             Ok(resp) if resp.status().is_success() => {
                 let body: serde_json::Value = match resp.json().await {
                     Ok(v) => v,
-                    Err(_) => json!({}),
+                    Err(e) => {
+                        tracing::warn!(provider = %name, error = %e, "failed to parse model-list response JSON");
+                        json!({})
+                    }
                 };
                 let has_ollama_shape = body.get("models").and_then(|v| v.as_array()).is_some();
                 let has_openai_shape = body.get("data").and_then(|v| v.as_array()).is_some();

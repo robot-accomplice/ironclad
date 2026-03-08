@@ -5,20 +5,28 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
     let network = state.wallet.wallet.network_name();
     let config = state.config.read().await;
     let revenue_accounting =
-        ironclad_db::revenue_accounting::revenue_accounting_summary(&state.db).unwrap_or_default();
+        ironclad_db::revenue_accounting::revenue_accounting_summary(&state.db)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load revenue accounting summary"))
+            .unwrap_or_default();
     let revenue_swap_queue =
-        ironclad_db::revenue_accounting::revenue_swap_queue_summary(&state.db).unwrap_or_default();
+        ironclad_db::revenue_accounting::revenue_swap_queue_summary(&state.db)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load revenue swap queue summary"))
+            .unwrap_or_default();
     let revenue_strategy_summary =
         ironclad_db::revenue_strategy_summary::revenue_strategy_summary(&state.db)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load revenue strategy summary"))
             .unwrap_or_default();
     let revenue_feedback_summary =
         ironclad_db::revenue_feedback::revenue_feedback_summary_by_strategy(&state.db)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load revenue feedback summary"))
             .unwrap_or_default();
     let revenue_swap_tasks =
         ironclad_db::revenue_swap_tasks::list_revenue_swap_tasks(&state.db, 200)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load revenue swap tasks"))
             .unwrap_or_default();
     let revenue_tax_tasks =
         ironclad_db::revenue_tax_tasks::list_revenue_tax_tasks(&state.db, 200)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load revenue tax tasks"))
             .unwrap_or_default();
     let default_swap_chain = config.treasury.revenue_swap.default_chain.clone();
     let default_swap_chain_cfg = config
