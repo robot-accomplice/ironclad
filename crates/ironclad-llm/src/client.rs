@@ -141,49 +141,49 @@ impl LlmClient {
         let status = response.status();
 
         // ── x402 autonomous payment ──────────────────────────────
-        if status.as_u16() == 402 {
-            if let Some(handler) = &self.payment_handler {
-                let error_body = response.text().await.unwrap_or_else(|_| "{}".into());
-                let body_json: serde_json::Value =
-                    serde_json::from_str(&error_body).unwrap_or_default();
+        if status.as_u16() == 402
+            && let Some(handler) = &self.payment_handler
+        {
+            let error_body = response.text().await.unwrap_or_else(|_| "{}".into());
+            let body_json: serde_json::Value =
+                serde_json::from_str(&error_body).unwrap_or_default();
 
-                // Safety rail: reject auto-pay above threshold
-                if let Some(amount) = body_json.get("amount").and_then(|v| v.as_f64()) {
-                    if amount > X402_MAX_AUTO_PAY_USDC {
-                        warn!(
-                            amount,
-                            max = X402_MAX_AUTO_PAY_USDC,
-                            "x402 payment exceeds auto-pay threshold, declining"
-                        );
-                        return Err(IroncladError::Llm(format!(
-                            "x402 payment of ${amount:.4} exceeds auto-pay limit of ${X402_MAX_AUTO_PAY_USDC:.2}"
-                        )));
-                    }
+            // Safety rail: reject auto-pay above threshold
+            if let Some(amount) = body_json.get("amount").and_then(|v| v.as_f64())
+                && amount > X402_MAX_AUTO_PAY_USDC
+            {
+                warn!(
+                    amount,
+                    max = X402_MAX_AUTO_PAY_USDC,
+                    "x402 payment exceeds auto-pay threshold, declining"
+                );
+                return Err(IroncladError::Llm(format!(
+                    "x402 payment of ${amount:.4} exceeds auto-pay limit of ${X402_MAX_AUTO_PAY_USDC:.2}"
+                )));
+            }
+
+            match handler.handle_payment_required(&body_json).await {
+                Ok(payment_header) => {
+                    info!(
+                        url = effective_url_ref,
+                        "retrying request with x402 payment header"
+                    );
+                    return self
+                        .retry_with_payment(
+                            effective_url_ref,
+                            api_key,
+                            &body,
+                            auth_header,
+                            extra_headers,
+                            &payment_header,
+                        )
+                        .await;
                 }
-
-                match handler.handle_payment_required(&body_json).await {
-                    Ok(payment_header) => {
-                        info!(
-                            url = effective_url_ref,
-                            "retrying request with x402 payment header"
-                        );
-                        return self
-                            .retry_with_payment(
-                                effective_url_ref,
-                                api_key,
-                                &body,
-                                auth_header,
-                                extra_headers,
-                                &payment_header,
-                            )
-                            .await;
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "x402 payment handler failed, returning original 402");
-                        return Err(IroncladError::Llm(format!(
-                            "provider returned 402 and x402 payment failed: {e}"
-                        )));
-                    }
+                Err(e) => {
+                    warn!(error = %e, "x402 payment handler failed, returning original 402");
+                    return Err(IroncladError::Llm(format!(
+                        "provider returned 402 and x402 payment failed: {e}"
+                    )));
                 }
             }
         }
@@ -317,45 +317,45 @@ impl LlmClient {
         let status = response.status();
 
         // ── x402 autonomous payment (streaming) ────────────────
-        if status.as_u16() == 402 {
-            if let Some(handler) = &self.payment_handler {
-                let error_body = response.text().await.unwrap_or_else(|_| "{}".into());
-                let body_json: serde_json::Value =
-                    serde_json::from_str(&error_body).unwrap_or_default();
+        if status.as_u16() == 402
+            && let Some(handler) = &self.payment_handler
+        {
+            let error_body = response.text().await.unwrap_or_else(|_| "{}".into());
+            let body_json: serde_json::Value =
+                serde_json::from_str(&error_body).unwrap_or_default();
 
-                if let Some(amount) = body_json.get("amount").and_then(|v| v.as_f64()) {
-                    if amount > X402_MAX_AUTO_PAY_USDC {
-                        warn!(
-                            amount,
-                            max = X402_MAX_AUTO_PAY_USDC,
-                            "x402 payment exceeds auto-pay threshold, declining"
-                        );
-                        return Err(IroncladError::Llm(format!(
-                            "x402 payment of ${amount:.4} exceeds auto-pay limit of ${X402_MAX_AUTO_PAY_USDC:.2}"
-                        )));
-                    }
+            if let Some(amount) = body_json.get("amount").and_then(|v| v.as_f64())
+                && amount > X402_MAX_AUTO_PAY_USDC
+            {
+                warn!(
+                    amount,
+                    max = X402_MAX_AUTO_PAY_USDC,
+                    "x402 payment exceeds auto-pay threshold, declining"
+                );
+                return Err(IroncladError::Llm(format!(
+                    "x402 payment of ${amount:.4} exceeds auto-pay limit of ${X402_MAX_AUTO_PAY_USDC:.2}"
+                )));
+            }
+
+            match handler.handle_payment_required(&body_json).await {
+                Ok(payment_header) => {
+                    info!(url = effective_url_ref, "retrying stream with x402 payment");
+                    return self
+                        .retry_stream_with_payment(
+                            effective_url_ref,
+                            api_key,
+                            &body,
+                            auth_header,
+                            extra_headers,
+                            &payment_header,
+                        )
+                        .await;
                 }
-
-                match handler.handle_payment_required(&body_json).await {
-                    Ok(payment_header) => {
-                        info!(url = effective_url_ref, "retrying stream with x402 payment");
-                        return self
-                            .retry_stream_with_payment(
-                                effective_url_ref,
-                                api_key,
-                                &body,
-                                auth_header,
-                                extra_headers,
-                                &payment_header,
-                            )
-                            .await;
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "x402 payment handler failed for stream");
-                        return Err(IroncladError::Llm(format!(
-                            "provider returned 402 and x402 payment failed: {e}"
-                        )));
-                    }
+                Err(e) => {
+                    warn!(error = %e, "x402 payment handler failed for stream");
+                    return Err(IroncladError::Llm(format!(
+                        "provider returned 402 and x402 payment failed: {e}"
+                    )));
                 }
             }
         }
