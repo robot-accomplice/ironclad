@@ -253,7 +253,8 @@ settle_body=$(jq -n \
         amount_usdc: $amt,
         currency: "USDC",
         attributable_costs_usdc: 0.0,
-        auto_swap: false
+        auto_swap: false,
+        target_chain: "BASE"
     }'
 )
 settle_resp=$(api POST "/api/services/opportunities/${OPP_ID}/settle" \
