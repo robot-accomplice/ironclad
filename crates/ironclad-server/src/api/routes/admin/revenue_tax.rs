@@ -322,7 +322,7 @@ fn mark_tax_confirmed_with_metrics(
     // Guard: a transaction must have been submitted (tax_tx_hash recorded) before
     // confirmation is allowed.  Without this, a caller could confirm a tax payout that
     // was never submitted on-chain, marking the task complete without sending funds.
-    if source.get("tax_tx_hash").and_then(|v| v.as_str()).map_or(true, str::is_empty) {
+    if source.get("tax_tx_hash").and_then(|v| v.as_str()).is_none_or(str::is_empty) {
         return Err(bad_request(format!(
             "revenue tax task for opportunity '{}' has no prior submission (tax_tx_hash missing); \
              submit the transaction before confirming",

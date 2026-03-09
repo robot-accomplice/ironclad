@@ -434,7 +434,7 @@ fn mark_swap_confirmed_with_metrics(
     // Guard: a transaction must have been submitted (swap_tx_hash recorded) before
     // confirmation is allowed.  Without this, a caller could confirm a swap that was
     // never actually submitted on-chain, marking the task complete without moving funds.
-    if source.get("swap_tx_hash").and_then(|v| v.as_str()).map_or(true, str::is_empty) {
+    if source.get("swap_tx_hash").and_then(|v| v.as_str()).is_none_or(str::is_empty) {
         return Err(bad_request(format!(
             "revenue swap task for opportunity '{}' has no prior submission (swap_tx_hash missing); \
              submit the transaction before confirming",
