@@ -30,6 +30,7 @@ pub async fn submit_evm_contract_call(wallet: &Wallet, call: &EvmContractCall) -
     let signer = PrivateKeySigner::from_bytes(key_bytes.into())
         .map_err(|e| IroncladError::Wallet(format!("invalid private key: {e}")))?;
     let provider = ProviderBuilder::new()
+        .with_recommended_fillers()
         .wallet(EthereumWallet::from(signer))
         .on_http(
             wallet
