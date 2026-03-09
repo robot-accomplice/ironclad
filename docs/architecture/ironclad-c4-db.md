@@ -85,7 +85,7 @@ flowchart TB
     subgraph IdentityDetail ["identity + discovery"]
         IDENTITY["identity table CRUD<br/>get/set key-value pairs<br/>(ethereum_address, did,<br/>hmac_session_secret, etc.)"]
         DISCOVERED["discovered_agents table CRUD<br/>upsert, lookup_by_did,<br/>search_by_capability,<br/>prune_expired"]
-        SOUL["soul_history table CRUD<br/>append, get_current,<br/>get_history"]
+        SOUL["os_personality_history table CRUD<br/>append, get_current,<br/>get_history"]
     end
 
     subgraph HippocampusDetail ["hippocampus.rs — Memory Consolidation"]
@@ -141,7 +141,7 @@ flowchart TB
 | `proxy_stats` | (schema) | Snapshot JSON |
 | `semantic_cache` | `cache.rs` | Persistent backing store for in-memory cache; loaded on boot, flushed every 5 min |
 | `identity` | direct | Key-value (ethereum_address, did, hmac_session_secret, a2a_identity_key, etc.) |
-| `soul_history` | direct | Soul content history |
+| `os_personality_history` | direct | OS personality content history |
 | `metric_snapshots` | (schema) | Alerts and metrics JSON |
 | `discovered_agents` | direct | A2A agent card cache (DID, endpoint, trust_score) |
 | `delivery_queue` | (schema) | Outbound channel delivery (status, attempts, next_retry_at) |

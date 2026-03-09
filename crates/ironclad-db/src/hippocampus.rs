@@ -369,7 +369,7 @@ fn system_table_metadata(table_name: &str) -> (&'static str, &'static str) {
         "proxy_stats" => ("API proxy statistics", "internal"),
         "semantic_cache" => ("Semantic response cache", "internal"),
         "identity" => ("Agent identity and credentials", "internal"),
-        "soul_history" => ("Agent personality evolution log", "internal"),
+        "os_personality_history" => ("OS personality evolution log", "internal"),
         "metric_snapshots" => ("System metric snapshots", "internal"),
         "discovered_agents" => ("Discovered peer agents", "read"),
         "skills" => ("Registered agent skills", "read"),

@@ -304,7 +304,7 @@ CREATE TABLE IF NOT EXISTS identity (
     value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS soul_history (
+CREATE TABLE IF NOT EXISTS os_personality_history (
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -516,7 +516,7 @@ CREATE INDEX IF NOT EXISTS idx_abuse_events_actor ON abuse_events(actor_id, crea
 CREATE INDEX IF NOT EXISTS idx_abuse_events_origin ON abuse_events(origin, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_created ON abuse_events(created_at DESC);
 "#;
-const EMBEDDED_SCHEMA_VERSION: i64 = 19;
+const EMBEDDED_SCHEMA_VERSION: i64 = 20;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {

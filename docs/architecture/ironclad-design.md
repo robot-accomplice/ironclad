@@ -549,8 +549,8 @@ CREATE TABLE identity (
     value TEXT NOT NULL
 );
 
--- Soul history
-CREATE TABLE soul_history (
+-- OS personality history
+CREATE TABLE os_personality_history (
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,

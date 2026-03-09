@@ -111,7 +111,7 @@ fn default_decay_half_life_days() -> u32 {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
-    /// Tracks OS personality evolution in the `soul_history` table.
+    /// Tracks OS personality evolution in the `os_personality_history` table.
     /// NOTE: Legacy naming — "soul" here means the OS personality layer, not
     /// firmware. Kept as `soul_versioning` for TOML backward compatibility.
     #[serde(default)]

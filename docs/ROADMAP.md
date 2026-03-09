@@ -1176,7 +1176,7 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 2.7 | ~~WASM plugin runtime~~ ✅ | 2 | Plugin SDK, ToolDef | ~~High~~ Done |
 | 2.8 | Prompt compression | 2 | Context assembly, tier.rs | Medium |
 | 2.9 | ~~Declarative agent manifests~~ ✅ | 2 | Config, SkillLoader, SubagentRegistry | ~~High~~ Done |
-| 2.10 | ~~Structured workspace system~~ ✅ | 2 | personality.rs, soul_history | ~~Medium~~ Done |
+| 2.10 | ~~Structured workspace system~~ ✅ | 2 | personality.rs, os_personality_history | ~~Medium~~ Done |
 | 2.11 | ~~Knowledge source trait~~ ✅ | 2 | retrieval.rs, EmbeddingClient, HNSW | ~~High~~ Done |
 | 2.12 | Episodic digest system | 2 | memory.rs, compaction, retrieval | Medium |
 | 2.13 | Hippocampus — self-describing schema map | 2 | schema.rs, Tool trait, policy engine | High |

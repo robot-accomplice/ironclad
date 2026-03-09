@@ -1393,7 +1393,7 @@ flowchart TD
 | 23. Prompt Compression | (no direct DB tables; compression is in-memory before inference) |
 | 24. Introspection Tools | sub_agents, tasks, working_memory, episodic_memory, semantic_memory, procedural_memory, relationship_memory, delivery_queue |
 
-Tables not referenced by any diagram: `schema_version` (infrastructure-only), `proxy_stats`, `identity`, `soul_history` -- these are straightforward CRUD subsystems not requiring dataflow diagrams.
+Tables not referenced by any diagram: `schema_version` (infrastructure-only), `proxy_stats`, `identity`, `os_personality_history` -- these are straightforward CRUD subsystems not requiring dataflow diagrams.
 
 ### Crate References
 
