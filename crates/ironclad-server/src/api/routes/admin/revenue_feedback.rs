@@ -31,6 +31,12 @@ pub async fn record_revenue_opportunity_feedback(
             "comment exceeds max length of 2048 characters",
         ));
     }
+    // Verify the opportunity exists before attempting feedback insertion.
+    // Without this check, a missing ID causes `query_row` in the DB layer to
+    // return `QueryReturnedNoRows`, which surfaces as a misleading 500.
+    let _opp = ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
+        .map_err(|e| internal_err(&e))?
+        .ok_or_else(|| not_found(format!("revenue opportunity '{}' not found", id)))?;
     let feedback_id = ironclad_db::revenue_feedback::record_revenue_feedback(
         &state.db,
         &id,

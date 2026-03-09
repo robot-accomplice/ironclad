@@ -121,6 +121,16 @@ mod tests {
     }
 
     #[test]
+    fn record_feedback_for_missing_opportunity_returns_error() {
+        let db = Database::new(":memory:").unwrap();
+        let result = record_revenue_feedback(&db, "nonexistent", 4.0, "operator", None);
+        assert!(
+            result.is_err(),
+            "should error when opportunity doesn't exist"
+        );
+    }
+
+    #[test]
     fn revenue_feedback_signal_returns_count_and_average() {
         let db = Database::new(":memory:").unwrap();
         let conn = db.conn();
