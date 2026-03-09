@@ -81,18 +81,29 @@ fn score_revenue_opportunity_from_signal(
         .unwrap_or(false)
         || action_text.contains("multi-repo");
 
+    // Strategy calibrations: confidence = likelihood of payout, effort = relative cost,
+    // risk = probability of failure/loss.  Tuned for "high volume, low risk, reliable returns".
     let mut confidence: f64 = match strategy.as_str() {
         "oracle_feed" => 0.65,
+        "code_review" | "small_audit" => 0.70, // well-scoped, repeatable
+        "content" | "content_creation" => 0.60, // reliable but variable payout timing
+        "monitoring" | "api_monitoring" => 0.75, // highly automated, near-guaranteed
         "micro_bounty" => 0.55,
         _ => 0.45,
     };
     let mut effort: f64 = match strategy.as_str() {
         "oracle_feed" => 0.35,
+        "code_review" | "small_audit" => 0.30, // fast turnaround, narrow scope
+        "content" | "content_creation" => 0.35, // moderate effort, templatable
+        "monitoring" | "api_monitoring" => 0.20, // low-touch automated
         "micro_bounty" => 0.40,
         _ => 0.50,
     };
     let mut risk: f64 = match strategy.as_str() {
         "oracle_feed" => 0.20,
+        "code_review" | "small_audit" => 0.15, // low risk — deliverable is well-defined
+        "content" | "content_creation" => 0.20, // low risk — worst case is no engagement
+        "monitoring" | "api_monitoring" => 0.10, // very low risk — automated checks
         "micro_bounty" => 0.30,
         _ => 0.40,
     };

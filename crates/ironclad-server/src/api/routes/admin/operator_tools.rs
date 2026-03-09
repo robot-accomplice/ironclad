@@ -12,9 +12,22 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
         ironclad_db::revenue_accounting::revenue_swap_queue_summary(&state.db)
             .inspect_err(|e| tracing::warn!(error = %e, "failed to load revenue swap queue summary"))
             .unwrap_or_default();
+    // Revenue introspection class — unified operational visibility surface
     let revenue_strategy_summary =
-        ironclad_db::revenue_strategy_summary::revenue_strategy_summary(&state.db)
+        ironclad_db::revenue_introspection::strategy_summary(&state.db)
             .inspect_err(|e| tracing::warn!(error = %e, "failed to load revenue strategy summary"))
+            .unwrap_or_default();
+    let revenue_profitability =
+        ironclad_db::revenue_introspection::strategy_profitability(&state.db)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load revenue profitability"))
+            .unwrap_or_default();
+    let revenue_audit_log =
+        ironclad_db::revenue_introspection::audit_log(&state.db, 50)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load revenue audit log"))
+            .unwrap_or_default();
+    let pipeline_health =
+        ironclad_db::revenue_introspection::pipeline_health(&state.db)
+            .inspect_err(|e| tracing::warn!(error = %e, "failed to load pipeline health"))
             .unwrap_or_default();
     let revenue_feedback_summary =
         ironclad_db::revenue_feedback::revenue_feedback_summary_by_strategy(&state.db)
@@ -234,6 +247,9 @@ pub async fn wallet_balance(State(state): State<AppState>) -> impl IntoResponse 
             "completed": revenue_tax_tasks.iter().filter(|r| r["status"].as_str() == Some("completed")).count(),
         },
         "revenue_strategy_summary": revenue_strategy_summary,
+        "revenue_profitability": revenue_profitability,
+        "revenue_audit_log": revenue_audit_log,
+        "revenue_pipeline_health": pipeline_health,
         "revenue_feedback_summary": revenue_feedback_summary,
         "seed_exercise_readiness": seed_readiness,
         "seed_exercise_progress": seed_progress,

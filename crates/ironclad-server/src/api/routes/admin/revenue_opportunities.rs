@@ -113,6 +113,7 @@ pub async fn get_revenue_opportunity(
         "tax_destination_wallet": row.tax_destination_wallet,
         "swap_task": revenue_swap_task_status(&state.db, &id)
             .map_err(|e| internal_err(&e))?,
+        "settled_at": row.settled_at,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     })))

@@ -83,6 +83,7 @@ pub struct RevenueOpportunityRecord {
     pub tax_amount_usdc: f64,
     pub retained_earnings_usdc: Option<f64>,
     pub tax_destination_wallet: Option<String>,
+    pub settled_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -261,7 +262,8 @@ pub fn get_revenue_opportunity(
             "SELECT id, source, strategy, payload_json, expected_revenue_usdc, status, qualification_reason, \
                     confidence_score, effort_score, risk_score, priority_score, recommended_approved, score_reason, \
                     plan_json, evidence_json, request_id, settlement_ref, settled_amount_usdc, attributable_costs_usdc, \
-                    net_profit_usdc, tax_rate, tax_amount_usdc, retained_earnings_usdc, tax_destination_wallet, created_at, updated_at \
+                    net_profit_usdc, tax_rate, tax_amount_usdc, retained_earnings_usdc, tax_destination_wallet, \
+                    settled_at, created_at, updated_at \
              FROM revenue_opportunities WHERE id = ?1",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -292,8 +294,9 @@ pub fn get_revenue_opportunity(
                 tax_amount_usdc: row.get(21)?,
                 retained_earnings_usdc: row.get(22)?,
                 tax_destination_wallet: row.get(23)?,
-                created_at: row.get(24)?,
-                updated_at: row.get(25)?,
+                settled_at: row.get(24)?,
+                created_at: row.get(25)?,
+                updated_at: row.get(26)?,
             })
         })
         .optional()
@@ -409,7 +412,7 @@ pub fn settle_revenue_opportunity(
          SET status = ?2, settlement_ref = ?3, settled_amount_usdc = ?4, attributable_costs_usdc = ?5, \
              net_profit_usdc = (?4 - ?5), tax_rate = ?6, tax_amount_usdc = ?7, \
              retained_earnings_usdc = MAX((?4 - ?5) - ?7, 0.0), \
-             tax_destination_wallet = ?8, updated_at = datetime('now') \
+             tax_destination_wallet = ?8, settled_at = datetime('now'), updated_at = datetime('now') \
          WHERE id = ?1 AND status = ?9",
         rusqlite::params![
             id,

@@ -243,6 +243,7 @@ CREATE TABLE IF NOT EXISTS revenue_opportunities (
     tax_amount_usdc REAL NOT NULL DEFAULT 0,
     retained_earnings_usdc REAL,
     tax_destination_wallet TEXT,
+    settled_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -515,7 +516,7 @@ CREATE INDEX IF NOT EXISTS idx_abuse_events_actor ON abuse_events(actor_id, crea
 CREATE INDEX IF NOT EXISTS idx_abuse_events_origin ON abuse_events(origin, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_created ON abuse_events(created_at DESC);
 "#;
-const EMBEDDED_SCHEMA_VERSION: i64 = 18;
+const EMBEDDED_SCHEMA_VERSION: i64 = 19;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {
@@ -767,6 +768,14 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
     if !has_column(&conn, "revenue_opportunities", "score_reason")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN score_reason TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    // v0.9.5: settled_at for cycle-time analytics
+    if !has_column(&conn, "revenue_opportunities", "settled_at")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN settled_at TEXT",
             [],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;

@@ -29,6 +29,7 @@
 //! - `metrics` -- Inference cost tracking, proxy snapshots, transactions, turn feedback
 //! - `routing_dataset` -- Historical routing decision + cost outcome JOIN for ML training
 //! - `shadow_routing` -- Counterfactual ML predictions stored alongside production decisions
+//! - `revenue_introspection` -- Unified introspection surface: strategy health, profitability, audit trail
 
 pub mod abuse;
 pub mod agents;
@@ -48,6 +49,7 @@ pub mod model_selection;
 pub mod policy;
 pub mod revenue_accounting;
 pub mod revenue_feedback;
+pub mod revenue_introspection;
 pub mod revenue_opportunity_queries;
 pub mod revenue_scoring;
 pub mod revenue_strategy_summary;
