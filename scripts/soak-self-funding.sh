@@ -25,7 +25,7 @@
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────
-BASE_URL="${IRONCLAD_URL:-http://127.0.0.1:3110}"
+BASE_URL="${IRONCLAD_URL:-http://127.0.0.1:18789}"
 API_KEY="${IRONCLAD_API_KEY:-}"
 DRY_RUN=0
 REVENUE_AMOUNT=5.00
