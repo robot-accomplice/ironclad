@@ -142,7 +142,7 @@ pub fn mark_revenue_tax_confirmed(
         "completed",
         None,
         Some(tx_hash),
-        &["in_progress"],
+        &["in_progress", "submitting"],
     )
 }
 
@@ -157,7 +157,7 @@ pub fn mark_revenue_tax_submitted(
         "in_progress",
         None,
         Some(tx_hash),
-        &["submitting", "in_progress"],
+        &["submitting"],
     )
 }
 

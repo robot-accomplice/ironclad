@@ -23,7 +23,6 @@ fn find_revenue_service(id: &str) -> Option<&'static RevenueServiceSpec> {
 #[derive(Deserialize)]
 pub struct ServiceQuoteRequest {
     pub service_id: String,
-    #[serde(default)]
     pub requester: String,
     #[serde(default)]
     pub parameters: Value,

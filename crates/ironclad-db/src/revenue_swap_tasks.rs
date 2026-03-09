@@ -146,7 +146,7 @@ pub fn mark_revenue_swap_confirmed(
         "completed",
         None,
         Some(tx_hash),
-        &["in_progress"],
+        &["in_progress", "submitting"],
     )
 }
 
@@ -161,7 +161,7 @@ pub fn mark_revenue_swap_submitted(
         "in_progress",
         None,
         Some(tx_hash),
-        &["submitting", "in_progress"],
+        &["submitting"],
     )
 }
 

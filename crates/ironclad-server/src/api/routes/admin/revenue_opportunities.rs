@@ -6,9 +6,6 @@ pub async fn intake_revenue_opportunity(
     let strategy = req.strategy.trim().to_ascii_lowercase();
     validate_short("source", &source)?;
     validate_short("strategy", &strategy)?;
-    if source.is_empty() || strategy.is_empty() {
-        return Err(bad_request("source and strategy must be non-empty"));
-    }
     if !req.expected_revenue_usdc.is_finite() || req.expected_revenue_usdc <= 0.0 {
         return Err(bad_request("expected_revenue_usdc must be positive"));
     }
