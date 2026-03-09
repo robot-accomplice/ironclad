@@ -1317,6 +1317,31 @@ pub async fn cmd_update_all(
     let (OK, _, WARN, DETAIL, _) = icons();
     heading("Ironclad Update");
 
+    // ── Liability Waiver ──────────────────────────────────────────
+    println!();
+    println!("    {BOLD}IMPORTANT — PLEASE READ{RESET}");
+    println!();
+    println!("    Ironclad is an autonomous AI agent that can execute actions,");
+    println!("    interact with external services, and manage digital assets");
+    println!("    including cryptocurrency wallets and on-chain transactions.");
+    println!();
+    println!("    THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND.");
+    println!("    The developers and contributors bear {BOLD}no responsibility{RESET} for:");
+    println!();
+    println!("      - Actions taken by the agent, whether intended or unintended");
+    println!("      - Loss of funds, income, cryptocurrency, or other digital assets");
+    println!("      - Security vulnerabilities, compromises, or unauthorized access");
+    println!("      - Damages arising from the agent's use, misuse, or malfunction");
+    println!("      - Any financial, legal, or operational consequences whatsoever");
+    println!();
+    println!("    By proceeding, you acknowledge that you use Ironclad entirely");
+    println!("    at your own risk and accept full responsibility for its operation.");
+    println!();
+    if !yes && !confirm_action("I understand and accept these terms", true) {
+        println!("\n    Update cancelled.\n");
+        return Ok(());
+    }
+
     let binary_updated = apply_binary_update(yes, "download").await?;
 
     let registry_url = resolve_registry_url(registry_url_override, config_path);
