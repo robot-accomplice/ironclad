@@ -8,6 +8,10 @@ use crate::memory::MemoryBudgetManager;
 pub struct MemoryRetriever {
     budget_manager: MemoryBudgetManager,
     hybrid_weight: f64,
+    /// Half-life (in days) for episodic memory decay during retrieval re-ranking.
+    /// Older episodic results have their similarity score discounted so that
+    /// recent memories surface above stale ones with similar cosine proximity.
+    decay_half_life_days: f64,
 }
 
 impl MemoryRetriever {
@@ -16,7 +20,14 @@ impl MemoryRetriever {
         Self {
             budget_manager: MemoryBudgetManager::new(config),
             hybrid_weight,
+            decay_half_life_days: 7.0, // sensible default: 1-week half-life
         }
+    }
+
+    /// Override the episodic decay half-life (in days) used during retrieval re-ranking.
+    pub fn with_decay_half_life(mut self, days: f64) -> Self {
+        self.decay_half_life_days = days;
+        self
     }
 
     /// Retrieve memories from all tiers and format them into a single string
@@ -68,7 +79,7 @@ impl MemoryRetriever {
         } else {
             None
         };
-        let relevant = relevant.unwrap_or_else(|| {
+        let mut relevant = relevant.unwrap_or_else(|| {
             ironclad_db::embeddings::hybrid_search(
                 db,
                 query,
@@ -78,6 +89,13 @@ impl MemoryRetriever {
             )
             .unwrap_or_default()
         });
+
+        // Decay re-ranking: discount episodic results by age so recent memories
+        // surface above stale ones with similar cosine proximity.
+        if self.decay_half_life_days > 0.0 {
+            self.rerank_episodic_by_decay(db, &mut relevant);
+        }
+
         if let Some(s) = self.format_relevant(&relevant, budgets.episodic + budgets.semantic) {
             sections.push(s);
         }
@@ -171,6 +189,54 @@ impl MemoryRetriever {
         } else {
             None
         }
+    }
+
+    /// Re-rank search results by applying time-decay to episodic entries.
+    ///
+    /// For results from the `episodic_memory` table, look up their `created_at`
+    /// timestamp and scale the similarity score by an exponential decay factor.
+    /// Non-episodic results are left untouched.  The result list is re-sorted
+    /// by the adjusted similarity in descending order.
+    fn rerank_episodic_by_decay(
+        &self,
+        db: &Database,
+        results: &mut Vec<ironclad_db::embeddings::SearchResult>,
+    ) {
+        let now = chrono::Utc::now();
+        let conn = db.conn();
+
+        for result in results.iter_mut() {
+            if result.source_table != "episodic_memory" {
+                continue;
+            }
+            // Look up the created_at for this episodic entry
+            let age_days: Option<f64> = conn
+                .query_row(
+                    "SELECT created_at FROM episodic_memory WHERE id = ?1",
+                    [&result.source_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok()
+                .and_then(|ts| chrono::DateTime::parse_from_rfc3339(&ts).ok())
+                .map(|created| {
+                    (now - created.with_timezone(&chrono::Utc))
+                        .to_std()
+                        .map(|d| d.as_secs_f64() / 86_400.0)
+                        .unwrap_or(0.0)
+                });
+
+            if let Some(age) = age_days {
+                let decay_factor = (0.5_f64).powf(age / self.decay_half_life_days);
+                result.similarity *= decay_factor;
+            }
+        }
+
+        // Re-sort by adjusted similarity, descending
+        results.sort_by(|a, b| {
+            b.similarity
+                .partial_cmp(&a.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     fn retrieve_procedural(&self, db: &Database, budget_tokens: usize) -> Option<String> {

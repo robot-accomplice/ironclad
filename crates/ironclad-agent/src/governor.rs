@@ -112,10 +112,32 @@ impl SessionGovernor {
         if trimmed.is_empty() {
             return Ok(());
         }
-        let prompt = crate::context::build_compaction_prompt(&trimmed);
+
+        // Progressive compaction: pick the least aggressive stage that fits ~500 tokens.
+        let current_tokens = crate::context::count_tokens(&trimmed);
+        let target_tokens = 500usize;
+        let excess_ratio = current_tokens as f64 / target_tokens.max(1) as f64;
+        let stage = crate::context::CompactionStage::from_excess(excess_ratio);
+        let compacted = crate::context::compact_to_stage(&trimmed, stage);
+
+        // Format the compacted messages into a summary block.
+        let summary_lines: Vec<String> = compacted
+            .iter()
+            .filter(|m| m.role != "system")
+            .map(|m| format!("{}: {}", m.role, m.content))
+            .collect();
+        let summary_body = if summary_lines.is_empty() {
+            compacted
+                .iter()
+                .map(|m| m.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            summary_lines.join("\n")
+        };
         let digest = format!(
-            "[Conversation Summary Draft]\n{}",
-            prompt.chars().take(2_000).collect::<String>()
+            "[Conversation Summary — {stage:?}]\n{}",
+            summary_body.chars().take(2_000).collect::<String>()
         );
         ironclad_db::sessions::append_message(db, session_id, "system", &digest)?;
         Ok(())
@@ -251,7 +273,7 @@ mod tests {
         assert!(
             !msgs
                 .iter()
-                .any(|m| m.content.contains("[Conversation Summary Draft]"))
+                .any(|m| m.content.contains("[Conversation Summary"))
         );
     }
 
@@ -276,12 +298,8 @@ mod tests {
         let last = msgs.last().unwrap();
         assert_eq!(last.role, "system");
         assert!(
-            last.content.contains("[Conversation Summary Draft]"),
-            "expected summary draft header"
-        );
-        assert!(
-            last.content.contains("Summarize"),
-            "expected summarize instruction"
+            last.content.contains("[Conversation Summary"),
+            "expected summary header"
         );
     }
 
@@ -303,11 +321,10 @@ mod tests {
         let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
         let summary_msg = msgs
             .iter()
-            .find(|m| m.content.contains("[Conversation Summary Draft]"))
+            .find(|m| m.content.contains("[Conversation Summary"))
             .unwrap();
 
-        // The summary should include content from trimmed messages (0..4) but
-        // not from the kept recent 4 (4..8)
+        // The summary should reference content from trimmed messages (0..4)
         assert!(
             summary_msg.content.contains("content-0"),
             "summary should include trimmed message 0"
@@ -369,7 +386,7 @@ mod tests {
         let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
         assert!(
             msgs.iter()
-                .any(|m| m.content.contains("[Conversation Summary Draft]")),
+                .any(|m| m.content.contains("[Conversation Summary")),
             "compaction should have appended a summary"
         );
     }
