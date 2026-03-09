@@ -98,6 +98,32 @@ api() {
     echo "$body"
 }
 
+# Retry wrapper for on-chain operations that may hit RPC rate limits.
+# Usage: api_retry <max_attempts> <method> <path> [curl_args...]
+api_retry() {
+    local max_attempts="$1"
+    shift
+    local attempt=1 delay=5 result
+    while [[ $attempt -le $max_attempts ]]; do
+        if result=$(api "$@" 2>&1); then
+            echo "$result"
+            return 0
+        fi
+        if echo "$result" | grep -q 'rate limit\|over rate limit'; then
+            info "  ↻ RPC rate-limited, retry $attempt/$max_attempts (waiting ${delay}s)..."
+            sleep "$delay"
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+        else
+            # Non-rate-limit error — don't retry
+            echo "$result"
+            return 1
+        fi
+    done
+    echo "$result"
+    return 1
+}
+
 # Construct ERC-20 transfer calldata
 # Usage: erc20_transfer_calldata <to_address> <amount_usdc>
 erc20_transfer_calldata() {
@@ -147,7 +173,7 @@ check_pass "Server is healthy"
 
 # 1b. Wallet status
 info "Checking wallet..."
-wallet_json=$(api GET /api/wallet/balance 2>/dev/null) || fail "Cannot reach wallet endpoint"
+wallet_json=$(api_retry 3 GET /api/wallet/balance 2>/dev/null) || fail "Cannot reach wallet endpoint"
 wallet_addr=$(echo "$wallet_json" | jq -r '.address // empty')
 wallet_balance=$(echo "$wallet_json" | jq -r '.balance // "0"')
 wallet_chain=$(echo "$wallet_json" | jq -r '.chain_id // 0')
@@ -325,7 +351,11 @@ fi
 
 # ═══════════════════════════════════════════════════════════════════
 # PHASE 3: Tax Payout (on-chain ERC-20 transfer)
+# Brief cooldown to avoid hitting public RPC rate limits after the
+# rapid-fire server-side calls in Phase 2.
 # ═══════════════════════════════════════════════════════════════════
+info "Waiting 5s for RPC rate-limit window to reset..."
+sleep 5
 step "Phase 3: Tax Payout (on-chain)"
 
 # Check if tax task was queued
@@ -359,7 +389,7 @@ if awk "BEGIN { exit (${tax_amount} > 0) ? 0 : 1 }" && [[ -n "$tax_task_status" 
             --arg ca "$USDC_BASE" \
             '{calldata: $cd, contract_address: $ca}'
         )
-        submit_resp=$(api POST "/api/services/tax-payouts/${OPP_ID}/submit" \
+        submit_resp=$(api_retry 4 POST "/api/services/tax-payouts/${OPP_ID}/submit" \
             -d "$submit_body"
         ) || {
             check_fail "Tax payout submission failed: ${submit_resp}"
@@ -510,7 +540,7 @@ echo ""
 # ═══════════════════════════════════════════════════════════════════
 step "Phase 5: Final Balance Verification"
 
-final_wallet=$(api GET /api/wallet/balance 2>/dev/null) || warn "Cannot fetch final wallet state"
+final_wallet=$(api_retry 3 GET /api/wallet/balance 2>/dev/null) || warn "Cannot fetch final wallet state"
 final_balance=$(echo "$final_wallet" | jq -r '.balance // "unknown"')
 info "Final USDC balance: \$${final_balance}"
 info "Starting balance:   \$${wallet_balance}"
