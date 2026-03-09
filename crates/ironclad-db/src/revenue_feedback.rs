@@ -24,11 +24,17 @@ pub fn record_revenue_feedback(
         rusqlite::params![id, opportunity_id, strategy, grade, source, comment],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
-    conn.execute(
-        "UPDATE revenue_opportunities SET updated_at = datetime('now') WHERE id = ?1",
-        [opportunity_id],
-    )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let touched = conn
+        .execute(
+            "UPDATE revenue_opportunities SET updated_at = datetime('now') WHERE id = ?1",
+            [opportunity_id],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    if touched == 0 {
+        return Err(IroncladError::Database(format!(
+            "revenue opportunity '{opportunity_id}' not found for feedback touch"
+        )));
+    }
     Ok(id)
 }
 
@@ -38,6 +44,7 @@ pub fn revenue_feedback_summary_by_strategy(db: &Database) -> Result<Vec<Value>>
         .prepare(
             "SELECT strategy, COUNT(*), AVG(grade), MAX(created_at) \
              FROM revenue_feedback \
+             WHERE created_at >= datetime('now', '-90 days') \
              GROUP BY strategy \
              ORDER BY AVG(grade) DESC, COUNT(*) DESC, strategy ASC \
              LIMIT 200",
@@ -65,7 +72,7 @@ pub fn revenue_feedback_signal_for_strategy(
     conn.query_row(
         "SELECT COUNT(*), AVG(grade) \
          FROM revenue_feedback \
-         WHERE strategy = ?1",
+         WHERE strategy = ?1 AND created_at >= datetime('now', '-90 days')",
         [strategy],
         |row| {
             let feedback_count = row.get::<_, i64>(0)?;
@@ -123,13 +130,16 @@ mod tests {
     }
 
     #[test]
-    fn record_feedback_without_existing_opportunity_succeeds_at_db_layer() {
-        // Existence check is the route handler's responsibility, not the DB layer.
-        // The DB function is a pure insert + touch; it does not validate FK presence.
+    fn record_feedback_without_existing_opportunity_returns_error() {
+        // The DB-layer touch now validates that the opportunity exists, returning
+        // an error if the UPDATE affected 0 rows. This prevents ghost feedback
+        // records pointing to non-existent opportunities.
         let db = Database::new(":memory:").unwrap();
         let result =
             record_revenue_feedback(&db, "nonexistent", "any_strategy", 4.0, "operator", None);
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "expected 'not found' in: {err}");
     }
 
     #[test]

@@ -2226,7 +2226,8 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn revenue_swap_task_lifecycle_routes_work() {
-        let app = build_router(test_state());
+        let state = test_state();
+        let app = build_router(state.clone());
         let intake_resp = app
             .clone()
             .oneshot(
@@ -2290,6 +2291,21 @@ primary = "ollama/qwen3:8b"
             .await
             .unwrap();
         assert_eq!(start_resp.status(), StatusCode::OK);
+
+        // Simulate EVM submission: claim the submission slot then record the tx_hash.
+        // Real submissions go through the /submit endpoint which broadcasts on-chain,
+        // but we can't do real EVM in tests.
+        assert!(
+            ironclad_db::revenue_swap_tasks::claim_revenue_swap_submission(&state.db, &id).unwrap()
+        );
+        assert!(
+            ironclad_db::revenue_swap_tasks::mark_revenue_swap_submitted(
+                &state.db,
+                &id,
+                "0xswap123"
+            )
+            .unwrap()
+        );
 
         let confirm_resp = app
             .clone()
@@ -2555,7 +2571,7 @@ primary = "ollama/qwen3:8b"
             cfg.self_funding.tax.destination_wallet =
                 Some("0x1111111111111111111111111111111111111111".to_string());
         }
-        let app = build_router(state);
+        let app = build_router(state.clone());
         let intake_resp = app
             .clone()
             .oneshot(
@@ -2619,6 +2635,17 @@ primary = "ollama/qwen3:8b"
             .await
             .unwrap();
         assert_eq!(start_resp.status(), StatusCode::OK);
+
+        // Simulate EVM submission: claim the submission slot then record the tx_hash.
+        // Real submissions go through the /submit endpoint which broadcasts on-chain,
+        // but we can't do real EVM in tests.
+        assert!(
+            ironclad_db::revenue_tax_tasks::claim_revenue_tax_submission(&state.db, &id).unwrap()
+        );
+        assert!(
+            ironclad_db::revenue_tax_tasks::mark_revenue_tax_submitted(&state.db, &id, "0xtax123")
+                .unwrap()
+        );
 
         let confirm_resp = app
             .clone()

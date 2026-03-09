@@ -246,7 +246,7 @@ pub async fn settle_revenue_opportunity(
                 &state.db,
                 RevenueSwapTask {
                     opportunity_id: &id,
-                    amount: req.amount_usdc,
+                    amount: retained_earnings_usdc,
                     from_currency: settlement_currency.as_str(),
                     target_symbol: target_symbol.as_str(),
                     target_chain: target_chain.as_str(),
@@ -294,24 +294,34 @@ pub async fn settle_revenue_opportunity(
         if db_tax_amount > 0.0
             && let Some(destination_wallet) = db_tax_wallet
         {
-            let tax_chain_config = swap_policy
-                .chains
-                .iter()
-                .find(|c| c.chain.trim().eq_ignore_ascii_case(&target_chain));
-            let tax_contract_address = tax_chain_config
-                .map(|c| c.target_contract_address.as_str());
-            queue_revenue_tax_payout(
-                &state.db,
-                RevenueTaxPayoutTask {
-                    opportunity_id: &id,
-                    amount: db_tax_amount,
-                    currency: settlement_currency.as_str(),
-                    target_chain: target_chain.as_str(),
-                    destination_wallet,
-                    contract_address: tax_contract_address,
-                },
-            )
-            .map_err(|e| internal_err(&e))?;
+            // Only re-queue if the tax task doesn't already exist (crash-recovery).
+            // If it exists, the original settlement created it with correct parameters;
+            // re-queuing with caller-supplied currency/chain could overwrite those
+            // values if the task has completed/failed (ON CONFLICT DO UPDATE).
+            let tax_task_exists =
+                ironclad_db::revenue_tax_tasks::get_revenue_tax_task(&state.db, &id)
+                    .map_err(|e| internal_err(&e))?
+                    .is_some();
+            if !tax_task_exists {
+                let tax_chain_config = swap_policy
+                    .chains
+                    .iter()
+                    .find(|c| c.chain.trim().eq_ignore_ascii_case(&target_chain));
+                let tax_contract_address =
+                    tax_chain_config.map(|c| c.target_contract_address.as_str());
+                queue_revenue_tax_payout(
+                    &state.db,
+                    RevenueTaxPayoutTask {
+                        opportunity_id: &id,
+                        amount: db_tax_amount,
+                        currency: settlement_currency.as_str(),
+                        target_chain: target_chain.as_str(),
+                        destination_wallet,
+                        contract_address: tax_contract_address,
+                    },
+                )
+                .map_err(|e| internal_err(&e))?;
+            }
         }
         // Check if swap task already exists in DB (authoritative for replay).
         // This prevents config/request drift from misrepresenting swap_queued
@@ -327,11 +337,15 @@ pub async fn settle_revenue_opportunity(
             && let Some((target_contract_address, swap_contract_address)) = planned_swap.as_ref()
         {
             // Crash-recovery: settlement committed but task INSERT didn't.
+            // Use DB-persisted retained_earnings (not gross settled amount) to
+            // match the fresh-settlement path — only swap what remains after
+            // costs and tax are deducted.
+            let db_retained = db_row.retained_earnings_usdc.unwrap_or(0.0);
             queue_revenue_swap(
                 &state.db,
                 RevenueSwapTask {
                     opportunity_id: &id,
-                    amount: db_settled_amount,
+                    amount: db_retained,
                     from_currency: settlement_currency.as_str(),
                     target_symbol: target_symbol.as_str(),
                     target_chain: target_chain.as_str(),

@@ -431,6 +431,16 @@ fn mark_swap_confirmed_with_metrics(
         .as_deref()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         .ok_or_else(|| bad_request("revenue swap task source is missing or invalid JSON"))?;
+    // Guard: a transaction must have been submitted (swap_tx_hash recorded) before
+    // confirmation is allowed.  Without this, a caller could confirm a swap that was
+    // never actually submitted on-chain, marking the task complete without moving funds.
+    if source.get("swap_tx_hash").and_then(|v| v.as_str()).map_or(true, str::is_empty) {
+        return Err(bad_request(format!(
+            "revenue swap task for opportunity '{}' has no prior submission (swap_tx_hash missing); \
+             submit the transaction before confirming",
+            opportunity_id
+        )));
+    }
     let amount = source
         .get("amount")
         .and_then(|v| v.as_f64())
