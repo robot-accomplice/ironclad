@@ -147,7 +147,7 @@ check_pass "Server is healthy"
 
 # 1b. Wallet status
 info "Checking wallet..."
-wallet_json=$(api GET /api/admin/wallet 2>/dev/null) || fail "Cannot reach wallet endpoint"
+wallet_json=$(api GET /api/wallet/balance 2>/dev/null) || fail "Cannot reach wallet endpoint"
 wallet_addr=$(echo "$wallet_json" | jq -r '.address // empty')
 wallet_balance=$(echo "$wallet_json" | jq -r '.balance // "0"')
 wallet_chain=$(echo "$wallet_json" | jq -r '.chain_id // 0')
@@ -190,7 +190,7 @@ info "Settlement ref: ${SOAK_REF}"
 
 # 2a. Intake
 info "Creating revenue opportunity..."
-intake_resp=$(api POST /api/admin/opportunities/intake \
+intake_resp=$(api POST /api/services/opportunities/intake \
     -d "$(jq -n \
         --arg src "soak_test" \
         --arg strat "micro_bounty" \
@@ -209,7 +209,7 @@ check_pass "Intake: ${OPP_ID} (confidence=${confidence})"
 
 # 2b. Qualify
 info "Qualifying opportunity..."
-qualify_resp=$(api POST "/api/admin/opportunities/${OPP_ID}/qualify" \
+qualify_resp=$(api POST "/api/services/opportunities/${OPP_ID}/qualify" \
     -d '{"approved": true, "reason": "soak test qualification"}'
 ) || fail "Qualify failed: ${qualify_resp}"
 
@@ -221,7 +221,7 @@ check_pass "Qualified"
 
 # 2c. Plan
 info "Planning opportunity..."
-plan_resp=$(api POST "/api/admin/opportunities/${OPP_ID}/plan" \
+plan_resp=$(api POST "/api/services/opportunities/${OPP_ID}/plan" \
     -d '{"plan": {"steps": ["execute soak test"], "estimated_hours": 0.1}}'
 ) || fail "Plan failed: ${plan_resp}"
 
@@ -233,7 +233,7 @@ check_pass "Planned"
 
 # 2d. Fulfill
 info "Fulfilling opportunity..."
-fulfill_resp=$(api POST "/api/admin/opportunities/${OPP_ID}/fulfill" \
+fulfill_resp=$(api POST "/api/services/opportunities/${OPP_ID}/fulfill" \
     -d '{"evidence": {"result": "soak test completed", "verified": true}}'
 ) || fail "Fulfill failed: ${fulfill_resp}"
 
@@ -256,7 +256,7 @@ settle_body=$(jq -n \
         auto_swap: false
     }'
 )
-settle_resp=$(api POST "/api/admin/opportunities/${OPP_ID}/settle" \
+settle_resp=$(api POST "/api/services/opportunities/${OPP_ID}/settle" \
     -d "$settle_body"
 ) || fail "Settlement failed: ${settle_resp}"
 
@@ -280,7 +280,7 @@ info "  Swap queued:       ${swap_queued}"
 
 # 2f. Verify idempotency
 info "Testing settlement idempotency..."
-idem_resp=$(api POST "/api/admin/opportunities/${OPP_ID}/settle" \
+idem_resp=$(api POST "/api/services/opportunities/${OPP_ID}/settle" \
     -d "$settle_body"
 ) || fail "Idempotent settlement failed: ${idem_resp}"
 
@@ -293,7 +293,7 @@ fi
 
 # 2g. Verify full opportunity state
 info "Verifying opportunity record..."
-opp_record=$(api GET "/api/admin/opportunities/${OPP_ID}") || fail "Cannot fetch opportunity"
+opp_record=$(api GET "/api/services/opportunities/${OPP_ID}") || fail "Cannot fetch opportunity"
 final_status=$(echo "$opp_record" | jq -r '.status')
 final_settled=$(echo "$opp_record" | jq -r '.settled_amount_usdc // 0')
 final_retained=$(echo "$opp_record" | jq -r '.retained_earnings_usdc // 0')
@@ -328,7 +328,7 @@ fi
 step "Phase 3: Tax Payout (on-chain)"
 
 # Check if tax task was queued
-tax_tasks=$(api GET "/api/admin/services/tax-payouts?limit=10") || fail "Cannot list tax tasks"
+tax_tasks=$(api GET "/api/services/tax-payouts?limit=10") || fail "Cannot list tax tasks"
 tax_task_count=$(echo "$tax_tasks" | jq -r '.count // 0')
 tax_task_status=$(echo "$tax_tasks" | jq -r ".tax_tasks[] | select(.opportunity_id == \"${OPP_ID}\") | .status" 2>/dev/null || echo "")
 
@@ -341,7 +341,7 @@ if awk "BEGIN { exit (${tax_amount} > 0) ? 0 : 1 }" && [[ -n "$tax_task_status" 
     else
         # Start the tax task
         info "Starting tax task..."
-        start_resp=$(api POST "/api/admin/services/tax-payouts/${OPP_ID}/start") || fail "Tax start failed"
+        start_resp=$(api POST "/api/services/tax-payouts/${OPP_ID}/start") || fail "Tax start failed"
         check_pass "Tax task started"
 
         # Construct ERC-20 transfer calldata
@@ -358,7 +358,7 @@ if awk "BEGIN { exit (${tax_amount} > 0) ? 0 : 1 }" && [[ -n "$tax_task_status" 
             --arg ca "$USDC_BASE" \
             '{calldata: $cd, contract_address: $ca}'
         )
-        submit_resp=$(api POST "/api/admin/services/tax-payouts/${OPP_ID}/submit" \
+        submit_resp=$(api POST "/api/services/tax-payouts/${OPP_ID}/submit" \
             -d "$submit_body"
         ) || {
             check_fail "Tax payout submission failed: ${submit_resp}"
@@ -376,7 +376,7 @@ if awk "BEGIN { exit (${tax_amount} > 0) ? 0 : 1 }" && [[ -n "$tax_task_status" 
             confirmed=0
             for i in $(seq 1 $MAX_POLLS); do
                 sleep "$POLL_INTERVAL"
-                recon_resp=$(api POST "/api/admin/services/tax-payouts/${OPP_ID}/reconcile" 2>/dev/null) || continue
+                recon_resp=$(api POST "/api/services/tax-payouts/${OPP_ID}/reconcile" 2>/dev/null) || continue
                 receipt_status=$(echo "$recon_resp" | jq -r '.receipt_status // "pending"')
                 if [[ "$receipt_status" == "confirmed" ]]; then
                     check_pass "Tax payout confirmed on-chain (${i}×${POLL_INTERVAL}s)"
@@ -428,7 +428,7 @@ swap_settle_body=$(jq -n \
 
 # Create a NEW opportunity for the swap test cycle
 info "Creating second opportunity for swap test..."
-intake2_resp=$(api POST /api/admin/opportunities/intake \
+intake2_resp=$(api POST /api/services/opportunities/intake \
     -d "$(jq -n \
         --argjson amt "$REVENUE_AMOUNT" \
         '{source: "soak_test", strategy: "micro_bounty", expected_revenue_usdc: $amt, payload: {test: "swap_cycle"}}'
@@ -438,13 +438,13 @@ OPP2_ID=$(echo "$intake2_resp" | jq -r '.opportunity_id')
 check_pass "Swap cycle opportunity: ${OPP2_ID}"
 
 # Fast-track through lifecycle
-api POST "/api/admin/opportunities/${OPP2_ID}/qualify" -d '{"approved": true, "reason": "swap soak"}' >/dev/null 2>&1
-api POST "/api/admin/opportunities/${OPP2_ID}/plan" -d '{"plan": {"steps": ["swap test"]}}' >/dev/null 2>&1
-api POST "/api/admin/opportunities/${OPP2_ID}/fulfill" -d '{"evidence": {"result": "swap test done"}}' >/dev/null 2>&1
+api POST "/api/services/opportunities/${OPP2_ID}/qualify" -d '{"approved": true, "reason": "swap soak"}' >/dev/null 2>&1
+api POST "/api/services/opportunities/${OPP2_ID}/plan" -d '{"plan": {"steps": ["swap test"]}}' >/dev/null 2>&1
+api POST "/api/services/opportunities/${OPP2_ID}/fulfill" -d '{"evidence": {"result": "swap test done"}}' >/dev/null 2>&1
 check_pass "Fast-tracked to fulfilled"
 
 # Settle with auto_swap
-swap_settle_resp=$(api POST "/api/admin/opportunities/${OPP2_ID}/settle" \
+swap_settle_resp=$(api POST "/api/services/opportunities/${OPP2_ID}/settle" \
     -d "$(jq -n \
         --arg ref "${SOAK_REF}-swap" \
         --argjson amt "$REVENUE_AMOUNT" \
@@ -471,12 +471,12 @@ else
 fi
 
 # Verify swap task exists
-swap_tasks=$(api GET "/api/admin/services/swaps?limit=10") || fail "Cannot list swap tasks"
+swap_tasks=$(api GET "/api/services/swaps?limit=10") || fail "Cannot list swap tasks"
 info "Swap tasks available: $(echo "$swap_tasks" | jq -r '.count // 0')"
 
 # Start the swap
 info "Starting swap task..."
-swap_start=$(api POST "/api/admin/services/swaps/${OPP2_ID}/start" 2>/dev/null) || {
+swap_start=$(api POST "/api/services/swaps/${OPP2_ID}/start" 2>/dev/null) || {
     check_fail "Swap start failed"
 }
 if echo "$swap_start" | jq -e '.status == "in_progress"' >/dev/null 2>&1; then
@@ -494,12 +494,12 @@ echo -e "  ${DIM}cast calldata 'exactInputSingle((address,address,uint24,address
 echo -e "  ${DIM}  '(${USDC_BASE},0x4200000000000000000000000000000000000006,3000,${wallet_addr},$(awk "BEGIN { printf \"%.0f\", ${retained2} * 1000000 }"),0,0)'${RESET}"
 echo ""
 echo -e "  ${BOLD}Option B: Submit via API manually${RESET}"
-echo -e "  ${DIM}curl -X POST ${BASE_URL}/api/admin/services/swaps/${OPP2_ID}/submit \\${RESET}"
+echo -e "  ${DIM}curl -X POST ${BASE_URL}/api/services/swaps/${OPP2_ID}/submit \\${RESET}"
 echo -e "  ${DIM}  -H 'Content-Type: application/json' \\${RESET}"
 echo -e "  ${DIM}  -d '{\"calldata\": \"0x...\", \"contract_address\": \"0x2626664c2603336E57B271c5C0b26F421741e481\"}'${RESET}"
 echo ""
 echo -e "  ${BOLD}Option C: Skip swap (mark as failed)${RESET}"
-echo -e "  ${DIM}curl -X POST ${BASE_URL}/api/admin/services/swaps/${OPP2_ID}/fail \\${RESET}"
+echo -e "  ${DIM}curl -X POST ${BASE_URL}/api/services/swaps/${OPP2_ID}/fail \\${RESET}"
 echo -e "  ${DIM}  -H 'Content-Type: application/json' \\${RESET}"
 echo -e "  ${DIM}  -d '{\"reason\": \"soak test: swap skipped\"}'${RESET}"
 echo ""
@@ -509,7 +509,7 @@ echo ""
 # ═══════════════════════════════════════════════════════════════════
 step "Phase 5: Final Balance Verification"
 
-final_wallet=$(api GET /api/admin/wallet 2>/dev/null) || warn "Cannot fetch final wallet state"
+final_wallet=$(api GET /api/wallet/balance 2>/dev/null) || warn "Cannot fetch final wallet state"
 final_balance=$(echo "$final_wallet" | jq -r '.balance // "unknown"')
 info "Final USDC balance: \$${final_balance}"
 info "Starting balance:   \$${wallet_balance}"
