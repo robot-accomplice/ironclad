@@ -17,6 +17,7 @@
 //! - `embeddings` -- BLOB embedding storage / lookup with JSON fallback
 //! - `ann` -- HNSW approximate nearest-neighbor index (instant-distance)
 //! - `hippocampus` -- Long-term memory consolidation and decay
+//! - `learned_skills` -- Learned skill CRUD, reinforcement (success/failure), priority
 //! - `checkpoint` -- Session checkpoint / restore via `context_snapshots` table
 //! - `efficiency` -- Efficiency metrics tracking and queries
 //! - `agents` -- Sub-agent registry and enabled-agent CRUD
@@ -43,6 +44,7 @@ pub mod delivery_queue;
 pub mod efficiency;
 pub mod embeddings;
 pub mod hippocampus;
+pub mod learned_skills;
 pub mod memory;
 pub mod metrics;
 pub mod model_selection;
