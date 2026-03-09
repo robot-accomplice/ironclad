@@ -68,6 +68,23 @@ impl SkillLoader {
             return Ok(skills);
         }
 
+        Self::load_entries(dir, &mut skills)?;
+
+        // Recurse into immediate subdirectories (e.g. learned/, custom/).
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    Self::load_entries(&path, &mut skills)?;
+                }
+            }
+        }
+
+        Ok(skills)
+    }
+
+    /// Load `.toml` and `.md` skill files from a single directory (non-recursive).
+    fn load_entries(dir: &Path, skills: &mut Vec<LoadedSkill>) -> Result<()> {
         let entries = std::fs::read_dir(dir)?;
 
         for entry in entries {
@@ -95,7 +112,7 @@ impl SkillLoader {
             }
         }
 
-        Ok(skills)
+        Ok(())
     }
 }
 
@@ -417,6 +434,43 @@ Always greet the user with enthusiasm and warmth.
         assert_eq!(skill.priority, 5); // default_priority()
         assert_eq!(skill.name, "test_skill");
         assert!(skill.body.contains("Body content"));
+    }
+
+    // ── Coverage for subdirectory loading ─────────────────────────
+
+    #[test]
+    fn skill_loader_recurses_into_subdirectories() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Top-level skill
+        let top_md = "---\nname: top_skill\ndescription: Top-level\n---\nTop body.";
+        fs::write(dir.path().join("top.md"), top_md).unwrap();
+
+        // Subdirectory skill (simulates learned/)
+        let sub_dir = dir.path().join("learned");
+        fs::create_dir(&sub_dir).unwrap();
+        let sub_md = "---\nname: learned_skill\ndescription: Auto-learned\n---\nLearned body.";
+        fs::write(sub_dir.join("auto.md"), sub_md).unwrap();
+
+        let skills = SkillLoader::load_from_dir(dir.path()).unwrap();
+        assert_eq!(skills.len(), 2);
+
+        let names: Vec<&str> = skills.iter().map(|s| s.name()).collect();
+        assert!(names.contains(&"top_skill"));
+        assert!(names.contains(&"learned_skill"));
+    }
+
+    #[test]
+    fn skill_loader_does_not_recurse_deeper_than_one_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("learned").join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        let deep_md = "---\nname: deep_skill\ndescription: Too deep\n---\nDeep body.";
+        fs::write(nested.join("deep.md"), deep_md).unwrap();
+
+        let skills = SkillLoader::load_from_dir(dir.path()).unwrap();
+        // Should NOT find the deeply nested skill
+        assert!(skills.is_empty());
     }
 
     // ── Coverage for case-insensitive keyword matching ────────────

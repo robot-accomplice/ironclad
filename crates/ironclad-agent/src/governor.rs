@@ -71,6 +71,9 @@ impl SessionGovernor {
         if let Err(e) = self.decay_episodic_importance(db) {
             tracing::warn!(error = %e, "episodic importance decay failed during governor tick");
         }
+        if let Err(e) = self.adjust_learned_skill_priorities(db) {
+            tracing::warn!(error = %e, "learned skill priority adjustment failed during governor tick");
+        }
         Ok(expired)
     }
 
@@ -163,6 +166,54 @@ impl SessionGovernor {
         );
         ironclad_db::sessions::append_message(db, session_id, "system", &digest)?;
         Ok(())
+    }
+
+    /// Adjust learned skill priorities based on success/failure ratios.
+    ///
+    /// - Skills with > 5 total uses and > 80% success → boost priority
+    /// - Skills where failures exceed successes → decay priority
+    ///
+    /// Returns the number of skills whose priority was actually changed.
+    fn adjust_learned_skill_priorities(&self, db: &Database) -> ironclad_core::Result<usize> {
+        if !self.learning_config.enabled {
+            return Ok(0);
+        }
+        let skills = ironclad_db::learned_skills::list_learned_skills(db, 200)?;
+        let mut adjusted = 0usize;
+        let boost = self.learning_config.priority_boost_on_success as i64;
+        let decay = self.learning_config.priority_decay_on_failure as i64;
+
+        for skill in &skills {
+            let total = skill.success_count + skill.failure_count;
+            let ratio = if total > 0 {
+                skill.success_count as f64 / total as f64
+            } else {
+                0.0
+            };
+
+            let new_priority = if total > 5 && ratio > 0.8 {
+                // Reliable skill — boost
+                (skill.priority + boost).min(100)
+            } else if skill.failure_count > skill.success_count {
+                // Unreliable skill — decay
+                (skill.priority - decay).max(0)
+            } else {
+                continue;
+            };
+
+            if new_priority != skill.priority {
+                if let Err(e) = ironclad_db::learned_skills::update_learned_skill_priority(
+                    db,
+                    &skill.name,
+                    new_priority,
+                ) {
+                    tracing::warn!(error = %e, skill = %skill.name, "failed to adjust skill priority");
+                } else {
+                    adjusted += 1;
+                }
+            }
+        }
+        Ok(adjusted)
     }
 
     fn decay_episodic_importance(&self, db: &Database) -> ironclad_core::Result<usize> {
@@ -421,5 +472,87 @@ mod tests {
             .rotate_agent_scope_sessions(&db, "nonexistent-agent")
             .unwrap();
         assert_eq!(rotated, 0);
+    }
+
+    // ── Learned skill priority adjustment ─────────────────────────
+
+    #[test]
+    fn adjust_priorities_boosts_reliable_skills() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+
+        // Create a skill with > 5 uses and > 80% success ratio
+        ironclad_db::learned_skills::store_learned_skill(
+            &db,
+            "reliable-skill",
+            "A reliable skill",
+            "[]",
+            "[]",
+            None,
+        )
+        .unwrap();
+        // Start at priority 50, success_count=1. Add more successes.
+        for _ in 0..6 {
+            ironclad_db::learned_skills::record_learned_skill_success(&db, "reliable-skill")
+                .unwrap();
+        }
+        // Now: success_count=7, failure_count=0, ratio=1.0, total=7 > 5
+
+        let adjusted = gov.adjust_learned_skill_priorities(&db).unwrap();
+        assert_eq!(adjusted, 1);
+
+        let skill = ironclad_db::learned_skills::get_learned_skill_by_name(&db, "reliable-skill")
+            .unwrap()
+            .unwrap();
+        assert!(
+            skill.priority > 50,
+            "priority should have been boosted from 50, got {}",
+            skill.priority
+        );
+    }
+
+    #[test]
+    fn adjust_priorities_decays_unreliable_skills() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+
+        ironclad_db::learned_skills::store_learned_skill(
+            &db,
+            "flaky-skill",
+            "An unreliable skill",
+            "[]",
+            "[]",
+            None,
+        )
+        .unwrap();
+        // success_count=1. Add many failures so failure > success.
+        for _ in 0..3 {
+            ironclad_db::learned_skills::record_learned_skill_failure(&db, "flaky-skill").unwrap();
+        }
+        // Now: success_count=1, failure_count=3, failure > success
+
+        let adjusted = gov.adjust_learned_skill_priorities(&db).unwrap();
+        assert_eq!(adjusted, 1);
+
+        let skill = ironclad_db::learned_skills::get_learned_skill_by_name(&db, "flaky-skill")
+            .unwrap()
+            .unwrap();
+        assert!(
+            skill.priority < 50,
+            "priority should have decayed from 50, got {}",
+            skill.priority
+        );
+    }
+
+    #[test]
+    fn adjust_priorities_disabled_config_skips() {
+        let mut learning_config = LearningConfig::default();
+        learning_config.enabled = false;
+        let gov = SessionGovernor::new(SessionConfig::default())
+            .with_learning(learning_config, PathBuf::from("/tmp"));
+        let db = test_db();
+
+        let adjusted = gov.adjust_learned_skill_priorities(&db).unwrap();
+        assert_eq!(adjusted, 0);
     }
 }
