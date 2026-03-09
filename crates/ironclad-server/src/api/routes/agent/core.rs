@@ -355,6 +355,16 @@ pub(super) async fn prepare_inference(
             parts: None,
         });
     }
+
+    // Instruction anti-fade: inject compact directive reminder before the user
+    // message when conversation is long enough that system prompt instructions
+    // may have faded from the model's attention window (OPENDEV pattern).
+    if let Some(reminder) =
+        ironclad_agent::prompt::build_instruction_reminder(&input.soul_text, &input.firmware_text)
+    {
+        ironclad_agent::context::inject_instruction_reminder(&mut messages, &reminder);
+    }
+
     // Prompt compression gate — only when enabled in config
     {
         let cfg = input.state.config.read().await;

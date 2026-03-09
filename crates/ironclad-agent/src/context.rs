@@ -278,6 +278,40 @@ pub fn build_context(
     messages
 }
 
+/// Inject an instruction anti-fade micro-reminder into the message list.
+///
+/// The OPENDEV paper shows that LLM instruction-following degrades as
+/// conversation length grows — the system prompt fades from the model's
+/// effective attention. This function injects a compact distillation of
+/// key directives just before the final user message when the conversation
+/// exceeds `ANTI_FADE_TURN_THRESHOLD` non-system turns.
+///
+/// Returns `true` if a reminder was injected, `false` otherwise.
+pub fn inject_instruction_reminder(messages: &mut Vec<UnifiedMessage>, reminder: &str) -> bool {
+    let non_system_turns = messages.iter().filter(|m| m.role != "system").count();
+    if non_system_turns < crate::prompt::ANTI_FADE_TURN_THRESHOLD {
+        return false;
+    }
+
+    // Find the last user message and inject the reminder just before it.
+    // This puts the reminder in the "recency hotspot" where it most influences
+    // the model's next generation.
+    let insert_pos = messages
+        .iter()
+        .rposition(|m| m.role == "user")
+        .unwrap_or(messages.len());
+
+    messages.insert(
+        insert_pos,
+        UnifiedMessage {
+            role: "system".into(),
+            content: reminder.to_string(),
+            parts: None,
+        },
+    );
+    true
+}
+
 #[derive(Debug, Clone)]
 pub struct PruningConfig {
     pub max_tokens: usize,
@@ -1028,5 +1062,91 @@ mod tests {
         let long = "x".repeat(200);
         let result = extract_topic_sentence(&long);
         assert!(result.len() <= 120);
+    }
+
+    // ── Anti-fade injection tests ───────────────────────────────────────
+
+    fn make_msg(role: &str, content: &str) -> UnifiedMessage {
+        UnifiedMessage {
+            role: role.into(),
+            content: content.into(),
+            parts: None,
+        }
+    }
+
+    #[test]
+    fn inject_reminder_skips_short_conversations() {
+        let mut msgs = vec![
+            make_msg("system", "You are helpful."),
+            make_msg("user", "Hello"),
+            make_msg("assistant", "Hi!"),
+            make_msg("user", "How are you?"),
+            make_msg("assistant", "Good, thanks!"),
+        ];
+        // Only 4 non-system turns, below threshold of 8
+        let injected = inject_instruction_reminder(&mut msgs, "[Reminder] Be helpful.");
+        assert!(!injected);
+        assert_eq!(msgs.len(), 5);
+    }
+
+    #[test]
+    fn inject_reminder_fires_for_long_conversations() {
+        let mut msgs = vec![make_msg("system", "You are helpful.")];
+        // Add 10 user/assistant pairs (20 non-system turns)
+        for i in 0..10 {
+            msgs.push(make_msg("user", &format!("question {i}")));
+            msgs.push(make_msg("assistant", &format!("answer {i}")));
+        }
+        let len_before = msgs.len();
+        let injected = inject_instruction_reminder(&mut msgs, "[Reminder] Always be thorough.");
+        assert!(injected);
+        assert_eq!(msgs.len(), len_before + 1);
+
+        // The reminder should be inserted just before the last user message
+        let last_user_idx = msgs.iter().rposition(|m| m.role == "user").unwrap();
+        assert_eq!(msgs[last_user_idx - 1].role, "system");
+        assert!(
+            msgs[last_user_idx - 1]
+                .content
+                .contains("[Reminder] Always be thorough.")
+        );
+    }
+
+    #[test]
+    fn inject_reminder_places_before_last_user_message() {
+        let mut msgs = vec![make_msg("system", "System prompt.")];
+        for i in 0..5 {
+            msgs.push(make_msg("user", &format!("q{i}")));
+            msgs.push(make_msg("assistant", &format!("a{i}")));
+        }
+        // Final user message
+        msgs.push(make_msg("user", "final question"));
+
+        let injected = inject_instruction_reminder(&mut msgs, "[Reminder] Key directive.");
+        assert!(injected);
+
+        // Last message should still be the user's final question
+        assert_eq!(msgs.last().unwrap().content, "final question");
+        assert_eq!(msgs.last().unwrap().role, "user");
+
+        // Second-to-last should be the reminder
+        let second_last = &msgs[msgs.len() - 2];
+        assert_eq!(second_last.role, "system");
+        assert!(second_last.content.contains("[Reminder]"));
+    }
+
+    #[test]
+    fn inject_reminder_no_user_messages_appends_at_end() {
+        let mut msgs = vec![make_msg("system", "System prompt.")];
+        // Add only assistant messages (unusual but tests edge case)
+        for i in 0..10 {
+            msgs.push(make_msg("assistant", &format!("response {i}")));
+        }
+        let len_before = msgs.len();
+        let injected = inject_instruction_reminder(&mut msgs, "[Reminder] Test.");
+        assert!(injected);
+        // When no user message found, inserts at the end
+        assert_eq!(msgs.len(), len_before + 1);
+        assert_eq!(msgs.last().unwrap().content, "[Reminder] Test.");
     }
 }
