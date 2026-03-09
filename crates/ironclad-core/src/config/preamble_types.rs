@@ -109,6 +109,59 @@ fn default_decay_half_life_days() -> u32 {
     7
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningConfig {
+    #[serde(default = "default_learning_enabled")]
+    pub enabled: bool,
+    /// Minimum number of tools in a successful sequence to consider it a procedure.
+    #[serde(default = "default_min_tool_sequence")]
+    pub min_tool_sequence: usize,
+    /// Minimum tool success ratio in a session (0.0–1.0) to trigger learning.
+    #[serde(default = "default_min_success_ratio")]
+    pub min_success_ratio: f64,
+    /// Priority points added when a learned skill is observed succeeding again.
+    #[serde(default = "default_priority_boost")]
+    pub priority_boost_on_success: i32,
+    /// Priority points subtracted when a learned skill's procedure fails.
+    #[serde(default = "default_priority_decay")]
+    pub priority_decay_on_failure: i32,
+    /// Cap on total learned skills to prevent unbounded growth.
+    #[serde(default = "default_max_learned_skills")]
+    pub max_learned_skills: usize,
+}
+
+impl Default for LearningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_learning_enabled(),
+            min_tool_sequence: default_min_tool_sequence(),
+            min_success_ratio: default_min_success_ratio(),
+            priority_boost_on_success: default_priority_boost(),
+            priority_decay_on_failure: default_priority_decay(),
+            max_learned_skills: default_max_learned_skills(),
+        }
+    }
+}
+
+fn default_learning_enabled() -> bool {
+    true
+}
+fn default_min_tool_sequence() -> usize {
+    3
+}
+fn default_min_success_ratio() -> f64 {
+    0.7
+}
+fn default_priority_boost() -> i32 {
+    5
+}
+fn default_priority_decay() -> i32 {
+    10
+}
+fn default_max_learned_skills() -> usize {
+    100
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
     /// Tracks OS personality evolution in the `os_personality_history` table.
@@ -170,6 +223,8 @@ pub struct IroncladConfig {
     pub session: SessionConfig,
     #[serde(default)]
     pub digest: DigestConfig,
+    #[serde(default)]
+    pub learning: LearningConfig,
     #[serde(default)]
     pub multimodal: MultimodalConfig,
     #[serde(default)]

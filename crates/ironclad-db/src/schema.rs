@@ -515,8 +515,24 @@ CREATE TABLE IF NOT EXISTS abuse_events (
 CREATE INDEX IF NOT EXISTS idx_abuse_events_actor ON abuse_events(actor_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_origin ON abuse_events(origin, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_created ON abuse_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS learned_skills (
+    id                TEXT PRIMARY KEY,
+    name              TEXT NOT NULL UNIQUE,
+    description       TEXT NOT NULL DEFAULT '',
+    trigger_tools     TEXT NOT NULL DEFAULT '[]',
+    steps_json        TEXT NOT NULL DEFAULT '[]',
+    source_session_id TEXT,
+    success_count     INTEGER NOT NULL DEFAULT 1,
+    failure_count     INTEGER NOT NULL DEFAULT 0,
+    priority          INTEGER NOT NULL DEFAULT 50,
+    skill_md_path     TEXT,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_learned_skills_priority ON learned_skills(priority DESC);
 "#;
-const EMBEDDED_SCHEMA_VERSION: i64 = 20;
+const EMBEDDED_SCHEMA_VERSION: i64 = 21;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {
@@ -952,8 +968,8 @@ mod tests {
         // 30 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback
         // + context_snapshots + model_selection_events + abuse_events
         // + shadow_routing_predictions (v0.9.4) + service_requests + revenue_opportunities
-        // + revenue_feedback (v0.9.6) = 39
-        assert_eq!(count, 39, "expected 39 user-defined tables, got {count}");
+        // + revenue_feedback (v0.9.6) + learned_skills (v0.9.6) = 40
+        assert_eq!(count, 40, "expected 40 user-defined tables, got {count}");
     }
 
     #[test]
@@ -962,7 +978,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 39);
+        assert_eq!(count, 40);
     }
 
     #[test]

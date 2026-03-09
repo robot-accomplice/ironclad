@@ -150,6 +150,21 @@ cost_per_output_token = 0.00015
     }
 
     #[test]
+    fn learning_config_defaults() {
+        let cfg = LearningConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.min_tool_sequence, 3);
+        assert!((cfg.min_success_ratio - 0.7).abs() < f64::EPSILON);
+        assert_eq!(cfg.priority_boost_on_success, 5);
+        assert_eq!(cfg.priority_decay_on_failure, 10);
+        assert_eq!(cfg.max_learned_skills, 100);
+
+        let full = IroncladConfig::from_str(minimal_toml()).unwrap();
+        assert!(full.learning.enabled);
+        assert_eq!(full.learning.min_tool_sequence, 3);
+    }
+
+    #[test]
     fn session_config_from_toml() {
         let toml = r#"
 [agent]
