@@ -77,7 +77,7 @@ use ironclad_core::IroncladConfig;
 use ironclad_db::Database;
 use ironclad_llm::LlmService;
 use ironclad_llm::OAuthManager;
-use ironclad_wallet::WalletService;
+use ironclad_wallet::{WalletPaymentHandler, WalletService};
 
 use ironclad_agent::approvals::ApprovalManager;
 use ironclad_agent::obsidian::ObsidianVault;
@@ -255,6 +255,13 @@ pub async fn bootstrap_with_config_path(
         Err(e) => tracing::warn!(error = %e, "failed to seed quality tracker from history"),
     }
     let wallet = WalletService::new(&config).await?;
+
+    // Wire x402 payment handler: when the LLM client hits an HTTP 402, it
+    // signs an EIP-3009 authorization via the agent wallet and retries.
+    let wallet_arc = Arc::new(wallet.wallet.clone());
+    let x402_handler = Arc::new(WalletPaymentHandler::new(wallet_arc));
+    llm.set_payment_handler(x402_handler);
+
     let a2a = A2aProtocol::new(config.a2a.clone());
     let plugin_registry = plugins::init_plugin_registry(&config.plugins).await;
     let mut policy_engine = PolicyEngine::new();

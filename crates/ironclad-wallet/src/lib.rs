@@ -34,7 +34,7 @@ pub use evm_submit::{
 pub use money::Money;
 pub use treasury::TreasuryPolicy;
 pub use wallet::{TokenBalance, Wallet};
-pub use x402::{PaymentRequirements, X402Handler};
+pub use x402::{PaymentRequirements, WalletPaymentHandler, X402Handler};
 pub use yield_engine::YieldEngine;
 
 use ironclad_core::Result;

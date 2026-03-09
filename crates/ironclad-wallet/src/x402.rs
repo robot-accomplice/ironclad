@@ -1,4 +1,8 @@
-use ironclad_core::{IroncladError, Result};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use ironclad_core::{IroncladError, PaymentHandler, Result};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -85,6 +89,30 @@ impl X402Handler {
 impl Default for X402Handler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Bridges `ironclad-wallet` into the generic `PaymentHandler` trait so the
+/// LLM HTTP client can autonomously pay for 402-gated resources without a
+/// direct dependency on this crate.
+pub struct WalletPaymentHandler {
+    wallet: Arc<Wallet>,
+}
+
+impl WalletPaymentHandler {
+    pub fn new(wallet: Arc<Wallet>) -> Self {
+        Self { wallet }
+    }
+}
+
+impl PaymentHandler for WalletPaymentHandler {
+    fn handle_payment_required(
+        &self,
+        response_body: &serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
+        // Clone the body so the future only borrows `&self` (the `'_` lifetime).
+        let body = response_body.clone();
+        Box::pin(async move { X402Handler::handle_402(&body, &self.wallet).await })
     }
 }
 

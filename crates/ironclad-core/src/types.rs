@@ -1,6 +1,25 @@
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
+
+use crate::Result;
+
+/// Trait for handling HTTP 402 Payment Required responses (x402 protocol).
+///
+/// Implementors receive the JSON response body from a 402 response and must
+/// return a payment header string (e.g. `"x402 amount=... recipient=... auth=..."`)
+/// that will be attached to the retry request.
+///
+/// This trait lives in `ironclad-core` so that `ironclad-llm` (the HTTP client)
+/// can accept a handler without depending on `ironclad-wallet` directly.
+pub trait PaymentHandler: Send + Sync {
+    fn handle_payment_required(
+        &self,
+        response_body: &serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>>;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SurvivalTier {
