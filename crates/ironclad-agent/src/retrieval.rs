@@ -200,7 +200,7 @@ impl MemoryRetriever {
     fn rerank_episodic_by_decay(
         &self,
         db: &Database,
-        results: &mut Vec<ironclad_db::embeddings::SearchResult>,
+        results: &mut [ironclad_db::embeddings::SearchResult],
     ) {
         let now = chrono::Utc::now();
         let conn = db.conn();

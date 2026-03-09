@@ -203,7 +203,7 @@ pub fn build_instruction_reminder(os_text: &str, firmware_text: &str) -> Option<
     let reminder_body = if imperatives.is_empty() {
         // Fallback: first two sentences of the combined text
         let sentences: Vec<&str> = combined
-            .split(|c: char| c == '.' || c == '!' || c == '?')
+            .split(['.', '!', '?'])
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .take(2)
@@ -220,7 +220,7 @@ pub fn build_instruction_reminder(os_text: &str, firmware_text: &str) -> Option<
     let truncated: String = reminder_body.chars().take(REMINDER_MAX_CHARS).collect();
     let body = if truncated.len() < reminder_body.len() {
         // Find last complete sentence within truncated range
-        if let Some(last_period) = truncated.rfind(|c: char| c == '.' || c == '!' || c == '?') {
+        if let Some(last_period) = truncated.rfind(['.', '!', '?']) {
             truncated[..=last_period].to_string()
         } else {
             truncated + "..."
@@ -254,7 +254,7 @@ fn extract_imperative_sentences(text: &str) -> Vec<String> {
 
     let mut results = Vec::new();
     // Split on sentence boundaries
-    for raw_sentence in text.split(|c: char| c == '.' || c == '!' || c == '?') {
+    for raw_sentence in text.split(['.', '!', '?']) {
         let sentence = raw_sentence.trim();
         if sentence.is_empty() || sentence.len() < 10 {
             continue;
