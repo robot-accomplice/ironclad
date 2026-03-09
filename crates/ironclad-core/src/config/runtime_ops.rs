@@ -162,8 +162,15 @@ pub struct UpdateConfig {
     pub check_on_start: bool,
     #[serde(default = "default_update_channel")]
     pub channel: String,
+    /// Legacy single-registry URL. Kept for backward compatibility.
+    /// If `registries` is empty and this is set, `resolve_registries()` synthesizes
+    /// a single `RegistrySource` from it.
     #[serde(default = "default_update_registry_url")]
     pub registry_url: String,
+    /// Multi-registry support: ordered list of skill registries to sync from.
+    /// Higher-priority registries win on name collision.
+    #[serde(default)]
+    pub registries: Vec<RegistrySource>,
 }
 
 impl Default for UpdateConfig {
@@ -172,8 +179,47 @@ impl Default for UpdateConfig {
             check_on_start: true,
             channel: default_update_channel(),
             registry_url: default_update_registry_url(),
+            registries: Vec::new(),
         }
     }
+}
+
+impl UpdateConfig {
+    /// Resolve the effective list of registries. If explicit `registries` is
+    /// non-empty, returns those. Otherwise, falls back to the legacy
+    /// `registry_url` field wrapped in a single `RegistrySource`.
+    pub fn resolve_registries(&self) -> Vec<RegistrySource> {
+        if !self.registries.is_empty() {
+            return self.registries.clone();
+        }
+        vec![RegistrySource {
+            name: "default".into(),
+            url: self.registry_url.clone(),
+            priority: 50,
+            enabled: true,
+        }]
+    }
+}
+
+/// A remote skill registry that the agent can sync from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistrySource {
+    /// Human-readable name, used as the namespace prefix for remote skills
+    /// (e.g. `"community"` → skills namespaced as `community/skill_name`).
+    pub name: String,
+    /// URL of the registry manifest (JSON endpoint).
+    pub url: String,
+    /// Priority for conflict resolution: higher wins when two registries
+    /// publish a skill with the same name. Range: 0–100.
+    #[serde(default = "default_registry_priority")]
+    pub priority: u32,
+    /// Whether this registry is actively synced.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_registry_priority() -> u32 {
+    50
 }
 
 fn default_update_channel() -> String {

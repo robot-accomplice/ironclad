@@ -120,6 +120,10 @@ pub struct SkillManifest {
     pub script_path: Option<PathBuf>,
     #[serde(default = "default_risk_level")]
     pub risk_level: RiskLevel,
+    #[serde(default = "default_version")]
+    pub version: String,
+    #[serde(default = "default_author")]
+    pub author: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +140,10 @@ pub struct InstructionSkill {
     #[serde(default = "default_priority")]
     pub priority: u32,
     pub body: String,
+    #[serde(default = "default_version")]
+    pub version: String,
+    #[serde(default = "default_author")]
+    pub author: String,
 }
 
 fn default_priority() -> u32 {
@@ -144,6 +152,14 @@ fn default_priority() -> u32 {
 
 fn default_risk_level() -> RiskLevel {
     RiskLevel::Caution
+}
+
+fn default_version() -> String {
+    "0.0.0".into()
+}
+
+fn default_author() -> String {
+    "local".into()
 }
 
 /// Authority level of the message sender, resolved from authentication layers.
@@ -434,6 +450,8 @@ mod tests {
             policy_overrides: None,
             script_path: None,
             risk_level: RiskLevel::Safe,
+            version: "1.0.0".into(),
+            author: "tester".into(),
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let back: SkillManifest = serde_json::from_str(&json).unwrap();
@@ -449,6 +467,8 @@ mod tests {
             triggers: SkillTrigger::default(),
             priority: 3,
             body: "Help text".into(),
+            version: "0.1.0".into(),
+            author: "local".into(),
         };
         let json = serde_json::to_string(&skill).unwrap();
         let back: InstructionSkill = serde_json::from_str(&json).unwrap();

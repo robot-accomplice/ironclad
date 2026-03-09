@@ -142,6 +142,10 @@ fn parse_instruction_md(content: &str, path: &Path) -> Result<InstructionSkill> 
         triggers: SkillTrigger,
         #[serde(default = "default_priority")]
         priority: u32,
+        #[serde(default)]
+        version: Option<String>,
+        #[serde(default)]
+        author: Option<String>,
     }
 
     fn default_priority() -> u32 {
@@ -161,6 +165,8 @@ fn parse_instruction_md(content: &str, path: &Path) -> Result<InstructionSkill> 
         triggers: fm.triggers,
         priority: fm.priority,
         body,
+        version: fm.version.unwrap_or_else(|| "0.0.0".into()),
+        author: fm.author.unwrap_or_else(|| "local".into()),
     })
 }
 
@@ -280,6 +286,8 @@ Always greet the user with enthusiasm and warmth.
                 },
                 priority: 5,
                 body: "Review the code.".into(),
+                version: "0.0.0".into(),
+                author: "local".into(),
             },
             "hash_a".into(),
             PathBuf::from("/tmp/hash_a"),
@@ -296,6 +304,8 @@ Always greet the user with enthusiasm and warmth.
                 },
                 priority: 5,
                 body: "Deploy the service.".into(),
+                version: "0.0.0".into(),
+                author: "local".into(),
             },
             "hash_b".into(),
             PathBuf::from("/tmp/hash_b"),
@@ -334,6 +344,8 @@ Always greet the user with enthusiasm and warmth.
             tool_chain: None,
             policy_overrides: None,
             script_path: None,
+            version: "1.0.0".into(),
+            author: "tester".into(),
         };
         let skill = LoadedSkill::Structured(
             manifest.clone(),
@@ -363,6 +375,8 @@ Always greet the user with enthusiasm and warmth.
             },
             priority: 5,
             body: "Greet warmly.".into(),
+            version: "0.0.0".into(),
+            author: "local".into(),
         };
         let skill =
             LoadedSkill::Instruction(instr, "def456".into(), PathBuf::from("/tmp/greet.md"));
@@ -489,6 +503,8 @@ Always greet the user with enthusiasm and warmth.
                 },
                 priority: 5,
                 body: "test".into(),
+                version: "0.0.0".into(),
+                author: "local".into(),
             },
             "h".into(),
             PathBuf::from("/tmp/t"),

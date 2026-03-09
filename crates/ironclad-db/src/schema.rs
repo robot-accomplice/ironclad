@@ -346,7 +346,10 @@ CREATE TABLE IF NOT EXISTS skills (
     risk_level TEXT NOT NULL DEFAULT 'Caution',
     enabled INTEGER NOT NULL DEFAULT 1,
     last_loaded_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    version TEXT NOT NULL DEFAULT '0.0.0',
+    author TEXT NOT NULL DEFAULT 'local',
+    registry_source TEXT NOT NULL DEFAULT 'local'
 );
 CREATE INDEX IF NOT EXISTS idx_skills_kind ON skills(kind);
 
@@ -532,7 +535,7 @@ CREATE TABLE IF NOT EXISTS learned_skills (
 );
 CREATE INDEX IF NOT EXISTS idx_learned_skills_priority ON learned_skills(priority DESC);
 "#;
-const EMBEDDED_SCHEMA_VERSION: i64 = 21;
+const EMBEDDED_SCHEMA_VERSION: i64 = 22;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {
@@ -792,6 +795,28 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
     if !has_column(&conn, "revenue_opportunities", "settled_at")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN settled_at TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    // v0.9.6: skill registry protocol — version, author, registry_source
+    if !has_column(&conn, "skills", "version")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN version TEXT NOT NULL DEFAULT '0.0.0'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "skills", "author")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN author TEXT NOT NULL DEFAULT 'local'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "skills", "registry_source")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN registry_source TEXT NOT NULL DEFAULT 'local'",
             [],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -1144,6 +1169,10 @@ mod tests {
         assert!(has_column(&conn, "tool_calls", "skill_name").unwrap());
         assert!(has_column(&conn, "tool_calls", "skill_hash").unwrap());
         assert!(has_column(&conn, "delivery_queue", "idempotency_key").unwrap());
+        // v0.9.6: skill registry protocol columns
+        assert!(has_column(&conn, "skills", "version").unwrap());
+        assert!(has_column(&conn, "skills", "author").unwrap());
+        assert!(has_column(&conn, "skills", "registry_source").unwrap());
     }
 
     #[test]
@@ -1322,6 +1351,9 @@ mod tests {
         assert!(has_column(&conn, "tool_calls", "skill_name").unwrap());
         assert!(has_column(&conn, "tool_calls", "skill_hash").unwrap());
         assert!(has_column(&conn, "delivery_queue", "idempotency_key").unwrap());
+        assert!(has_column(&conn, "skills", "version").unwrap());
+        assert!(has_column(&conn, "skills", "author").unwrap());
+        assert!(has_column(&conn, "skills", "registry_source").unwrap());
     }
 
     #[test]

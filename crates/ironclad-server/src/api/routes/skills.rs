@@ -882,6 +882,9 @@ mod tests {
             enabled: true,
             last_loaded_at: None,
             created_at: "now".into(),
+            version: "0.0.0".into(),
+            author: "local".into(),
+            registry_source: "local".into(),
         }
     }
 

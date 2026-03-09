@@ -18,6 +18,9 @@ pub struct SkillRecord {
     pub enabled: bool,
     pub last_loaded_at: Option<String>,
     pub created_at: String,
+    pub version: String,
+    pub author: String,
+    pub registry_source: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -94,7 +97,7 @@ pub fn get_skill(db: &Database, id: &str) -> Result<Option<SkillRecord>> {
     conn.query_row(
         "SELECT id, name, kind, description, source_path, content_hash, \
          triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-         enabled, last_loaded_at, created_at \
+         enabled, last_loaded_at, created_at, version, author, registry_source \
          FROM skills WHERE id = ?1",
         [id],
         row_to_skill,
@@ -109,7 +112,7 @@ pub fn list_skills(db: &Database) -> Result<Vec<SkillRecord>> {
         .prepare(
             "SELECT id, name, kind, description, source_path, content_hash, \
              triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-             enabled, last_loaded_at, created_at \
+             enabled, last_loaded_at, created_at, version, author, registry_source \
              FROM skills ORDER BY name ASC",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -210,7 +213,7 @@ pub fn find_by_trigger(db: &Database, keyword: &str) -> Result<Vec<SkillRecord>>
         .prepare(
             "SELECT id, name, kind, description, source_path, content_hash, \
              triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-             enabled, last_loaded_at, created_at \
+             enabled, last_loaded_at, created_at, version, author, registry_source \
              FROM skills WHERE triggers_json LIKE ?1 ESCAPE '\\' AND enabled = 1",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -231,7 +234,7 @@ pub fn find_enabled_skill_by_script_path(
     conn.query_row(
         "SELECT id, name, kind, description, source_path, content_hash, \
          triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-         enabled, last_loaded_at, created_at \
+         enabled, last_loaded_at, created_at, version, author, registry_source \
          FROM skills WHERE script_path = ?1 AND enabled = 1 LIMIT 1",
         [script_path],
         row_to_skill,
@@ -246,7 +249,7 @@ pub fn find_skill_by_script_path(db: &Database, script_path: &str) -> Result<Opt
         .prepare(
             "SELECT id, name, kind, description, source_path, content_hash, \
              triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-             enabled, last_loaded_at, created_at \
+             enabled, last_loaded_at, created_at, version, author, registry_source \
              FROM skills WHERE script_path = ?1 ORDER BY created_at DESC",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -282,6 +285,9 @@ fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillRecord> {
         enabled: row.get::<_, i32>(11)? != 0,
         last_loaded_at: row.get(12)?,
         created_at: row.get(13)?,
+        version: row.get(14)?,
+        author: row.get(15)?,
+        registry_source: row.get(16)?,
     })
 }
 
