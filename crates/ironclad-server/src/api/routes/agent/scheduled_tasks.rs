@@ -50,7 +50,7 @@ pub(crate) async fn execute_scheduled_agent_task(
     }
 
     let personality = state.personality.read().await;
-    let soul_text = personality.soul_text.clone();
+    let os_text = personality.os_text.clone();
     let firmware_text = personality.firmware_text.clone();
     drop(personality);
 
@@ -78,7 +78,7 @@ pub(crate) async fn execute_scheduled_agent_task(
         channel_label: "cron",
         agent_name: config.agent.name.clone(),
         agent_id: root_agent_id,
-        soul_text,
+        os_text,
         firmware_text,
         primary_model: config.models.primary.clone(),
         tier_adapt: config.tier_adapt.clone(),

@@ -226,7 +226,7 @@ impl PaginationQuery {
 /// Holds the composed personality text plus metadata for status display.
 #[derive(Debug, Clone)]
 pub struct PersonalityState {
-    pub soul_text: String,
+    pub os_text: String,
     pub firmware_text: String,
     pub identity: OsIdentity,
     pub voice: OsVoice,
@@ -239,7 +239,7 @@ impl PersonalityState {
         let operator = personality::load_operator(workspace);
         let directives = personality::load_directives(workspace);
 
-        let soul_text =
+        let os_text =
             personality::compose_identity_text(os.as_ref(), operator.as_ref(), directives.as_ref());
         let firmware_text = personality::compose_firmware_text(fw.as_ref());
 
@@ -256,7 +256,7 @@ impl PersonalityState {
         };
 
         Self {
-            soul_text,
+            os_text,
             firmware_text,
             identity,
             voice,
@@ -265,7 +265,7 @@ impl PersonalityState {
 
     pub fn empty() -> Self {
         Self {
-            soul_text: String::new(),
+            os_text: String::new(),
             firmware_text: String::new(),
             identity: OsIdentity {
                 name: String::new(),
@@ -5637,7 +5637,7 @@ params = { path = "README.md" }
     #[test]
     fn personality_state_empty_defaults() {
         let ps = PersonalityState::empty();
-        assert!(ps.soul_text.is_empty());
+        assert!(ps.os_text.is_empty());
         assert!(ps.firmware_text.is_empty());
         assert!(ps.identity.name.is_empty());
     }
@@ -5645,7 +5645,7 @@ params = { path = "README.md" }
     #[test]
     fn personality_state_from_nonexistent_workspace() {
         let ps = PersonalityState::from_workspace(std::path::Path::new("/tmp/no-such-workspace"));
-        assert!(ps.soul_text.is_empty());
+        assert!(ps.os_text.is_empty());
     }
 
     // ── Mock-based tests: read_log_entries with temp files ────────

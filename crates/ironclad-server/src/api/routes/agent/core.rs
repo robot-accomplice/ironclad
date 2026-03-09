@@ -47,7 +47,7 @@ pub(super) struct InferenceInput<'a> {
     /// System prompt fragments from caller
     pub agent_name: String,
     pub agent_id: String,
-    pub soul_text: String,
+    pub os_text: String,
     pub firmware_text: String,
     pub primary_model: String,
     pub tier_adapt: TierAdaptConfig,
@@ -221,7 +221,7 @@ pub(super) async fn prepare_inference(
         .map(|(_, m)| m)
         .unwrap_or(&model)
         .to_string();
-    let system_prompt = if input.soul_text.is_empty() {
+    let system_prompt = if input.os_text.is_empty() {
         format!(
             "You are {name}, an autonomous AI agent (id: {id}). \
              When asked who you are, always identify as {name}. \
@@ -230,7 +230,7 @@ pub(super) async fn prepare_inference(
             id = input.agent_id,
         )
     } else {
-        let mut prompt = input.soul_text.clone();
+        let mut prompt = input.os_text.clone();
         if !input.firmware_text.is_empty() {
             prompt.push_str("\n\n");
             prompt.push_str(&input.firmware_text);
@@ -360,7 +360,7 @@ pub(super) async fn prepare_inference(
     // message when conversation is long enough that system prompt instructions
     // may have faded from the model's attention window (OPENDEV pattern).
     if let Some(reminder) =
-        ironclad_agent::prompt::build_instruction_reminder(&input.soul_text, &input.firmware_text)
+        ironclad_agent::prompt::build_instruction_reminder(&input.os_text, &input.firmware_text)
     {
         ironclad_agent::context::inject_instruction_reminder(&mut messages, &reminder);
     }
@@ -726,7 +726,7 @@ async fn try_execution_shortcut(
         });
     }
 
-    // Outage-safe personality response from loaded soul/firmware identity.
+    // Outage-safe personality response from loaded OS/firmware identity.
     if requests_personality_profile(user_prompt) {
         let identity = {
             let cfg = state.config.read().await;

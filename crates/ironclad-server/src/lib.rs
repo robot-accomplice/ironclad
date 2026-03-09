@@ -8,7 +8,7 @@
 //! ## Key Types
 //!
 //! - [`AppState`] -- Shared application state passed to all route handlers
-//! - [`PersonalityState`] -- Loaded personality files (soul, firmware, identity)
+//! - [`PersonalityState`] -- Loaded personality files (OS, firmware, identity)
 //! - [`EventBus`] -- Tokio broadcast channel for WebSocket event push
 //!
 //! ## Modules
@@ -216,7 +216,7 @@ pub async fn bootstrap_with_config_path(
 
     let personality_state = api::PersonalityState::from_workspace(&config.agent.workspace);
 
-    if !personality_state.soul_text.is_empty() {
+    if !personality_state.os_text.is_empty() {
         tracing::info!(
             personality = %personality_state.identity.name,
             generated_by = %personality_state.identity.generated_by,
