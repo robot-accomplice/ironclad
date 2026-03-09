@@ -92,7 +92,8 @@ pub struct RevenueSettlementAccounting<'a> {
     pub attributable_costs_usdc: f64,
     pub tax_rate: f64,
     pub tax_amount_usdc: f64,
-    pub retained_earnings_usdc: f64,
+    // retained_earnings_usdc is derived in the UPDATE SQL as MAX((?4-?5)-?7, 0.0)
+    // to enforce the accounting identity: retained = net_profit - tax.
     pub tax_destination_wallet: Option<&'a str>,
 }
 
@@ -407,9 +408,10 @@ pub fn settle_revenue_opportunity(
         .execute(
             "UPDATE revenue_opportunities \
              SET status = ?2, settlement_ref = ?3, settled_amount_usdc = ?4, attributable_costs_usdc = ?5, \
-                 net_profit_usdc = (?4 - ?5), tax_rate = ?6, tax_amount_usdc = ?7, retained_earnings_usdc = ?8, \
-                 tax_destination_wallet = ?9, updated_at = datetime('now') \
-             WHERE id = ?1 AND status = ?10",
+                 net_profit_usdc = (?4 - ?5), tax_rate = ?6, tax_amount_usdc = ?7, \
+                 retained_earnings_usdc = MAX((?4 - ?5) - ?7, 0.0), \
+                 tax_destination_wallet = ?8, updated_at = datetime('now') \
+             WHERE id = ?1 AND status = ?9",
             rusqlite::params![
                 id,
                 OPPORTUNITY_STATUS_SETTLED,
@@ -418,7 +420,6 @@ pub fn settle_revenue_opportunity(
                 accounting.attributable_costs_usdc,
                 accounting.tax_rate,
                 accounting.tax_amount_usdc,
-                accounting.retained_earnings_usdc,
                 accounting.tax_destination_wallet,
                 OPPORTUNITY_STATUS_FULFILLED
             ],
@@ -520,7 +521,6 @@ mod tests {
                     attributable_costs_usdc: 0.5,
                     tax_rate: 0.1,
                     tax_amount_usdc: 0.2,
-                    retained_earnings_usdc: 1.8,
                     tax_destination_wallet: Some("0x123"),
                 },
             )
@@ -537,7 +537,6 @@ mod tests {
                     attributable_costs_usdc: 0.5,
                     tax_rate: 0.1,
                     tax_amount_usdc: 0.2,
-                    retained_earnings_usdc: 1.8,
                     tax_destination_wallet: Some("0x123"),
                 },
             )

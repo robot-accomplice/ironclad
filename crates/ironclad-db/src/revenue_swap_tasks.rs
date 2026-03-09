@@ -93,6 +93,37 @@ pub fn mark_revenue_swap_in_progress(db: &Database, opportunity_id: &str) -> Res
     Ok(updated > 0)
 }
 
+/// Atomically claim the submission slot by transitioning `in_progress → submitting`.
+/// Returns `true` if the claim was acquired, `false` if the task was not in `in_progress`
+/// (e.g. another caller already claimed it, or status is wrong).
+pub fn claim_revenue_swap_submission(db: &Database, opportunity_id: &str) -> Result<bool> {
+    let conn = db.conn();
+    let task_id = format!("rev_swap:{opportunity_id}");
+    let updated = conn
+        .execute(
+            "UPDATE tasks SET status = 'submitting', updated_at = datetime('now') \
+             WHERE id = ?1 AND status = 'in_progress'",
+            [task_id.as_str()],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(updated > 0)
+}
+
+/// Release a previously acquired submission claim, returning the task to `in_progress`.
+/// Used when the EVM call fails and the operator should be able to retry.
+pub fn release_revenue_swap_claim(db: &Database, opportunity_id: &str) -> Result<bool> {
+    let conn = db.conn();
+    let task_id = format!("rev_swap:{opportunity_id}");
+    let updated = conn
+        .execute(
+            "UPDATE tasks SET status = 'in_progress', updated_at = datetime('now') \
+             WHERE id = ?1 AND status = 'submitting'",
+            [task_id.as_str()],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(updated > 0)
+}
+
 pub fn mark_revenue_swap_failed(db: &Database, opportunity_id: &str, reason: &str) -> Result<bool> {
     update_revenue_swap_status(
         db,
@@ -100,7 +131,7 @@ pub fn mark_revenue_swap_failed(db: &Database, opportunity_id: &str, reason: &st
         "failed",
         Some(reason),
         None,
-        &["pending", "in_progress"],
+        &["pending", "in_progress", "submitting"],
     )
 }
 
@@ -130,7 +161,7 @@ pub fn mark_revenue_swap_submitted(
         "in_progress",
         None,
         Some(tx_hash),
-        &["in_progress"],
+        &["submitting", "in_progress"],
     )
 }
 
@@ -144,7 +175,7 @@ fn update_revenue_swap_status(
 ) -> Result<bool> {
     let conn = db.conn();
     let task_id = format!("rev_swap:{opportunity_id}");
-    let existing: Option<(String, String)> = conn
+    let existing: Option<(Option<String>, String)> = conn
         .query_row(
             "SELECT source, status FROM tasks WHERE id = ?1",
             [task_id.as_str()],
@@ -152,9 +183,12 @@ fn update_revenue_swap_status(
         )
         .optional()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
-    let Some((existing_source_json, current_status)) = existing else {
+    let Some((existing_source_opt, current_status)) = existing else {
         return Ok(false);
     };
+    // Defensively handle NULL source column — fall back to empty JSON object
+    // so downstream mutations (insert "status", "tx_hash", etc.) still work.
+    let existing_source_json = existing_source_opt.unwrap_or_else(|| "{}".to_string());
     if !allowed_from_statuses
         .iter()
         .any(|s| s.eq_ignore_ascii_case(&current_status))
@@ -218,5 +252,58 @@ mod tests {
         assert_eq!(row.status, "completed");
         assert_eq!(row.opportunity_id, "ro_1");
         assert!(!row.created_at.is_empty());
+    }
+
+    #[test]
+    fn claim_release_prevents_double_submission() {
+        let db = Database::new(":memory:").unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, priority, source) VALUES ('rev_swap:ro_2','Swap','pending',95,'{\"type\":\"revenue_swap\",\"opportunity_id\":\"ro_2\"}')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        // Can't claim from pending
+        assert!(!claim_revenue_swap_submission(&db, "ro_2").unwrap());
+
+        assert!(mark_revenue_swap_in_progress(&db, "ro_2").unwrap());
+
+        // First claim succeeds
+        assert!(claim_revenue_swap_submission(&db, "ro_2").unwrap());
+        let row = get_revenue_swap_task(&db, "ro_2").unwrap().unwrap();
+        assert_eq!(row.status, "submitting");
+
+        // Second concurrent claim fails (already submitting)
+        assert!(!claim_revenue_swap_submission(&db, "ro_2").unwrap());
+
+        // Release returns to in_progress
+        assert!(release_revenue_swap_claim(&db, "ro_2").unwrap());
+        let row = get_revenue_swap_task(&db, "ro_2").unwrap().unwrap();
+        assert_eq!(row.status, "in_progress");
+    }
+
+    #[test]
+    fn claim_then_submit_records_tx_hash() {
+        let db = Database::new(":memory:").unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, priority, source) VALUES ('rev_swap:ro_3','Swap','pending',95,'{\"type\":\"revenue_swap\",\"opportunity_id\":\"ro_3\"}')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(mark_revenue_swap_in_progress(&db, "ro_3").unwrap());
+        assert!(claim_revenue_swap_submission(&db, "ro_3").unwrap());
+        // mark_submitted accepts from "submitting"
+        assert!(mark_revenue_swap_submitted(&db, "ro_3", "0xdef").unwrap());
+        let row = get_revenue_swap_task(&db, "ro_3").unwrap().unwrap();
+        assert_eq!(row.status, "in_progress");
+        // tx_hash should be in source JSON
+        let source: serde_json::Value =
+            serde_json::from_str(row.source_json.as_deref().unwrap()).unwrap();
+        assert_eq!(source["swap_tx_hash"], "0xdef");
     }
 }

@@ -239,10 +239,26 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        crate::revenue_feedback::record_revenue_feedback(&db, "ro_1", 1.5, "operator", None)
-            .unwrap();
-        crate::revenue_feedback::record_revenue_feedback(&db, "ro_2", 2.0, "operator", None)
-            .unwrap();
+        // Both feedback records must use the same strategy as the scoring input below
+        // ("micro_bounty") so they are visible to the strategy-scoped signal query.
+        crate::revenue_feedback::record_revenue_feedback(
+            &db,
+            "ro_1",
+            "micro_bounty",
+            1.5,
+            "operator",
+            None,
+        )
+        .unwrap();
+        crate::revenue_feedback::record_revenue_feedback(
+            &db,
+            "ro_2",
+            "micro_bounty",
+            2.0,
+            "operator",
+            None,
+        )
+        .unwrap();
 
         let input = RevenueOpportunityScoreInput {
             source: "external_board",

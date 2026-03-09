@@ -129,13 +129,7 @@ pub async fn create_service_quote(
     let svc = find_revenue_service(req.service_id.trim())
         .ok_or_else(|| not_found(format!("unknown service '{}'", req.service_id)))?;
     let requester = req.requester.trim();
-    validate_short("requester", requester)?;
-    if requester.len() > 64 {
-        return Err(bad_request("requester exceeds max length of 64 characters"));
-    }
-    if requester.is_empty() {
-        return Err(bad_request("requester cannot be empty"));
-    }
+    validate_field("requester", requester, 64)?;
 
     let request_id = format!("sr_{}", uuid::Uuid::new_v4().simple());
     let recipient = state.wallet.wallet.address().to_string();

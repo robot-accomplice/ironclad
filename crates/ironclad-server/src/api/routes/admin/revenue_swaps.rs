@@ -165,7 +165,21 @@ pub async fn submit_revenue_swap_task(
         .check_all(amount, current_balance, hourly_total, daily_total)
         .map_err(|e| bad_request(e.to_string()))?;
 
-    let tx_hash = ironclad_wallet::submit_evm_contract_call(
+    // Atomically claim the submission slot to prevent concurrent double-submission.
+    // This transitions the task from "in_progress" to "submitting" as a database-level mutex.
+    let claimed = ironclad_db::revenue_swap_tasks::claim_revenue_swap_submission(
+        &state.db,
+        &opportunity_id,
+    )
+    .map_err(|e| internal_err(&e))?;
+    if !claimed {
+        return Err(bad_request(
+            "revenue swap task is not available for submission; \
+             another submission may be in progress",
+        ));
+    }
+
+    let tx_hash = match ironclad_wallet::submit_evm_contract_call(
         &state.wallet.wallet,
         &ironclad_wallet::EvmContractCall {
             to: contract_address.clone(),
@@ -177,7 +191,17 @@ pub async fn submit_revenue_swap_task(
         },
     )
     .await
-    .map_err(|e| bad_request(e.to_string()))?;
+    {
+        Ok(hash) => hash,
+        Err(e) => {
+            // Release the claim so the operator can retry after fixing the issue.
+            let _ = ironclad_db::revenue_swap_tasks::release_revenue_swap_claim(
+                &state.db,
+                &opportunity_id,
+            );
+            return Err(bad_request(e.to_string()));
+        }
+    };
 
     tracing::info!(
         opportunity_id = %opportunity_id,

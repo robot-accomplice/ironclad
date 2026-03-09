@@ -136,7 +136,6 @@ pub async fn settle_revenue_opportunity(
             attributable_costs_usdc,
             tax_rate,
             tax_amount_usdc,
-            retained_earnings_usdc,
             tax_destination_wallet,
         },
     )
@@ -314,9 +313,20 @@ pub async fn settle_revenue_opportunity(
             )
             .map_err(|e| internal_err(&e))?;
         }
-        if auto_swap
+        // Check if swap task already exists in DB (authoritative for replay).
+        // This prevents config/request drift from misrepresenting swap_queued
+        // or queuing a swap that wasn't part of the original settlement.
+        let swap_task_exists =
+            ironclad_db::revenue_swap_tasks::get_revenue_swap_task(&state.db, &id)
+                .map_err(|e| internal_err(&e))?
+                .is_some();
+        if swap_task_exists {
+            // Swap was queued during the original settlement — report truthfully.
+            swap_queued = true;
+        } else if auto_swap
             && let Some((target_contract_address, swap_contract_address)) = planned_swap.as_ref()
         {
+            // Crash-recovery: settlement committed but task INSERT didn't.
             queue_revenue_swap(
                 &state.db,
                 RevenueSwapTask {

@@ -11,18 +11,12 @@ pub struct RevenueFeedbackSignal {
 pub fn record_revenue_feedback(
     db: &Database,
     opportunity_id: &str,
+    strategy: &str,
     grade: f64,
     source: &str,
     comment: Option<&str>,
 ) -> Result<String> {
     let conn = db.conn();
-    let strategy: String = conn
-        .query_row(
-            "SELECT strategy FROM revenue_opportunities WHERE id = ?1",
-            [opportunity_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO revenue_feedback (id, opportunity_id, strategy, grade, source, comment) \
@@ -110,9 +104,17 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        record_revenue_feedback(&db, "ro_1", 4.5, "operator", Some("strong result")).unwrap();
-        record_revenue_feedback(&db, "ro_2", 3.5, "operator", None).unwrap();
-        record_revenue_feedback(&db, "ro_3", 2.0, "operator", None).unwrap();
+        record_revenue_feedback(
+            &db,
+            "ro_1",
+            "oracle_feed",
+            4.5,
+            "operator",
+            Some("strong result"),
+        )
+        .unwrap();
+        record_revenue_feedback(&db, "ro_2", "oracle_feed", 3.5, "operator", None).unwrap();
+        record_revenue_feedback(&db, "ro_3", "micro_bounty", 2.0, "operator", None).unwrap();
 
         let rows = revenue_feedback_summary_by_strategy(&db).unwrap();
         assert_eq!(rows.len(), 2);
@@ -121,13 +123,13 @@ mod tests {
     }
 
     #[test]
-    fn record_feedback_for_missing_opportunity_returns_error() {
+    fn record_feedback_without_existing_opportunity_succeeds_at_db_layer() {
+        // Existence check is the route handler's responsibility, not the DB layer.
+        // The DB function is a pure insert + touch; it does not validate FK presence.
         let db = Database::new(":memory:").unwrap();
-        let result = record_revenue_feedback(&db, "nonexistent", 4.0, "operator", None);
-        assert!(
-            result.is_err(),
-            "should error when opportunity doesn't exist"
-        );
+        let result =
+            record_revenue_feedback(&db, "nonexistent", "any_strategy", 4.0, "operator", None);
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -146,8 +148,8 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        record_revenue_feedback(&db, "ro_1", 5.0, "operator", None).unwrap();
-        record_revenue_feedback(&db, "ro_2", 3.0, "operator", None).unwrap();
+        record_revenue_feedback(&db, "ro_1", "oracle_feed", 5.0, "operator", None).unwrap();
+        record_revenue_feedback(&db, "ro_2", "oracle_feed", 3.0, "operator", None).unwrap();
 
         let signal = revenue_feedback_signal_for_strategy(&db, "oracle_feed")
             .unwrap()

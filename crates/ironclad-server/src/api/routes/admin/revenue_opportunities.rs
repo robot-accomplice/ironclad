@@ -156,7 +156,25 @@ pub async fn qualify_revenue_opportunity(
     let row = ironclad_db::service_revenue::get_revenue_opportunity(&state.db, &id)
         .map_err(|e| internal_err(&e))?
         .ok_or_else(|| not_found(format!("revenue opportunity '{}' not found", id)))?;
-    let approved = req.approved.unwrap_or(row.recommended_approved);
+    let approved = match req.approved {
+        Some(v) => v,
+        None => {
+            // When scoring hasn't run (all scores at defaults), the system has no basis
+            // for a recommendation.  Require the caller to make an explicit decision
+            // rather than silently falling back to `recommended_approved = false`.
+            let scores_are_default = row.confidence_score == 0.0
+                && row.effort_score == 0.0
+                && row.risk_score == 0.0
+                && row.priority_score == 0.0;
+            if scores_are_default && !row.recommended_approved {
+                return Err(bad_request(
+                    "scoring has not run for this opportunity; \
+                     'approved' field is required for explicit qualification decision",
+                ));
+            }
+            row.recommended_approved
+        }
+    };
     let reason = req.reason.trim();
     let updated = ironclad_db::service_revenue::qualify_revenue_opportunity(
         &state.db,
