@@ -96,7 +96,7 @@ pub fn revenue_strategy_profitability(db: &Database) -> Result<Vec<Value>> {
 /// Recent revenue opportunity audit log — the last N settlement events ordered newest-first.
 /// Shows what happened, when, and how much, for operational transparency.
 pub fn revenue_audit_log(db: &Database, limit: i64) -> Result<Vec<Value>> {
-    let limit = limit.max(1).min(500);
+    let limit = limit.clamp(1, 500);
     let conn = db.conn();
     let mut stmt = conn
         .prepare(
@@ -147,9 +147,7 @@ fn parse_cycle_seconds(created: &str, settled: &str) -> Option<i64> {
     // SQLite datetime format: "YYYY-MM-DD HH:MM:SS"
     fn parse_ts(s: &str) -> Option<i64> {
         // Minimal parser for SQLite datetime — no external dep needed.
-        let parts: Vec<&str> = s
-            .split(|c: char| c == '-' || c == ' ' || c == ':' || c == 'T')
-            .collect();
+        let parts: Vec<&str> = s.split(['-', ' ', ':', 'T']).collect();
         if parts.len() < 6 {
             return None;
         }
