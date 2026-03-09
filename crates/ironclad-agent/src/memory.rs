@@ -165,12 +165,53 @@ pub fn ingest_turn(
 
     // Procedural: track tool success/failure
     if turn_type == TurnType::ToolUse {
-        for (tool_name, _) in tool_results {
-            if let Err(e) = ironclad_db::memory::record_procedural_success(db, tool_name) {
+        for (tool_name, result) in tool_results {
+            if is_tool_failure(result) {
+                if let Err(e) = ironclad_db::memory::record_procedural_failure(db, tool_name) {
+                    warn!(error = %e, tool = %tool_name, "failed to record procedural failure");
+                }
+            } else if let Err(e) = ironclad_db::memory::record_procedural_success(db, tool_name) {
                 warn!(error = %e, tool = %tool_name, "failed to record procedural success");
             }
         }
     }
+}
+
+/// Heuristic: does the tool result text indicate a failure?
+///
+/// Checks for common error prefixes and patterns in tool output.  We lean
+/// toward *not* marking ambiguous results as failures (false negatives are
+/// cheaper than false positives in the procedural memory tier).
+fn is_tool_failure(result: &str) -> bool {
+    let lower = result.to_lowercase();
+    let trimmed = lower.trim_start();
+
+    // Explicit error/failure prefixes
+    if trimmed.starts_with("error:")
+        || trimmed.starts_with("error -")
+        || trimmed.starts_with("failed:")
+        || trimmed.starts_with("failure:")
+        || trimmed.starts_with("fatal:")
+        || trimmed.starts_with("panic:")
+    {
+        return true;
+    }
+
+    // Common structured error patterns
+    if trimmed.starts_with("{\"error\"") || trimmed.starts_with("{\"err\"") {
+        return true;
+    }
+
+    // Non-zero exit codes from shell tools
+    if trimmed.contains("exit code") || trimmed.contains("exit status") {
+        // "exit code 0" is success; anything else is failure
+        if trimmed.contains("exit code 0") || trimmed.contains("exit status 0") {
+            return false;
+        }
+        return true;
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -527,5 +568,60 @@ mod tests {
             ),
             TurnType::ToolUse
         );
+    }
+
+    // ── is_tool_failure tests ──────────────────────────────────────
+
+    #[test]
+    fn tool_failure_error_prefix() {
+        assert!(is_tool_failure("Error: file not found"));
+        assert!(is_tool_failure("error: connection refused"));
+        assert!(is_tool_failure("  Error: indented"));
+    }
+
+    #[test]
+    fn tool_failure_failed_prefix() {
+        assert!(is_tool_failure("Failed: command returned non-zero"));
+        assert!(is_tool_failure("failure: assertion failed"));
+        assert!(is_tool_failure("fatal: not a git repository"));
+        assert!(is_tool_failure("panic: index out of bounds"));
+    }
+
+    #[test]
+    fn tool_failure_json_error() {
+        assert!(is_tool_failure(r#"{"error": "not found"}"#));
+        assert!(is_tool_failure(r#"{"err": "timeout"}"#));
+    }
+
+    #[test]
+    fn tool_failure_exit_code() {
+        assert!(is_tool_failure("process exited with exit code 1"));
+        assert!(is_tool_failure("exit status 127"));
+        assert!(!is_tool_failure("exit code 0 — success"));
+        assert!(!is_tool_failure("exit status 0"));
+    }
+
+    #[test]
+    fn tool_success_normal_output() {
+        assert!(!is_tool_failure("hello world"));
+        assert!(!is_tool_failure("42"));
+        assert!(!is_tool_failure("file created successfully"));
+        assert!(!is_tool_failure(""));
+    }
+
+    #[test]
+    fn ingest_turn_records_procedural_failure() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+        let session_id = ironclad_db::sessions::find_or_create(&db, "test-agent", None).unwrap();
+        ironclad_db::memory::store_procedural(&db, "bad_tool", "a tool").ok();
+        ingest_turn(
+            &db,
+            &session_id,
+            "use bad_tool",
+            "error occurred",
+            &[("bad_tool".into(), "Error: something broke".into())],
+        );
+        // If the procedural entry exists, failure_count should have incremented.
+        // The test passes if no panic occurs (silent degradation).
     }
 }

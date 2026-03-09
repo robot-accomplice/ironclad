@@ -1,11 +1,14 @@
 use chrono::{DateTime, Utc};
-use ironclad_core::config::{DigestConfig, SessionConfig};
+use ironclad_core::config::{DigestConfig, LearningConfig, SessionConfig};
 use ironclad_db::Database;
 use ironclad_llm::format::UnifiedMessage;
+use std::path::PathBuf;
 
 pub struct SessionGovernor {
     config: SessionConfig,
     digest_config: DigestConfig,
+    learning_config: LearningConfig,
+    skills_dir: Option<PathBuf>,
 }
 
 impl SessionGovernor {
@@ -13,11 +16,19 @@ impl SessionGovernor {
         Self {
             config,
             digest_config: DigestConfig::default(),
+            learning_config: LearningConfig::default(),
+            skills_dir: None,
         }
     }
 
     pub fn with_digest(mut self, digest_config: DigestConfig) -> Self {
         self.digest_config = digest_config;
+        self
+    }
+
+    pub fn with_learning(mut self, learning_config: LearningConfig, skills_dir: PathBuf) -> Self {
+        self.learning_config = learning_config;
+        self.skills_dir = Some(skills_dir);
         self
     }
 
@@ -34,6 +45,14 @@ impl SessionGovernor {
             // Generate episodic digest before the session status changes
             if let Ok(Some(session)) = ironclad_db::sessions::get_session(db, session_id) {
                 crate::digest::digest_on_close(db, &self.digest_config, &session);
+                if let Some(ref skills_dir) = self.skills_dir {
+                    crate::learning::learn_on_close(
+                        db,
+                        &self.learning_config,
+                        &session,
+                        skills_dir,
+                    );
+                }
             }
             // Clean up checkpoints before expiry
             if let Err(e) = ironclad_db::checkpoint::clear_checkpoints(db, session_id) {
@@ -82,6 +101,9 @@ impl SessionGovernor {
                 tracing::warn!(error = %e, session_id = %s.id, "compaction failed before rotation");
             }
             crate::digest::digest_on_close(db, &self.digest_config, s);
+            if let Some(ref skills_dir) = self.skills_dir {
+                crate::learning::learn_on_close(db, &self.learning_config, s, skills_dir);
+            }
             if let Err(e) = ironclad_db::checkpoint::clear_checkpoints(db, &s.id) {
                 tracing::warn!(error = %e, session_id = %s.id, "failed to clear checkpoints on rotation");
             }
