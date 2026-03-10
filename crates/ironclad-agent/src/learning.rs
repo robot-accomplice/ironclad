@@ -159,8 +159,8 @@ pub fn synthesize_skill_md(candidate: &CandidateProcedure) -> String {
         md.push_str(&format!("  - {t}\n"));
     }
     md.push_str("priority: 50\n");
-    md.push_str(&format!("version: \"0.0.1\"\n"));
-    md.push_str(&format!("author: learned\n"));
+    md.push_str("version: \"0.0.1\"\n");
+    md.push_str("author: learned\n");
     md.push_str("---\n\n");
 
     // Markdown body

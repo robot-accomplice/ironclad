@@ -24,19 +24,22 @@ pub struct HygieneLogEntry {
     pub avg_skill_priority: f64,
 }
 
+/// Input parameters for recording a hygiene sweep (no auto-generated fields).
+#[derive(Debug, Clone)]
+pub struct HygieneSweepInput {
+    pub stale_procedural_days: u32,
+    pub dead_skill_priority_threshold: i64,
+    pub proc_total: i64,
+    pub proc_stale: i64,
+    pub proc_pruned: i64,
+    pub skills_total: i64,
+    pub skills_dead: i64,
+    pub skills_pruned: i64,
+    pub avg_skill_priority: f64,
+}
+
 /// Record a completed hygiene sweep.
-pub fn log_hygiene_sweep(
-    db: &Database,
-    stale_procedural_days: u32,
-    dead_skill_priority_threshold: i64,
-    proc_total: i64,
-    proc_stale: i64,
-    proc_pruned: i64,
-    skills_total: i64,
-    skills_dead: i64,
-    skills_pruned: i64,
-    avg_skill_priority: f64,
-) -> Result<()> {
+pub fn log_hygiene_sweep(db: &Database, input: &HygieneSweepInput) -> Result<()> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
@@ -47,15 +50,15 @@ pub fn log_hygiene_sweep(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
             id,
-            stale_procedural_days,
-            dead_skill_priority_threshold,
-            proc_total,
-            proc_stale,
-            proc_pruned,
-            skills_total,
-            skills_dead,
-            skills_pruned,
-            avg_skill_priority,
+            input.stale_procedural_days,
+            input.dead_skill_priority_threshold,
+            input.proc_total,
+            input.proc_stale,
+            input.proc_pruned,
+            input.skills_total,
+            input.skills_dead,
+            input.skills_pruned,
+            input.avg_skill_priority,
         ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -106,11 +109,46 @@ mod tests {
         Database::new(":memory:").unwrap()
     }
 
+    fn sweep_input(proc_total: i64, avg_priority: f64) -> HygieneSweepInput {
+        HygieneSweepInput {
+            stale_procedural_days: 30,
+            dead_skill_priority_threshold: 0,
+            proc_total,
+            proc_stale: 0,
+            proc_pruned: 0,
+            skills_total: 0,
+            skills_dead: 0,
+            skills_pruned: 0,
+            avg_skill_priority: avg_priority,
+        }
+    }
+
     #[test]
     fn log_and_retrieve_hygiene_sweep() {
         let db = test_db();
-        log_hygiene_sweep(&db, 30, 0, 100, 5, 3, 20, 2, 2, 45.0).unwrap();
-        log_hygiene_sweep(&db, 30, 0, 97, 2, 1, 18, 0, 0, 48.0).unwrap();
+        let input1 = HygieneSweepInput {
+            stale_procedural_days: 30,
+            dead_skill_priority_threshold: 0,
+            proc_total: 100,
+            proc_stale: 5,
+            proc_pruned: 3,
+            skills_total: 20,
+            skills_dead: 2,
+            skills_pruned: 2,
+            avg_skill_priority: 45.0,
+        };
+        let input2 = HygieneSweepInput {
+            proc_total: 97,
+            proc_stale: 2,
+            proc_pruned: 1,
+            skills_total: 18,
+            skills_dead: 0,
+            skills_pruned: 0,
+            avg_skill_priority: 48.0,
+            ..input1
+        };
+        log_hygiene_sweep(&db, &input1).unwrap();
+        log_hygiene_sweep(&db, &input2).unwrap();
 
         let entries = recent_hygiene_log(&db, 10).unwrap();
         assert_eq!(entries.len(), 2);
@@ -134,7 +172,7 @@ mod tests {
     fn recent_hygiene_log_respects_limit() {
         let db = test_db();
         for i in 0..5 {
-            log_hygiene_sweep(&db, 30, 0, i, 0, 0, 0, 0, 0, 0.0).unwrap();
+            log_hygiene_sweep(&db, &sweep_input(i, 0.0)).unwrap();
         }
         let entries = recent_hygiene_log(&db, 3).unwrap();
         assert_eq!(entries.len(), 3);

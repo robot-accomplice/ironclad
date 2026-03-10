@@ -71,10 +71,10 @@ impl SessionGovernor {
         if let Err(e) = self.decay_episodic_importance(db) {
             tracing::warn!(error = %e, "episodic importance decay failed during governor tick");
         }
-        if self.skills_dir.is_some() {
-            if let Err(e) = self.adjust_learned_skill_priorities(db) {
-                tracing::warn!(error = %e, "learned skill priority adjustment failed during governor tick");
-            }
+        if self.skills_dir.is_some()
+            && let Err(e) = self.adjust_learned_skill_priorities(db)
+        {
+            tracing::warn!(error = %e, "learned skill priority adjustment failed during governor tick");
         }
         // Retrieval-hygiene: prune stale procedural entries and dead learned skills.
         self.run_retrieval_hygiene(db);
@@ -285,15 +285,14 @@ impl SessionGovernor {
                 Ok(dead) => {
                     let count = dead.len() as i64;
                     for (name, md_path) in &dead {
-                        if let Some(path) = md_path {
-                            if let Err(e) = std::fs::remove_file(path) {
-                                if e.kind() != std::io::ErrorKind::NotFound {
-                                    tracing::warn!(
-                                        error = %e, skill = %name, path = %path,
-                                        "failed to remove dead learned skill file"
-                                    );
-                                }
-                            }
+                        if let Some(path) = md_path
+                            && let Err(e) = std::fs::remove_file(path)
+                            && e.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tracing::warn!(
+                                error = %e, skill = %name, path = %path,
+                                "failed to remove dead learned skill file"
+                            );
                         }
                         tracing::info!(skill = %name, "pruned dead learned skill");
                     }
@@ -306,10 +305,9 @@ impl SessionGovernor {
             };
 
         // ── 3. Record sweep in audit log ─────────────────────────
-        if let Err(e) = ironclad_db::hygiene_log::log_hygiene_sweep(
-            db,
-            stale_days,
-            dead_threshold,
+        let sweep_input = ironclad_db::hygiene_log::HygieneSweepInput {
+            stale_procedural_days: stale_days,
+            dead_skill_priority_threshold: dead_threshold,
             proc_total,
             proc_stale,
             proc_pruned,
@@ -317,7 +315,8 @@ impl SessionGovernor {
             skills_dead,
             skills_pruned,
             avg_skill_priority,
-        ) {
+        };
+        if let Err(e) = ironclad_db::hygiene_log::log_hygiene_sweep(db, &sweep_input) {
             tracing::warn!(error = %e, "failed to log hygiene sweep");
         }
     }
