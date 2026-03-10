@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Learning loop closure**: Agent now detects repeating multi-step tool sequences on session close and synthesizes reusable SKILL.md procedure files. `learned_skills` table (migration 021) tracks reinforcement history (success/failure counts, priority). `LearningConfig` exposes tuneable thresholds for minimum sequence length, success ratio, priority boost/decay, and skill cap. Inspired by recent work on autonomous tool-use learning in LLM agents ([arXiv:2603.05344](https://arxiv.org/abs/2603.05344)).
+- **Procedural failure recording**: `record_procedural_failure()` (previously dead code in the DB layer) is now called from `ingest_turn()` when tool results indicate failure, closing the procedural memory feedback loop.
+- **Skill priority adjustment**: Governor `tick()` now runs `adjust_learned_skill_priorities()` after episodic decay — learned skills with high success ratios get priority boosts; those with poor ratios get decayed.
+- **Skill subdirectory loading**: `SkillLoader` now recurses into `learned/` subdirectory, loading machine-synthesized skills alongside hand-authored ones.
+- **Skill registry protocol**: Migration 022 adds `version`, `author`, `registry_source` columns to skills table. Multi-registry support via `RegistrySource { name, url, priority, enabled }` with backward-compatible fallback from legacy single-URL `registry_url`.
+- **Multi-registry fetch**: Registry sync iterates all configured sources, namespaces skills as `{registry_name}/{skill_name}` for non-local sources, applies semver comparison to skip redundant downloads, and resolves conflicts by registry priority.
+- **Progressive context compaction**: 5-stage compaction (`Trim` → `Summarize` → `Archive` → `Evict` → `Emergency`) in `compact_before_archive()` with `CompactionStage::from_excess()` selector.
+- **Decay-weighted episodic retrieval**: `rerank_episodic_by_decay()` applies time-based decay at retrieval time, preventing stale context from dominating memory budget.
+- **Instruction anti-fade micro-reminders**: Event-driven system prompt reinforcement at agent decision points to combat instruction-following drift.
+- **x402 autonomous payment**: LLM HTTP client now handles `402 Payment Required` responses with autonomous on-chain payment and request retry.
+
 ### Changed
 
+- **Terminology normalization**: `soul_text` → `os_text`, `soul_history` → `os_personality_history` (migration 020) for firmware/OS terminology coherency.
 - **Behavior soak hardening**: `scripts/run-agent-behavior-soak.py` now includes regression checks for filesystem capability truthfulness, subagent capability response quality, and affirmative continuation quality, with rubric updates to score substantive outcomes over brittle phrase matching.
 - **Roadmap/release traceability**: `docs/releases/v0.9.5.md` and `docs/ROADMAP.md` updated with current v0.9.5 prep status for speculative execution, browser runtime support, CLI skill roadmap slice, and behavior continuity validation.
 - **Architecture documentation**: Added explicit v0.9.5-prep control/dataflow coverage for deterministic execution shortcuts and guarded response sanitization in `docs/architecture/ironclad-dataflow.md` and `docs/architecture/ironclad-sequences.md`.

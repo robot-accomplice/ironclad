@@ -967,6 +967,26 @@ Competitive learnings captured as **robot subroutines** for roadmap shaping. The
 - Add simulation scenarios that compare this profile against existing local/cloud choices under privacy-first and latency-first policy presets.
 - Define readiness gates for promotion into default local-routing recommendations (minimum tool success + loop completion thresholds).
 
+### Subroutine P — Terminal User Interface (TUI)
+
+**Signal**: operators managing long-running autonomous agents need a rich interactive terminal experience that doesn't require a browser. The TUI must maintain full functional parity with the web dashboard.
+
+**Plan fit**: extends operator observability, brings the full control surface to headless/SSH environments, and unlocks efficient multi-session management without browser overhead.
+
+**Scope draft**:
+
+- **Framework**: `ratatui` + `crossterm` backend. Single binary, no additional dependencies.
+- **Dashboard parity**: real-time session list, active agent status, memory budget visualization, inference cost breakdown, routing profile spider graph, approval queue, and skill catalog — all mirroring web dashboard functionality.
+- **Live streaming**: token-by-token agent response rendering via the existing WebSocket event bus (reuses `model_shift`, `tool_call`, `approval_request` events).
+- **Session management**: create/attach/detach/kill sessions, inspect session history, replay episodic digests.
+- **Configuration surfaces**: inline model routing profile editor, channel allowlist management, autonomy budget controls, scheduler cron management.
+- **Revenue/service views**: opportunity queue, swap status, settlement history, tax payout ledger — all with the same data as web dashboard routes.
+- **Approval workflow**: interactive approve/deny/inspect pending tool calls with risk context display.
+- **Skill management**: browse, install, activate, deactivate skills with inline preview.
+- **Split-pane layout**: configurable multi-pane views (e.g., session output + memory inspector + approval queue).
+- **Keybindings**: vim-style navigation with customizable keymaps via config.
+- **Parity contract**: any new web dashboard feature must ship with a corresponding TUI surface. Feature parity is enforced by CI gate (dashboard route coverage → TUI panel mapping).
+
 ### Mission-Kernel Freeze Guard
 
 For the current major-version bug-hammer cycle:
