@@ -546,8 +546,10 @@ mod tests {
 
     #[test]
     fn adjust_priorities_disabled_config_skips() {
-        let mut learning_config = LearningConfig::default();
-        learning_config.enabled = false;
+        let learning_config = LearningConfig {
+            enabled: false,
+            ..Default::default()
+        };
         let gov = SessionGovernor::new(SessionConfig::default())
             .with_learning(learning_config, PathBuf::from("/tmp"));
         let db = test_db();
