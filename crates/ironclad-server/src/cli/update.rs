@@ -1343,10 +1343,10 @@ pub(crate) async fn apply_multi_registry_skills_update(
 
         for (filename, remote_hash) in &manifest.packs.skills.files {
             // Cross-registry conflict: skip if a higher-priority registry already claimed this file.
-            if let Some(owner) = claimed_files.get(filename) {
-                if *owner != reg.name {
-                    continue;
-                }
+            if let Some(owner) = claimed_files.get(filename)
+                && *owner != reg.name
+            {
+                continue;
             }
             claimed_files.insert(filename.clone(), reg.name.clone());
 
