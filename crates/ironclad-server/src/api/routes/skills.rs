@@ -285,6 +285,9 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
 
         let existing = existing_by_name.get(name);
 
+        let version = skill.version();
+        let author = skill.author();
+
         if let Some(existing) = existing {
             if existing.content_hash != hash
                 || existing.triggers_json.as_deref() != triggers.as_deref()
@@ -293,8 +296,10 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
                 || existing.script_path.as_deref() != script_path.as_deref()
                 || existing.source_path != source
                 || existing.risk_level != risk_level
+                || existing.version != version
+                || existing.author != author
             {
-                match ironclad_db::skills::update_skill_full(
+                match ironclad_db::skills::update_skill_with_provenance(
                     &state.db,
                     &existing.id,
                     hash,
@@ -304,6 +309,9 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
                     script_path.as_deref(),
                     &source,
                     &risk_level,
+                    Some(version),
+                    Some(author),
+                    None, // preserve existing registry_source
                 ) {
                     Ok(_) => updated += 1,
                     Err(e) => {
@@ -312,7 +320,7 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
                 }
             }
         } else {
-            match ironclad_db::skills::register_skill_full(
+            match ironclad_db::skills::register_skill_with_provenance(
                 &state.db,
                 name,
                 kind,
@@ -324,6 +332,9 @@ async fn reload_skills_internal(state: &AppState) -> Result<Value, JsonError> {
                 policy_overrides_json.as_deref(),
                 script_path.as_deref(),
                 &risk_level,
+                version,
+                author,
+                "local", // locally loaded from disk
             ) {
                 Ok(_) => added += 1,
                 Err(e) => {
@@ -360,6 +371,9 @@ pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
                         "built_in": built_in,
                         "last_loaded_at": s.last_loaded_at,
                         "created_at": s.created_at,
+                        "version": s.version,
+                        "author": s.author,
+                        "registry_source": s.registry_source,
                     })
                 })
                 .collect();
@@ -408,6 +422,9 @@ pub async fn get_skill(State(state): State<AppState>, Path(id): Path<String>) ->
                 "built_in": built_in,
                 "last_loaded_at": s.last_loaded_at,
                 "created_at": s.created_at,
+                "version": s.version,
+                "author": s.author,
+                "registry_source": s.registry_source,
             })))
         }
         Ok(None) => Err(not_found(format!("skill {id} not found"))),

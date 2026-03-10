@@ -50,6 +50,20 @@ impl LoadedSkill {
             LoadedSkill::Instruction(i, _, _) => Some(&i.description),
         }
     }
+
+    pub fn version(&self) -> &str {
+        match self {
+            LoadedSkill::Structured(m, _, _) => &m.version,
+            LoadedSkill::Instruction(i, _, _) => &i.version,
+        }
+    }
+
+    pub fn author(&self) -> &str {
+        match self {
+            LoadedSkill::Structured(m, _, _) => &m.author,
+            LoadedSkill::Instruction(i, _, _) => &i.author,
+        }
+    }
 }
 
 fn content_hash(data: &[u8]) -> String {

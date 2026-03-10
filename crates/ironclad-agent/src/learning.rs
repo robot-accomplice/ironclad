@@ -131,7 +131,7 @@ pub fn detect_candidate_procedures(
 
 /// Generate a SKILL.md document from a candidate procedure.
 ///
-/// Format: TOML frontmatter (name, description, triggers, priority)
+/// Format: YAML frontmatter (`---` delimited, matching `parse_instruction_md`)
 /// followed by markdown body (steps, tool chain, when to use).
 pub fn synthesize_skill_md(candidate: &CandidateProcedure) -> String {
     let triggers: Vec<&str> = {
@@ -143,22 +143,25 @@ pub fn synthesize_skill_md(candidate: &CandidateProcedure) -> String {
             .map(|t| t.as_str())
             .collect()
     };
-    let triggers_toml: Vec<String> = triggers.iter().map(|t| format!(r#""{t}""#)).collect();
 
     let mut md = String::new();
 
-    // TOML frontmatter
-    md.push_str("+++\n");
-    md.push_str(&format!("name = \"{}\"\n", sanitize_name(&candidate.name)));
+    // YAML frontmatter (must use `---` delimiters to match SkillLoader)
+    md.push_str("---\n");
+    md.push_str(&format!("name: {}\n", sanitize_name(&candidate.name)));
     md.push_str(&format!(
-        "description = \"{}\"\n",
+        "description: \"{}\"\n",
         candidate.description.replace('"', "'")
     ));
-    md.push_str(&format!("triggers = [{}]\n", triggers_toml.join(", ")));
-    md.push_str("priority = 50\n");
-    md.push_str(&format!("success_ratio = {:.2}\n", candidate.success_ratio));
-    md.push_str("source = \"learned\"\n");
-    md.push_str("+++\n\n");
+    // triggers as YAML list
+    md.push_str("triggers:\n");
+    for t in &triggers {
+        md.push_str(&format!("  - {t}\n"));
+    }
+    md.push_str("priority: 50\n");
+    md.push_str(&format!("version: \"0.0.1\"\n"));
+    md.push_str(&format!("author: learned\n"));
+    md.push_str("---\n\n");
 
     // Markdown body
     md.push_str(&format!("# {}\n\n", candidate.description));
@@ -338,7 +341,9 @@ fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        format!("{}…", &s[..max_len.min(s.len())])
+        // Use floor_char_boundary to avoid panicking on multi-byte UTF-8.
+        let boundary = s.floor_char_boundary(max_len);
+        format!("{}…", &s[..boundary])
     }
 }
 
@@ -505,9 +510,13 @@ mod tests {
             ],
         };
         let md = synthesize_skill_md(&candidate);
-        assert!(md.contains("+++"));
-        assert!(md.contains(r#"name = "read-edit-bash""#));
-        assert!(md.contains("triggers = ["));
+        // YAML frontmatter delimiters
+        assert!(md.contains("---"), "expected YAML frontmatter delimiter");
+        assert!(md.contains("name: read-edit-bash"));
+        assert!(
+            md.contains("triggers:") && md.contains("  - read"),
+            "expected YAML triggers list"
+        );
         assert!(md.contains("## Steps"));
         assert!(md.contains("1. **read**"));
         assert!(md.contains("2. **edit**"));

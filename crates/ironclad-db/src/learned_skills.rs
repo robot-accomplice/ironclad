@@ -29,8 +29,15 @@ pub struct LearnedSkillRecord {
 
 // ── Store ──────────────────────────────────────────────────────
 
-/// Insert a new learned skill.  Uses `ON CONFLICT(name)` to update if the
+/// Insert a new learned skill.  Uses `ON CONFLICT(name)` to upsert if the
 /// skill already exists (idempotent re-learning).
+///
+/// On conflict the description/tools/steps are updated but `success_count`
+/// is NOT incremented here — the caller (governor) handles reinforcement
+/// via [`record_learned_skill_success`] to avoid double-counting.
+///
+/// Returns the persisted row's `id` (which may differ from a freshly
+/// generated UUID when the upsert takes the conflict path).
 pub fn store_learned_skill(
     db: &Database,
     name: &str,
@@ -47,15 +54,24 @@ pub fn store_learned_skill(
              (id, name, description, trigger_tools, steps_json, source_session_id, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) \
          ON CONFLICT(name) DO UPDATE SET \
-             description   = excluded.description, \
-             trigger_tools = excluded.trigger_tools, \
-             steps_json    = excluded.steps_json, \
-             success_count = success_count + 1, \
-             updated_at    = ?7",
+             description      = excluded.description, \
+             trigger_tools    = excluded.trigger_tools, \
+             steps_json       = excluded.steps_json, \
+             source_session_id = excluded.source_session_id, \
+             updated_at       = ?7",
         rusqlite::params![id, name, description, trigger_tools, steps_json, source_session_id, now],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
-    Ok(id)
+
+    // Return the actual persisted id (the upsert may have kept the original row's id).
+    let persisted_id: String = conn
+        .query_row(
+            "SELECT id FROM learned_skills WHERE name = ?1",
+            [name],
+            |r| r.get(0),
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(persisted_id)
 }
 
 // ── Retrieve ───────────────────────────────────────────────────
@@ -140,6 +156,42 @@ pub fn set_learned_skill_md_path(db: &Database, name: &str, path: &str) -> Resul
     Ok(())
 }
 
+// ── Hygiene ─────────────────────────────────────────────────────
+
+/// Delete learned skills whose priority has decayed to or below `threshold`.
+///
+/// Pass `threshold = 0` for the default behaviour (remove only fully-dead
+/// skills).  Raise the threshold to be more aggressive about culling
+/// low-value procedures.
+///
+/// Returns the names and `skill_md_path`s of deleted rows so the caller
+/// can clean up the corresponding `.md` files on disk.
+pub fn prune_dead_learned_skills(
+    db: &Database,
+    threshold: i64,
+) -> Result<Vec<(String, Option<String>)>> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare("SELECT name, skill_md_path FROM learned_skills WHERE priority <= ?1")
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+    let dead: Vec<(String, Option<String>)> = stmt
+        .query_map([threshold], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !dead.is_empty() {
+        conn.execute(
+            "DELETE FROM learned_skills WHERE priority <= ?1",
+            [threshold],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+
+    Ok(dead)
+}
+
 // ── Count ──────────────────────────────────────────────────────
 
 pub fn count_learned_skills(db: &Database) -> Result<usize> {
@@ -205,18 +257,25 @@ mod tests {
     }
 
     #[test]
-    fn store_duplicate_name_increments_success() {
+    fn store_duplicate_name_upserts_without_double_counting() {
         let db = test_db();
-        store_learned_skill(&db, "deploy", "Deploy app", "[]", "[]", None).unwrap();
-        store_learned_skill(&db, "deploy", "Deploy v2", "[]", "[]", None).unwrap();
+        let id1 =
+            store_learned_skill(&db, "deploy", "Deploy app", "[]", "[]", Some("sess-1")).unwrap();
+        let id2 =
+            store_learned_skill(&db, "deploy", "Deploy v2", "[]", "[]", Some("sess-2")).unwrap();
 
         let skill = get_learned_skill_by_name(&db, "deploy")
             .unwrap()
             .expect("should exist");
-        // ON CONFLICT increments success_count
-        assert_eq!(skill.success_count, 2);
+        // ON CONFLICT does NOT increment success_count — the governor handles
+        // reinforcement separately via record_learned_skill_success.
+        assert_eq!(skill.success_count, 1);
         // Description updated to latest
         assert_eq!(skill.description, "Deploy v2");
+        // source_session_id updated to latest session
+        assert_eq!(skill.source_session_id.as_deref(), Some("sess-2"));
+        // Both calls return the same persisted row id
+        assert_eq!(id1, id2);
     }
 
     #[test]
@@ -301,5 +360,33 @@ mod tests {
         }
         let skills = list_learned_skills(&db, 3).unwrap();
         assert_eq!(skills.len(), 3);
+    }
+
+    #[test]
+    fn prune_dead_learned_skills_removes_zero_priority() {
+        let db = test_db();
+        store_learned_skill(&db, "alive", "Alive", "[]", "[]", None).unwrap();
+        store_learned_skill(&db, "dead", "Dead", "[]", "[]", None).unwrap();
+        set_learned_skill_md_path(&db, "dead", "/tmp/dead.md").unwrap();
+        update_learned_skill_priority(&db, "dead", 0).unwrap();
+
+        let pruned = prune_dead_learned_skills(&db, 0).unwrap();
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].0, "dead");
+        assert_eq!(pruned[0].1.as_deref(), Some("/tmp/dead.md"));
+
+        // Only "alive" remains
+        assert_eq!(count_learned_skills(&db).unwrap(), 1);
+        assert!(get_learned_skill_by_name(&db, "alive").unwrap().is_some());
+        assert!(get_learned_skill_by_name(&db, "dead").unwrap().is_none());
+    }
+
+    #[test]
+    fn prune_dead_learned_skills_empty_is_noop() {
+        let db = test_db();
+        store_learned_skill(&db, "healthy", "OK", "[]", "[]", None).unwrap();
+        let pruned = prune_dead_learned_skills(&db, 0).unwrap();
+        assert!(pruned.is_empty());
+        assert_eq!(count_learned_skills(&db).unwrap(), 1);
     }
 }

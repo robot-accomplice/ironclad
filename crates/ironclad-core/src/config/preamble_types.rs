@@ -109,6 +109,21 @@ fn default_decay_half_life_days() -> u32 {
     7
 }
 
+/// Configuration for the procedural-memory learning loop.
+///
+/// When sessions close, the governor analyses tool-call sequences and
+/// synthesises reusable skill documents for patterns that meet the
+/// `min_tool_sequence` and `min_success_ratio` thresholds.
+///
+/// ## Priority asymmetry (intentional)
+///
+/// `priority_decay_on_failure` (default 10) is **2× larger** than
+/// `priority_boost_on_success` (default 5).  This deliberate asymmetry
+/// ensures that a single failure erases roughly two prior successes,
+/// which means unreliable procedures decay to zero and are eventually
+/// superseded by better alternatives.  Skills start at priority 50,
+/// giving a new procedure ten consecutive failures of runway before it
+/// drops off the active set (with no successes to counteract).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearningConfig {
     #[serde(default = "default_learning_enabled")]
@@ -120,14 +135,37 @@ pub struct LearningConfig {
     #[serde(default = "default_min_success_ratio")]
     pub min_success_ratio: f64,
     /// Priority points added when a learned skill is observed succeeding again.
+    ///
+    /// Default: 5.  See struct-level docs for the intentional 2:1 asymmetry
+    /// with `priority_decay_on_failure`.
     #[serde(default = "default_priority_boost")]
     pub priority_boost_on_success: i32,
     /// Priority points subtracted when a learned skill's procedure fails.
+    ///
+    /// Default: 10 (2× `priority_boost_on_success`).  The asymmetry
+    /// causes unreliable skills to decay faster than reliable skills
+    /// accumulate trust, preventing low-quality procedures from
+    /// persisting in the active set.
     #[serde(default = "default_priority_decay")]
     pub priority_decay_on_failure: i32,
     /// Cap on total learned skills to prevent unbounded growth.
     #[serde(default = "default_max_learned_skills")]
     pub max_learned_skills: usize,
+    /// Days of zero-activity before a procedural-memory entry is pruned.
+    ///
+    /// Entries in `procedural_memory` that have never been observed
+    /// succeeding or failing (`success_count = 0 AND failure_count = 0`)
+    /// and are older than this many days are removed during the
+    /// retrieval-hygiene sweep.  Default: 30.
+    #[serde(default = "default_stale_procedural_days")]
+    pub stale_procedural_days: u32,
+    /// Learned-skill priority at or below which a skill is considered dead
+    /// and removed during retrieval-hygiene.  Default: 0.
+    ///
+    /// The corresponding `.md` file on disk is also deleted.  Raise this
+    /// threshold to be more aggressive about culling low-value skills.
+    #[serde(default = "default_dead_skill_priority_threshold")]
+    pub dead_skill_priority_threshold: i64,
 }
 
 impl Default for LearningConfig {
@@ -139,6 +177,8 @@ impl Default for LearningConfig {
             priority_boost_on_success: default_priority_boost(),
             priority_decay_on_failure: default_priority_decay(),
             max_learned_skills: default_max_learned_skills(),
+            stale_procedural_days: default_stale_procedural_days(),
+            dead_skill_priority_threshold: default_dead_skill_priority_threshold(),
         }
     }
 }
@@ -160,6 +200,12 @@ fn default_priority_decay() -> i32 {
 }
 fn default_max_learned_skills() -> usize {
     100
+}
+fn default_stale_procedural_days() -> u32 {
+    30
+}
+fn default_dead_skill_priority_threshold() -> i64 {
+    0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

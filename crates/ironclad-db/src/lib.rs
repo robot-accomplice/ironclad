@@ -44,6 +44,7 @@ pub mod delivery_queue;
 pub mod efficiency;
 pub mod embeddings;
 pub mod hippocampus;
+pub mod hygiene_log;
 pub mod learned_skills;
 pub mod memory;
 pub mod metrics;

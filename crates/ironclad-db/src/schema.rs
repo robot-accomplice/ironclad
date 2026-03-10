@@ -534,8 +534,23 @@ CREATE TABLE IF NOT EXISTS learned_skills (
     updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_learned_skills_priority ON learned_skills(priority DESC);
+
+CREATE TABLE IF NOT EXISTS hygiene_log (
+    id                             TEXT PRIMARY KEY,
+    sweep_at                       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    stale_procedural_days          INTEGER NOT NULL,
+    dead_skill_priority_threshold  INTEGER NOT NULL,
+    proc_total                     INTEGER NOT NULL DEFAULT 0,
+    proc_stale                     INTEGER NOT NULL DEFAULT 0,
+    proc_pruned                    INTEGER NOT NULL DEFAULT 0,
+    skills_total                   INTEGER NOT NULL DEFAULT 0,
+    skills_dead                    INTEGER NOT NULL DEFAULT 0,
+    skills_pruned                  INTEGER NOT NULL DEFAULT 0,
+    avg_skill_priority             REAL NOT NULL DEFAULT 0.0
+);
+CREATE INDEX IF NOT EXISTS idx_hygiene_log_sweep ON hygiene_log(sweep_at DESC);
 "#;
-const EMBEDDED_SCHEMA_VERSION: i64 = 22;
+const EMBEDDED_SCHEMA_VERSION: i64 = 23;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {
@@ -993,8 +1008,9 @@ mod tests {
         // 30 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback
         // + context_snapshots + model_selection_events + abuse_events
         // + shadow_routing_predictions (v0.9.4) + service_requests + revenue_opportunities
-        // + revenue_feedback (v0.9.6) + learned_skills (v0.9.6) = 40
-        assert_eq!(count, 40, "expected 40 user-defined tables, got {count}");
+        // + revenue_feedback (v0.9.6) + learned_skills (v0.9.6)
+        // + hygiene_log (v0.9.6) = 41
+        assert_eq!(count, 41, "expected 41 user-defined tables, got {count}");
     }
 
     #[test]
@@ -1003,7 +1019,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 40);
+        assert_eq!(count, 41);
     }
 
     #[test]

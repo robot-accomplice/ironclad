@@ -71,9 +71,13 @@ impl SessionGovernor {
         if let Err(e) = self.decay_episodic_importance(db) {
             tracing::warn!(error = %e, "episodic importance decay failed during governor tick");
         }
-        if let Err(e) = self.adjust_learned_skill_priorities(db) {
-            tracing::warn!(error = %e, "learned skill priority adjustment failed during governor tick");
+        if self.skills_dir.is_some() {
+            if let Err(e) = self.adjust_learned_skill_priorities(db) {
+                tracing::warn!(error = %e, "learned skill priority adjustment failed during governor tick");
+            }
         }
+        // Retrieval-hygiene: prune stale procedural entries and dead learned skills.
+        self.run_retrieval_hygiene(db);
         Ok(expired)
     }
 
@@ -214,6 +218,183 @@ impl SessionGovernor {
             }
         }
         Ok(adjusted)
+    }
+
+    /// Retrieval-hygiene sweep: prune stale procedural entries and remove
+    /// dead learned skills along with their on-disk `.md` files.
+    ///
+    /// Thresholds are controlled by `LearningConfig::stale_procedural_days`
+    /// and `LearningConfig::dead_skill_priority_threshold`.
+    ///
+    /// Every sweep is recorded in the `hygiene_log` table for forensics
+    /// and future auto-tuning.
+    fn run_retrieval_hygiene(&self, db: &Database) {
+        let stale_days = self.learning_config.stale_procedural_days;
+        let dead_threshold = self.learning_config.dead_skill_priority_threshold;
+
+        // ── Pre-sweep metrics ────────────────────────────────────
+        let conn = db.conn();
+        let proc_total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM procedural_memory", [], |r| r.get(0))
+            .unwrap_or(0);
+        let proc_stale: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM procedural_memory \
+                 WHERE success_count = 0 AND failure_count = 0 \
+                   AND updated_at < datetime('now', ?1)",
+                [format!("-{stale_days} days")],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let skills_total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM learned_skills", [], |r| r.get(0))
+            .unwrap_or(0);
+        let skills_dead: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM learned_skills WHERE priority <= ?1",
+                [dead_threshold],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let avg_skill_priority: f64 = conn
+            .query_row(
+                "SELECT COALESCE(AVG(priority), 0) FROM learned_skills",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0.0);
+        drop(conn); // release lock before mutating
+
+        // ── 1. Prune stale procedural_memory entries ─────────────
+        let proc_pruned: i64 = match ironclad_db::memory::prune_stale_procedural(db, stale_days) {
+            Ok(0) => 0,
+            Ok(n) => {
+                tracing::info!(count = n, "pruned stale procedural memory entries");
+                n as i64
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "stale procedural pruning failed");
+                0
+            }
+        };
+
+        // ── 2. Prune dead learned skills ─────────────────────────
+        let skills_pruned: i64 =
+            match ironclad_db::learned_skills::prune_dead_learned_skills(db, dead_threshold) {
+                Ok(dead) if dead.is_empty() => 0,
+                Ok(dead) => {
+                    let count = dead.len() as i64;
+                    for (name, md_path) in &dead {
+                        if let Some(path) = md_path {
+                            if let Err(e) = std::fs::remove_file(path) {
+                                if e.kind() != std::io::ErrorKind::NotFound {
+                                    tracing::warn!(
+                                        error = %e, skill = %name, path = %path,
+                                        "failed to remove dead learned skill file"
+                                    );
+                                }
+                            }
+                        }
+                        tracing::info!(skill = %name, "pruned dead learned skill");
+                    }
+                    count
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "dead learned skill pruning failed");
+                    0
+                }
+            };
+
+        // ── 3. Record sweep in audit log ─────────────────────────
+        if let Err(e) = ironclad_db::hygiene_log::log_hygiene_sweep(
+            db,
+            stale_days,
+            dead_threshold,
+            proc_total,
+            proc_stale,
+            proc_pruned,
+            skills_total,
+            skills_dead,
+            skills_pruned,
+            avg_skill_priority,
+        ) {
+            tracing::warn!(error = %e, "failed to log hygiene sweep");
+        }
+    }
+
+    // ── Diagnostic ────────────────────────────────────────────────
+
+    /// Return a human-readable report on retrieval-memory health.
+    ///
+    /// The mechanic can call this to decide whether the hygiene thresholds
+    /// in `LearningConfig` need adjusting — no auto-tuning, just data.
+    pub fn diagnose_retrieval_health(&self, db: &Database) -> String {
+        let mut lines = Vec::new();
+        let conn = db.conn();
+
+        // Procedural memory stats
+        let proc_total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM procedural_memory", [], |r| r.get(0))
+            .unwrap_or(0);
+        let proc_stale: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM procedural_memory \
+                 WHERE success_count = 0 AND failure_count = 0 \
+                   AND updated_at < datetime('now', ?1)",
+                [format!(
+                    "-{} days",
+                    self.learning_config.stale_procedural_days
+                )],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        lines.push(format!(
+            "procedural_memory: {proc_total} total, {proc_stale} stale \
+             (zero-activity, >{} days)",
+            self.learning_config.stale_procedural_days
+        ));
+
+        // Learned skills stats
+        let skill_total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM learned_skills", [], |r| r.get(0))
+            .unwrap_or(0);
+        let skill_dead: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM learned_skills WHERE priority <= ?1",
+                [self.learning_config.dead_skill_priority_threshold],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let skill_low: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM learned_skills WHERE priority > ?1 AND priority < 20",
+                [self.learning_config.dead_skill_priority_threshold],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let avg_priority: f64 = conn
+            .query_row(
+                "SELECT COALESCE(AVG(priority), 0) FROM learned_skills",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0.0);
+        lines.push(format!(
+            "learned_skills: {skill_total} total, {skill_dead} dead (priority ≤ {}), \
+             {skill_low} low (< 20), avg priority {avg_priority:.0}",
+            self.learning_config.dead_skill_priority_threshold
+        ));
+
+        // Config snapshot
+        lines.push(format!(
+            "config: stale_procedural_days={}, dead_skill_priority_threshold={}, \
+             max_learned_skills={}",
+            self.learning_config.stale_procedural_days,
+            self.learning_config.dead_skill_priority_threshold,
+            self.learning_config.max_learned_skills,
+        ));
+
+        lines.join("\n")
     }
 
     fn decay_episodic_importance(&self, db: &Database) -> ironclad_core::Result<usize> {
