@@ -1196,6 +1196,219 @@ async fn apply_skills_update(
     Ok(true)
 }
 
+// ── Multi-registry support ───────────────────────────────────
+
+/// Compare two semver-style version strings.  Returns `true` when
+/// `local >= remote`, meaning an update is unnecessary.  Gracefully
+/// falls back to string comparison for non-numeric segments.
+fn semver_gte(local: &str, remote: &str) -> bool {
+    fn parse_parts(v: &str) -> Vec<u64> {
+        v.split('.')
+            .map(|s| s.parse::<u64>().unwrap_or(0))
+            .collect()
+    }
+    let l = parse_parts(local);
+    let r = parse_parts(remote);
+    let len = l.len().max(r.len());
+    for i in 0..len {
+        let lv = l.get(i).copied().unwrap_or(0);
+        let rv = r.get(i).copied().unwrap_or(0);
+        match lv.cmp(&rv) {
+            std::cmp::Ordering::Greater => return true,
+            std::cmp::Ordering::Less => return false,
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+    true // equal versions
+}
+
+/// Apply skills updates from all configured registries.
+///
+/// Registries are processed in priority order (highest first). When two
+/// registries publish a skill with the same filename, the higher-priority
+/// one wins.  Non-default registries are namespaced into subdirectories
+/// (e.g. `skills/community/`) so they coexist with the default set.
+pub(crate) async fn apply_multi_registry_skills_update(
+    yes: bool,
+    cli_registry_override: Option<&str>,
+    config_path: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let (_, BOLD, _, _, _, _, _, RESET, _) = colors();
+    let (OK, _, WARN, _, _) = icons();
+
+    // If the user supplied a CLI override, fall through to the single-registry path.
+    if let Some(url) = cli_registry_override {
+        return apply_skills_update(yes, url, config_path).await;
+    }
+
+    // Parse just the [update] section to avoid requiring a full valid config.
+    let registries = match std::fs::read_to_string(config_path).ok().and_then(|raw| {
+        let table: toml::Value = toml::from_str(&raw).ok()?;
+        let update_val = table.get("update")?.clone();
+        let update_cfg: ironclad_core::config::UpdateConfig = update_val.try_into().ok()?;
+        Some(update_cfg.resolve_registries())
+    }) {
+        Some(regs) => regs,
+        None => {
+            // Fallback: single default registry from legacy resolution.
+            let url = resolve_registry_url(None, config_path);
+            return apply_skills_update(yes, &url, config_path).await;
+        }
+    };
+
+    // Only one "default" registry (the common case) — delegate directly.
+    // Non-default registries always need the namespace logic below.
+    if registries.len() <= 1
+        && registries
+            .first()
+            .map(|r| r.name == "default")
+            .unwrap_or(true)
+    {
+        let url = registries
+            .first()
+            .map(|r| r.url.as_str())
+            .unwrap_or(DEFAULT_REGISTRY_URL);
+        return apply_skills_update(yes, url, config_path).await;
+    }
+
+    // Multiple registries — process in priority order (highest first).
+    let mut sorted = registries.clone();
+    sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
+
+    println!("\n  {BOLD}Skills (multi-registry){RESET}\n");
+
+    let client = http_client()?;
+    let skills_dir = skills_local_dir(config_path);
+    if !skills_dir.exists() {
+        std::fs::create_dir_all(&skills_dir)?;
+    }
+
+    let state = UpdateState::load();
+    let mut any_changed = false;
+    // Track claimed filenames to resolve cross-registry conflicts.
+    let mut claimed_files: HashMap<String, String> = HashMap::new();
+
+    for reg in &sorted {
+        if !reg.enabled {
+            continue;
+        }
+
+        let manifest = match fetch_manifest(&client, &reg.url).await {
+            Ok(m) => m,
+            Err(e) => {
+                println!(
+                    "    {WARN} [{name}] Could not fetch manifest: {e}",
+                    name = reg.name
+                );
+                continue;
+            }
+        };
+
+        // Version-based skip: if local installed version >= remote, skip.
+        let installed_version = state
+            .installed_content
+            .skills
+            .as_ref()
+            .map(|s| s.version.as_str())
+            .unwrap_or("0.0.0");
+        if reg.name == "default" && semver_gte(installed_version, &manifest.version) {
+            // Also verify all file hashes still match before declaring up-to-date.
+            let all_match = manifest.packs.skills.files.iter().all(|(fname, hash)| {
+                let local = skills_dir.join(fname);
+                local.exists() && file_sha256(&local).unwrap_or_default() == *hash
+            });
+            if all_match {
+                println!(
+                    "    {OK} [{name}] All skills are up to date (v{ver})",
+                    name = reg.name,
+                    ver = manifest.version
+                );
+                continue;
+            }
+        }
+
+        // Determine the target directory for this registry's files.
+        let target_dir = if reg.name == "default" {
+            skills_dir.clone()
+        } else {
+            let ns_dir = skills_dir.join(&reg.name);
+            if !ns_dir.exists() {
+                std::fs::create_dir_all(&ns_dir)?;
+            }
+            ns_dir
+        };
+
+        let base_url = registry_base_url(&reg.url);
+        let mut applied = 0u32;
+
+        for (filename, remote_hash) in &manifest.packs.skills.files {
+            // Cross-registry conflict: skip if a higher-priority registry already claimed this file.
+            if let Some(owner) = claimed_files.get(filename) {
+                if *owner != reg.name {
+                    continue;
+                }
+            }
+            claimed_files.insert(filename.clone(), reg.name.clone());
+
+            let local_file = target_dir.join(filename);
+            if local_file.exists() {
+                let current_hash = file_sha256(&local_file).unwrap_or_default();
+                if current_hash == *remote_hash {
+                    continue; // Already up to date.
+                }
+            }
+
+            // Fetch and write the file.
+            match fetch_file(
+                &client,
+                &base_url,
+                &format!("{}{}", manifest.packs.skills.path, filename),
+            )
+            .await
+            {
+                Ok(content) => {
+                    std::fs::write(&local_file, &content)?;
+                    applied += 1;
+                }
+                Err(e) => {
+                    println!(
+                        "    {WARN} [{name}] Failed to fetch {filename}: {e}",
+                        name = reg.name
+                    );
+                }
+            }
+        }
+
+        if applied > 0 {
+            any_changed = true;
+            println!(
+                "    {OK} [{name}] Applied {applied} skill update(s) (v{ver})",
+                name = reg.name,
+                ver = manifest.version
+            );
+        } else {
+            println!(
+                "    {OK} [{name}] All skills are up to date",
+                name = reg.name
+            );
+        }
+    }
+
+    // Save updated state (record the default registry version).
+    if any_changed {
+        let mut state = UpdateState::load();
+        state.last_check = now_iso();
+        state
+            .save()
+            .inspect_err(
+                |e| tracing::warn!(error = %e, "failed to save update state after multi-registry sync"),
+            )
+            .ok();
+    }
+
+    Ok(any_changed)
+}
+
 fn skills_local_dir(config_path: &str) -> PathBuf {
     if let Ok(content) = std::fs::read_to_string(config_path)
         && let Ok(config) = content.parse::<toml::Value>()
@@ -1346,7 +1559,7 @@ pub async fn cmd_update_all(
 
     let registry_url = resolve_registry_url(registry_url_override, config_path);
     apply_providers_update(yes, &registry_url, config_path).await?;
-    apply_skills_update(yes, &registry_url, config_path).await?;
+    apply_multi_registry_skills_update(yes, registry_url_override, config_path).await?;
     run_oauth_storage_maintenance();
     run_mechanic_checks_maintenance(config_path);
     if let Err(e) = apply_removed_legacy_config_migration(config_path) {
@@ -1414,8 +1627,7 @@ pub async fn cmd_update_skills(
     config_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     heading("Skills Update");
-    let registry_url = resolve_registry_url(registry_url_override, config_path);
-    apply_skills_update(yes, &registry_url, config_path).await?;
+    apply_multi_registry_skills_update(yes, registry_url_override, config_path).await?;
     run_oauth_storage_maintenance();
     run_mechanic_checks_maintenance(config_path);
     println!();
@@ -2188,6 +2400,151 @@ def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
                 .await
                 .unwrap();
         assert!(!changed_second);
+        handle.abort();
+    }
+
+    // ── semver_gte tests ────────────────────────────────────────
+
+    #[test]
+    fn semver_gte_equal_versions() {
+        assert!(semver_gte("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn semver_gte_local_newer() {
+        assert!(semver_gte("1.1.0", "1.0.0"));
+        assert!(semver_gte("2.0.0", "1.9.9"));
+        assert!(semver_gte("0.9.6", "0.9.5"));
+    }
+
+    #[test]
+    fn semver_gte_local_older() {
+        assert!(!semver_gte("1.0.0", "1.0.1"));
+        assert!(!semver_gte("0.9.5", "0.9.6"));
+        assert!(!semver_gte("0.8.9", "0.9.0"));
+    }
+
+    #[test]
+    fn semver_gte_different_segment_counts() {
+        assert!(semver_gte("1.0.0", "1.0"));
+        assert!(semver_gte("1.0", "1.0.0"));
+        assert!(!semver_gte("1.0", "1.0.1"));
+    }
+
+    // ── Multi-registry test ─────────────────────────────────────
+
+    /// Helper to start a mock registry that serves skills under a given namespace.
+    async fn start_namespaced_mock_registry(
+        registry_name: &str,
+        skill_filename: &str,
+        skill_content: String,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let content_hash = bytes_sha256(skill_content.as_bytes());
+        let manifest = serde_json::json!({
+            "version": "1.0.0",
+            "packs": {
+                "providers": {
+                    "sha256": "unused",
+                    "path": "registry/providers.toml"
+                },
+                "skills": {
+                    "sha256": null,
+                    "path": format!("registry/{registry_name}/"),
+                    "files": {
+                        skill_filename: content_hash
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let skill_route = format!("/registry/{registry_name}/{skill_filename}");
+
+        let state = MockRegistry {
+            manifest,
+            providers: String::new(),
+            skill_payload: skill_content,
+        };
+
+        async fn manifest_h(State(st): State<MockRegistry>) -> Json<serde_json::Value> {
+            Json(serde_json::from_str(&st.manifest).unwrap())
+        }
+        async fn providers_h(State(st): State<MockRegistry>) -> String {
+            st.providers.clone()
+        }
+        async fn skill_h(State(st): State<MockRegistry>) -> String {
+            st.skill_payload.clone()
+        }
+
+        let app = Router::new()
+            .route("/manifest.json", get(manifest_h))
+            .route("/registry/providers.toml", get(providers_h))
+            .route(&skill_route, get(skill_h))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (
+            format!("http://{}:{}/manifest.json", addr.ip(), addr.port()),
+            handle,
+        )
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn multi_registry_namespaces_non_default_skills() {
+        let _lock = env_lock().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = EnvGuard::set("HOME", temp.path().to_str().unwrap());
+        let skills_dir = temp.path().join("skills");
+        let config_path = temp.path().join("ironclad.toml");
+
+        let skill_content = "# community skill\nbody\n".to_string();
+        let (registry_url, handle) =
+            start_namespaced_mock_registry("community", "helper.md", skill_content.clone()).await;
+
+        // Write a config file with a multi-registry setup.
+        let config_toml = format!(
+            r#"[skills]
+skills_dir = "{}"
+
+[update]
+registry_url = "{}"
+
+[[update.registries]]
+name = "community"
+url = "{}"
+priority = 40
+enabled = true
+"#,
+            skills_dir.display(),
+            registry_url,
+            registry_url,
+        );
+        std::fs::write(&config_path, &config_toml).unwrap();
+
+        let changed = apply_multi_registry_skills_update(true, None, config_path.to_str().unwrap())
+            .await
+            .unwrap();
+
+        assert!(changed);
+        // Skill should be namespaced under community/ subdirectory.
+        let namespaced_path = skills_dir.join("community").join("helper.md");
+        assert!(
+            namespaced_path.exists(),
+            "expected skill at {}, files in skills_dir: {:?}",
+            namespaced_path.display(),
+            std::fs::read_dir(&skills_dir)
+                .map(|rd| rd.flatten().map(|e| e.path()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&namespaced_path).unwrap(),
+            skill_content
+        );
+
         handle.abort();
     }
 }
