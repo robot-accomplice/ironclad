@@ -67,7 +67,7 @@ pub fn get_learned_skill_by_name(db: &Database, name: &str) -> Result<Option<Lea
                 success_count, failure_count, priority, skill_md_path, created_at, updated_at \
          FROM learned_skills WHERE name = ?1",
         [name],
-        |row| row_to_record(row),
+        row_to_record,
     )
     .optional()
     .map_err(|e| IroncladError::Database(e.to_string()))
@@ -85,7 +85,7 @@ pub fn list_learned_skills(db: &Database, limit: usize) -> Result<Vec<LearnedSki
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     let rows = stmt
-        .query_map([limit as i64], |row| row_to_record(row))
+        .query_map([limit as i64], row_to_record)
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     rows.collect::<std::result::Result<Vec<_>, _>>()
