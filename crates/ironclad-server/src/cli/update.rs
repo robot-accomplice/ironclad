@@ -124,6 +124,40 @@ fn now_iso() -> String {
 
 // ── Helpers ──────────────────────────────────────────────────
 
+/// Validate that `filename` joined to `base_dir` stays within the base directory.
+///
+/// Defence-in-depth beyond the string-level `..` / `is_absolute` check:
+/// normalize the path components and verify the resolved path still has
+/// `base_dir` as a prefix.  This catches multi-component escapes and
+/// symlinks that might slip past the string-level guard.
+fn is_safe_skill_path(base_dir: &Path, filename: &str) -> bool {
+    // First-pass string guard (kept for clarity)
+    if filename.contains("..") || Path::new(filename).is_absolute() {
+        return false;
+    }
+    // Normalize the joined path using components() to resolve `.` and
+    // multi-component oddities without requiring the file to exist.
+    let joined = base_dir.join(filename);
+    let normalized: PathBuf = joined.components().fold(PathBuf::new(), |mut acc, c| {
+        match c {
+            std::path::Component::ParentDir => {
+                acc.pop();
+            }
+            other => acc.push(other),
+        }
+        acc
+    });
+    // If the base_dir itself can be canonicalized (it exists), use that for
+    // the prefix check.  Otherwise, fall back to a component-normalized base.
+    let canonical_base = base_dir.canonicalize().unwrap_or_else(|_| {
+        base_dir.components().fold(PathBuf::new(), |mut acc, c| {
+            acc.push(c);
+            acc
+        })
+    });
+    normalized.starts_with(&canonical_base)
+}
+
 pub fn file_sha256(path: &Path) -> io::Result<String> {
     let bytes = std::fs::read(path)?;
     let hash = Sha256::digest(&bytes);
@@ -406,11 +440,22 @@ async fn resolve_download_release(
 }
 
 fn find_file_recursive(root: &Path, filename: &str) -> io::Result<Option<PathBuf>> {
+    find_file_recursive_depth(root, filename, 10)
+}
+
+fn find_file_recursive_depth(
+    root: &Path,
+    filename: &str,
+    remaining_depth: usize,
+) -> io::Result<Option<PathBuf>> {
+    if remaining_depth == 0 {
+        return Ok(None);
+    }
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            if let Some(found) = find_file_recursive(&path, filename)? {
+            if let Some(found) = find_file_recursive_depth(&path, filename, remaining_depth - 1)? {
                 return Ok(Some(found));
             }
         } else if path
@@ -1056,8 +1101,8 @@ async fn apply_skills_update(
     let mut up_to_date = Vec::new();
 
     for (filename, remote_hash) in &manifest.packs.skills.files {
-        // Path traversal guard: reject filenames containing ".." or absolute paths.
-        if filename.contains("..") || Path::new(filename).is_absolute() {
+        // Path traversal guard: string check + component normalization.
+        if !is_safe_skill_path(&skills_dir, filename) {
             tracing::warn!(filename, "skipping manifest entry with suspicious path");
             continue;
         }
@@ -1141,8 +1186,21 @@ async fn apply_skills_update(
             &format!("{}{}", manifest.packs.skills.path, filename),
         )
         .await?;
+        // Verify downloaded content matches the manifest hash before writing to disk.
+        let download_hash = bytes_sha256(remote_content.as_bytes());
+        if let Some(expected) = manifest.packs.skills.files.get(filename) {
+            if download_hash != *expected {
+                tracing::warn!(
+                    filename,
+                    expected,
+                    actual = %download_hash,
+                    "skill download hash mismatch — skipping"
+                );
+                continue;
+            }
+        }
         std::fs::write(skills_dir.join(filename), &remote_content)?;
-        file_hashes.insert(filename.clone(), bytes_sha256(remote_content.as_bytes()));
+        file_hashes.insert(filename.clone(), download_hash);
         applied += 1;
     }
 
@@ -1156,6 +1214,20 @@ async fn apply_skills_update(
         )
         .await?;
 
+        // Verify downloaded content matches the manifest hash before offering to the user.
+        let download_hash = bytes_sha256(remote_content.as_bytes());
+        if let Some(expected) = manifest.packs.skills.files.get(filename.as_str()) {
+            if download_hash != *expected {
+                tracing::warn!(
+                    filename,
+                    expected,
+                    actual = %download_hash,
+                    "skill download hash mismatch — skipping"
+                );
+                continue;
+            }
+        }
+
         println!();
         println!("    {YELLOW}{filename}{RESET} -- local modifications detected:");
         print_diff(&local_content, &remote_content);
@@ -1163,7 +1235,7 @@ async fn apply_skills_update(
         match confirm_overwrite(filename) {
             OverwriteChoice::Overwrite => {
                 std::fs::write(&local_file, &remote_content)?;
-                file_hashes.insert(filename.clone(), bytes_sha256(remote_content.as_bytes()));
+                file_hashes.insert(filename.clone(), download_hash.clone());
                 applied += 1;
             }
             OverwriteChoice::Backup => {
@@ -1171,7 +1243,7 @@ async fn apply_skills_update(
                 std::fs::copy(&local_file, &backup)?;
                 println!("    {DETAIL} Backed up to {}", backup.display());
                 std::fs::write(&local_file, &remote_content)?;
-                file_hashes.insert(filename.clone(), bytes_sha256(remote_content.as_bytes()));
+                file_hashes.insert(filename.clone(), download_hash.clone());
                 applied += 1;
             }
             OverwriteChoice::Skip => {
@@ -1396,10 +1468,8 @@ pub(crate) async fn apply_multi_registry_skills_update(
         let mut applied = 0u32;
 
         for (filename, remote_hash) in &manifest.packs.skills.files {
-            // Path traversal guard: reject filenames containing ".." or absolute paths.
-            // A malicious manifest could use "../../../etc/cron.d/evil" to escape the
-            // skills directory.
-            if filename.contains("..") || Path::new(filename).is_absolute() {
+            // Path traversal guard: string check + component normalization.
+            if !is_safe_skill_path(&target_dir, filename) {
                 tracing::warn!(
                     registry = %reg.name,
                     filename,
@@ -1427,7 +1497,7 @@ pub(crate) async fn apply_multi_registry_skills_update(
                 }
             }
 
-            // Fetch and write the file.
+            // Fetch and write the file, verifying hash matches manifest.
             match fetch_file(
                 &client,
                 &base_url,
@@ -1436,6 +1506,17 @@ pub(crate) async fn apply_multi_registry_skills_update(
             .await
             {
                 Ok(content) => {
+                    let download_hash = bytes_sha256(content.as_bytes());
+                    if download_hash != *remote_hash {
+                        tracing::warn!(
+                            registry = %reg.name,
+                            filename,
+                            expected = %remote_hash,
+                            actual = %download_hash,
+                            "skill download hash mismatch — skipping"
+                        );
+                        continue;
+                    }
                     std::fs::write(&local_file, &content)?;
                     applied += 1;
                 }

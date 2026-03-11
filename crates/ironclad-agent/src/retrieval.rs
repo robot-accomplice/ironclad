@@ -242,6 +242,11 @@ impl MemoryRetriever {
                     chrono::DateTime::parse_from_rfc3339(&ts)
                         .ok()
                         .map(|created| {
+                            // Age in days. Future timestamps (clock skew) yield a
+                            // negative chrono::Duration whose .to_std() returns Err,
+                            // mapping to age=0 (fresh). This is correct: only the
+                            // agent writes to episodic_memory so future-dated entries
+                            // are clock-skew artifacts, not attacker-injectable.
                             let age = (now - created.with_timezone(&chrono::Utc))
                                 .to_std()
                                 .map(|d| d.as_secs_f64() / 86_400.0)
@@ -254,6 +259,13 @@ impl MemoryRetriever {
 
         for result in results.iter_mut() {
             if result.source_table != "episodic_memory" {
+                continue;
+            }
+            if result.source_id.is_empty() {
+                // FTS-only results have no source_id and can't be looked up
+                // in episodic_memory. Apply a conservative default penalty so
+                // they don't bypass decay and outrank properly-aged results.
+                result.similarity *= 0.5;
                 continue;
             }
             if let Some(&age) = age_map.get(&result.source_id) {

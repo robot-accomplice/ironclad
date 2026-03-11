@@ -143,6 +143,10 @@ impl PaymentHandler for WalletPaymentHandler {
         let policy = self.treasury_policy.clone();
         Box::pin(async move {
             // Enforce treasury policy per-payment cap before signing.
+            // NOTE: Only check_per_payment is enforced here because hourly/daily/reserve
+            // checks require aggregate spending state (recent_hourly_total, balance, etc.)
+            // that the 402 handler doesn't track. A full TreasuryGuard with spending
+            // ledger integration would be needed for check_all().
             if let (Some(policy), Some(amount)) =
                 (policy.as_ref(), body.get("amount").and_then(|v| v.as_f64()))
             {

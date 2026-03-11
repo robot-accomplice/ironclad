@@ -159,7 +159,7 @@ fn skeleton_compress(messages: &[UnifiedMessage]) -> Vec<UnifiedMessage> {
         .cloned()
         .collect();
     result.push(UnifiedMessage {
-        role: "system".into(),
+        role: "assistant".into(),
         content: format!("[Conversation Skeleton]\n{}", topics.join("\n")),
         parts: None,
     });
@@ -226,7 +226,9 @@ pub fn build_context(
     let mut messages = Vec::new();
 
     // System prompt is always included — it defines the agent's identity.
-    // History and memories get trimmed if the budget is tight.
+    // If the prompt exceeds the entire budget, truncate it to fit but never
+    // drop it entirely (an agent without identity is worse than one with a
+    // truncated identity).
     let sys_tokens = estimate_tokens(system_prompt);
     if sys_tokens <= budget {
         messages.push(UnifiedMessage {
@@ -235,6 +237,24 @@ pub fn build_context(
             parts: None,
         });
         used += sys_tokens;
+    } else {
+        // Truncate the system prompt to roughly fit the budget.  Each token
+        // averages ~4 chars; we leave a small margin for the token estimator's
+        // over/under-count.
+        let max_chars = budget.saturating_mul(4);
+        let truncated: String = system_prompt.chars().take(max_chars).collect();
+        let truncated_tokens = estimate_tokens(&truncated);
+        messages.push(UnifiedMessage {
+            role: "system".into(),
+            content: truncated,
+            parts: None,
+        });
+        used += truncated_tokens;
+        tracing::warn!(
+            sys_tokens,
+            budget,
+            "system prompt exceeds budget — truncated to fit"
+        );
     }
 
     if !memories.is_empty() {
@@ -385,9 +405,9 @@ pub fn soft_trim(messages: &[UnifiedMessage], config: &PruningConfig) -> Pruning
         if msg_tokens <= available {
             kept.push(msg.clone());
             available = available.saturating_sub(msg_tokens);
-        } else {
-            break;
         }
+        // Skip individual messages that exceed remaining budget rather
+        // than breaking — older, smaller messages may still fit.
     }
     kept.reverse();
 
@@ -773,10 +793,13 @@ mod tests {
         }];
 
         let ctx = build_context(ComplexityLevel::L0, &big_sys, mem, &history);
-        // System prompt is too big -> not included, but history should still be present
-        // Actually: sys_tokens > budget => system prompt is skipped entirely
-        // History might still fit
-        assert!(!ctx.is_empty() || ctx.is_empty()); // just exercise the branch
+        // System prompt is truncated to fit, never dropped entirely.
+        assert!(!ctx.is_empty());
+        assert_eq!(ctx[0].role, "system");
+        // The truncated content must be shorter than the original.
+        assert!(ctx[0].content.len() < big_sys.len());
+        // But still non-empty — agent always gets some identity.
+        assert!(!ctx[0].content.is_empty());
     }
 
     #[test]
@@ -976,9 +999,10 @@ mod tests {
             },
         ];
         let result = skeleton_compress(&msgs);
-        // System message preserved + one skeleton system message
+        // System message preserved + one skeleton assistant message
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].content, "System prompt");
+        assert_eq!(result[1].role, "assistant");
         assert!(result[1].content.contains("[Conversation Skeleton]"));
         assert!(result[1].content.contains("[user]"));
         assert!(result[1].content.contains("[assistant]"));

@@ -209,8 +209,11 @@ pub fn delete_learned_skills_by_names(db: &Database, names: &[String]) -> Result
 }
 
 /// Convenience wrapper that finds and deletes dead skills in one call.
-/// Prefer [`find_dead_learned_skills`] + [`delete_learned_skills_by_names`]
-/// when you need to clean up files between the two phases.
+///
+/// **WARNING:** This only removes DB rows. It does NOT delete the `.md` files
+/// referenced by `skill_md_path`. Callers MUST iterate the returned paths and
+/// remove the files themselves. Prefer [`find_dead_learned_skills`] +
+/// file cleanup + [`delete_learned_skills_by_names`] for the two-phase pattern.
 pub fn prune_dead_learned_skills(
     db: &Database,
     threshold: i64,
