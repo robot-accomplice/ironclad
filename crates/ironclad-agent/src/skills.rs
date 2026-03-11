@@ -85,12 +85,27 @@ impl SkillLoader {
         Self::load_entries(dir, &mut skills)?;
 
         // Recurse into immediate subdirectories (e.g. learned/, custom/).
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    Self::load_entries(&path, &mut skills)?;
+        match std::fs::read_dir(dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        if let Err(e) = Self::load_entries(&path, &mut skills) {
+                            tracing::warn!(
+                                dir = %path.display(),
+                                error = %e,
+                                "failed to load skills from subdirectory, skipping"
+                            );
+                        }
+                    }
                 }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "failed to enumerate skill subdirectories"
+                );
             }
         }
 

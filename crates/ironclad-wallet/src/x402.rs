@@ -53,6 +53,12 @@ impl X402Handler {
             IroncladError::Wallet("missing or invalid 'amount' in payment requirements".into())
         })?;
 
+        if !amount.is_finite() || amount <= 0.0 {
+            return Err(IroncladError::Wallet(format!(
+                "payment amount must be a positive finite number, got {amount}"
+            )));
+        }
+
         let recipient = body
             .get("recipient")
             .and_then(|v| v.as_str())
@@ -207,6 +213,29 @@ mod tests {
         assert!(header.starts_with("x402 "));
         assert!(header.contains("amount=0.05"));
         assert!(header.contains("auth=0x"));
+    }
+
+    #[test]
+    fn parse_payment_requirements_zero_amount() {
+        let body = serde_json::json!({"amount": 0.0, "recipient": "0xabcdef1234567890abcdef1234567890abcdef12", "chain_id": 1});
+        let err = X402Handler::parse_payment_requirements(&body).unwrap_err();
+        assert!(err.to_string().contains("positive finite number"));
+    }
+
+    #[test]
+    fn parse_payment_requirements_negative_amount() {
+        let body = serde_json::json!({"amount": -1.0, "recipient": "0xabcdef1234567890abcdef1234567890abcdef12", "chain_id": 1});
+        let err = X402Handler::parse_payment_requirements(&body).unwrap_err();
+        assert!(err.to_string().contains("positive finite number"));
+    }
+
+    #[test]
+    fn parse_payment_requirements_infinity_amount() {
+        let body = serde_json::json!({"amount": f64::INFINITY, "recipient": "0xabcdef1234567890abcdef1234567890abcdef12", "chain_id": 1});
+        // serde_json::json! cannot represent infinity directly — it becomes null
+        // So this tests the "missing amount" path. The is_finite check guards
+        // against programmatic construction of PaymentRequirements.
+        assert!(X402Handler::parse_payment_requirements(&body).is_err());
     }
 
     #[test]

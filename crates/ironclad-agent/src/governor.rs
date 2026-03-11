@@ -128,6 +128,14 @@ impl SessionGovernor {
         if msgs.len() < 4 {
             return Ok(());
         }
+        // Idempotency guard: skip if a summary was already appended by a prior
+        // compaction pass (e.g. rotation followed by tick expiry on the same session).
+        if msgs
+            .iter()
+            .any(|m| m.role == "system" && m.content.contains("[Conversation Summary"))
+        {
+            return Ok(());
+        }
         let keep_recent = 4usize;
         let trim_end = msgs.len().saturating_sub(keep_recent);
         let trimmed: Vec<UnifiedMessage> = msgs[..trim_end]
@@ -279,11 +287,15 @@ impl SessionGovernor {
         };
 
         // ── 2. Prune dead learned skills ─────────────────────────
+        // Phase 1: find dead rows (DB rows survive if we crash here)
+        // Phase 2: delete .md files on disk
+        // Phase 3: delete DB rows (crash-safe: orphan DB rows are re-pruned next cycle)
         let skills_pruned: i64 =
-            match ironclad_db::learned_skills::prune_dead_learned_skills(db, dead_threshold) {
+            match ironclad_db::learned_skills::find_dead_learned_skills(db, dead_threshold) {
                 Ok(dead) if dead.is_empty() => 0,
                 Ok(dead) => {
                     let count = dead.len() as i64;
+                    // Delete files first so a crash never leaves orphan .md files
                     for (name, md_path) in &dead {
                         if let Some(path) = md_path
                             && let Err(e) = std::fs::remove_file(path)
@@ -295,6 +307,13 @@ impl SessionGovernor {
                             );
                         }
                         tracing::info!(skill = %name, "pruned dead learned skill");
+                    }
+                    // Now safe to remove DB rows
+                    let names: Vec<String> = dead.iter().map(|(n, _)| n.clone()).collect();
+                    if let Err(e) =
+                        ironclad_db::learned_skills::delete_learned_skills_by_names(db, &names)
+                    {
+                        tracing::warn!(error = %e, "failed to delete dead learned skill DB rows");
                     }
                     count
                 }
@@ -605,6 +624,36 @@ mod tests {
         // keep_recent = 4, trim_end = 4 - 4 = 0, trimmed slice is empty -> early return
         let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
         assert_eq!(msgs.len(), 4);
+    }
+
+    #[test]
+    fn compact_before_archive_idempotent_on_double_call() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+        let sid = ironclad_db::sessions::create_new(&db, "compact-idem", None).unwrap();
+
+        for i in 0..6 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            ironclad_db::sessions::append_message(&db, &sid, role, &format!("msg-{i}")).unwrap();
+        }
+
+        // First call should append a summary
+        gov.compact_before_archive(&db, &sid).unwrap();
+        let msgs_after_first = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
+        let summary_count_1 = msgs_after_first
+            .iter()
+            .filter(|m| m.content.contains("[Conversation Summary"))
+            .count();
+        assert_eq!(summary_count_1, 1);
+
+        // Second call should be a no-op (idempotency guard)
+        gov.compact_before_archive(&db, &sid).unwrap();
+        let msgs_after_second = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
+        let summary_count_2 = msgs_after_second
+            .iter()
+            .filter(|m| m.content.contains("[Conversation Summary"))
+            .count();
+        assert_eq!(summary_count_2, 1, "should not append a second summary");
     }
 
     #[test]

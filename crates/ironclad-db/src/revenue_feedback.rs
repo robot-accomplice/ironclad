@@ -16,25 +16,39 @@ pub fn record_revenue_feedback(
     source: &str,
     comment: Option<&str>,
 ) -> Result<String> {
+    if !grade.is_finite() {
+        return Err(IroncladError::Database(
+            "feedback grade must be a finite number".into(),
+        ));
+    }
     let conn = db.conn();
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
     let id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO revenue_feedback (id, opportunity_id, strategy, grade, source, comment) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![id, opportunity_id, strategy, grade, source, comment],
-    )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
-    let touched = conn
+    // Verify the opportunity exists before inserting the feedback row, so we
+    // never create orphan feedback pointing at a deleted opportunity.
+    let touched = tx
         .execute(
             "UPDATE revenue_opportunities SET updated_at = datetime('now') WHERE id = ?1",
             [opportunity_id],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     if touched == 0 {
+        tx.rollback()
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
         return Err(IroncladError::Database(format!(
             "revenue opportunity '{opportunity_id}' not found for feedback touch"
         )));
     }
+    tx.execute(
+        "INSERT INTO revenue_feedback (id, opportunity_id, strategy, grade, source, comment) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, opportunity_id, strategy, grade, source, comment],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.commit()
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
 }
 

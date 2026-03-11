@@ -374,6 +374,28 @@ pub fn settle_revenue_opportunity(
     settled_amount_usdc: f64,
     accounting: &RevenueSettlementAccounting<'_>,
 ) -> Result<SettlementResult> {
+    // Validate tax amount consistency: if a non-zero tax_rate is declared, the
+    // caller-supplied tax_amount_usdc must approximately match rate × net_profit.
+    // Tolerance: 1 cent absolute OR 5% relative, whichever is larger.
+    let net_profit = settled_amount_usdc - accounting.attributable_costs_usdc;
+    if accounting.tax_rate > 0.0 && net_profit > 0.0 {
+        let expected_tax = net_profit * accounting.tax_rate;
+        let abs_diff = (accounting.tax_amount_usdc - expected_tax).abs();
+        let tolerance = (0.01_f64).max(expected_tax * 0.05);
+        if abs_diff > tolerance {
+            return Ok(SettlementResult::WrongState(format!(
+                "tax_amount_usdc ({:.4}) does not match tax_rate ({}) × net_profit ({:.4}) = {:.4}; diff={:.4} exceeds tolerance {:.4}",
+                accounting.tax_amount_usdc,
+                accounting.tax_rate,
+                net_profit,
+                expected_tax,
+                abs_diff,
+                tolerance
+            )));
+        }
+    }
+
+    let settlement_ref = settlement_ref.trim();
     let conn = db.conn();
     let tx = conn
         .unchecked_transaction()
@@ -393,7 +415,7 @@ pub fn settle_revenue_opportunity(
         return Ok(SettlementResult::NotFound);
     };
     if status.eq_ignore_ascii_case(OPPORTUNITY_STATUS_SETTLED)
-        && existing_ref.as_deref() == Some(settlement_ref)
+        && existing_ref.as_deref().map(str::trim) == Some(settlement_ref)
     {
         tx.commit()
             .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -562,5 +584,64 @@ mod tests {
         assert_eq!(row.settlement_ref.as_deref(), Some("tx_1"));
         assert!((row.attributable_costs_usdc - 0.5).abs() < f64::EPSILON);
         assert_eq!(row.tax_destination_wallet.as_deref(), Some("0x123"));
+    }
+
+    #[test]
+    fn settle_rejects_mismatched_tax_amount() {
+        let db = test_db();
+        create_revenue_opportunity(
+            &db,
+            &NewRevenueOpportunity {
+                id: "ro_tax",
+                source: "test",
+                strategy: "micro_bounty",
+                payload_json: "{}",
+                expected_revenue_usdc: 10.0,
+                request_id: None,
+            },
+        )
+        .unwrap();
+        assert!(qualify_revenue_opportunity(&db, "ro_tax", true, Some("ok")).unwrap());
+        assert!(plan_revenue_opportunity(&db, "ro_tax", "{}").unwrap());
+        assert!(mark_revenue_opportunity_fulfilled(&db, "ro_tax", "{}").unwrap());
+        // settled_amount=10, costs=2, net=8, rate=0.1 → expected tax=0.8
+        // But caller supplies tax_amount=0.0 — should be rejected
+        let result = settle_revenue_opportunity(
+            &db,
+            "ro_tax",
+            "tx_bad",
+            10.0,
+            &RevenueSettlementAccounting {
+                attributable_costs_usdc: 2.0,
+                tax_rate: 0.1,
+                tax_amount_usdc: 0.0, // should be ~0.8
+                tax_destination_wallet: Some("0xdest"),
+            },
+        )
+        .unwrap();
+        match result {
+            SettlementResult::WrongState(msg) => {
+                assert!(
+                    msg.contains("tax_amount_usdc"),
+                    "expected tax mismatch error: {msg}"
+                );
+            }
+            other => panic!("expected WrongState, got {other:?}"),
+        }
+        // Correct tax amount should succeed
+        let result = settle_revenue_opportunity(
+            &db,
+            "ro_tax",
+            "tx_good",
+            10.0,
+            &RevenueSettlementAccounting {
+                attributable_costs_usdc: 2.0,
+                tax_rate: 0.1,
+                tax_amount_usdc: 0.8,
+                tax_destination_wallet: Some("0xdest"),
+            },
+        )
+        .unwrap();
+        assert_eq!(result, SettlementResult::Settled);
     }
 }

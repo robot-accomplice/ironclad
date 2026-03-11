@@ -8,8 +8,8 @@ pub fn revenue_strategy_summary(db: &Database) -> Result<Vec<Value>> {
         .prepare(
             "SELECT strategy, COUNT(*) AS total_jobs, \
                     SUM(CASE WHEN status = 'settled' THEN 1 ELSE 0 END) AS settled_jobs, \
-                    SUM(COALESCE(settled_amount_usdc, 0)) AS gross_revenue_usdc, \
-                    SUM(COALESCE(net_profit_usdc, 0)) AS net_profit_usdc, \
+                    SUM(CASE WHEN status = 'settled' THEN COALESCE(settled_amount_usdc, 0) ELSE 0 END) AS gross_revenue_usdc, \
+                    SUM(CASE WHEN status = 'settled' THEN COALESCE(net_profit_usdc, 0) ELSE 0 END) AS net_profit_usdc, \
                     AVG(priority_score) AS avg_priority_score \
              FROM revenue_opportunities \
              GROUP BY strategy \
@@ -159,10 +159,13 @@ fn parse_cycle_seconds(created: &str, settled: &str) -> Option<i64> {
         // Handle fractional seconds or trailing Z
         let sec_str = parts[5].trim_end_matches('Z');
         let sec: i64 = sec_str.split('.').next()?.parse().ok()?;
-        // Approximate epoch seconds (sufficient for cycle-time deltas).
-        // Using a simplified Julian-like computation; exact accuracy isn't critical
-        // since both timestamps use the same formula.
-        let days = (y - 2000) * 365 + (y - 2000) / 4 + (mo - 1) * 30 + d;
+        // Cumulative days per month (non-leap). For delta purposes the leap-year
+        // error is ≤1 day which is acceptable for revenue cycle-time reporting.
+        const CUMULATIVE_DAYS: [i64; 13] =
+            [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365];
+        let mo_idx = (mo as usize).clamp(1, 12);
+        let day_of_year = CUMULATIVE_DAYS[mo_idx - 1] + d;
+        let days = (y - 2000) * 365 + (y - 2000) / 4 + day_of_year;
         Some(days * 86400 + h * 3600 + mi * 60 + sec)
     }
     let c = parse_ts(created)?;
@@ -265,5 +268,52 @@ mod tests {
         let created = "2025-01-15 10:05:00";
         let settled = "2025-01-15 10:00:00";
         assert!(parse_cycle_seconds(created, settled).is_none());
+    }
+
+    #[test]
+    fn parse_cycle_seconds_cross_month_boundary() {
+        // Jan 31 → Feb 1 = exactly 1 day = 86400 seconds
+        let created = "2025-01-31 12:00:00";
+        let settled = "2025-02-01 12:00:00";
+        let result = parse_cycle_seconds(created, settled).unwrap();
+        assert_eq!(result, 86400, "cross-month delta should be exactly 1 day");
+
+        // Jan 15 → Mar 15 = 59 days (31-15=16 in Jan + 28 in Feb + 15 in Mar)
+        let created2 = "2025-01-15 00:00:00";
+        let settled2 = "2025-03-15 00:00:00";
+        let result2 = parse_cycle_seconds(created2, settled2).unwrap();
+        assert_eq!(result2, 59 * 86400, "Jan 15 → Mar 15 should be 59 days");
+    }
+
+    #[test]
+    fn revenue_strategy_summary_excludes_non_settled_amounts() {
+        let db = Database::new(":memory:").unwrap();
+        let conn = db.conn();
+        // Insert a non-settled row that has settled_amount set (data inconsistency)
+        conn.execute(
+            "INSERT INTO revenue_opportunities (id, source, strategy, payload_json, expected_revenue_usdc, status, settled_amount_usdc, net_profit_usdc, priority_score) \
+             VALUES ('ro_phantom','a','phantom_strat','{}',10.0,'intake',10.0,8.0,50.0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO revenue_opportunities (id, source, strategy, payload_json, expected_revenue_usdc, status, settled_amount_usdc, net_profit_usdc, priority_score) \
+             VALUES ('ro_real','b','phantom_strat','{}',5.0,'settled',5.0,4.0,70.0)",
+            [],
+        ).unwrap();
+        drop(conn);
+
+        let rows = revenue_strategy_summary(&db).unwrap();
+        assert_eq!(rows.len(), 1);
+        // Only the settled row's amounts should be summed
+        let gross = rows[0]["gross_revenue_usdc"].as_f64().unwrap();
+        let net = rows[0]["net_profit_usdc"].as_f64().unwrap();
+        assert!(
+            (gross - 5.0).abs() < 0.01,
+            "gross should be 5.0 not 15.0: {gross}"
+        );
+        assert!(
+            (net - 4.0).abs() < 0.01,
+            "net should be 4.0 not 12.0: {net}"
+        );
     }
 }

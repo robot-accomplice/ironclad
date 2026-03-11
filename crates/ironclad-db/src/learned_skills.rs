@@ -158,15 +158,18 @@ pub fn set_learned_skill_md_path(db: &Database, name: &str, path: &str) -> Resul
 
 // ── Hygiene ─────────────────────────────────────────────────────
 
-/// Delete learned skills whose priority has decayed to or below `threshold`.
+/// Find learned skills whose priority has decayed to or below `threshold`.
 ///
-/// Pass `threshold = 0` for the default behaviour (remove only fully-dead
+/// Pass `threshold = 0` for the default behaviour (find only fully-dead
 /// skills).  Raise the threshold to be more aggressive about culling
 /// low-value procedures.
 ///
-/// Returns the names and `skill_md_path`s of deleted rows so the caller
-/// can clean up the corresponding `.md` files on disk.
-pub fn prune_dead_learned_skills(
+/// Returns the names and `skill_md_path`s of matching rows.  The caller
+/// should delete the corresponding `.md` files **first**, then call
+/// [`delete_learned_skills_by_names`] to remove the DB rows — this ordering
+/// ensures a crash between the two steps never leaves orphan `.md` files
+/// (the DB rows survive and will be pruned on the next cycle).
+pub fn find_dead_learned_skills(
     db: &Database,
     threshold: i64,
 ) -> Result<Vec<(String, Option<String>)>> {
@@ -181,14 +184,42 @@ pub fn prune_dead_learned_skills(
         .filter_map(|r| r.ok())
         .collect();
 
-    if !dead.is_empty() {
-        conn.execute(
-            "DELETE FROM learned_skills WHERE priority <= ?1",
-            [threshold],
-        )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    }
+    Ok(dead)
+}
 
+/// Delete learned skills by name.  Intended to be called **after** the
+/// caller has removed the corresponding `.md` files from disk.
+pub fn delete_learned_skills_by_names(db: &Database, names: &[String]) -> Result<()> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    let conn = db.conn();
+    let placeholders: Vec<String> = (1..=names.len()).map(|i| format!("?{i}")).collect();
+    let sql = format!(
+        "DELETE FROM learned_skills WHERE name IN ({})",
+        placeholders.join(", ")
+    );
+    let params: Vec<&dyn rusqlite::types::ToSql> = names
+        .iter()
+        .map(|n| n as &dyn rusqlite::types::ToSql)
+        .collect();
+    conn.execute(&sql, params.as_slice())
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(())
+}
+
+/// Convenience wrapper that finds and deletes dead skills in one call.
+/// Prefer [`find_dead_learned_skills`] + [`delete_learned_skills_by_names`]
+/// when you need to clean up files between the two phases.
+pub fn prune_dead_learned_skills(
+    db: &Database,
+    threshold: i64,
+) -> Result<Vec<(String, Option<String>)>> {
+    let dead = find_dead_learned_skills(db, threshold)?;
+    if !dead.is_empty() {
+        let names: Vec<String> = dead.iter().map(|(n, _)| n.clone()).collect();
+        delete_learned_skills_by_names(db, &names)?;
+    }
     Ok(dead)
 }
 

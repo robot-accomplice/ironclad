@@ -70,6 +70,7 @@ pub mod tools;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
+pub use rusqlite::params_from_iter;
 
 use ironclad_core::{IroncladError, Result};
 

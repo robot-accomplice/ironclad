@@ -346,7 +346,7 @@ fn probe_revenue_control_plane(
                  SET status = 'failed', qualification_reason = COALESCE(qualification_reason, 'mechanic orphan repair: missing linked request'), updated_at = datetime('now') \
                  WHERE request_id IS NOT NULL \
                    AND request_id != '' \
-                   AND status IN ('qualified', 'planned', 'fulfilled') \
+                   AND status IN ('intake', 'qualified', 'planned', 'fulfilled') \
                    AND NOT EXISTS (SELECT 1 FROM service_requests sr WHERE sr.id = request_id)",
                 [],
             )? as i64;

@@ -74,6 +74,14 @@ pub fn detect_candidate_procedures(
     let mut candidates: Vec<CandidateProcedure> = Vec::new();
 
     // Try windows of min_length up to 2×min_length (cap to avoid noise).
+    // Also cap the input to the last 200 tool calls to avoid quadratic blowup
+    // on very long sessions.
+    let max_input = 200;
+    let all_calls = if all_calls.len() > max_input {
+        &all_calls[all_calls.len() - max_input..]
+    } else {
+        &all_calls[..]
+    };
     let max_window = (min_length * 2).min(all_calls.len());
     for window_size in min_length..=max_window {
         for window in all_calls.windows(window_size) {
@@ -178,9 +186,12 @@ pub fn synthesize_skill_md(candidate: &CandidateProcedure) -> String {
             step.tool_name,
             step.status
         ));
-        md.push_str(&format!("   - Input: `{}`\n", step.input_summary));
+        // Escape backticks in input/output to prevent broken inline code fences
+        let safe_input = step.input_summary.replace('`', "'");
+        md.push_str(&format!("   - Input: `{safe_input}`\n"));
         if let Some(ref out) = step.output_summary {
-            md.push_str(&format!("   - Output: `{}`\n", out));
+            let safe_output = out.replace('`', "'");
+            md.push_str(&format!("   - Output: `{safe_output}`\n"));
         }
     }
     md.push('\n');
@@ -195,6 +206,9 @@ pub fn synthesize_skill_md(candidate: &CandidateProcedure) -> String {
 }
 
 /// Write a learned skill to disk under `{skills_dir}/learned/`.
+///
+/// Uses atomic write (write to `.tmp` then rename) so that a concurrent
+/// `SkillLoader` never observes a partially-written `.md` file.
 pub fn write_learned_skill(
     skills_dir: &Path,
     candidate: &CandidateProcedure,
@@ -207,8 +221,16 @@ pub fn write_learned_skill(
 
     let filename = format!("{}.md", sanitize_name(&candidate.name));
     let path = learned_dir.join(&filename);
-    std::fs::write(&path, md_content).map_err(|e| {
-        ironclad_core::IroncladError::Config(format!("failed to write learned skill: {e}"))
+    let tmp_path = learned_dir.join(format!("{filename}.tmp"));
+
+    // Write to temporary file first, then atomically rename into place.
+    std::fs::write(&tmp_path, md_content).map_err(|e| {
+        ironclad_core::IroncladError::Config(format!("failed to write learned skill tmp: {e}"))
+    })?;
+    std::fs::rename(&tmp_path, &path).map_err(|e| {
+        // Clean up tmp on rename failure
+        let _ = std::fs::remove_file(&tmp_path);
+        ironclad_core::IroncladError::Config(format!("failed to rename learned skill: {e}"))
     })?;
     Ok(path)
 }
@@ -230,8 +252,9 @@ pub fn learn_on_close(
         return;
     }
 
-    // Cap enforcement
-    match ironclad_db::learned_skills::count_learned_skills(db) {
+    // Cap enforcement — track remaining capacity to avoid TOCTOU race where
+    // the loop could exceed max_learned_skills by inserting multiple candidates.
+    let remaining_capacity = match ironclad_db::learned_skills::count_learned_skills(db) {
         Ok(count) if count >= config.max_learned_skills => {
             debug!(
                 count,
@@ -240,12 +263,13 @@ pub fn learn_on_close(
             );
             return;
         }
+        Ok(count) => config.max_learned_skills - count,
         Err(e) => {
             warn!(error = %e, "failed to count learned skills");
             return;
         }
-        _ => {}
-    }
+    };
+    let mut new_skills_inserted = 0usize;
 
     // Load tool calls for this session
     let tool_calls = match ironclad_db::tools::get_tool_calls_for_session(db, &session.id) {
@@ -276,16 +300,51 @@ pub fn learn_on_close(
     for candidate in &candidates {
         // Check if already known
         match ironclad_db::learned_skills::get_learned_skill_by_name(db, &candidate.name) {
-            Ok(Some(_existing)) => {
-                // Reinforce existing skill
+            Ok(Some(existing)) => {
+                // Reinforce existing skill (doesn't count against cap)
                 if let Err(e) =
                     ironclad_db::learned_skills::record_learned_skill_success(db, &candidate.name)
                 {
                     warn!(error = %e, name = %candidate.name, "failed to reinforce learned skill");
                 }
+
+                // Self-heal: if a prior run stored the DB row but the .md write
+                // or path-set failed, the record has skill_md_path = NULL.
+                // Re-synthesize the .md so the skill is fully usable.
+                if existing.skill_md_path.is_none() {
+                    let md = synthesize_skill_md(candidate);
+                    match write_learned_skill(skills_dir, candidate, &md) {
+                        Ok(path) => {
+                            let path_str = path.to_string_lossy().to_string();
+                            if let Err(e) = ironclad_db::learned_skills::set_learned_skill_md_path(
+                                db,
+                                &candidate.name,
+                                &path_str,
+                            ) {
+                                warn!(error = %e, name = %candidate.name, "failed to set healed skill md path");
+                            } else {
+                                info!(name = %candidate.name, path = %path_str, "healed learned skill .md");
+                            }
+                        }
+                        Err(e) => {
+                            warn!(error = %e, name = %candidate.name, "failed to heal skill .md write");
+                        }
+                    }
+                }
+
                 debug!(name = %candidate.name, "reinforced existing learned skill");
             }
             Ok(None) => {
+                // Guard: check remaining capacity before inserting new skill
+                if new_skills_inserted >= remaining_capacity {
+                    debug!(
+                        inserted = new_skills_inserted,
+                        remaining = remaining_capacity,
+                        "learned skills cap reached during loop, stopping"
+                    );
+                    break;
+                }
+
                 // New skill: store in DB + write .md file
                 let trigger_tools_json =
                     serde_json::to_string(&candidate.tool_sequence).unwrap_or_else(|_| "[]".into());
@@ -303,8 +362,9 @@ pub fn learn_on_close(
                     warn!(error = %e, name = %candidate.name, "failed to store learned skill");
                     continue;
                 }
+                new_skills_inserted += 1;
 
-                // Synthesise and write .md
+                // Synthesise and write .md (atomic: write to .tmp then rename)
                 let md = synthesize_skill_md(candidate);
                 match write_learned_skill(skills_dir, candidate, &md) {
                     Ok(path) => {
@@ -660,6 +720,99 @@ mod tests {
         assert_eq!(
             ironclad_db::learned_skills::count_learned_skills(&db).unwrap(),
             2
+        );
+    }
+
+    #[test]
+    fn learn_on_close_heals_null_skill_md_path() {
+        let db = ironclad_db::Database::new(":memory:").unwrap();
+        let sid = ironclad_db::sessions::find_or_create(&db, "heal-agent", None).unwrap();
+        let session = ironclad_db::sessions::get_session(&db, &sid)
+            .unwrap()
+            .unwrap();
+
+        // Pre-create a learned skill with NULL skill_md_path (simulates prior
+        // partial write where DB store succeeded but .md write failed).
+        ironclad_db::learned_skills::store_learned_skill(
+            &db,
+            "read-edit-bash",
+            "3-step procedure",
+            r#"["read","edit","bash"]"#,
+            "[]",
+            None,
+        )
+        .unwrap();
+
+        // Verify it starts with NULL path
+        let before = ironclad_db::learned_skills::get_learned_skill_by_name(&db, "read-edit-bash")
+            .unwrap()
+            .unwrap();
+        assert!(
+            before.skill_md_path.is_none(),
+            "precondition: path should be NULL"
+        );
+
+        // Create tool calls that will produce a candidate with the same name
+        {
+            let conn = db.conn();
+            conn.execute(
+                "INSERT INTO turns (id, session_id) VALUES ('ht1', ?1)",
+                [&sid],
+            )
+            .unwrap();
+        }
+        ironclad_db::tools::record_tool_call(
+            &db,
+            "ht1",
+            "read",
+            r#"{"file":"a.rs"}"#,
+            Some("contents"),
+            "success",
+            Some(10),
+        )
+        .unwrap();
+        ironclad_db::tools::record_tool_call(
+            &db,
+            "ht1",
+            "edit",
+            r#"{"file":"a.rs"}"#,
+            Some("ok"),
+            "success",
+            Some(20),
+        )
+        .unwrap();
+        ironclad_db::tools::record_tool_call(
+            &db,
+            "ht1",
+            "bash",
+            r#"{"cmd":"cargo test"}"#,
+            Some("passed"),
+            "success",
+            Some(30),
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = LearningConfig::default();
+        learn_on_close(&db, &config, &session, dir.path());
+
+        // After heal: skill_md_path should now be populated
+        let after = ironclad_db::learned_skills::get_learned_skill_by_name(&db, "read-edit-bash")
+            .unwrap()
+            .unwrap();
+        assert!(
+            after.skill_md_path.is_some(),
+            "skill_md_path should be healed to a real path"
+        );
+
+        // The .md file should actually exist on disk
+        let md_path = std::path::Path::new(after.skill_md_path.as_ref().unwrap());
+        assert!(md_path.exists(), "healed .md file should exist on disk");
+
+        // Success count should have been bumped (reinforced)
+        assert!(
+            after.success_count > before.success_count,
+            "success_count should have been incremented"
         );
     }
 }

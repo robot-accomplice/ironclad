@@ -893,6 +893,9 @@ pub fn run_migrations(db: &Database) -> Result<()> {
         if version == 13 {
             apply_migration_13_idempotent(&tx)
                 .map_err(|e| IroncladError::Database(format!("migration {version}: {e}")))?;
+        } else if version == 22 {
+            apply_migration_22_idempotent(&tx)
+                .map_err(|e| IroncladError::Database(format!("migration {version}: {e}")))?;
         } else {
             tx.execute_batch(sql.trim())
                 .map_err(|e| IroncladError::Database(format!("migration {version}: {e}")))?;
@@ -973,6 +976,36 @@ CREATE INDEX IF NOT EXISTS idx_shadow_routing_turn ON shadow_routing_predictions
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
 
+    Ok(())
+}
+
+/// Migration 022: Skill Registry Protocol — add version/author/registry_source to skills.
+///
+/// Uses `has_column()` guards so it's safe to run even if the embedded schema
+/// already created these columns (fresh install) or if the migration runs twice
+/// (corrupted schema_version).
+fn apply_migration_22_idempotent(conn: &rusqlite::Transaction<'_>) -> Result<()> {
+    if !has_column(conn, "skills", "version")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN version TEXT NOT NULL DEFAULT '0.0.0'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(conn, "skills", "author")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN author TEXT NOT NULL DEFAULT 'local'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(conn, "skills", "registry_source")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN registry_source TEXT NOT NULL DEFAULT 'local'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
     Ok(())
 }
 

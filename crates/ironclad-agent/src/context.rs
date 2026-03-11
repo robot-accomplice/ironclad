@@ -86,8 +86,10 @@ fn selective_trim(messages: &[UnifiedMessage]) -> Vec<UnifiedMessage> {
             if m.content.len() >= 40 {
                 return true;
             }
-            let lower = m.content.to_lowercase();
-            !FILLER.iter().any(|p| lower.contains(p))
+            let lower = m.content.trim().to_lowercase();
+            // Exact match (not substring) so "ok, I updated the schema" isn't
+            // falsely classified as filler.
+            !FILLER.contains(&lower.as_str())
         })
         .cloned()
         .collect()

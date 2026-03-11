@@ -1203,6 +1203,11 @@ async fn apply_skills_update(
 /// falls back to string comparison for non-numeric segments.
 fn semver_gte(local: &str, remote: &str) -> bool {
     fn parse_parts(v: &str) -> Vec<u64> {
+        // Strip leading 'v', build metadata (+…), and pre-release (-…)
+        // so that "1.0.0-rc.1" compares as (1, 0, 0) — same logic as parse_semver.
+        let v = v.trim_start_matches('v');
+        let v = v.split_once('+').map(|(core, _)| core).unwrap_or(v);
+        let v = v.split_once('-').map(|(core, _)| core).unwrap_or(v);
         v.split('.')
             .map(|s| s.parse::<u64>().unwrap_or(0))
             .collect()
@@ -1277,6 +1282,30 @@ pub(crate) async fn apply_multi_registry_skills_update(
 
     println!("\n  {BOLD}Skills (multi-registry){RESET}\n");
 
+    // Show configured registries and prompt before fetching from non-default sources.
+    let non_default: Vec<_> = sorted
+        .iter()
+        .filter(|r| r.enabled && r.name != "default")
+        .collect();
+    if !non_default.is_empty() {
+        for r in &non_default {
+            println!(
+                "    {WARN} Non-default registry: {BOLD}{}{RESET} ({})",
+                r.name, r.url
+            );
+        }
+        if !yes && !confirm_action("Install skills from non-default registries?", false) {
+            println!("    Skipped non-default registries.");
+            // Fall back to default-only.
+            let url = sorted
+                .iter()
+                .find(|r| r.name == "default")
+                .map(|r| r.url.as_str())
+                .unwrap_or(DEFAULT_REGISTRY_URL);
+            return apply_skills_update(yes, url, config_path).await;
+        }
+    }
+
     let client = http_client()?;
     let skills_dir = skills_local_dir(config_path);
     if !skills_dir.exists() {
@@ -1311,7 +1340,7 @@ pub(crate) async fn apply_multi_registry_skills_update(
             .as_ref()
             .map(|s| s.version.as_str())
             .unwrap_or("0.0.0");
-        if reg.name == "default" && semver_gte(installed_version, &manifest.version) {
+        if semver_gte(installed_version, &manifest.version) {
             // Also verify all file hashes still match before declaring up-to-date.
             let all_match = manifest.packs.skills.files.iter().all(|(fname, hash)| {
                 let local = skills_dir.join(fname);
@@ -1342,13 +1371,16 @@ pub(crate) async fn apply_multi_registry_skills_update(
         let mut applied = 0u32;
 
         for (filename, remote_hash) in &manifest.packs.skills.files {
-            // Cross-registry conflict: skip if a higher-priority registry already claimed this file.
-            if let Some(owner) = claimed_files.get(filename)
+            // Cross-registry conflict: key on the resolved file path so that
+            // different namespaced registries writing to different directories
+            // don't falsely collide on the same bare filename.
+            let resolved_key = target_dir.join(filename).to_string_lossy().to_string();
+            if let Some(owner) = claimed_files.get(&resolved_key)
                 && *owner != reg.name
             {
                 continue;
             }
-            claimed_files.insert(filename.clone(), reg.name.clone());
+            claimed_files.insert(resolved_key, reg.name.clone());
 
             let local_file = target_dir.join(filename);
             if local_file.exists() {
@@ -1452,13 +1484,56 @@ pub async fn cmd_update_check(
         None => println!("    {WARN} Could not check crates.io"),
     }
 
-    // Content packs
-    let registry_url = resolve_registry_url(registry_url_override, config_path);
+    // Content packs — resolve all configured registries (multi-registry aware).
+    let registries: Vec<ironclad_core::config::RegistrySource> = if let Some(url) =
+        registry_url_override
+    {
+        // CLI override → single registry.
+        vec![ironclad_core::config::RegistrySource {
+            name: "cli-override".into(),
+            url: url.to_string(),
+            priority: 100,
+            enabled: true,
+        }]
+    } else {
+        std::fs::read_to_string(config_path)
+            .ok()
+            .and_then(|raw| {
+                let table: toml::Value = toml::from_str(&raw).ok()?;
+                let update_val = table.get("update")?.clone();
+                let update_cfg: ironclad_core::config::UpdateConfig = update_val.try_into().ok()?;
+                Some(update_cfg.resolve_registries())
+            })
+            .unwrap_or_else(|| {
+                // Fallback: legacy single-URL resolution.
+                let url = resolve_registry_url(None, config_path);
+                vec![ironclad_core::config::RegistrySource {
+                    name: "default".into(),
+                    url,
+                    priority: 50,
+                    enabled: true,
+                }]
+            })
+    };
+
+    let enabled: Vec<_> = registries.iter().filter(|r| r.enabled).collect();
 
     println!("\n  {BOLD}Content Packs{RESET}");
-    println!("    Registry: {DIM}{registry_url}{RESET}");
+    if enabled.len() == 1 {
+        println!("    Registry: {DIM}{}{RESET}", enabled[0].url);
+    } else {
+        for reg in &enabled {
+            println!("    Registry: {DIM}{}{RESET} ({})", reg.url, reg.name);
+        }
+    }
 
-    match fetch_manifest(&client, &registry_url).await {
+    // Check the primary (first enabled) registry for providers + skills status.
+    let primary_url = enabled
+        .first()
+        .map(|r| r.url.as_str())
+        .unwrap_or(DEFAULT_REGISTRY_URL);
+
+    match fetch_manifest(&client, primary_url).await {
         Ok(manifest) => {
             let state = UpdateState::load();
             println!("    Pack version: {MONO}v{}{RESET}", manifest.version);
@@ -1501,6 +1576,14 @@ pub async fn cmd_update_check(
                 println!(
                     "    {GREEN}\u{25b6}{RESET} Skills: {skills_new} new, {skills_changed} changed, {skills_ok} current"
                 );
+            }
+
+            // Check additional non-default registries for reachability.
+            for reg in enabled.iter().skip(1) {
+                match fetch_manifest(&client, &reg.url).await {
+                    Ok(m) => println!("    {OK} {}: reachable (v{})", reg.name, m.version),
+                    Err(e) => println!("    {WARN} {}: unreachable ({e})", reg.name),
+                }
             }
 
             if let Some(ref providers) = state.installed_content.providers {
@@ -2429,6 +2512,21 @@ def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
         assert!(semver_gte("1.0.0", "1.0"));
         assert!(semver_gte("1.0", "1.0.0"));
         assert!(!semver_gte("1.0", "1.0.1"));
+    }
+
+    #[test]
+    fn semver_gte_strips_prerelease_and_build_metadata() {
+        // Pre-release: "1.0.0-rc.1" should compare as 1.0.0
+        assert!(semver_gte("1.0.0-rc.1", "1.0.0"));
+        assert!(semver_gte("1.0.0", "1.0.0-rc.1"));
+        // Build metadata: "1.0.0+hotfix.1" should compare as 1.0.0
+        assert!(semver_gte("1.0.0+build.42", "1.0.0"));
+        assert!(semver_gte("1.0.0", "1.0.0+build.42"));
+        // Combined: pre-release + build metadata
+        assert!(semver_gte("1.0.0-rc.1+build.42", "1.0.0"));
+        // v prefix
+        assert!(semver_gte("v1.0.0-rc.1", "1.0.0"));
+        assert!(!semver_gte("v0.9.5-beta.1", "0.9.6"));
     }
 
     // ── Multi-registry test ─────────────────────────────────────

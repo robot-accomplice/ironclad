@@ -203,31 +203,65 @@ impl MemoryRetriever {
         results: &mut [ironclad_db::embeddings::SearchResult],
     ) {
         let now = chrono::Utc::now();
-        let conn = db.conn();
+
+        // Batch-query: collect all episodic IDs, look them up in one pass,
+        // then apply decay.  This avoids N separate queries holding the DB
+        // connection open in a loop.
+        let episodic_ids: Vec<&str> = results
+            .iter()
+            .filter(|r| r.source_table == "episodic_memory")
+            .map(|r| r.source_id.as_str())
+            .collect();
+
+        if episodic_ids.is_empty() {
+            return;
+        }
+
+        // Build a HashMap<id, age_days> from a single DB access
+        let age_map: std::collections::HashMap<String, f64> = {
+            let conn = db.conn();
+            let placeholders: Vec<String> =
+                (1..=episodic_ids.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "SELECT id, created_at FROM episodic_memory WHERE id IN ({})",
+                placeholders.join(", ")
+            );
+            let mut stmt = match conn.prepare(&sql) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let rows = match stmt
+                .query_map(ironclad_db::params_from_iter(episodic_ids.iter()), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                }) {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            rows.filter_map(|r| r.ok())
+                .filter_map(|(id, ts)| {
+                    chrono::DateTime::parse_from_rfc3339(&ts)
+                        .ok()
+                        .map(|created| {
+                            let age = (now - created.with_timezone(&chrono::Utc))
+                                .to_std()
+                                .map(|d| d.as_secs_f64() / 86_400.0)
+                                .unwrap_or(0.0);
+                            (id, age)
+                        })
+                })
+                .collect()
+        }; // conn dropped here — DB connection released before mutation loop
 
         for result in results.iter_mut() {
             if result.source_table != "episodic_memory" {
                 continue;
             }
-            // Look up the created_at for this episodic entry
-            let age_days: Option<f64> = conn
-                .query_row(
-                    "SELECT created_at FROM episodic_memory WHERE id = ?1",
-                    [&result.source_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .ok()
-                .and_then(|ts| chrono::DateTime::parse_from_rfc3339(&ts).ok())
-                .map(|created| {
-                    (now - created.with_timezone(&chrono::Utc))
-                        .to_std()
-                        .map(|d| d.as_secs_f64() / 86_400.0)
-                        .unwrap_or(0.0)
-                });
-
-            if let Some(age) = age_days {
+            if let Some(&age) = age_map.get(&result.source_id) {
                 let decay_factor = (0.5_f64).powf(age / self.decay_half_life_days);
-                result.similarity *= decay_factor;
+                // Floor at 0.05 so very old memories remain findable — they
+                // rank lower but never become completely invisible.
+                let clamped = decay_factor.max(0.05);
+                result.similarity *= clamped;
             }
         }
 
