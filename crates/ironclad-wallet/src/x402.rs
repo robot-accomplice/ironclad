@@ -143,10 +143,10 @@ impl PaymentHandler for WalletPaymentHandler {
         let policy = self.treasury_policy.clone();
         Box::pin(async move {
             // Enforce treasury policy per-payment cap before signing.
-            if let Some(ref policy) = policy {
-                if let Some(amount) = body.get("amount").and_then(|v| v.as_f64()) {
-                    policy.check_per_payment(amount)?;
-                }
+            if let (Some(policy), Some(amount)) =
+                (policy.as_ref(), body.get("amount").and_then(|v| v.as_f64()))
+            {
+                policy.check_per_payment(amount)?;
             }
             X402Handler::handle_402(&body, &self.wallet).await
         })
