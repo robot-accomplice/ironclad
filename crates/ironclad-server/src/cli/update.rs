@@ -135,9 +135,19 @@ fn is_safe_skill_path(base_dir: &Path, filename: &str) -> bool {
     if filename.contains("..") || Path::new(filename).is_absolute() {
         return false;
     }
-    // Normalize the joined path using components() to resolve `.` and
+    // Resolve the effective base: canonicalize if possible (resolves symlinks
+    // such as macOS's /var → /private/var), otherwise normalize components.
+    // Using the same effective base for both joining and prefix-checking avoids
+    // false negatives when the original path and canonical path differ.
+    let effective_base = base_dir.canonicalize().unwrap_or_else(|_| {
+        base_dir.components().fold(PathBuf::new(), |mut acc, c| {
+            acc.push(c);
+            acc
+        })
+    });
+    // Join filename to the effective base, then normalize to resolve `.` and
     // multi-component oddities without requiring the file to exist.
-    let joined = base_dir.join(filename);
+    let joined = effective_base.join(filename);
     let normalized: PathBuf = joined.components().fold(PathBuf::new(), |mut acc, c| {
         match c {
             std::path::Component::ParentDir => {
@@ -147,15 +157,7 @@ fn is_safe_skill_path(base_dir: &Path, filename: &str) -> bool {
         }
         acc
     });
-    // If the base_dir itself can be canonicalized (it exists), use that for
-    // the prefix check.  Otherwise, fall back to a component-normalized base.
-    let canonical_base = base_dir.canonicalize().unwrap_or_else(|_| {
-        base_dir.components().fold(PathBuf::new(), |mut acc, c| {
-            acc.push(c);
-            acc
-        })
-    });
-    normalized.starts_with(&canonical_base)
+    normalized.starts_with(&effective_base)
 }
 
 pub fn file_sha256(path: &Path) -> io::Result<String> {
