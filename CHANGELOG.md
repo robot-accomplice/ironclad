@@ -7,18 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-03-11
+
 ### Added
 
+- **Compliance-first self-funding control plane**: Complete revenue opportunity lifecycle (intake → qualify → score → plan → fulfill → settle) with DB-backed restart safety, strategy-level scoring (confidence/effort/risk/priority/recommendation), feedback persistence per opportunity and summary by strategy, configurable post-settlement asset routing (default `PALM_USD`), EVM swap submission with tx-hash tracking and on-chain receipt reconciliation, tax payout lifecycle mirroring swap tasks, and operator-visible accounting (net profit, attributable costs, retained earnings, tax allocation) across API, CLI, and mechanic surfaces.
+- **Revenue mechanic integration**: Mechanic can probe, reconcile, and repair orphaned or stale revenue jobs and swap/tax reconciliation mismatches via `run_gateway_provider_and_revenue_checks` and `run_gateway_integrated_repair_sweep`.
+- **Skills catalog**: `PluginCatalog` with CLI flows (`ironclad skills catalog list/install/activate`) and API endpoints (`GET/POST /api/skills/catalog`, `/install`, `/activate`). Registry manifest fetch from remote URL.
+- **Skill registry protocol**: Migration 022 adds `version`, `author`, `registry_source` columns to skills table. Multi-registry support via `RegistrySource { name, url, priority, enabled }` with backward-compatible fallback from legacy single-URL `registry_url`.
+- **Multi-registry fetch**: Registry sync iterates all configured sources, namespaces skills as `{registry_name}/{skill_name}` for non-local sources, applies semver comparison to skip redundant downloads, and resolves conflicts by registry priority.
 - **Learning loop closure**: Agent now detects repeating multi-step tool sequences on session close and synthesizes reusable SKILL.md procedure files. `learned_skills` table (migration 021) tracks reinforcement history (success/failure counts, priority). `LearningConfig` exposes tuneable thresholds for minimum sequence length, success ratio, priority boost/decay, and skill cap. Inspired by recent work on autonomous tool-use learning in LLM agents ([arXiv:2603.05344](https://arxiv.org/abs/2603.05344)).
 - **Procedural failure recording**: `record_procedural_failure()` (previously dead code in the DB layer) is now called from `ingest_turn()` when tool results indicate failure, closing the procedural memory feedback loop.
 - **Skill priority adjustment**: Governor `tick()` now runs `adjust_learned_skill_priorities()` after episodic decay — learned skills with high success ratios get priority boosts; those with poor ratios get decayed.
 - **Skill subdirectory loading**: `SkillLoader` now recurses into `learned/` subdirectory, loading machine-synthesized skills alongside hand-authored ones.
-- **Skill registry protocol**: Migration 022 adds `version`, `author`, `registry_source` columns to skills table. Multi-registry support via `RegistrySource { name, url, priority, enabled }` with backward-compatible fallback from legacy single-URL `registry_url`.
-- **Multi-registry fetch**: Registry sync iterates all configured sources, namespaces skills as `{registry_name}/{skill_name}` for non-local sources, applies semver comparison to skip redundant downloads, and resolves conflicts by registry priority.
 - **Progressive context compaction**: 5-stage compaction (`Trim` → `Summarize` → `Archive` → `Evict` → `Emergency`) in `compact_before_archive()` with `CompactionStage::from_excess()` selector.
 - **Decay-weighted episodic retrieval**: `rerank_episodic_by_decay()` applies time-based decay at retrieval time, preventing stale context from dominating memory budget.
 - **Instruction anti-fade micro-reminders**: Event-driven system prompt reinforcement at agent decision points to combat instruction-following drift.
 - **x402 autonomous payment**: LLM HTTP client now handles `402 Payment Required` responses with autonomous on-chain payment and request retry.
+- **Homebrew & Winget packaging**: `release.yml` contains complete `update-homebrew` (SHA256 extraction, formula generation, tap push) and `update-winget` (`vedantmgoyal9/winget-releaser@v2`) jobs. Activation requires tap repo creation and secrets provisioning.
 
 ### Changed
 
@@ -38,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Delegation shortcut boundary**: markdown-count shortcut no longer hijacks explicitly delegated prompts, preserving delegation intent handling.
 - **Speculative branch cleanup safety**: introduced RAII speculation slot guards and abort-path tests to guarantee no slot leakage when speculative tasks are canceled.
 - **CLI skill sandbox isolation coverage**: added explicit tests that secret env vars are stripped while only allowlisted runtime vars are propagated under `skills.sandbox_env=true`.
+
+### Note
+
+- **$50 seed exercise deferred**: The revenue infrastructure is proven via integration tests and the seed exercise plan is authored (`docs/releases/v0.9.6-seed-exercise.md`), but the exercise itself is deferred — the economic ecosystem for autonomous bot services is still nascent. The rails are in place; the market is not.
 
 ## [0.9.4] - 2026-03-05
 

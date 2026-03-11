@@ -220,6 +220,8 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.20 Homebrew & Winget Package Manager Distribution
 
+> **Status**: Scaffolded in v0.9.6. `release.yml` contains complete `update-homebrew` (SHA256 extraction, formula generation, tap push) and `update-winget` (`vedantmgoyal9/winget-releaser@v2`) jobs in commented form. Activation requires: (1) create `robot-accomplice/homebrew-ironclad` tap repo, (2) add `HOMEBREW_TAP_PAT` and `WINGET_TOKEN` secrets, (3) uncomment jobs. No code changes needed beyond `release.yml`.
+
 **Current state**: Ironclad distributes pre-built binaries via GitHub Releases (5 targets), crates.io (source install), Docker image, and platform installer scripts (`install.sh`, `install.ps1`). Users on macOS/Linux must use installer scripts or `cargo install`; Windows users must use the PowerShell script or `cargo install`. No native package manager integration exists.
 
 **Target**: One-command installation via native package managers — `brew install ironclad` (macOS/Linux) and `winget install RobotAccomplice.Ironclad` (Windows). Auto-updated on each release with zero manual intervention.
@@ -516,6 +518,8 @@ On first boot, `initialize_db()` populates the hippocampus with all system table
 
 ### 2.14 Skills Catalog (CLI + Dashboard)
 
+> **Status**: Shipped in v0.9.6. `PluginCatalog` with CLI flows (`ironclad skills catalog list/install/activate`) and API endpoints (`GET/POST /api/skills/catalog`, `/install`, `/activate`). Registry manifest fetch from remote URL with JSON parsing.
+
 **Current state**: Skills are loaded from local directories and managed via direct file operations, API calls, and ad hoc toggles. There is no first-party catalog UX for browsing Ironclad-produced skills or batch-installing curated sets.
 
 **Target**: A first-party skills catalog for both CLI and dashboard that lets users browse published Ironclad skills, multi-select items, and perform one-shot download, install, and activation workflows.
@@ -551,6 +555,8 @@ On first boot, `initialize_db()` populates the hippocampus with all system table
 ---
 
 ### 2.18 Compliance-First Self-Funding Portfolio + Profit Taxation
+
+> **Status**: Shipped in v0.9.6. Complete revenue opportunity lifecycle (intake → qualify → score → plan → fulfill → settle) with DB-backed restart safety, strategy-level scoring, feedback persistence, configurable post-settlement asset routing (default `PALM_USD`), EVM swap/tax payout lifecycle with tx-hash tracking and on-chain reconciliation, and operator-visible accounting across API/CLI/mechanic surfaces. $50 seed exercise deferred — infrastructure proven via integration tests; economic ecosystem for autonomous bot services is still nascent.
 
 **Current state**: Ironclad has wallet/treasury controls, transaction tracking, and a service lifecycle foundation, but no first-class self-funding package optimized for legal, low-friction income generation. There is also no built-in mechanism to automatically redirect a configurable share of realized bot profit to the user's Ironclad-affiliated wallet.
 
@@ -630,6 +636,8 @@ Scoring contract reference: `docs/evals/METASCORE_V1_SPEC.md` (spec-only).
 ---
 
 ### 2.21 Skill Registry Protocol
+
+> **Status**: Shipped in v0.9.6. Migration 022 adds `version`, `author`, `registry_source` columns. `RegistrySource` type with multi-registry config, namespace resolution (`{registry_name}/{skill_name}`), semver comparison, priority-based conflict resolution, and backward-compatible single-URL fallback.
 
 **Current state**: Skills are loaded from local directories. `2.14 Skills Catalog` adds CLI/dashboard browse and install for first-party skills, but there is no protocol for community-contributed skill distribution. As agent runtimes mature, ecosystem breadth becomes a key differentiator — a registry protocol enables community participation without centralizing control.
 
