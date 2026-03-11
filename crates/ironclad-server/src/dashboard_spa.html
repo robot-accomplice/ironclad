@@ -6270,7 +6270,7 @@
         { id: 'blockchain', name: 'Blockchain', kind: 'Blockchain', x: 0.82, y: 0.78 },
         { id: 'web', name: 'Web / APIs', kind: 'Tool', x: 0.50, y: 0.12 },
         { id: 'files', name: 'File System', kind: 'Tool', x: 0.50, y: 0.88 },
-        { id: 'shelter', name: 'Idle Bots Warehouse', kind: 'Shelter', x: 0.035, y: 0.50 }
+        { id: 'shelter', name: 'Idle Agents', kind: 'Shelter', x: 0.035, y: 0.50 }
       ];
     }
     var self = this;
@@ -6354,18 +6354,19 @@
     var idleBots = this.bots.filter(function(b) {
       return !b.activeSkill && (b.animState === 'idle' || b.animState === 'walking');
     });
-    var cols = 2;
-    var xGap = 0.03;
-    var yGap = 0.06;
+    // Tight cluster: idle agents pack closely around the station to "disappear"
+    var cols = 3;
+    var xGap = 0.018;
+    var yGap = 0.035;
     for (var i = 0; i < idleBots.length; i++) {
       var b = idleBots[i];
       if (b.currentStation && b.currentStation !== 'standby' && b.currentStation !== 'shelter') continue;
       var col = i % cols;
       var row = Math.floor(i / cols);
-      var x = standby.x + (col === 0 ? -xGap : xGap);
-      var y = standby.y - 0.06 + row * yGap;
-      b.targetX = Math.max(0.005, Math.min(0.13, x));
-      b.targetY = Math.max(0.2, Math.min(0.85, y));
+      var x = standby.x + (col - 1) * xGap;
+      var y = standby.y - 0.02 + row * yGap;
+      b.targetX = Math.max(0.005, Math.min(0.10, x));
+      b.targetY = Math.max(0.25, Math.min(0.80, y));
       b.currentStation = 'shelter';
     }
   };
@@ -6436,7 +6437,7 @@
       var ws = this.stations.find(function(s) { return s.id === bot.currentStation; });
       return ws ? ('Working at ' + ws.name + '.') : 'Working on a task.';
     }
-    if (bot.currentStation === 'standby' || bot.currentStation === 'shelter') return 'Idle in the shelter, waiting for work.';
+    if (bot.currentStation === 'standby' || bot.currentStation === 'shelter') return 'Idle, waiting for the next task.';
     if (bot.animState === 'walking') return 'Moving to the next workstation.';
     return 'Idle and waiting for the next task.';
   };
@@ -6742,7 +6743,9 @@
     var tc = this._themeColors || { surface: '#1e2030', muted: '#71717a', text: '#e4e4e7', aR: 99, aG: 102, aB: 241 };
     var px = bot.x * W, py = bot.y * H, t = this.time, frame = bot.animFrame;
     var isAgent = (bot.role === 'agent');
+    var isSheltered = (bot.currentStation === 'shelter' || bot.currentStation === 'standby') && !bot.activeSkill;
     var scale = isAgent ? 1.0 : 0.7;
+    if (isSheltered) scale *= 0.55;
     var bodyW = isAgent ? 20 : 14, bodyH = isAgent ? 24 : 18;
     var walkBob = (bot.animState === 'walking') ? Math.sin(t * 12) * 2 : 0;
     ctx.save(); ctx.translate(px, py + walkBob); ctx.scale(scale, scale);
@@ -6832,17 +6835,20 @@
       ctx.restore();
     }
 
-    ctx.save();
-    var tagY = -bodyH * 0.3 - (isAgent ? 30 : 20) - (isAgent && bot.subordinates && bot.subordinates.length > 0 ? 10 : 0);
-    ctx.font = 'bold 10px ' + getComputedStyle(document.body).fontFamily; ctx.textAlign = 'center';
-    var nameW = ctx.measureText(bot.name).width + 12;
-    ctx.globalAlpha = 0.88; ctx.fillStyle = tc.surface;
-    ctx.beginPath(); ctx.roundRect(-nameW / 2, tagY - 7, nameW, 14, 7); ctx.fill();
-    ctx.globalAlpha = 1; ctx.strokeStyle = bot.color + '66'; ctx.lineWidth = 1; ctx.stroke();
-    ctx.fillStyle = tc.text; ctx.fillText(bot.name, 0, tagY + 3);
-    var dotColor = bot.state === 'Running' ? '#22c55e' : (bot.state === 'Error' ? '#ef4444' : '#eab308');
-    ctx.fillStyle = dotColor; ctx.beginPath(); ctx.arc(nameW / 2 - 4, tagY, 3, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
+    // Hide name tags for sheltered bots — the station badge shows the count instead
+    if (!isSheltered) {
+      ctx.save();
+      var tagY = -bodyH * 0.3 - (isAgent ? 30 : 20) - (isAgent && bot.subordinates && bot.subordinates.length > 0 ? 10 : 0);
+      ctx.font = 'bold 10px ' + getComputedStyle(document.body).fontFamily; ctx.textAlign = 'center';
+      var nameW = ctx.measureText(bot.name).width + 12;
+      ctx.globalAlpha = 0.88; ctx.fillStyle = tc.surface;
+      ctx.beginPath(); ctx.roundRect(-nameW / 2, tagY - 7, nameW, 14, 7); ctx.fill();
+      ctx.globalAlpha = 1; ctx.strokeStyle = bot.color + '66'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = tc.text; ctx.fillText(bot.name, 0, tagY + 3);
+      var dotColor = bot.state === 'Running' ? '#22c55e' : (bot.state === 'Error' ? '#ef4444' : '#eab308');
+      ctx.fillStyle = dotColor; ctx.beginPath(); ctx.arc(nameW / 2 - 4, tagY, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
 
     if (bot.activeSkill && bot.skillFade > 0) {
       ctx.save();

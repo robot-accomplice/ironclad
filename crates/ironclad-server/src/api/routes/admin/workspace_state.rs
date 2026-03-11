@@ -187,7 +187,7 @@ pub async fn workspace_state(State(state): State<AppState>) -> impl IntoResponse
         json!({ "id": "blockchain", "name": "Blockchain",      "kind": "Blockchain",  "x": 0.82, "y": 0.78 }),
         json!({ "id": "web",        "name": "Web / APIs",      "kind": "Tool",        "x": 0.50, "y": 0.12 }),
         json!({ "id": "files",      "name": "File System",     "kind": "Tool",        "x": 0.50, "y": 0.88 }),
-        json!({ "id": "shelter",    "name": "Shelter",         "kind": "Shelter",     "x": 0.035, "y": 0.50 }),
+        json!({ "id": "shelter",    "name": "Idle Agents",     "kind": "Shelter",     "x": 0.035, "y": 0.50 }),
     ];
 
     let skills = ironclad_db::skills::list_skills(&state.db)
