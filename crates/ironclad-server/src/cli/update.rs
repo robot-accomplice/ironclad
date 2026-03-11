@@ -1188,16 +1188,16 @@ async fn apply_skills_update(
         .await?;
         // Verify downloaded content matches the manifest hash before writing to disk.
         let download_hash = bytes_sha256(remote_content.as_bytes());
-        if let Some(expected) = manifest.packs.skills.files.get(filename) {
-            if download_hash != *expected {
-                tracing::warn!(
-                    filename,
-                    expected,
-                    actual = %download_hash,
-                    "skill download hash mismatch — skipping"
-                );
-                continue;
-            }
+        if let Some(expected) = manifest.packs.skills.files.get(filename)
+            && download_hash != *expected
+        {
+            tracing::warn!(
+                filename,
+                expected,
+                actual = %download_hash,
+                "skill download hash mismatch — skipping"
+            );
+            continue;
         }
         std::fs::write(skills_dir.join(filename), &remote_content)?;
         file_hashes.insert(filename.clone(), download_hash);
@@ -1216,16 +1216,16 @@ async fn apply_skills_update(
 
         // Verify downloaded content matches the manifest hash before offering to the user.
         let download_hash = bytes_sha256(remote_content.as_bytes());
-        if let Some(expected) = manifest.packs.skills.files.get(filename.as_str()) {
-            if download_hash != *expected {
-                tracing::warn!(
-                    filename,
-                    expected,
-                    actual = %download_hash,
-                    "skill download hash mismatch — skipping"
-                );
-                continue;
-            }
+        if let Some(expected) = manifest.packs.skills.files.get(filename.as_str())
+            && download_hash != *expected
+        {
+            tracing::warn!(
+                filename,
+                expected,
+                actual = %download_hash,
+                "skill download hash mismatch — skipping"
+            );
+            continue;
         }
 
         println!();
