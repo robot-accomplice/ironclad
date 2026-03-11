@@ -1481,12 +1481,11 @@ pub(crate) async fn apply_multi_registry_skills_update(
             if let Ok(entries) = std::fs::read_dir(&skills_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_file() {
-                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            if let Ok(hash) = file_sha256(&path) {
-                                file_hashes.insert(name.to_string(), hash);
-                            }
-                        }
+                    if path.is_file()
+                        && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                        && let Ok(hash) = file_sha256(&path)
+                    {
+                        file_hashes.insert(name.to_string(), hash);
                     }
                 }
             }
