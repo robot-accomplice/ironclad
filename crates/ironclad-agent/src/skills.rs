@@ -89,14 +89,14 @@ impl SkillLoader {
             Ok(entries) => {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_dir() {
-                        if let Err(e) = Self::load_entries(&path, &mut skills) {
-                            tracing::warn!(
-                                dir = %path.display(),
-                                error = %e,
-                                "failed to load skills from subdirectory, skipping"
-                            );
-                        }
+                    if path.is_dir()
+                        && let Err(e) = Self::load_entries(&path, &mut skills)
+                    {
+                        tracing::warn!(
+                            dir = %path.display(),
+                            error = %e,
+                            "failed to load skills from subdirectory, skipping"
+                        );
                     }
                 }
             }
