@@ -220,7 +220,7 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.20 Homebrew & Winget Package Manager Distribution
 
-> **Status**: Scaffolded in v0.9.6. `release.yml` contains complete `update-homebrew` (SHA256 extraction, formula generation, tap push) and `update-winget` (`vedantmgoyal9/winget-releaser@v2`) jobs in commented form. Activation requires: (1) create `robot-accomplice/homebrew-ironclad` tap repo, (2) add `HOMEBREW_TAP_PAT` and `WINGET_TOKEN` secrets, (3) uncomment jobs. No code changes needed beyond `release.yml`.
+> **Status**: Shipped in v0.9.6. Tap repo (`robot-accomplice/homebrew-ironclad`), secrets (`HOMEBREW_TAP_PAT`, `WINGET_TOKEN`), and `release.yml` jobs are all in place. First tagged release will exercise the Homebrew formula pipeline; Winget submission goes through Microsoft review on first release.
 
 **Current state**: Ironclad distributes pre-built binaries via GitHub Releases (5 targets), crates.io (source install), Docker image, and platform installer scripts (`install.sh`, `install.ps1`). Users on macOS/Linux must use installer scripts or `cargo install`; Windows users must use the PowerShell script or `cargo install`. No native package manager integration exists.
 
