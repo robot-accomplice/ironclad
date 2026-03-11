@@ -51,8 +51,8 @@ pub fn store_learned_skill(
     let now = Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO learned_skills \
-             (id, name, description, trigger_tools, steps_json, source_session_id, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) \
+             (id, name, description, trigger_tools, steps_json, source_session_id, success_count, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?7) \
          ON CONFLICT(name) DO UPDATE SET \
              description      = excluded.description, \
              trigger_tools    = excluded.trigger_tools, \
@@ -281,7 +281,8 @@ mod tests {
             .expect("should exist");
         assert_eq!(skill.name, "git-commit-push");
         assert_eq!(skill.description, "Commit and push changes");
-        assert_eq!(skill.success_count, 1);
+        // I4 fix: new skills start at success_count = 0 to avoid phantom inflation
+        assert_eq!(skill.success_count, 0);
         assert_eq!(skill.failure_count, 0);
         assert_eq!(skill.priority, 50);
         assert_eq!(skill.source_session_id.as_deref(), Some("session-abc"));
@@ -300,7 +301,7 @@ mod tests {
             .expect("should exist");
         // ON CONFLICT does NOT increment success_count — the governor handles
         // reinforcement separately via record_learned_skill_success.
-        assert_eq!(skill.success_count, 1);
+        assert_eq!(skill.success_count, 0);
         // Description updated to latest
         assert_eq!(skill.description, "Deploy v2");
         // source_session_id updated to latest session
@@ -335,8 +336,8 @@ mod tests {
         let skill = get_learned_skill_by_name(&db, "test-skill")
             .unwrap()
             .expect("should exist");
-        // Initial 1 + 2 more successes
-        assert_eq!(skill.success_count, 3);
+        // Initial 0 + 2 explicit successes (I4 fix: no phantom +1 at creation)
+        assert_eq!(skill.success_count, 2);
         assert_eq!(skill.failure_count, 1);
     }
 

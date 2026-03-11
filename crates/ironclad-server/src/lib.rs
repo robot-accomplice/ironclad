@@ -258,8 +258,11 @@ pub async fn bootstrap_with_config_path(
 
     // Wire x402 payment handler: when the LLM client hits an HTTP 402, it
     // signs an EIP-3009 authorization via the agent wallet and retries.
+    // The treasury policy enforces per-payment caps from configuration.
     let wallet_arc = Arc::new(wallet.wallet.clone());
-    let x402_handler = Arc::new(WalletPaymentHandler::new(wallet_arc));
+    let treasury_policy = ironclad_wallet::treasury::TreasuryPolicy::new(&config.treasury);
+    let x402_handler =
+        Arc::new(WalletPaymentHandler::new(wallet_arc).with_treasury_policy(treasury_policy));
     llm.set_payment_handler(x402_handler);
 
     let a2a = A2aProtocol::new(config.a2a.clone());

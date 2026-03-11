@@ -358,6 +358,11 @@ impl Wallet {
             .ok_or_else(|| IroncladError::Wallet("missing result in RPC response".into()))?
             .trim_start_matches("0x");
 
+        // Some nodes return "0x" (empty hex) for zero-balance accounts.
+        if hex.is_empty() {
+            return Ok(0.0);
+        }
+
         let raw = u128::from_str_radix(hex, 16)
             .map_err(|e| IroncladError::Wallet(format!("failed to parse balance hex: {e}")))?;
 
@@ -406,6 +411,11 @@ impl Wallet {
             .as_str()
             .ok_or_else(|| IroncladError::Wallet("missing result in RPC response".into()))?
             .trim_start_matches("0x");
+
+        // Some nodes return "0x" (empty hex) for zero-balance accounts/tokens.
+        if hex.is_empty() {
+            return Ok(0.0);
+        }
 
         let raw = u128::from_str_radix(hex, 16)
             .map_err(|e| IroncladError::Wallet(format!("failed to parse balance hex: {e}")))?;

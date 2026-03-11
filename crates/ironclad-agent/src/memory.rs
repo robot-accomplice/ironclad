@@ -202,10 +202,22 @@ fn is_tool_failure(result: &str) -> bool {
         return true;
     }
 
-    // Non-zero exit codes from shell tools
+    // Non-zero exit codes from shell tools.
+    // Use word-boundary-aware matching to avoid "exit code 0" matching inside
+    // "exit code 0137" (which would incorrectly classify as success).
     if trimmed.contains("exit code") || trimmed.contains("exit status") {
-        // "exit code 0" is success; anything else is failure
-        if trimmed.contains("exit code 0") || trimmed.contains("exit status 0") {
+        // Exact "exit code 0" / "exit status 0" followed by non-digit → success.
+        // We check that the 0 isn't followed by another digit.
+        let is_zero_exit = |s: &str, prefix: &str| -> bool {
+            if let Some(idx) = s.find(prefix) {
+                let after = &s[idx + prefix.len()..];
+                // next char must be non-digit or end-of-string to be "exit code 0"
+                after.is_empty() || !after.starts_with(|c: char| c.is_ascii_digit())
+            } else {
+                false
+            }
+        };
+        if is_zero_exit(trimmed, "exit code 0") || is_zero_exit(trimmed, "exit status 0") {
             return false;
         }
         return true;

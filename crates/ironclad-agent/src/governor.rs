@@ -452,12 +452,23 @@ impl SessionGovernor {
         }
         drop(stmt);
 
-        for (id, new_importance) in &updates {
-            conn.execute(
-                "UPDATE episodic_memory SET importance = ?1 WHERE id = ?2",
-                (&new_importance, id),
-            )
-            .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+        // Batch all updates in a single transaction to avoid holding the Mutex
+        // across N individual UPDATEs and to ensure atomicity.
+        if !updates.is_empty() {
+            conn.execute_batch("BEGIN")
+                .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+            for (id, new_importance) in &updates {
+                conn.execute(
+                    "UPDATE episodic_memory SET importance = ?1 WHERE id = ?2",
+                    (&new_importance, id),
+                )
+                .map_err(|e| {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    ironclad_core::IroncladError::Database(e.to_string())
+                })?;
+            }
+            conn.execute_batch("COMMIT")
+                .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
         }
 
         Ok(updates.len())

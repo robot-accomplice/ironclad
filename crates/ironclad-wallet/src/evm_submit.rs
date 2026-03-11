@@ -77,7 +77,10 @@ pub async fn get_evm_transaction_receipt_status(
         "params": [tx_hash],
         "id": 1,
     });
-    let resp = reqwest::Client::new()
+    let resp = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| IroncladError::Wallet(format!("HTTP client build failed: {e}")))?
         .post(wallet.rpc_url())
         .json(&rpc_body)
         .send()

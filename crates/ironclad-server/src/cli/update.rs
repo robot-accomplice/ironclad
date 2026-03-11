@@ -1056,6 +1056,12 @@ async fn apply_skills_update(
     let mut up_to_date = Vec::new();
 
     for (filename, remote_hash) in &manifest.packs.skills.files {
+        // Path traversal guard: reject filenames containing ".." or absolute paths.
+        if filename.contains("..") || Path::new(filename).is_absolute() {
+            tracing::warn!(filename, "skipping manifest entry with suspicious path");
+            continue;
+        }
+
         let local_file = skills_dir.join(filename);
         let installed_hash = state
             .installed_content
@@ -1202,18 +1208,26 @@ async fn apply_skills_update(
 /// `local >= remote`, meaning an update is unnecessary.  Gracefully
 /// falls back to string comparison for non-numeric segments.
 fn semver_gte(local: &str, remote: &str) -> bool {
-    fn parse_parts(v: &str) -> Vec<u64> {
-        // Strip leading 'v', build metadata (+…), and pre-release (-…)
-        // so that "1.0.0-rc.1" compares as (1, 0, 0) — same logic as parse_semver.
+    /// Decompose a version string into (core_parts, has_pre_release).
+    /// Per semver, a pre-release version has *lower* precedence than the
+    /// same core version without a pre-release suffix: 1.0.0-rc.1 < 1.0.0.
+    fn parse(v: &str) -> (Vec<u64>, bool) {
         let v = v.trim_start_matches('v');
+        // Strip build metadata first (has no effect on precedence).
         let v = v.split_once('+').map(|(core, _)| core).unwrap_or(v);
-        let v = v.split_once('-').map(|(core, _)| core).unwrap_or(v);
-        v.split('.')
+        // Detect and strip pre-release suffix.
+        let (core, has_pre) = match v.split_once('-') {
+            Some((c, _)) => (c, true),
+            None => (v, false),
+        };
+        let parts = core
+            .split('.')
             .map(|s| s.parse::<u64>().unwrap_or(0))
-            .collect()
+            .collect();
+        (parts, has_pre)
     }
-    let l = parse_parts(local);
-    let r = parse_parts(remote);
+    let (l, l_pre) = parse(local);
+    let (r, r_pre) = parse(remote);
     let len = l.len().max(r.len());
     for i in 0..len {
         let lv = l.get(i).copied().unwrap_or(0);
@@ -1224,7 +1238,13 @@ fn semver_gte(local: &str, remote: &str) -> bool {
             std::cmp::Ordering::Equal => {}
         }
     }
-    true // equal versions
+    // Core versions are equal.  A pre-release is *less than* the release:
+    // local=1.0.0-rc.1 vs remote=1.0.0  →  local < remote  →  false
+    // local=1.0.0      vs remote=1.0.0-rc.1 → local > remote → true
+    if l_pre && !r_pre {
+        return false;
+    }
+    true
 }
 
 /// Apply skills updates from all configured registries.
@@ -1357,6 +1377,11 @@ pub(crate) async fn apply_multi_registry_skills_update(
         }
 
         // Determine the target directory for this registry's files.
+        // Guard: registry names must not contain path traversal components.
+        if reg.name.contains("..") || reg.name.contains('/') || reg.name.contains('\\') {
+            tracing::warn!(registry = %reg.name, "skipping registry with suspicious name");
+            continue;
+        }
         let target_dir = if reg.name == "default" {
             skills_dir.clone()
         } else {
@@ -1371,6 +1396,18 @@ pub(crate) async fn apply_multi_registry_skills_update(
         let mut applied = 0u32;
 
         for (filename, remote_hash) in &manifest.packs.skills.files {
+            // Path traversal guard: reject filenames containing ".." or absolute paths.
+            // A malicious manifest could use "../../../etc/cron.d/evil" to escape the
+            // skills directory.
+            if filename.contains("..") || Path::new(filename).is_absolute() {
+                tracing::warn!(
+                    registry = %reg.name,
+                    filename,
+                    "skipping manifest entry with suspicious path"
+                );
+                continue;
+            }
+
             // Cross-registry conflict: key on the resolved file path so that
             // different namespaced registries writing to different directories
             // don't falsely collide on the same bare filename.
@@ -1426,10 +1463,47 @@ pub(crate) async fn apply_multi_registry_skills_update(
         }
     }
 
-    // Save updated state (record the default registry version).
-    if any_changed {
+    // Save updated state — record file hashes so the next run can skip unchanged files.
+    // Without persisting `installed_content.skills`, the multi-registry path would
+    // re-download every file on every run because it couldn't prove they're up-to-date.
+    {
         let mut state = UpdateState::load();
         state.last_check = now_iso();
+        if any_changed {
+            // Build a merged file-hash map across all registries.
+            let mut file_hashes: HashMap<String, String> = state
+                .installed_content
+                .skills
+                .as_ref()
+                .map(|s| s.files.clone())
+                .unwrap_or_default();
+            // Walk skills_dir to capture current on-disk hashes.
+            if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            if let Ok(hash) = file_sha256(&path) {
+                                file_hashes.insert(name.to_string(), hash);
+                            }
+                        }
+                    }
+                }
+            }
+            // Use the highest manifest version across registries.
+            let max_version = sorted
+                .iter()
+                .filter(|r| r.enabled)
+                .map(|r| r.name.as_str())
+                .next()
+                .unwrap_or("0.0.0");
+            let _ = max_version; // We don't have per-registry versions cached; use "multi".
+            state.installed_content.skills = Some(SkillsRecord {
+                version: "multi".into(),
+                files: file_hashes,
+                installed_at: now_iso(),
+            });
+        }
         state
             .save()
             .inspect_err(
@@ -2516,17 +2590,20 @@ def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
 
     #[test]
     fn semver_gte_strips_prerelease_and_build_metadata() {
-        // Pre-release: "1.0.0-rc.1" should compare as 1.0.0
-        assert!(semver_gte("1.0.0-rc.1", "1.0.0"));
+        // Per semver spec: pre-release has LOWER precedence than its release.
+        // 1.0.0-rc.1 < 1.0.0
+        assert!(!semver_gte("1.0.0-rc.1", "1.0.0"));
         assert!(semver_gte("1.0.0", "1.0.0-rc.1"));
         // Build metadata: "1.0.0+hotfix.1" should compare as 1.0.0
         assert!(semver_gte("1.0.0+build.42", "1.0.0"));
         assert!(semver_gte("1.0.0", "1.0.0+build.42"));
-        // Combined: pre-release + build metadata
-        assert!(semver_gte("1.0.0-rc.1+build.42", "1.0.0"));
-        // v prefix
-        assert!(semver_gte("v1.0.0-rc.1", "1.0.0"));
+        // Combined: pre-release + build metadata → still pre-release < release
+        assert!(!semver_gte("1.0.0-rc.1+build.42", "1.0.0"));
+        // v prefix with pre-release
+        assert!(!semver_gte("v1.0.0-rc.1", "1.0.0"));
         assert!(!semver_gte("v0.9.5-beta.1", "0.9.6"));
+        // Two pre-releases with same core version — both are pre-release, so equal core → true
+        assert!(semver_gte("1.0.0-rc.2", "1.0.0-rc.1"));
     }
 
     // ── Multi-registry test ─────────────────────────────────────

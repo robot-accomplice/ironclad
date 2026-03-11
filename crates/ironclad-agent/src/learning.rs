@@ -100,8 +100,9 @@ pub fn detect_candidate_procedures(
                 continue;
             }
 
-            let name = tool_seq.join("-");
-            // De-duplicate: skip if we already captured a candidate with same name.
+            // Use sanitized name as the dedup key — this matches the DB/filename key
+            // so two raw names that sanitize to the same string are correctly deduped.
+            let name = sanitize_name(&tool_seq.join("-"));
             if candidates.iter().any(|c| c.name == name) {
                 continue;
             }
@@ -161,10 +162,11 @@ pub fn synthesize_skill_md(candidate: &CandidateProcedure) -> String {
         "description: \"{}\"\n",
         candidate.description.replace('"', "'")
     ));
-    // triggers as YAML list
+    // triggers as YAML list — quote values to handle special chars in tool names
+    // (e.g. "mcp:read_file", "[bash]", "tool/sub")
     md.push_str("triggers:\n");
     for t in &triggers {
-        md.push_str(&format!("  - {t}\n"));
+        md.push_str(&format!("  - \"{}\"\n", t.replace('"', "'")));
     }
     md.push_str("priority: 50\n");
     md.push_str("version: \"0.0.1\"\n");
@@ -408,7 +410,8 @@ fn truncate(s: &str, max_len: usize) -> String {
 }
 
 fn sanitize_name(name: &str) -> String {
-    name.chars()
+    let raw: String = name
+        .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '-' || c == '_' {
                 c
@@ -417,7 +420,21 @@ fn sanitize_name(name: &str) -> String {
             }
         })
         .collect::<String>()
-        .to_lowercase()
+        .to_lowercase();
+
+    // Collapse runs of hyphens, trim leading/trailing hyphens, and provide
+    // a fallback so we never produce an empty or hidden filename.
+    let collapsed: String = raw
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    if collapsed.is_empty() {
+        "unknown-skill".to_string()
+    } else {
+        collapsed
+    }
 }
 
 fn distinct_tools_display(seq: &[String]) -> String {
@@ -574,7 +591,7 @@ mod tests {
         assert!(md.contains("---"), "expected YAML frontmatter delimiter");
         assert!(md.contains("name: read-edit-bash"));
         assert!(
-            md.contains("triggers:") && md.contains("  - read"),
+            md.contains("triggers:") && md.contains("  - \"read\""),
             "expected YAML triggers list"
         );
         assert!(md.contains("## Steps"));

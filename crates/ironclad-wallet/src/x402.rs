@@ -29,6 +29,18 @@ impl X402Handler {
 
     pub async fn handle_402(response_body: &serde_json::Value, wallet: &Wallet) -> Result<String> {
         let requirements = Self::parse_payment_requirements(response_body)?;
+
+        // Validate that the requested chain_id matches the wallet's configured chain.
+        // Without this check, a malicious server could extract a valid payment signature
+        // for an arbitrary chain.
+        if requirements.chain_id != wallet.chain_id() {
+            return Err(IroncladError::Wallet(format!(
+                "payment chain_id {} does not match wallet chain_id {}",
+                requirements.chain_id,
+                wallet.chain_id()
+            )));
+        }
+
         debug!(
             amount = requirements.amount,
             recipient = %requirements.recipient,
@@ -103,11 +115,21 @@ impl Default for X402Handler {
 /// direct dependency on this crate.
 pub struct WalletPaymentHandler {
     wallet: Arc<Wallet>,
+    treasury_policy: Option<crate::treasury::TreasuryPolicy>,
 }
 
 impl WalletPaymentHandler {
     pub fn new(wallet: Arc<Wallet>) -> Self {
-        Self { wallet }
+        Self {
+            wallet,
+            treasury_policy: None,
+        }
+    }
+
+    /// Attach a treasury policy to enforce per-payment caps from configuration.
+    pub fn with_treasury_policy(mut self, policy: crate::treasury::TreasuryPolicy) -> Self {
+        self.treasury_policy = Some(policy);
+        self
     }
 }
 
@@ -118,7 +140,16 @@ impl PaymentHandler for WalletPaymentHandler {
     ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>> {
         // Clone the body so the future only borrows `&self` (the `'_` lifetime).
         let body = response_body.clone();
-        Box::pin(async move { X402Handler::handle_402(&body, &self.wallet).await })
+        let policy = self.treasury_policy.clone();
+        Box::pin(async move {
+            // Enforce treasury policy per-payment cap before signing.
+            if let Some(ref policy) = policy {
+                if let Some(amount) = body.get("amount").and_then(|v| v.as_f64()) {
+                    policy.check_per_payment(amount)?;
+                }
+            }
+            X402Handler::handle_402(&body, &self.wallet).await
+        })
     }
 }
 
@@ -258,5 +289,24 @@ mod tests {
         let handler = X402Handler::new();
         let cloned = handler.clone();
         let _ = format!("{:?}", cloned);
+    }
+
+    #[tokio::test]
+    async fn handle_402_rejects_wrong_chain_id() {
+        let dir = TempDir::new().unwrap();
+        let config = WalletConfig {
+            path: dir.path().join("wallet.json"),
+            chain_id: 8453,
+            rpc_url: "https://mainnet.base.org".into(),
+        };
+        let wallet = Wallet::load_or_generate(&config).await.unwrap();
+        // Request payment on chain_id 1 (Ethereum mainnet) while wallet is configured for 8453 (Base)
+        let body = serde_json::json!({
+            "amount": 0.05,
+            "recipient": "0xabcdef1234567890abcdef1234567890abcdef12",
+            "chain_id": 1
+        });
+        let err = X402Handler::handle_402(&body, &wallet).await.unwrap_err();
+        assert!(err.to_string().contains("does not match wallet chain_id"));
     }
 }
