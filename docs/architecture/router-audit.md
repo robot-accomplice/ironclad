@@ -116,7 +116,7 @@ sequenceDiagram
 
 ### Pass
 
-- Router supports three configured modes: `primary`, `metascore`, and `heuristic` (`heuristic` currently aliases metascore behavior).
+- Router supports two configured runtime modes: `primary` and `metascore`. Legacy `heuristic` configs are migrated by update/mechanic before runtime load.
 - Complexity-aware path applies `local_first`, breaker filtering, and capacity filtering.
 - Cost-aware path applies breaker and capacity pruning before cost choice.
 - Runtime model override (`set_override`) cleanly short-circuits both selection modes.

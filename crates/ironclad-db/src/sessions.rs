@@ -597,7 +597,12 @@ pub fn backfill_nicknames(db: &Database) -> Result<usize> {
     let rows: Vec<(String, Option<String>)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|e| IroncladError::Database(e.to_string()))?
-        .filter_map(|r| r.ok())
+        .filter_map(|r| {
+            r.inspect_err(
+                |e| tracing::warn!(error = %e, "sessions: skipping malformed session row"),
+            )
+            .ok()
+        })
         .collect();
 
     let count = rows.len();

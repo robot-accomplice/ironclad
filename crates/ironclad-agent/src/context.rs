@@ -1,5 +1,185 @@
 use ironclad_llm::format::UnifiedMessage;
 
+// ── Progressive compaction stages (OPENDEV pattern) ────────────────────────
+
+/// Progressive compaction stages, ordered from least to most aggressive.
+///
+/// The OPENDEV paper demonstrates that staged compression outperforms
+/// single-shot summarization because each stage preserves strictly more
+/// information than the next, allowing the system to use the *least
+/// aggressive* stage that fits the token budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CompactionStage {
+    /// Stage 0: Full messages, no compression.
+    Verbatim,
+    /// Stage 1: Drop social filler (greetings, acks) but keep substantive content.
+    SelectiveTrim,
+    /// Stage 2: Apply entropy-based compression via `PromptCompressor` (~60% ratio).
+    SemanticCompress,
+    /// Stage 3: Reduce each message to its topic sentence.
+    TopicExtract,
+    /// Stage 4: Collapse entire conversation to a structural outline.
+    Skeleton,
+}
+
+impl CompactionStage {
+    /// Choose compaction stage based on how far over budget the content is.
+    ///
+    /// `excess_ratio` = current_tokens / target_tokens.
+    /// A ratio of 1.0 means exactly at budget; >1.0 means over.
+    pub fn from_excess(excess_ratio: f64) -> Self {
+        if excess_ratio <= 1.0 {
+            Self::Verbatim
+        } else if excess_ratio <= 1.5 {
+            Self::SelectiveTrim
+        } else if excess_ratio <= 2.5 {
+            Self::SemanticCompress
+        } else if excess_ratio <= 4.0 {
+            Self::TopicExtract
+        } else {
+            Self::Skeleton
+        }
+    }
+}
+
+/// Apply progressive compaction to a slice of messages at the requested stage.
+///
+/// System messages are always preserved. Higher stages produce shorter output.
+pub fn compact_to_stage(
+    messages: &[UnifiedMessage],
+    stage: CompactionStage,
+) -> Vec<UnifiedMessage> {
+    match stage {
+        CompactionStage::Verbatim => messages.to_vec(),
+        CompactionStage::SelectiveTrim => selective_trim(messages),
+        CompactionStage::SemanticCompress => semantic_compress(messages),
+        CompactionStage::TopicExtract => topic_extract(messages),
+        CompactionStage::Skeleton => skeleton_compress(messages),
+    }
+}
+
+/// Stage 1: Drop messages that are pure social filler.
+fn selective_trim(messages: &[UnifiedMessage]) -> Vec<UnifiedMessage> {
+    const FILLER: &[&str] = &[
+        "hello",
+        "hi",
+        "hey",
+        "thanks",
+        "thank you",
+        "ok",
+        "okay",
+        "sure",
+        "got it",
+        "sounds good",
+        "no problem",
+        "np",
+        "ack",
+        "roger",
+    ];
+    messages
+        .iter()
+        .filter(|m| {
+            if m.role == "system" {
+                return true;
+            }
+            // Keep any message with substantive length
+            if m.content.len() >= 40 {
+                return true;
+            }
+            let lower = m.content.trim().to_lowercase();
+            // Exact match (not substring) so "ok, I updated the schema" isn't
+            // falsely classified as filler.
+            !FILLER.contains(&lower.as_str())
+        })
+        .cloned()
+        .collect()
+}
+
+/// Stage 2: Entropy-based compression on non-system messages ≥100 chars.
+fn semantic_compress(messages: &[UnifiedMessage]) -> Vec<UnifiedMessage> {
+    use ironclad_llm::compression::PromptCompressor;
+    let compressor = PromptCompressor::new(0.6);
+    messages
+        .iter()
+        .map(|m| {
+            if m.role == "system" || m.content.len() < 100 {
+                m.clone()
+            } else {
+                UnifiedMessage {
+                    role: m.role.clone(),
+                    content: compressor.compress(&m.content),
+                    parts: None,
+                }
+            }
+        })
+        .collect()
+}
+
+/// Stage 3: Reduce each non-system message to its topic sentence.
+fn topic_extract(messages: &[UnifiedMessage]) -> Vec<UnifiedMessage> {
+    messages
+        .iter()
+        .map(|m| {
+            if m.role == "system" {
+                m.clone()
+            } else {
+                UnifiedMessage {
+                    role: m.role.clone(),
+                    content: extract_topic_sentence(&m.content),
+                    parts: None,
+                }
+            }
+        })
+        .collect()
+}
+
+/// Stage 4: Collapse all non-system messages into a single skeleton outline.
+fn skeleton_compress(messages: &[UnifiedMessage]) -> Vec<UnifiedMessage> {
+    let topics: Vec<String> = messages
+        .iter()
+        .filter(|m| m.role != "system")
+        .map(|m| {
+            let topic = extract_topic_sentence(&m.content);
+            format!("[{}] {}", m.role, topic)
+        })
+        .filter(|line| line.len() > 10)
+        .collect();
+
+    if topics.is_empty() {
+        return messages
+            .iter()
+            .filter(|m| m.role == "system")
+            .cloned()
+            .collect();
+    }
+
+    let mut result: Vec<UnifiedMessage> = messages
+        .iter()
+        .filter(|m| m.role == "system")
+        .cloned()
+        .collect();
+    result.push(UnifiedMessage {
+        role: "assistant".into(),
+        content: format!("[Conversation Skeleton]\n{}", topics.join("\n")),
+        parts: None,
+    });
+    result
+}
+
+/// Extract the first sentence (up to 120 chars) from text.
+fn extract_topic_sentence(text: &str) -> String {
+    let end = text
+        .find(". ")
+        .or_else(|| text.find(".\n"))
+        .or_else(|| text.find('?'))
+        .or_else(|| text.find('!'))
+        .map(|i| i + 1)
+        .unwrap_or_else(|| text.len().min(120));
+    text[..end.min(text.len())].trim().to_string()
+}
+
+// ── Complexity levels & context assembly ─────────────────────────────────────
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComplexityLevel {
     L0,
@@ -46,7 +226,9 @@ pub fn build_context(
     let mut messages = Vec::new();
 
     // System prompt is always included — it defines the agent's identity.
-    // History and memories get trimmed if the budget is tight.
+    // If the prompt exceeds the entire budget, truncate it to fit but never
+    // drop it entirely (an agent without identity is worse than one with a
+    // truncated identity).
     let sys_tokens = estimate_tokens(system_prompt);
     if sys_tokens <= budget {
         messages.push(UnifiedMessage {
@@ -55,6 +237,24 @@ pub fn build_context(
             parts: None,
         });
         used += sys_tokens;
+    } else {
+        // Truncate the system prompt to roughly fit the budget.  Each token
+        // averages ~4 chars; we leave a small margin for the token estimator's
+        // over/under-count.
+        let max_chars = budget.saturating_mul(4);
+        let truncated: String = system_prompt.chars().take(max_chars).collect();
+        let truncated_tokens = estimate_tokens(&truncated);
+        messages.push(UnifiedMessage {
+            role: "system".into(),
+            content: truncated,
+            parts: None,
+        });
+        used += truncated_tokens;
+        tracing::warn!(
+            sys_tokens,
+            budget,
+            "system prompt exceeds budget — truncated to fit"
+        );
     }
 
     if !memories.is_empty() {
@@ -98,6 +298,40 @@ pub fn build_context(
     }
 
     messages
+}
+
+/// Inject an instruction anti-fade micro-reminder into the message list.
+///
+/// The OPENDEV paper shows that LLM instruction-following degrades as
+/// conversation length grows — the system prompt fades from the model's
+/// effective attention. This function injects a compact distillation of
+/// key directives just before the final user message when the conversation
+/// exceeds `ANTI_FADE_TURN_THRESHOLD` non-system turns.
+///
+/// Returns `true` if a reminder was injected, `false` otherwise.
+pub fn inject_instruction_reminder(messages: &mut Vec<UnifiedMessage>, reminder: &str) -> bool {
+    let non_system_turns = messages.iter().filter(|m| m.role != "system").count();
+    if non_system_turns < crate::prompt::ANTI_FADE_TURN_THRESHOLD {
+        return false;
+    }
+
+    // Find the last user message and inject the reminder just before it.
+    // This puts the reminder in the "recency hotspot" where it most influences
+    // the model's next generation.
+    let insert_pos = messages
+        .iter()
+        .rposition(|m| m.role == "user")
+        .unwrap_or(messages.len());
+
+    messages.insert(
+        insert_pos,
+        UnifiedMessage {
+            role: "system".into(),
+            content: reminder.to_string(),
+            parts: None,
+        },
+    );
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -171,9 +405,9 @@ pub fn soft_trim(messages: &[UnifiedMessage], config: &PruningConfig) -> Pruning
         if msg_tokens <= available {
             kept.push(msg.clone());
             available = available.saturating_sub(msg_tokens);
-        } else {
-            break;
         }
+        // Skip individual messages that exceed remaining budget rather
+        // than breaking — older, smaller messages may still fit.
     }
     kept.reverse();
 
@@ -559,10 +793,13 @@ mod tests {
         }];
 
         let ctx = build_context(ComplexityLevel::L0, &big_sys, mem, &history);
-        // System prompt is too big -> not included, but history should still be present
-        // Actually: sys_tokens > budget => system prompt is skipped entirely
-        // History might still fit
-        assert!(!ctx.is_empty() || ctx.is_empty()); // just exercise the branch
+        // System prompt is truncated to fit, never dropped entirely.
+        assert!(!ctx.is_empty());
+        assert_eq!(ctx[0].role, "system");
+        // The truncated content must be shorter than the original.
+        assert!(ctx[0].content.len() < big_sys.len());
+        // But still non-empty — agent always gets some identity.
+        assert!(!ctx[0].content.is_empty());
     }
 
     #[test]
@@ -615,5 +852,327 @@ mod tests {
     #[test]
     fn count_tokens_empty() {
         assert_eq!(count_tokens(&[]), 0);
+    }
+
+    // ── CompactionStage tests ──────────────────────────────────────────
+
+    #[test]
+    fn compaction_stage_from_excess_boundaries() {
+        assert_eq!(CompactionStage::from_excess(0.5), CompactionStage::Verbatim);
+        assert_eq!(CompactionStage::from_excess(1.0), CompactionStage::Verbatim);
+        assert_eq!(
+            CompactionStage::from_excess(1.01),
+            CompactionStage::SelectiveTrim
+        );
+        assert_eq!(
+            CompactionStage::from_excess(1.5),
+            CompactionStage::SelectiveTrim
+        );
+        assert_eq!(
+            CompactionStage::from_excess(1.51),
+            CompactionStage::SemanticCompress
+        );
+        assert_eq!(
+            CompactionStage::from_excess(2.5),
+            CompactionStage::SemanticCompress
+        );
+        assert_eq!(
+            CompactionStage::from_excess(2.51),
+            CompactionStage::TopicExtract
+        );
+        assert_eq!(
+            CompactionStage::from_excess(4.0),
+            CompactionStage::TopicExtract
+        );
+        assert_eq!(
+            CompactionStage::from_excess(4.01),
+            CompactionStage::Skeleton
+        );
+        assert_eq!(
+            CompactionStage::from_excess(100.0),
+            CompactionStage::Skeleton
+        );
+    }
+
+    #[test]
+    fn compaction_stage_ordering() {
+        assert!(CompactionStage::Verbatim < CompactionStage::SelectiveTrim);
+        assert!(CompactionStage::SelectiveTrim < CompactionStage::SemanticCompress);
+        assert!(CompactionStage::SemanticCompress < CompactionStage::TopicExtract);
+        assert!(CompactionStage::TopicExtract < CompactionStage::Skeleton);
+    }
+
+    #[test]
+    fn selective_trim_removes_filler() {
+        let msgs = vec![
+            UnifiedMessage {
+                role: "system".into(),
+                content: "sys prompt".into(),
+                parts: None,
+            },
+            UnifiedMessage {
+                role: "user".into(),
+                content: "hello".into(),
+                parts: None,
+            },
+            UnifiedMessage {
+                role: "assistant".into(),
+                content: "ok".into(),
+                parts: None,
+            },
+            UnifiedMessage {
+                role: "user".into(),
+                content: "Please analyze the data and find anomalies in the revenue stream".into(),
+                parts: None,
+            },
+            UnifiedMessage {
+                role: "assistant".into(),
+                content: "thanks".into(),
+                parts: None,
+            },
+        ];
+        let result = selective_trim(&msgs);
+        // System message always kept, substantive user message kept (>=40 chars),
+        // filler "hello", "ok", "thanks" dropped
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].role, "system");
+        assert!(result[1].content.contains("analyze the data"));
+    }
+
+    #[test]
+    fn selective_trim_keeps_all_long_messages() {
+        let msgs = vec![
+            UnifiedMessage {
+                role: "user".into(),
+                content: "This is a long enough message that should never be trimmed away".into(),
+                parts: None,
+            },
+            UnifiedMessage {
+                role: "assistant".into(),
+                content: "I agree, this response is also long enough to stay around".into(),
+                parts: None,
+            },
+        ];
+        let result = selective_trim(&msgs);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn topic_extract_takes_first_sentence() {
+        let msgs = vec![
+            UnifiedMessage {
+                role: "system".into(),
+                content: "You are helpful.".into(),
+                parts: None,
+            },
+            UnifiedMessage {
+                role: "user".into(),
+                content:
+                    "Deploy the model to production. Then run the test suite. Finally update docs."
+                        .into(),
+                parts: None,
+            },
+        ];
+        let result = topic_extract(&msgs);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].content, "You are helpful."); // system preserved
+        assert_eq!(result[1].content, "Deploy the model to production."); // first sentence
+    }
+
+    #[test]
+    fn skeleton_compress_creates_outline() {
+        let msgs = vec![
+            UnifiedMessage {
+                role: "system".into(),
+                content: "System prompt".into(),
+                parts: None,
+            },
+            UnifiedMessage {
+                role: "user".into(),
+                content: "How does authentication work in this app?".into(),
+                parts: None,
+            },
+            UnifiedMessage {
+                role: "assistant".into(),
+                content: "Authentication uses JWT tokens with a 24-hour expiry. The flow starts at the login endpoint.".into(),
+                parts: None,
+            },
+        ];
+        let result = skeleton_compress(&msgs);
+        // System message preserved + one skeleton assistant message
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].content, "System prompt");
+        assert_eq!(result[1].role, "assistant");
+        assert!(result[1].content.contains("[Conversation Skeleton]"));
+        assert!(result[1].content.contains("[user]"));
+        assert!(result[1].content.contains("[assistant]"));
+    }
+
+    #[test]
+    fn skeleton_compress_empty_non_system() {
+        let msgs = vec![UnifiedMessage {
+            role: "system".into(),
+            content: "sys".into(),
+            parts: None,
+        }];
+        let result = skeleton_compress(&msgs);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].role, "system");
+    }
+
+    #[test]
+    fn compact_to_stage_verbatim_is_identity() {
+        let msgs = vec![
+            UnifiedMessage {
+                role: "user".into(),
+                content: "test".into(),
+                parts: None,
+            },
+            UnifiedMessage {
+                role: "assistant".into(),
+                content: "resp".into(),
+                parts: None,
+            },
+        ];
+        let result = compact_to_stage(&msgs, CompactionStage::Verbatim);
+        assert_eq!(result.len(), msgs.len());
+        assert_eq!(result[0].content, "test");
+        assert_eq!(result[1].content, "resp");
+    }
+
+    #[test]
+    fn compact_to_stage_dispatches_correctly() {
+        let msgs = vec![
+            UnifiedMessage {
+                role: "user".into(),
+                content: "hi".into(),
+                parts: None,
+            },
+            UnifiedMessage {
+                role: "user".into(),
+                content: "Analyze the market data and identify trends in revenue growth over Q3"
+                    .into(),
+                parts: None,
+            },
+        ];
+        // SelectiveTrim should remove the "hi" filler
+        let trimmed = compact_to_stage(&msgs, CompactionStage::SelectiveTrim);
+        assert_eq!(trimmed.len(), 1);
+        assert!(trimmed[0].content.contains("Analyze"));
+    }
+
+    #[test]
+    fn extract_topic_sentence_with_period() {
+        assert_eq!(
+            extract_topic_sentence("First sentence. Second sentence. Third."),
+            "First sentence."
+        );
+    }
+
+    #[test]
+    fn extract_topic_sentence_with_question() {
+        assert_eq!(
+            extract_topic_sentence("What is this? More details here."),
+            "What is this?"
+        );
+    }
+
+    #[test]
+    fn extract_topic_sentence_no_punctuation() {
+        let short = "Just some text without ending";
+        assert_eq!(extract_topic_sentence(short), short);
+    }
+
+    #[test]
+    fn extract_topic_sentence_very_long() {
+        let long = "x".repeat(200);
+        let result = extract_topic_sentence(&long);
+        assert!(result.len() <= 120);
+    }
+
+    // ── Anti-fade injection tests ───────────────────────────────────────
+
+    fn make_msg(role: &str, content: &str) -> UnifiedMessage {
+        UnifiedMessage {
+            role: role.into(),
+            content: content.into(),
+            parts: None,
+        }
+    }
+
+    #[test]
+    fn inject_reminder_skips_short_conversations() {
+        let mut msgs = vec![
+            make_msg("system", "You are helpful."),
+            make_msg("user", "Hello"),
+            make_msg("assistant", "Hi!"),
+            make_msg("user", "How are you?"),
+            make_msg("assistant", "Good, thanks!"),
+        ];
+        // Only 4 non-system turns, below threshold of 8
+        let injected = inject_instruction_reminder(&mut msgs, "[Reminder] Be helpful.");
+        assert!(!injected);
+        assert_eq!(msgs.len(), 5);
+    }
+
+    #[test]
+    fn inject_reminder_fires_for_long_conversations() {
+        let mut msgs = vec![make_msg("system", "You are helpful.")];
+        // Add 10 user/assistant pairs (20 non-system turns)
+        for i in 0..10 {
+            msgs.push(make_msg("user", &format!("question {i}")));
+            msgs.push(make_msg("assistant", &format!("answer {i}")));
+        }
+        let len_before = msgs.len();
+        let injected = inject_instruction_reminder(&mut msgs, "[Reminder] Always be thorough.");
+        assert!(injected);
+        assert_eq!(msgs.len(), len_before + 1);
+
+        // The reminder should be inserted just before the last user message
+        let last_user_idx = msgs.iter().rposition(|m| m.role == "user").unwrap();
+        assert_eq!(msgs[last_user_idx - 1].role, "system");
+        assert!(
+            msgs[last_user_idx - 1]
+                .content
+                .contains("[Reminder] Always be thorough.")
+        );
+    }
+
+    #[test]
+    fn inject_reminder_places_before_last_user_message() {
+        let mut msgs = vec![make_msg("system", "System prompt.")];
+        for i in 0..5 {
+            msgs.push(make_msg("user", &format!("q{i}")));
+            msgs.push(make_msg("assistant", &format!("a{i}")));
+        }
+        // Final user message
+        msgs.push(make_msg("user", "final question"));
+
+        let injected = inject_instruction_reminder(&mut msgs, "[Reminder] Key directive.");
+        assert!(injected);
+
+        // Last message should still be the user's final question
+        assert_eq!(msgs.last().unwrap().content, "final question");
+        assert_eq!(msgs.last().unwrap().role, "user");
+
+        // Second-to-last should be the reminder
+        let second_last = &msgs[msgs.len() - 2];
+        assert_eq!(second_last.role, "system");
+        assert!(second_last.content.contains("[Reminder]"));
+    }
+
+    #[test]
+    fn inject_reminder_no_user_messages_appends_at_end() {
+        let mut msgs = vec![make_msg("system", "System prompt.")];
+        // Add only assistant messages (unusual but tests edge case)
+        for i in 0..10 {
+            msgs.push(make_msg("assistant", &format!("response {i}")));
+        }
+        let len_before = msgs.len();
+        let injected = inject_instruction_reminder(&mut msgs, "[Reminder] Test.");
+        assert!(injected);
+        // When no user message found, inserts at the end
+        assert_eq!(msgs.len(), len_before + 1);
+        assert_eq!(msgs.last().unwrap().content, "[Reminder] Test.");
     }
 }

@@ -1,11 +1,14 @@
 use chrono::{DateTime, Utc};
-use ironclad_core::config::{DigestConfig, SessionConfig};
+use ironclad_core::config::{DigestConfig, LearningConfig, SessionConfig};
 use ironclad_db::Database;
 use ironclad_llm::format::UnifiedMessage;
+use std::path::PathBuf;
 
 pub struct SessionGovernor {
     config: SessionConfig,
     digest_config: DigestConfig,
+    learning_config: LearningConfig,
+    skills_dir: Option<PathBuf>,
 }
 
 impl SessionGovernor {
@@ -13,11 +16,19 @@ impl SessionGovernor {
         Self {
             config,
             digest_config: DigestConfig::default(),
+            learning_config: LearningConfig::default(),
+            skills_dir: None,
         }
     }
 
     pub fn with_digest(mut self, digest_config: DigestConfig) -> Self {
         self.digest_config = digest_config;
+        self
+    }
+
+    pub fn with_learning(mut self, learning_config: LearningConfig, skills_dir: PathBuf) -> Self {
+        self.learning_config = learning_config;
+        self.skills_dir = Some(skills_dir);
         self
     }
 
@@ -34,6 +45,14 @@ impl SessionGovernor {
             // Generate episodic digest before the session status changes
             if let Ok(Some(session)) = ironclad_db::sessions::get_session(db, session_id) {
                 crate::digest::digest_on_close(db, &self.digest_config, &session);
+                if let Some(ref skills_dir) = self.skills_dir {
+                    crate::learning::learn_on_close(
+                        db,
+                        &self.learning_config,
+                        &session,
+                        skills_dir,
+                    );
+                }
             }
             // Clean up checkpoints before expiry
             if let Err(e) = ironclad_db::checkpoint::clear_checkpoints(db, session_id) {
@@ -52,6 +71,13 @@ impl SessionGovernor {
         if let Err(e) = self.decay_episodic_importance(db) {
             tracing::warn!(error = %e, "episodic importance decay failed during governor tick");
         }
+        if self.skills_dir.is_some()
+            && let Err(e) = self.adjust_learned_skill_priorities(db)
+        {
+            tracing::warn!(error = %e, "learned skill priority adjustment failed during governor tick");
+        }
+        // Retrieval-hygiene: prune stale procedural entries and dead learned skills.
+        self.run_retrieval_hygiene(db);
         Ok(expired)
     }
 
@@ -82,6 +108,9 @@ impl SessionGovernor {
                 tracing::warn!(error = %e, session_id = %s.id, "compaction failed before rotation");
             }
             crate::digest::digest_on_close(db, &self.digest_config, s);
+            if let Some(ref skills_dir) = self.skills_dir {
+                crate::learning::learn_on_close(db, &self.learning_config, s, skills_dir);
+            }
             if let Err(e) = ironclad_db::checkpoint::clear_checkpoints(db, &s.id) {
                 tracing::warn!(error = %e, session_id = %s.id, "failed to clear checkpoints on rotation");
             }
@@ -99,6 +128,14 @@ impl SessionGovernor {
         if msgs.len() < 4 {
             return Ok(());
         }
+        // Idempotency guard: skip if a summary was already appended by a prior
+        // compaction pass (e.g. rotation followed by tick expiry on the same session).
+        if msgs
+            .iter()
+            .any(|m| m.role == "system" && m.content.contains("[Conversation Summary"))
+        {
+            return Ok(());
+        }
         let keep_recent = 4usize;
         let trim_end = msgs.len().saturating_sub(keep_recent);
         let trimmed: Vec<UnifiedMessage> = msgs[..trim_end]
@@ -112,13 +149,270 @@ impl SessionGovernor {
         if trimmed.is_empty() {
             return Ok(());
         }
-        let prompt = crate::context::build_compaction_prompt(&trimmed);
+
+        // Progressive compaction: pick the least aggressive stage that fits ~500 tokens.
+        let current_tokens = crate::context::count_tokens(&trimmed);
+        let target_tokens = 500usize;
+        let excess_ratio = current_tokens as f64 / target_tokens.max(1) as f64;
+        let stage = crate::context::CompactionStage::from_excess(excess_ratio);
+        let compacted = crate::context::compact_to_stage(&trimmed, stage);
+
+        // Format the compacted messages into a summary block.
+        let summary_lines: Vec<String> = compacted
+            .iter()
+            .filter(|m| m.role != "system")
+            .map(|m| format!("{}: {}", m.role, m.content))
+            .collect();
+        let summary_body = if summary_lines.is_empty() {
+            compacted
+                .iter()
+                .map(|m| m.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            summary_lines.join("\n")
+        };
         let digest = format!(
-            "[Conversation Summary Draft]\n{}",
-            prompt.chars().take(2_000).collect::<String>()
+            "[Conversation Summary — {stage:?}]\n{}",
+            summary_body.chars().take(2_000).collect::<String>()
         );
         ironclad_db::sessions::append_message(db, session_id, "system", &digest)?;
         Ok(())
+    }
+
+    /// Adjust learned skill priorities based on success/failure ratios.
+    ///
+    /// - Skills with > 5 total uses and > 80% success → boost priority
+    /// - Skills where failures exceed successes → decay priority
+    ///
+    /// Returns the number of skills whose priority was actually changed.
+    fn adjust_learned_skill_priorities(&self, db: &Database) -> ironclad_core::Result<usize> {
+        if !self.learning_config.enabled {
+            return Ok(0);
+        }
+        let skills = ironclad_db::learned_skills::list_learned_skills(db, 200)?;
+        let mut adjusted = 0usize;
+        let boost = self.learning_config.priority_boost_on_success as i64;
+        let decay = self.learning_config.priority_decay_on_failure as i64;
+
+        for skill in &skills {
+            let total = skill.success_count + skill.failure_count;
+            let ratio = if total > 0 {
+                skill.success_count as f64 / total as f64
+            } else {
+                0.0
+            };
+
+            let new_priority = if total > 5 && ratio > 0.8 {
+                // Reliable skill — boost
+                (skill.priority + boost).min(100)
+            } else if skill.failure_count > skill.success_count {
+                // Unreliable skill — decay
+                (skill.priority - decay).max(0)
+            } else {
+                continue;
+            };
+
+            if new_priority != skill.priority {
+                if let Err(e) = ironclad_db::learned_skills::update_learned_skill_priority(
+                    db,
+                    &skill.name,
+                    new_priority,
+                ) {
+                    tracing::warn!(error = %e, skill = %skill.name, "failed to adjust skill priority");
+                } else {
+                    adjusted += 1;
+                }
+            }
+        }
+        Ok(adjusted)
+    }
+
+    /// Retrieval-hygiene sweep: prune stale procedural entries and remove
+    /// dead learned skills along with their on-disk `.md` files.
+    ///
+    /// Thresholds are controlled by `LearningConfig::stale_procedural_days`
+    /// and `LearningConfig::dead_skill_priority_threshold`.
+    ///
+    /// Every sweep is recorded in the `hygiene_log` table for forensics
+    /// and future auto-tuning.
+    fn run_retrieval_hygiene(&self, db: &Database) {
+        let stale_days = self.learning_config.stale_procedural_days;
+        let dead_threshold = self.learning_config.dead_skill_priority_threshold;
+
+        // ── Pre-sweep metrics ────────────────────────────────────
+        let conn = db.conn();
+        let proc_total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM procedural_memory", [], |r| r.get(0))
+            .unwrap_or(0);
+        let proc_stale: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM procedural_memory \
+                 WHERE success_count = 0 AND failure_count = 0 \
+                   AND updated_at < datetime('now', ?1)",
+                [format!("-{stale_days} days")],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let skills_total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM learned_skills", [], |r| r.get(0))
+            .unwrap_or(0);
+        let skills_dead: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM learned_skills WHERE priority <= ?1",
+                [dead_threshold],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let avg_skill_priority: f64 = conn
+            .query_row(
+                "SELECT COALESCE(AVG(priority), 0) FROM learned_skills",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0.0);
+        drop(conn); // release lock before mutating
+
+        // ── 1. Prune stale procedural_memory entries ─────────────
+        let proc_pruned: i64 = match ironclad_db::memory::prune_stale_procedural(db, stale_days) {
+            Ok(0) => 0,
+            Ok(n) => {
+                tracing::info!(count = n, "pruned stale procedural memory entries");
+                n as i64
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "stale procedural pruning failed");
+                0
+            }
+        };
+
+        // ── 2. Prune dead learned skills ─────────────────────────
+        // Phase 1: find dead rows (DB rows survive if we crash here)
+        // Phase 2: delete .md files on disk
+        // Phase 3: delete DB rows (crash-safe: orphan DB rows are re-pruned next cycle)
+        let skills_pruned: i64 =
+            match ironclad_db::learned_skills::find_dead_learned_skills(db, dead_threshold) {
+                Ok(dead) if dead.is_empty() => 0,
+                Ok(dead) => {
+                    let count = dead.len() as i64;
+                    // Delete files first so a crash never leaves orphan .md files
+                    for (name, md_path) in &dead {
+                        if let Some(path) = md_path
+                            && let Err(e) = std::fs::remove_file(path)
+                            && e.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tracing::warn!(
+                                error = %e, skill = %name, path = %path,
+                                "failed to remove dead learned skill file"
+                            );
+                        }
+                        tracing::info!(skill = %name, "pruned dead learned skill");
+                    }
+                    // Now safe to remove DB rows
+                    let names: Vec<String> = dead.iter().map(|(n, _)| n.clone()).collect();
+                    if let Err(e) =
+                        ironclad_db::learned_skills::delete_learned_skills_by_names(db, &names)
+                    {
+                        tracing::warn!(error = %e, "failed to delete dead learned skill DB rows");
+                    }
+                    count
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "dead learned skill pruning failed");
+                    0
+                }
+            };
+
+        // ── 3. Record sweep in audit log ─────────────────────────
+        let sweep_input = ironclad_db::hygiene_log::HygieneSweepInput {
+            stale_procedural_days: stale_days,
+            dead_skill_priority_threshold: dead_threshold,
+            proc_total,
+            proc_stale,
+            proc_pruned,
+            skills_total,
+            skills_dead,
+            skills_pruned,
+            avg_skill_priority,
+        };
+        if let Err(e) = ironclad_db::hygiene_log::log_hygiene_sweep(db, &sweep_input) {
+            tracing::warn!(error = %e, "failed to log hygiene sweep");
+        }
+    }
+
+    // ── Diagnostic ────────────────────────────────────────────────
+
+    /// Return a human-readable report on retrieval-memory health.
+    ///
+    /// The mechanic can call this to decide whether the hygiene thresholds
+    /// in `LearningConfig` need adjusting — no auto-tuning, just data.
+    pub fn diagnose_retrieval_health(&self, db: &Database) -> String {
+        let mut lines = Vec::new();
+        let conn = db.conn();
+
+        // Procedural memory stats
+        let proc_total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM procedural_memory", [], |r| r.get(0))
+            .unwrap_or(0);
+        let proc_stale: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM procedural_memory \
+                 WHERE success_count = 0 AND failure_count = 0 \
+                   AND updated_at < datetime('now', ?1)",
+                [format!(
+                    "-{} days",
+                    self.learning_config.stale_procedural_days
+                )],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        lines.push(format!(
+            "procedural_memory: {proc_total} total, {proc_stale} stale \
+             (zero-activity, >{} days)",
+            self.learning_config.stale_procedural_days
+        ));
+
+        // Learned skills stats
+        let skill_total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM learned_skills", [], |r| r.get(0))
+            .unwrap_or(0);
+        let skill_dead: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM learned_skills WHERE priority <= ?1",
+                [self.learning_config.dead_skill_priority_threshold],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let skill_low: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM learned_skills WHERE priority > ?1 AND priority < 20",
+                [self.learning_config.dead_skill_priority_threshold],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let avg_priority: f64 = conn
+            .query_row(
+                "SELECT COALESCE(AVG(priority), 0) FROM learned_skills",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0.0);
+        lines.push(format!(
+            "learned_skills: {skill_total} total, {skill_dead} dead (priority ≤ {}), \
+             {skill_low} low (< 20), avg priority {avg_priority:.0}",
+            self.learning_config.dead_skill_priority_threshold
+        ));
+
+        // Config snapshot
+        lines.push(format!(
+            "config: stale_procedural_days={}, dead_skill_priority_threshold={}, \
+             max_learned_skills={}",
+            self.learning_config.stale_procedural_days,
+            self.learning_config.dead_skill_priority_threshold,
+            self.learning_config.max_learned_skills,
+        ));
+
+        lines.join("\n")
     }
 
     fn decay_episodic_importance(&self, db: &Database) -> ironclad_core::Result<usize> {
@@ -158,12 +452,23 @@ impl SessionGovernor {
         }
         drop(stmt);
 
-        for (id, new_importance) in &updates {
-            conn.execute(
-                "UPDATE episodic_memory SET importance = ?1 WHERE id = ?2",
-                (&new_importance, id),
-            )
-            .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+        // Batch all updates in a single transaction to avoid holding the Mutex
+        // across N individual UPDATEs and to ensure atomicity.
+        if !updates.is_empty() {
+            conn.execute_batch("BEGIN")
+                .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
+            for (id, new_importance) in &updates {
+                conn.execute(
+                    "UPDATE episodic_memory SET importance = ?1 WHERE id = ?2",
+                    (&new_importance, id),
+                )
+                .map_err(|e| {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    ironclad_core::IroncladError::Database(e.to_string())
+                })?;
+            }
+            conn.execute_batch("COMMIT")
+                .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
         }
 
         Ok(updates.len())
@@ -251,7 +556,7 @@ mod tests {
         assert!(
             !msgs
                 .iter()
-                .any(|m| m.content.contains("[Conversation Summary Draft]"))
+                .any(|m| m.content.contains("[Conversation Summary"))
         );
     }
 
@@ -276,12 +581,8 @@ mod tests {
         let last = msgs.last().unwrap();
         assert_eq!(last.role, "system");
         assert!(
-            last.content.contains("[Conversation Summary Draft]"),
-            "expected summary draft header"
-        );
-        assert!(
-            last.content.contains("Summarize"),
-            "expected summarize instruction"
+            last.content.contains("[Conversation Summary"),
+            "expected summary header"
         );
     }
 
@@ -303,11 +604,10 @@ mod tests {
         let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
         let summary_msg = msgs
             .iter()
-            .find(|m| m.content.contains("[Conversation Summary Draft]"))
+            .find(|m| m.content.contains("[Conversation Summary"))
             .unwrap();
 
-        // The summary should include content from trimmed messages (0..4) but
-        // not from the kept recent 4 (4..8)
+        // The summary should reference content from trimmed messages (0..4)
         assert!(
             summary_msg.content.contains("content-0"),
             "summary should include trimmed message 0"
@@ -335,6 +635,36 @@ mod tests {
         // keep_recent = 4, trim_end = 4 - 4 = 0, trimmed slice is empty -> early return
         let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
         assert_eq!(msgs.len(), 4);
+    }
+
+    #[test]
+    fn compact_before_archive_idempotent_on_double_call() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+        let sid = ironclad_db::sessions::create_new(&db, "compact-idem", None).unwrap();
+
+        for i in 0..6 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            ironclad_db::sessions::append_message(&db, &sid, role, &format!("msg-{i}")).unwrap();
+        }
+
+        // First call should append a summary
+        gov.compact_before_archive(&db, &sid).unwrap();
+        let msgs_after_first = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
+        let summary_count_1 = msgs_after_first
+            .iter()
+            .filter(|m| m.content.contains("[Conversation Summary"))
+            .count();
+        assert_eq!(summary_count_1, 1);
+
+        // Second call should be a no-op (idempotency guard)
+        gov.compact_before_archive(&db, &sid).unwrap();
+        let msgs_after_second = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
+        let summary_count_2 = msgs_after_second
+            .iter()
+            .filter(|m| m.content.contains("[Conversation Summary"))
+            .count();
+        assert_eq!(summary_count_2, 1, "should not append a second summary");
     }
 
     #[test]
@@ -369,7 +699,7 @@ mod tests {
         let msgs = ironclad_db::sessions::list_messages(&db, &sid, Some(50)).unwrap();
         assert!(
             msgs.iter()
-                .any(|m| m.content.contains("[Conversation Summary Draft]")),
+                .any(|m| m.content.contains("[Conversation Summary")),
             "compaction should have appended a summary"
         );
     }
@@ -382,5 +712,89 @@ mod tests {
             .rotate_agent_scope_sessions(&db, "nonexistent-agent")
             .unwrap();
         assert_eq!(rotated, 0);
+    }
+
+    // ── Learned skill priority adjustment ─────────────────────────
+
+    #[test]
+    fn adjust_priorities_boosts_reliable_skills() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+
+        // Create a skill with > 5 uses and > 80% success ratio
+        ironclad_db::learned_skills::store_learned_skill(
+            &db,
+            "reliable-skill",
+            "A reliable skill",
+            "[]",
+            "[]",
+            None,
+        )
+        .unwrap();
+        // Start at priority 50, success_count=1. Add more successes.
+        for _ in 0..6 {
+            ironclad_db::learned_skills::record_learned_skill_success(&db, "reliable-skill")
+                .unwrap();
+        }
+        // Now: success_count=7, failure_count=0, ratio=1.0, total=7 > 5
+
+        let adjusted = gov.adjust_learned_skill_priorities(&db).unwrap();
+        assert_eq!(adjusted, 1);
+
+        let skill = ironclad_db::learned_skills::get_learned_skill_by_name(&db, "reliable-skill")
+            .unwrap()
+            .unwrap();
+        assert!(
+            skill.priority > 50,
+            "priority should have been boosted from 50, got {}",
+            skill.priority
+        );
+    }
+
+    #[test]
+    fn adjust_priorities_decays_unreliable_skills() {
+        let gov = SessionGovernor::new(SessionConfig::default());
+        let db = test_db();
+
+        ironclad_db::learned_skills::store_learned_skill(
+            &db,
+            "flaky-skill",
+            "An unreliable skill",
+            "[]",
+            "[]",
+            None,
+        )
+        .unwrap();
+        // success_count=1. Add many failures so failure > success.
+        for _ in 0..3 {
+            ironclad_db::learned_skills::record_learned_skill_failure(&db, "flaky-skill").unwrap();
+        }
+        // Now: success_count=1, failure_count=3, failure > success
+
+        let adjusted = gov.adjust_learned_skill_priorities(&db).unwrap();
+        assert_eq!(adjusted, 1);
+
+        let skill = ironclad_db::learned_skills::get_learned_skill_by_name(&db, "flaky-skill")
+            .unwrap()
+            .unwrap();
+        assert!(
+            skill.priority < 50,
+            "priority should have decayed from 50, got {}",
+            skill.priority
+        );
+    }
+
+    #[test]
+    fn adjust_priorities_disabled_config_skips() {
+        let learning_config = LearningConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let gov = SessionGovernor::new(SessionConfig::default())
+            .with_learning(learning_config, PathBuf::from("/tmp"));
+        let db = test_db();
+
+        let adjusted = gov.adjust_learned_skill_priorities(&db).unwrap();
+        assert_eq!(adjusted, 0);
     }
 }

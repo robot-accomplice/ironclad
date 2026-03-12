@@ -601,8 +601,8 @@ sequenceDiagram
                     Task->>MemDB: DELETE lowest importance episodic_memory exceeding threshold
                     Task->>MemDB: rebuild memory_fts after bulk deletes
                     MemDB-->>Task: pruned counts
-                else job is agentTurn (DEPRECATED)
-                    Task->>Task: agent_turn_legacy: noop with warning log
+                else payload uses removed legacy kind
+                    Task-->>Sched: error (rejected; migrate via update/mechanic before execution)
                 else job is other built-in task
                     Task->>Task: run task-specific logic
                 end

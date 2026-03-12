@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS cron_runs (
     status TEXT NOT NULL,
     duration_ms INTEGER,
     error TEXT,
+    output_text TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -225,17 +226,42 @@ CREATE TABLE IF NOT EXISTS revenue_opportunities (
     expected_revenue_usdc REAL NOT NULL,
     status TEXT NOT NULL,
     qualification_reason TEXT,
+    confidence_score REAL NOT NULL DEFAULT 0,
+    effort_score REAL NOT NULL DEFAULT 0,
+    risk_score REAL NOT NULL DEFAULT 0,
+    priority_score REAL NOT NULL DEFAULT 0,
+    recommended_approved INTEGER NOT NULL DEFAULT 0,
+    score_reason TEXT,
     plan_json TEXT,
     evidence_json TEXT,
     request_id TEXT,
     settlement_ref TEXT UNIQUE,
     settled_amount_usdc REAL,
+    attributable_costs_usdc REAL NOT NULL DEFAULT 0,
+    net_profit_usdc REAL,
+    tax_rate REAL NOT NULL DEFAULT 0,
+    tax_amount_usdc REAL NOT NULL DEFAULT 0,
+    retained_earnings_usdc REAL,
+    tax_destination_wallet TEXT,
+    settled_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_revenue_opportunities_status ON revenue_opportunities(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_revenue_opportunities_strategy ON revenue_opportunities(strategy, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_revenue_opportunities_request ON revenue_opportunities(request_id);
+
+CREATE TABLE IF NOT EXISTS revenue_feedback (
+    id TEXT PRIMARY KEY,
+    opportunity_id TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    grade REAL NOT NULL,
+    source TEXT NOT NULL,
+    comment TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_revenue_feedback_opportunity ON revenue_feedback(opportunity_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_revenue_feedback_strategy ON revenue_feedback(strategy, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS inference_costs (
     id TEXT PRIMARY KEY,
@@ -278,7 +304,7 @@ CREATE TABLE IF NOT EXISTS identity (
     value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS soul_history (
+CREATE TABLE IF NOT EXISTS os_personality_history (
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -320,7 +346,10 @@ CREATE TABLE IF NOT EXISTS skills (
     risk_level TEXT NOT NULL DEFAULT 'Caution',
     enabled INTEGER NOT NULL DEFAULT 1,
     last_loaded_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    version TEXT NOT NULL DEFAULT '0.0.0',
+    author TEXT NOT NULL DEFAULT 'local',
+    registry_source TEXT NOT NULL DEFAULT 'local'
 );
 CREATE INDEX IF NOT EXISTS idx_skills_kind ON skills(kind);
 
@@ -489,8 +518,39 @@ CREATE TABLE IF NOT EXISTS abuse_events (
 CREATE INDEX IF NOT EXISTS idx_abuse_events_actor ON abuse_events(actor_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_origin ON abuse_events(origin, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_abuse_events_created ON abuse_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS learned_skills (
+    id                TEXT PRIMARY KEY,
+    name              TEXT NOT NULL UNIQUE,
+    description       TEXT NOT NULL DEFAULT '',
+    trigger_tools     TEXT NOT NULL DEFAULT '[]',
+    steps_json        TEXT NOT NULL DEFAULT '[]',
+    source_session_id TEXT,
+    success_count     INTEGER NOT NULL DEFAULT 1,
+    failure_count     INTEGER NOT NULL DEFAULT 0,
+    priority          INTEGER NOT NULL DEFAULT 50,
+    skill_md_path     TEXT,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_learned_skills_priority ON learned_skills(priority DESC);
+
+CREATE TABLE IF NOT EXISTS hygiene_log (
+    id                             TEXT PRIMARY KEY,
+    sweep_at                       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    stale_procedural_days          INTEGER NOT NULL,
+    dead_skill_priority_threshold  INTEGER NOT NULL,
+    proc_total                     INTEGER NOT NULL DEFAULT 0,
+    proc_stale                     INTEGER NOT NULL DEFAULT 0,
+    proc_pruned                    INTEGER NOT NULL DEFAULT 0,
+    skills_total                   INTEGER NOT NULL DEFAULT 0,
+    skills_dead                    INTEGER NOT NULL DEFAULT 0,
+    skills_pruned                  INTEGER NOT NULL DEFAULT 0,
+    avg_skill_priority             REAL NOT NULL DEFAULT 0.0
+);
+CREATE INDEX IF NOT EXISTS idx_hygiene_log_sweep ON hygiene_log(sweep_at DESC);
 "#;
-const EMBEDDED_SCHEMA_VERSION: i64 = 15;
+const EMBEDDED_SCHEMA_VERSION: i64 = 23;
 
 pub fn initialize_db(db: &Database) -> Result<()> {
     {
@@ -658,6 +718,124 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     }
+    if !has_column(&conn, "cron_runs", "output_text")? {
+        conn.execute("ALTER TABLE cron_runs ADD COLUMN output_text TEXT", [])
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "attributable_costs_usdc")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN attributable_costs_usdc REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "net_profit_usdc")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN net_profit_usdc REAL",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "tax_rate")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN tax_rate REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "tax_amount_usdc")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN tax_amount_usdc REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "retained_earnings_usdc")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN retained_earnings_usdc REAL",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "tax_destination_wallet")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN tax_destination_wallet TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "confidence_score")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN confidence_score REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "effort_score")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN effort_score REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "risk_score")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN risk_score REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "priority_score")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN priority_score REAL NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "recommended_approved")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN recommended_approved INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "revenue_opportunities", "score_reason")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN score_reason TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    // v0.9.5: settled_at for cycle-time analytics
+    if !has_column(&conn, "revenue_opportunities", "settled_at")? {
+        conn.execute(
+            "ALTER TABLE revenue_opportunities ADD COLUMN settled_at TEXT",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    // v0.9.6: skill registry protocol — version, author, registry_source
+    if !has_column(&conn, "skills", "version")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN version TEXT NOT NULL DEFAULT '0.0.0'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "skills", "author")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN author TEXT NOT NULL DEFAULT 'local'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(&conn, "skills", "registry_source")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN registry_source TEXT NOT NULL DEFAULT 'local'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -714,6 +892,9 @@ pub fn run_migrations(db: &Database) -> Result<()> {
         })?;
         if version == 13 {
             apply_migration_13_idempotent(&tx)
+                .map_err(|e| IroncladError::Database(format!("migration {version}: {e}")))?;
+        } else if version == 22 {
+            apply_migration_22_idempotent(&tx)
                 .map_err(|e| IroncladError::Database(format!("migration {version}: {e}")))?;
         } else {
             tx.execute_batch(sql.trim())
@@ -798,6 +979,36 @@ CREATE INDEX IF NOT EXISTS idx_shadow_routing_turn ON shadow_routing_predictions
     Ok(())
 }
 
+/// Migration 022: Skill Registry Protocol — add version/author/registry_source to skills.
+///
+/// Uses `has_column()` guards so it's safe to run even if the embedded schema
+/// already created these columns (fresh install) or if the migration runs twice
+/// (corrupted schema_version).
+fn apply_migration_22_idempotent(conn: &rusqlite::Transaction<'_>) -> Result<()> {
+    if !has_column(conn, "skills", "version")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN version TEXT NOT NULL DEFAULT '0.0.0'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(conn, "skills", "author")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN author TEXT NOT NULL DEFAULT 'local'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    if !has_column(conn, "skills", "registry_source")? {
+        conn.execute(
+            "ALTER TABLE skills ADD COLUMN registry_source TEXT NOT NULL DEFAULT 'local'",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    }
+    Ok(())
+}
+
 /// Parse version number from migration filename, e.g. 001_initial.sql -> 1, 002_add_indexes.sql -> 2.
 fn version_from_name(name: &str) -> i64 {
     name.find('_')
@@ -829,8 +1040,10 @@ mod tests {
         let count = table_count(&db).unwrap();
         // 30 regular tables + 1 FTS5 virtual table + sub_agents + hippocampus + turn_feedback
         // + context_snapshots + model_selection_events + abuse_events
-        // + shadow_routing_predictions (v0.9.4) + service_requests + revenue_opportunities (v0.9.5) = 38
-        assert_eq!(count, 38, "expected 38 user-defined tables, got {count}");
+        // + shadow_routing_predictions (v0.9.4) + service_requests + revenue_opportunities
+        // + revenue_feedback (v0.9.6) + learned_skills (v0.9.6)
+        // + hygiene_log (v0.9.6) = 41
+        assert_eq!(count, 41, "expected 41 user-defined tables, got {count}");
     }
 
     #[test]
@@ -839,7 +1052,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 38);
+        assert_eq!(count, 41);
     }
 
     #[test]
@@ -1005,6 +1218,10 @@ mod tests {
         assert!(has_column(&conn, "tool_calls", "skill_name").unwrap());
         assert!(has_column(&conn, "tool_calls", "skill_hash").unwrap());
         assert!(has_column(&conn, "delivery_queue", "idempotency_key").unwrap());
+        // v0.9.6: skill registry protocol columns
+        assert!(has_column(&conn, "skills", "version").unwrap());
+        assert!(has_column(&conn, "skills", "author").unwrap());
+        assert!(has_column(&conn, "skills", "registry_source").unwrap());
     }
 
     #[test]
@@ -1183,6 +1400,9 @@ mod tests {
         assert!(has_column(&conn, "tool_calls", "skill_name").unwrap());
         assert!(has_column(&conn, "tool_calls", "skill_hash").unwrap());
         assert!(has_column(&conn, "delivery_queue", "idempotency_key").unwrap());
+        assert!(has_column(&conn, "skills", "version").unwrap());
+        assert!(has_column(&conn, "skills", "author").unwrap());
+        assert!(has_column(&conn, "skills", "registry_source").unwrap());
     }
 
     #[test]

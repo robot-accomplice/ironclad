@@ -1,5 +1,6 @@
 mod channel_tests;
 mod decomposition_tests;
+mod delegation_tests;
 mod diagnostics_tests;
 mod guard_tests;
 mod routing_tests;

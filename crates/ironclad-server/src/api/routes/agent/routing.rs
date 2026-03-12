@@ -1,7 +1,6 @@
 //! Model selection, inference fallback chain, and routing audit persistence.
 
 use std::collections::HashMap;
-use std::sync::Once;
 use std::time::{Duration, Instant};
 
 use ironclad_core::IroncladError;
@@ -9,8 +8,6 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::AppState;
-
-static HEURISTIC_ALIAS_NOTICE: Once = Once::new();
 
 #[allow(dead_code)] // model/provider reserved for future per-turn audit trails
 pub(super) struct InferenceResult {
@@ -105,14 +102,20 @@ pub(super) async fn persist_model_selection_audit(
         override_model: audit.override_model.clone(),
         complexity: complexity.map(|s| s.to_string()),
         user_excerpt: summarize_user_excerpt(user_content),
-        candidates_json: serde_json::to_string(&audit.candidates).unwrap_or_else(|_| "[]".into()),
+        candidates_json: serde_json::to_string(&audit.candidates).unwrap_or_else(|e| {
+            tracing::warn!(turn_id, error = %e, "failed to serialize routing candidates for audit");
+            "[]".into()
+        }),
         created_at: chrono::Utc::now().to_rfc3339(),
         schema_version: ironclad_db::model_selection::ROUTING_SCHEMA_VERSION,
         attribution: Some(audit.strategy.clone()),
         metascore_json: audit
             .metascore_breakdown
             .as_ref()
-            .and_then(|m| serde_json::to_string(m).ok()),
+            .and_then(|m| serde_json::to_string(m).map_err(|e| {
+                tracing::warn!(turn_id, error = %e, "failed to serialize metascore breakdown for audit");
+                e
+            }).ok()),
         features_json: None,
     };
     if let Err(e) = ironclad_db::model_selection::record_model_selection_event(&state.db, &row) {
@@ -248,16 +251,7 @@ pub(super) async fn select_routed_model_with_audit(
     // Phase 2: Metascore routing (2.19).
     // Build per-model profiles from current system state, score with metascore,
     // and select the highest-scoring candidate.
-    let routing_mode_effective = if routing_mode == "heuristic" {
-        HEURISTIC_ALIAS_NOTICE.call_once(|| {
-            tracing::info!("models.routing.mode=heuristic currently aliases metascore behavior");
-        });
-        "metascore"
-    } else {
-        routing_mode.as_str()
-    };
-
-    if routing_mode_effective != "primary" {
+    if routing_mode != "primary" {
         let features = ironclad_llm::extract_features(user_content, 0, 0);
         let complexity = ironclad_llm::classify_complexity(&features);
 
@@ -648,8 +642,13 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
             req_clone.model = model_for_api;
         }
 
-        let llm_body = ironclad_llm::format::translate_request(&req_clone, resolved.format)
-            .unwrap_or_else(|_| serde_json::json!({}));
+        let llm_body = match ironclad_llm::format::translate_request(&req_clone, resolved.format) {
+            Ok(body) => body,
+            Err(e) => {
+                tracing::warn!(model = %model, error = %e, "translate_request failed; skipping provider");
+                continue;
+            }
+        };
 
         let inference_start = std::time::Instant::now();
         let llm = state.llm.read().await;
@@ -677,12 +676,15 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
         match result {
             Ok(resp) => {
                 let unified_resp = ironclad_llm::format::translate_response(&resp, resolved.format)
-                    .unwrap_or_else(|_| ironclad_llm::format::UnifiedResponse {
-                        content: "(no response)".into(),
-                        model: model.clone(),
-                        tokens_in: 0,
-                        tokens_out: 0,
-                        finish_reason: None,
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(model = %model, error = %e, "translate_response failed; returning synthetic empty response");
+                        ironclad_llm::format::UnifiedResponse {
+                            content: "(no response)".into(),
+                            model: model.clone(),
+                            tokens_in: 0,
+                            tokens_out: 0,
+                            finish_reason: None,
+                        }
                     });
                 let tin = unified_resp.tokens_in as i64;
                 let tout = unified_resp.tokens_out as i64;

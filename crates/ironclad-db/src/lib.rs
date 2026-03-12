@@ -17,6 +17,7 @@
 //! - `embeddings` -- BLOB embedding storage / lookup with JSON fallback
 //! - `ann` -- HNSW approximate nearest-neighbor index (instant-distance)
 //! - `hippocampus` -- Long-term memory consolidation and decay
+//! - `learned_skills` -- Learned skill CRUD, reinforcement (success/failure), priority
 //! - `checkpoint` -- Session checkpoint / restore via `context_snapshots` table
 //! - `efficiency` -- Efficiency metrics tracking and queries
 //! - `agents` -- Sub-agent registry and enabled-agent CRUD
@@ -29,6 +30,7 @@
 //! - `metrics` -- Inference cost tracking, proxy snapshots, transactions, turn feedback
 //! - `routing_dataset` -- Historical routing decision + cost outcome JOIN for ML training
 //! - `shadow_routing` -- Counterfactual ML predictions stored alongside production decisions
+//! - `revenue_introspection` -- Unified introspection surface: strategy health, profitability, audit trail
 
 pub mod abuse;
 pub mod agents;
@@ -42,21 +44,33 @@ pub mod delivery_queue;
 pub mod efficiency;
 pub mod embeddings;
 pub mod hippocampus;
+pub mod hygiene_log;
+pub mod learned_skills;
 pub mod memory;
 pub mod metrics;
 pub mod model_selection;
 pub mod policy;
+pub mod revenue_accounting;
+pub mod revenue_feedback;
+pub mod revenue_introspection;
+pub mod revenue_opportunity_queries;
+pub mod revenue_scoring;
+pub mod revenue_strategy_summary;
+pub mod revenue_swap_tasks;
+pub mod revenue_tax_tasks;
 pub mod routing_dataset;
 pub mod schema;
 pub mod service_revenue;
 pub mod sessions;
 pub mod shadow_routing;
 pub mod skills;
+pub mod tasks;
 pub mod tools;
 
 use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
+pub use rusqlite::params_from_iter;
 
 use ironclad_core::{IroncladError, Result};
 

@@ -61,12 +61,24 @@ pub fn record_transaction(
     counterparty: Option<&str>,
     tx_hash: Option<&str>,
 ) -> Result<String> {
+    record_transaction_with_metadata(db, tx_type, amount, currency, counterparty, tx_hash, None)
+}
+
+pub fn record_transaction_with_metadata(
+    db: &Database,
+    tx_type: &str,
+    amount: f64,
+    currency: &str,
+    counterparty: Option<&str>,
+    tx_hash: Option<&str>,
+    metadata_json: Option<&str>,
+) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO transactions (id, tx_type, amount, currency, counterparty, tx_hash) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![id, tx_type, amount, currency, counterparty, tx_hash],
+        "INSERT INTO transactions (id, tx_type, amount, currency, counterparty, tx_hash, metadata_json) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![id, tx_type, amount, currency, counterparty, tx_hash, metadata_json],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(id)
@@ -106,6 +118,23 @@ pub fn query_transactions(db: &Database, hours: i64) -> Result<Vec<TransactionRe
         .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
+/// Sum transaction amounts within the given time window (in hours).
+/// Used by treasury policy enforcement to check hourly/daily rate limits.
+pub fn sum_transaction_amounts(db: &Database, hours: i64) -> Result<f64> {
+    let hours = hours.unsigned_abs().max(1);
+    let conn = db.conn();
+    let offset = format!("-{hours} hours");
+    let total: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(amount), 0.0) FROM transactions \
+             WHERE created_at >= datetime('now', ?1)",
+            [&offset],
+            |row| row.get(0),
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(total)
+}
+
 /// Return the most recent quality observations from `inference_costs`, ordered
 /// oldest-first so that the caller can feed them into a ring buffer in chronological
 /// order. Each row is `(model, quality_score)`.
@@ -124,7 +153,10 @@ pub fn recent_quality_scores(db: &Database, limit: i64) -> Result<Vec<(String, f
             Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
         })
         .map_err(|e| IroncladError::Database(e.to_string()))?
-        .filter_map(|r| r.ok())
+        .filter_map(|r| {
+            r.inspect_err(|e| tracing::warn!(error = %e, "metrics: skipping malformed cost row"))
+                .ok()
+        })
         .collect();
     // Reverse so oldest comes first (ring buffer insertion order).
     let mut rows = rows;

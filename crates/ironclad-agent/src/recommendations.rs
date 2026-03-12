@@ -834,7 +834,7 @@ impl RecommendationRule for HighCostPerTurn {
     }
 }
 
-// ── LLM-powered deep analysis (stub) ─────────────────────────
+// ── LLM-powered deep analysis ──────────────────────────────────
 
 pub struct LlmRecommendationAnalyzer;
 

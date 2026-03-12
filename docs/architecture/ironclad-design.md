@@ -549,8 +549,8 @@ CREATE TABLE identity (
     value TEXT NOT NULL
 );
 
--- Soul history
-CREATE TABLE soul_history (
+-- OS personality history
+CREATE TABLE os_personality_history (
     id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -711,7 +711,7 @@ fallbacks = [
 ]
 
 [models.routing]
-mode = "metascore"  # "primary" or "metascore" ("heuristic" accepted as legacy alias)
+mode = "metascore"  # "primary" or "metascore"
 confidence_threshold = 0.9
 local_first = true
 
@@ -746,7 +746,6 @@ tier = "T1"
 threshold = 3
 window_seconds = 60
 cooldown_seconds = 60
-credit_cooldown_seconds = 300
 max_cooldown_seconds = 900
 
 [memory]

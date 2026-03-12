@@ -56,7 +56,11 @@ impl DurableScheduler {
     }
 
     /// Returns true if enough time has elapsed since `last_run` (or if there was no previous run).
+    /// Returns false for zero/negative intervals to prevent fire storms.
     pub fn evaluate_interval(last_run: Option<&str>, interval_ms: i64, now: &str) -> bool {
+        if interval_ms <= 0 {
+            return false;
+        }
         let now_dt = match parse_iso(now) {
             Some(dt) => dt,
             None => return false,
@@ -129,7 +133,13 @@ impl DurableScheduler {
 }
 
 fn parse_rfc3339(s: &str) -> Option<DateTime<FixedOffset>> {
-    DateTime::parse_from_rfc3339(s).ok()
+    DateTime::parse_from_rfc3339(s).ok().or_else(|| {
+        // Backward-compat: SQLite's datetime('now') produces "YYYY-MM-DD HH:MM:SS"
+        // (space-separated, no timezone). Treat as UTC.
+        NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+            .ok()
+            .map(|naive| naive.and_utc().fixed_offset())
+    })
 }
 
 fn parse_iso(s: &str) -> Option<NaiveDateTime> {
@@ -137,6 +147,8 @@ fn parse_iso(s: &str) -> Option<NaiveDateTime> {
         .map(|dt| dt.naive_utc())
         .ok()
         .or_else(|| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok())
+        // Backward-compat: SQLite's datetime('now') produces "YYYY-MM-DD HH:MM:SS"
+        .or_else(|| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
 }
 
 #[allow(dead_code)] // convenience wrapper — will be used when cron scheduler is wired

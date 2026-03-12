@@ -36,6 +36,7 @@ pub struct CronRunItem {
     pub status: String,
     pub duration_ms: Option<i64>,
     pub error: Option<String>,
+    pub output_text: Option<String>,
     pub created_at: String,
     pub day: String,
 }
@@ -47,6 +48,14 @@ pub struct UpdateCronJobRequest {
     pub schedule_kind: Option<String>,
     pub schedule_expr: Option<String>,
     pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunCronJobResponse {
+    pub job_id: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub output_text: Option<String>,
 }
 
 pub async fn list_cron_jobs(State(state): State<AppState>) -> impl IntoResponse {
@@ -98,11 +107,25 @@ pub async fn create_cron_job(
             }
             raw.to_string()
         }
-        _ => serde_json::json!({
-            "action": "log",
-            "message": format!("scheduled job: {}", body.name)
-        })
-        .to_string(),
+        _ => {
+            let task = body
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            match task {
+                Some(task) => serde_json::json!({
+                    "action": "agent_task",
+                    "task": task
+                })
+                .to_string(),
+                None => serde_json::json!({
+                    "action": "log",
+                    "message": format!("scheduled job: {}", body.name)
+                })
+                .to_string(),
+            }
+        }
     };
     // BUG-012: Validate schedule_kind is a known value.
     let schedule_kind = normalize_schedule_kind(&body.schedule_kind);
@@ -153,8 +176,9 @@ pub async fn create_cron_job(
             let desc = body.description.as_deref().map(str::trim);
             if let Some(d) = desc
                 && !d.is_empty()
+                && let Err(e) = ironclad_db::cron::update_job_description(&state.db, &id, Some(d))
             {
-                let _ = ironclad_db::cron::update_job_description(&state.db, &id, Some(d));
+                tracing::warn!(job_id = %id, error = %e, "failed to update cron job description");
             }
             Ok(axum::Json(serde_json::json!({ "job_id": id })))
         }
@@ -195,6 +219,7 @@ pub async fn list_cron_runs(
                         status: r.status,
                         duration_ms: r.duration_ms,
                         error: r.error,
+                        output_text: r.output_text,
                         created_at: r.created_at,
                         day,
                     }
@@ -290,6 +315,36 @@ pub async fn update_cron_job(
         }
         Err(e) => Err(internal_err(&e)),
     }
+}
+
+pub async fn run_cron_job_now(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, JsonError> {
+    let Some(job) = ironclad_db::cron::get_job(&state.db, &id).map_err(|e| internal_err(&e))?
+    else {
+        return Err(not_found(format!("cron job {id} not found")));
+    };
+    let start = std::time::Instant::now();
+    let result = crate::cron_runtime::execute_cron_job_once(&state, &job).await;
+    let duration = start.elapsed().as_millis() as i64;
+    if let Err(e) = ironclad_db::cron::record_run(
+        &state.db,
+        &job.id,
+        result.status,
+        Some(duration),
+        result.error.as_deref(),
+        result.output.as_deref(),
+    ) {
+        tracing::error!(job_id = %job.id, job_name = %job.name, error = %e,
+            "failed to record manual cron run; audit trail incomplete");
+    }
+    Ok(axum::Json(RunCronJobResponse {
+        job_id: job.id,
+        status: result.status.to_string(),
+        error: result.error,
+        output_text: result.output,
+    }))
 }
 
 pub async fn delete_cron_job(

@@ -48,7 +48,7 @@ in older comments, commits, or conversations.
 | Canonical Term | Legacy / Alternate Names | Disambiguation |
 |---|---|---|
 | **Subagent** | specialist, delegate | A taskable child agent. "Specialist" was used pre-v0.8.2 and normalized via role validation. "Delegate" appears in some orchestration literature but is not used in code. |
-| **Orchestrator** | commander | The primary agent that manages subagents. "Commander" is a legacy alias that may still appear in older persisted state and is normalized during repair/migration. |
+| **Orchestrator** | commander | The primary agent that manages subagents. "Commander" is historical terminology retained only for disambiguating old discussions and audit history. |
 | **Model-proxy** | _(none)_ | A routing/proxy record in the `sub_agents` table. Explicitly **not** a subagent — cannot own skills, cannot be tasked. |
 | **OS** | soul, personality, character, persona | The agent's identity layer — the frequently updated surface. Loaded from `OS.toml` as `OsConfig` (containing `OsIdentity` + `OsVoice` + `prompt_text`). Identity tuning, voice adjustments, and personality evolution happen here. "Soul" and "personality" are acceptable as casual descriptors but **OS** is the canonical term in code, config files, and docs. |
 | **Firmware** | system prompt, system message, rules | The foundational behavioral rule layer — essentially immutable once defined. Loaded from `FIRMWARE.toml` as `FirmwareConfig`. Composed into the system prompt via `compose_firmware_text()`. Not the same as a raw "system prompt" — firmware is structured rules, the system prompt is the final composed text sent to the LLM. |

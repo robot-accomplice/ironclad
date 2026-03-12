@@ -539,120 +539,125 @@ jobs:
             --input <(echo "$dispatch")
 
   # ── Publish: Homebrew tap formula ──────────────────────
-  # update-homebrew:
-  #   name: Update Homebrew Tap
-  #   needs: [preflight, release]
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Download SHA256SUMS from release
-  #       env:
-  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #         VERSION: ${{ needs.preflight.outputs.version }}
-  #       run: |
-  #         gh release download "v${VERSION}" \
-  #           --repo robot-accomplice/ironclad \
-  #           --pattern "SHA256SUMS.txt" \
-  #           --dir .
+  # Requires:
+  #   - robot-accomplice/homebrew-ironclad repo exists with Formula/ directory
+  #   - HOMEBREW_TAP_PAT secret with push access to the tap repo
+  update-homebrew:
+    name: Update Homebrew Tap
+    needs: [preflight, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download SHA256SUMS from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          gh release download "v${VERSION}" \
+            --repo robot-accomplice/ironclad \
+            --pattern "SHA256SUMS.txt" \
+            --dir .
 
-  #     - name: Extract checksums
-  #       env:
-  #         VERSION: ${{ needs.preflight.outputs.version }}
-  #       run: |
-  #         extract_sha() {
-  #           grep "$1" SHA256SUMS.txt | awk '{print $1}'
-  #         }
-  #         {
-  #           echo "SHA_X86_64_DARWIN=$(extract_sha "ironclad-${VERSION}-x86_64-darwin.tar.gz")"
-  #           echo "SHA_AARCH64_DARWIN=$(extract_sha "ironclad-${VERSION}-aarch64-darwin.tar.gz")"
-  #           echo "SHA_X86_64_LINUX=$(extract_sha "ironclad-${VERSION}-x86_64-linux.tar.gz")"
-  #           echo "SHA_AARCH64_LINUX=$(extract_sha "ironclad-${VERSION}-aarch64-linux.tar.gz")"
-  #         } >> "$GITHUB_ENV"
+      - name: Extract checksums
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          extract_sha() {
+            grep "$1" SHA256SUMS.txt | awk '{print $1}'
+          }
+          {
+            echo "SHA_X86_64_DARWIN=$(extract_sha "ironclad-${VERSION}-x86_64-darwin.tar.gz")"
+            echo "SHA_AARCH64_DARWIN=$(extract_sha "ironclad-${VERSION}-aarch64-darwin.tar.gz")"
+            echo "SHA_X86_64_LINUX=$(extract_sha "ironclad-${VERSION}-x86_64-linux.tar.gz")"
+            echo "SHA_AARCH64_LINUX=$(extract_sha "ironclad-${VERSION}-aarch64-linux.tar.gz")"
+          } >> "$GITHUB_ENV"
 
-  #     - name: Checkout homebrew-ironclad tap
-  #       uses: actions/checkout@v4
-  #       with:
-  #         repository: robot-accomplice/homebrew-ironclad
-  #         token: ${{ secrets.HOMEBREW_TAP_PAT }}
-  #         path: homebrew-tap
+      - name: Checkout homebrew-ironclad tap
+        uses: actions/checkout@v4
+        with:
+          repository: robot-accomplice/homebrew-ironclad
+          token: ${{ secrets.HOMEBREW_TAP_PAT }}
+          path: homebrew-tap
 
-  #     - name: Update formula
-  #       env:
-  #         VERSION: ${{ needs.preflight.outputs.version }}
-  #       run: |
-  #         cat > homebrew-tap/Formula/ironclad.rb << 'STATIC_EOF'
-  #         # typed: false
-  #         # frozen_string_literal: true
+      - name: Update formula
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          cat > homebrew-tap/Formula/ironclad.rb << 'STATIC_EOF'
+          # typed: false
+          # frozen_string_literal: true
 
-  #         class Ironclad < Formula
-  #           desc "Autonomous agent runtime — single binary, streaming LLM, semantic caching, zero-trust A2A"
-  #           homepage "https://roboticus.ai"
-  #           license "Apache-2.0"
-  #         STATIC_EOF
+          class Ironclad < Formula
+            desc "Autonomous agent runtime — single binary, streaming LLM, semantic caching, zero-trust A2A"
+            homepage "https://roboticus.ai"
+            license "Apache-2.0"
+          STATIC_EOF
 
-  #         cat >> homebrew-tap/Formula/ironclad.rb << EOF
-  #           version "${VERSION}"
+          cat >> homebrew-tap/Formula/ironclad.rb << EOF
+            version "${VERSION}"
 
-  #           on_macos do
-  #             if Hardware::CPU.arm?
-  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-darwin.tar.gz"
-  #               sha256 "${SHA_AARCH64_DARWIN}"
-  #             else
-  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-darwin.tar.gz"
-  #               sha256 "${SHA_X86_64_DARWIN}"
-  #             end
-  #           end
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-darwin.tar.gz"
+                sha256 "${SHA_AARCH64_DARWIN}"
+              else
+                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-darwin.tar.gz"
+                sha256 "${SHA_X86_64_DARWIN}"
+              end
+            end
 
-  #           on_linux do
-  #             if Hardware::CPU.arm?
-  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-linux.tar.gz"
-  #               sha256 "${SHA_AARCH64_LINUX}"
-  #             else
-  #               url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-linux.tar.gz"
-  #               sha256 "${SHA_X86_64_LINUX}"
-  #             end
-  #           end
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-aarch64-linux.tar.gz"
+                sha256 "${SHA_AARCH64_LINUX}"
+              else
+                url "https://github.com/robot-accomplice/ironclad/releases/download/v${VERSION}/ironclad-${VERSION}-x86_64-linux.tar.gz"
+                sha256 "${SHA_X86_64_LINUX}"
+              end
+            end
 
-  #           def install
-  #             bin.install "ironclad"
-  #           end
+            def install
+              bin.install "ironclad"
+            end
 
-  #           test do
-  #             assert_match version.to_s, shell_output("#{bin}/ironclad version")
-  #           end
-  #         end
-  #         EOF
+            test do
+              assert_match version.to_s, shell_output("#{bin}/ironclad version")
+            end
+          end
+          EOF
 
-  #     - name: Commit and push formula
-  #       working-directory: homebrew-tap
-  #       env:
-  #         VERSION: ${{ needs.preflight.outputs.version }}
-  #       run: |
-  #         git config user.name "github-actions[bot]"
-  #         git config user.email "github-actions[bot]@users.noreply.github.com"
-  #         git add Formula/ironclad.rb
-  #         git diff --cached --quiet && echo "Formula unchanged" && exit 0
-  #         git commit -m "ironclad ${VERSION}"
-  #         git push
+      - name: Commit and push formula
+        working-directory: homebrew-tap
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/ironclad.rb
+          git diff --cached --quiet && echo "Formula unchanged" && exit 0
+          git commit -m "ironclad ${VERSION}"
+          git push
 
   # ── Publish: Winget manifest ───────────────────────────
-  # update-winget:
-  #   name: Update Winget Manifest
-  #   needs: [preflight, release]
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Submit to winget-pkgs
-  #       uses: vedantmgoyal9/winget-releaser@v2
-  #       with:
-  #         identifier: RobotAccomplice.Ironclad
-  #         version: ${{ needs.preflight.outputs.version }}
-  #         installers-regex: '\.zip$'
-  #         token: ${{ secrets.WINGET_TOKEN }}
-  #         max-versions-to-keep: 5
+  # Requires:
+  #   - WINGET_TOKEN secret with public_repo scope for winget-pkgs PRs
+  update-winget:
+    name: Update Winget Manifest
+    needs: [preflight, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Submit to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: RobotAccomplice.Ironclad
+          version: ${{ needs.preflight.outputs.version }}
+          installers-regex: '\.zip$'
+          token: ${{ secrets.WINGET_TOKEN }}
+          max-versions-to-keep: 5
 
   # ── Notify: release completion notification ───────────
   notify:
     name: Release Notification
-    needs: [preflight, build, publish, release, sync-site] #, update-homebrew, update-winget]
+    needs: [preflight, build, publish, release, sync-site, update-homebrew, update-winget]
     if: always()
     runs-on: ubuntu-latest
     env:

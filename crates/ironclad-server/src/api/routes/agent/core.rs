@@ -47,7 +47,7 @@ pub(super) struct InferenceInput<'a> {
     /// System prompt fragments from caller
     pub agent_name: String,
     pub agent_id: String,
-    pub soul_text: String,
+    pub os_text: String,
     pub firmware_text: String,
     pub primary_model: String,
     pub tier_adapt: TierAdaptConfig,
@@ -150,7 +150,9 @@ pub(super) async fn prepare_inference(
         &model_audit,
     )
     .await;
-    let _ = ironclad_db::sessions::update_model(&state.db, input.session_id, &model);
+    if let Err(e) = ironclad_db::sessions::update_model(&state.db, input.session_id, &model) {
+        tracing::warn!(session_id = %input.session_id, model = %model, error = %e, "failed to update session model");
+    }
 
     // Tier resolution
     let tier = {
@@ -219,7 +221,7 @@ pub(super) async fn prepare_inference(
         .map(|(_, m)| m)
         .unwrap_or(&model)
         .to_string();
-    let system_prompt = if input.soul_text.is_empty() {
+    let system_prompt = if input.os_text.is_empty() {
         format!(
             "You are {name}, an autonomous AI agent (id: {id}). \
              When asked who you are, always identify as {name}. \
@@ -228,7 +230,7 @@ pub(super) async fn prepare_inference(
             id = input.agent_id,
         )
     } else {
-        let mut prompt = input.soul_text.clone();
+        let mut prompt = input.os_text.clone();
         if !input.firmware_text.is_empty() {
             prompt.push_str("\n\n");
             prompt.push_str(&input.firmware_text);
@@ -353,6 +355,16 @@ pub(super) async fn prepare_inference(
             parts: None,
         });
     }
+
+    // Instruction anti-fade: inject compact directive reminder before the user
+    // message when conversation is long enough that system prompt instructions
+    // may have faded from the model's attention window (OPENDEV pattern).
+    if let Some(reminder) =
+        ironclad_agent::prompt::build_instruction_reminder(&input.os_text, &input.firmware_text)
+    {
+        ironclad_agent::context::inject_instruction_reminder(&mut messages, &reminder);
+    }
+
     // Prompt compression gate — only when enabled in config
     {
         let cfg = input.state.config.read().await;
@@ -688,7 +700,10 @@ async fn try_execution_shortcut(
             .join(", ");
         let subagent_total = match ironclad_db::agents::list_sub_agents(&state.db) {
             Ok(rows) => rows.into_iter().filter(|r| r.enabled).count(),
-            Err(_) => 0,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to list sub-agents for capability summary");
+                0
+            }
         };
         let primary_model = {
             let cfg = state.config.read().await;
@@ -711,7 +726,7 @@ async fn try_execution_shortcut(
         });
     }
 
-    // Outage-safe personality response from loaded soul/firmware identity.
+    // Outage-safe personality response from loaded OS/firmware identity.
     if requests_personality_profile(user_prompt) {
         let identity = {
             let cfg = state.config.read().await;
@@ -944,7 +959,7 @@ async fn try_execution_shortcut(
                 tool_results.push(("orchestrate-subagents".to_string(), format!("error: {err}")));
                 return Some(InferenceOutput {
                     content: format!(
-                        "Duncan here. I attempted delegated email triage but the task failed: {}. \
+                        "I attempted delegated email triage but the task failed: {}. \
                          If Proton Bridge is expected, I can probe himalaya/bridge readiness and retry immediately.",
                         err
                     ),
@@ -1490,7 +1505,8 @@ async fn try_execution_shortcut(
                         tool_results,
                     });
                 }
-                Err(_) => {
+                Err(e) => {
+                    tracing::warn!(model = %prepared_model, error = %e, "numeric inference failed; returning zero");
                     return Some(InferenceOutput {
                         content: "0".to_string(),
                         model: prepared_model.to_string(),
@@ -1905,13 +1921,14 @@ Please continue with a narrower or next-step command.",
                 total_cost += result.cost;
                 let retried = sanitize_model_output(result.content, state.hmac_secret.as_ref());
                 final_content = if is_overbroad_sensitive_conflict_refusal(&retried) {
-                    "Duncan here: “Fear is the mind-killer.” In this context, the point is to resist panic and choose disciplined judgment.".to_string()
+                    "“Fear is the mind-killer.” In this context, the point is to resist panic and choose disciplined judgment.".to_string()
                 } else {
                     retried
                 };
             }
-            Err(_) => {
-                final_content = "Duncan here: “Fear is the mind-killer.” In this context, the point is to resist panic and choose disciplined judgment.".to_string();
+            Err(e) => {
+                tracing::warn!(error = %e, "conflict-refusal quality retry failed; using deterministic fallback");
+                final_content = "“Fear is the mind-killer.” In this context, the point is to resist panic and choose disciplined judgment.".to_string();
             }
         }
     }
@@ -1974,7 +1991,8 @@ Please continue with a narrower or next-step command.",
                     final_content = deterministic_quality_fallback(user_prompt, &agent_name);
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                tracing::warn!(error = %e, "low-value quality retry failed; using deterministic fallback");
                 final_content = deterministic_quality_fallback(user_prompt, &agent_name);
             }
         }

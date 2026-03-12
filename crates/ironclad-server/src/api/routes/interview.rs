@@ -200,7 +200,14 @@ pub async fn finish_interview(
     session.pending_output = Some(parsed);
     session.awaiting_confirmation = true;
 
-    let pending = session.pending_output.as_ref().expect("just assigned");
+    let Some(pending) = session.pending_output.as_ref() else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({
+                "error": "pending output was not retained after generation",
+            })),
+        ));
+    };
     Ok(axum::Json(json!({
         "session_key": body.session_key,
         "status": "awaiting_confirmation",

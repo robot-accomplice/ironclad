@@ -8,7 +8,7 @@
 //! ## Key Types
 //!
 //! - [`AppState`] -- Shared application state passed to all route handlers
-//! - [`PersonalityState`] -- Loaded personality files (soul, firmware, identity)
+//! - [`PersonalityState`] -- Loaded personality files (OS, firmware, identity)
 //! - [`EventBus`] -- Tokio broadcast channel for WebSocket event push
 //!
 //! ## Modules
@@ -36,7 +36,9 @@ pub mod abuse;
 pub mod api;
 pub mod auth;
 pub mod cli;
+pub mod config_maintenance;
 pub mod config_runtime;
+mod cron_runtime;
 pub mod daemon;
 pub mod dashboard;
 pub mod migrate;
@@ -75,7 +77,7 @@ use ironclad_core::IroncladConfig;
 use ironclad_db::Database;
 use ironclad_llm::LlmService;
 use ironclad_llm::OAuthManager;
-use ironclad_wallet::WalletService;
+use ironclad_wallet::{WalletPaymentHandler, WalletService};
 
 use ironclad_agent::approvals::ApprovalManager;
 use ironclad_agent::obsidian::ObsidianVault;
@@ -214,7 +216,7 @@ pub async fn bootstrap_with_config_path(
 
     let personality_state = api::PersonalityState::from_workspace(&config.agent.workspace);
 
-    if !personality_state.soul_text.is_empty() {
+    if !personality_state.os_text.is_empty() {
         tracing::info!(
             personality = %personality_state.identity.name,
             generated_by = %personality_state.identity.generated_by,
@@ -253,6 +255,16 @@ pub async fn bootstrap_with_config_path(
         Err(e) => tracing::warn!(error = %e, "failed to seed quality tracker from history"),
     }
     let wallet = WalletService::new(&config).await?;
+
+    // Wire x402 payment handler: when the LLM client hits an HTTP 402, it
+    // signs an EIP-3009 authorization via the agent wallet and retries.
+    // The treasury policy enforces per-payment caps from configuration.
+    let wallet_arc = Arc::new(wallet.wallet.clone());
+    let treasury_policy = ironclad_wallet::treasury::TreasuryPolicy::new(&config.treasury);
+    let x402_handler =
+        Arc::new(WalletPaymentHandler::new(wallet_arc).with_treasury_policy(treasury_policy));
+    llm.set_payment_handler(x402_handler);
+
     let a2a = A2aProtocol::new(config.a2a.clone());
     let plugin_registry = plugins::init_plugin_registry(&config.plugins).await;
     let mut policy_engine = PolicyEngine::new();
@@ -907,10 +919,10 @@ pub async fn bootstrap_with_config_path(
 
     // Start cron worker
     {
-        let cron_db = state.db.clone();
         let instance_id = config.agent.id.clone();
+        let cron_state = state.clone();
         tokio::spawn(async move {
-            ironclad_schedule::run_cron_worker(cron_db, instance_id).await;
+            crate::cron_runtime::run_cron_worker(cron_state, instance_id).await;
         });
         tracing::info!("Cron worker spawned");
     }

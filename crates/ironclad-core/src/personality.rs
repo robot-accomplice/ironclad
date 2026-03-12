@@ -204,9 +204,12 @@ pub fn load_directives(workspace: &Path) -> Option<DirectivesConfig> {
 // Prompt composition -- assemble personality files into system prompt text
 // ---------------------------------------------------------------------------
 
-/// Full composition: identity + voice + firmware + operator + directives.
-/// Kept for backward compatibility; new code should prefer the split variants.
-pub fn compose_soul(
+/// Full composition: OS personality + firmware rules + operator + directives.
+/// Combines both the malleable personality layer (OS) and the hardened
+/// constraints (firmware) into a single text block for the system prompt.
+/// New code should prefer the split variants (`compose_identity_text` /
+/// `compose_firmware_text`) to keep the layers separate.
+pub fn compose_full_personality(
     os: Option<&OsConfig>,
     firmware: Option<&FirmwareConfig>,
     operator: Option<&OperatorConfig>,
@@ -729,19 +732,19 @@ mod tests {
     }
 
     #[test]
-    fn compose_soul_with_all_sections() {
+    fn compose_full_personality_with_all_sections() {
         let os: OsConfig = toml::from_str(DEFAULT_OS_TOML).unwrap();
         let fw: FirmwareConfig = toml::from_str(DEFAULT_FIRMWARE_TOML).unwrap();
-        let soul = compose_soul(Some(&os), Some(&fw), None, None);
-        assert!(soul.contains("Roboticus"));
-        assert!(soul.contains("YOU MUST:"));
-        assert!(soul.contains("YOU MUST NOT:"));
+        let full = compose_full_personality(Some(&os), Some(&fw), None, None);
+        assert!(full.contains("Roboticus"));
+        assert!(full.contains("YOU MUST:"));
+        assert!(full.contains("YOU MUST NOT:"));
     }
 
     #[test]
-    fn compose_soul_empty_when_no_files() {
-        let soul = compose_soul(None, None, None, None);
-        assert!(soul.is_empty());
+    fn compose_full_personality_empty_when_no_files() {
+        let full = compose_full_personality(None, None, None, None);
+        assert!(full.is_empty());
     }
 
     #[test]
@@ -780,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_soul_includes_voice_when_non_default() {
+    fn compose_full_personality_includes_voice_when_non_default() {
         let os_toml = r#"
 prompt_text = "I am a test bot."
 
@@ -795,24 +798,24 @@ humor = "dry"
 domain = "developer"
 "#;
         let os: OsConfig = toml::from_str(os_toml).unwrap();
-        let soul = compose_soul(Some(&os), None, None, None);
-        assert!(soul.contains("I am a test bot."));
-        assert!(soul.contains("## Voice Profile"));
-        assert!(soul.contains("Formality: formal"));
-        assert!(soul.contains("Proactiveness: initiative"));
-        assert!(soul.contains("Domain: developer"));
+        let full = compose_full_personality(Some(&os), None, None, None);
+        assert!(full.contains("I am a test bot."));
+        assert!(full.contains("## Voice Profile"));
+        assert!(full.contains("Formality: formal"));
+        assert!(full.contains("Proactiveness: initiative"));
+        assert!(full.contains("Domain: developer"));
         // Default fields should not appear
-        assert!(!soul.contains("Verbosity:"));
-        assert!(!soul.contains("Humor:"));
+        assert!(!full.contains("Verbosity:"));
+        assert!(!full.contains("Humor:"));
     }
 
     #[test]
-    fn compose_soul_skips_voice_when_all_default() {
+    fn compose_full_personality_skips_voice_when_all_default() {
         let os: OsConfig = toml::from_str(DEFAULT_OS_TOML).unwrap();
         // Roboticus has humor = "robotic" which is non-default
-        let soul = compose_soul(Some(&os), None, None, None);
-        assert!(soul.contains("## Voice Profile"));
-        assert!(soul.contains("Humor: robotic"));
+        let full = compose_full_personality(Some(&os), None, None, None);
+        assert!(full.contains("## Voice Profile"));
+        assert!(full.contains("Humor: robotic"));
     }
 
     #[test]
@@ -840,7 +843,7 @@ domain = "developer"
         let fw: FirmwareConfig = toml::from_str(DEFAULT_FIRMWARE_TOML).unwrap();
         let identity = compose_identity_text(Some(&os), None, None);
         let firmware = compose_firmware_text(Some(&fw));
-        let combined = compose_soul(Some(&os), Some(&fw), None, None);
+        let combined = compose_full_personality(Some(&os), Some(&fw), None, None);
 
         assert!(identity.contains("Roboticus"));
         assert!(!identity.contains("YOU MUST"));
@@ -1122,11 +1125,11 @@ this is not valid toml {{{
     }
 
     #[test]
-    fn compose_soul_firmware_only() {
+    fn compose_full_personality_firmware_only() {
         let fw: FirmwareConfig = toml::from_str(DEFAULT_FIRMWARE_TOML).unwrap();
-        let soul = compose_soul(None, Some(&fw), None, None);
-        assert!(soul.contains("Firmware"));
-        assert!(!soul.is_empty());
+        let full = compose_full_personality(None, Some(&fw), None, None);
+        assert!(full.contains("Firmware"));
+        assert!(!full.is_empty());
     }
 
     #[test]
@@ -1431,10 +1434,10 @@ name = "AltBot"
         assert_eq!(fw.rules.len(), 6);
     }
 
-    // ── compose_soul with operator + directives ──────────────────────
+    // ── compose_full_personality with operator + directives ──────────
 
     #[test]
-    fn compose_soul_full_with_operator_and_directives() {
+    fn compose_full_personality_with_operator_and_directives() {
         let os: OsConfig = toml::from_str(DEFAULT_OS_TOML).unwrap();
         let fw: FirmwareConfig = toml::from_str(DEFAULT_FIRMWARE_TOML).unwrap();
         let op = OperatorConfig {
@@ -1450,15 +1453,15 @@ name = "AltBot"
             }],
             context: "Production push.".into(),
         };
-        let soul = compose_soul(Some(&os), Some(&fw), Some(&op), Some(&dir));
-        assert!(soul.contains("Roboticus"));
-        assert!(soul.contains("YOU MUST"));
-        assert!(soul.contains("## Operator Context"));
-        assert!(soul.contains("I build robots"));
-        assert!(soul.contains("## Active Directives"));
-        assert!(soul.contains("Production push"));
-        assert!(soul.contains("## Missions"));
-        assert!(soul.contains("**Deploy** (ongoing)"));
+        let full = compose_full_personality(Some(&os), Some(&fw), Some(&op), Some(&dir));
+        assert!(full.contains("Roboticus"));
+        assert!(full.contains("YOU MUST"));
+        assert!(full.contains("## Operator Context"));
+        assert!(full.contains("I build robots"));
+        assert!(full.contains("## Active Directives"));
+        assert!(full.contains("Production push"));
+        assert!(full.contains("## Missions"));
+        assert!(full.contains("**Deploy** (ongoing)"));
     }
 
     // ── compose_identity_text: prompt_text empty branch ──────────────

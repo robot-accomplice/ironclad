@@ -71,7 +71,7 @@ Focus: ecosystem expansion and autonomous operations.
 - `cross-channel-operator` (telegram/discord/signal/email workflow support)
 - `policy-guardrail-designer`
 - `cost-anomaly-investigator` (inference cost spikes)
-- `knowledge-workflow-curator` (capture/index/retrieval hygiene)
+- `knowledge-workflow-curator` (retrieval hygiene only — capture/synthesis shipped in v0.9.6 learning loop)
 
 Exit criteria:
 

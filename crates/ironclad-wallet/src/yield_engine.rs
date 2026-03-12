@@ -265,11 +265,16 @@ async fn real_deposit(
     let signer: PrivateKeySigner = PrivateKeySigner::from_bytes(key_bytes.into())
         .map_err(|e| IroncladError::Wallet(format!("invalid private key: {e}")))?;
     let wallet = EthereumWallet::from(signer);
-    let provider = ProviderBuilder::new().wallet(wallet).on_http(
-        rpc_url
-            .parse()
-            .map_err(|e| IroncladError::Wallet(format!("invalid RPC URL: {e}")))?,
-    );
+    // with_recommended_fillers() adds ChainIdFiller, NonceFiller, and GasFiller
+    // for proper gas estimation and nonce management on-chain.
+    let provider = ProviderBuilder::new()
+        .with_recommended_fillers()
+        .wallet(wallet)
+        .on_http(
+            rpc_url
+                .parse()
+                .map_err(|e| IroncladError::Wallet(format!("invalid RPC URL: {e}")))?,
+        );
 
     let pool = IPool::new(pool_addr, &provider);
     let erc20 = IERC20::new(usdc_addr, &provider);
@@ -319,11 +324,14 @@ async fn real_withdraw(
     let signer: PrivateKeySigner = PrivateKeySigner::from_bytes(key_bytes.into())
         .map_err(|e| IroncladError::Wallet(format!("invalid private key: {e}")))?;
     let wallet = EthereumWallet::from(signer);
-    let provider = ProviderBuilder::new().wallet(wallet).on_http(
-        rpc_url
-            .parse()
-            .map_err(|e| IroncladError::Wallet(format!("invalid RPC URL: {e}")))?,
-    );
+    let provider = ProviderBuilder::new()
+        .with_recommended_fillers()
+        .wallet(wallet)
+        .on_http(
+            rpc_url
+                .parse()
+                .map_err(|e| IroncladError::Wallet(format!("invalid RPC URL: {e}")))?,
+        );
 
     let pool = IPool::new(pool_addr, &provider);
     let tx_hash = pool

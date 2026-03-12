@@ -92,7 +92,7 @@ auth_token_env = "GITHUB_MCP_TOKEN"
 |----------|-------------|
 | `IRONCLAD_OAUTH_CLIENT_ID` | Fallback OAuth client ID when not set in provider config or CLI flag |
 
-OAuth tokens are stored in `~/.ironclad/oauth_tokens.json` after `ironclad auth login`.
+OAuth tokens are stored in the encrypted keystore after `ironclad auth login`.
 
 ---
 

@@ -1,4 +1,4 @@
-<!-- last_updated: 2026-02-26, version: 0.8.0 -->
+<!-- last_updated: 2026-03-07, version: 0.9.5 -->
 # C4 Level 3: Component Diagram -- ironclad-server
 
 *Top-level binary crate that wires all other crates together: HTTP server (axum), REST API, embedded dashboard, WebSocket push, and application bootstrap.*
@@ -29,7 +29,7 @@ flowchart TB
         BOOT_3["3. Initialize SQLite DB +<br/>run migrations (ironclad-db)"]
         BOOT_4["4. Load/generate wallet (ironclad-wallet)"]
         BOOT_5["5. Generate cryptographic HMAC secret<br/>(OsRng, 32 bytes)"]
-        BOOT_6["6. Initialize LLM client pool +<br/>heuristic router + embedding client<br/>(ironclad-llm)"]
+        BOOT_6["6. Initialize LLM client pool +<br/>metascore router + embedding client<br/>(ironclad-llm)"]
         BOOT_6B["6b. Load persisted semantic cache<br/>from SQLite (ironclad-db/cache.rs)"]
         BOOT_7["7. Initialize agent loop +<br/>tool registry + MemoryRetriever<br/>(ironclad-agent)"]
         BOOT_8["8. Skills loaded on demand<br/>via POST /api/skills/reload"]

@@ -39,7 +39,7 @@ If no config file is specified, Ironclad looks for `~/.ironclad/ironclad.toml`. 
 
 Refuses to start on a non-localhost bind address without `[server] api_key` set.
 
-On startup, Ironclad `0.7.x` auto-migrates legacy provider URLs that still point to `http://127.0.0.1:8788/<provider>` to canonical direct provider base URLs (for example Anthropic/Google), writes the updated `ironclad.toml`, and keeps a one-time backup at `ironclad.toml.bak`.
+Use `ironclad update all` or `ironclad mechanic --repair` to migrate removed legacy provider URL patterns and config fields before runtime start. Runtime rejects unsupported legacy loopback provider URLs.
 
 Legacy loopback provider URLs are deprecated in `0.7.x` and removed in `0.8.0+`. In `0.8.0+`, startup fails fast if any `providers.*.url` still uses `127.0.0.1:8788/<provider>`, and operators must configure direct upstream provider base URLs.
 
@@ -380,6 +380,9 @@ Display the wallet's on-chain address.
 
 Check wallet balance.
 
+The balance view also reports the active revenue swap policy, including whether
+auto-swap is enabled and the default target asset/chain.
+
 ---
 
 ## Authentication
@@ -435,6 +438,22 @@ Set a config value in the config file, then immediately apply it to the running 
 |------|---------|-------------|
 | `-f, --file <path>` | `ironclad.toml` | Config file to modify |
 | `--no-apply` | `false` | Skip immediate runtime apply via `/api/config` |
+
+Revenue swap examples:
+
+```bash
+ironclad config set treasury.revenue_swap.enabled true
+ironclad config set treasury.revenue_swap.target_symbol PALM_USD
+ironclad config set treasury.revenue_swap.default_chain ETH
+ironclad config set treasury.revenue_swap.chains '[{ chain = "ETH", target_contract_address = "0xfaf0cee6b20e2aaa4b80748a6af4cd89609a3d78", swap_contract_address = "0x1C60785f0Fbc29cAf63DF85Aa84A9a44E665f7A1" }]'
+```
+
+When the target path already points to an array, `config set` also accepts a
+plain CSV list:
+
+```bash
+ironclad config set channels.startup_announcements telegram,signal,email
+```
 
 #### `ironclad config unset <PATH>`
 

@@ -50,6 +50,20 @@ impl LoadedSkill {
             LoadedSkill::Instruction(i, _, _) => Some(&i.description),
         }
     }
+
+    pub fn version(&self) -> &str {
+        match self {
+            LoadedSkill::Structured(m, _, _) => &m.version,
+            LoadedSkill::Instruction(i, _, _) => &i.version,
+        }
+    }
+
+    pub fn author(&self) -> &str {
+        match self {
+            LoadedSkill::Structured(m, _, _) => &m.author,
+            LoadedSkill::Instruction(i, _, _) => &i.author,
+        }
+    }
 }
 
 fn content_hash(data: &[u8]) -> String {
@@ -68,6 +82,38 @@ impl SkillLoader {
             return Ok(skills);
         }
 
+        Self::load_entries(dir, &mut skills)?;
+
+        // Recurse into immediate subdirectories (e.g. learned/, custom/).
+        match std::fs::read_dir(dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir()
+                        && let Err(e) = Self::load_entries(&path, &mut skills)
+                    {
+                        tracing::warn!(
+                            dir = %path.display(),
+                            error = %e,
+                            "failed to load skills from subdirectory, skipping"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "failed to enumerate skill subdirectories"
+                );
+            }
+        }
+
+        Ok(skills)
+    }
+
+    /// Load `.toml` and `.md` skill files from a single directory (non-recursive).
+    fn load_entries(dir: &Path, skills: &mut Vec<LoadedSkill>) -> Result<()> {
         let entries = std::fs::read_dir(dir)?;
 
         for entry in entries {
@@ -95,7 +141,7 @@ impl SkillLoader {
             }
         }
 
-        Ok(skills)
+        Ok(())
     }
 }
 
@@ -125,6 +171,10 @@ fn parse_instruction_md(content: &str, path: &Path) -> Result<InstructionSkill> 
         triggers: SkillTrigger,
         #[serde(default = "default_priority")]
         priority: u32,
+        #[serde(default)]
+        version: Option<String>,
+        #[serde(default)]
+        author: Option<String>,
     }
 
     fn default_priority() -> u32 {
@@ -144,6 +194,8 @@ fn parse_instruction_md(content: &str, path: &Path) -> Result<InstructionSkill> 
         triggers: fm.triggers,
         priority: fm.priority,
         body,
+        version: fm.version.unwrap_or_else(|| "0.0.0".into()),
+        author: fm.author.unwrap_or_else(|| "local".into()),
     })
 }
 
@@ -263,6 +315,8 @@ Always greet the user with enthusiasm and warmth.
                 },
                 priority: 5,
                 body: "Review the code.".into(),
+                version: "0.0.0".into(),
+                author: "local".into(),
             },
             "hash_a".into(),
             PathBuf::from("/tmp/hash_a"),
@@ -279,6 +333,8 @@ Always greet the user with enthusiasm and warmth.
                 },
                 priority: 5,
                 body: "Deploy the service.".into(),
+                version: "0.0.0".into(),
+                author: "local".into(),
             },
             "hash_b".into(),
             PathBuf::from("/tmp/hash_b"),
@@ -317,6 +373,8 @@ Always greet the user with enthusiasm and warmth.
             tool_chain: None,
             policy_overrides: None,
             script_path: None,
+            version: "1.0.0".into(),
+            author: "tester".into(),
         };
         let skill = LoadedSkill::Structured(
             manifest.clone(),
@@ -346,6 +404,8 @@ Always greet the user with enthusiasm and warmth.
             },
             priority: 5,
             body: "Greet warmly.".into(),
+            version: "0.0.0".into(),
+            author: "local".into(),
         };
         let skill =
             LoadedSkill::Instruction(instr, "def456".into(), PathBuf::from("/tmp/greet.md"));
@@ -419,6 +479,43 @@ Always greet the user with enthusiasm and warmth.
         assert!(skill.body.contains("Body content"));
     }
 
+    // ── Coverage for subdirectory loading ─────────────────────────
+
+    #[test]
+    fn skill_loader_recurses_into_subdirectories() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Top-level skill
+        let top_md = "---\nname: top_skill\ndescription: Top-level\n---\nTop body.";
+        fs::write(dir.path().join("top.md"), top_md).unwrap();
+
+        // Subdirectory skill (simulates learned/)
+        let sub_dir = dir.path().join("learned");
+        fs::create_dir(&sub_dir).unwrap();
+        let sub_md = "---\nname: learned_skill\ndescription: Auto-learned\n---\nLearned body.";
+        fs::write(sub_dir.join("auto.md"), sub_md).unwrap();
+
+        let skills = SkillLoader::load_from_dir(dir.path()).unwrap();
+        assert_eq!(skills.len(), 2);
+
+        let names: Vec<&str> = skills.iter().map(|s| s.name()).collect();
+        assert!(names.contains(&"top_skill"));
+        assert!(names.contains(&"learned_skill"));
+    }
+
+    #[test]
+    fn skill_loader_does_not_recurse_deeper_than_one_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("learned").join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        let deep_md = "---\nname: deep_skill\ndescription: Too deep\n---\nDeep body.";
+        fs::write(nested.join("deep.md"), deep_md).unwrap();
+
+        let skills = SkillLoader::load_from_dir(dir.path()).unwrap();
+        // Should NOT find the deeply nested skill
+        assert!(skills.is_empty());
+    }
+
     // ── Coverage for case-insensitive keyword matching ────────────
 
     #[test]
@@ -435,6 +532,8 @@ Always greet the user with enthusiasm and warmth.
                 },
                 priority: 5,
                 body: "test".into(),
+                version: "0.0.0".into(),
+                author: "local".into(),
             },
             "h".into(),
             PathBuf::from("/tmp/t"),

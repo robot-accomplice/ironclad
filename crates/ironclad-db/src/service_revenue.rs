@@ -66,19 +66,46 @@ pub struct RevenueOpportunityRecord {
     pub expected_revenue_usdc: f64,
     pub status: String,
     pub qualification_reason: Option<String>,
+    pub confidence_score: f64,
+    pub effort_score: f64,
+    pub risk_score: f64,
+    pub priority_score: f64,
+    pub recommended_approved: bool,
+    pub score_reason: Option<String>,
     pub plan_json: Option<String>,
     pub evidence_json: Option<String>,
     pub request_id: Option<String>,
     pub settlement_ref: Option<String>,
     pub settled_amount_usdc: Option<f64>,
+    pub attributable_costs_usdc: f64,
+    pub net_profit_usdc: Option<f64>,
+    pub tax_rate: f64,
+    pub tax_amount_usdc: f64,
+    pub retained_earnings_usdc: Option<f64>,
+    pub tax_destination_wallet: Option<String>,
+    pub settled_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
+pub struct RevenueSettlementAccounting<'a> {
+    pub attributable_costs_usdc: f64,
+    pub tax_rate: f64,
+    pub tax_amount_usdc: f64,
+    // retained_earnings_usdc is derived in the UPDATE SQL as MAX((?4-?5)-?7, 0.0)
+    // to enforce the accounting identity: retained = net_profit - tax.
+    pub tax_destination_wallet: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettlementResult {
     Settled,
     AlreadySettled,
+    /// The opportunity exists but is not in a valid state for settlement.
+    WrongState(String),
+    /// The opportunity was not found.
+    NotFound,
 }
 
 pub fn create_service_request(db: &Database, req: &NewServiceRequest<'_>) -> Result<()> {
@@ -186,6 +213,25 @@ pub fn mark_fulfilled(db: &Database, id: &str, fulfillment_output: &str) -> Resu
     Ok(updated > 0)
 }
 
+pub fn mark_service_request_failed(db: &Database, id: &str, reason: &str) -> Result<bool> {
+    let conn = db.conn();
+    let updated = conn
+        .execute(
+            "UPDATE service_requests \
+             SET status = ?2, failure_reason = ?3, updated_at = datetime('now') \
+             WHERE id = ?1 AND status IN (?4, ?5)",
+            rusqlite::params![
+                id,
+                STATUS_FAILED,
+                reason,
+                STATUS_QUOTED,
+                STATUS_PAYMENT_VERIFIED
+            ],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(updated > 0)
+}
+
 pub fn create_revenue_opportunity(db: &Database, opp: &NewRevenueOpportunity<'_>) -> Result<()> {
     let conn = db.conn();
     conn.execute(
@@ -214,7 +260,10 @@ pub fn get_revenue_opportunity(
     let mut stmt = conn
         .prepare(
             "SELECT id, source, strategy, payload_json, expected_revenue_usdc, status, qualification_reason, \
-                    plan_json, evidence_json, request_id, settlement_ref, settled_amount_usdc, created_at, updated_at \
+                    confidence_score, effort_score, risk_score, priority_score, recommended_approved, score_reason, \
+                    plan_json, evidence_json, request_id, settlement_ref, settled_amount_usdc, attributable_costs_usdc, \
+                    net_profit_usdc, tax_rate, tax_amount_usdc, retained_earnings_usdc, tax_destination_wallet, \
+                    settled_at, created_at, updated_at \
              FROM revenue_opportunities WHERE id = ?1",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -228,13 +277,26 @@ pub fn get_revenue_opportunity(
                 expected_revenue_usdc: row.get(4)?,
                 status: row.get(5)?,
                 qualification_reason: row.get(6)?,
-                plan_json: row.get(7)?,
-                evidence_json: row.get(8)?,
-                request_id: row.get(9)?,
-                settlement_ref: row.get(10)?,
-                settled_amount_usdc: row.get(11)?,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
+                confidence_score: row.get(7)?,
+                effort_score: row.get(8)?,
+                risk_score: row.get(9)?,
+                priority_score: row.get(10)?,
+                recommended_approved: row.get::<_, i64>(11)? != 0,
+                score_reason: row.get(12)?,
+                plan_json: row.get(13)?,
+                evidence_json: row.get(14)?,
+                request_id: row.get(15)?,
+                settlement_ref: row.get(16)?,
+                settled_amount_usdc: row.get(17)?,
+                attributable_costs_usdc: row.get(18)?,
+                net_profit_usdc: row.get(19)?,
+                tax_rate: row.get(20)?,
+                tax_amount_usdc: row.get(21)?,
+                retained_earnings_usdc: row.get(22)?,
+                tax_destination_wallet: row.get(23)?,
+                settled_at: row.get(24)?,
+                created_at: row.get(25)?,
+                updated_at: row.get(26)?,
             })
         })
         .optional()
@@ -310,7 +372,30 @@ pub fn settle_revenue_opportunity(
     id: &str,
     settlement_ref: &str,
     settled_amount_usdc: f64,
+    accounting: &RevenueSettlementAccounting<'_>,
 ) -> Result<SettlementResult> {
+    // Validate tax amount consistency: if a non-zero tax_rate is declared, the
+    // caller-supplied tax_amount_usdc must approximately match rate × net_profit.
+    // Tolerance: 1 cent absolute OR 5% relative, whichever is larger.
+    let net_profit = settled_amount_usdc - accounting.attributable_costs_usdc;
+    if accounting.tax_rate > 0.0 && net_profit > 0.0 {
+        let expected_tax = net_profit * accounting.tax_rate;
+        let abs_diff = (accounting.tax_amount_usdc - expected_tax).abs();
+        let tolerance = (0.01_f64).max(expected_tax * 0.05);
+        if abs_diff > tolerance {
+            return Ok(SettlementResult::WrongState(format!(
+                "tax_amount_usdc ({:.4}) does not match tax_rate ({}) × net_profit ({:.4}) = {:.4}; diff={:.4} exceeds tolerance {:.4}",
+                accounting.tax_amount_usdc,
+                accounting.tax_rate,
+                net_profit,
+                expected_tax,
+                abs_diff,
+                tolerance
+            )));
+        }
+    }
+
+    let settlement_ref = settlement_ref.trim();
     let conn = db.conn();
     let tx = conn
         .unchecked_transaction()
@@ -325,35 +410,64 @@ pub fn settle_revenue_opportunity(
         .optional()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     let Some((status, existing_ref)) = existing else {
-        return Err(IroncladError::Database(format!(
-            "revenue opportunity '{id}' not found"
-        )));
+        tx.commit()
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        return Ok(SettlementResult::NotFound);
     };
     if status.eq_ignore_ascii_case(OPPORTUNITY_STATUS_SETTLED)
-        && existing_ref.as_deref() == Some(settlement_ref)
+        && existing_ref.as_deref().map(str::trim) == Some(settlement_ref)
     {
         tx.commit()
             .map_err(|e| IroncladError::Database(e.to_string()))?;
         return Ok(SettlementResult::AlreadySettled);
     }
-    let updated = tx
-        .execute(
-            "UPDATE revenue_opportunities \
-             SET status = ?2, settlement_ref = ?3, settled_amount_usdc = ?4, updated_at = datetime('now') \
-             WHERE id = ?1 AND status = ?5",
-            rusqlite::params![
-                id,
-                OPPORTUNITY_STATUS_SETTLED,
-                settlement_ref,
-                settled_amount_usdc,
-                OPPORTUNITY_STATUS_FULFILLED
-            ],
-        )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    if status.eq_ignore_ascii_case(OPPORTUNITY_STATUS_SETTLED) {
+        tx.commit()
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        return Ok(SettlementResult::WrongState(format!(
+            "revenue opportunity '{}' is already settled with a different settlement_ref",
+            id,
+        )));
+    }
+    let updated = match tx.execute(
+        "UPDATE revenue_opportunities \
+         SET status = ?2, settlement_ref = ?3, settled_amount_usdc = ?4, attributable_costs_usdc = ?5, \
+             net_profit_usdc = (?4 - ?5), tax_rate = ?6, tax_amount_usdc = ?7, \
+             retained_earnings_usdc = MAX((?4 - ?5) - ?7, 0.0), \
+             tax_destination_wallet = ?8, settled_at = datetime('now'), updated_at = datetime('now') \
+         WHERE id = ?1 AND status = ?9",
+        rusqlite::params![
+            id,
+            OPPORTUNITY_STATUS_SETTLED,
+            settlement_ref,
+            settled_amount_usdc,
+            accounting.attributable_costs_usdc,
+            accounting.tax_rate,
+            accounting.tax_amount_usdc,
+            accounting.tax_destination_wallet,
+            OPPORTUNITY_STATUS_FULFILLED
+        ],
+    ) {
+        Ok(n) => n,
+        Err(rusqlite::Error::SqliteFailure(err, _))
+            if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            tx.commit()
+                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            return Ok(SettlementResult::WrongState(format!(
+                "settlement_ref '{}' is already used by another revenue opportunity",
+                settlement_ref
+            )));
+        }
+        Err(e) => return Err(IroncladError::Database(e.to_string())),
+    };
     if updated == 0 {
-        return Err(IroncladError::Database(
-            "revenue opportunity must be fulfilled before settlement".to_string(),
-        ));
+        tx.commit()
+            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        return Ok(SettlementResult::WrongState(format!(
+            "revenue opportunity '{}' is in status '{}'; must be '{}' before settlement",
+            id, status, OPPORTUNITY_STATUS_FULFILLED
+        )));
     }
     tx.commit()
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -434,15 +548,100 @@ mod tests {
         assert!(plan_revenue_opportunity(&db, "ro_1", r#"{"executor":"self"}"#).unwrap());
         assert!(mark_revenue_opportunity_fulfilled(&db, "ro_1", r#"{"proof":"ok"}"#).unwrap());
         assert_eq!(
-            settle_revenue_opportunity(&db, "ro_1", "tx_1", 2.5).unwrap(),
+            settle_revenue_opportunity(
+                &db,
+                "ro_1",
+                "tx_1",
+                2.5,
+                &RevenueSettlementAccounting {
+                    attributable_costs_usdc: 0.5,
+                    tax_rate: 0.1,
+                    tax_amount_usdc: 0.2,
+                    tax_destination_wallet: Some("0x123"),
+                },
+            )
+            .unwrap(),
             SettlementResult::Settled
         );
         assert_eq!(
-            settle_revenue_opportunity(&db, "ro_1", "tx_1", 2.5).unwrap(),
+            settle_revenue_opportunity(
+                &db,
+                "ro_1",
+                "tx_1",
+                2.5,
+                &RevenueSettlementAccounting {
+                    attributable_costs_usdc: 0.5,
+                    tax_rate: 0.1,
+                    tax_amount_usdc: 0.2,
+                    tax_destination_wallet: Some("0x123"),
+                },
+            )
+            .unwrap(),
             SettlementResult::AlreadySettled
         );
         let row = get_revenue_opportunity(&db, "ro_1").unwrap().unwrap();
         assert_eq!(row.status, OPPORTUNITY_STATUS_SETTLED);
         assert_eq!(row.settlement_ref.as_deref(), Some("tx_1"));
+        assert!((row.attributable_costs_usdc - 0.5).abs() < f64::EPSILON);
+        assert_eq!(row.tax_destination_wallet.as_deref(), Some("0x123"));
+    }
+
+    #[test]
+    fn settle_rejects_mismatched_tax_amount() {
+        let db = test_db();
+        create_revenue_opportunity(
+            &db,
+            &NewRevenueOpportunity {
+                id: "ro_tax",
+                source: "test",
+                strategy: "micro_bounty",
+                payload_json: "{}",
+                expected_revenue_usdc: 10.0,
+                request_id: None,
+            },
+        )
+        .unwrap();
+        assert!(qualify_revenue_opportunity(&db, "ro_tax", true, Some("ok")).unwrap());
+        assert!(plan_revenue_opportunity(&db, "ro_tax", "{}").unwrap());
+        assert!(mark_revenue_opportunity_fulfilled(&db, "ro_tax", "{}").unwrap());
+        // settled_amount=10, costs=2, net=8, rate=0.1 → expected tax=0.8
+        // But caller supplies tax_amount=0.0 — should be rejected
+        let result = settle_revenue_opportunity(
+            &db,
+            "ro_tax",
+            "tx_bad",
+            10.0,
+            &RevenueSettlementAccounting {
+                attributable_costs_usdc: 2.0,
+                tax_rate: 0.1,
+                tax_amount_usdc: 0.0, // should be ~0.8
+                tax_destination_wallet: Some("0xdest"),
+            },
+        )
+        .unwrap();
+        match result {
+            SettlementResult::WrongState(msg) => {
+                assert!(
+                    msg.contains("tax_amount_usdc"),
+                    "expected tax mismatch error: {msg}"
+                );
+            }
+            other => panic!("expected WrongState, got {other:?}"),
+        }
+        // Correct tax amount should succeed
+        let result = settle_revenue_opportunity(
+            &db,
+            "ro_tax",
+            "tx_good",
+            10.0,
+            &RevenueSettlementAccounting {
+                attributable_costs_usdc: 2.0,
+                tax_rate: 0.1,
+                tax_amount_usdc: 0.8,
+                tax_destination_wallet: Some("0xdest"),
+            },
+        )
+        .unwrap();
+        assert_eq!(result, SettlementResult::Settled);
     }
 }

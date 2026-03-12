@@ -325,6 +325,11 @@ enum MemoryCmd {
 enum ScheduleCmd {
     /// List scheduled tasks
     List,
+    /// Execute a scheduled task once immediately
+    Run {
+        /// Cron job name or ID
+        job: String,
+    },
     /// Re-enable paused cron jobs after unknown-action containment
     Recover {
         /// Re-enable all paused jobs
@@ -876,6 +881,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Some(Commands::Schedule(sub)) => match sub {
             ScheduleCmd::List => cli::cmd_schedule_list(url).await,
+            ScheduleCmd::Run { job } => cli::cmd_schedule_run(url, &job).await,
             ScheduleCmd::Recover {
                 all,
                 names,
@@ -1213,7 +1219,7 @@ async fn cmd_auth_login(
 
     let ok = t.icon_ok();
     eprintln!("\n  {ok} {a}Successfully authenticated with {provider}{r}");
-    eprintln!("  {d}Tokens stored in ~/.ironclad/oauth_tokens.json{r}\n");
+    eprintln!("  {d}Tokens stored in the encrypted keystore{r}\n");
     eprintln!("  {d}To use OAuth auth, set auth_mode = \"oauth\" in your provider config:{r}");
     eprintln!("  {d}  [providers.{provider}]{r}");
     eprintln!("  {d}  auth_mode = \"oauth\"{r}\n");
@@ -2347,7 +2353,7 @@ primary = "ollama/qwen3:8b"
 fallbacks = []
 
 [models.routing]
-mode = "heuristic"
+mode = "metascore"
 confidence_threshold = 0.9
 local_first = true
 

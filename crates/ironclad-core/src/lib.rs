@@ -16,7 +16,7 @@
 //! - `config` -- Configuration structs, TOML parsing, tilde expansion, validation
 //! - `error` -- `IroncladError` enum and `Result` type alias
 //! - `keystore` -- Encrypted JSON file store with machine-key auto-unlock
-//! - `personality` -- OS/soul/firmware personality loading from workspace
+//! - `personality` -- OS/firmware personality loading from workspace
 //! - `style` -- Terminal theme (CRT, typewriter effect, icons)
 //! - `types` -- Shared domain enums: `SurvivalTier`, `AgentState`, `ApiFormat`,
 //!   `ModelTier`, `PolicyDecision`, `RiskLevel`, `SkillManifest`, etc.

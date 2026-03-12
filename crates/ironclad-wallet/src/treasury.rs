@@ -91,7 +91,14 @@ impl TreasuryPolicy {
                 reason: format!("payment amount must be positive, got {new_amount}"),
             });
         }
-        let projected = Money::from_dollars(recent_hourly_total)? + new_amt;
+        let hourly_total = Money::from_dollars(recent_hourly_total)?;
+        if hourly_total < Money::zero() {
+            return Err(IroncladError::Policy {
+                rule: "negative_total".into(),
+                reason: format!("hourly total must be non-negative, got {recent_hourly_total}"),
+            });
+        }
+        let projected = hourly_total + new_amt;
         if projected > limit {
             warn!(
                 projected = projected.dollars(),
@@ -119,7 +126,14 @@ impl TreasuryPolicy {
                 reason: format!("payment amount must be positive, got {new_amount}"),
             });
         }
-        let projected = Money::from_dollars(recent_daily_total)? + new_amt;
+        let daily_total = Money::from_dollars(recent_daily_total)?;
+        if daily_total < Money::zero() {
+            return Err(IroncladError::Policy {
+                rule: "negative_total".into(),
+                reason: format!("daily total must be non-negative, got {recent_daily_total}"),
+            });
+        }
+        let projected = daily_total + new_amt;
         if projected > limit {
             warn!(
                 projected = projected.dollars(),
@@ -139,7 +153,14 @@ impl TreasuryPolicy {
     }
 
     pub fn check_minimum_reserve(&self, current_balance: f64, amount: f64) -> Result<()> {
-        let remaining = Money::from_dollars(current_balance)? - Money::from_dollars(amount)?;
+        let amt = Money::from_dollars(amount)?;
+        if amt < Money::zero() {
+            return Err(IroncladError::Policy {
+                rule: "negative_amount".into(),
+                reason: format!("payment amount must be non-negative, got {amount}"),
+            });
+        }
+        let remaining = Money::from_dollars(current_balance)? - amt;
         let reserve = Money::from_dollars(self.minimum_reserve)?;
         if remaining < reserve {
             warn!(
@@ -213,6 +234,7 @@ mod tests {
             daily_transfer_limit: 2000.0,
             minimum_reserve: 5.0,
             daily_inference_budget: 50.0,
+            revenue_swap: Default::default(),
         })
     }
 
@@ -350,9 +372,18 @@ mod tests {
     }
 
     #[test]
-    fn negative_amount_minimum_reserve_rejected() {
+    fn overdraft_minimum_reserve_rejected() {
         let policy = default_policy();
         assert!(policy.check_minimum_reserve(10.0, 15.0).is_err());
+    }
+
+    #[test]
+    fn negative_amount_minimum_reserve_rejected() {
+        let policy = default_policy();
+        // A negative amount would bypass the reserve check by *adding* to
+        // the balance — the guard must catch it.
+        let err = policy.check_minimum_reserve(10.0, -5.0).unwrap_err();
+        assert!(err.to_string().contains("negative_amount"));
     }
 
     #[test]
@@ -371,6 +402,7 @@ mod tests {
             daily_transfer_limit: 0.0,
             minimum_reserve: 0.0,
             daily_inference_budget: 0.0,
+            revenue_swap: Default::default(),
         });
         assert!(policy.check_per_payment(0.01).is_err());
         assert!(policy.check_per_payment(1.0).is_err());
@@ -625,6 +657,7 @@ mod tests {
             daily_transfer_limit: 100_000_000.0,
             minimum_reserve: 0.0,
             daily_inference_budget: 1_000_000.0,
+            revenue_swap: Default::default(),
         });
         assert!(policy.check_per_payment(999_999.99).is_ok());
         assert!(policy.check_per_payment(1_000_000.0).is_ok());

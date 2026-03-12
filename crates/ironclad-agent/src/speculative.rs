@@ -53,8 +53,15 @@ pub struct SpeculationSlotGuard {
 
 impl Drop for SpeculationSlotGuard {
     fn drop(&mut self) {
-        self.active_count
+        // Saturating decrement: guard is created by reserve_slot which always
+        // increments first, but we defend against double-drop or misuse.
+        let prev = self
+            .active_count
             .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        debug_assert!(
+            prev > 0,
+            "SpeculationSlotGuard dropped with count already 0"
+        );
     }
 }
 
@@ -144,9 +151,27 @@ impl SpeculationCache {
     }
 
     /// Release a speculation slot.
+    ///
+    /// Saturates at zero: calling this when no slots are active is a no-op
+    /// rather than wrapping `usize` to `MAX`.
     pub fn end_speculation(&self) {
-        self.active_count
-            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        // CAS loop: decrement only if current value > 0.
+        let mut current = self.active_count.load(std::sync::atomic::Ordering::Acquire);
+        loop {
+            if current == 0 {
+                tracing::debug!("end_speculation called with no active slots — no-op");
+                return;
+            }
+            match self.active_count.compare_exchange_weak(
+                current,
+                current - 1,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(updated) => current = updated,
+            }
+        }
     }
 
     pub fn active_count(&self) -> usize {

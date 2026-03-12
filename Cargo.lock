@@ -103,6 +103,7 @@ dependencies = [
  "alloy-network",
  "alloy-provider",
  "alloy-rpc-client",
+ "alloy-rpc-types",
  "alloy-serde",
  "alloy-signer",
  "alloy-signer-local",
@@ -426,6 +427,18 @@ dependencies = [
  "tracing",
  "url",
  "wasmtimer",
+]
+
+[[package]]
+name = "alloy-rpc-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3410a472ce26c457e9780f708ee6bd540b30f88f1f31fdab7a11d00bd6aa1aee"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rpc-types-eth",
+ "alloy-serde",
+ "serde",
 ]
 
 [[package]]
@@ -3280,7 +3293,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-agent"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3313,7 +3326,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-browser"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "futures-util",
  "ironclad-core",
@@ -3327,7 +3340,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-channels"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "aes-gcm",
  "async-imap",
@@ -3359,7 +3372,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-core"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3377,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-db"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "chrono",
  "instant-distance",
@@ -3393,7 +3406,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-harness"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "assert_cmd",
  "axum",
@@ -3424,7 +3437,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-llm"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "base64",
  "bytes",
@@ -3444,7 +3457,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-plugin-sdk"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "async-trait",
  "hex",
@@ -3462,7 +3475,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-schedule"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3480,7 +3493,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-server"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "assert_cmd",
  "async-stream",
@@ -3528,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-tests"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "axum",
  "chrono",
@@ -3553,7 +3566,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-wallet"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -4740,9 +4753,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.13"
+version = "0.11.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1906b49b0c3bc04b5fe5d86a77925ae6524a19b816ae38ce1e426255f1d8a31"
+checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",

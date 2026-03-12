@@ -2253,7 +2253,7 @@
       if (!job || !job.payload_json) return '';
       try {
         var payload = JSON.parse(job.payload_json);
-        return String(payload.message || '').trim();
+        return String(payload.task || payload.prompt || payload.message || '').trim();
       } catch (_) {
         return '';
       }
@@ -2925,14 +2925,224 @@
     },
 
     _TOKEN_ICONS: { ETH: '\u039e', MATIC: '\u25c6', USDC: '\u0024', USDT: '\u0024', DAI: '\u25c7', WETH: '\u039e', WBTC: '\u20bf', cbBTC: '\u20bf' },
+    _renderRevenueSwapSummaryCard: function(revenueSwap) {
+      var cfg = revenueSwap || {};
+      var enabled = cfg.enabled !== false;
+      var target = cfg.target_symbol || 'PALM_USD';
+      var chain = cfg.default_chain || 'ETH';
+      var chains = Array.isArray(cfg.chains) ? cfg.chains : [];
+      var chainRows = chains.map(function(entry) {
+        var swapContract = entry.swap_contract_address
+          ? '<div style="font-size:0.625rem;color:var(--muted);margin-top:0.2rem">Swap contract: <span class="card-mono">' + esc(entry.swap_contract_address) + '</span></div>'
+          : '<div style="font-size:0.625rem;color:var(--muted);margin-top:0.2rem">Swap contract: <span class="card-mono">custom/no override</span></div>';
+        return '<div class="settings-nested" style="margin-top:0.6rem">'
+          + '<div class="settings-row"><div class="settings-label">' + esc(entry.chain || 'UNSPECIFIED') + '</div><div class="card-mono" style="font-size:0.7rem;word-break:break-all">' + esc(entry.target_contract_address || '\u2014') + '</div></div>'
+          + swapContract
+          + '</div>';
+      }).join('');
+      if (!chainRows) chainRows = '<div style="font-size:0.75rem;color:var(--muted);padding-top:0.35rem">No chain targets configured.</div>';
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Swap Policy</div>'
+        + '<div class="settings-row"><div class="settings-label">Auto-swap</div><div style="font-family:var(--font-mono)">' + (enabled ? 'enabled' : 'disabled') + '</div></div>'
+        + '<div class="settings-row"><div class="settings-label">Default target</div><div style="font-family:var(--font-mono)">' + esc(target) + '</div></div>'
+        + '<div class="settings-row"><div class="settings-label">Default chain</div><div style="font-family:var(--font-mono)">' + esc(chain) + '</div></div>'
+        + chainRows
+        + '</div>';
+    },
+    _renderRevenueStrategySummaryCard: function(rows) {
+      var items = Array.isArray(rows) ? rows : [];
+      var body = items.length
+        ? items.map(function(row) {
+            return '<div class="settings-row">'
+              + '<div><div style="font-weight:600;font-size:0.8125rem">' + esc(row.strategy || 'unknown') + '</div><div style="font-size:0.625rem;color:var(--muted)">' + esc(String(row.settled_jobs || 0)) + ' settled / ' + esc(String(row.total_jobs || 0)) + ' total</div></div>'
+              + '<div style="text-align:right;font-family:var(--font-mono)"><div>$' + Number(row.net_profit_usdc || 0).toFixed(2) + '</div><div style="font-size:0.625rem;color:var(--muted)">priority ' + Number(row.avg_priority_score || 0).toFixed(1) + '</div></div>'
+              + '</div>';
+          }).join('')
+        : '<div style="font-size:0.75rem;color:var(--muted)">No settled strategy data yet.</div>';
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Strategy Summary</div>' + body + '</div>';
+    },
+    _renderRevenueFeedbackSummaryCard: function(rows) {
+      var items = Array.isArray(rows) ? rows : [];
+      var body = items.length
+        ? items.map(function(row) {
+            return '<div class="settings-row">'
+              + '<div><div style="font-weight:600;font-size:0.8125rem">' + esc(row.strategy || 'unknown') + '</div><div style="font-size:0.625rem;color:var(--muted)">' + esc(String(row.feedback_count || 0)) + ' feedback signals</div></div>'
+              + '<div style="text-align:right;font-family:var(--font-mono)"><div>' + Number(row.avg_grade || 0).toFixed(2) + ' / 5.00</div><div style="font-size:0.625rem;color:var(--muted)">' + esc((row.latest_feedback_at || '').replace('T', ' ').slice(0, 19) || '\u2014') + '</div></div>'
+              + '</div>';
+          }).join('')
+        : '<div style="font-size:0.75rem;color:var(--muted)">No feedback recorded yet.</div>';
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Feedback Summary</div>' + body + '</div>';
+    },
+    _renderSeedExerciseReadinessCard: function(readiness) {
+      var r = readiness || {};
+      var ready = !!r.meets_seed_target;
+      var reserve = !!r.minimum_reserve_configured;
+      var swapEnabled = !!r.swap_enabled;
+      var targetOk = !!r.default_chain_has_target_contract;
+      var swapOk = !!r.default_chain_has_swap_contract;
+      var target = Number(r.seed_target_usdc || 50);
+      var stable = Number(r.stable_balance_usdc || 0);
+      var defaultChain = r.default_chain || 'ETH';
+      var checks = [
+        ['Stable balance', stable.toFixed(2) + ' / ' + target.toFixed(2) + ' USDC', ready],
+        ['Minimum reserve', reserve ? 'configured' : 'missing', reserve],
+        ['Auto-swap', swapEnabled ? 'enabled' : 'disabled', swapEnabled],
+        ['Target contract', targetOk ? 'configured' : 'missing', targetOk],
+        ['Swap contract', swapOk ? 'configured' : 'missing', swapOk]
+      ];
+      var rows = checks.map(function(check) {
+        return '<div class="settings-row">'
+          + '<div class="settings-label">' + esc(check[0]) + '</div>'
+          + '<div style="display:flex;align-items:center;gap:0.5rem"><span class="badge ' + (check[2] ? 'success' : 'warn') + '">' + esc(check[1]) + '</span></div>'
+          + '</div>';
+      }).join('');
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">$50 Seed Readiness</div>'
+        + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">Default chain: <span class="card-mono">' + esc(defaultChain) + '</span></div>'
+        + rows
+        + '</div>';
+    },
+    _renderSeedExerciseProgressCard: function(progress) {
+      var p = progress || {};
+      var phases = [
+        ['Phase 1: seeded + visible', !!p.phase_1_seeded_and_visible],
+        ['Phase 1: target met', !!p.phase_1_meets_target],
+        ['Phase 2: revenue cycle complete', !!p.phase_2_revenue_cycle_complete],
+        ['Phase 3: swap submitted', !!p.phase_3_swap_submitted],
+        ['Phase 3: swap reconciled', !!p.phase_3_swap_reconciled],
+        ['Phase 3: tax submitted', !!p.phase_3_tax_submitted],
+        ['Phase 3: tax reconciled', !!p.phase_3_tax_reconciled],
+        ['Phase 4: mechanic clear', !!p.phase_4_mechanic_clear]
+      ];
+      var rows = phases.map(function(phase) {
+        return '<div class="settings-row">'
+          + '<div class="settings-label">' + esc(phase[0]) + '</div>'
+          + '<div><span class="badge ' + (phase[1] ? 'success' : 'warn') + '">' + (phase[1] ? 'done' : 'pending') + '</span></div>'
+          + '</div>';
+      }).join('');
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Seed Exercise Progress</div>'
+        + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">Next action: ' + esc(p.next_action || 'no action available') + '</div>'
+        + rows
+        + '</div>';
+    },
+    _renderSeedExercisePlanCard: function(plan) {
+      var p = plan || {};
+      var phases = Array.isArray(p.phases) ? p.phases : [];
+      var phaseRows = phases.length
+        ? phases.map(function(phase) {
+            return '<div class="settings-nested" style="margin-top:0.6rem">'
+              + '<div class="settings-row"><div class="settings-label">' + esc(phase.label || phase.id || 'phase') + '</div><div><span class="badge">' + esc(String(Number(phase.max_spend_usdc || 0).toFixed(2))) + ' USDC cap</span></div></div>'
+              + '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.35rem">' + esc(phase.goal || '') + '</div>'
+              + '<div style="font-size:0.6875rem;color:var(--muted);margin-top:0.35rem">Success signal: ' + esc(phase.success_signal || '') + '</div>'
+              + '</div>';
+          }).join('')
+        : '<div style="font-size:0.75rem;color:var(--muted)">No seed exercise plan is available.</div>';
+      var aborts = Array.isArray(p.abort_conditions) ? p.abort_conditions : [];
+      var guidance = Array.isArray(p.operator_guidance) ? p.operator_guidance : [];
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">$50 Seed Exercise Plan</div>'
+        + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">Constrained live-funds validation plan for treasury, settlement, routing, and repair.</div>'
+        + phaseRows
+        + '<div style="margin-top:0.9rem;font-size:0.75rem;color:var(--muted)">Abort conditions</div>'
+        + (aborts.length ? '<ul style="margin:0.35rem 0 0 1rem;padding:0;color:var(--text)">' + aborts.map(function(item) { return '<li style="margin:0.3rem 0">' + esc(item) + '</li>'; }).join('') + '</ul>' : '<div style="font-size:0.75rem;color:var(--muted)">No abort conditions defined.</div>')
+        + '<div style="margin-top:0.9rem;font-size:0.75rem;color:var(--muted)">Operator guidance</div>'
+        + (guidance.length ? '<ul style="margin:0.35rem 0 0 1rem;padding:0;color:var(--text)">' + guidance.map(function(item) { return '<li style="margin:0.3rem 0">' + esc(item) + '</li>'; }).join('') + '</ul>' : '<div style="font-size:0.75rem;color:var(--muted)">No operator guidance defined.</div>')
+        + '</div>';
+    },
+    _renderRevenueSwapTasksCard: function(rows) {
+      var items = Array.isArray(rows) ? rows : [];
+      var body = items.length
+        ? '<div class="table-wrap"><table><thead><tr><th>Opportunity</th><th>Status</th><th>Target</th><th>Tx</th><th>Updated</th><th>Actions</th></tr></thead><tbody>'
+          + items.map(function(row) {
+              var source = row.source || {};
+              var target = (source.target_asset || 'unknown') + ' on ' + (source.target_chain || 'unknown');
+              var txHash = source.swap_tx_hash
+                ? '<span class="card-mono" style="font-size:0.625rem">' + esc(String(source.swap_tx_hash).slice(0, 18)) + '\u2026</span>'
+                : '<span style="color:var(--muted)">\u2014</span>';
+              var updated = row.updated_at ? String(row.updated_at).replace('T', ' ').slice(0, 19) : '\u2014';
+              var actions = [];
+              if (row.status === 'pending') {
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="swap" data-revenue-task-action="start" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Start</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="swap" data-revenue-task-action="submit" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Submit</button>');
+              } else if (row.status === 'in_progress') {
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="swap" data-revenue-task-action="reconcile" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Reconcile</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="swap" data-revenue-task-action="confirm" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Confirm</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="swap" data-revenue-task-action="fail" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Fail</button>');
+              }
+              return '<tr>'
+                + '<td><div style="font-weight:600">' + esc(row.opportunity_id || row.id || 'unknown') + '</div><div style="font-size:0.625rem;color:var(--muted)">' + esc(row.title || '') + '</div></td>'
+                + '<td>' + esc(row.status || 'unknown') + '</td>'
+                + '<td>' + esc(target) + '</td>'
+                + '<td>' + txHash + '</td>'
+                + '<td style="color:var(--muted)">' + esc(updated) + '</td>'
+                + '<td><div style="display:flex;flex-wrap:wrap;gap:0.25rem">' + (actions.join('') || '<span style="color:var(--muted)">—</span>') + '</div></td>'
+                + '</tr>';
+            }).join('')
+          + '</tbody></table></div>'
+        : '<div style="font-size:0.75rem;color:var(--muted)">No revenue swap tasks yet.</div>';
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Swap Tasks</div>' + body + '</div>';
+    },
+    _renderRevenueTaxTasksCard: function(rows) {
+      var items = Array.isArray(rows) ? rows : [];
+      var body = items.length
+        ? '<div class="table-wrap"><table><thead><tr><th>Opportunity</th><th>Status</th><th>Destination</th><th>Tx</th><th>Updated</th><th>Actions</th></tr></thead><tbody>'
+          + items.map(function(row) {
+              var source = row.source || {};
+              var dest = (source.destination_wallet || 'unknown') + ' on ' + (source.target_chain || 'unknown');
+              var txHash = source.tax_tx_hash
+                ? '<span class="card-mono" style="font-size:0.625rem">' + esc(String(source.tax_tx_hash).slice(0, 18)) + '…</span>'
+                : '<span style="color:var(--muted)">—</span>';
+              var updated = row.updated_at ? String(row.updated_at).replace('T', ' ').slice(0, 19) : '—';
+              var actions = [];
+              if (row.status === 'pending') {
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="tax" data-revenue-task-action="start" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Start</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="tax" data-revenue-task-action="submit" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Submit</button>');
+              } else if (row.status === 'in_progress') {
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="tax" data-revenue-task-action="reconcile" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Reconcile</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="tax" data-revenue-task-action="confirm" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Confirm</button>');
+                actions.push('<button class="btn secondary" style="font-size:0.625rem;padding:0.18rem 0.45rem" data-revenue-task-kind="tax" data-revenue-task-action="fail" data-opportunity-id="' + esc(row.opportunity_id || '') + '">Fail</button>');
+              }
+              return '<tr>'
+                + '<td><div style="font-weight:600">' + esc(row.opportunity_id || row.id || 'unknown') + '</div><div style="font-size:0.625rem;color:var(--muted)">' + esc(row.title || '') + '</div></td>'
+                + '<td>' + esc(row.status || 'unknown') + '</td>'
+                + '<td>' + esc(dest) + '</td>'
+                + '<td>' + txHash + '</td>'
+                + '<td style="color:var(--muted)">' + esc(updated) + '</td>'
+                + '<td><div style="display:flex;flex-wrap:wrap;gap:0.25rem">' + (actions.join('') || '<span style="color:var(--muted)">—</span>') + '</div></td>'
+                + '</tr>';
+            }).join('')
+          + '</tbody></table></div>'
+        : '<div style="font-size:0.75rem;color:var(--muted)">No revenue tax tasks yet.</div>';
+      return '<div class="card" style="margin-bottom:1rem"><div class="card-title">Revenue Tax Tasks</div>' + body + '</div>';
+    },
+    _renderRevenueSwapSettings: function(revenueSwap) {
+      var cfg = revenueSwap || {};
+      var chains = Array.isArray(cfg.chains) ? cfg.chains : [];
+      var rows = chains.map(function(entry, idx) {
+        return '<div class="settings-nested" style="margin-top:0.6rem">'
+          + '<div class="settings-row"><div class="settings-label">Chain</div><input class="settings-input" type="text" data-revenue-swap-chain-field="chain" data-revenue-swap-chain-index="' + idx + '" value="' + esc(entry.chain || '') + '" placeholder="ETH"></div>'
+          + '<div class="settings-row"><div class="settings-label">Target contract</div><input class="settings-input" type="text" data-revenue-swap-chain-field="target_contract_address" data-revenue-swap-chain-index="' + idx + '" value="' + esc(entry.target_contract_address || '') + '" placeholder="0x... or program id"></div>'
+          + '<div class="settings-row"><div class="settings-label">Swap contract</div><input class="settings-input" type="text" data-revenue-swap-chain-field="swap_contract_address" data-revenue-swap-chain-index="' + idx + '" value="' + esc(entry.swap_contract_address || '') + '" placeholder="optional"></div>'
+          + '<div style="display:flex;justify-content:flex-end"><button class="btn secondary" data-revenue-swap-remove-chain="' + idx + '">Remove chain</button></div>'
+          + '</div>';
+      }).join('');
+      if (!rows) rows = '<div style="font-size:0.75rem;color:var(--muted)">No chain targets configured yet. Add one below.</div>';
+      return '<div class="settings-section"><div class="settings-section-title">Revenue Swap</div>'
+        + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">Default post-settlement conversion policy. Users can disable auto-swap, change the target asset, or configure any chain so long as the contract addresses are supplied.</div>'
+        + '<div class="settings-row"><div class="settings-label">Auto-swap by default</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="treasury.revenue_swap.enabled"' + (cfg.enabled !== false ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (cfg.enabled !== false ? 'On' : 'Off') + '</span></div></div>'
+        + '<div class="settings-row"><div class="settings-label">Target symbol</div><input class="settings-input" type="text" data-settings-path="treasury.revenue_swap.target_symbol" value="' + esc(cfg.target_symbol || 'PALM_USD') + '" placeholder="PALM_USD"></div>'
+        + '<div class="settings-row"><div class="settings-label">Default chain</div><input class="settings-input" type="text" data-settings-path="treasury.revenue_swap.default_chain" value="' + esc(cfg.default_chain || 'ETH') + '" placeholder="ETH"></div>'
+        + '<div class="settings-row"><div class="settings-label">Configured chains</div><div style="width:100%">' + rows + '</div></div>'
+        + '<div class="model-order-add" style="margin-top:0.5rem"><input id="revenue-swap-chain-add" class="settings-input" type="text" placeholder="Add chain (e.g. ETH, SOLANA, BSC, ARBITRUM)"><button class="btn secondary" id="revenue-swap-chain-add-btn">Add chain</button></div>'
+        + '</div>';
+    },
     renderWallet: function() {
       var self = this;
       return Promise.all([
         api('/api/wallet/balance').catch(function() { return { balance: '0', currency: 'ETH', tokens: [], network: 'Unknown' }; }),
         api('/api/wallet/address').catch(function() { return { address: '', chain_id: 1, network: 'Unknown' }; }),
-        api('/api/stats/transactions?hours=168').catch(function() { return { transactions: [] }; })
+        api('/api/stats/transactions?hours=168').catch(function() { return { transactions: [] }; }),
+        api('/api/services/swaps?limit=10').catch(function() { return { swap_tasks: [] }; }),
+        api('/api/services/tax-payouts?limit=10').catch(function() { return { tax_tasks: [] }; })
       ]).then(function(arr) {
-        var bal = arr[0], addr = arr[1], txs = (arr[2].transactions || []);
+        var bal = arr[0], addr = arr[1], txs = (arr[2].transactions || []), swaps = (arr[3].swap_tasks || []), taxTasks = (arr[4].tax_tasks || []);
         var addrStr = (addr.address != null && addr.address !== '') ? addr.address : (addr.note || '\u2014');
         var network = bal.network || addr.network || 'Unknown';
         var chainId = addr.chain_id || bal.chain_id || 1;
@@ -2982,8 +3192,16 @@
           '<div class="settings-row"><div class="settings-label">Daily inference budget</div><div style="font-family:var(--font-mono)">$' + (treasury.daily_inference_budget || 0).toFixed(2) + '</div></div>' +
           '<div class="settings-row"><div class="settings-label">Minimum reserve</div><div style="font-family:var(--font-mono)">$' + (treasury.minimum_reserve || 0).toFixed(2) + '</div></div>' +
           '</div>';
+        var revenueSwapCard = self._renderRevenueSwapSummaryCard(treasury.revenue_swap || {});
+        var seedReadinessCard = self._renderSeedExerciseReadinessCard(bal.seed_exercise_readiness || {});
+        var seedProgressCard = self._renderSeedExerciseProgressCard(bal.seed_exercise_progress || {});
+        var seedPlanCard = self._renderSeedExercisePlanCard(bal.seed_exercise_plan || {});
+        var strategySummaryCard = self._renderRevenueStrategySummaryCard(bal.revenue_strategy_summary || []);
+        var feedbackSummaryCard = self._renderRevenueFeedbackSummaryCard(bal.revenue_feedback_summary || []);
+        var swapTasksCard = self._renderRevenueSwapTasksCard(swaps);
+        var taxTasksCard = self._renderRevenueTaxTasksCard(taxTasks);
 
-        return addrSection + balancesCard + treasuryCard +
+        return addrSection + balancesCard + treasuryCard + revenueSwapCard + seedReadinessCard + seedProgressCard + seedPlanCard + strategySummaryCard + feedbackSummaryCard + swapTasksCard + taxTasksCard +
           '<div class="card-title">Transaction history</div><div class="table-wrap"><table><thead><tr><th>Type</th><th>Amount</th><th>Date</th></tr></thead><tbody>' + txRows + '</tbody></table></div>';
       });
     },
@@ -3006,7 +3224,7 @@
     _buildMutableConfigPatch: function(draft) {
       var caps = this._configCapabilities || {};
       var immutable = {};
-      (caps.immutable_sections || ['server', 'treasury', 'a2a', 'wallet']).forEach(function(k) { immutable[k] = true; });
+      (caps.immutable_sections || ['server', 'a2a', 'wallet']).forEach(function(k) { immutable[k] = true; });
       var patch = {};
       Object.keys(draft || {}).forEach(function(k) {
         if (!immutable[k]) patch[k] = draft[k];
@@ -3371,7 +3589,7 @@
         if (specialists.length === 0) {
           html += '<div class="card" style="text-align:center;padding:3rem"><div style="font-size:2rem;margin-bottom:0.5rem">\uD83E\uDD16</div>';
           html += '<div style="color:var(--muted)">No taskable sub-agents configured</div>';
-          html += '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Run <code style="background:var(--surface);padding:0.1rem 0.4rem;border-radius:4px">ironclad migrate import ~/.legacy --areas agents</code> or add one below</div>';
+          html += '<div style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">Import a prior agent export with <code style="background:var(--surface);padding:0.1rem 0.4rem;border-radius:4px">ironclad migrate import &lt;export-root&gt; --areas agents</code> or add one below</div>';
           html += '</div>';
         }
 
@@ -3706,7 +3924,7 @@
       var self = this;
       return Promise.all([
         api('/api/config'),
-        api('/api/config/capabilities').catch(function() { return { immutable_sections: ['server', 'treasury', 'a2a', 'wallet'] }; })
+        api('/api/config/capabilities').catch(function() { return { immutable_sections: ['server', 'a2a', 'wallet'] }; })
       ]).then(function(arr) {
         var cfg = arr[0] || {};
         var caps = arr[1] || {};
@@ -4227,6 +4445,25 @@
               }
             });
             html += '</div>';
+            return;
+          }
+
+          if (section === 'treasury') {
+            html += '<div class="settings-section"><div class="settings-section-title">Treasury</div>';
+            Object.keys(sectionData).forEach(function(key) {
+              if (key === 'revenue_swap') return;
+              var val = sectionData[key];
+              var path = section + '.' + key;
+              if (typeof val === 'boolean') {
+                html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><div class="settings-toggle-wrap"><label class="toggle"><input type="checkbox" data-settings-path="' + esc(path) + '"' + (val ? ' checked' : '') + '><span class="toggle-track"></span></label><span class="settings-toggle-label">' + (val ? 'On' : 'Off') + '</span></div></div>';
+              } else if (typeof val !== 'object') {
+                var type = typeof val === 'number' ? 'number' : 'text';
+                var sv = (val == null || val === '') ? '' : esc(String(val));
+                html += '<div class="settings-row"><div class="settings-label">' + esc(key) + '</div><input class="settings-input" type="' + type + '" data-settings-path="' + esc(path) + '" value="' + sv + '" placeholder="none"></div>';
+              }
+            });
+            html += '</div>';
+            html += self._renderRevenueSwapSettings(sectionData.revenue_swap || {});
             return;
           }
 
@@ -5043,6 +5280,48 @@
       if (pre && pre.textContent) navigator.clipboard.writeText(pre.textContent).then(function() { toast('Address copied'); });
       return;
     }
+    var revenueTaskBtn = e.target.closest('[data-revenue-task-action][data-opportunity-id][data-revenue-task-kind]');
+    if (revenueTaskBtn) {
+      var taskKind = revenueTaskBtn.getAttribute('data-revenue-task-kind');
+      var taskAction = revenueTaskBtn.getAttribute('data-revenue-task-action');
+      var opportunityId = revenueTaskBtn.getAttribute('data-opportunity-id');
+      if (!taskKind || !taskAction || !opportunityId) { toast('Missing revenue task metadata'); return; }
+      var basePath = taskKind === 'tax' ? '/api/services/tax-payouts/' : '/api/services/swaps/';
+      var request = { method: 'POST' };
+      if (taskAction === 'confirm') {
+        var txHash = window.prompt('Enter the transaction hash to confirm:', '');
+        if (!txHash || !txHash.trim()) return;
+        request.headers = { 'Content-Type': 'application/json' };
+        request.body = JSON.stringify({ tx_hash: txHash.trim() });
+      } else if (taskAction === 'fail') {
+        var reason = window.prompt('Enter the failure reason:', '');
+        if (!reason || !reason.trim()) return;
+        request.headers = { 'Content-Type': 'application/json' };
+        request.body = JSON.stringify({ reason: reason.trim() });
+      } else if (taskAction === 'submit') {
+        var calldata = window.prompt('Enter calldata (0x...) for submission:', '');
+        if (!calldata || !calldata.trim()) return;
+        var contractAddress = window.prompt('Optional contract address override (leave blank to use configured task source):', '') || '';
+        request.headers = { 'Content-Type': 'application/json' };
+        request.body = JSON.stringify({
+          calldata: calldata.trim(),
+          contract_address: contractAddress.trim() || null
+        });
+      }
+      api(basePath + encodeURIComponent(opportunityId) + '/' + taskAction, request)
+        .then(function(resp) {
+          var msg = taskKind === 'tax' ? 'Tax payout ' : 'Swap ';
+          msg += taskAction + ' completed';
+          if (resp && resp.receipt_status) msg += ' — receipt ' + resp.receipt_status;
+          if (resp && resp.tx_hash) msg += ' — ' + String(resp.tx_hash).slice(0, 18) + '…';
+          toast(msg);
+          App.navigate('wallet');
+        })
+        .catch(function(err) {
+          toast(err.message || ('Revenue task ' + taskAction + ' failed'));
+        });
+      return;
+    }
     if (e.target.closest('#memory-search-btn')) {
       var q = document.getElementById('memory-search-q'); var query = (q && q.value) || '';
       if (!query.trim()) { toast('Enter a search query'); return; }
@@ -5265,6 +5544,41 @@
       App.navigate('settings');
       return;
     }
+    if (e.target.closest('#revenue-swap-chain-add-btn')) {
+      var chainInput = document.getElementById('revenue-swap-chain-add');
+      var chainName = (chainInput && chainInput.value || '').trim().toUpperCase();
+      if (!chainName) { toast('Enter a chain name'); return; }
+      var draftSwapAdd = App._getSettingsDraft();
+      if (!draftSwapAdd.treasury) draftSwapAdd.treasury = {};
+      if (!draftSwapAdd.treasury.revenue_swap) draftSwapAdd.treasury.revenue_swap = {};
+      if (!Array.isArray(draftSwapAdd.treasury.revenue_swap.chains)) draftSwapAdd.treasury.revenue_swap.chains = [];
+      var exists = draftSwapAdd.treasury.revenue_swap.chains.some(function(entry) {
+        return String((entry && entry.chain) || '').trim().toUpperCase() === chainName;
+      });
+      if (exists) { toast('Chain already configured'); return; }
+      draftSwapAdd.treasury.revenue_swap.chains.push({
+        chain: chainName,
+        target_contract_address: '',
+        swap_contract_address: ''
+      });
+      if (chainInput) chainInput.value = '';
+      App._settingsDirty = JSON.stringify(draftSwapAdd) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
+    var revenueSwapRemoveBtn = e.target.closest('[data-revenue-swap-remove-chain]');
+    if (revenueSwapRemoveBtn) {
+      var removeIdx = Number(revenueSwapRemoveBtn.getAttribute('data-revenue-swap-remove-chain'));
+      var draftSwapRemove = App._getSettingsDraft();
+      var swapChains = draftSwapRemove && draftSwapRemove.treasury && draftSwapRemove.treasury.revenue_swap && Array.isArray(draftSwapRemove.treasury.revenue_swap.chains)
+        ? draftSwapRemove.treasury.revenue_swap.chains
+        : null;
+      if (!swapChains || removeIdx < 0 || removeIdx >= swapChains.length) return;
+      swapChains.splice(removeIdx, 1);
+      App._settingsDirty = JSON.stringify(draftSwapRemove) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
+      App.navigate('settings');
+      return;
+    }
     var modelPrimaryBtn = e.target.closest('[data-model-order-make-primary]');
     if (modelPrimaryBtn) {
       var pIdx = Number(modelPrimaryBtn.getAttribute('data-model-order-make-primary'));
@@ -5384,6 +5698,21 @@
       return;
     }
     var delBtn = e.target.closest('[data-cal-delete]');
+    var runBtn = e.target.closest('[data-cal-run]');
+    if (runBtn) {
+      var runIdx = Number(runBtn.getAttribute('data-cal-run')); var rj = _cachedCronJobs[runIdx];
+      if (rj && rj.id) {
+        api('/api/cron/jobs/' + encodeURIComponent(rj.id) + '/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+          .then(function(resp) {
+            var msg = (resp.status === 'success' ? 'Ran ' : 'Run failed: ') + rj.name + (resp.error ? ' — ' + resp.error : '');
+            if (resp.output_text) msg += ' — ' + String(resp.output_text).replace(/\s+/g, ' ').trim().slice(0, 160);
+            toast(msg);
+            App.navigate('scheduler');
+          })
+          .catch(function(err) { toast(err.message || 'Run failed'); });
+      }
+      return;
+    }
     if (delBtn) {
       var idx = Number(delBtn.getAttribute('data-cal-delete')); var j = _cachedCronJobs[idx];
       if (j) {
@@ -5400,7 +5729,7 @@
       if (!name) { toast('Name is required'); return; }
       var sched = App._readSchedFromUI(); var cron = App._schedToCron(sched);
       var descEl = document.getElementById('cal-job-description'); var intent = (descEl && descEl.value || '').trim();
-      var payloadObj = { action: 'log', message: intent || ('scheduled job: ' + name) };
+      var payloadObj = intent ? { action: 'agent_task', task: intent } : { action: 'log', message: ('scheduled job: ' + name) };
       var jobData = { name: name, description: intent || null, schedule_kind: cron.kind, schedule_expr: cron.expr, payload_json: JSON.stringify(payloadObj), agent_id: App._activeAgentId || 'ironclad' };
       if (App._calModalMode === 'add') {
         api('/api/cron/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jobData) }).then(function() { toast('Added "' + name + '"'); App._calModalMode = null; App._calEditJob = null; App.navigate('scheduler'); }).catch(function(err) { toast(err.message || 'Add failed'); });
@@ -5743,6 +6072,23 @@
       document.querySelectorAll('#settings-save,#settings-apply,#settings-cancel').forEach(function(b) { if (App._settingsDirty) { b.disabled = false; b.style.opacity = ''; b.style.pointerEvents = ''; } else { b.disabled = true; b.style.opacity = '0.4'; b.style.pointerEvents = 'none'; } });
       return;
     }
+    var revenueSwapChainInput = e.target.closest('[data-revenue-swap-chain-field]');
+    if (revenueSwapChainInput) {
+      var revenueField = revenueSwapChainInput.getAttribute('data-revenue-swap-chain-field');
+      var revenueIdx = Number(revenueSwapChainInput.getAttribute('data-revenue-swap-chain-index'));
+      var draftSwapField = App._getSettingsDraft();
+      if (!draftSwapField.treasury) draftSwapField.treasury = {};
+      if (!draftSwapField.treasury.revenue_swap) draftSwapField.treasury.revenue_swap = {};
+      if (!Array.isArray(draftSwapField.treasury.revenue_swap.chains)) draftSwapField.treasury.revenue_swap.chains = [];
+      if (!draftSwapField.treasury.revenue_swap.chains[revenueIdx]) draftSwapField.treasury.revenue_swap.chains[revenueIdx] = { chain: '', target_contract_address: '', swap_contract_address: '' };
+      var revenueVal = revenueSwapChainInput.value;
+      if (revenueField === 'chain') revenueVal = String(revenueVal || '').toUpperCase();
+      draftSwapField.treasury.revenue_swap.chains[revenueIdx][revenueField] = revenueVal;
+      App._settingsDirty = JSON.stringify(draftSwapField) !== JSON.stringify(_cachedConfig);
+      App._settingsJsonText = null;
+      document.querySelectorAll('#settings-save,#settings-apply,#settings-cancel').forEach(function(b) { if (App._settingsDirty) { b.disabled = false; b.style.opacity = ''; b.style.pointerEvents = ''; } else { b.disabled = true; b.style.opacity = '0.4'; b.style.pointerEvents = 'none'; } });
+      return;
+    }
   });
   if (content) content.addEventListener('dragstart', function(e) {
     var item = e.target.closest('[data-model-order-item]');
@@ -5788,6 +6134,7 @@
   if (content) content.addEventListener('keydown', function(e) {
     if (e.target.id === 'session-msg-input' && e.key === 'Enter') { e.preventDefault(); if (App._sendingMessage) return; var btn = document.getElementById('btn-send-msg'); if (btn && !btn.disabled) btn.click(); return; }
     if (e.target.id === 'model-order-add-input' && e.key === 'Enter') { e.preventDefault(); var addBtn = document.getElementById('model-order-add-btn'); if (addBtn) addBtn.click(); return; }
+    if (e.target.id === 'revenue-swap-chain-add' && e.key === 'Enter') { e.preventDefault(); var addRevenueSwapChainBtn = document.getElementById('revenue-swap-chain-add-btn'); if (addRevenueSwapChainBtn) addRevenueSwapChainBtn.click(); return; }
     if (e.target.id === 'add-provider-input' && e.key === 'Enter') { e.preventDefault(); var addProviderBtn = document.getElementById('add-provider'); if (addProviderBtn) addProviderBtn.click(); return; }
     if (e.target.id === 'trusted-sender-input' && e.key === 'Enter') { e.preventDefault(); var addSenderBtn = document.getElementById('trusted-sender-add'); if (addSenderBtn) addSenderBtn.click(); return; }
     if (e.target.id === 'telegram-allowed-chat-input' && e.key === 'Enter') { e.preventDefault(); var addTgBtn = document.getElementById('telegram-allowed-chat-add'); if (addTgBtn) addTgBtn.click(); return; }
@@ -5844,6 +6191,10 @@
       App._settingsDirty = JSON.stringify(draft) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
       if (formInput.type === 'checkbox') { var lbl = formInput.closest('.settings-toggle-wrap'); if (lbl) { var span = lbl.querySelector('.settings-toggle-label'); if (span) span.textContent = newVal ? 'On' : 'Off'; } }
       document.querySelectorAll('#settings-save,#settings-apply,#settings-cancel').forEach(function(b) { if (App._settingsDirty) { b.disabled = false; b.style.opacity = ''; b.style.pointerEvents = ''; } else { b.disabled = true; b.style.opacity = '0.4'; b.style.pointerEvents = 'none'; } });
+    }
+    var revenueSwapChainInput = e.target.closest('[data-revenue-swap-chain-field]');
+    if (revenueSwapChainInput && revenueSwapChainInput.getAttribute('data-revenue-swap-chain-field') === 'chain') {
+      revenueSwapChainInput.value = String(revenueSwapChainInput.value || '').toUpperCase();
     }
   });
 
@@ -5919,7 +6270,7 @@
         { id: 'blockchain', name: 'Blockchain', kind: 'Blockchain', x: 0.82, y: 0.78 },
         { id: 'web', name: 'Web / APIs', kind: 'Tool', x: 0.50, y: 0.12 },
         { id: 'files', name: 'File System', kind: 'Tool', x: 0.50, y: 0.88 },
-        { id: 'shelter', name: 'Idle Bots Warehouse', kind: 'Shelter', x: 0.035, y: 0.50 }
+        { id: 'shelter', name: 'Idle Agents', kind: 'Shelter', x: 0.035, y: 0.50 }
       ];
     }
     var self = this;
@@ -6003,18 +6354,13 @@
     var idleBots = this.bots.filter(function(b) {
       return !b.activeSkill && (b.animState === 'idle' || b.animState === 'walking');
     });
-    var cols = 2;
-    var xGap = 0.03;
-    var yGap = 0.06;
+    // Move idle bots to the shelter station coords. drawBot() skips rendering
+    // them entirely — only the station badge count is visible.
     for (var i = 0; i < idleBots.length; i++) {
       var b = idleBots[i];
       if (b.currentStation && b.currentStation !== 'standby' && b.currentStation !== 'shelter') continue;
-      var col = i % cols;
-      var row = Math.floor(i / cols);
-      var x = standby.x + (col === 0 ? -xGap : xGap);
-      var y = standby.y - 0.06 + row * yGap;
-      b.targetX = Math.max(0.005, Math.min(0.13, x));
-      b.targetY = Math.max(0.2, Math.min(0.85, y));
+      b.targetX = standby.x;
+      b.targetY = standby.y;
       b.currentStation = 'shelter';
     }
   };
@@ -6085,7 +6431,7 @@
       var ws = this.stations.find(function(s) { return s.id === bot.currentStation; });
       return ws ? ('Working at ' + ws.name + '.') : 'Working on a task.';
     }
-    if (bot.currentStation === 'standby' || bot.currentStation === 'shelter') return 'Idle in the shelter, waiting for work.';
+    if (bot.currentStation === 'standby' || bot.currentStation === 'shelter') return 'Idle, waiting for the next task.';
     if (bot.animState === 'walking') return 'Moving to the next workstation.';
     return 'Idle and waiting for the next task.';
   };
@@ -6388,6 +6734,10 @@
   };
 
   WorkspaceEngine.prototype.drawBot = function(ctx, bot, W, H) {
+    // Sheltered bots are hidden — the station badge shows the count.
+    // They reappear when assigned a skill/task.
+    var isSheltered = (bot.currentStation === 'shelter' || bot.currentStation === 'standby') && !bot.activeSkill;
+    if (isSheltered) return;
     var tc = this._themeColors || { surface: '#1e2030', muted: '#71717a', text: '#e4e4e7', aR: 99, aG: 102, aB: 241 };
     var px = bot.x * W, py = bot.y * H, t = this.time, frame = bot.animFrame;
     var isAgent = (bot.role === 'agent');

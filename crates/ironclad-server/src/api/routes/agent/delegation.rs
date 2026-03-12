@@ -267,6 +267,23 @@ pub(super) async fn execute_virtual_subagent_tool_call(
         return Err("no enabled taskable subagents are configured".to_string());
     }
 
+    let mut ready_subagents = Vec::new();
+    let mut repair_failures = Vec::new();
+    for sa in &taskable_subagents {
+        match crate::api::routes::subagent_integrity::ensure_taskable_subagent_ready(state, sa)
+            .await
+        {
+            Ok(ready) => ready_subagents.push(ready),
+            Err(err) => repair_failures.push(format!("{}: {}", sa.name, err)),
+        }
+    }
+    if ready_subagents.is_empty() {
+        return Err(format!(
+            "no viable taskable subagents are available after integrity repair ({}).",
+            repair_failures.join(" | ")
+        ));
+    }
+
     let runtime_by_name: HashMap<String, ironclad_agent::subagents::AgentInstance> = state
         .registry
         .list_agents()
@@ -291,14 +308,10 @@ pub(super) async fn execute_virtual_subagent_tool_call(
         .count();
 
     if action == "select-subagent-model" || action == "select_subagent_model" {
-        let chosen = pick_running_subagent(
-            &task,
-            specialist_hint,
-            &taskable_subagents,
-            &runtime_by_name,
-        )
-        .or_else(|| taskable_subagents.first())
-        .ok_or_else(|| "no candidate subagent found for model selection".to_string())?;
+        let chosen =
+            pick_running_subagent(&task, specialist_hint, &ready_subagents, &runtime_by_name)
+                .or_else(|| ready_subagents.first())
+                .ok_or_else(|| "no candidate subagent found for model selection".to_string())?;
         let model = resolve_subagent_runtime_model(state, chosen, &task).await;
         return Ok(format!(
             "selected_subagent={} resolved_model={} running={} booting={}",
@@ -309,13 +322,13 @@ pub(super) async fn execute_virtual_subagent_tool_call(
     let chosen = pick_running_subagent(
         &task,
         specialist_hint,
-        &taskable_subagents,
+        &ready_subagents,
         &runtime_by_name,
     )
     .ok_or_else(|| {
         format!(
-            "no running taskable subagents are available (running={}, booting={})",
-            running_count, booting_count
+            "no running taskable subagents are available after integrity repair (running={}, booting={}, repair_failures={})",
+            running_count, booting_count, repair_failures.join(" | ")
         )
     })?;
     let model = resolve_subagent_runtime_model(state, chosen, &task).await;
