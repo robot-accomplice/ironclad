@@ -308,6 +308,11 @@ pub fn build_context(
 /// key directives just before the final user message when the conversation
 /// exceeds `ANTI_FADE_TURN_THRESHOLD` non-system turns.
 ///
+/// The reminder uses the `user` role rather than `system` to maintain
+/// compatibility with backends (e.g. llama.cpp, vLLM) whose chat templates
+/// enforce that system messages appear only at position 0. The `[System Note]`
+/// prefix signals the model to treat the content as an instruction.
+///
 /// Returns `true` if a reminder was injected, `false` otherwise.
 pub fn inject_instruction_reminder(messages: &mut Vec<UnifiedMessage>, reminder: &str) -> bool {
     let non_system_turns = messages.iter().filter(|m| m.role != "system").count();
@@ -317,7 +322,8 @@ pub fn inject_instruction_reminder(messages: &mut Vec<UnifiedMessage>, reminder:
 
     // Find the last user message and inject the reminder just before it.
     // This puts the reminder in the "recency hotspot" where it most influences
-    // the model's next generation.
+    // the model's next generation. Using `user` role avoids violating chat
+    // template constraints that require system messages at position 0.
     let insert_pos = messages
         .iter()
         .rposition(|m| m.role == "user")
@@ -326,8 +332,8 @@ pub fn inject_instruction_reminder(messages: &mut Vec<UnifiedMessage>, reminder:
     messages.insert(
         insert_pos,
         UnifiedMessage {
-            role: "system".into(),
-            content: reminder.to_string(),
+            role: "user".into(),
+            content: format!("[System Note] {reminder}"),
             parts: None,
         },
     );
@@ -1128,11 +1134,15 @@ mod tests {
         assert!(injected);
         assert_eq!(msgs.len(), len_before + 1);
 
-        // The reminder should be inserted just before the last user message
-        let last_user_idx = msgs.iter().rposition(|m| m.role == "user").unwrap();
-        assert_eq!(msgs[last_user_idx - 1].role, "system");
+        // The reminder should be inserted just before the last user message,
+        // using "user" role with [System Note] prefix for backend compatibility.
+        let reminder_idx = msgs
+            .iter()
+            .rposition(|m| m.content.contains("[System Note]"))
+            .unwrap();
+        assert_eq!(msgs[reminder_idx].role, "user");
         assert!(
-            msgs[last_user_idx - 1]
+            msgs[reminder_idx]
                 .content
                 .contains("[Reminder] Always be thorough.")
         );
@@ -1155,9 +1165,10 @@ mod tests {
         assert_eq!(msgs.last().unwrap().content, "final question");
         assert_eq!(msgs.last().unwrap().role, "user");
 
-        // Second-to-last should be the reminder
+        // Second-to-last should be the reminder (user role with [System Note] prefix)
         let second_last = &msgs[msgs.len() - 2];
-        assert_eq!(second_last.role, "system");
+        assert_eq!(second_last.role, "user");
+        assert!(second_last.content.contains("[System Note]"));
         assert!(second_last.content.contains("[Reminder]"));
     }
 
@@ -1173,6 +1184,10 @@ mod tests {
         assert!(injected);
         // When no user message found, inserts at the end
         assert_eq!(msgs.len(), len_before + 1);
-        assert_eq!(msgs.last().unwrap().content, "[Reminder] Test.");
+        assert_eq!(
+            msgs.last().unwrap().content,
+            "[System Note] [Reminder] Test."
+        );
+        assert_eq!(msgs.last().unwrap().role, "user");
     }
 }
