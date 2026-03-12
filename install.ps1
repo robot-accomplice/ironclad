@@ -238,6 +238,33 @@ Write-Info "3. Verify install and optionally initialize workspace"
 Write-Info "Version: $versionDisplay"
 Write-Info ("Cargo --locked: " + ($(if ($InstallLocked) { "enabled" } else { "disabled" })))
 
+# ── Liability Waiver ──────────────────────────────────────────
+Write-Host ""
+Write-Step "Disclaimer"
+Write-Info "IMPORTANT - PLEASE READ"
+Write-Info ""
+Write-Info "  Ironclad is an autonomous AI agent that can execute actions,"
+Write-Info "  interact with external services, and manage digital assets"
+Write-Info "  including cryptocurrency wallets and on-chain transactions."
+Write-Info ""
+Write-Info "  THE SOFTWARE IS PROVIDED `"AS IS`", WITHOUT WARRANTY OF ANY KIND."
+Write-Info "  The developers and contributors bear no responsibility for:"
+Write-Info ""
+Write-Info "    - Actions taken by the agent, whether intended or unintended"
+Write-Info "    - Loss of funds, income, cryptocurrency, or other digital assets"
+Write-Info "    - Security vulnerabilities, compromises, or unauthorized access"
+Write-Info "    - Damages arising from the agent's use, misuse, or malfunction"
+Write-Info "    - Any financial, legal, or operational consequences whatsoever"
+Write-Info ""
+Write-Info "  By proceeding, you acknowledge that you use Ironclad entirely"
+Write-Info "  at your own risk and accept full responsibility for its operation."
+Write-Info ""
+
+if (-not (Confirm-Step "I understand and accept these terms")) {
+    Write-Warn "Installation cancelled by user."
+    exit 0
+}
+
 if (-not (Confirm-Step "Proceed with installation?")) {
     Write-Warn "Installation cancelled by user."
     exit 0

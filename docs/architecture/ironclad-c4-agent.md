@@ -1,4 +1,4 @@
-<!-- last_updated: 2026-02-26, version: 0.8.0 -->
+<!-- last_updated: 2026-03-07, version: 0.9.5 -->
 # C4 Level 3: Component Diagram -- ironclad-agent
 
 *Agent core implementing the ReAct reasoning loop, tool execution, policy enforcement, prompt injection defense, memory management, and context assembly.*

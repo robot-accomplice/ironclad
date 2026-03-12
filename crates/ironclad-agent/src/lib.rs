@@ -53,6 +53,7 @@ pub mod ingest;
 pub mod injection;
 pub mod interview;
 pub mod knowledge;
+pub mod learning;
 pub mod manifest;
 pub mod mcp;
 pub mod mcp_handler;

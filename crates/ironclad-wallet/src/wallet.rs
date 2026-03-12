@@ -298,6 +298,10 @@ impl Wallet {
         &self.rpc_url
     }
 
+    pub(crate) fn private_key_bytes(&self) -> &[u8] {
+        &self.private_key
+    }
+
     pub async fn sign_message(&self, message: &str) -> Result<String> {
         let signing_key = SigningKey::from_slice(&self.private_key)
             .map_err(|e| IroncladError::Wallet(format!("failed to load signing key: {e}")))?;
@@ -354,6 +358,11 @@ impl Wallet {
             .ok_or_else(|| IroncladError::Wallet("missing result in RPC response".into()))?
             .trim_start_matches("0x");
 
+        // Some nodes return "0x" (empty hex) for zero-balance accounts.
+        if hex.is_empty() {
+            return Ok(0.0);
+        }
+
         let raw = u128::from_str_radix(hex, 16)
             .map_err(|e| IroncladError::Wallet(format!("failed to parse balance hex: {e}")))?;
 
@@ -402,6 +411,11 @@ impl Wallet {
             .as_str()
             .ok_or_else(|| IroncladError::Wallet("missing result in RPC response".into()))?
             .trim_start_matches("0x");
+
+        // Some nodes return "0x" (empty hex) for zero-balance accounts/tokens.
+        if hex.is_empty() {
+            return Ok(0.0);
+        }
 
         let raw = u128::from_str_radix(hex, 16)
             .map_err(|e| IroncladError::Wallet(format!("failed to parse balance hex: {e}")))?;

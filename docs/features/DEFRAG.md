@@ -55,7 +55,7 @@ Each pass is an independent scanner that produces findings. Passes run in order;
 Scan all `.md`, `.sh`, `.py`, `.js`, `.toml`, `.json` files in the workspace and skills directories for references that don't resolve.
 
 **Checks:**
-- Filesystem paths that don't exist (e.g., `~/.legacy/workspace` after migration)
+- Filesystem paths that don't exist (e.g., `<old-workspace-path>` after migration)
 - References to deleted skill directories
 - CLI commands for platforms that aren't installed
 - URLs pointing at localhost ports that don't match config
@@ -172,7 +172,7 @@ Validate that executable scripts in skills reference real commands and paths.
           "file": "skills/cron-efficiency/SKILL.md",
           "line": 42,
           "severity": "warn",
-          "message": "Reference to ~/.legacy/cron/jobs.json — path does not exist",
+          "message": "Reference to an old cron/jobs.json path — path does not exist",
           "fixable": true,
           "fix": "Replace with `ironclad schedule list`"
         }

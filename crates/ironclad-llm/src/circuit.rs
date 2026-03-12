@@ -224,7 +224,6 @@ mod tests {
             threshold: 3,
             window_seconds: 60,
             cooldown_seconds: 2,
-            credit_cooldown_seconds: 10,
             max_cooldown_seconds: 30,
         }
     }
@@ -317,7 +316,6 @@ mod tests {
         let config = CircuitBreakerConfig {
             threshold: 1,
             cooldown_seconds: 0,
-            credit_cooldown_seconds: 0,
             ..test_config()
         };
         let mut reg = CircuitBreakerRegistry::new(&config);

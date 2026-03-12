@@ -302,7 +302,29 @@ info "Version:          $(bold "$VERSION_DISPLAY")"
 info "Cargo --locked:   $(bold "$LOCKED_DISPLAY")"
 info "Binary location:  $(bold "$CARGO_BIN/ironclad")"
 
-abort_if_declined "Proceed with installation?"
+# ── Liability Waiver ────────────────────────────────────────────────────────
+printf "\n"
+step "Disclaimer"
+info "$(bold "IMPORTANT — PLEASE READ")"
+info ""
+info "  Ironclad is an autonomous AI agent that can execute actions,"
+info "  interact with external services, and manage digital assets"
+info "  including cryptocurrency wallets and on-chain transactions."
+info ""
+info "  THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND."
+info "  The developers and contributors bear $(bold "no responsibility") for:"
+info ""
+info "    • Actions taken by the agent, whether intended or unintended"
+info "    • Loss of funds, income, cryptocurrency, or other digital assets"
+info "    • Security vulnerabilities, compromises, or unauthorized access"
+info "    • Damages arising from the agent's use, misuse, or malfunction"
+info "    • Any financial, legal, or operational consequences whatsoever"
+info ""
+info "  By proceeding, you acknowledge that you use Ironclad entirely"
+info "  at your own risk and accept full responsibility for its operation."
+info ""
+
+abort_if_declined "I understand and accept these terms"
 
 # ── Preflight ────────────────────────────────────────────────────────────────
 

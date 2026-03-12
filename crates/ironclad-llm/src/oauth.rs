@@ -50,7 +50,6 @@ impl OAuthStorageHealth {
     }
 }
 
-// Legacy plaintext path retained for one-time migration from older versions.
 fn token_file_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(home)
@@ -193,30 +192,6 @@ impl OAuthManager {
                     && let Ok(entry) = serde_json::from_str::<StoredTokens>(&raw)
                 {
                     map.insert(entry.provider.clone(), entry);
-                }
-            }
-        }
-
-        // One-time migration from legacy plaintext storage.
-        if map.is_empty()
-            && let Ok(data) = std::fs::read_to_string(token_file_path())
-            && let Ok(file) = serde_json::from_str::<TokenFile>(&data)
-        {
-            for entry in file.tokens {
-                map.insert(entry.provider.clone(), entry);
-            }
-            if !map.is_empty()
-                && let Some(ks) = &keystore
-            {
-                for entry in map.values() {
-                    if let Ok(serialized) = serde_json::to_string(entry)
-                        && let Err(e) = ks.set(&oauth_storage_key(&entry.provider), &serialized)
-                    {
-                        warn!(provider = %entry.provider, error = %e, "failed to migrate OAuth token to keystore");
-                    }
-                }
-                if let Err(e) = std::fs::remove_file(token_file_path()) {
-                    debug!(error = %e, "legacy OAuth token file cleanup skipped");
                 }
             }
         }

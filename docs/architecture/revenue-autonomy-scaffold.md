@@ -1,4 +1,4 @@
-# Revenue Autonomy Scaffold (v0.9.5)
+# Revenue Autonomy Scaffold (v0.9.5 -> v0.9.6)
 
 ## Purpose
 
@@ -120,13 +120,39 @@ Persistence:
 - `service_requests` table (status transitions: `quoted -> payment_verified -> completed`)
 - revenue ledger entry via `transactions` (`tx_type = service_revenue`)
 
+Current shared-lifecycle revenue control-plane primitives:
+
+- canonical opportunity record persisted in `revenue_opportunities`
+- restart-safe status progression (`intake -> qualified/rejected -> planned -> fulfilled -> settled`)
+- persisted opportunity scoring:
+  - `confidence_score`
+  - `effort_score`
+  - `risk_score`
+  - `priority_score`
+  - `recommended_approved`
+  - `score_reason`
+- persisted opportunity feedback:
+  - operator/runtime grade records stored per opportunity
+  - strategy-level feedback summary aggregated from recorded outcomes
+- current concrete adapters:
+  - `micro_bounty`
+  - `oracle_feed`
+- recommendation-aware qualification, with explicit override still allowed
+- EVM swap execution submission:
+  - queued swap tasks can be submitted through the wallet on the configured EVM chain
+  - submission is rejected on chain mismatch or missing swap contract wiring
+  - submission records a tx hash but final completion remains an explicit confirm/fail transition
+- receipt reconciliation:
+  - submitted swaps can be reconciled against `eth_getTransactionReceipt`
+  - mechanic repair can use the same reconcile path to fold confirmed/failed receipts back into task state
+
 ## Phase 2 Continuation (v0.9.5 forward)
 
 Shared control-plane primitives to add before strategy expansion:
 
 - `opportunity intake`: normalize all new opportunities to one schema
 - `qualification gate`: enforce policy/safety/eligibility before planning
-- first micro-bounty intake adapter bound to the same lifecycle (no strategy-specific bypass path)
+- strategy adapters bound to the same lifecycle (no strategy-specific bypass path)
 - settlement idempotency keyed by request/job ID
 
 Mechanic support hooks:
@@ -134,6 +160,55 @@ Mechanic support hooks:
 - revenue control-plane probe
 - ledger/request reconciliation
 - orphan-job repair path
+
+## v0.9.6 Debut Scope: Full Self-Funding Mechanism
+
+v0.9.6 is the point where this scaffold stops being partial infrastructure and becomes a user-visible, end-to-end self-funding system.
+
+Required capabilities:
+
+- multiple revenue strategies sharing one lifecycle:
+  - paid service intake
+  - micro-bounty intake
+  - oracle-feed intake
+- profitability-aware qualification and scoring using expected revenue, attributable costs, confidence, and policy risk
+- restart-safe execution state for every revenue job
+- idempotent settlement keyed by job/request identifier
+- persisted feedback on realized outcomes, aggregated by strategy
+- configurable post-settlement asset routing:
+  - default target asset `PALM_USD`
+  - operator-controlled disable/override behavior
+  - arbitrary chain support when contract addresses are supplied
+- profit accounting:
+  - gross revenue
+  - attributable costs
+  - net realized profit
+  - retained earnings
+  - tax allocation/destination when enabled
+- operator surfaces:
+  - API visibility
+  - dashboard controls and status
+  - terminal visibility/configuration
+- constrained live-funds validation surfaces:
+  - `$50` seed readiness
+  - `$50` seed progress
+  - `$50` seed exercise plan with spend caps and abort conditions
+- mechanic repair coverage:
+  - stale revenue task detection
+  - orphan settlement detection
+  - ledger/request mismatch reconciliation
+  - swap-queue integrity checks
+  - tax-payout receipt reconciliation
+- honest execution boundaries:
+  - EVM transaction submission supported on the configured wallet chain
+  - submitted tax payouts and swaps can be reconciled from on-chain receipts
+  - non-EVM or cross-chain execution remains deferred until there is a real submission primitive
+
+Non-goals for the v0.9.6 debut:
+
+- speculative or high-risk autonomous trading
+- bespoke strategy-specific settlement paths
+- unaudited fund movement outside policy-enforced treasury controls
 
 ## Acceptance Criteria
 
@@ -151,3 +226,4 @@ Mechanic support hooks:
 - automated micro-bounty intake adapters
 - profitability-aware strategy scheduler
 - tax destination transfers for realized profit
+- automatic cross-chain/non-EVM swap execution

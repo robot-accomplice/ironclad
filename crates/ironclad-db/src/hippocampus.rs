@@ -336,8 +336,8 @@ pub fn compact_summary(db: &Database) -> Result<String> {
     summary.push_str("Use get_runtime_context for full schema details.");
 
     // Hard truncation safety net
-    if summary.len() > 800 {
-        summary.truncate(800);
+    if summary.len() > 1000 {
+        summary.truncate(1000);
         if let Some(last_nl) = summary.rfind('\n') {
             summary.truncate(last_nl);
         }
@@ -369,7 +369,7 @@ fn system_table_metadata(table_name: &str) -> (&'static str, &'static str) {
         "proxy_stats" => ("API proxy statistics", "internal"),
         "semantic_cache" => ("Semantic response cache", "internal"),
         "identity" => ("Agent identity and credentials", "internal"),
-        "soul_history" => ("Agent personality evolution log", "internal"),
+        "os_personality_history" => ("OS personality evolution log", "internal"),
         "metric_snapshots" => ("System metric snapshots", "internal"),
         "discovered_agents" => ("Discovered peer agents", "read"),
         "skills" => ("Registered agent skills", "read"),
@@ -380,6 +380,7 @@ fn system_table_metadata(table_name: &str) -> (&'static str, &'static str) {
         "sub_agents" => ("Spawned sub-agent registry", "read"),
         "context_checkpoints" => ("Context checkpoint snapshots", "internal"),
         "hippocampus" => ("Schema map (this table)", "internal"),
+        "learned_skills" => ("Skills synthesized from successful tool sequences", "read"),
         _ => ("Agent-managed table", "readwrite"),
     }
 }
@@ -835,9 +836,9 @@ mod tests {
     fn compact_summary_fits_token_budget() {
         let db = test_db();
         let summary = compact_summary(&db).unwrap();
-        // ~200 tokens ≈ ~800 chars
+        // ~250 tokens ≈ ~1000 chars
         assert!(
-            summary.len() <= 900,
+            summary.len() <= 1100,
             "compact_summary too long: {} chars",
             summary.len()
         );

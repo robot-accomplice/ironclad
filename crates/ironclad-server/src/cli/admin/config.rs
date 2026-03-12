@@ -101,7 +101,11 @@ fn set_toml_value(
     for (i, part) in parts.iter().enumerate() {
         if i == parts.len() - 1 {
             if let toml::Value::Table(map) = current {
-                let parsed_value = parse_toml_value(value);
+                let parsed_value = if matches!(map.get(*part), Some(toml::Value::Array(_))) {
+                    parse_toml_value_for_existing_array(value)
+                } else {
+                    parse_toml_value(value)
+                };
                 map.insert(part.to_string(), parsed_value);
             }
         } else {
@@ -146,7 +150,26 @@ fn remove_toml_key(table: &mut toml::Value, path: &str) -> bool {
     }
 }
 
+fn parse_toml_value_for_existing_array(s: &str) -> toml::Value {
+    let trimmed = s.trim();
+    if trimmed.starts_with('[') || trimmed.starts_with('{') {
+        return parse_toml_value(trimmed);
+    }
+    let items: Vec<toml::Value> = trimmed
+        .split(',')
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .map(parse_toml_value)
+        .collect();
+    toml::Value::Array(items)
+}
+
 fn parse_toml_value(s: &str) -> toml::Value {
+    if let Ok(parsed) = format!("value = {s}").parse::<toml::Table>()
+        && let Some(value) = parsed.get("value")
+    {
+        return value.clone();
+    }
     if s == "true" {
         return toml::Value::Boolean(true);
     }
@@ -410,6 +433,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_toml_value_inline_table_array() {
+        let result = parse_toml_value(
+            r#"[{ chain = "ETH", target_contract_address = "0x1", swap_contract_address = "0x2" }]"#,
+        );
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        let first = arr[0].as_table().unwrap();
+        assert!(first.get("chain").is_some());
+    }
+
+    #[test]
     fn set_toml_value_existing_key() {
         let mut table: toml::Value = "[server]\nport = 8080".parse().unwrap();
         set_toml_value(&mut table, "server.port", "9090").unwrap();
@@ -440,6 +474,25 @@ mod tests {
         let mut table = toml::Value::Table(toml::map::Map::new());
         set_toml_value(&mut table, "name", "test").unwrap();
         assert_eq!(table.get("name").unwrap().as_str().unwrap(), "test");
+    }
+
+    #[test]
+    fn set_toml_value_existing_array_accepts_csv() {
+        let mut table: toml::Value = "[channels]\nstartup_announcements = [\"telegram\"]"
+            .parse()
+            .unwrap();
+        set_toml_value(
+            &mut table,
+            "channels.startup_announcements",
+            "telegram,signal,email",
+        )
+        .unwrap();
+        let arr = navigate_toml(&table, "channels.startup_announcements")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[1].as_str().unwrap(), "signal");
     }
 
     #[test]

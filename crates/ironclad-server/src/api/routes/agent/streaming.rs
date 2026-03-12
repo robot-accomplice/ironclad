@@ -175,7 +175,7 @@ pub async fn agent_message_stream(
     let agent_id_for_input = config.agent.id.clone();
     let primary_model = config.models.primary.clone();
     let personality = state.personality.read().await;
-    let soul_text = personality.soul_text.clone();
+    let os_text = personality.os_text.clone();
     let firmware_text = personality.firmware_text.clone();
     drop(personality);
     drop(config);
@@ -188,7 +188,7 @@ pub async fn agent_message_stream(
         channel_label: "api-stream",
         agent_name,
         agent_id: agent_id_for_input,
-        soul_text,
+        os_text,
         firmware_text,
         primary_model,
         tier_adapt,

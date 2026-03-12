@@ -7,6 +7,8 @@ mod interview;
 mod memory;
 mod sessions;
 mod skills;
+pub(crate) mod subagent_integrity;
+pub(crate) use self::agent::execute_scheduled_agent_task;
 mod subagents;
 
 use std::collections::HashMap;
@@ -224,7 +226,7 @@ impl PaginationQuery {
 /// Holds the composed personality text plus metadata for status display.
 #[derive(Debug, Clone)]
 pub struct PersonalityState {
-    pub soul_text: String,
+    pub os_text: String,
     pub firmware_text: String,
     pub identity: OsIdentity,
     pub voice: OsVoice,
@@ -237,7 +239,7 @@ impl PersonalityState {
         let operator = personality::load_operator(workspace);
         let directives = personality::load_directives(workspace);
 
-        let soul_text =
+        let os_text =
             personality::compose_identity_text(os.as_ref(), operator.as_ref(), directives.as_ref());
         let firmware_text = personality::compose_firmware_text(fw.as_ref());
 
@@ -254,7 +256,7 @@ impl PersonalityState {
         };
 
         Self {
-            soul_text,
+            os_text,
             firmware_text,
             identity,
             voice,
@@ -263,7 +265,7 @@ impl PersonalityState {
 
     pub fn empty() -> Self {
         Self {
-            soul_text: String::new(),
+            os_text: String::new(),
             firmware_text: String::new(),
             identity: OsIdentity {
                 name: String::new(),
@@ -458,26 +460,32 @@ async fn security_headers_layer(
 pub fn build_router(state: AppState) -> Router {
     use admin::{
         a2a_hello, breaker_open, breaker_reset, breaker_status, browser_action, browser_start,
-        browser_status, browser_stop, change_agent_model, create_service_quote,
-        delete_provider_key, execute_plugin_tool, fulfill_revenue_opportunity,
-        fulfill_service_request, generate_deep_analysis, get_agents, get_available_models,
-        get_cache_stats, get_capacity_stats, get_config, get_config_apply_status,
-        get_config_capabilities, get_costs, get_efficiency, get_mcp_runtime,
-        get_overview_timeseries, get_plugins, get_recommendations, get_revenue_opportunity,
-        get_routing_dataset, get_routing_diagnostics, get_runtime_surfaces, get_service_request,
-        get_throttle_stats, get_transactions, intake_micro_bounty_opportunity,
+        browser_status, browser_stop, change_agent_model, confirm_revenue_swap_task,
+        confirm_revenue_tax_task, create_service_quote, delete_provider_key, execute_plugin_tool,
+        fail_revenue_swap_task, fail_revenue_tax_task, fail_service_request,
+        fulfill_revenue_opportunity, fulfill_service_request, generate_deep_analysis, get_agents,
+        get_available_models, get_cache_stats, get_capacity_stats, get_config,
+        get_config_apply_status, get_config_capabilities, get_costs, get_efficiency,
+        get_mcp_runtime, get_overview_timeseries, get_plugins, get_recommendations,
+        get_revenue_opportunity, get_routing_dataset, get_routing_diagnostics,
+        get_runtime_surfaces, get_service_request, get_throttle_stats, get_transactions,
+        intake_micro_bounty_opportunity, intake_oracle_feed_opportunity,
         intake_revenue_opportunity, list_discovered_agents, list_paired_devices,
+        list_revenue_opportunities, list_revenue_swap_tasks, list_revenue_tax_tasks,
         list_services_catalog, mcp_client_disconnect, mcp_client_discover, pair_device,
-        plan_revenue_opportunity, qualify_revenue_opportunity, register_discovered_agent, roster,
-        run_routing_eval, set_provider_key, settle_revenue_opportunity, start_agent, stop_agent,
-        toggle_plugin, unpair_device, update_config, verify_discovered_agent, verify_paired_device,
+        plan_revenue_opportunity, qualify_revenue_opportunity, reconcile_revenue_swap_task,
+        reconcile_revenue_tax_task, record_revenue_opportunity_feedback, register_discovered_agent,
+        roster, run_routing_eval, score_revenue_opportunity, set_provider_key,
+        settle_revenue_opportunity, start_agent, start_revenue_swap_task, start_revenue_tax_task,
+        stop_agent, submit_revenue_swap_task, submit_revenue_tax_task, toggle_plugin,
+        unpair_device, update_config, verify_discovered_agent, verify_paired_device,
         verify_service_payment, wallet_address, wallet_balance, workspace_state,
     };
     use agent::{agent_message, agent_message_stream, agent_status};
     use channels::{get_channels_status, get_dead_letters, replay_dead_letter};
     use cron::{
         create_cron_job, delete_cron_job, get_cron_job, list_cron_jobs, list_cron_runs,
-        update_cron_job,
+        run_cron_job_now, update_cron_job,
     };
     use health::{get_logs, health};
     use memory::{
@@ -554,6 +562,10 @@ pub fn build_router(state: AppState) -> Router {
                 .put(update_cron_job)
                 .delete(delete_cron_job),
         )
+        .route(
+            "/api/cron/jobs/{id}/run",
+            axum::routing::post(run_cron_job_now),
+        )
         .route("/api/stats/costs", get(get_costs))
         .route("/api/stats/timeseries", get(get_overview_timeseries))
         .route("/api/stats/efficiency", get(get_efficiency))
@@ -571,20 +583,36 @@ pub fn build_router(state: AppState) -> Router {
             post(fulfill_service_request),
         )
         .route(
+            "/api/services/requests/{id}/fail",
+            post(fail_service_request),
+        )
+        .route(
             "/api/services/opportunities/intake",
-            post(intake_revenue_opportunity),
+            get(list_revenue_opportunities).post(intake_revenue_opportunity),
         )
         .route(
             "/api/services/opportunities/adapters/micro-bounty/intake",
             post(intake_micro_bounty_opportunity),
         )
         .route(
+            "/api/services/opportunities/adapters/oracle-feed/intake",
+            post(intake_oracle_feed_opportunity),
+        )
+        .route(
             "/api/services/opportunities/{id}",
             get(get_revenue_opportunity),
         )
         .route(
+            "/api/services/opportunities/{id}/score",
+            post(score_revenue_opportunity),
+        )
+        .route(
             "/api/services/opportunities/{id}/qualify",
             post(qualify_revenue_opportunity),
+        )
+        .route(
+            "/api/services/opportunities/{id}/feedback",
+            post(record_revenue_opportunity_feedback),
         )
         .route(
             "/api/services/opportunities/{id}/plan",
@@ -597,6 +625,48 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/services/opportunities/{id}/settle",
             post(settle_revenue_opportunity),
+        )
+        .route("/api/services/swaps", get(list_revenue_swap_tasks))
+        .route("/api/services/tax-payouts", get(list_revenue_tax_tasks))
+        .route(
+            "/api/services/swaps/{id}/start",
+            post(start_revenue_swap_task),
+        )
+        .route(
+            "/api/services/swaps/{id}/submit",
+            post(submit_revenue_swap_task),
+        )
+        .route(
+            "/api/services/swaps/{id}/reconcile",
+            post(reconcile_revenue_swap_task),
+        )
+        .route(
+            "/api/services/swaps/{id}/confirm",
+            post(confirm_revenue_swap_task),
+        )
+        .route(
+            "/api/services/swaps/{id}/fail",
+            post(fail_revenue_swap_task),
+        )
+        .route(
+            "/api/services/tax-payouts/{id}/start",
+            post(start_revenue_tax_task),
+        )
+        .route(
+            "/api/services/tax-payouts/{id}/submit",
+            post(submit_revenue_tax_task),
+        )
+        .route(
+            "/api/services/tax-payouts/{id}/reconcile",
+            post(reconcile_revenue_tax_task),
+        )
+        .route(
+            "/api/services/tax-payouts/{id}/confirm",
+            post(confirm_revenue_tax_task),
+        )
+        .route(
+            "/api/services/tax-payouts/{id}/fail",
+            post(fail_revenue_tax_task),
         )
         .route("/api/stats/cache", get(get_cache_stats))
         .route("/api/stats/capacity", get(get_capacity_stats))
@@ -841,7 +911,7 @@ primary = "ollama/qwen3:8b"
 "#
     }
 
-    fn test_state() -> AppState {
+    pub(crate) fn test_state() -> AppState {
         let db = Database::new(":memory:").unwrap();
         let config = ironclad_core::IroncladConfig::from_str(test_config_str()).unwrap();
         let llm = LlmService::new(&config).unwrap();
@@ -1476,7 +1546,7 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
-    async fn create_cron_job_defaults_payload_to_log_action() {
+    async fn create_cron_job_defaults_payload_to_agent_task_when_description_present() {
         let state = test_state();
         let app = build_router(state.clone());
         let req = Request::builder()
@@ -1484,7 +1554,7 @@ primary = "ollama/qwen3:8b"
             .uri("/api/cron/jobs")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"name":"morning-briefing","agent_id":"test","schedule_kind":"cron","schedule_expr":"0 9 * * *"}"#,
+                r#"{"name":"morning-briefing","description":"summarize overnight events","agent_id":"test","schedule_kind":"cron","schedule_expr":"0 9 * * *"}"#,
             ))
             .unwrap();
 
@@ -1498,8 +1568,8 @@ primary = "ollama/qwen3:8b"
             .expect("job should exist");
         let payload: serde_json::Value =
             serde_json::from_str(&job.payload_json).expect("payload should be valid JSON");
-        assert_eq!(payload["action"], "log");
-        assert_eq!(payload["message"], "scheduled job: morning-briefing");
+        assert_eq!(payload["action"], "agent_task");
+        assert_eq!(payload["task"], "summarize overnight events");
     }
 
     #[tokio::test]
@@ -1567,6 +1637,67 @@ primary = "ollama/qwen3:8b"
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn run_cron_job_now_executes_and_records_run() {
+        let state = test_state();
+        let job_id = ironclad_db::cron::create_job(
+            &state.db,
+            "run-now",
+            "agent-1",
+            "cron",
+            Some("0 * * * *"),
+            r#"{"action":"noop"}"#,
+        )
+        .unwrap();
+
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/cron/jobs/{job_id}/run"))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["job_id"], job_id);
+        assert_eq!(body["status"], "success");
+
+        let runs = ironclad_db::cron::list_runs(&state.db, None, None, Some(&job_id), 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "success");
+    }
+
+    #[tokio::test]
+    async fn run_cron_job_now_returns_output_text_for_log_job() {
+        let state = test_state();
+        let job_id = ironclad_db::cron::create_job(
+            &state.db,
+            "run-now-log",
+            "agent-1",
+            "cron",
+            Some("0 * * * *"),
+            r#"{"action":"log","message":"hello from cron"}"#,
+        )
+        .unwrap();
+
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/cron/jobs/{job_id}/run"))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["status"], "success");
+        assert_eq!(body["output_text"], "hello from cron");
+
+        let runs = ironclad_db::cron::list_runs(&state.db, None, None, Some(&job_id), 10).unwrap();
+        assert_eq!(runs[0].output_text.as_deref(), Some("hello from cron"));
     }
 
     #[tokio::test]
@@ -1967,6 +2098,678 @@ primary = "ollama/qwen3:8b"
     }
 
     #[tokio::test]
+    async fn revenue_opportunity_oracle_feed_adapter_scores_on_intake() {
+        let app = build_router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/adapters/oracle-feed/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"request_id":"feed_1","expected_revenue_usdc":9.5,"payload":{"pair":"ETH/USD","source_url":"https://example.com/feed"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["strategy"], "oracle_feed");
+        assert_eq!(body["score"]["recommended_approved"], true);
+        assert!(body["score"]["priority_score"].as_f64().unwrap_or_default() > 60.0);
+    }
+
+    #[tokio::test]
+    async fn revenue_opportunity_score_endpoint_persists_recommendation() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"trusted_feed_registry","strategy":"oracle_feed","expected_revenue_usdc":7.0,"payload":{"pair":"BTC/USD","source_url":"https://example.com/oracle"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let score_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/score"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(score_resp.status(), StatusCode::OK);
+        let score_body = json_body(score_resp).await;
+        assert_eq!(score_body["score"]["recommended_approved"], true);
+
+        let get_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/services/opportunities/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = json_body(get_resp).await;
+        assert_eq!(body["score"]["recommended_approved"], true);
+        assert!(
+            body["score"]["confidence_score"]
+                .as_f64()
+                .unwrap_or_default()
+                > 0.6
+        );
+    }
+
+    #[tokio::test]
+    async fn list_revenue_opportunities_orders_by_priority() {
+        let app = build_router(test_state());
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/adapters/micro-bounty/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"expected_revenue_usdc":2.0,"payload":{"action":"multi-repo audit"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/adapters/oracle-feed/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"expected_revenue_usdc":8.0,"payload":{"pair":"ETH/USD","source_url":"https://example.com/feed"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services/opportunities/intake?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["count"], 2);
+        assert_eq!(body["opportunities"][0]["strategy"], "oracle_feed");
+    }
+
+    #[tokio::test]
+    async fn revenue_swap_task_lifecycle_routes_work() {
+        let state = test_state();
+        let app = build_router(state.clone());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":4.0,"payload":{"issue":"swap-lifecycle"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for (path, body) in [
+            (
+                format!("/api/services/opportunities/{id}/qualify"),
+                r#"{"approved":true}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/plan"),
+                r#"{"plan":{"executor":"self"}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/fulfill"),
+                r#"{"evidence":{"ok":true}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/settle"),
+                r#"{"settlement_ref":"tx_swap_lifecycle","amount_usdc":4.0,"currency":"USDC"}"#
+                    .to_string(),
+            ),
+        ] {
+            let _ = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let start_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/swaps/{id}/start"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(start_resp.status(), StatusCode::OK);
+
+        // Simulate EVM submission: claim the submission slot then record the tx_hash.
+        // Real submissions go through the /submit endpoint which broadcasts on-chain,
+        // but we can't do real EVM in tests.
+        assert!(
+            ironclad_db::revenue_swap_tasks::claim_revenue_swap_submission(&state.db, &id).unwrap()
+        );
+        assert!(
+            ironclad_db::revenue_swap_tasks::mark_revenue_swap_submitted(
+                &state.db,
+                &id,
+                "0xswap123"
+            )
+            .unwrap()
+        );
+
+        let confirm_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/swaps/{id}/confirm"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"tx_hash":"0xswap123"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(confirm_resp.status(), StatusCode::OK);
+
+        let list_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services/swaps?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body = json_body(list_resp).await;
+        assert_eq!(body["count"], 1);
+        assert_eq!(body["swap_tasks"][0]["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn revenue_swap_submit_rejects_chain_mismatch() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":4.0,"payload":{"issue":"swap-submit-chain-mismatch"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for (path, body) in [
+            (
+                format!("/api/services/opportunities/{id}/qualify"),
+                r#"{"approved":true}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/plan"),
+                r#"{"plan":{"executor":"self"}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/fulfill"),
+                r#"{"evidence":{"ok":true}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/settle"),
+                r#"{"settlement_ref":"tx_swap_submit_mismatch","amount_usdc":4.0,"currency":"USDC","auto_swap":true,"target_chain":"ETH","target_contract_address":"0xfaf0cee6b20e2aaa4b80748a6af4cd89609a3d78"}"#
+                    .to_string(),
+            ),
+        ] {
+            let _ = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Transition swap task to in_progress before submit
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/swaps/{id}/start"))
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/swaps/{id}/submit"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"calldata":"0x1234"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("wallet is not configured"),
+            "expected generic chain-mismatch error, got: {:?}",
+            body["error"]
+        );
+    }
+
+    #[tokio::test]
+    async fn revenue_swap_submit_requires_contract_address() {
+        let state = test_state();
+        {
+            let conn = state.db.conn();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority, source) VALUES (?1, ?2, 'pending', 95, ?3)",
+                rusqlite::params![
+                    "rev_swap:ro_submit_no_contract",
+                    "Swap settlement",
+                    r#"{"type":"revenue_swap","opportunity_id":"ro_submit_no_contract","from_currency":"USDC","target_asset":"PALM_USD","target_chain":"BASE","amount":4.0}"#
+                ],
+            )
+            .unwrap();
+        }
+        let app = build_router(state);
+        // Transition swap task to in_progress before submit
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/swaps/ro_submit_no_contract/start")
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/swaps/ro_submit_no_contract/submit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"calldata":"0x1234"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("contract_address")
+        );
+    }
+
+    #[tokio::test]
+    async fn revenue_settlement_queues_tax_payout_when_tax_policy_enabled() {
+        let state = test_state();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.self_funding.tax.enabled = true;
+            cfg.self_funding.tax.rate = 0.25;
+            cfg.self_funding.tax.destination_wallet =
+                Some("0x1111111111111111111111111111111111111111".to_string());
+        }
+        let app = build_router(state);
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":8.0,"payload":{"issue":"tax-queue"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for (path, body) in [
+            (
+                format!("/api/services/opportunities/{id}/qualify"),
+                r#"{"approved":true}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/plan"),
+                r#"{"plan":{"executor":"self"}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/fulfill"),
+                r#"{"evidence":{"ok":true}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/settle"),
+                r#"{"settlement_ref":"tx_tax_queue","amount_usdc":8.0,"currency":"USDC","attributable_costs_usdc":2.0,"auto_swap":false}"#
+                    .to_string(),
+            ),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        let list_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services/tax-payouts?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body = json_body(list_resp).await;
+        assert_eq!(body["count"], 1);
+        assert_eq!(body["tax_tasks"][0]["opportunity_id"], id);
+        assert_eq!(body["tax_tasks"][0]["status"], "pending");
+        assert_eq!(
+            body["tax_tasks"][0]["source"]["destination_wallet"],
+            "0x1111111111111111111111111111111111111111"
+        );
+    }
+
+    #[tokio::test]
+    async fn revenue_tax_task_lifecycle_routes_work() {
+        let state = test_state();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.self_funding.tax.enabled = true;
+            cfg.self_funding.tax.rate = 0.25;
+            cfg.self_funding.tax.destination_wallet =
+                Some("0x1111111111111111111111111111111111111111".to_string());
+        }
+        let app = build_router(state.clone());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":8.0,"payload":{"issue":"tax-lifecycle"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for (path, body) in [
+            (
+                format!("/api/services/opportunities/{id}/qualify"),
+                r#"{"approved":true}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/plan"),
+                r#"{"plan":{"executor":"self"}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/fulfill"),
+                r#"{"evidence":{"ok":true}}"#.to_string(),
+            ),
+            (
+                format!("/api/services/opportunities/{id}/settle"),
+                r#"{"settlement_ref":"tx_tax_lifecycle","amount_usdc":8.0,"currency":"USDC","attributable_costs_usdc":2.0,"auto_swap":false}"#
+                    .to_string(),
+            ),
+        ] {
+            let _ = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let start_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/tax-payouts/{id}/start"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(start_resp.status(), StatusCode::OK);
+
+        // Simulate EVM submission: claim the submission slot then record the tx_hash.
+        // Real submissions go through the /submit endpoint which broadcasts on-chain,
+        // but we can't do real EVM in tests.
+        assert!(
+            ironclad_db::revenue_tax_tasks::claim_revenue_tax_submission(&state.db, &id).unwrap()
+        );
+        assert!(
+            ironclad_db::revenue_tax_tasks::mark_revenue_tax_submitted(&state.db, &id, "0xtax123")
+                .unwrap()
+        );
+
+        let confirm_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/tax-payouts/{id}/confirm"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"tx_hash":"0xtax123"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(confirm_resp.status(), StatusCode::OK);
+
+        let list_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/services/tax-payouts?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let body = json_body(list_resp).await;
+        assert_eq!(body["count"], 1);
+        assert_eq!(body["tax_tasks"][0]["status"], "completed");
+        assert_eq!(body["tax_tasks"][0]["source"]["tax_tx_hash"], "0xtax123");
+    }
+
+    #[tokio::test]
+    async fn revenue_feedback_route_records_and_surfaces_strategy_summary() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/adapters/oracle-feed/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"feed_name":"fx-settlement","market":"fx","expected_revenue_usdc":6.0,"payload":{"cadence":"hourly","source":"trusted-oracle"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let feedback_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/feedback"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"grade":4.5,"source":"operator","comment":"worth repeating"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(feedback_resp.status(), StatusCode::OK);
+
+        let wallet_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/wallet/balance")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wallet_resp.status(), StatusCode::OK);
+        let body = json_body(wallet_resp).await;
+        assert_eq!(
+            body["revenue_feedback_summary"][0]["strategy"],
+            "oracle_feed"
+        );
+        assert_eq!(body["revenue_feedback_summary"][0]["feedback_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn revenue_swap_reconcile_requires_submitted_tx_hash() {
+        let state = test_state();
+        {
+            let conn = state.db.conn();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority, source) VALUES (?1, ?2, 'pending', 95, ?3)",
+                rusqlite::params![
+                    "rev_swap:ro_reconcile_no_hash",
+                    "Swap settlement",
+                    r#"{"type":"revenue_swap","opportunity_id":"ro_reconcile_no_hash","from_currency":"USDC","target_asset":"PALM_USD","target_chain":"BASE","amount":4.0,"swap_contract_address":"0x1234567890123456789012345678901234567890"}"#
+                ],
+            )
+            .unwrap();
+        }
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/swaps/ro_reconcile_no_hash/reconcile")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("submitted tx_hash")
+        );
+    }
+
+    #[tokio::test]
     async fn revenue_settlement_is_idempotent_for_duplicate_ref() {
         let app = build_router(test_state());
         let intake_resp = app
@@ -2054,6 +2857,276 @@ primary = "ollama/qwen3:8b"
         assert_eq!(second.status(), StatusCode::OK);
         let body = json_body(second).await;
         assert_eq!(body["idempotent"], true);
+    }
+
+    #[tokio::test]
+    async fn revenue_settlement_rejects_unknown_target_chain() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":1.1,"payload":{"issue":"xyz"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/qualify"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"approved":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/plan"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"plan":{"executor":"self"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/fulfill"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"evidence":{"ok":true}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/settle"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"settlement_ref":"tx_settle_bad_chain","amount_usdc":1.1,"currency":"USDC","target_chain":"AVALANCHE","auto_swap":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(resp).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("target_contract_address")
+        );
+
+        let good_resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/settle"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"settlement_ref":"tx_settle_good_chain","amount_usdc":1.1,"currency":"USDC","target_chain":"AVALANCHE","auto_swap":true,"target_contract_address":"0x1111111111111111111111111111111111111111"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(good_resp.status(), StatusCode::OK);
+        let good_body = json_body(good_resp).await;
+        assert_eq!(good_body["idempotent"], false);
+    }
+
+    #[tokio::test]
+    async fn revenue_settlement_accepts_custom_chain_when_contract_addresses_are_supplied() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":1.3,"payload":{"issue":"swap-test"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/qualify"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"approved":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/plan"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"plan":{"executor":"self"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/fulfill"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"evidence":{"ok":true}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/settle"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"settlement_ref":"tx_settle_custom_chain","amount_usdc":1.3,"currency":"USDC","target_chain":"ARBITRUM","auto_swap":true,"target_symbol":"PALM_USD","target_contract_address":"0x1111111111111111111111111111111111111111","swap_contract_address":"0x2222222222222222222222222222222222222222"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["swap_queued"], true);
+        assert_eq!(body["swap_target_chain"], "ARBITRUM");
+        assert_eq!(body["swap_target_asset"], "PALM_USD");
+    }
+
+    #[tokio::test]
+    async fn revenue_opportunity_get_exposes_swap_task_and_accounting() {
+        let app = build_router(test_state());
+        let intake_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/services/opportunities/intake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"source":"micro_bounty_board","strategy":"micro_bounty","expected_revenue_usdc":4.5,"payload":{"issue":"swap-telemetry"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_body(intake_resp).await["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/qualify"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"approved":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/plan"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"plan":{"executor":"self"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/fulfill"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"evidence":{"ok":true}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let settle_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/opportunities/{id}/settle"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"settlement_ref":"tx_swap_visibility","amount_usdc":4.5,"attributable_costs_usdc":1.2,"currency":"USDC"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(settle_resp.status(), StatusCode::OK);
+
+        let get_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/services/opportunities/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = json_body(get_resp).await;
+        assert_eq!(body["settled_amount_usdc"], 4.5);
+        assert_eq!(body["attributable_costs_usdc"], 1.2);
+        assert_eq!(body["net_profit_usdc"], 3.3);
+        assert_eq!(body["swap_task"]["id"], format!("rev_swap:{id}"));
+        assert_eq!(body["swap_task"]["status"], "pending");
     }
 
     #[tokio::test]
@@ -2219,7 +3292,32 @@ primary = "ollama/qwen3:8b"
 
     #[tokio::test]
     async fn wallet_balance_returns_real_data() {
-        let app = build_router(test_state());
+        let state = test_state();
+        {
+            let mut cfg = state.config.write().await;
+            cfg.self_funding.tax.enabled = true;
+            cfg.self_funding.tax.rate = 0.25;
+            cfg.self_funding.tax.destination_wallet =
+                Some("0x1111111111111111111111111111111111111111".to_string());
+        }
+        let task_source = serde_json::json!({
+            "type": "revenue_tax_payout",
+            "opportunity_id": "wallet-balance-tax",
+            "currency": "USDC",
+            "target_chain": "BASE",
+            "destination_wallet": "0x1111111111111111111111111111111111111111",
+            "amount": 1.5
+        })
+        .to_string();
+        {
+            let conn = state.db.conn();
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, priority, source) VALUES (?1, ?2, 'pending', 96, ?3)",
+                rusqlite::params!["rev_tax:wallet-balance-tax", "Tax payout", task_source],
+            )
+            .unwrap();
+        }
+        let app = build_router(state);
         let req = Request::builder()
             .uri("/api/wallet/balance")
             .body(Body::empty())
@@ -2234,6 +3332,31 @@ primary = "ollama/qwen3:8b"
         assert!(body["address"].is_string());
         assert!(body["chain_id"].is_number());
         assert!(body["treasury"]["per_payment_cap"].is_number());
+        assert_eq!(
+            body["treasury"]["revenue_swap"]["target_symbol"],
+            "PALM_USD"
+        );
+        assert_eq!(body["treasury"]["revenue_swap"]["default_chain"], "ETH");
+        assert!(body["treasury"]["revenue_swap"]["chains"].is_array());
+        assert_eq!(body["seed_exercise_readiness"]["seed_target_usdc"], 50.0);
+        assert!(body["seed_exercise_readiness"]["stable_balance_usdc"].is_number());
+        assert_eq!(body["seed_exercise_readiness"]["default_chain"], "ETH");
+        assert!(body["seed_exercise_readiness"]["default_chain_has_target_contract"].is_boolean());
+        assert!(body["seed_exercise_readiness"]["default_chain_has_swap_contract"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_1_seeded_and_visible"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_1_meets_target"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_2_revenue_cycle_complete"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_3_swap_submitted"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_3_swap_reconciled"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_3_tax_submitted"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_3_tax_reconciled"].is_boolean());
+        assert!(body["seed_exercise_progress"]["phase_4_mechanic_clear"].is_boolean());
+        assert!(body["seed_exercise_progress"]["next_action"].is_string());
+        assert!(body["seed_exercise_plan"]["phases"].is_array());
+        assert!(body["seed_exercise_plan"]["abort_conditions"].is_array());
+        assert!(body["seed_exercise_plan"]["operator_guidance"].is_array());
+        assert_eq!(body["revenue_tax_queue"]["total"], 1);
+        assert_eq!(body["revenue_tax_queue"]["pending"], 1);
     }
 
     #[tokio::test]
@@ -4514,7 +5637,7 @@ params = { path = "README.md" }
     #[test]
     fn personality_state_empty_defaults() {
         let ps = PersonalityState::empty();
-        assert!(ps.soul_text.is_empty());
+        assert!(ps.os_text.is_empty());
         assert!(ps.firmware_text.is_empty());
         assert!(ps.identity.name.is_empty());
     }
@@ -4522,7 +5645,7 @@ params = { path = "README.md" }
     #[test]
     fn personality_state_from_nonexistent_workspace() {
         let ps = PersonalityState::from_workspace(std::path::Path::new("/tmp/no-such-workspace"));
-        assert!(ps.soul_text.is_empty());
+        assert!(ps.os_text.is_empty());
     }
 
     // ── Mock-based tests: read_log_entries with temp files ────────
@@ -4943,6 +6066,9 @@ params = { path = "README.md" }
             .expect("created subagent should be listed");
         assert!(created["runtime_state"].is_string());
         assert!(created["taskable"].is_boolean());
+        assert!(created["integrity"]["hollow"].is_boolean());
+        assert!(created["integrity"]["missing_session"].is_boolean());
+        assert!(created["integrity"]["repairable"].is_boolean());
     }
 
     #[tokio::test]
@@ -5001,6 +6127,7 @@ params = { path = "README.md" }
         let reply = agent::handle_bot_command(&state, "/status", None)
             .await
             .unwrap();
+        assert!(reply.contains(&format!("version: v{}", env!("CARGO_PKG_VERSION"))));
         assert!(reply.contains("taskable subagents"));
         assert!(reply.contains("subagent taskability"));
     }
@@ -6196,8 +7323,9 @@ params = { path = "README.md" }
             "{}",
         )
         .unwrap();
-        ironclad_db::cron::record_run(&state.db, &job_id, "success", Some(150), None).unwrap();
-        ironclad_db::cron::record_run(&state.db, &job_id, "error", Some(20), Some("timeout"))
+        ironclad_db::cron::record_run(&state.db, &job_id, "success", Some(150), None, None)
+            .unwrap();
+        ironclad_db::cron::record_run(&state.db, &job_id, "error", Some(20), Some("timeout"), None)
             .unwrap();
 
         let app = build_router(state);

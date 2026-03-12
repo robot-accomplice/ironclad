@@ -78,7 +78,9 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures::Stream;
-use ironclad_core::{ApiFormat, IroncladConfig, Result};
+use std::sync::Arc;
+
+use ironclad_core::{ApiFormat, IroncladConfig, PaymentHandler, Result};
 use router::HeuristicBackend;
 
 pub struct LlmService {
@@ -146,6 +148,13 @@ impl LlmService {
             escalation,
             embedding,
         })
+    }
+
+    /// Inject an x402 payment handler so the LLM client can autonomously pay
+    /// for 402-gated resources. Call this after construction when the wallet
+    /// is available.
+    pub fn set_payment_handler(&mut self, handler: Arc<dyn PaymentHandler>) {
+        self.client = self.client.clone().with_payment_handler(handler);
     }
 
     /// Stream a request to the given provider, returning parsed `StreamChunk`s.

@@ -47,7 +47,7 @@ ironclad-tests       Integration test suite
 - **Circuit breaker** per provider (Closed/Open/HalfOpen states, exponential backoff, rate/credit/timeout trips)
 - **In-flight deduplication** -- SHA-256 fingerprinting prevents duplicate concurrent requests
 - **Tier-based prompt adaptation** -- T1 (condensed), T2 (preamble + reorder), T3/T4 (passthrough + Anthropic cache_control)
-- **Heuristic model router** -- rule-based fallback chain + heuristic complexity classifier for routing
+- **Metascore model router** -- profile-based model selection with bounded fallback and provider health checks
 - **3-level semantic cache** -- L1 exact hash, L2 embedding cosine similarity, L3 deterministic tool TTL; backed by SQLite persistence (loaded on boot, flushed every 5 min)
 - **Multi-provider embedding client** -- supports OpenAI, Ollama, and Google embedding APIs with automatic format translation; falls back to deterministic char n-gram hashing when no provider is configured
 - **Persistent connection pool** -- single `reqwest::Client` with HTTP/2 multiplexing per provider
@@ -81,7 +81,7 @@ ironclad-tests       Integration test suite
 - **Full-text search** via SQLite FTS5
 - **Hybrid RAG retrieval** -- combines FTS5 keyword matching with vector cosine similarity (configurable `hybrid_weight` blend); used for pre-inference context retrieval
 - **Multi-provider embeddings** -- real embeddings from OpenAI, Ollama, or Google; n-gram fallback when no provider configured
-- **Binary BLOB embedding storage** -- `Vec<f32>` stored as native byte arrays (~4x smaller than JSON text); backward-compatible JSON fallback for legacy data
+- **Binary BLOB embedding storage** -- `Vec<f32>` stored as native byte arrays (~4x smaller than JSON text); read-path support for pre-migration JSON rows until mechanic/update rewrites them
 - **HNSW ANN index** -- optional approximate nearest-neighbor index (instant-distance crate) for O(log n) similarity search over large embedding sets; toggled via `memory.ann_index`
 - **Content chunking** -- long documents split into overlapping chunks (default 512 tokens, 64-token overlap) for more granular embedding and retrieval
 - **Memory budget manager** -- configurable per-tier token allocation with unused rollover

@@ -220,6 +220,8 @@ Capabilities where the core code exists but isn't fully connected. High impact, 
 
 ### 1.20 Homebrew & Winget Package Manager Distribution
 
+> **Status**: Shipped in v0.9.6. Tap repo (`robot-accomplice/homebrew-ironclad`), secrets (`HOMEBREW_TAP_PAT`, `WINGET_TOKEN`), and `release.yml` jobs are all in place. First tagged release will exercise the Homebrew formula pipeline; Winget submission goes through Microsoft review on first release.
+
 **Current state**: Ironclad distributes pre-built binaries via GitHub Releases (5 targets), crates.io (source install), Docker image, and platform installer scripts (`install.sh`, `install.ps1`). Users on macOS/Linux must use installer scripts or `cargo install`; Windows users must use the PowerShell script or `cargo install`. No native package manager integration exists.
 
 **Target**: One-command installation via native package managers — `brew install ironclad` (macOS/Linux) and `winget install RobotAccomplice.Ironclad` (Windows). Auto-updated on each release with zero manual intervention.
@@ -516,6 +518,8 @@ On first boot, `initialize_db()` populates the hippocampus with all system table
 
 ### 2.14 Skills Catalog (CLI + Dashboard)
 
+> **Status**: Shipped in v0.9.6. `PluginCatalog` with CLI flows (`ironclad skills catalog list/install/activate`) and API endpoints (`GET/POST /api/skills/catalog`, `/install`, `/activate`). Registry manifest fetch from remote URL with JSON parsing.
+
 **Current state**: Skills are loaded from local directories and managed via direct file operations, API calls, and ad hoc toggles. There is no first-party catalog UX for browsing Ironclad-produced skills or batch-installing curated sets.
 
 **Target**: A first-party skills catalog for both CLI and dashboard that lets users browse published Ironclad skills, multi-select items, and perform one-shot download, install, and activation workflows.
@@ -552,13 +556,25 @@ On first boot, `initialize_db()` populates the hippocampus with all system table
 
 ### 2.18 Compliance-First Self-Funding Portfolio + Profit Taxation
 
+> **Status**: Shipped in v0.9.6. Complete revenue opportunity lifecycle (intake → qualify → score → plan → fulfill → settle) with DB-backed restart safety, strategy-level scoring, feedback persistence, configurable post-settlement asset routing (default `PALM_USD`), EVM swap/tax payout lifecycle with tx-hash tracking and on-chain reconciliation, and operator-visible accounting across API/CLI/mechanic surfaces. $50 seed exercise deferred — infrastructure proven via integration tests; economic ecosystem for autonomous bot services is still nascent.
+
 **Current state**: Ironclad has wallet/treasury controls, transaction tracking, and a service lifecycle foundation, but no first-class self-funding package optimized for legal, low-friction income generation. There is also no built-in mechanism to automatically redirect a configurable share of realized bot profit to the user's Ironclad-affiliated wallet.
 
 **Target**: A realistic, low-overhead self-funding system that helps agents maintain strong runtime capacity while remaining compliance-first. Include an adjustable taxation paradigm that applies to net realized profit per completed paid job and automatically redirects the taxed amount to the user's affiliated wallet.
 
+**Release commitment**: `v0.9.6` is the target debut for the first complete self-funding mechanism. This is no longer a vague post-v0.9.x aspiration; the expectation is a user-operable, restart-safe, auditable end-to-end loop.
+
 **Builds on**: `ServiceManager`, wallet/treasury (`ironclad-wallet`), `transactions` ledger, A2A/service endpoints, subagent routing and capability matching.
 
-**Scope**: Ship a curated self-funding catalog of legal, repeatable service archetypes (monitoring/alerts, recurring summaries, narrow subagent deliverables) with transparent pricing templates. Add profit accounting primitives: `net_realized_profit = earned_revenue - attributable_costs` (inference, fulfillment payouts, network/settlement fees) at job completion. Add config and controls for `self_funding.tax.enabled`, `self_funding.tax.rate` (0.0-1.0), `self_funding.tax.destination_wallet`, and per-service opt-in/out. On each completed paid job, compute tax from net realized profit, create an auditable settlement record, and transfer/allocate funds to the configured affiliated wallet. Enforce safety rails: max transfer caps, minimum reserve floor, invalid-address rejection, and explicit no-op behavior when profit <= 0. Expose dashboard/API observability for gross revenue, attributable costs, net profit, tax paid, after-tax retained earnings, and payout history.
+**Scope**: Ship a curated self-funding catalog of legal, repeatable service archetypes (monitoring/alerts, recurring summaries, narrow subagent deliverables) with transparent pricing templates. Add profit accounting primitives: `net_realized_profit = earned_revenue - attributable_costs` (inference, fulfillment payouts, network/settlement fees) at job completion. Add config and controls for `self_funding.tax.enabled`, `self_funding.tax.rate` (0.0-1.0), `self_funding.tax.destination_wallet`, and per-service opt-in/out. On each completed paid job, compute tax from net realized profit, create an auditable settlement record, and transfer/allocate funds to the configured affiliated wallet. Enforce safety rails: max transfer caps, minimum reserve floor, invalid-address rejection, and explicit no-op behavior when profit <= 0. Expose dashboard/API observability for gross revenue, attributable costs, net profit, tax paid, after-tax retained earnings, and payout history. Post-settlement asset routing must be operator-configurable, default to `PALM_USD`, and support arbitrary chains when contract addresses are supplied.
+
+**v0.9.6 delivery bar**:
+
+- at least two strategy classes share one canonical revenue lifecycle
+- all revenue jobs are DB-backed, auditable, and restart-safe
+- settlement, tax allocation, and retained-earnings accounting are observable from API/dashboard/terminal
+- mechanic can detect and repair stale/orphaned revenue jobs and reconciliation mismatches
+- no strategy bypasses the shared intake -> qualification -> scoring -> planning -> fulfillment -> settlement path
 
 ---
 
@@ -620,6 +636,8 @@ Scoring contract reference: `docs/evals/METASCORE_V1_SPEC.md` (spec-only).
 ---
 
 ### 2.21 Skill Registry Protocol
+
+> **Status**: Shipped in v0.9.6. Migration 022 adds `version`, `author`, `registry_source` columns. `RegistrySource` type with multi-registry config, namespace resolution (`{registry_name}/{skill_name}`), semver comparison, priority-based conflict resolution, and backward-compatible single-URL fallback.
 
 **Current state**: Skills are loaded from local directories. `2.14 Skills Catalog` adds CLI/dashboard browse and install for first-party skills, but there is no protocol for community-contributed skill distribution. As agent runtimes mature, ecosystem breadth becomes a key differentiator — a registry protocol enables community participation without centralizing control.
 
@@ -717,7 +735,7 @@ Ambitious capabilities that push the architecture into new territory. High effor
 
 ### 3.7 UniRoute Model Vectors
 
-**Current state**: Model routing uses a heuristic or (future) trained classifier that must be retrained for new models.
+**Current state**: Model routing uses a metascore router or (future) trained classifier that must be retrained for new models.
 
 **Target**: Represent each model as a feature vector derived from its capabilities, pricing, and benchmark performance. Route among unseen models without retraining.
 
@@ -957,6 +975,26 @@ Competitive learnings captured as **robot subroutines** for roadmap shaping. The
 - Add simulation scenarios that compare this profile against existing local/cloud choices under privacy-first and latency-first policy presets.
 - Define readiness gates for promotion into default local-routing recommendations (minimum tool success + loop completion thresholds).
 
+### Subroutine P — Terminal User Interface (TUI)
+
+**Signal**: operators managing long-running autonomous agents need a rich interactive terminal experience that doesn't require a browser. The TUI must maintain full functional parity with the web dashboard.
+
+**Plan fit**: extends operator observability, brings the full control surface to headless/SSH environments, and unlocks efficient multi-session management without browser overhead.
+
+**Scope draft**:
+
+- **Framework**: `ratatui` + `crossterm` backend. Single binary, no additional dependencies.
+- **Dashboard parity**: real-time session list, active agent status, memory budget visualization, inference cost breakdown, routing profile spider graph, approval queue, and skill catalog — all mirroring web dashboard functionality.
+- **Live streaming**: token-by-token agent response rendering via the existing WebSocket event bus (reuses `model_shift`, `tool_call`, `approval_request` events).
+- **Session management**: create/attach/detach/kill sessions, inspect session history, replay episodic digests.
+- **Configuration surfaces**: inline model routing profile editor, channel allowlist management, autonomy budget controls, scheduler cron management.
+- **Revenue/service views**: opportunity queue, swap status, settlement history, tax payout ledger — all with the same data as web dashboard routes.
+- **Approval workflow**: interactive approve/deny/inspect pending tool calls with risk context display.
+- **Skill management**: browse, install, activate, deactivate skills with inline preview.
+- **Split-pane layout**: configurable multi-pane views (e.g., session output + memory inspector + approval queue).
+- **Keybindings**: vim-style navigation with customizable keymaps via config.
+- **Parity contract**: any new web dashboard feature must ship with a corresponding TUI surface. Feature parity is enforced by CI gate (dashboard route coverage → TUI panel mapping).
+
 ### Mission-Kernel Freeze Guard
 
 For the current major-version bug-hammer cycle:
@@ -1166,7 +1204,7 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 2.7 | ~~WASM plugin runtime~~ ✅ | 2 | Plugin SDK, ToolDef | ~~High~~ Done |
 | 2.8 | Prompt compression | 2 | Context assembly, tier.rs | Medium |
 | 2.9 | ~~Declarative agent manifests~~ ✅ | 2 | Config, SkillLoader, SubagentRegistry | ~~High~~ Done |
-| 2.10 | ~~Structured workspace system~~ ✅ | 2 | personality.rs, soul_history | ~~Medium~~ Done |
+| 2.10 | ~~Structured workspace system~~ ✅ | 2 | personality.rs, os_personality_history | ~~Medium~~ Done |
 | 2.11 | ~~Knowledge source trait~~ ✅ | 2 | retrieval.rs, EmbeddingClient, HNSW | ~~High~~ Done |
 | 2.12 | Episodic digest system | 2 | memory.rs, compaction, retrieval | Medium |
 | 2.13 | Hippocampus — self-describing schema map | 2 | schema.rs, Tool trait, policy engine | High |

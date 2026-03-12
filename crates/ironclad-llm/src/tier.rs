@@ -117,9 +117,16 @@ mod tests {
 
         assert_eq!(classify("claude-opus-5"), ModelTier::T4);
         assert_eq!(classify("gpt-5-turbo"), ModelTier::T4);
+        assert_eq!(classify("gpt-5.4"), ModelTier::T4);
+        assert_eq!(classify("gpt-5.4-turbo"), ModelTier::T4);
+        assert_eq!(classify("gpt-5.4-mini"), ModelTier::T2);
         assert_eq!(classify("o1-preview"), ModelTier::T4);
         assert_eq!(classify("o3-mini"), ModelTier::T2);
         assert_eq!(classify("o3-pro"), ModelTier::T4);
+
+        assert_eq!(classify("gemini-3-flash"), ModelTier::T2);
+        assert_eq!(classify("gemini-flash-3"), ModelTier::T2);
+        assert_eq!(classify("gemini-3.1-flash-preview"), ModelTier::T2);
 
         assert_eq!(classify("some-unknown-model"), ModelTier::T2);
     }

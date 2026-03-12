@@ -217,7 +217,7 @@ Focus: ecosystem expansion and policy-heavy operations.
 | `cross-channel-operator` | Telegram/Discord/Signal/email support | Channel adapters |
 | `policy-guardrail-designer` | Policy authoring guidance | P.5 Policy-as-Code |
 | `cost-anomaly-investigator` | Inference cost anomaly detection | Cost telemetry |
-| `knowledge-workflow-curator` | Knowledge management workflow design | — |
+| `knowledge-workflow-curator` | Knowledge management workflow design | — | **Note:** Core capture/synthesis loop shipped in v0.9.6 (learning.rs + learned_skills). Remaining scope is retrieval-hygiene: stale-entry pruning, dedup across procedural_memory + learned_skills, and cross-session knowledge graph indexing. |
 
 **Exit criteria**: Faster integration setup and troubleshooting. Lower plugin/channel setup failure rate. Clear operator-facing policy/guardrail recommendations.
 

@@ -12,6 +12,7 @@ fn treasury_policy_with_db_transactions() {
         daily_transfer_limit: 2000.0,
         minimum_reserve: 5.0,
         daily_inference_budget: 50.0,
+        revenue_swap: Default::default(),
     });
 
     for i in 0..5 {
@@ -86,6 +87,7 @@ fn check_all_validates_multiple_constraints() {
         daily_transfer_limit: 1000.0,
         minimum_reserve: 10.0,
         daily_inference_budget: 50.0,
+        revenue_swap: Default::default(),
     });
 
     policy.check_all(40.0, 100.0, 50.0, 200.0).unwrap();

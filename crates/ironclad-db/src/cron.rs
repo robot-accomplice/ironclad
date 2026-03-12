@@ -35,6 +35,7 @@ pub struct CronRun {
     pub status: String,
     pub duration_ms: Option<i64>,
     pub error: Option<String>,
+    pub output_text: Option<String>,
     pub created_at: String,
 }
 
@@ -315,6 +316,7 @@ pub fn record_run(
     status: &str,
     duration_ms: Option<i64>,
     error: Option<&str>,
+    output_text: Option<&str>,
 ) -> Result<String> {
     let conn = db.conn();
     let tx = conn
@@ -323,22 +325,22 @@ pub fn record_run(
 
     let id = uuid::Uuid::new_v4().to_string();
     tx.execute(
-        "INSERT INTO cron_runs (id, job_id, status, duration_ms, error) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![id, job_id, status, duration_ms, error],
+        "INSERT INTO cron_runs (id, job_id, status, duration_ms, error, output_text) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, job_id, status, duration_ms, error, output_text],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     if status == "success" {
         tx.execute(
-            "UPDATE cron_jobs SET last_run_at = datetime('now'), last_status = ?1, \
+            "UPDATE cron_jobs SET last_run_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), last_status = ?1, \
              last_duration_ms = ?2, consecutive_errors = 0, last_error = NULL WHERE id = ?3",
             rusqlite::params![status, duration_ms, job_id],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     } else {
         tx.execute(
-            "UPDATE cron_jobs SET last_run_at = datetime('now'), last_status = ?1, \
+            "UPDATE cron_jobs SET last_run_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), last_status = ?1, \
              last_duration_ms = ?2, consecutive_errors = consecutive_errors + 1, \
              last_error = ?3 WHERE id = ?4",
             rusqlite::params![status, duration_ms, error, job_id],
@@ -359,7 +361,7 @@ pub fn list_runs(
     limit: i64,
 ) -> Result<Vec<CronRun>> {
     let conn = db.conn();
-    let sql = "SELECT id, job_id, status, duration_ms, error, created_at
+    let sql = "SELECT id, job_id, status, duration_ms, error, output_text, created_at
                FROM cron_runs
                WHERE (?1 IS NULL OR created_at >= ?1)
                  AND (?2 IS NULL OR created_at <= ?2)
@@ -377,7 +379,8 @@ pub fn list_runs(
                 status: row.get(2)?,
                 duration_ms: row.get(3)?,
                 error: row.get(4)?,
-                created_at: row.get(5)?,
+                output_text: row.get(5)?,
+                created_at: row.get(6)?,
             })
         })
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -453,12 +456,12 @@ mod tests {
         let db = test_db();
         let job_id = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
 
-        record_run(&db, &job_id, "success", Some(150), None).unwrap();
+        record_run(&db, &job_id, "success", Some(150), None, None).unwrap();
         let jobs = list_jobs(&db).unwrap();
         assert_eq!(jobs[0].last_status.as_deref(), Some("success"));
         assert_eq!(jobs[0].consecutive_errors, 0);
 
-        record_run(&db, &job_id, "error", Some(50), Some("timeout")).unwrap();
+        record_run(&db, &job_id, "error", Some(50), Some("timeout"), None).unwrap();
         let jobs = list_jobs(&db).unwrap();
         assert_eq!(jobs[0].consecutive_errors, 1);
         assert_eq!(jobs[0].last_error.as_deref(), Some("timeout"));
@@ -512,12 +515,12 @@ mod tests {
         let db = test_db();
         let job_id = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
 
-        record_run(&db, &job_id, "error", Some(10), Some("oops")).unwrap();
+        record_run(&db, &job_id, "error", Some(10), Some("oops"), None).unwrap();
         let job = get_job(&db, &job_id).unwrap().unwrap();
         assert_eq!(job.consecutive_errors, 1);
         assert_eq!(job.last_error.as_deref(), Some("oops"));
 
-        record_run(&db, &job_id, "success", Some(20), None).unwrap();
+        record_run(&db, &job_id, "success", Some(20), None, None).unwrap();
         let job = get_job(&db, &job_id).unwrap().unwrap();
         assert_eq!(job.consecutive_errors, 0);
         assert!(job.last_error.is_none());
@@ -527,7 +530,7 @@ mod tests {
     fn record_run_with_none_duration() {
         let db = test_db();
         let job_id = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
-        let run_id = record_run(&db, &job_id, "error", None, Some("crash")).unwrap();
+        let run_id = record_run(&db, &job_id, "error", None, Some("crash"), None).unwrap();
         assert!(!run_id.is_empty());
         let job = get_job(&db, &job_id).unwrap().unwrap();
         assert!(job.last_duration_ms.is_none());
@@ -538,7 +541,15 @@ mod tests {
         let db = test_db();
         let job_id = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
         for i in 1..=5 {
-            record_run(&db, &job_id, "error", Some(10), Some(&format!("err-{i}"))).unwrap();
+            record_run(
+                &db,
+                &job_id,
+                "error",
+                Some(10),
+                Some(&format!("err-{i}")),
+                None,
+            )
+            .unwrap();
             let job = get_job(&db, &job_id).unwrap().unwrap();
             assert_eq!(job.consecutive_errors, i);
         }
@@ -558,11 +569,30 @@ mod tests {
     }
 
     #[test]
+    fn record_run_persists_output_text() {
+        let db = test_db();
+        let job_id = create_job(
+            &db,
+            "job-output",
+            "agent-1",
+            "cron",
+            Some("0 * * * *"),
+            "{}",
+        )
+        .unwrap();
+        let run_id =
+            record_run(&db, &job_id, "success", Some(5), None, Some("hello world")).unwrap();
+        let runs = list_runs(&db, None, None, Some(&job_id), 10).unwrap();
+        assert_eq!(runs[0].id, run_id);
+        assert_eq!(runs[0].output_text.as_deref(), Some("hello world"));
+    }
+
+    #[test]
     fn record_run_returns_unique_ids() {
         let db = test_db();
         let job_id = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
-        let r1 = record_run(&db, &job_id, "success", Some(10), None).unwrap();
-        let r2 = record_run(&db, &job_id, "success", Some(20), None).unwrap();
+        let r1 = record_run(&db, &job_id, "success", Some(10), None, None).unwrap();
+        let r2 = record_run(&db, &job_id, "success", Some(20), None, None).unwrap();
         assert_ne!(r1, r2);
     }
 
@@ -650,9 +680,9 @@ mod tests {
     fn list_runs_all() {
         let db = test_db();
         let jid = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
-        record_run(&db, &jid, "success", Some(100), None).unwrap();
-        record_run(&db, &jid, "error", Some(50), Some("boom")).unwrap();
-        record_run(&db, &jid, "success", Some(200), None).unwrap();
+        record_run(&db, &jid, "success", Some(100), None, None).unwrap();
+        record_run(&db, &jid, "error", Some(50), Some("boom"), None).unwrap();
+        record_run(&db, &jid, "success", Some(200), None, None).unwrap();
 
         let runs = list_runs(&db, None, None, None, 100).unwrap();
         assert_eq!(runs.len(), 3);
@@ -663,9 +693,9 @@ mod tests {
         let db = test_db();
         let j1 = create_job(&db, "job1", "a1", "every", None, "{}").unwrap();
         let j2 = create_job(&db, "job2", "a1", "every", None, "{}").unwrap();
-        record_run(&db, &j1, "success", Some(10), None).unwrap();
-        record_run(&db, &j1, "success", Some(20), None).unwrap();
-        record_run(&db, &j2, "success", Some(30), None).unwrap();
+        record_run(&db, &j1, "success", Some(10), None, None).unwrap();
+        record_run(&db, &j1, "success", Some(20), None, None).unwrap();
+        record_run(&db, &j2, "success", Some(30), None, None).unwrap();
 
         let runs = list_runs(&db, None, None, Some(&j1), 100).unwrap();
         assert_eq!(runs.len(), 2);
@@ -679,7 +709,7 @@ mod tests {
         let db = test_db();
         let jid = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
         for _ in 0..10 {
-            record_run(&db, &jid, "success", Some(10), None).unwrap();
+            record_run(&db, &jid, "success", Some(10), None, None).unwrap();
         }
         let runs = list_runs(&db, None, None, None, 3).unwrap();
         assert_eq!(runs.len(), 3);
@@ -689,7 +719,7 @@ mod tests {
     fn list_runs_fields_populated() {
         let db = test_db();
         let jid = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
-        let run_id = record_run(&db, &jid, "error", Some(42), Some("timeout")).unwrap();
+        let run_id = record_run(&db, &jid, "error", Some(42), Some("timeout"), None).unwrap();
         let runs = list_runs(&db, None, None, None, 10).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].id, run_id);
@@ -704,8 +734,8 @@ mod tests {
     fn delete_job_cascades_cron_runs() {
         let db = test_db();
         let jid = create_job(&db, "task", "a1", "every", None, "{}").unwrap();
-        record_run(&db, &jid, "success", Some(10), None).unwrap();
-        record_run(&db, &jid, "error", Some(5), Some("oops")).unwrap();
+        record_run(&db, &jid, "success", Some(10), None, None).unwrap();
+        record_run(&db, &jid, "error", Some(5), Some("oops"), None).unwrap();
 
         assert!(delete_job(&db, &jid).unwrap());
 

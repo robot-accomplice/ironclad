@@ -1,0 +1,2 @@
+-- Embedded schema already includes these columns as of v0.9.6.
+-- Older databases are repaired by ensure_optional_columns() during startup/update/mechanic.

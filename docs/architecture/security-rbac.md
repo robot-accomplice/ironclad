@@ -13,7 +13,7 @@ Prior to v0.9.0, Ironclad had three disconnected security layers:
 2. **`trusted_sender_ids`** -- global list, but non-members got `External` with no middle ground
 3. **PolicyEngine** -- authority-based tool gating, but only saw `Creator` or `External`
 
-This meant: fresh installs were open to the internet, nobody could access Caution-level tools without being in `trusted_sender_ids`, and the `Peer`/`SelfGenerated` authority levels existed in the enum but were never assigned.
+This meant: fresh installs defaulted to permissive channel exposure, nobody could access Caution-level tools without being in `trusted_sender_ids`, and the `Peer`/`SelfGenerated` authority levels existed in the enum but were never assigned.
 
 ## Architecture Overview
 
@@ -249,7 +249,6 @@ flowchart TB
 ```toml
 [security]
 # Reject messages on channels with empty allow-lists (default: true)
-# Set to false for legacy "empty = allow all" behavior
 deny_on_empty_allowlist = true
 
 # Authority granted when sender passes a channel's allow-list
@@ -302,8 +301,6 @@ Matches against both `sender_id` and `chat_id` for each inbound message.
 | `true` (default) | Empty | **Reject all** -- no grant from this layer |
 | `true` | Non-empty, sender in list | Grant `allowlist_authority` |
 | `true` | Non-empty, sender not in list | No grant from this layer |
-| `false` | Empty | **Allow all** -- grant `allowlist_authority` to everyone |
-| `false` | Non-empty | Same as `true` non-empty behavior |
 
 ## Web UI
 
@@ -337,13 +334,12 @@ Reports security findings:
 | `security-missing-section` | MEDIUM | No `[security]` section in config |
 | `security-no-trusted-senders` | HIGH | Empty `trusted_sender_ids` with channels enabled |
 | `security-no-allowlist` | HIGH | Channel enabled with empty allow-list + deny mode |
-| `security-open-to-world` | CRITICAL | Channel enabled with empty allow-list + legacy allow-all |
 
 ### `ironclad mechanic --repair`
 
 Interactive interview to configure security settings:
 
-1. Prompt for `deny_on_empty_allowlist` preference
+1. Enforce `deny_on_empty_allowlist = true`
 2. Collect trusted sender IDs
 3. Set `allowlist_authority` level
 4. Write `[security]` section to config file

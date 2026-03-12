@@ -928,7 +928,7 @@ impl ContextAnalyzer {
     }
 }
 
-// ── LLM-powered deep analysis stub ─────────────────────────────
+// ── LLM-powered deep analysis ──────────────────────────────────
 
 pub struct LlmAnalyzer;
 

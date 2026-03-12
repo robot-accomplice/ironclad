@@ -424,49 +424,12 @@ ci-test:
     }
 
     parallel_crate_tests() {
-        local parallelism="${CI_TEST_PARALLELISM:-4}"
-        local tmpdir
-        local failed=0
-        local -a pids=()
-        local -a names=()
-        local total i j end_idx
-
-        tmpdir=$(mktemp -d)
-        echo "  Running ${#TEST_CRATES[@]} crates with parallelism=${parallelism}"
-        total=${#TEST_CRATES[@]}
-
-        for ((i = 0; i < total; i += parallelism)); do
-            pids=()
-            names=()
-            end_idx=$((i + parallelism - 1))
-            if [ "$end_idx" -ge "$total" ]; then
-                end_idx=$((total - 1))
-            fi
-
-            for ((j = i; j <= end_idx; j++)); do
-                crate="${TEST_CRATES[$j]}"
-                (
-                    cargo test -p "$crate" --verbose --locked >"$tmpdir/$crate.log" 2>&1
-                ) &
-                pids+=("$!")
-                names+=("$crate")
-            done
-
-            for idx in "${!pids[@]}"; do
-                pid="${pids[$idx]}"
-                crate="${names[$idx]}"
-                if wait "$pid"; then
-                    echo "  ✔ $crate passed"
-                else
-                    echo "  ✘ $crate FAILED"
-                    failed=1
-                    sed -n '1,160p' "$tmpdir/$crate.log" || true
-                fi
-            done
+        local -a pkg_flags=()
+        for crate in "${TEST_CRATES[@]}"; do
+            pkg_flags+=("-p" "$crate")
         done
-
-        rm -rf "$tmpdir"
-        return "$failed"
+        echo "  Running ${#TEST_CRATES[@]} crates: ${TEST_CRATES[*]}"
+        cargo test "${pkg_flags[@]}" --locked 2>&1
     }
 
     CRATES=(

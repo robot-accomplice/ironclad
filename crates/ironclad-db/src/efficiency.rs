@@ -152,7 +152,9 @@ fn compute_quality_for_model(
          JOIN turns t ON t.id = tf.turn_id \
          WHERE t.model = ?1 AND tf.created_at >= {cutoff}"
     );
-    let mut stmt = conn.prepare(&sql).ok()?;
+    let mut stmt = conn.prepare(&sql)
+        .inspect_err(|e| tracing::warn!(model, error = %e, "efficiency: failed to prepare quality metrics query"))
+        .ok()?;
     let rows: Vec<(i32, String, f64)> = stmt
         .query_map(rusqlite::params![model], |row| {
             Ok((
@@ -161,8 +163,10 @@ fn compute_quality_for_model(
                 row.get::<_, f64>(2).unwrap_or(0.0),
             ))
         })
+        .inspect_err(|e| tracing::warn!(model, error = %e, "efficiency: failed to execute quality metrics query"))
         .ok()?
         .collect::<std::result::Result<Vec<_>, _>>()
+        .inspect_err(|e| tracing::warn!(model, error = %e, "efficiency: failed to collect quality metrics rows"))
         .ok()?;
 
     if rows.is_empty() {

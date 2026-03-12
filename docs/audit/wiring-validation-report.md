@@ -1,5 +1,7 @@
 # Wiring Validation Report — v0.8.0
 
+> Historical audit snapshot. Findings here describe the codebase at audit time and may be superseded by later remediation.
+
 <!-- last_updated: 2026-02-26, version: 0.8.0 -->
 
 Per-edge contract assessment across crate dependency graph.

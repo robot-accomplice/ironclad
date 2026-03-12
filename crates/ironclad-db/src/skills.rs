@@ -18,6 +18,9 @@ pub struct SkillRecord {
     pub enabled: bool,
     pub last_loaded_at: Option<String>,
     pub created_at: String,
+    pub version: String,
+    pub author: String,
+    pub registry_source: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -63,13 +66,53 @@ pub fn register_skill_full(
     script_path: Option<&str>,
     risk_level: &str,
 ) -> Result<String> {
+    register_skill_with_provenance(
+        db,
+        name,
+        kind,
+        description,
+        source_path,
+        content_hash,
+        triggers_json,
+        tool_chain_json,
+        policy_overrides_json,
+        script_path,
+        risk_level,
+        "0.0.0",
+        "local",
+        "local",
+    )
+}
+
+/// Register a skill with full provenance (version, author, registry_source).
+///
+/// Callers that already know the provenance fields (e.g., multi-registry sync,
+/// learned-skill write-back) should call this directly.
+#[allow(clippy::too_many_arguments)]
+pub fn register_skill_with_provenance(
+    db: &Database,
+    name: &str,
+    kind: &str,
+    description: Option<&str>,
+    source_path: &str,
+    content_hash: &str,
+    triggers_json: Option<&str>,
+    tool_chain_json: Option<&str>,
+    policy_overrides_json: Option<&str>,
+    script_path: Option<&str>,
+    risk_level: &str,
+    version: &str,
+    author: &str,
+    registry_source: &str,
+) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO skills (id, name, kind, description, source_path, content_hash, \
-         triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, last_loaded_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
+         last_loaded_at, version, author, registry_source) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         rusqlite::params![
             id,
             name,
@@ -83,6 +126,9 @@ pub fn register_skill_full(
             script_path,
             risk_level,
             now,
+            version,
+            author,
+            registry_source,
         ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -94,7 +140,7 @@ pub fn get_skill(db: &Database, id: &str) -> Result<Option<SkillRecord>> {
     conn.query_row(
         "SELECT id, name, kind, description, source_path, content_hash, \
          triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-         enabled, last_loaded_at, created_at \
+         enabled, last_loaded_at, created_at, version, author, registry_source \
          FROM skills WHERE id = ?1",
         [id],
         row_to_skill,
@@ -109,7 +155,7 @@ pub fn list_skills(db: &Database) -> Result<Vec<SkillRecord>> {
         .prepare(
             "SELECT id, name, kind, description, source_path, content_hash, \
              triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-             enabled, last_loaded_at, created_at \
+             enabled, last_loaded_at, created_at, version, author, registry_source \
              FROM skills ORDER BY name ASC",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -151,23 +197,78 @@ pub fn update_skill_full(
     source_path: &str,
     risk_level: &str,
 ) -> Result<()> {
+    update_skill_with_provenance(
+        db,
+        id,
+        content_hash,
+        triggers_json,
+        tool_chain_json,
+        policy_overrides_json,
+        script_path,
+        source_path,
+        risk_level,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Update a skill with optional provenance (version, author, registry_source).
+///
+/// When provenance fields are `None`, the existing DB values are preserved.
+#[allow(clippy::too_many_arguments)]
+pub fn update_skill_with_provenance(
+    db: &Database,
+    id: &str,
+    content_hash: &str,
+    triggers_json: Option<&str>,
+    tool_chain_json: Option<&str>,
+    policy_overrides_json: Option<&str>,
+    script_path: Option<&str>,
+    source_path: &str,
+    risk_level: &str,
+    version: Option<&str>,
+    author: Option<&str>,
+    registry_source: Option<&str>,
+) -> Result<()> {
     let conn = db.conn();
-    conn.execute(
+    // Build the SET clause dynamically based on which provenance fields are provided.
+    let mut sql = String::from(
         "UPDATE skills SET content_hash = ?1, triggers_json = ?2, tool_chain_json = ?3, \
          policy_overrides_json = ?4, script_path = ?5, source_path = ?6, risk_level = ?7, \
-         last_loaded_at = datetime('now') WHERE id = ?8",
-        rusqlite::params![
-            content_hash,
-            triggers_json,
-            tool_chain_json,
-            policy_overrides_json,
-            script_path,
-            source_path,
-            risk_level,
-            id
-        ],
-    )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+         last_loaded_at = datetime('now')",
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+        Box::new(content_hash.to_string()),
+        Box::new(triggers_json.map(|s| s.to_string())),
+        Box::new(tool_chain_json.map(|s| s.to_string())),
+        Box::new(policy_overrides_json.map(|s| s.to_string())),
+        Box::new(script_path.map(|s| s.to_string())),
+        Box::new(source_path.to_string()),
+        Box::new(risk_level.to_string()),
+    ];
+    let mut idx = 8;
+    if let Some(v) = version {
+        sql.push_str(&format!(", version = ?{idx}"));
+        params.push(Box::new(v.to_string()));
+        idx += 1;
+    }
+    if let Some(a) = author {
+        sql.push_str(&format!(", author = ?{idx}"));
+        params.push(Box::new(a.to_string()));
+        idx += 1;
+    }
+    if let Some(r) = registry_source {
+        sql.push_str(&format!(", registry_source = ?{idx}"));
+        params.push(Box::new(r.to_string()));
+        idx += 1;
+    }
+    sql.push_str(&format!(" WHERE id = ?{idx}"));
+    params.push(Box::new(id.to_string()));
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    conn.execute(&sql, param_refs.as_slice())
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(())
 }
 
@@ -210,7 +311,7 @@ pub fn find_by_trigger(db: &Database, keyword: &str) -> Result<Vec<SkillRecord>>
         .prepare(
             "SELECT id, name, kind, description, source_path, content_hash, \
              triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-             enabled, last_loaded_at, created_at \
+             enabled, last_loaded_at, created_at, version, author, registry_source \
              FROM skills WHERE triggers_json LIKE ?1 ESCAPE '\\' AND enabled = 1",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -231,7 +332,7 @@ pub fn find_enabled_skill_by_script_path(
     conn.query_row(
         "SELECT id, name, kind, description, source_path, content_hash, \
          triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-         enabled, last_loaded_at, created_at \
+         enabled, last_loaded_at, created_at, version, author, registry_source \
          FROM skills WHERE script_path = ?1 AND enabled = 1 LIMIT 1",
         [script_path],
         row_to_skill,
@@ -246,7 +347,7 @@ pub fn find_skill_by_script_path(db: &Database, script_path: &str) -> Result<Opt
         .prepare(
             "SELECT id, name, kind, description, source_path, content_hash, \
              triggers_json, tool_chain_json, policy_overrides_json, script_path, risk_level, \
-             enabled, last_loaded_at, created_at \
+             enabled, last_loaded_at, created_at, version, author, registry_source \
              FROM skills WHERE script_path = ?1 ORDER BY created_at DESC",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -282,6 +383,9 @@ fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillRecord> {
         enabled: row.get::<_, i32>(11)? != 0,
         last_loaded_at: row.get(12)?,
         created_at: row.get(13)?,
+        version: row.get(14)?,
+        author: row.get(15)?,
+        registry_source: row.get(16)?,
     })
 }
 

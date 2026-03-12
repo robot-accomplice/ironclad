@@ -342,6 +342,17 @@ pub fn retrieve_procedural(db: &Database, name: &str) -> Result<Option<Procedura
 
 pub fn record_procedural_success(db: &Database, name: &str) -> Result<()> {
     let conn = db.conn();
+    // Auto-register the tool if it hasn't been seen before, then increment.
+    // Must include `steps` (NOT NULL) — SQLite evaluates NOT NULL before the
+    // ON CONFLICT(name) upsert path, so omitting it causes a hard failure
+    // even when the row already exists.
+    conn.execute(
+        "INSERT INTO procedural_memory (id, name, steps, success_count, failure_count, created_at, updated_at) \
+         VALUES (lower(hex(randomblob(16))), ?1, '', 0, 0, datetime('now'), datetime('now')) \
+         ON CONFLICT(name) DO NOTHING",
+        [name],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
     conn.execute(
         "UPDATE procedural_memory SET success_count = success_count + 1, updated_at = datetime('now') WHERE name = ?1",
         [name],
@@ -352,12 +363,38 @@ pub fn record_procedural_success(db: &Database, name: &str) -> Result<()> {
 
 pub fn record_procedural_failure(db: &Database, name: &str) -> Result<()> {
     let conn = db.conn();
+    // Auto-register the tool if it hasn't been seen before, then increment.
+    // Must include `steps` (NOT NULL) — see record_procedural_success comment.
+    conn.execute(
+        "INSERT INTO procedural_memory (id, name, steps, success_count, failure_count, created_at, updated_at) \
+         VALUES (lower(hex(randomblob(16))), ?1, '', 0, 0, datetime('now'), datetime('now')) \
+         ON CONFLICT(name) DO NOTHING",
+        [name],
+    )
+    .map_err(|e| IroncladError::Database(e.to_string()))?;
     conn.execute(
         "UPDATE procedural_memory SET failure_count = failure_count + 1, updated_at = datetime('now') WHERE name = ?1",
         [name],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
     Ok(())
+}
+
+/// Delete procedural entries with zero activity (no successes AND no failures)
+/// that haven't been updated in at least `stale_days` days.
+///
+/// Returns the number of rows deleted.
+pub fn prune_stale_procedural(db: &Database, stale_days: u32) -> Result<usize> {
+    let conn = db.conn();
+    let deleted = conn
+        .execute(
+            "DELETE FROM procedural_memory \
+             WHERE success_count = 0 AND failure_count = 0 \
+               AND updated_at < datetime('now', ?1)",
+            [format!("-{stale_days} days")],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(deleted)
 }
 
 // ── Relationship memory ─────────────────────────────────────────
@@ -956,5 +993,47 @@ mod tests {
         let result = sanitize_fts_query("hello* OR world");
         // * and OR should be kept as alphanumeric/space
         assert!(!result.contains('*'));
+    }
+
+    #[test]
+    fn prune_stale_procedural_removes_zero_activity_entries() {
+        let db = test_db();
+        // Create a procedural entry via store (will have success_count=0, failure_count=0)
+        store_procedural(&db, "stale-tool", "do something").unwrap();
+
+        // Backdate its updated_at to 60 days ago
+        db.conn()
+            .execute(
+                "UPDATE procedural_memory SET updated_at = datetime('now', '-60 days') WHERE name = ?1",
+                ["stale-tool"],
+            )
+            .unwrap();
+
+        // Also create one with activity — should NOT be pruned
+        store_procedural(&db, "active-tool", "steps").unwrap();
+        record_procedural_success(&db, "active-tool").unwrap();
+        db.conn()
+            .execute(
+                "UPDATE procedural_memory SET updated_at = datetime('now', '-60 days') WHERE name = ?1",
+                ["active-tool"],
+            )
+            .unwrap();
+
+        let pruned = prune_stale_procedural(&db, 30).unwrap();
+        assert_eq!(pruned, 1);
+
+        // stale-tool gone, active-tool remains
+        assert!(retrieve_procedural(&db, "stale-tool").unwrap().is_none());
+        assert!(retrieve_procedural(&db, "active-tool").unwrap().is_some());
+    }
+
+    #[test]
+    fn prune_stale_procedural_ignores_recent_entries() {
+        let db = test_db();
+        store_procedural(&db, "fresh-tool", "steps").unwrap();
+        // Don't backdate — should not be pruned
+        let pruned = prune_stale_procedural(&db, 30).unwrap();
+        assert_eq!(pruned, 0);
+        assert!(retrieve_procedural(&db, "fresh-tool").unwrap().is_some());
     }
 }

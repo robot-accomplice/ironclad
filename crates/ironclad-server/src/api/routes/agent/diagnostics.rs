@@ -26,6 +26,7 @@ pub(super) struct RuntimeDiagnostics {
     pub taskable_subagents_booting: usize,
     pub taskable_subagents_running: usize,
     pub taskable_subagents_error: usize,
+    pub taskable_subagents_hollow: usize,
     pub delegation_tools_available: bool,
     pub channels_total: usize,
     pub channels_with_errors: usize,
@@ -134,6 +135,30 @@ pub(super) async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiag
         .iter()
         .filter(|a| !is_model_proxy_role(&a.role) && a.enabled)
         .count();
+    let session_counts = ironclad_db::agents::list_session_counts_by_agent(&state.db)
+        .inspect_err(
+            |e| tracing::warn!(error = %e, "failed to read subagent session counts for diagnostics"),
+        )
+        .unwrap_or_default();
+    let taskable_subagents_hollow = configured_subagents
+        .iter()
+        .filter(|a| !is_model_proxy_role(&a.role) && a.enabled)
+        .filter(|a| {
+            let runtime = runtime_agents
+                .iter()
+                .find(|inst| inst.id.eq_ignore_ascii_case(&a.name));
+            let session_count = session_counts
+                .get(&a.name)
+                .copied()
+                .unwrap_or(a.session_count);
+            !crate::api::routes::subagent_integrity::assess_subagent_integrity(
+                a,
+                runtime,
+                session_count,
+            )
+            .has_fixed_skills
+        })
+        .count();
     let pending_approvals = state.approvals.list_pending().len();
     let delegation_tools_available = {
         let cfg = state.config.read().await;
@@ -161,6 +186,7 @@ pub(super) async fn collect_runtime_diagnostics(state: &AppState) -> RuntimeDiag
         taskable_subagents_booting,
         taskable_subagents_running,
         taskable_subagents_error,
+        taskable_subagents_hollow,
         delegation_tools_available,
         channels_total: channels.len(),
         channels_with_errors,
@@ -196,12 +222,13 @@ pub(super) fn diagnostics_system_note(diag: &RuntimeDiagnostics) -> String {
             diag.cache_entries, diag.cache_hit_rate_pct
         ),
         &format!(
-            "- taskable_subagents: total={} enabled={} booting={} running={} error={}",
+            "- taskable_subagents: total={} enabled={} booting={} running={} error={} hollow={}",
             diag.taskable_subagents_total,
             diag.taskable_subagents_enabled,
             diag.taskable_subagents_booting,
             diag.taskable_subagents_running,
-            diag.taskable_subagents_error
+            diag.taskable_subagents_error,
+            diag.taskable_subagents_hollow
         ),
         &format!(
             "- delegation_tools_available={}",

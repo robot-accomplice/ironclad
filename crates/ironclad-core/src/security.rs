@@ -53,12 +53,8 @@ pub fn resolve_channel_claim(ctx: &ChannelContext<'_>, sec: &SecurityConfig) -> 
             sources.push(ClaimSource::ChannelAllowList);
         }
         // Sender NOT in a configured allow-list: no grant from this layer
-    } else if !sec.deny_on_empty_allowlist {
-        // Empty allow-list + legacy mode: treat as if everyone is allowed
-        grants.push(sec.allowlist_authority);
-        sources.push(ClaimSource::ChannelAllowList);
     }
-    // Empty allow-list + deny_on_empty = true: no grant (secure default)
+    // Empty allow-list: no grant (secure default)
 
     // Layer 2: trusted_sender_ids
     if !ctx.trusted_sender_ids.is_empty() {
@@ -293,13 +289,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_allowlist_deny_on_empty_false_allows() {
+    fn empty_allowlist_still_rejects_even_if_flag_is_false() {
         let mut sec = default_sec();
+        // Runtime no longer supports permissive empty allow-lists. Repair/update
+        // migrates this value back to true before persisted configs are reloaded.
         sec.deny_on_empty_allowlist = false;
         let ctx = channel_ctx("u1", "c1", "telegram", false, false, false, &[]);
         let claim = resolve_channel_claim(&ctx, &sec);
-        assert_eq!(claim.authority, InputAuthority::Peer);
-        assert!(claim.sources.contains(&ClaimSource::ChannelAllowList));
+        assert_eq!(claim.authority, InputAuthority::External);
+        assert!(claim.sources.contains(&ClaimSource::Anonymous));
     }
 
     // ── API claims ──────────────────────────────────────────────────

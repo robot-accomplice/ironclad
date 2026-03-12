@@ -107,6 +107,7 @@ impl SandboxedServer {
                 let port = crate::port_pool::allocate_port();
                 let config_path = generate_config(tmp_dir.path(), port, &overrides)?;
                 let base_url = format!("http://127.0.0.1:{port}");
+                #[allow(deprecated)]
                 let bin = assert_cmd::cargo::cargo_bin("ironclad");
                 let child = std::process::Command::new(bin)
                     .args(["serve", "-c"])

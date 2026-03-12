@@ -1,13 +1,17 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Client;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::{IroncladError, PaymentHandler, Result};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Maximum USDC amount we'll auto-pay per x402 request (safety rail).
+const X402_MAX_AUTO_PAY_USDC: f64 = 1.0;
 
 /// Percent-encode a string for safe inclusion as a URL query parameter value.
 /// Encodes all bytes outside the unreserved set (RFC 3986 section 2.3).
@@ -28,9 +32,28 @@ pub(crate) fn pct_encode_query_value(s: &str) -> String {
     out
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LlmClient {
     http: Client,
+    /// Optional x402 payment handler — when present, 402 responses trigger
+    /// autonomous micropayment + retry instead of failing as a billing error.
+    payment_handler: Option<Arc<dyn PaymentHandler>>,
+}
+
+impl std::fmt::Debug for LlmClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmClient")
+            .field("http", &"Client { .. }")
+            .field(
+                "payment_handler",
+                &if self.payment_handler.is_some() {
+                    "Some(..)"
+                } else {
+                    "None"
+                },
+            )
+            .finish()
+    }
 }
 
 impl LlmClient {
@@ -41,7 +64,16 @@ impl LlmClient {
             .pool_max_idle_per_host(4)
             .build()
             .map_err(|e| IroncladError::Network(e.to_string()))?;
-        Ok(Self { http })
+        Ok(Self {
+            http,
+            payment_handler: None,
+        })
+    }
+
+    /// Attach an x402 payment handler for autonomous 402-response payment.
+    pub fn with_payment_handler(mut self, handler: Arc<dyn PaymentHandler>) -> Self {
+        self.payment_handler = Some(handler);
+        self
     }
 
     /// Legacy method using default Bearer auth.
@@ -71,13 +103,123 @@ impl LlmClient {
     ) -> Result<serde_json::Value> {
         debug!(url, auth_header, "forwarding request to provider");
 
-        let effective_url;
+        let effective_url_owned;
+        let effective_url_ref;
         let mut request = if let Some(param_name) = auth_header.strip_prefix("query:") {
             let separator = if url.contains('?') { '&' } else { '?' };
             let encoded_key = pct_encode_query_value(api_key);
-            effective_url = format!("{url}{separator}{param_name}={encoded_key}");
+            effective_url_owned = format!("{url}{separator}{param_name}={encoded_key}");
+            effective_url_ref = effective_url_owned.as_str();
             self.http
-                .post(&effective_url)
+                .post(effective_url_ref)
+                .header("Content-Type", "application/json")
+        } else {
+            effective_url_owned = String::new(); // unused
+            effective_url_ref = url;
+            let auth_value = if auth_header.eq_ignore_ascii_case("authorization") {
+                format!("Bearer {api_key}")
+            } else {
+                api_key.to_string()
+            };
+            self.http
+                .post(url)
+                .header(auth_header, &auth_value)
+                .header("Content-Type", "application/json")
+        };
+        let _ = &effective_url_owned; // suppress unused warning in non-query branch
+
+        for (key, value) in extra_headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+
+        let response = request
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("request failed: {e}")))?;
+
+        let status = response.status();
+
+        // ── x402 autonomous payment ──────────────────────────────
+        if status.as_u16() == 402
+            && let Some(handler) = &self.payment_handler
+        {
+            let error_body = response.text().await.unwrap_or_else(|_| "{}".into());
+            let body_json: serde_json::Value =
+                serde_json::from_str(&error_body).unwrap_or_default();
+
+            // Safety rail: reject auto-pay above threshold
+            if let Some(amount) = body_json.get("amount").and_then(|v| v.as_f64())
+                && amount > X402_MAX_AUTO_PAY_USDC
+            {
+                warn!(
+                    amount,
+                    max = X402_MAX_AUTO_PAY_USDC,
+                    "x402 payment exceeds auto-pay threshold, declining"
+                );
+                return Err(IroncladError::Llm(format!(
+                    "x402 payment of ${amount:.4} exceeds auto-pay limit of ${X402_MAX_AUTO_PAY_USDC:.2}"
+                )));
+            }
+
+            match handler.handle_payment_required(&body_json).await {
+                Ok(payment_header) => {
+                    info!(
+                        url = effective_url_ref,
+                        "retrying request with x402 payment header"
+                    );
+                    return self
+                        .retry_with_payment(
+                            effective_url_ref,
+                            api_key,
+                            &body,
+                            auth_header,
+                            extra_headers,
+                            &payment_header,
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    warn!(error = %e, "x402 payment handler failed, returning original 402");
+                    return Err(IroncladError::Llm(format!(
+                        "provider returned 402 and x402 payment failed: {e}"
+                    )));
+                }
+            }
+        }
+
+        if !status.is_success() {
+            let error_body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unable to read error body".into());
+            return Err(IroncladError::Llm(format!(
+                "provider returned {status}: {error_body}"
+            )));
+        }
+
+        response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| IroncladError::Llm(format!("failed to parse provider response: {e}")))
+    }
+
+    /// Retry a non-streaming request with the `X-Payment` header from x402.
+    async fn retry_with_payment(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: &serde_json::Value,
+        auth_header: &str,
+        extra_headers: &HashMap<String, String>,
+        payment_header: &str,
+    ) -> Result<serde_json::Value> {
+        let mut request = if let Some(param_name) = auth_header.strip_prefix("query:") {
+            let separator = if url.contains('?') { '&' } else { '?' };
+            let encoded_key = pct_encode_query_value(api_key);
+            let effective = format!("{url}{separator}{param_name}={encoded_key}");
+            self.http
+                .post(&effective)
                 .header("Content-Type", "application/json")
         } else {
             let auth_value = if auth_header.eq_ignore_ascii_case("authorization") {
@@ -94,12 +236,13 @@ impl LlmClient {
         for (key, value) in extra_headers {
             request = request.header(key.as_str(), value.as_str());
         }
+        request = request.header("X-Payment", payment_header);
 
         let response = request
-            .json(&body)
+            .json(body)
             .send()
             .await
-            .map_err(|e| IroncladError::Network(format!("request failed: {e}")))?;
+            .map_err(|e| IroncladError::Network(format!("x402 retry request failed: {e}")))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -108,7 +251,7 @@ impl LlmClient {
                 .await
                 .unwrap_or_else(|_| "unable to read error body".into());
             return Err(IroncladError::Llm(format!(
-                "provider returned {status}: {error_body}"
+                "provider returned {status} after x402 payment: {error_body}"
             )));
         }
 
@@ -136,13 +279,123 @@ impl LlmClient {
     > {
         debug!(url, auth_header, "forwarding streaming request to provider");
 
-        let effective_url;
+        let effective_url_owned;
+        let effective_url_ref;
         let mut request = if let Some(param_name) = auth_header.strip_prefix("query:") {
             let separator = if url.contains('?') { '&' } else { '?' };
             let encoded_key = pct_encode_query_value(api_key);
-            effective_url = format!("{url}{separator}{param_name}={encoded_key}");
+            effective_url_owned = format!("{url}{separator}{param_name}={encoded_key}");
+            effective_url_ref = effective_url_owned.as_str();
             self.http
-                .post(&effective_url)
+                .post(effective_url_ref)
+                .header("Content-Type", "application/json")
+        } else {
+            effective_url_owned = String::new();
+            effective_url_ref = url;
+            let auth_value = if auth_header.eq_ignore_ascii_case("authorization") {
+                format!("Bearer {api_key}")
+            } else {
+                api_key.to_string()
+            };
+            self.http
+                .post(url)
+                .header(auth_header, &auth_value)
+                .header("Content-Type", "application/json")
+        };
+        let _ = &effective_url_owned;
+
+        for (key, value) in extra_headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+
+        let response = request
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("stream request failed: {e}")))?;
+
+        let status = response.status();
+
+        // ── x402 autonomous payment (streaming) ────────────────
+        if status.as_u16() == 402
+            && let Some(handler) = &self.payment_handler
+        {
+            let error_body = response.text().await.unwrap_or_else(|_| "{}".into());
+            let body_json: serde_json::Value =
+                serde_json::from_str(&error_body).unwrap_or_default();
+
+            if let Some(amount) = body_json.get("amount").and_then(|v| v.as_f64())
+                && amount > X402_MAX_AUTO_PAY_USDC
+            {
+                warn!(
+                    amount,
+                    max = X402_MAX_AUTO_PAY_USDC,
+                    "x402 payment exceeds auto-pay threshold, declining"
+                );
+                return Err(IroncladError::Llm(format!(
+                    "x402 payment of ${amount:.4} exceeds auto-pay limit of ${X402_MAX_AUTO_PAY_USDC:.2}"
+                )));
+            }
+
+            match handler.handle_payment_required(&body_json).await {
+                Ok(payment_header) => {
+                    info!(url = effective_url_ref, "retrying stream with x402 payment");
+                    return self
+                        .retry_stream_with_payment(
+                            effective_url_ref,
+                            api_key,
+                            &body,
+                            auth_header,
+                            extra_headers,
+                            &payment_header,
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    warn!(error = %e, "x402 payment handler failed for stream");
+                    return Err(IroncladError::Llm(format!(
+                        "provider returned 402 and x402 payment failed: {e}"
+                    )));
+                }
+            }
+        }
+
+        if !status.is_success() {
+            let error_body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unable to read error body".into());
+            return Err(IroncladError::Llm(format!(
+                "provider returned {status}: {error_body}"
+            )));
+        }
+
+        Ok(Box::pin(response.bytes_stream()))
+    }
+
+    /// Retry a streaming request with the `X-Payment` header from x402.
+    async fn retry_stream_with_payment(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: &serde_json::Value,
+        auth_header: &str,
+        extra_headers: &HashMap<String, String>,
+        payment_header: &str,
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures::Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>>
+                    + Send,
+            >,
+        >,
+    > {
+        let mut request = if let Some(param_name) = auth_header.strip_prefix("query:") {
+            let separator = if url.contains('?') { '&' } else { '?' };
+            let encoded_key = pct_encode_query_value(api_key);
+            let effective = format!("{url}{separator}{param_name}={encoded_key}");
+            self.http
+                .post(&effective)
                 .header("Content-Type", "application/json")
         } else {
             let auth_value = if auth_header.eq_ignore_ascii_case("authorization") {
@@ -159,21 +412,20 @@ impl LlmClient {
         for (key, value) in extra_headers {
             request = request.header(key.as_str(), value.as_str());
         }
+        request = request.header("X-Payment", payment_header);
 
-        let response = request
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| IroncladError::Network(format!("stream request failed: {e}")))?;
+        let response = request.json(body).send().await.map_err(|e| {
+            IroncladError::Network(format!("x402 retry stream request failed: {e}"))
+        })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        if !status.is_success() {
             let error_body = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "unable to read error body".into());
             return Err(IroncladError::Llm(format!(
-                "provider returned {status}: {error_body}"
+                "provider returned {status} after x402 payment: {error_body}"
             )));
         }
 

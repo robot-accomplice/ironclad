@@ -92,13 +92,16 @@ pub(crate) fn extract_auth_principal(req: &Request<Body>) -> Option<String> {
 
 fn unauthorized_response() -> Response<Body> {
     let body = serde_json::json!({"error": "unauthorized", "message": "Valid API key required"});
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&body).expect("static error body serialization"),
-        ))
-        .expect("error response construction")
+    let bytes = serde_json::to_vec(&body).unwrap_or_else(|_| {
+        br#"{"error":"unauthorized","message":"Valid API key required"}"#.to_vec()
+    });
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = StatusCode::UNAUTHORIZED;
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    response
 }
 
 impl<S> Service<Request<Body>> for ApiKeyMiddleware<S>

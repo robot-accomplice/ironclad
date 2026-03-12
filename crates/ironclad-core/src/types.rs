@@ -1,6 +1,25 @@
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
+
+use crate::Result;
+
+/// Trait for handling HTTP 402 Payment Required responses (x402 protocol).
+///
+/// Implementors receive the JSON response body from a 402 response and must
+/// return a payment header string (e.g. `"x402 amount=... recipient=... auth=..."`)
+/// that will be attached to the retry request.
+///
+/// This trait lives in `ironclad-core` so that `ironclad-llm` (the HTTP client)
+/// can accept a handler without depending on `ironclad-wallet` directly.
+pub trait PaymentHandler: Send + Sync {
+    fn handle_payment_required(
+        &self,
+        response_body: &serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>>;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SurvivalTier {
@@ -101,6 +120,10 @@ pub struct SkillManifest {
     pub script_path: Option<PathBuf>,
     #[serde(default = "default_risk_level")]
     pub risk_level: RiskLevel,
+    #[serde(default = "default_version")]
+    pub version: String,
+    #[serde(default = "default_author")]
+    pub author: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +140,10 @@ pub struct InstructionSkill {
     #[serde(default = "default_priority")]
     pub priority: u32,
     pub body: String,
+    #[serde(default = "default_version")]
+    pub version: String,
+    #[serde(default = "default_author")]
+    pub author: String,
 }
 
 fn default_priority() -> u32 {
@@ -125,6 +152,14 @@ fn default_priority() -> u32 {
 
 fn default_risk_level() -> RiskLevel {
     RiskLevel::Caution
+}
+
+fn default_version() -> String {
+    "0.0.0".into()
+}
+
+fn default_author() -> String {
+    "local".into()
 }
 
 /// Authority level of the message sender, resolved from authentication layers.
@@ -415,6 +450,8 @@ mod tests {
             policy_overrides: None,
             script_path: None,
             risk_level: RiskLevel::Safe,
+            version: "1.0.0".into(),
+            author: "tester".into(),
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let back: SkillManifest = serde_json::from_str(&json).unwrap();
@@ -430,6 +467,8 @@ mod tests {
             triggers: SkillTrigger::default(),
             priority: 3,
             body: "Help text".into(),
+            version: "0.1.0".into(),
+            author: "local".into(),
         };
         let json = serde_json::to_string(&skill).unwrap();
         let back: InstructionSkill = serde_json::from_str(&json).unwrap();

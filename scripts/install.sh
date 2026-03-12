@@ -5,6 +5,8 @@ VERSION="${IRONCLAD_VERSION:-latest}"
 INSTALL_DIR="${IRONCLAD_INSTALL_DIR:-$HOME/.ironclad/bin}"
 REPO="robot-accomplice/ironclad"
 
+AUTO_YES="${IRONCLAD_YES:-0}"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -16,6 +18,19 @@ info()  { echo -e "${CYAN}[info]${RESET}  $*"; }
 ok()    { echo -e "${GREEN}[ok]${RESET}    $*"; }
 warn()  { echo -e "${YELLOW}[warn]${RESET}  $*"; }
 fail()  { echo -e "${RED}[error]${RESET} $*"; exit 1; }
+
+confirm_or_exit() {
+    local prompt="$1"
+    if [ "$AUTO_YES" = "1" ]; then
+        return 0
+    fi
+    printf "  %s [Y/n] " "$prompt"
+    read -r answer </dev/tty
+    case "${answer:-Y}" in
+        [Yy]|[Yy][Ee][Ss]) return 0 ;;
+        *) echo "Cancelled."; exit 0 ;;
+    esac
+}
 
 detect_os() {
     case "$(uname -s)" in
@@ -72,6 +87,27 @@ main() {
     echo ""
     echo -e "${BOLD}Ironclad Installer${RESET}"
     echo ""
+
+    # ── Liability Waiver ──────────────────────────────────────────
+    echo -e "  ${BOLD}IMPORTANT — PLEASE READ${RESET}"
+    echo ""
+    echo "  Ironclad is an autonomous AI agent that can execute actions,"
+    echo "  interact with external services, and manage digital assets"
+    echo "  including cryptocurrency wallets and on-chain transactions."
+    echo ""
+    echo "  THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND."
+    echo -e "  The developers and contributors bear ${BOLD}no responsibility${RESET} for:"
+    echo ""
+    echo "    - Actions taken by the agent, whether intended or unintended"
+    echo "    - Loss of funds, income, cryptocurrency, or other digital assets"
+    echo "    - Security vulnerabilities, compromises, or unauthorized access"
+    echo "    - Damages arising from the agent's use, misuse, or malfunction"
+    echo "    - Any financial, legal, or operational consequences whatsoever"
+    echo ""
+    echo "  By proceeding, you acknowledge that you use Ironclad entirely"
+    echo "  at your own risk and accept full responsibility for its operation."
+    echo ""
+    confirm_or_exit "I understand and accept these terms"
 
     local os arch
     os="$(detect_os)"
