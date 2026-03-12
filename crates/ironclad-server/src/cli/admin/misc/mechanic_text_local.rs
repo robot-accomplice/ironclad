@@ -467,5 +467,60 @@ fn run_mechanic_text_local_preflight(
         println!("  {OK} Capability-to-skill parity checks passed");
     }
 
+    // Check memory hygiene — detect canned responses, memorised fallbacks,
+    // and hallucinated subagent output lodged in memory tiers.
+    let mem_hygiene = run_memory_hygiene(&ironclad_dir.join("state.db"), repair)?;
+    if mem_hygiene.total_detected > 0 {
+        if repair {
+            println!(
+                "  {ACTION} Memory hygiene: purged {} contaminated entr{}",
+                mem_hygiene.total_purged,
+                if mem_hygiene.total_purged == 1 { "y" } else { "ies" }
+            );
+            *fixed += mem_hygiene.total_purged;
+        } else {
+            let tier_count = [
+                mem_hygiene.working_canned > 0,
+                mem_hygiene.semantic_canned > 0,
+                mem_hygiene.episodic_hallucinated > 0,
+            ]
+            .iter()
+            .filter(|&&b| b)
+            .count();
+            println!(
+                "  {WARN} Memory hygiene: {} contaminated entr{} across {} tier{}",
+                mem_hygiene.total_detected,
+                if mem_hygiene.total_detected == 1 { "y" } else { "ies" },
+                tier_count,
+                if tier_count == 1 { "" } else { "s" }
+            );
+            if mem_hygiene.working_canned > 0 {
+                println!(
+                    "    {DETAIL} {} canned response{} in working_memory",
+                    mem_hygiene.working_canned,
+                    if mem_hygiene.working_canned == 1 { "" } else { "s" }
+                );
+            }
+            if mem_hygiene.semantic_canned > 0 {
+                println!(
+                    "    {DETAIL} {} canned response{} learned as semantic fact{}",
+                    mem_hygiene.semantic_canned,
+                    if mem_hygiene.semantic_canned == 1 { "" } else { "s" },
+                    if mem_hygiene.semantic_canned == 1 { "" } else { "s" }
+                );
+            }
+            if mem_hygiene.episodic_hallucinated > 0 {
+                println!(
+                    "    {DETAIL} {} hallucinated subagent output{} in episodic_memory",
+                    mem_hygiene.episodic_hallucinated,
+                    if mem_hygiene.episodic_hallucinated == 1 { "" } else { "s" }
+                );
+            }
+            println!("    {DETAIL} Run `ironclad mechanic --repair` to purge.");
+        }
+    } else {
+        println!("  {OK} Memory hygiene OK");
+    }
+
     Ok(())
 }

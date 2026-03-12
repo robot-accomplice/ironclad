@@ -242,6 +242,52 @@ fn collect_mechanic_json_local_findings(
             false,
         ));
     }
+
+    // Memory hygiene — canned responses, memorised fallbacks, hallucinated output.
+    let mem_hygiene = run_memory_hygiene(&ironclad_dir.join("state.db"), repair)?;
+    if mem_hygiene.total_detected > 0 {
+        let mut details_parts = Vec::new();
+        if mem_hygiene.working_canned > 0 {
+            details_parts.push(format!(
+                "{} canned response(s) in working_memory",
+                mem_hygiene.working_canned
+            ));
+        }
+        if mem_hygiene.semantic_canned > 0 {
+            details_parts.push(format!(
+                "{} canned response(s) learned as semantic facts",
+                mem_hygiene.semantic_canned
+            ));
+        }
+        if mem_hygiene.episodic_hallucinated > 0 {
+            details_parts.push(format!(
+                "{} hallucinated subagent output(s) in episodic_memory",
+                mem_hygiene.episodic_hallucinated
+            ));
+        }
+
+        let mut f = finding(
+            "memory-contamination",
+            "high",
+            0.95,
+            format!(
+                "Memory contamination: {} entries across {} tier(s)",
+                mem_hygiene.total_detected,
+                details_parts.len()
+            ),
+            details_parts.join("; "),
+            "Purge canned/hallucinated entries from memory tiers and VACUUM.",
+            vec!["ironclad mechanic --repair".to_string()],
+            true,
+            false,
+        );
+        if repair && mem_hygiene.total_purged > 0 {
+            f.auto_repaired = true;
+            actions.memory_entries_purged = mem_hygiene.total_purged;
+        }
+        findings.push(f);
+    }
+
     Ok(())
 }
 
