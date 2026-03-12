@@ -82,7 +82,7 @@ impl AnnIndex {
         let conn = db.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT source_table, source_id, content_preview, embedding_blob, embedding_json \
+                "SELECT source_table, source_id, content_preview, embedding_blob \
                  FROM embeddings",
             )
             .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
@@ -98,37 +98,18 @@ impl AnnIndex {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, Option<Vec<u8>>>(3)?,
-                    row.get::<_, String>(4)?,
                 ))
             })
             .map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
 
         for row in rows {
-            let (source_table, source_id, content_preview, blob, json_text) =
+            let (source_table, source_id, content_preview, blob) =
                 row.map_err(|e| ironclad_core::IroncladError::Database(e.to_string()))?;
 
-            let embedding = if let Some(b) = blob {
-                if !b.is_empty() {
-                    blob_to_embedding(&b)
-                } else if !json_text.is_empty() {
-                    match serde_json::from_str(&json_text) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!(source_id = %source_id, error = %e, "corrupt embedding JSON, skipping");
-                            continue;
-                        }
-                    }
-                } else {
-                    continue;
-                }
-            } else if !json_text.is_empty() {
-                match serde_json::from_str(&json_text) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!(source_id = %source_id, error = %e, "corrupt embedding JSON, skipping");
-                        continue;
-                    }
-                }
+            let embedding = if let Some(b) = blob
+                && !b.is_empty()
+            {
+                blob_to_embedding(&b)
             } else {
                 continue;
             };
@@ -251,7 +232,7 @@ mod tests {
             store_embedding(
                 &db,
                 &format!("e{i}"),
-                "t",
+                "episodic_memory",
                 &format!("{i}"),
                 "preview",
                 &[1.0, 0.0],
@@ -275,7 +256,7 @@ mod tests {
             store_embedding(
                 &db,
                 &format!("e{i}"),
-                "test",
+                "episodic_memory",
                 &format!("t{i}"),
                 &format!("entry {i}"),
                 &emb,
@@ -295,9 +276,17 @@ mod tests {
         let mut index = AnnIndex::new(true);
         index.min_entries_for_index = 3;
 
-        store_embedding(&db, "e1", "test", "t1", "near", &[1.0, 0.0, 0.0]).unwrap();
-        store_embedding(&db, "e2", "test", "t2", "far", &[0.0, 1.0, 0.0]).unwrap();
-        store_embedding(&db, "e3", "test", "t3", "medium", &[0.7, 0.3, 0.0]).unwrap();
+        store_embedding(&db, "e1", "episodic_memory", "t1", "near", &[1.0, 0.0, 0.0]).unwrap();
+        store_embedding(&db, "e2", "episodic_memory", "t2", "far", &[0.0, 1.0, 0.0]).unwrap();
+        store_embedding(
+            &db,
+            "e3",
+            "episodic_memory",
+            "t3",
+            "medium",
+            &[0.7, 0.3, 0.0],
+        )
+        .unwrap();
 
         index.build_from_db(&db).unwrap();
         assert!(index.is_built());
@@ -316,23 +305,22 @@ mod tests {
     }
 
     #[test]
-    fn build_from_json_fallback() {
+    fn build_from_blob_embeddings() {
         let db = test_db();
         let mut index = AnnIndex::new(true);
         index.min_entries_for_index = 3;
 
-        {
-            let conn = db.conn();
-            for i in 0..5 {
-                let emb = vec![i as f32 / 5.0, 1.0 - i as f32 / 5.0, 0.5];
-                let json = serde_json::to_string(&emb).unwrap();
-                conn.execute(
-                    "INSERT INTO embeddings (id, source_table, source_id, content_preview, embedding_json, dimensions) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![format!("j{i}"), "legacy", format!("l{i}"), format!("legacy {i}"), json, 3],
-                )
-                .unwrap();
-            }
+        for i in 0..5 {
+            let emb = vec![i as f32 / 5.0, 1.0 - i as f32 / 5.0, 0.5];
+            store_embedding(
+                &db,
+                &format!("b{i}"),
+                "episodic_memory",
+                &format!("s{i}"),
+                &format!("entry {i}"),
+                &emb,
+            )
+            .unwrap();
         }
 
         let count = index.build_from_db(&db).unwrap();
@@ -352,22 +340,46 @@ mod tests {
         {
             let conn = db.conn();
             conn.execute(
-                "INSERT INTO embeddings (id, source_table, source_id, content_preview, embedding_json, dimensions) \
-                 VALUES ('empty1', 'test', 's1', 'empty', '', 0)",
+                "INSERT INTO embeddings (id, source_table, source_id, content_preview, dimensions) \
+                 VALUES ('empty1', 'episodic_memory', 's1', 'empty', 0)",
                 [],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO embeddings (id, source_table, source_id, content_preview, embedding_json, dimensions) \
-                 VALUES ('empty2', 'test', 's2', 'empty2', '', 0)",
+                "INSERT INTO embeddings (id, source_table, source_id, content_preview, dimensions) \
+                 VALUES ('empty2', 'episodic_memory', 's2', 'empty2', 0)",
                 [],
             )
             .unwrap();
         }
 
-        store_embedding(&db, "valid1", "test", "v1", "ok1", &[1.0, 0.0, 0.0]).unwrap();
-        store_embedding(&db, "valid2", "test", "v2", "ok2", &[0.0, 1.0, 0.0]).unwrap();
-        store_embedding(&db, "valid3", "test", "v3", "ok3", &[0.0, 0.0, 1.0]).unwrap();
+        store_embedding(
+            &db,
+            "valid1",
+            "episodic_memory",
+            "v1",
+            "ok1",
+            &[1.0, 0.0, 0.0],
+        )
+        .unwrap();
+        store_embedding(
+            &db,
+            "valid2",
+            "episodic_memory",
+            "v2",
+            "ok2",
+            &[0.0, 1.0, 0.0],
+        )
+        .unwrap();
+        store_embedding(
+            &db,
+            "valid3",
+            "episodic_memory",
+            "v3",
+            "ok3",
+            &[0.0, 0.0, 1.0],
+        )
+        .unwrap();
 
         let count = index.build_from_db(&db).unwrap();
         assert_eq!(count, 3);
@@ -375,26 +387,53 @@ mod tests {
     }
 
     #[test]
-    fn build_skips_blob_with_no_data_falls_back_to_json() {
+    fn build_skips_empty_blobs() {
         let db = test_db();
         let mut index = AnnIndex::new(true);
         index.min_entries_for_index = 3;
 
         {
             let conn = db.conn();
-            for i in 0..4 {
-                let emb = vec![i as f32 / 4.0, 1.0 - i as f32 / 4.0, 0.5];
+            for i in 0..2 {
                 conn.execute(
-                    "INSERT INTO embeddings (id, source_table, source_id, content_preview, embedding_json, embedding_blob, dimensions) \
-                     VALUES (?1, 'test', ?2, ?3, ?4, X'', 3)",
-                    rusqlite::params![format!("mixed{i}"), format!("m{i}"), format!("mixed {i}"), serde_json::to_string(&emb).unwrap()],
+                    "INSERT INTO embeddings (id, source_table, source_id, content_preview, embedding_blob, dimensions) \
+                     VALUES (?1, 'episodic_memory', ?2, ?3, X'', 3)",
+                    rusqlite::params![format!("empty{i}"), format!("e{i}"), format!("empty {i}")],
                 )
                 .unwrap();
             }
         }
 
+        store_embedding(
+            &db,
+            "valid1",
+            "episodic_memory",
+            "v1",
+            "ok1",
+            &[1.0, 0.0, 0.0],
+        )
+        .unwrap();
+        store_embedding(
+            &db,
+            "valid2",
+            "episodic_memory",
+            "v2",
+            "ok2",
+            &[0.0, 1.0, 0.0],
+        )
+        .unwrap();
+        store_embedding(
+            &db,
+            "valid3",
+            "episodic_memory",
+            "v3",
+            "ok3",
+            &[0.0, 0.0, 1.0],
+        )
+        .unwrap();
+
         let count = index.build_from_db(&db).unwrap();
-        assert_eq!(count, 4);
+        assert_eq!(count, 3);
         assert!(index.is_built());
     }
 }

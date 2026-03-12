@@ -803,6 +803,59 @@ pub fn message_count(db: &Database, session_id: &str) -> Result<i64> {
     .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
+// ── Retention pruning for high-write tables ───────────────────
+
+/// Delete turns, tool_calls (via FK cascade), session_messages, and
+/// inference_costs older than `retention_days` days.  Also prunes
+/// `model_selection_events` in the same window.
+///
+/// Returns the total number of rows deleted across all tables.
+pub fn prune_old_turn_data(db: &Database, retention_days: u32) -> Result<usize> {
+    let conn = db.conn();
+    let cutoff = format!("-{retention_days} days");
+
+    // tool_calls FK-cascades from turns, but session_messages doesn't.
+    // Delete children first, then parents.
+    let msgs = conn
+        .execute(
+            "DELETE FROM session_messages WHERE created_at < datetime('now', ?1)",
+            [&cutoff],
+        )
+        .unwrap_or(0);
+
+    let costs = conn
+        .execute(
+            "DELETE FROM inference_costs WHERE created_at < datetime('now', ?1)",
+            [&cutoff],
+        )
+        .unwrap_or(0);
+
+    let mse = conn
+        .execute(
+            "DELETE FROM model_selection_events WHERE created_at < datetime('now', ?1)",
+            [&cutoff],
+        )
+        .unwrap_or(0);
+
+    // tool_calls references turns(id), so delete tool_calls for old turns first.
+    let tc = conn
+        .execute(
+            "DELETE FROM tool_calls WHERE turn_id IN \
+             (SELECT id FROM turns WHERE created_at < datetime('now', ?1))",
+            [&cutoff],
+        )
+        .unwrap_or(0);
+
+    let turns = conn
+        .execute(
+            "DELETE FROM turns WHERE created_at < datetime('now', ?1)",
+            [&cutoff],
+        )
+        .unwrap_or(0);
+
+    Ok(msgs + costs + mse + tc + turns)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
