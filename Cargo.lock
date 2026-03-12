@@ -3303,6 +3303,7 @@ dependencies = [
  "ironclad-db",
  "ironclad-llm",
  "k256",
+ "libc",
  "notify",
  "pdf-extract",
  "rand 0.8.5",

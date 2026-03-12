@@ -176,6 +176,76 @@ fn collect_mechanic_json_security_and_plugin_findings(
         }
     }
 
+    // ── Sandbox configuration findings ───────────────────────────────
+    if let Some(ref cfg_path) = security_config_path
+        && let Ok(raw) = std::fs::read_to_string(cfg_path)
+        && let Ok(cfg) = toml::from_str::<ironclad_core::IroncladConfig>(&raw)
+    {
+        let sk = &cfg.skills;
+
+        // Sandbox disabled entirely
+        if !sk.sandbox_env {
+            findings.push(finding(
+                "sandbox-disabled",
+                "high",
+                0.99,
+                "Sandbox disabled — skill scripts run with full environment access",
+                "sandbox_env = false in [skills]. Scripts inherit the agent's full \
+                 environment and filesystem access. This negates all sandbox protections.",
+                "Set sandbox_env = true in [skills].",
+                vec!["ironclad mechanic --repair".to_string()],
+                false,
+                true,
+            ));
+        }
+
+        // Bare interpreter names (PATH hijacking risk)
+        let bare_interpreters: Vec<&str> = sk
+            .allowed_interpreters
+            .iter()
+            .filter(|i| !std::path::Path::new(i.as_str()).is_absolute())
+            .map(|s| s.as_str())
+            .collect();
+        if !bare_interpreters.is_empty() {
+            findings.push(finding(
+                "sandbox-bare-interpreters",
+                "medium",
+                0.90,
+                format!(
+                    "{} interpreter(s) use bare names (PATH hijacking risk)",
+                    bare_interpreters.len()
+                ),
+                format!(
+                    "allowed_interpreters contains bare names: [{}]. A malicious PATH entry \
+                     could shadow a legitimate interpreter. The script runner resolves to \
+                     absolute paths at runtime, but config-level absolute paths provide \
+                     defense-in-depth.",
+                    bare_interpreters.join(", ")
+                ),
+                "Set absolute paths for allowed_interpreters in [skills] config.",
+                vec![],
+                false,
+                false,
+            ));
+        }
+
+        // No memory limit
+        if sk.script_max_memory_bytes.is_none() {
+            findings.push(finding(
+                "sandbox-no-memory-limit",
+                "medium",
+                0.85,
+                "No memory ceiling for skill scripts",
+                "script_max_memory_bytes is not set — a runaway script could exhaust \
+                 system memory. Default is 256 MiB on Linux (RLIMIT_AS).",
+                "Set script_max_memory_bytes in [skills] config.",
+                vec![],
+                false,
+                false,
+            ));
+        }
+    }
+
     // Plugin health checks
     {
         use ironclad_plugin_sdk::manifest::PluginManifest;

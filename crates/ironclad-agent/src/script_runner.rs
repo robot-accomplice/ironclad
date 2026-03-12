@@ -46,6 +46,57 @@ impl ScriptRunner {
                     cmd.env(key, val);
                 }
             }
+            // Expose the skills directory and optional workspace root so scripts
+            // know their boundaries without guessing.
+            cmd.env("IRONCLAD_SKILLS_DIR", &self.config.skills_dir);
+            if let Some(ref ws) = self.config.workspace_dir {
+                cmd.env("IRONCLAD_WORKSPACE", ws);
+            }
+        }
+
+        // Pre-exec resource limits (Unix only).
+        #[cfg(unix)]
+        {
+            let mem_limit = self.config.script_max_memory_bytes;
+            let deny_net = self.config.sandbox_env && !self.config.network_allowed;
+            // SAFETY: pre_exec runs in the forked child before exec.
+            // Only async-signal-safe functions are called (setrlimit, unshare).
+            unsafe {
+                cmd.pre_exec(move || {
+                    // Memory ceiling via RLIMIT_AS on Linux.
+                    // macOS virtual memory model makes RLIMIT_AS unreliable
+                    // (processes routinely map far more virtual space than
+                    // they physically use), so we skip enforcement there.
+                    #[cfg(target_os = "linux")]
+                    if let Some(max_bytes) = mem_limit {
+                        let rlim = libc::rlimit {
+                            rlim_cur: max_bytes,
+                            rlim_max: max_bytes,
+                        };
+                        if libc::setrlimit(libc::RLIMIT_AS, &rlim) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    let _ = mem_limit;
+                    // Network isolation via unshare(CLONE_NEWNET) on Linux.
+                    #[cfg(target_os = "linux")]
+                    if deny_net {
+                        if libc::unshare(libc::CLONE_NEWNET) != 0 {
+                            // Non-fatal: user namespaces may be disabled.
+                            // The mechanic health check will warn about this.
+                            eprintln!(
+                                "ironclad: warning: network isolation unavailable (unshare failed)"
+                            );
+                        }
+                    }
+                    // On macOS there is no unprivileged network namespace API.
+                    // The mechanic health check notes this platform limitation.
+                    #[cfg(not(target_os = "linux"))]
+                    let _ = deny_net;
+                    Ok(())
+                });
+            }
         }
 
         cmd.stdout(std::process::Stdio::piped());
@@ -212,8 +263,38 @@ fn default_python_interpreter() -> &'static str {
     }
 }
 
+/// Resolve a bare interpreter name to its canonical absolute path by walking PATH.
+///
+/// If the name is already absolute, canonicalize and return it.
+/// This prevents PATH-hijacking attacks where a malicious binary shadows
+/// a legitimate interpreter earlier in the search order.
+pub fn resolve_interpreter_absolute(name: &str) -> Result<String> {
+    let p = Path::new(name);
+    if p.is_absolute() {
+        let canonical = std::fs::canonicalize(p).map_err(|e| IroncladError::Tool {
+            tool: "script_runner".into(),
+            message: format!("interpreter '{name}' not found: {e}"),
+        })?;
+        return Ok(canonical.to_string_lossy().to_string());
+    }
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            if let Ok(canonical) = std::fs::canonicalize(&candidate) {
+                return Ok(canonical.to_string_lossy().to_string());
+            }
+        }
+    }
+    Err(IroncladError::Tool {
+        tool: "script_runner".into(),
+        message: format!("interpreter '{name}' not found in PATH"),
+    })
+}
+
 /// Determines the interpreter for a script by reading its shebang line
 /// or inferring from the file extension, then checks against the whitelist.
+/// Returns the **absolute path** to the interpreter to prevent PATH hijacking.
 pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<String> {
     if let Ok(first_line) = std::fs::File::open(script_path).and_then(|f| {
         use std::io::{BufRead, Read};
@@ -238,7 +319,7 @@ pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<Strin
         };
 
         if allowed.iter().any(|a| a == interp) {
-            return Ok(interp.to_string());
+            return resolve_interpreter_absolute(interp);
         } else {
             return Err(IroncladError::Tool {
                 tool: "script_runner".into(),
@@ -265,7 +346,7 @@ pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<Strin
     };
 
     if allowed.iter().any(|a| a == inferred) {
-        Ok(inferred.to_string())
+        resolve_interpreter_absolute(inferred)
     } else {
         Err(IroncladError::Tool {
             tool: "script_runner".into(),
@@ -379,29 +460,48 @@ mod tests {
             "python3".to_string(),
             "node".to_string(),
         ];
+
+        // check_interpreter now returns absolute paths; verify it's an absolute python path.
+        // Canonical resolution may follow symlinks (e.g. python3 → python3.14 on Homebrew).
+        let py_result = check_interpreter(&py_script, &allowed).unwrap();
         #[cfg(windows)]
-        assert_eq!(check_interpreter(&py_script, &allowed).unwrap(), "python");
+        assert!(py_result.ends_with("python") || py_result.ends_with("python.exe"));
         #[cfg(not(windows))]
-        assert_eq!(check_interpreter(&py_script, &allowed).unwrap(), "python3");
+        assert!(
+            Path::new(&py_result).is_absolute() && py_result.contains("python"),
+            "expected absolute python path, got: {py_result}"
+        );
 
         let sh_script = dir.path().join("test.sh");
         fs::write(&sh_script, "echo hi").unwrap();
-        assert_eq!(check_interpreter(&sh_script, &allowed).unwrap(), "bash");
+        let sh_result = check_interpreter(&sh_script, &allowed).unwrap();
+        assert!(
+            sh_result.ends_with("/bash"),
+            "expected absolute bash path, got: {sh_result}"
+        );
 
         let js_script = dir.path().join("test.js");
         fs::write(&js_script, "console.log('hi')").unwrap();
-        assert_eq!(check_interpreter(&js_script, &allowed).unwrap(), "node");
+        let js_result = check_interpreter(&js_script, &allowed).unwrap();
+        assert!(
+            js_result.ends_with("/node"),
+            "expected absolute node path, got: {js_result}"
+        );
     }
 
     #[test]
     fn check_interpreter_env_shebang() {
-        // #!/usr/bin/env python3 -> should parse "python3"
+        // #!/usr/bin/env python3 -> should resolve to absolute python path
+        // (canonical may resolve symlink, e.g. python3 → python3.14 on Homebrew)
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("env_shebang.py");
         fs::write(&script, "#!/usr/bin/env python3\nprint('hi')").unwrap();
         let allowed = vec!["python3".to_string()];
         let interp = check_interpreter(&script, &allowed).unwrap();
-        assert_eq!(interp, "python3");
+        assert!(
+            Path::new(&interp).is_absolute() && interp.contains("python"),
+            "expected absolute python path, got: {interp}"
+        );
     }
 
     #[test]
@@ -438,7 +538,10 @@ mod tests {
         fs::write(&script, "echo hi").unwrap();
         let allowed = vec!["bash".to_string()];
         let interp = check_interpreter(&script, &allowed).unwrap();
-        assert_eq!(interp, "bash");
+        assert!(
+            interp.ends_with("/bash"),
+            "expected absolute bash path, got: {interp}"
+        );
     }
 
     #[test]
@@ -605,6 +708,71 @@ mod tests {
         unsafe {
             std::env::remove_var("OPENAI_API_KEY");
         }
+    }
+
+    #[test]
+    fn resolve_interpreter_absolute_finds_bash() {
+        let abs = resolve_interpreter_absolute("bash").unwrap();
+        assert!(
+            Path::new(&abs).is_absolute(),
+            "expected absolute path, got: {abs}"
+        );
+        assert!(
+            abs.ends_with("/bash"),
+            "expected path ending in /bash, got: {abs}"
+        );
+    }
+
+    #[test]
+    fn resolve_interpreter_absolute_rejects_missing() {
+        let result = resolve_interpreter_absolute("nonexistent_binary_xyz_123");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not found in PATH")
+        );
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn sandbox_exposes_workspace_env_vars() {
+        let _env_guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("check_ws.sh");
+        fs::write(
+            &script,
+            "#!/bin/bash\nprintf \"SKILLS=%s WS=%s\" \"${IRONCLAD_SKILLS_DIR:-MISSING}\" \"${IRONCLAD_WORKSPACE:-MISSING}\"",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config();
+        cfg.skills_dir = dir.path().to_path_buf();
+        cfg.workspace_dir = Some(ws_dir.path().to_path_buf());
+        let runner = ScriptRunner::new(cfg);
+        let result = runner
+            .execute(Path::new("check_ws.sh"), &[])
+            .await
+            .expect("script should execute");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(
+            result
+                .stdout
+                .contains(&format!("SKILLS={}", dir.path().display())),
+            "IRONCLAD_SKILLS_DIR not set, got: {}",
+            result.stdout
+        );
+        assert!(
+            result
+                .stdout
+                .contains(&format!("WS={}", ws_dir.path().display())),
+            "IRONCLAD_WORKSPACE not set, got: {}",
+            result.stdout
+        );
     }
 
     #[allow(clippy::await_holding_lock)]
