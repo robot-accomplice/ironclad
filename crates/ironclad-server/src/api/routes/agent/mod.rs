@@ -52,7 +52,7 @@ pub(crate) use self::poll_loops::CHANNEL_PROCESSING_ERROR_REPLY;
 pub use self::poll_loops::{
     discord_poll_loop, email_poll_loop, signal_poll_loop, telegram_poll_loop,
 };
-use self::routing::{DELEGATED_INFERENCE_BUDGET, infer_with_fallback_with_budget_and_preferred};
+use self::routing::{delegated_inference_budget, infer_with_fallback_with_budget_and_preferred};
 #[cfg(test)]
 use self::routing::{estimate_cost_from_provider, fallback_candidates, summarize_user_excerpt};
 pub(crate) use self::routing::{infer_content_with_fallback, select_routed_model};

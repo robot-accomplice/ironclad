@@ -352,9 +352,11 @@ async fn run_llm_recommendation_analysis(
             format!("failed to translate request: {e}"),
         )
     })?;
-    let llm = state.llm.read().await;
-    let resp = llm
-        .client
+    let client = {
+        let llm = state.llm.read().await;
+        llm.client.clone()
+    };
+    let resp = client
         .forward_with_provider(
             &url,
             &key,
@@ -369,7 +371,6 @@ async fn run_llm_recommendation_analysis(
                 format!("analysis provider call failed: {e}"),
             )
         })?;
-    drop(llm);
 
     let unified =
         ironclad_llm::format::translate_response(&resp, provider.format).unwrap_or_else(|e| {

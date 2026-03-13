@@ -230,6 +230,13 @@ impl CircuitBreakerRegistry {
         }
         cb.preemptive_half_open = pressured;
     }
+
+    /// Update the config used for newly-created breakers. Existing breakers
+    /// retain their current thresholds — only breakers created after this
+    /// call will use the updated values.
+    pub fn sync_config(&mut self, config: &CircuitBreakerConfig) {
+        self.config = config.clone();
+    }
 }
 
 #[cfg(test)]

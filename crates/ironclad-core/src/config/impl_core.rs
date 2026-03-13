@@ -225,6 +225,13 @@ impl IroncladConfig {
             )));
         }
 
+        if self.server.cron_max_concurrency == 0 || self.server.cron_max_concurrency > 16 {
+            return Err(IroncladError::Config(format!(
+                "server.cron_max_concurrency must be between 1 and 16, got {}",
+                self.server.cron_max_concurrency
+            )));
+        }
+
         // ── Security validation ─────────────────────────────────
         // Allow-list authority must not exceed trusted authority (the allow-list
         // is a weaker authentication signal than trusted_sender_ids).
@@ -335,6 +342,22 @@ impl IroncladConfig {
                     "models.routing.blocked_models entries must be non-empty".into(),
                 ));
             }
+        }
+        if self.models.routing.per_provider_timeout_seconds < 5 {
+            return Err(IroncladError::Config(format!(
+                "models.routing.per_provider_timeout_seconds must be >= 5, got {}",
+                self.models.routing.per_provider_timeout_seconds
+            )));
+        }
+        if self.models.routing.max_total_inference_seconds < self.models.routing.per_provider_timeout_seconds {
+            return Err(IroncladError::Config(
+                "models.routing.max_total_inference_seconds must be >= per_provider_timeout_seconds".into(),
+            ));
+        }
+        if self.models.routing.max_fallback_attempts == 0 {
+            return Err(IroncladError::Config(
+                "models.routing.max_fallback_attempts must be >= 1".into(),
+            ));
         }
 
         Ok(())

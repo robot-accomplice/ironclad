@@ -503,17 +503,33 @@ pub(super) struct InferenceBudget {
     pub per_provider_timeout: Duration,
 }
 
-pub(super) const INTERACTIVE_INFERENCE_BUDGET: InferenceBudget = InferenceBudget {
-    max_fallback_attempts: 6,
-    max_total_inference_time: Duration::from_secs(75),
-    per_provider_timeout: Duration::from_secs(15),
-};
+/// Build an inference budget from the user's routing config.
+pub(super) fn interactive_inference_budget(
+    routing: &ironclad_core::config::RoutingConfig,
+) -> InferenceBudget {
+    InferenceBudget {
+        max_fallback_attempts: routing.max_fallback_attempts,
+        max_total_inference_time: Duration::from_secs(routing.max_total_inference_seconds),
+        per_provider_timeout: Duration::from_secs(routing.per_provider_timeout_seconds),
+    }
+}
 
-pub(super) const DELEGATED_INFERENCE_BUDGET: InferenceBudget = InferenceBudget {
-    max_fallback_attempts: 6,
-    max_total_inference_time: Duration::from_secs(110),
-    per_provider_timeout: Duration::from_secs(18),
-};
+/// Delegated (sub-agent) inference gets a slightly extended budget: +20% on
+/// the per-provider timeout and +50% on total time to accommodate the
+/// extra latency of orchestrated multi-step calls.
+pub(super) fn delegated_inference_budget(
+    routing: &ironclad_core::config::RoutingConfig,
+) -> InferenceBudget {
+    InferenceBudget {
+        max_fallback_attempts: routing.max_fallback_attempts,
+        max_total_inference_time: Duration::from_secs(
+            routing.max_total_inference_seconds + routing.max_total_inference_seconds / 2,
+        ),
+        per_provider_timeout: Duration::from_secs(
+            routing.per_provider_timeout_seconds + routing.per_provider_timeout_seconds / 5,
+        ),
+    }
+}
 
 /// Attempt inference on the selected model, falling back through the configured
 /// chain on transient errors. Updates circuit breakers on success/failure.
@@ -528,13 +544,11 @@ pub(super) async fn infer_with_fallback(
     unified_req: &ironclad_llm::format::UnifiedRequest,
     initial_model: &str,
 ) -> Result<InferenceResult, String> {
-    infer_with_fallback_with_budget(
-        state,
-        unified_req,
-        initial_model,
-        INTERACTIVE_INFERENCE_BUDGET,
-    )
-    .await
+    let budget = {
+        let config = state.config.read().await;
+        interactive_inference_budget(&config.models.routing)
+    };
+    infer_with_fallback_with_budget(state, unified_req, initial_model, budget).await
 }
 
 pub(super) async fn infer_with_fallback_with_budget(
@@ -580,8 +594,8 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
                 "fallback attempt budget exhausted"
             );
             last_error = format!(
-                "fallback attempt budget exhausted ({})",
-                budget.max_fallback_attempts
+                "fallback attempt budget exhausted after {} attempts (configured limit: models.routing.max_fallback_attempts = {})",
+                attempted, budget.max_fallback_attempts
             );
             break;
         }
@@ -593,7 +607,8 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
                 "total inference timeout reached"
             );
             last_error = format!(
-                "inference timeout after {}s",
+                "inference timeout after {}s (configured limit: models.routing.max_total_inference_seconds = {})",
+                elapsed.as_secs(),
                 budget.max_total_inference_time.as_secs()
             );
             break;
@@ -601,7 +616,8 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
         let remaining_budget = budget.max_total_inference_time.saturating_sub(elapsed);
         if remaining_budget.is_zero() {
             last_error = format!(
-                "inference timeout after {}s",
+                "inference timeout after {}s (configured limit: models.routing.max_total_inference_seconds = {})",
+                elapsed.as_secs(),
                 budget.max_total_inference_time.as_secs()
             );
             break;
@@ -667,8 +683,9 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
         {
             Ok(result) => result,
             Err(_) => Err(IroncladError::Network(format!(
-                "request failed: timeout after {}s",
-                attempt_timeout.as_secs()
+                "request failed: timeout after {}s (configured limit: models.routing.per_provider_timeout_seconds = {})",
+                attempt_timeout.as_secs(),
+                budget.per_provider_timeout.as_secs()
             ))),
         };
         drop(llm);

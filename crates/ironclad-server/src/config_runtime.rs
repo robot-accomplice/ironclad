@@ -220,19 +220,22 @@ pub async fn apply_runtime_config(
     let backup_path = backup_config_file(&config_path)?;
     write_config_atomic(&config_path, &updated)?;
 
+    // Only settings that genuinely require a process restart belong here.
+    // server.bind/port: requires rebinding the TCP listener socket.
+    // wallet: holds crypto keys + chain state; partial swap risks fund loss.
     let deferred_apply = vec![
         "server.bind".to_string(),
         "server.port".to_string(),
         "wallet".to_string(),
-        "treasury.policy_engine".to_string(),
-        "browser.runtime".to_string(),
     ];
 
     let apply_result: Result<(), ConfigRuntimeError> = async {
+        // Core config swap — all subsequent reads see the new config.
         {
             let mut config = state.config.write().await;
             *config = updated.clone();
         }
+        // LLM routing: primary/fallback chain, routing mode, timeout budgets.
         {
             let mut llm = state.llm.write().await;
             llm.router.sync_runtime(
@@ -240,11 +243,15 @@ pub async fn apply_runtime_config(
                 updated.models.fallbacks.clone(),
                 updated.models.routing.clone(),
             );
+            llm.breakers.sync_config(&updated.circuit_breaker);
         }
+        // A2A protocol config.
         {
             let mut a2a = state.a2a.write().await;
             a2a.config = updated.a2a.clone();
         }
+        // Personality: agent name, persona, tone — already behind RwLock.
+        state.reload_personality().await;
         Ok(())
     }
     .await;

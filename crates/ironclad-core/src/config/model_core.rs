@@ -20,6 +20,8 @@ pub struct ServerConfig {
     pub per_actor_rate_limit_requests: u32,
     #[serde(default)]
     pub trusted_proxy_cidrs: Vec<String>,
+    #[serde(default = "default_cron_max_concurrency")]
+    pub cron_max_concurrency: u8,
 }
 
 impl Default for ServerConfig {
@@ -35,6 +37,7 @@ impl Default for ServerConfig {
             per_ip_rate_limit_requests: default_per_ip_rate_limit_requests(),
             per_actor_rate_limit_requests: default_per_actor_rate_limit_requests(),
             trusted_proxy_cidrs: Vec::new(),
+            cron_max_concurrency: default_cron_max_concurrency(),
         }
     }
 }
@@ -53,6 +56,10 @@ fn default_per_ip_rate_limit_requests() -> u32 {
 
 fn default_per_actor_rate_limit_requests() -> u32 {
     200
+}
+
+fn default_cron_max_concurrency() -> u8 {
+    8
 }
 
 fn default_port() -> u16 {
@@ -163,6 +170,19 @@ pub struct RoutingConfig {
     /// instant kill-switch without restarting the server.
     #[serde(default)]
     pub blocked_models: Vec<String>,
+    /// Per-provider timeout in seconds for interactive inference. If a single
+    /// model doesn't respond within this window, the fallback chain advances.
+    /// Increase for slow local models (e.g. large quantized models on CPU/GPU).
+    #[serde(default = "default_per_provider_timeout")]
+    pub per_provider_timeout_seconds: u64,
+    /// Total wall-clock budget in seconds for the entire inference fallback
+    /// chain (all attempts combined). Increase if you have many fallback
+    /// candidates or slow providers.
+    #[serde(default = "default_max_total_inference")]
+    pub max_total_inference_seconds: u64,
+    /// Maximum number of fallback attempts before giving up.
+    #[serde(default = "default_max_fallback_attempts")]
+    pub max_fallback_attempts: usize,
 }
 
 impl Default for RoutingConfig {
@@ -179,12 +199,27 @@ impl Default for RoutingConfig {
             canary_model: None,
             canary_fraction: 0.0,
             blocked_models: Vec::new(),
+            per_provider_timeout_seconds: default_per_provider_timeout(),
+            max_total_inference_seconds: default_max_total_inference(),
+            max_fallback_attempts: default_max_fallback_attempts(),
         }
     }
 }
 
 fn default_accuracy_min_obs() -> usize {
     10
+}
+
+fn default_per_provider_timeout() -> u64 {
+    30
+}
+
+fn default_max_total_inference() -> u64 {
+    120
+}
+
+fn default_max_fallback_attempts() -> usize {
+    6
 }
 
 fn default_estimated_output_tokens() -> u32 {

@@ -850,6 +850,10 @@ pub(super) async fn check_cache(
 ) -> Option<ironclad_llm::CachedResponse> {
     let _ = user_content;
     let _ = query_embedding;
+    // NOTE: write lock required because lookup_strict() increments hit/miss stats.
+    // This is fast (microseconds) so contention is low.  A future optimization
+    // could wrap SemanticCache in its own Mutex for interior mutability, allowing
+    // check_cache to take only a read lock on LlmService.
     let mut llm = state.llm.write().await;
     // High-integrity default: only exact/tool-TTL cache hits.
     // Semantic near-match cache reuse can fabricate wrong instruction-bound outputs.

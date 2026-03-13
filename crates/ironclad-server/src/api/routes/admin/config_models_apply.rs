@@ -292,7 +292,7 @@ pub async fn update_config(
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, "config deserialization failed");
-            let msg = "invalid config: schema validation failed".to_string();
+            let msg = format!("invalid config: {e}");
             state.config_apply_status.write().await.last_error = Some(msg.clone());
             return Err(bad_request(msg));
         }
@@ -301,7 +301,7 @@ pub async fn update_config(
     updated.normalize_paths();
     if let Err(e) = updated.validate() {
         tracing::warn!(error = %e, "config validation failed");
-        let msg = "invalid config: validation failed".to_string();
+        let msg = format!("invalid config: {e}");
         state.config_apply_status.write().await.last_error = Some(msg.clone());
         return Err(bad_request(msg));
     }

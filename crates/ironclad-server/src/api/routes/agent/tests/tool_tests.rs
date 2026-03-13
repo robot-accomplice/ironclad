@@ -258,6 +258,36 @@ fn provider_failure_user_message_no_leak() {
     assert!(msg_retry.contains("provider authentication error"));
 }
 
+#[test]
+fn provider_failure_message_includes_timeout_config_hint() {
+    // Simulate the enhanced error message format from routing.rs
+    let raw = "request failed: timeout after 30s (configured limit: models.routing.per_provider_timeout_seconds = 30)";
+    let msg = provider_failure_user_message(raw, true);
+    assert!(
+        msg.contains("per_provider_timeout_seconds is set to 30s"),
+        "timeout hint missing: {msg}"
+    );
+    assert!(
+        msg.contains("[models.routing]"),
+        "config section hint missing: {msg}"
+    );
+
+    // Total inference timeout
+    let raw_total = "inference timeout after 120s (configured limit: models.routing.max_total_inference_seconds = 120)";
+    let msg_total = provider_failure_user_message(raw_total, false);
+    assert!(
+        msg_total.contains("max_total_inference_seconds is set to 120s"),
+        "total timeout hint missing: {msg_total}"
+    );
+
+    // Non-timeout errors should NOT get a hint
+    let msg_plain = provider_failure_user_message("some random error", true);
+    assert!(
+        !msg_plain.contains("is set to"),
+        "non-timeout error should not get hint: {msg_plain}"
+    );
+}
+
 // ── is_virtual_delegation_tool tests ─────────────────────────
 
 #[test]

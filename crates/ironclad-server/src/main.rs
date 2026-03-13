@@ -1505,12 +1505,18 @@ async fn cmd_serve(
     })?;
     step(t, 2, STEPS, "Configuration validated");
 
-    ensure_internal_proxies_reachable(&config).map_err(|e| {
-        let (er, r) = (t.error(), t.reset());
-        let err_icon = t.icon_error();
-        eprintln!("  {er}{err_icon}{r} Internal proxy preflight failed: {e}");
-        e
-    })?;
+    let unreachable_proxies = check_internal_proxy_reachability(&config);
+    if !unreachable_proxies.is_empty() {
+        let (w, r) = (t.warn(), t.reset());
+        let warn_icon = t.icon_warn();
+        eprintln!(
+            "  {w}{warn_icon}{r} Some local provider proxies are not currently reachable: {}",
+            unreachable_proxies.join(", ")
+        );
+        eprintln!(
+            "         These providers will be skipped until reachable (circuit breaker will manage availability)."
+        );
+    }
 
     let is_localhost = config.server.bind == "127.0.0.1"
         || config.server.bind == "localhost"
@@ -1941,48 +1947,33 @@ fn validate_legacy_loopback_urls_for_mode(
     }
 }
 
-fn ensure_internal_proxies_reachable(
-    config: &IroncladConfig,
-) -> Result<(), ironclad_core::IroncladError> {
-    let mut required = Vec::<(String, String, u16)>::new();
+/// Check reachability of locally-configured provider proxies and return any that
+/// are currently unreachable. This is purely informational — provider availability
+/// is a runtime concern handled by the circuit breaker + fallback chain, not a
+/// startup precondition.
+fn check_internal_proxy_reachability(config: &IroncladConfig) -> Vec<String> {
+    let mut candidates = Vec::<(String, String, u16)>::new();
     for (name, provider) in &config.providers {
         if !provider_requires_internal_proxy(name, provider) {
             continue;
         }
-        let parsed = reqwest::Url::parse(provider.url.trim()).map_err(|e| {
-            ironclad_core::IroncladError::Config(format!(
-                "invalid provider URL for {name}: {} ({e})",
-                provider.url
-            ))
-        })?;
-        let host = parsed
-            .host_str()
-            .ok_or_else(|| {
-                ironclad_core::IroncladError::Config(format!(
-                    "provider URL for {name} missing host: {}",
-                    provider.url
-                ))
-            })?
-            .to_string();
+        let Ok(parsed) = reqwest::Url::parse(provider.url.trim()) else {
+            continue;
+        };
+        let Some(host) = parsed.host_str() else {
+            continue;
+        };
         let port = parsed.port_or_known_default().unwrap_or(80);
-        required.push((name.clone(), host, port));
+        candidates.push((name.clone(), host.to_string(), port));
     }
 
     let mut unreachable = Vec::new();
-    for (name, host, port) in required {
+    for (name, host, port) in candidates {
         if !tcp_endpoint_reachable(&host, port) {
             unreachable.push(format!("{name} ({host}:{port})"));
         }
     }
-
-    if unreachable.is_empty() {
-        Ok(())
-    } else {
-        Err(ironclad_core::IroncladError::Config(format!(
-            "required internal provider proxy is unreachable: {}",
-            unreachable.join(", ")
-        )))
-    }
+    unreachable
 }
 
 fn cmd_init(path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -2626,7 +2617,7 @@ tier = "T3"
     }
 
     #[test]
-    fn ensure_internal_proxies_reachable_skips_non_loopback_providers() {
+    fn check_internal_proxy_reachability_skips_non_loopback_providers() {
         let cfg = minimal_cfg_with_providers(
             r#"
 [providers.anthropic]
@@ -2634,8 +2625,8 @@ url = "https://api.anthropic.com"
 tier = "T3"
 "#,
         );
-        let result = ensure_internal_proxies_reachable(&cfg);
-        assert!(result.is_ok());
+        let unreachable = check_internal_proxy_reachability(&cfg);
+        assert!(unreachable.is_empty());
     }
 
     #[test]
@@ -2710,7 +2701,7 @@ tier = "T3"
     }
 
     #[test]
-    fn ensure_internal_proxies_reachable_returns_error_for_unreachable_loopback_proxy() {
+    fn check_internal_proxy_reachability_reports_unreachable_loopback_proxy() {
         let cfg = minimal_cfg_with_providers(
             r#"
 [providers.anthropic]
@@ -2718,8 +2709,9 @@ url = "http://127.0.0.1:9/anthropic"
 tier = "T3"
 "#,
         );
-        let result = ensure_internal_proxies_reachable(&cfg);
-        assert!(result.is_err());
+        let unreachable = check_internal_proxy_reachability(&cfg);
+        assert!(!unreachable.is_empty(), "should report unreachable proxy");
+        assert!(unreachable[0].contains("anthropic"));
     }
 
     #[test]

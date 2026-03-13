@@ -399,7 +399,7 @@ pub(super) async fn execute_virtual_subagent_tool_call(
             state,
             &req,
             &effective_model,
-            super::DELEGATED_INFERENCE_BUDGET,
+            super::delegated_inference_budget(&state.config.read().await.models.routing),
             &preferred_fallbacks,
         )
         .await
@@ -442,7 +442,9 @@ pub(super) async fn execute_virtual_subagent_tool_call(
                         state,
                         &retry_req,
                         &rescue_model,
-                        super::DELEGATED_INFERENCE_BUDGET,
+                        super::delegated_inference_budget(
+                            &state.config.read().await.models.routing,
+                        ),
                         &preferred_fallbacks,
                     )
                     .await?

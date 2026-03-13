@@ -127,8 +127,9 @@ impl TelegramFormatter {
 
     /// Convert a single line of Markdown to Telegram MarkdownV2.
     ///
-    /// Handles: **bold** → *bold*, *italic*/__italic__ → _italic_,
-    /// `inline code` → `inline code`, [text](url) → [text](url).
+    /// Handles: **bold** → *bold*, *italic*/_italic_/__italic__ → _italic_,
+    /// ~~strikethrough~~ → ~strikethrough~, `inline code` → `inline code`,
+    /// [text](url) → [text](url), > blockquotes.
     /// Markdown headers (# / ## / ###) are converted to bold lines.
     fn convert_line(line: &str) -> String {
         let trimmed = line.trim();
@@ -142,6 +143,14 @@ impl TelegramFormatter {
         }
         if let Some(rest) = trimmed.strip_prefix("# ") {
             return format!("*{}*", Self::escape_text(rest.trim()));
+        }
+
+        // Blockquote: > text → >text (Telegram MarkdownV2 blockquote)
+        if let Some(rest) = trimmed.strip_prefix("> ") {
+            return format!(">{}", Self::convert_inline(rest));
+        }
+        if trimmed == ">" {
+            return ">".to_string();
         }
 
         // Process inline formatting
@@ -183,6 +192,36 @@ impl TelegramFormatter {
                 continue;
             }
 
+            // Strikethrough: ~~text~~ → ~text~
+            if i + 1 < len
+                && chars[i] == '~'
+                && chars[i + 1] == '~'
+                && let Some(end) = find_double_closing(&chars, i + 2, '~')
+            {
+                let inner: String = chars[i + 2..end].iter().collect();
+                result.push('~');
+                result.push_str(&Self::escape_text(&inner));
+                result.push('~');
+                i = end + 2;
+                continue;
+            }
+
+            // Single-tilde strikethrough: ~text~ → ~text~ (already Telegram-native;
+            // LLMs sometimes output this instead of ~~text~~)
+            if chars[i] == '~'
+                && (i == 0 || chars[i - 1] != '~')
+                && i + 1 < len
+                && chars[i + 1] != '~'
+                && let Some(end) = find_closing_not_doubled(&chars, i + 1, '~')
+            {
+                let inner: String = chars[i + 1..end].iter().collect();
+                result.push('~');
+                result.push_str(&Self::escape_text(&inner));
+                result.push('~');
+                i = end + 1;
+                continue;
+            }
+
             // Italic: *text* (single) or _text_
             if chars[i] == '*'
                 && (i == 0 || chars[i - 1] != '*')
@@ -209,6 +248,21 @@ impl TelegramFormatter {
                 result.push_str(&Self::escape_text(&inner));
                 result.push_str("__");
                 i = end + 2;
+                continue;
+            }
+
+            // Italic: _text_ (single underscores) → _text_
+            if chars[i] == '_'
+                && (i == 0 || chars[i - 1] != '_')
+                && i + 1 < len
+                && chars[i + 1] != '_'
+                && let Some(end) = find_closing_not_doubled(&chars, i + 1, '_')
+            {
+                let inner: String = chars[i + 1..end].iter().collect();
+                result.push('_');
+                result.push_str(&Self::escape_text(&inner));
+                result.push('_');
+                i = end + 1;
                 continue;
             }
 
@@ -728,6 +782,76 @@ mod tests {
         let result = TelegramFormatter.format("According to [1] the data [23] shows");
         assert!(!result.contains("[1]"));
         assert!(!result.contains("[23]"));
+    }
+
+    #[test]
+    fn telegram_strikethrough_conversion() {
+        let result = TelegramFormatter.format("This is ~~deleted~~ text");
+        assert!(
+            result.contains("~deleted~"),
+            "strikethrough should be ~deleted~, got: {result}"
+        );
+        // Should NOT contain the double tilde
+        assert!(!result.contains("~~"));
+    }
+
+    #[test]
+    fn telegram_single_tilde_strikethrough() {
+        // LLMs sometimes output Telegram-native ~text~ instead of Markdown ~~text~~
+        let result = TelegramFormatter.format("This is ~deleted~ text");
+        assert!(
+            result.contains("~deleted~"),
+            "single-tilde strikethrough should be preserved as ~deleted~, got: {result}"
+        );
+        // The tildes must NOT be escaped (would show as literal \~ in Telegram)
+        assert!(
+            !result.contains("\\~"),
+            "tildes should not be escaped in strikethrough, got: {result}"
+        );
+    }
+
+    #[test]
+    fn telegram_single_underscore_italic() {
+        let result = TelegramFormatter.format("This is _italic_ text");
+        assert!(
+            result.contains("_italic_"),
+            "single underscore italic should be preserved, got: {result}"
+        );
+        // The underscore should NOT be escaped
+        assert!(
+            !result.contains("\\_italic\\_"),
+            "underscores should not be escaped for italic, got: {result}"
+        );
+    }
+
+    #[test]
+    fn telegram_blockquote() {
+        let result = TelegramFormatter.format("Normal line\n> This is a quote\nAfter");
+        assert!(
+            result.contains(">This is a quote"),
+            "blockquote should start with >, got: {result}"
+        );
+        assert!(
+            !result.contains("\\>"),
+            "> should not be escaped in blockquotes, got: {result}"
+        );
+    }
+
+    #[test]
+    fn telegram_empty_blockquote() {
+        let result = TelegramFormatter.format("Before\n>\nAfter");
+        assert!(result.contains("\n>\n") || result.contains("\n>"));
+    }
+
+    #[test]
+    fn telegram_combined_formatting() {
+        let result = TelegramFormatter.format("**Bold** and _italic_ and ~~struck~~ and > quoted");
+        assert!(result.contains("*Bold*"), "bold failed: {result}");
+        assert!(result.contains("_italic_"), "italic failed: {result}");
+        assert!(
+            result.contains("~struck~"),
+            "strikethrough failed: {result}"
+        );
     }
 
     // -- Discord tests --

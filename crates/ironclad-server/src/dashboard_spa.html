@@ -197,6 +197,9 @@
     .message { margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 3px; max-width: 85%; }
     .message.user { margin-left: auto; background: var(--accent-dim); border: 1px solid rgba(99,102,241,0.3); }
     .message.assistant { margin-right: auto; background: var(--surface); border: 1px solid var(--border); }
+    .message .md-table { width: auto; margin: 0.5rem 0; font-size: 0.8125rem; }
+    .message .md-table th, .message .md-table td { padding: 0.375rem 0.75rem; border: 1px solid var(--border); }
+    .message .md-table th { background: rgba(255,255,255,0.04); }
     .message-role { font-size: 0.7rem; text-transform: uppercase; color: var(--muted); margin-bottom: 0.25rem; display: flex; align-items: center; gap: 0.5rem; }
     .ctx-expand-btn { background: none; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); cursor: pointer; padding: 1px 5px; font-size: 0.625rem; line-height: 1.2; transition: all 0.15s; font-family: var(--font); margin-left: auto; }
     .ctx-expand-btn:hover { color: var(--accent); border-color: var(--accent); }
@@ -537,24 +540,12 @@
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <svg class="robot-icon" viewBox="0 0 32 32" width="32" height="32" xmlns="http://www.w3.org/2000/svg">
-          <rect x="11" y="1" width="10" height="10.5" fill="var(--surface)" stroke="var(--robot-color, #22c55e)" stroke-width="1.5"/>
-          <circle cx="14" cy="5" r="2" fill="var(--robot-color, #22c55e)"/>
-          <circle cx="14" cy="5" r="0.8" fill="var(--surface)"/>
-          <circle cx="18" cy="5" r="2" fill="var(--robot-color, #22c55e)"/>
-          <circle cx="18" cy="5" r="0.8" fill="var(--surface)"/>
-          <rect x="13" y="8.5" width="6" height="1.5" fill="var(--robot-color, #22c55e)"/>
-          <rect x="14.5" y="11.5" width="3" height="2.5" fill="var(--robot-color, #22c55e)" opacity="0.6"/>
-          <rect x="8" y="14" width="16" height="8.5" fill="var(--surface)" stroke="var(--robot-color, #22c55e)" stroke-width="1.5"/>
-          <rect x="12" y="15" width="8" height="6.5" fill="var(--robot-color, #22c55e)" opacity="0.1"/>
-          <line x1="16" y1="14" x2="16" y2="22.5" stroke="var(--robot-color, #22c55e)" stroke-width="0.6" opacity="0.35"/>
-          <rect x="3.5" y="16.5" width="4.5" height="3" fill="var(--robot-color, #22c55e)" opacity="0.45"/>
-          <rect x="24" y="16.5" width="4.5" height="3" fill="var(--robot-color, #22c55e)" opacity="0.45"/>
-          <rect x="0.5" y="16" width="3" height="4" fill="var(--robot-color, #22c55e)" opacity="0.85"/>
-          <rect x="28.5" y="16" width="3" height="4" fill="var(--robot-color, #22c55e)" opacity="0.85"/>
-          <rect x="12.5" y="22.5" width="2.5" height="4" fill="var(--robot-color, #22c55e)" opacity="0.6"/>
-          <rect x="17" y="22.5" width="2.5" height="4" fill="var(--robot-color, #22c55e)" opacity="0.6"/>
-          <rect x="10.5" y="26.5" width="5" height="2" fill="var(--robot-color, #22c55e)"/>
-          <rect x="16.5" y="26.5" width="5" height="2" fill="var(--robot-color, #22c55e)"/>
+          <rect width="32" height="32" rx="4" fill="var(--bg, #0a0b0f)"/>
+          <rect x="10" y="5" width="12" height="18" rx="0.8" fill="none" stroke="var(--robot-color, #22c55e)" stroke-width="2"/>
+          <circle cx="13.6" cy="11.5" r="1.35" fill="var(--robot-color, #22c55e)"/>
+          <circle cx="18.4" cy="11.5" r="1.35" fill="var(--robot-color, #22c55e)"/>
+          <rect x="13.6" y="16.8" width="4.8" height="1.35" fill="var(--robot-color, #22c55e)"/>
+          <rect x="15" y="23" width="2" height="4" fill="var(--robot-color, #22c55e)"/>
         </svg>
         <div class="sidebar-brand">
           <div class="sidebar-title">Ironclad</div>
@@ -1009,7 +1000,7 @@
     var html = esc(src);
     var inlineCodes = [];
     html = html.replace(/`([^`]+)`/g, function(_, code) {
-      var token = '__MD_INLINE_CODE_' + inlineCodes.length + '__';
+      var token = '\x01IC' + inlineCodes.length + '\x01';
       inlineCodes.push('<code>' + code + '</code>');
       return token;
     });
@@ -1024,7 +1015,8 @@
     html = html.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
     html = html.replace(/_([^_\n]+)_/g, '<em>$1</em>');
     html = html.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-    html = html.replace(/__MD_INLINE_CODE_(\d+)__/g, function(_, idx) {
+    html = html.replace(/~([^~\n]+)~/g, '<del>$1</del>');
+    html = html.replace(/\x01IC(\d+)\x01/g, function(_, idx) {
       var n = Number(idx);
       return inlineCodes[n] || '';
     });
@@ -1090,6 +1082,32 @@
         closeLists();
         closeQuote();
         htmlParts.push('<hr>');
+        continue;
+      }
+      // Table: | col | col | with separator line following
+      if (trimmed.charAt(0) === '|' && i + 1 < lines.length && /^\|[\s\-:|]+\|$/.test(lines[i + 1].trim())) {
+        flushParagraph();
+        closeLists();
+        closeQuote();
+        var headerCells = trimmed.split('|').slice(1, -1).map(function(c) { return c.trim(); });
+        var tbl = '<table class="md-table"><thead><tr>';
+        for (var h = 0; h < headerCells.length; h++) {
+          tbl += '<th>' + renderInlineMarkdown(headerCells[h]) + '</th>';
+        }
+        tbl += '</tr></thead><tbody>';
+        i += 2; // skip header + separator
+        while (i < lines.length && lines[i].trim().charAt(0) === '|') {
+          var cells = lines[i].trim().split('|').slice(1, -1).map(function(c) { return c.trim(); });
+          tbl += '<tr>';
+          for (var c = 0; c < cells.length; c++) {
+            tbl += '<td>' + renderInlineMarkdown(cells[c]) + '</td>';
+          }
+          tbl += '</tr>';
+          i++;
+        }
+        tbl += '</tbody></table>';
+        htmlParts.push(tbl);
+        i--; // compensate for the for-loop i++
         continue;
       }
       var quoteMatch = trimmed.match(/^>\s?(.*)$/);

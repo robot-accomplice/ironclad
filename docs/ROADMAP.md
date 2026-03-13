@@ -665,6 +665,36 @@ Scoring contract reference: `docs/evals/METASCORE_V1_SPEC.md` (spec-only).
 
 ---
 
+### 2.23 Tool Output Noise Filter
+
+**Current state**: Tool execution results are injected verbatim into the conversation context. A `read_file` returning 500 lines, a `bash` command dumping verbose logs, or an API response with pagination headers all consume tokens at full cost — even when the model only needs a fraction of the output to reason about the task.
+
+**Target**: A configurable filter layer between tool execution and context injection that strips structural noise, truncates excessive output, and collapses repetitive content — reducing token spend on tool-heavy turns by 30–70% with no quality loss.
+
+**Builds on**: `execute_tool_call()` in `tools.rs`, ReAct observation assembly in `core.rs` (L702–733), `ironclad-agent/src/injection.rs` (output scanning), and `2.8 Prompt Compression` (complementary — noise filter removes categorical junk before compression scores remaining tokens).
+
+**Scope**:
+
+- Define a `ToolOutputFilter` trait with `fn filter(tool_name: &str, raw: &str) -> String`.
+- Implement structural filters applied to ALL tool output:
+  - **Truncation**: Cap output at configurable token limit (default: 4096 tokens) with head/tail preservation and `[...N lines truncated...]` marker.
+  - **ANSI/control code stripping**: Remove terminal escape sequences, progress bars, spinner characters.
+  - **Whitespace normalization**: Collapse runs of blank lines, trailing whitespace, indentation beyond a threshold.
+- Implement tool-specific filters:
+  - **File reads**: For large files, keep first N + last M lines with truncation marker. Optionally extract only lines around a search pattern if the triggering prompt contains a grep/search intent.
+  - **Directory listings**: Strip permission bits, ownership, timestamps — keep only names and types.
+  - **JSON responses**: Prune deeply nested objects beyond depth N, remove known noise fields (`_links`, `pagination`, `rate_limit_*`, `request_id`).
+  - **Command output**: Detect and collapse repetitive log lines (e.g., 1000 identical warnings → `[repeated 1000x]: <line>`).
+  - **Search results**: Limit match context to ±N lines, collapse consecutive matches in the same file.
+- Config: `[agent.noise_filter]` with `enabled`, `max_output_tokens`, `tool_specific_rules` (override per tool name), `strip_ansi`, `collapse_repeats`.
+- Metrics: Track tokens saved per tool call, per session. Surface in dashboard efficiency panel.
+- Integration point: Between `execute_tool_call()` return and observation formatting at `core.rs:712`. Filter runs BEFORE injection scan (`injection::scan_output`).
+- Composability: Noise filter output feeds into 2.8 Prompt Compression for further reduction — the two layers are complementary, not competing.
+
+**Non-goals for v1**: Semantic summarization of tool output (that's compression territory), tool output caching/dedup across turns, or modifying tool implementations themselves.
+
+---
+
 ## Tier 3 — Frontier
 
 Ambitious capabilities that push the architecture into new territory. High effort, high potential.
