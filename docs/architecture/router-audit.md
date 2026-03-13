@@ -6,16 +6,17 @@ This document maps current model-router behavior, defines intended routing seque
 
 ```mermaid
 flowchart TD
-  subgraph Entry["Inference Entry Paths"]
-    E1["agent_message()"]
-    E2["agent_message_stream()"]
-    E3["process_channel_message()"]
+  subgraph Entry["Inference Entry Paths (v0.9.7: all via unified pipeline)"]
+    E1["agent_message() → PipelineConfig::api()"]
+    E2["agent_message_stream() → PipelineConfig::streaming()"]
+    E3["process_channel_message() → PipelineConfig::channel()"]
     E4["interview_turn()"]
+    E5["scheduled_tasks → PipelineConfig::cron()"]
   end
 
   subgraph Select["Model Selection"]
     S1["extract_features() + classify_complexity()"]
-    S2["select_for_complexity()\nOR\nselect_cheapest_qualified()"]
+    S2["select_routed_model_with_audit()\n(metascore or primary mode)"]
     S3["model override check"]
     S4["local_first threshold check"]
     S5["breaker/capacity filtering"]
@@ -29,6 +30,7 @@ flowchart TD
   E2 --> S1
   E3 --> S1
   E4 --> S1
+  E5 --> S1
   S1 --> S2
   S2 --> S3
   S3 --> S4
@@ -38,7 +40,7 @@ flowchart TD
 
 ## Intended Sequence Diagrams
 
-### 1) Complexity-Aware Routing (Non-Cost-Aware)
+### 1) Metascore Routing (Primary Mode)
 
 ```mermaid
 sequenceDiagram
@@ -47,7 +49,7 @@ sequenceDiagram
   participant Br as CircuitBreakerRegistry
   participant Cap as CapacityTracker
 
-  Req->>Rt: select_for_complexity(score, registry, cap, breakers)
+  Req->>Rt: select_routed_model_with_audit(score, registry, cap, breakers)
   Rt->>Rt: override set?
   alt override exists
     Rt-->>Req: override model
@@ -62,7 +64,7 @@ sequenceDiagram
   end
 ```
 
-### 2) Cost-Aware Routing
+### 2) Metascore Routing (Cost-Aware Mode)
 
 ```mermaid
 sequenceDiagram
@@ -72,16 +74,12 @@ sequenceDiagram
   participant Br as CircuitBreakerRegistry
   participant Cap as CapacityTracker
 
-  Req->>Rt: select_cheapest_qualified(...)
-  Rt->>Rt: build candidate set (primary + fallbacks)
+  Req->>Rt: select_routed_model_with_audit(cost_aware=true)
+  Rt->>Rt: build_model_profiles (primary + fallbacks)
   Rt->>Br: remove blocked providers
   Rt->>Cap: remove near-capacity providers
-  alt complexity >= threshold
-    Rt->>Reg: keep cloud subset
-    Rt-->>Req: cheapest cloud candidate
-  else low complexity
-    Rt-->>Req: cheapest remaining candidate
-  end
+  Rt->>Rt: metascore() with cost-aware weights
+  Rt-->>Req: highest-scoring candidate
 ```
 
 ### 3) Bounded Fallback Execution
@@ -118,8 +116,9 @@ sequenceDiagram
 
 - Router supports two configured runtime modes: `primary` and `metascore`. Legacy `heuristic` configs are migrated by update/mechanic before runtime load.
 - Complexity-aware path applies `local_first`, breaker filtering, and capacity filtering.
-- Cost-aware path applies breaker and capacity pruning before cost choice.
+- Cost-aware path applies breaker and capacity pruning before metascore cost-weight adjustment.
 - Runtime model override (`set_override`) cleanly short-circuits both selection modes.
+- All entry points (API, streaming, channel, cron) converge through unified pipeline (v0.9.7).
 - Non-stream chat/channel paths run bounded candidate loop via `infer_with_fallback`.
 
 ### Mismatches / Risks
@@ -141,7 +140,10 @@ sequenceDiagram
 ## Files Audited
 
 - `crates/ironclad-llm/src/router.rs`
-- `crates/ironclad-server/src/api/routes/agent.rs`
+- `crates/ironclad-server/src/api/routes/agent/core.rs`
+- `crates/ironclad-server/src/api/routes/agent/pipeline.rs` (v0.9.7: unified pipeline)
+- `crates/ironclad-server/src/api/routes/agent/intent_registry.rs` (v0.9.7: intent classification)
+- `crates/ironclad-server/src/api/routes/agent/shortcuts.rs` (v0.9.7: shortcut dispatcher)
 - `crates/ironclad-server/src/api/routes/interview.rs`
 - `crates/ironclad-core/src/config.rs`
 
