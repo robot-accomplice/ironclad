@@ -523,10 +523,12 @@ pub(super) fn delegated_inference_budget(
     InferenceBudget {
         max_fallback_attempts: routing.max_fallback_attempts,
         max_total_inference_time: Duration::from_secs(
-            routing.max_total_inference_seconds + routing.max_total_inference_seconds / 2,
+            routing.max_total_inference_seconds
+                + routing.max_total_inference_seconds.saturating_mul(50) / 100,
         ),
         per_provider_timeout: Duration::from_secs(
-            routing.per_provider_timeout_seconds + routing.per_provider_timeout_seconds / 5,
+            routing.per_provider_timeout_seconds
+                + routing.per_provider_timeout_seconds.saturating_mul(20) / 100,
         ),
     }
 }
@@ -651,7 +653,6 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
             .map(|(_, m)| m)
             .unwrap_or(model)
             .to_string();
-        attempted += 1;
         let mut req_clone = unified_req.clone();
         // Ensure the request targets this model's API name
         if !req_clone.model.is_empty() {
@@ -665,6 +666,9 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
                 continue;
             }
         };
+        // Count attempt only after translate_request succeeds — serialization
+        // failures should not consume fallback budget.
+        attempted += 1;
 
         let inference_start = std::time::Instant::now();
         let llm = state.llm.read().await;
@@ -682,11 +686,23 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
         .await
         {
             Ok(result) => result,
-            Err(_) => Err(IroncladError::Network(format!(
-                "request failed: timeout after {}s (configured limit: models.routing.per_provider_timeout_seconds = {})",
-                attempt_timeout.as_secs(),
-                budget.per_provider_timeout.as_secs()
-            ))),
+            Err(_) => {
+                let (label, limit) = if remaining_budget < budget.per_provider_timeout {
+                    (
+                        "models.routing.max_total_inference_seconds (remaining budget)",
+                        budget.max_total_inference_time.as_secs(),
+                    )
+                } else {
+                    (
+                        "models.routing.per_provider_timeout_seconds",
+                        budget.per_provider_timeout.as_secs(),
+                    )
+                };
+                Err(IroncladError::Network(format!(
+                    "request failed: timeout after {}s (configured limit: {label} = {limit})",
+                    attempt_timeout.as_secs(),
+                )))
+            }
         };
         drop(llm);
 
