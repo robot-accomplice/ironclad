@@ -655,6 +655,138 @@ fn build_obsidian_insight_command(path: &str) -> String {
     )
 }
 
+/// Convert a single introspection tool's JSON output into a human-readable
+/// prose sentence.  Falls back to a truncated preview if parsing fails.
+fn format_introspection_prose(tool_name: &str, raw_json: &str) -> String {
+    let v: serde_json::Value = match serde_json::from_str(raw_json) {
+        Ok(v) => v,
+        Err(_) => return format!("{tool_name}: {}", truncate_for_channel(raw_json, 200)),
+    };
+
+    match tool_name {
+        "get_runtime_context" => {
+            let agent = v["agent_id"].as_str().unwrap_or("unknown");
+            let session = v["session_id"].as_str().unwrap_or("unknown");
+            let channel = v["channel"].as_str().unwrap_or("unknown");
+            let workspace = v["workspace_root"].as_str().unwrap_or("unknown");
+            let authority = v["authority"].as_str().unwrap_or("unknown");
+            format!(
+                "Runtime: agent \"{agent}\", session {session}, channel {channel}, \
+                 workspace {workspace}, authority {authority}."
+            )
+        }
+        "get_memory_stats" => {
+            let method = v["retrieval_method"].as_str().unwrap_or("hybrid retrieval");
+            let mut tier_parts = Vec::new();
+            if let Some(tiers) = v["tiers"].as_object() {
+                // Sort by budget descending for readability
+                let mut entries: Vec<_> = tiers
+                    .iter()
+                    .filter_map(|(name, obj)| {
+                        let pct = obj["budget_pct"].as_u64()?;
+                        Some((name.clone(), pct))
+                    })
+                    .collect();
+                entries.sort_by(|a, b| b.1.cmp(&a.1));
+                for (name, pct) in entries {
+                    tier_parts.push(format!("{name} {pct}%"));
+                }
+            }
+            if tier_parts.is_empty() {
+                format!("Memory: {method}.")
+            } else {
+                format!("Memory: {method} — {}.", tier_parts.join(", "))
+            }
+        }
+        "get_channel_health" => {
+            let channel = v["channel"].as_str().unwrap_or("unknown");
+            let status = v["status"].as_str().unwrap_or("unknown");
+            format!("Channel health: {channel} is {status}.")
+        }
+        "get_subagent_status" => {
+            let sub_count = v["subagent_count"].as_u64().unwrap_or(0);
+            let task_count = v["open_task_count"].as_u64().unwrap_or(0);
+            let mut parts = Vec::new();
+
+            // Subagents
+            if sub_count == 0 {
+                parts.push("No subagents registered".to_string());
+            } else {
+                let names: Vec<String> = v["subagents"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|s| {
+                                let name =
+                                    s["display_name"].as_str().or_else(|| s["name"].as_str())?;
+                                let enabled = s["enabled"].as_bool().unwrap_or(false);
+                                Some(if enabled {
+                                    name.to_string()
+                                } else {
+                                    format!("{name} (disabled)")
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                parts.push(format!(
+                    "{sub_count} subagent{}: {}",
+                    if sub_count == 1 { "" } else { "s" },
+                    names.join(", ")
+                ));
+            }
+
+            // Tasks
+            if task_count == 0 {
+                parts.push("no open tasks".to_string());
+            } else {
+                let task_titles: Vec<String> = v["tasks"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .take(5)
+                            .filter_map(|t| {
+                                let title = t["title"].as_str()?;
+                                let status = t["status"].as_str().unwrap_or("pending");
+                                Some(format!("\"{title}\" ({status})"))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let suffix = if task_count > 5 {
+                    format!(" (+{} more)", task_count - 5)
+                } else {
+                    String::new()
+                };
+                parts.push(format!(
+                    "{task_count} open task{}: {}{}",
+                    if task_count == 1 { "" } else { "s" },
+                    task_titles.join(", "),
+                    suffix
+                ));
+            }
+
+            format!("Subagents & tasks: {}.", parts.join("; "))
+        }
+        _ => {
+            // Unknown introspection tool — truncate the raw output.
+            format!(
+                "{tool_name}: {}",
+                truncate_for_channel(raw_json.trim(), 200)
+            )
+        }
+    }
+}
+
+/// Truncate a string to at most `max_len` characters, appending "…" if cut.
+fn truncate_for_channel(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max_len])
+    }
+}
+
 async fn try_execution_shortcut(
     state: &AppState,
     user_prompt: &str,
@@ -977,10 +1109,11 @@ async fn try_execution_shortcut(
         }
     }
 
-    // 1) Introspection request — execute actual introspection tools and summarize.
+    // 1) Introspection request — execute actual introspection tools and summarize
+    //    as natural-language prose (never raw JSON).
     if requests_introspection(user_prompt) {
         let mut tool_results = Vec::new();
-        let mut snippets = Vec::new();
+        let mut prose_lines = Vec::new();
 
         for tool_name in [
             "get_runtime_context",
@@ -999,12 +1132,12 @@ async fn try_execution_shortcut(
             .await;
             match out {
                 Ok(output) => {
-                    tool_results.push((tool_name.to_string(), output.clone()));
-                    snippets.push(format!("{}: {}", tool_name, output.trim()));
+                    prose_lines.push(format_introspection_prose(tool_name, &output));
+                    tool_results.push((tool_name.to_string(), output));
                 }
                 Err(err) => {
                     tool_results.push((tool_name.to_string(), format!("error: {err}")));
-                    snippets.push(format!("{}: error: {}", tool_name, err));
+                    prose_lines.push(format!("{tool_name}: error — {err}"));
                 }
             }
         }
@@ -1024,12 +1157,12 @@ async fn try_execution_shortcut(
             .collect::<Vec<_>>()
             .join(", ");
         let summary = format!(
-            "Acknowledged. Active introspection completed.\n\
+            "Introspection complete.\n\
              Available tools: {} total (sample: {}).\n\
-             Current subagent/runtime functionality snapshot:\n{}",
+             {}",
             names.len(),
             tool_sample,
-            snippets.join("\n")
+            prose_lines.join("\n")
         );
 
         return Some(InferenceOutput {
@@ -1090,11 +1223,12 @@ async fn try_execution_shortcut(
                     "echo".to_string()
                 };
                 tool_results.push((used.clone(), output.clone()));
+                let prose_output = format_introspection_prose(&used, &output);
                 let content = format!(
-                    "By your command, tool inventory follows.\nAvailable tools (sample): {}.\nRandom pick: {}.\nOutput:\n{}",
+                    "Tool inventory follows.\nAvailable tools (sample): {}.\nRandom pick: {}.\nResult: {}",
                     names.into_iter().take(12).collect::<Vec<_>>().join(", "),
                     used,
-                    output.trim()
+                    prose_output
                 );
                 return Some(InferenceOutput {
                     content,
