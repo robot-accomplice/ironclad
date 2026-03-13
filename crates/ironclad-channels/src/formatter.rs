@@ -244,9 +244,9 @@ impl TelegramFormatter {
                 && let Some(end) = find_double_closing(&chars, i + 2, '_')
             {
                 let inner: String = chars[i + 2..end].iter().collect();
-                result.push_str("__");
+                result.push('_');
                 result.push_str(&Self::escape_text(&inner));
-                result.push_str("__");
+                result.push('_');
                 i = end + 2;
                 continue;
             }
@@ -821,6 +821,20 @@ mod tests {
         assert!(
             !result.contains("\\_italic\\_"),
             "underscores should not be escaped for italic, got: {result}"
+        );
+    }
+
+    #[test]
+    fn telegram_double_underscore_italic() {
+        let result = TelegramFormatter.format("This is __italic__ text");
+        // __text__ should become _text_ (italic), NOT __text__ (underline)
+        assert!(
+            result.contains("_italic_"),
+            "double underscore should convert to single underscore italic, got: {result}"
+        );
+        assert!(
+            !result.contains("__italic__"),
+            "double underscore should NOT remain as underline, got: {result}"
         );
     }
 
