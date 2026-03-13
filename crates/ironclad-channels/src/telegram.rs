@@ -335,33 +335,33 @@ fn strip_markdownv2_escapes(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            if let Some(&next) = chars.peek() {
-                // MarkdownV2 special chars that get escaped.
-                if matches!(
-                    next,
-                    '_' | '*'
-                        | '['
-                        | ']'
-                        | '('
-                        | ')'
-                        | '~'
-                        | '`'
-                        | '>'
-                        | '#'
-                        | '+'
-                        | '-'
-                        | '='
-                        | '|'
-                        | '{'
-                        | '}'
-                        | '.'
-                        | '!'
-                ) {
-                    out.push(next);
-                    chars.next();
-                    continue;
-                }
+        if ch == '\\'
+            && let Some(&next) = chars.peek()
+        {
+            // MarkdownV2 special chars that get escaped.
+            if matches!(
+                next,
+                '_' | '*'
+                    | '['
+                    | ']'
+                    | '('
+                    | ')'
+                    | '~'
+                    | '`'
+                    | '>'
+                    | '#'
+                    | '+'
+                    | '-'
+                    | '='
+                    | '|'
+                    | '{'
+                    | '}'
+                    | '.'
+                    | '!'
+            ) {
+                out.push(next);
+                chars.next();
+                continue;
             }
         }
         out.push(ch);
