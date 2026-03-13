@@ -10,7 +10,9 @@ use futures_util::StreamExt;
 use serde_json::json;
 
 use super::core;
+use super::decomposition::DelegationProvenance;
 use super::guards::DedupGuard;
+use super::pipeline::{PipelineConfig, UnifiedPipelineInput};
 use super::routing::{fallback_candidates, resolve_inference_provider};
 use super::{AgentMessageRequest, AppState};
 
@@ -93,24 +95,25 @@ pub async fn agent_message_stream(
             ));
         }
     }
+    // DedupGuard RAII: fingerprint is released automatically when dedup_guard
+    // drops, regardless of which exit path is taken (early return, error, or
+    // stream completion). This replaces 9 manual `llm.dedup.release()` calls.
+    let dedup_guard = DedupGuard {
+        llm: Arc::clone(&state.llm),
+        fingerprint: dedup_fp,
+    };
 
     let agent_id = config.agent.id.clone();
     let session_id = match &body.session_id {
         Some(sid) => match ironclad_db::sessions::get_session(&state.db, sid) {
             Ok(Some(session)) if session.agent_id == agent_id => sid.clone(),
             Ok(Some(_)) => {
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-                drop(llm);
                 return Err((
                     StatusCode::FORBIDDEN,
                     axum::Json(json!({"error": "session does not belong to this agent"})),
                 ));
             }
             Ok(None) => {
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-                drop(llm);
                 return Err((
                     StatusCode::NOT_FOUND,
                     axum::Json(json!({"error": "session not found"})),
@@ -118,9 +121,6 @@ pub async fn agent_message_stream(
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to retrieve session");
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-                drop(llm);
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     axum::Json(json!({"error": "internal server error"})),
@@ -131,9 +131,6 @@ pub async fn agent_message_stream(
             let scope = match super::resolve_web_scope(&config, &body) {
                 Ok(scope) => scope,
                 Err(msg) => {
-                    let mut llm = state.llm.write().await;
-                    llm.dedup.release(&dedup_fp);
-                    drop(llm);
                     return Err((StatusCode::BAD_REQUEST, axum::Json(json!({"error": msg}))));
                 }
             };
@@ -141,9 +138,6 @@ pub async fn agent_message_stream(
                 Ok(sid) => sid,
                 Err(e) => {
                     tracing::error!(error = %e, "failed to create session");
-                    let mut llm = state.llm.write().await;
-                    llm.dedup.release(&dedup_fp);
-                    drop(llm);
                     return Err((
                         StatusCode::INTERNAL_SERVER_ERROR,
                         axum::Json(json!({"error": "internal server error"})),
@@ -157,9 +151,6 @@ pub async fn agent_message_stream(
         Ok(_) => {}
         Err(e) => {
             tracing::error!(error = %e, "failed to store user message");
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-            drop(llm);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(json!({"error": "internal server error"})),
@@ -169,42 +160,26 @@ pub async fn agent_message_stream(
 
     let turn_id = uuid::Uuid::new_v4().to_string();
 
-    // Read config values needed for InferenceInput before dropping the lock.
-    let tier_adapt = config.tier_adapt.clone();
-    let agent_name = config.agent.name.clone();
-    let agent_id_for_input = config.agent.id.clone();
-    let primary_model = config.models.primary.clone();
-    let personality = state.personality.read().await;
-    let os_text = personality.os_text.clone();
-    let firmware_text = personality.firmware_text.clone();
-    drop(personality);
     drop(config);
 
-    let input = core::InferenceInput {
+    // ── Prepare inference via unified pipeline ──────────────────────
+    let pipeline_config = PipelineConfig::streaming();
+    let pipeline_input = UnifiedPipelineInput {
         state: &state,
+        config: &pipeline_config,
         session_id: &session_id,
         user_content: &user_content,
         turn_id: &turn_id,
-        channel_label: "api-stream",
-        agent_name,
-        agent_id: agent_id_for_input,
-        os_text,
-        firmware_text,
-        primary_model,
-        tier_adapt,
+        is_correction_turn: false,
         delegation_workflow_note: None,
-        inject_diagnostics: true,
         gate_system_note: None,
         delegated_execution_note: None,
-        is_correction_turn: false,
+        delegation_provenance: DelegationProvenance::default(),
     };
-    let prepared = match core::prepare_inference(&input).await {
+    let prepared = match super::pipeline::prepare_unified_pipeline(&pipeline_input).await {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "streaming prepare_inference failed");
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-            drop(llm);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(json!({"error": e})),
@@ -257,9 +232,6 @@ pub async fn agent_message_stream(
             Ok(body) => body,
             Err(e) => {
                 tracing::error!(error = %e, "failed to translate streaming LLM request");
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-                drop(llm);
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     axum::Json(json!({"error": "internal server error"})),
@@ -311,9 +283,6 @@ pub async fn agent_message_stream(
 
     let Some(chunk_stream) = chunk_stream_opt else {
         tracing::error!(error = %last_error, "all streaming fallback candidates failed");
-        let mut llm = state.llm.write().await;
-        llm.dedup.release(&dedup_fp);
-        drop(llm);
         return Err((
             StatusCode::BAD_GATEWAY,
             axum::Json(json!({"error": "upstream provider error"})),
@@ -336,13 +305,6 @@ pub async fn agent_message_stream(
     let hmac_secret_clone = state.hmac_secret.clone();
     let user_content_clone = user_content.clone();
     let state_clone = state.clone();
-
-    // DedupGuard ensures the fingerprint is released even if the client disconnects
-    // mid-stream and the generator is dropped before reaching the explicit release.
-    let dedup_guard = DedupGuard {
-        llm: Arc::clone(&state.llm),
-        fingerprint: dedup_fp,
-    };
 
     let sse_stream = async_stream::stream! {
         // Move the guard into the generator so it drops with the stream
