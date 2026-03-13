@@ -532,10 +532,17 @@ ci-test:
         fi
 
         echo "  Checking unified inference pipeline wiring (API + channel)..."
-        rg -q 'execute_inference_pipeline\(' "$handlers" || {
-            echo "  FAIL: API handler bypasses execute_inference_pipeline"
+        local pipeline="$agent_dir/pipeline.rs"
+        # API path: handlers.rs → pipeline.rs (execute_unified_pipeline_with_authority) → core.rs (execute_inference_pipeline)
+        rg -q 'execute_unified_pipeline_with_authority\(' "$handlers" || {
+            echo "  FAIL: API handler bypasses execute_unified_pipeline_with_authority"
             return 1
         }
+        rg -q 'execute_inference_pipeline\(' "$pipeline" || {
+            echo "  FAIL: pipeline.rs does not call execute_inference_pipeline"
+            return 1
+        }
+        # Channel path: channel_message.rs → core.rs (execute_inference_pipeline) directly
         rg -q 'execute_inference_pipeline\(' "$channel" || {
             echo "  FAIL: Channel handler bypasses execute_inference_pipeline"
             return 1
