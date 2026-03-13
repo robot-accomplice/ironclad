@@ -282,6 +282,7 @@ pub async fn agent_message(
         inject_diagnostics: true,
         gate_system_note: Some(gate_system_note),
         delegated_execution_note,
+        is_correction_turn: false,
     };
 
     let prepared = match core::prepare_inference(&input).await {

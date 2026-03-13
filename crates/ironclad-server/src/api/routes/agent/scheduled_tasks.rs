@@ -86,6 +86,7 @@ pub(crate) async fn execute_scheduled_agent_task(
         inject_diagnostics: false,
         gate_system_note: Some(gate_system_note),
         delegated_execution_note: None,
+        is_correction_turn: false,
     };
     drop(config);
 

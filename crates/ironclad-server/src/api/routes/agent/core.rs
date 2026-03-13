@@ -59,6 +59,9 @@ pub(super) struct InferenceInput<'a> {
     pub gate_system_note: Option<String>,
     /// Optional delegated execution note for channels
     pub delegated_execution_note: Option<String>,
+    /// When true, the user is correcting/contradicting the previous reply.
+    /// Shortcuts must be skipped so the expanded correction prompt reaches the LLM.
+    pub is_correction_turn: bool,
 }
 
 /// Result of `prepare_inference` — everything needed to call the LLM.
@@ -70,6 +73,8 @@ pub(super) struct PreparedInference {
     pub previous_assistant: Option<String>,
     pub query_embedding: Option<Vec<f32>>,
     pub cache_hash: String,
+    /// Carried from `InferenceInput` — when true, skip execution shortcuts.
+    pub is_correction_turn: bool,
 }
 
 /// Result of a completed (non-streaming) inference cycle.
@@ -396,6 +401,7 @@ pub(super) async fn prepare_inference(
         previous_assistant,
         query_embedding,
         cache_hash,
+        is_correction_turn: input.is_correction_turn,
     })
 }
 
@@ -1795,18 +1801,24 @@ pub(super) async fn run_inference_and_react(
         .last()
         .map(|m| m.content.as_str())
         .unwrap_or_default();
-    if let Some(shortcut) = try_execution_shortcut(
-        state,
-        user_prompt,
-        turn_id,
-        authority,
-        channel_label,
-        &prepared.model,
-        delegation_provenance,
-    )
-    .await
-    {
-        return shortcut;
+    // Skip all execution shortcuts when the user is correcting/contradicting the
+    // previous reply.  The expanded prompt may contain keywords from the quoted
+    // previous assistant reply that would trigger unrelated shortcuts (e.g. a
+    // geopolitical sitrep keyword inside the quoted text).
+    if !prepared.is_correction_turn {
+        if let Some(shortcut) = try_execution_shortcut(
+            state,
+            user_prompt,
+            turn_id,
+            authority,
+            channel_label,
+            &prepared.model,
+            delegation_provenance,
+        )
+        .await
+        {
+            return shortcut;
+        }
     }
 
     // Initial inference

@@ -297,6 +297,10 @@ pub async fn process_channel_message(
         drop(llm);
         return Err(e.to_string());
     }
+    // Detect correction/contradiction *before* expansion — the expanded text may
+    // contain keywords from the previous reply that would trigger unrelated shortcuts.
+    let is_correction_turn =
+        is_short_contradiction_followup(&user_content) || is_short_reactive_sarcasm(&user_content);
     user_content = contextualize_short_followup(state, &session_id, &user_content).await;
     if let Some(reply) =
         maybe_handle_specialist_creation_controls(state, &session_id, &user_content).await
@@ -535,6 +539,7 @@ pub async fn process_channel_message(
         inject_diagnostics: false,
         gate_system_note: Some(gate_system_note),
         delegated_execution_note,
+        is_correction_turn,
     };
 
     let mut prepared = match core::prepare_inference(&input).await {

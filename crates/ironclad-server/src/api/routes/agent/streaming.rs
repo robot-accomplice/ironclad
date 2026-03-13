@@ -196,6 +196,7 @@ pub async fn agent_message_stream(
         inject_diagnostics: true,
         gate_system_note: None,
         delegated_execution_note: None,
+        is_correction_turn: false,
     };
     let prepared = match core::prepare_inference(&input).await {
         Ok(p) => p,
