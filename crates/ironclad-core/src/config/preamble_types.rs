@@ -393,6 +393,12 @@ pub struct FilesystemSecurityConfig {
     /// `workspace_dir`. Read-only access unless the path is also the workspace.
     #[serde(default)]
     pub script_allowed_paths: Vec<PathBuf>,
+
+    /// Absolute paths that agent tools (read_file, write_file, etc.) may
+    /// access even in `workspace_only` mode. Auto-populated from feature
+    /// configs (e.g. `obsidian.vault_path`) during config expansion.
+    #[serde(default)]
+    pub tool_allowed_paths: Vec<PathBuf>,
 }
 
 fn default_allowlist_authority() -> crate::types::InputAuthority {
@@ -469,6 +475,7 @@ impl Default for FilesystemSecurityConfig {
             extra_protected_paths: Vec::new(),
             script_fs_confinement: true,
             script_allowed_paths: Vec::new(),
+            tool_allowed_paths: Vec::new(),
         }
     }
 }

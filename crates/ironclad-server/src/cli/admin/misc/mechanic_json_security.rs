@@ -11,12 +11,15 @@ fn collect_mechanic_json_security_and_plugin_findings(
         let tg_404_count =
             count_occurrences(snapshot, "Telegram API error\",\"status\":\"404 Not Found");
         let tg_poll_err_count = count_occurrences(snapshot, "Telegram poll error, backing off 5s");
-        if tg_404_count >= 3 || tg_poll_err_count >= 3 {
+        let tg_401_count =
+            count_occurrences(snapshot, "Telegram API error\",\"status\":\"401");
+        if tg_401_count >= 3 {
+            // 401 Unauthorized is a clear token/auth issue — keystore is the right fix
             findings.push(finding(
                 "telegram-invalid-token-likely",
                 "high",
                 0.96,
-                "Repeated Telegram 404/poll-backoff failures",
+                "Repeated Telegram 401 Unauthorized errors",
                 "Log signatures strongly suggest an invalid or revoked Telegram bot token.",
                 "Set a valid token and restart daemon.",
                 vec![
@@ -25,6 +28,26 @@ fn collect_mechanic_json_security_and_plugin_findings(
                 ],
                 false,
                 true,
+            ));
+        } else if tg_404_count >= 3 || tg_poll_err_count >= 3 {
+            // 404 / poll backoff — transport-level issue, not a keystore problem
+            findings.push(finding(
+                "telegram-transport-degraded",
+                "medium",
+                0.80,
+                format!(
+                    "Telegram transport degraded ({tg_404_count} 404 errors, {tg_poll_err_count} poll backoffs)"
+                ),
+                "Repeated Telegram API 404 errors or poll backoff loops indicate transport-level \
+                 failures. This is typically caused by network issues, Telegram API changes, or \
+                 bot configuration problems — not an invalid keystore token.",
+                "Check Telegram bot configuration and API connectivity with `ironclad channels status`.",
+                vec![
+                    "ironclad channels status".to_string(),
+                    "ironclad daemon restart".to_string(),
+                ],
+                false,
+                false,
             ));
         }
         let unknown_action_count = count_occurrences(snapshot, "unknown action: unknown");

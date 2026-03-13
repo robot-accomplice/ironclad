@@ -51,6 +51,7 @@ rand = "0.8"
 subtle = { workspace = true }
 libc = "0.2"
 regex = "1"
+ureq = "2"
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server", "tower"] }
 async-trait = "0.1"
 

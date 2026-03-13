@@ -250,8 +250,12 @@ impl PolicyRule for FinancialRule {
 pub struct PathProtectionRule {
     /// Path patterns that are not allowed in tool arguments.
     pub protected: Vec<String>,
-    /// When true, absolute paths outside `/tmp` are denied (workspace-only mode).
+    /// When true, absolute paths outside `/tmp` and `tool_allowed_paths` are
+    /// denied (workspace-only mode).
     pub workspace_only: bool,
+    /// Absolute paths that tools may access even in workspace_only mode.
+    /// Auto-populated from feature configs (e.g. `obsidian.vault_path`).
+    pub tool_allowed_paths: Vec<std::path::PathBuf>,
 }
 
 impl Default for PathProtectionRule {
@@ -266,6 +270,7 @@ impl Default for PathProtectionRule {
                 "ironclad.toml".into(),
             ],
             workspace_only: true,
+            tool_allowed_paths: Vec::new(),
         }
     }
 }
@@ -275,18 +280,22 @@ impl PathProtectionRule {
         Self {
             protected,
             workspace_only: true,
+            tool_allowed_paths: Vec::new(),
         }
     }
 
     /// Build from the `[security.filesystem]` config section.
-    /// Merges `protected_paths` + `extra_protected_paths` and reads
-    /// `workspace_only` flag.
+    /// Merges `protected_paths` + `extra_protected_paths`, reads
+    /// `workspace_only` flag, and imports `tool_allowed_paths` so that
+    /// configured external directories (e.g. Obsidian vault) are reachable
+    /// even in workspace-only mode.
     pub fn from_config(fs_cfg: &ironclad_core::config::FilesystemSecurityConfig) -> Self {
         let mut protected = fs_cfg.protected_paths.clone();
         protected.extend(fs_cfg.extra_protected_paths.iter().cloned());
         Self {
             protected,
             workspace_only: fs_cfg.workspace_only,
+            tool_allowed_paths: fs_cfg.tool_allowed_paths.clone(),
         }
     }
 
@@ -315,20 +324,27 @@ impl PolicyRule for PathProtectionRule {
         let mut strings = Vec::new();
         collect_string_values(&call.params, &mut strings);
 
-        // Workspace-only gate: deny absolute paths outside /tmp.
-        // Relative paths are fine — they resolve against the workspace root
-        // in the tool layer (resolve_workspace_path).
+        // Workspace-only gate: deny absolute paths outside /tmp unless they
+        // fall under a configured `tool_allowed_paths` entry.  Relative paths
+        // are fine — they resolve against the workspace root in the tool layer
+        // (resolve_workspace_path).
         if self.workspace_only {
             for s in &strings {
                 let p = std::path::Path::new(s);
                 if p.is_absolute() && !s.starts_with("/tmp") {
-                    return PolicyDecision::Deny {
-                        rule: self.name().into(),
-                        reason: format!(
-                            "workspace_only mode: absolute path '{}' outside /tmp not allowed",
-                            s
-                        ),
-                    };
+                    let whitelisted = self
+                        .tool_allowed_paths
+                        .iter()
+                        .any(|allowed| p.starts_with(allowed));
+                    if !whitelisted {
+                        return PolicyDecision::Deny {
+                            rule: self.name().into(),
+                            reason: format!(
+                                "workspace_only mode: absolute path '{}' outside /tmp and configured allowed paths",
+                                s
+                            ),
+                        };
+                    }
                 }
             }
         }
@@ -1015,6 +1031,7 @@ mod tests {
         let rule = PathProtectionRule {
             protected: vec![],
             workspace_only: true,
+            tool_allowed_paths: vec![],
         };
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
@@ -1058,6 +1075,7 @@ mod tests {
         let rule = PathProtectionRule {
             protected: vec![],
             workspace_only: false,
+            tool_allowed_paths: vec![],
         };
         let ctx = PolicyContext {
             authority: InputAuthority::Creator,
@@ -1084,6 +1102,7 @@ mod tests {
             extra_protected_paths: vec!["custom.pem".into()],
             script_fs_confinement: true,
             script_allowed_paths: vec![],
+            tool_allowed_paths: vec![],
         };
         let rule = PathProtectionRule::from_config(&cfg);
         assert!(!rule.workspace_only);
@@ -1138,6 +1157,71 @@ mod tests {
                 path
             );
         }
+    }
+
+    #[test]
+    fn path_protection_tool_allowed_paths_whitelist() {
+        let rule = PathProtectionRule {
+            protected: vec![],
+            workspace_only: true,
+            tool_allowed_paths: vec![std::path::PathBuf::from("/Users/jmachen/Desktop/My Vault")],
+        };
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+            claim: None,
+        };
+
+        // Whitelisted path — should be allowed
+        let vault = ToolCallRequest {
+            tool_name: "read_file".into(),
+            params: serde_json::json!({ "path": "/Users/jmachen/Desktop/My Vault/notes.md" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(
+            rule.evaluate(&vault, &ctx).is_allowed(),
+            "tool_allowed_paths should whitelist configured paths"
+        );
+
+        // Non-whitelisted absolute path — still blocked
+        let other = ToolCallRequest {
+            tool_name: "read_file".into(),
+            params: serde_json::json!({ "path": "/Users/jmachen/Documents/secret.txt" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(
+            !rule.evaluate(&other, &ctx).is_allowed(),
+            "absolute paths not in tool_allowed_paths should still be blocked"
+        );
+
+        // /tmp still allowed
+        let tmp = ToolCallRequest {
+            tool_name: "write_file".into(),
+            params: serde_json::json!({ "path": "/tmp/output.txt" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(
+            rule.evaluate(&tmp, &ctx).is_allowed(),
+            "/tmp always allowed regardless of whitelist"
+        );
+    }
+
+    #[test]
+    fn path_protection_from_config_includes_tool_allowed_paths() {
+        let cfg = ironclad_core::config::FilesystemSecurityConfig {
+            workspace_only: true,
+            protected_paths: vec![],
+            extra_protected_paths: vec![],
+            script_fs_confinement: true,
+            script_allowed_paths: vec![],
+            tool_allowed_paths: vec![std::path::PathBuf::from("/opt/shared")],
+        };
+        let rule = PathProtectionRule::from_config(&cfg);
+        assert_eq!(rule.tool_allowed_paths.len(), 1);
+        assert_eq!(
+            rule.tool_allowed_paths[0],
+            std::path::PathBuf::from("/opt/shared")
+        );
     }
 
     #[test]

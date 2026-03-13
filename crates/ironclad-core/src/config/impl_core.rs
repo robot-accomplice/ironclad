@@ -68,6 +68,17 @@ impl IroncladConfig {
                 source.path = Some(expand_tilde(p));
             }
         }
+
+        // Auto-populate tool_allowed_paths from feature configs so that
+        // workspace_only mode doesn't block configured external paths.
+        if self.obsidian.enabled {
+            if let Some(ref vp) = self.obsidian.vault_path {
+                let canonical = vp.clone();
+                if !self.security.filesystem.tool_allowed_paths.contains(&canonical) {
+                    self.security.filesystem.tool_allowed_paths.push(canonical);
+                }
+            }
+        }
     }
 
     fn merge_bundled_providers(&mut self) {

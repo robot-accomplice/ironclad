@@ -64,7 +64,7 @@
     }
     .sidebar.collapsed { width: 56px; min-width: 56px; }
     .sidebar-header { padding: 1.25rem; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 0.75rem; white-space: normal; overflow: hidden; transition: padding 0.2s, justify-content 0.2s; }
-    .sidebar.collapsed .sidebar-header { padding: 0.5rem; justify-content: center; align-items: center; gap: 0; min-height: 0; }
+    .sidebar.collapsed .sidebar-header { padding: 0; justify-content: center; align-items: center; gap: 0; height: 56px; min-height: 56px; max-height: 56px; overflow: hidden; }
     .sidebar-brand { display: flex; flex-direction: column; min-width: 0; overflow: hidden; transition: width 0.2s, opacity 0.2s; }
     .sidebar.collapsed .sidebar-brand { opacity: 0; width: 0; overflow: hidden; margin: 0; padding: 0; }
     .sidebar-title { font-size: 1.125rem; font-weight: 600; margin-bottom: 0.25rem; letter-spacing: 0.15em; text-transform: uppercase; }
@@ -291,7 +291,7 @@
     .ctx-analyze-btn { margin-top: 0.5rem; font-size: 0.6875rem; padding: 0.25rem 0.625rem; }
     .ctx-insights { margin-top: 1rem; }
     .streaming-content { white-space: pre-wrap; word-break: break-word; }
-    .streaming-content::after { content: '\u2588'; animation: cursorBlink 0.8s step-end infinite; color: var(--accent); }
+    .streaming-content::after { content: '\2588'; animation: cursorBlink 0.8s step-end infinite; color: var(--accent); }
     @keyframes cursorBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
     .thinking-indicator { margin-right: auto; padding: 0.75rem 1rem; display: flex; align-items: center; gap: 0.625rem; }
     .thinking-brain { display: inline-block; font-size: 1.25rem; animation: brainBounce 1.2s ease-in-out infinite; }
@@ -1305,7 +1305,7 @@
         for (var k = 0; k < keys.length; k++) { var val = seriesMap[keys[k]][i]; layers.push({ bottom: cum, top: cum + val, key: keys[k] }); cum += val; }
         stacked.push({ layers: layers, total: cum });
       }
-      var maxTotal = Math.max.apply(null, stacked.map(function(s) { return s.total; }));
+      var maxTotal = opts.fixedMax != null ? opts.fixedMax : Math.max.apply(null, stacked.map(function(s) { return s.total; }));
       if (maxTotal === 0) maxTotal = 1;
       function toX(i) { return padLeft + (i / (len - 1)) * chartW; }
       function toY(v) { return padTop + chartH - (v / maxTotal) * chartH; }
@@ -1723,11 +1723,14 @@
         if (TS.cronSuccess.length === 0) TS.cronSuccess = repeatedSeries(buckets, cronSuccessVal);
         pushFleetSnapshot(agents, agentActivity);
         TS.agentLoadByAgent = {};
+        var agentCount = agents.length;
         agents.forEach(function(a) {
           var k = a.name || a.id;
           var history = (_fleetHistory.byAgent[k] || []).slice();
           if (history.length === 0) history = [agentActivity[k] || 0];
-          TS.agentLoadByAgent[k] = history;
+          // Normalize: each agent contributes at most 1/agentCount to the
+          // stacked total so that 100% = all agents active simultaneously.
+          TS.agentLoadByAgent[k] = history.map(function(v) { return v / agentCount; });
         });
         TS.agentLoadLabels = _fleetHistory.labels.slice();
 
@@ -1756,7 +1759,9 @@
           var fleetLegend = agents.map(function(a) {
             var k = a.name || a.id;
             var stDot = (a.state || '').toLowerCase() === 'running' ? 'var(--success)' : 'var(--warning)';
-            var lastVal = TS.agentLoadByAgent[k] ? seriesLast(TS.agentLoadByAgent[k]) : 0;
+            // Use raw per-agent score (0–1) for the legend bar, not the
+            // normalized fleet-fraction used in the stacked chart.
+            var lastVal = agentActivity[k] || 0;
             var stateLabel = (a.activity || a.state || 'idle').toString().toLowerCase();
             var color = a.color || '#6366f1';
             fleetColors[k] = color;
@@ -1777,7 +1782,8 @@
               labels: TS.agentLoadLabels.length > 1,
               xLabels: TS.agentLoadLabels,
               yAxis: true,
-              yFormat: function(v) { return v.toFixed(1); }
+              fixedMax: 1.0,
+              yFormat: function(v) { return (v * 100).toFixed(0) + '%'; }
             }
           );
           cardFleet = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Agent Fleet Activity</div><div class="cc-value">' + (seriesLast(TS.agentLoad) * 100).toFixed(0) + '% active load</div><div class="cc-sub">' + agentActiveNow + ' / ' + agents.length + ' agents active now</div></div><div class="cc-right">' + deltaHtml(seriesLast(TS.agentLoad), seriesPrev(TS.agentLoad)) + '</div></div>' + fleetChart + '<div class="metrics-legend" style="padding:0.5rem 1rem 0.75rem">' + fleetLegend + '</div></div>';
