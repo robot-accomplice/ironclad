@@ -44,8 +44,6 @@ pub(super) enum KeyStatus {
     Keystore { key_name: String },
     /// Key found via environment variable.
     EnvVar { env_name: String },
-    /// OAuth auth mode — token resolved at request time.
-    OAuth,
     /// Keystore reference configured but key is missing from keystore.
     KeystoreMissing { key_name: String },
     /// Keystore key exists but has an empty/blank value.
@@ -62,7 +60,7 @@ impl KeyStatus {
     pub fn is_healthy(&self) -> bool {
         matches!(
             self,
-            Self::NotRequired | Self::Keystore { .. } | Self::EnvVar { .. } | Self::OAuth
+            Self::NotRequired | Self::Keystore { .. } | Self::EnvVar { .. }
         )
     }
 
@@ -71,7 +69,6 @@ impl KeyStatus {
             Self::NotRequired => "local (no key needed)",
             Self::Keystore { .. } => "keystore ✓",
             Self::EnvVar { .. } => "env var ✓",
-            Self::OAuth => "OAuth ✓",
             Self::KeystoreMissing { .. } => "keystore key MISSING",
             Self::KeystoreBlank { .. } => "keystore key BLANK",
             Self::EnvMissing { .. } => "env var NOT SET",
@@ -82,7 +79,7 @@ impl KeyStatus {
 
     pub fn severity(&self) -> &'static str {
         match self {
-            Self::NotRequired | Self::Keystore { .. } | Self::EnvVar { .. } | Self::OAuth => "ok",
+            Self::NotRequired | Self::Keystore { .. } | Self::EnvVar { .. } => "ok",
             Self::KeystoreMissing { .. }
             | Self::KeystoreBlank { .. }
             | Self::EnvMissing { .. }
@@ -93,7 +90,7 @@ impl KeyStatus {
 
     pub fn remediation(&self) -> String {
         match self {
-            Self::NotRequired | Self::Keystore { .. } | Self::EnvVar { .. } | Self::OAuth => {
+            Self::NotRequired | Self::Keystore { .. } | Self::EnvVar { .. } => {
                 String::new()
             }
             Self::KeystoreMissing { key_name } => {
@@ -154,10 +151,10 @@ pub(super) fn run_model_triage(
     for fb in &config.models.fallbacks {
         model_roles.push((fb.clone(), ModelRole::Fallback));
     }
-    if let Some(ref canary) = config.models.routing.canary_model {
-        if !canary.trim().is_empty() {
-            model_roles.push((canary.clone(), ModelRole::Routing));
-        }
+    if let Some(ref canary) = config.models.routing.canary_model
+        && !canary.trim().is_empty()
+    {
+        model_roles.push((canary.clone(), ModelRole::Routing));
     }
     // Embedding provider
     if let Some((embed_provider, _)) = resolve_embedding_provider(config) {
@@ -340,57 +337,57 @@ fn resolve_key_status(
     }
 
     // Explicit keystore reference: "keystore:<name>"
-    if let Some(ks_ref) = api_key_ref {
-        if let Some(ks_name) = ks_ref.strip_prefix("keystore:") {
-            if !keystore_available {
-                return KeyStatus::KeystoreMissing {
-                    key_name: ks_name.to_string(),
-                };
-            }
-            return match keystore.get(ks_name) {
-                Some(val) if val.trim().is_empty() => KeyStatus::KeystoreBlank {
-                    key_name: ks_name.to_string(),
-                },
-                Some(_) => KeyStatus::Keystore {
-                    key_name: ks_name.to_string(),
-                },
-                None => KeyStatus::KeystoreMissing {
-                    key_name: ks_name.to_string(),
-                },
+    if let Some(ks_ref) = api_key_ref
+        && let Some(ks_name) = ks_ref.strip_prefix("keystore:")
+    {
+        if !keystore_available {
+            return KeyStatus::KeystoreMissing {
+                key_name: ks_name.to_string(),
             };
         }
+        return match keystore.get(ks_name) {
+            Some(val) if val.trim().is_empty() => KeyStatus::KeystoreBlank {
+                key_name: ks_name.to_string(),
+            },
+            Some(_) => KeyStatus::Keystore {
+                key_name: ks_name.to_string(),
+            },
+            None => KeyStatus::KeystoreMissing {
+                key_name: ks_name.to_string(),
+            },
+        };
     }
 
     // Conventional keystore name: "{provider_name}_api_key"
     let conventional = format!("{provider_name}_api_key");
-    if keystore_available {
-        if let Some(val) = keystore.get(&conventional) {
-            if val.trim().is_empty() {
-                return KeyStatus::KeystoreBlank {
-                    key_name: conventional,
-                };
-            }
-            return KeyStatus::Keystore {
+    if keystore_available
+        && let Some(val) = keystore.get(&conventional)
+    {
+        if val.trim().is_empty() {
+            return KeyStatus::KeystoreBlank {
                 key_name: conventional,
             };
         }
+        return KeyStatus::Keystore {
+            key_name: conventional,
+        };
     }
 
     // Environment variable
-    if let Some(env_name) = api_key_env {
-        if !env_name.is_empty() {
-            return match std::env::var(env_name) {
-                Ok(val) if val.trim().is_empty() => KeyStatus::EnvBlank {
-                    env_name: env_name.to_string(),
-                },
-                Ok(_) => KeyStatus::EnvVar {
-                    env_name: env_name.to_string(),
-                },
-                Err(_) => KeyStatus::EnvMissing {
-                    env_name: env_name.to_string(),
-                },
-            };
-        }
+    if let Some(env_name) = api_key_env
+        && !env_name.is_empty()
+    {
+        return match std::env::var(env_name) {
+            Ok(val) if val.trim().is_empty() => KeyStatus::EnvBlank {
+                env_name: env_name.to_string(),
+            },
+            Ok(_) => KeyStatus::EnvVar {
+                env_name: env_name.to_string(),
+            },
+            Err(_) => KeyStatus::EnvMissing {
+                env_name: env_name.to_string(),
+            },
+        };
     }
 
     // Nothing configured at all
@@ -409,39 +406,39 @@ fn resolve_channel_key_status(
     keystore_available: bool,
 ) -> KeyStatus {
     // Explicit keystore reference
-    if let Some(r) = token_ref {
-        if let Some(ks_name) = r.strip_prefix("keystore:") {
-            if !keystore_available {
-                return KeyStatus::KeystoreMissing {
-                    key_name: ks_name.to_string(),
-                };
-            }
-            return match keystore.get(ks_name) {
-                Some(val) if val.trim().is_empty() => KeyStatus::KeystoreBlank {
-                    key_name: ks_name.to_string(),
-                },
-                Some(_) => KeyStatus::Keystore {
-                    key_name: ks_name.to_string(),
-                },
-                None => KeyStatus::KeystoreMissing {
-                    key_name: ks_name.to_string(),
-                },
+    if let Some(r) = token_ref
+        && let Some(ks_name) = r.strip_prefix("keystore:")
+    {
+        if !keystore_available {
+            return KeyStatus::KeystoreMissing {
+                key_name: ks_name.to_string(),
             };
         }
+        return match keystore.get(ks_name) {
+            Some(val) if val.trim().is_empty() => KeyStatus::KeystoreBlank {
+                key_name: ks_name.to_string(),
+            },
+            Some(_) => KeyStatus::Keystore {
+                key_name: ks_name.to_string(),
+            },
+            None => KeyStatus::KeystoreMissing {
+                key_name: ks_name.to_string(),
+            },
+        };
     }
 
     // Conventional keystore name for channel
-    if keystore_available {
-        if let Some(val) = keystore.get(conventional_ks_name) {
-            if val.trim().is_empty() {
-                return KeyStatus::KeystoreBlank {
-                    key_name: conventional_ks_name.to_string(),
-                };
-            }
-            return KeyStatus::Keystore {
+    if keystore_available
+        && let Some(val) = keystore.get(conventional_ks_name)
+    {
+        if val.trim().is_empty() {
+            return KeyStatus::KeystoreBlank {
                 key_name: conventional_ks_name.to_string(),
             };
         }
+        return KeyStatus::Keystore {
+            key_name: conventional_ks_name.to_string(),
+        };
     }
 
     // Environment variable fallback
@@ -505,7 +502,7 @@ fn probe_provider(
     };
 
     // Use a short-lived blocking HTTP client for the probe.
-    let client = match ureq::AgentBuilder::new()
+    match ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(8))
         .build()
         .get(&probe_url)
@@ -542,8 +539,7 @@ fn probe_provider(
             Some(false),
             Some(format!("{probe_url} → network error: {e}")),
         ),
-    };
-    client
+    }
 }
 
 /// Probe Telegram's `getMe` endpoint to validate a bot token.

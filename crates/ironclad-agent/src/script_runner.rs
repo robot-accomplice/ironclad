@@ -433,10 +433,10 @@ pub fn resolve_interpreter_absolute(name: &str) -> Result<String> {
     let path_var = std::env::var("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path_var) {
         let candidate = dir.join(name);
-        if candidate.is_file() {
-            if let Ok(canonical) = std::fs::canonicalize(&candidate) {
-                return Ok(canonical.to_string_lossy().to_string());
-            }
+        if candidate.is_file()
+            && let Ok(canonical) = std::fs::canonicalize(&candidate)
+        {
+            return Ok(canonical.to_string_lossy().to_string());
         }
     }
     Err(IroncladError::Tool {

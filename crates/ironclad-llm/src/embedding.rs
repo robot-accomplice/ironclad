@@ -98,15 +98,15 @@ impl EmbeddingClient {
             .post(&url)
             .header("Content-Type", "application/json");
 
-        if let Some(ref key) = api_key {
-            if !is_query_auth {
-                let auth_value = if cfg.auth_header.eq_ignore_ascii_case("authorization") {
-                    format!("Bearer {key}")
-                } else {
-                    key.clone()
-                };
-                request = request.header(&cfg.auth_header, &auth_value);
-            }
+        if let Some(ref key) = api_key
+            && !is_query_auth
+        {
+            let auth_value = if cfg.auth_header.eq_ignore_ascii_case("authorization") {
+                format!("Bearer {key}")
+            } else {
+                key.clone()
+            };
+            request = request.header(&cfg.auth_header, &auth_value);
         }
 
         for (key, value) in &cfg.extra_headers {

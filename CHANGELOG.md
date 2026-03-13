@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-03-13
+
+### Added
+
+- **DB fitness hardening (DF-1–DF-18)**: 18-item SQLite performance audit resolved — retention pruning for 5 high-growth tables, orphan cleanup sweeps (working memory + embeddings), `auto_vacuum=INCREMENTAL`, 6 missing indexes, episodic dead-entry pruning, cache NULL-expiry fix, `PRAGMA synchronous=NORMAL` under WAL, CHECK constraints on 11 columns, and dead `proxy_stats` table removal.
+- **Memory hygiene mechanic**: `ironclad mechanic` detects and (with `--repair`) purges contaminated memory entries using 7 deterministic LIKE-prefix patterns across 3 tiers, with JSON-structured findings.
+- **Sandbox boundary management**: Filesystem confinement for skill scripts (skills_dir + `$IRONCLAD_WORKSPACE`, no traversal/symlink escape), configurable network isolation (`unshare(CLONE_NEWNET)` on Linux), memory ceiling via `RLIMIT_AS`, interpreter allowlist via absolute-path resolution, and mechanic sandbox health reporting.
+- **Filesystem security overhaul**: `FilesystemSecurityConfig` with `workspace_only` mode, ~25 default protected path patterns, `tool_allowed_paths` whitelist (auto-populated from Obsidian vault path), macOS `sandbox-exec` write-denial confinement, and dashboard UI toggles.
+- **Unified pipeline architecture**: `IntentRegistry` (22-variant `Intent` enum), `GuardChain` (12 guards with `full()`/`cached()`/`streaming()` presets), `ShortcutDispatcher` (15 handlers replacing 983-line god function), `PipelineConfig` (4 presets: `api`/`streaming`/`channel`/`cron`), and `DedupGuard` RAII replacing 11 manual release patterns. Net ~653 lines removed.
+- **ChannelFormatter trait**: Per-platform output formatting with static dispatch registry — `TelegramFormatter` (Markdown→MarkdownV2), `DiscordFormatter`, `WhatsAppFormatter`, `SignalFormatter`, `WebFormatter`, `EmailFormatter` — wired into `channel_message.rs` delivery path. 31 unit tests.
+
+### Fixed
+
+- **Circuit breaker window reset**: `record_failure()` now tracks `window_start` for rolling-window accumulation — failures spaced ~60s apart correctly accumulate instead of resetting.
+- **Embedding auth for local providers**: `EmbeddingConfig.is_local` skips API key resolution and auth headers for Ollama/llama.cpp.
+- **Cron `schedule_kind: "once"` support**: Runtime maps "once" → "at" dispatch, calls `DurableScheduler::evaluate_at()`, auto-disables after single execution.
+- **Vault path whitelisting**: `tool_allowed_paths` auto-populated from `obsidian.vault_path` during config normalization — workspace-only mode no longer blocks configured external paths.
+- **Fleet activity chart capacity model**: Stacked area normalizes per-agent scores by `1/agentCount` with `fixedMax: 1.0`.
+- **Cache guard parity**: `cached()` guard set now includes `SubagentClaim` + `LiteraryQuoteRetry` (previously missing).
+- **ExecutionTruthGuard**: Tool-results bypass bug removed.
+- **Collapsible if lint**: Updated `impl_core.rs` to use `if let` chain (edition 2024).
+- **Wallet RPC rate-limit backoff**: `get_all_balances()` detects rate-limit error codes (`-32016`, `-32005`, `429`) and stops iterating remaining tokens instead of repeatedly hitting the provider.
+- **Cron once-type orphan jobs**: Jobs with `schedule_kind: "once"` and no `schedule_expr` are now auto-disabled on first encounter instead of emitting a warning every 60s.
+- **Dashboard sidebar footer**: Navigation bar footer now stays pinned to the bottom of the viewport (added `height: 100%` to sidebar container).
+- **Dashboard custom model Add button**: Custom model text input row now has its own Add button; both Add buttons use a shared class selector.
+
 ## [0.9.6] - 2026-03-11
 
 ### Added

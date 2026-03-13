@@ -1194,7 +1194,7 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 1.22 | Built-in introspection skill | 1 | Tool trait, ToolRegistry, ToolContext, SessionScope, ChannelRouter | Low |
 | 1.23 | Context budget tuning | 1 | context.rs, token_budget, build_context, complexity scorer | Low |
 | 1.24 | Built-in CLI agent skills (Claude Code + Codex CLI) | 1 | SkillLoader, SkillRegistry, ToolRegistry, script sandbox, policy engine | Medium |
-| 1.25 | Channel-aware response formatting + rich dashboard markdown parity | 1 | channel adapters, formatter pipeline, dashboard renderer, capability negotiation metadata | Medium |
+| 1.25 | Channel-aware response formatting (partial ✅) + rich dashboard markdown parity | 1 | channel adapters, formatter pipeline, dashboard renderer, capability negotiation metadata | ~~Medium~~ Remaining: dashboard parity |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
 | 2.3 | Tiered inference pipeline | 2 | Fallback chain, local model config | Medium |

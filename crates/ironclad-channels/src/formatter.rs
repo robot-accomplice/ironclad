@@ -157,66 +157,72 @@ impl TelegramFormatter {
 
         while i < len {
             // Inline code: `code`
-            if chars[i] == '`' && i + 1 < len {
-                if let Some(end) = find_closing(&chars, i + 1, '`') {
-                    let code_text: String = chars[i + 1..end].iter().collect();
-                    result.push('`');
-                    result.push_str(&code_text); // no escaping inside code
-                    result.push('`');
-                    i = end + 1;
-                    continue;
-                }
+            if chars[i] == '`'
+                && i + 1 < len
+                && let Some(end) = find_closing(&chars, i + 1, '`')
+            {
+                let code_text: String = chars[i + 1..end].iter().collect();
+                result.push('`');
+                result.push_str(&code_text); // no escaping inside code
+                result.push('`');
+                i = end + 1;
+                continue;
             }
 
             // Bold: **text** → *text*
-            if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
-                if let Some(end) = find_double_closing(&chars, i + 2, '*') {
-                    let inner: String = chars[i + 2..end].iter().collect();
-                    result.push('*');
-                    result.push_str(&Self::escape_text(&inner));
-                    result.push('*');
-                    i = end + 2;
-                    continue;
-                }
+            if i + 1 < len
+                && chars[i] == '*'
+                && chars[i + 1] == '*'
+                && let Some(end) = find_double_closing(&chars, i + 2, '*')
+            {
+                let inner: String = chars[i + 2..end].iter().collect();
+                result.push('*');
+                result.push_str(&Self::escape_text(&inner));
+                result.push('*');
+                i = end + 2;
+                continue;
             }
 
             // Italic: *text* (single) or _text_
-            if chars[i] == '*' && (i == 0 || chars[i - 1] != '*') {
-                if i + 1 < len && chars[i + 1] != '*' {
-                    if let Some(end) = find_closing_not_doubled(&chars, i + 1, '*') {
-                        let inner: String = chars[i + 1..end].iter().collect();
-                        result.push('_');
-                        result.push_str(&Self::escape_text(&inner));
-                        result.push('_');
-                        i = end + 1;
-                        continue;
-                    }
-                }
+            if chars[i] == '*'
+                && (i == 0 || chars[i - 1] != '*')
+                && i + 1 < len
+                && chars[i + 1] != '*'
+                && let Some(end) = find_closing_not_doubled(&chars, i + 1, '*')
+            {
+                let inner: String = chars[i + 1..end].iter().collect();
+                result.push('_');
+                result.push_str(&Self::escape_text(&inner));
+                result.push('_');
+                i = end + 1;
+                continue;
             }
 
             // Italic: __text__ → _text_
-            if i + 1 < len && chars[i] == '_' && chars[i + 1] == '_' {
-                if let Some(end) = find_double_closing(&chars, i + 2, '_') {
-                    let inner: String = chars[i + 2..end].iter().collect();
-                    result.push_str("__");
-                    result.push_str(&Self::escape_text(&inner));
-                    result.push_str("__");
-                    i = end + 2;
-                    continue;
-                }
+            if i + 1 < len
+                && chars[i] == '_'
+                && chars[i + 1] == '_'
+                && let Some(end) = find_double_closing(&chars, i + 2, '_')
+            {
+                let inner: String = chars[i + 2..end].iter().collect();
+                result.push_str("__");
+                result.push_str(&Self::escape_text(&inner));
+                result.push_str("__");
+                i = end + 2;
+                continue;
             }
 
             // Markdown link: [text](url) → [text](url) (already MarkdownV2 compatible)
-            if chars[i] == '[' {
-                if let Some((link_text, url, end_pos)) = parse_markdown_link(&chars, i) {
-                    result.push('[');
-                    result.push_str(&Self::escape_text(&link_text));
-                    result.push_str("](");
-                    result.push_str(&url); // URLs don't get escaped
-                    result.push(')');
-                    i = end_pos;
-                    continue;
-                }
+            if chars[i] == '['
+                && let Some((link_text, url, end_pos)) = parse_markdown_link(&chars, i)
+            {
+                result.push('[');
+                result.push_str(&Self::escape_text(&link_text));
+                result.push_str("](");
+                result.push_str(&url); // URLs don't get escaped
+                result.push(')');
+                i = end_pos;
+                continue;
             }
 
             // Regular character — escape it
@@ -351,15 +357,16 @@ impl WhatsAppFormatter {
         let chars: Vec<char> = result.chars().collect();
         let mut i = 0;
         while i < chars.len() {
-            if chars[i] == '`' && (i == 0 || chars[i - 1] != '`') {
-                if let Some(end) = find_closing(&chars, i + 1, '`') {
-                    let code: String = chars[i + 1..end].iter().collect();
-                    out.push_str("```");
-                    out.push_str(&code);
-                    out.push_str("```");
-                    i = end + 1;
-                    continue;
-                }
+            if chars[i] == '`'
+                && (i == 0 || chars[i - 1] != '`')
+                && let Some(end) = find_closing(&chars, i + 1, '`')
+            {
+                let code: String = chars[i + 1..end].iter().collect();
+                out.push_str("```");
+                out.push_str(&code);
+                out.push_str("```");
+                i = end + 1;
+                continue;
             }
             out.push(chars[i]);
             i += 1;
@@ -508,7 +515,7 @@ pub fn formatter_for(platform: &str) -> &'static dyn ChannelFormatter {
         "whatsapp" => &WhatsAppFormatter,
         "signal" => &SignalFormatter,
         "email" => &EmailFormatter,
-        "web" | "websocket" | _ => &WebFormatter,
+        _ => &WebFormatter,
     }
 }
 
@@ -621,12 +628,12 @@ fn strip_markdown_links(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '[' {
-            if let Some((_link_text, url, end_pos)) = parse_markdown_link(&chars, i) {
-                out.push_str(&url);
-                i = end_pos;
-                continue;
-            }
+        if chars[i] == '['
+            && let Some((_link_text, url, end_pos)) = parse_markdown_link(&chars, i)
+        {
+            out.push_str(&url);
+            i = end_pos;
+            continue;
         }
         out.push(chars[i]);
         i += 1;

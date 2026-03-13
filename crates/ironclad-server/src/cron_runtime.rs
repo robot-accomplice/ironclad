@@ -79,7 +79,15 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                     }
                     None => {
                         tracing::warn!(job_id = %job.id, job_name = %job.name,
-                            "once-type job has no schedule_expr; will never fire");
+                            "once-type job has no schedule_expr; auto-disabling");
+                        let _ = ironclad_db::cron::update_job(
+                            &state.db,
+                            &job.id,
+                            None,
+                            None,
+                            None,
+                            Some(false),
+                        );
                         false
                     }
                 },
