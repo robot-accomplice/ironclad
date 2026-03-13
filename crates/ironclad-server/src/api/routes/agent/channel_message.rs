@@ -22,53 +22,6 @@ use ironclad_core::InputAuthority;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-fn strip_numeric_bracket_citations(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let chars: Vec<char> = input.chars().collect();
-    let mut i = 0usize;
-    while i < chars.len() {
-        if chars[i] == '[' {
-            let mut j = i + 1;
-            let mut has_digit = false;
-            while j < chars.len() && chars[j].is_ascii_digit() {
-                has_digit = true;
-                j += 1;
-            }
-            if has_digit && j < chars.len() && chars[j] == ']' {
-                i = j + 1;
-                continue;
-            }
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
-    out
-}
-
-fn normalize_telegram_text(content: &str) -> String {
-    let mut out = Vec::new();
-    let mut in_fence = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
-            continue;
-        }
-        let mut normalized = if in_fence {
-            line.to_string()
-        } else {
-            line.trim_start_matches('#').trim_start().to_string()
-        };
-        normalized = normalized
-            .replace("**", "")
-            .replace("__", "")
-            .replace('`', "");
-        normalized = strip_numeric_bracket_citations(&normalized);
-        out.push(normalized);
-    }
-    out.join("\n").trim().to_string()
-}
-
 fn is_short_followup_for_previous_reply(user_content: &str) -> bool {
     let lower = user_content.trim().to_ascii_lowercase();
     if lower.len() > 80 {
@@ -169,11 +122,7 @@ async fn contextualize_short_followup(
 }
 
 pub(super) fn format_channel_reply_for_delivery(platform: &str, content: &str) -> String {
-    let cleaned = strip_internal_delegation_metadata(content);
-    if platform.eq_ignore_ascii_case("telegram") {
-        return normalize_telegram_text(&cleaned);
-    }
-    cleaned
+    ironclad_channels::formatter::formatter_for(platform).format(content)
 }
 
 pub async fn process_channel_message(

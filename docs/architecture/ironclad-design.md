@@ -100,11 +100,14 @@ ironclad/
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── router.rs       # ChannelRouter
+│   │       ├── formatter.rs    # ChannelFormatter trait + per-platform formatters
 │   │       ├── telegram.rs     # Telegram Bot API
 │   │       ├── whatsapp.rs     # WhatsApp Cloud API
 │   │       ├── web.rs          # WebSocket interface
 │   │       ├── a2a.rs          # Agent-to-Agent protocol (zero-trust)
 │   │       ├── delivery.rs     # Delivery / notification
+│   │       ├── signal.rs       # Signal Protocol (signal-cli daemon)
+│   │       ├── email.rs        # Email adapter (IMAP + SMTP)
 │   │       └── discord.rs      # Discord adapter
 │   │
 │   ├── ironclad-plugin-sdk/    # Plugin registry, tool discovery

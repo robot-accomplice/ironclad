@@ -205,16 +205,16 @@ fn format_channel_reply_for_delivery_normalizes_telegram_markdown() {
     let raw = "\
 # Heading\n\
 **bold** and `code`\n\
-delegated_subagent=geo model=x fallback_models=[]\n\
-subtask 1 -> geo\n\
+[Delegated to geo]\n\
 line";
     let out = format_channel_reply_for_delivery("telegram", raw);
+    // ** markers converted to Telegram MarkdownV2 *bold*
     assert!(!out.contains("**"));
-    assert!(!out.contains('`'));
-    assert!(!out.contains("delegated_subagent="));
-    assert!(!out.contains("subtask 1 ->"));
+    // Delegation metadata stripped
+    assert!(!out.contains("Delegated to"));
+    // Content preserved (headers → bold, inline formatting kept)
     assert!(out.contains("Heading"));
-    assert!(out.contains("bold and code"));
+    assert!(out.contains("bold"));
     assert!(out.contains("line"));
 }
 
@@ -222,9 +222,11 @@ line";
 fn format_channel_reply_for_delivery_strips_numeric_citations_for_telegram() {
     let raw = "Situation remains tense across regions.[1][2]\nKey trend: supply chain splits.[14]";
     let out = format_channel_reply_for_delivery("telegram", raw);
+    // Numeric bracket citations stripped
     assert!(!out.contains("[1]"));
     assert!(!out.contains("[2]"));
     assert!(!out.contains("[14]"));
-    assert!(out.contains("Situation remains tense across regions."));
-    assert!(out.contains("Key trend: supply chain splits."));
+    // Content preserved (periods escaped for Telegram MarkdownV2)
+    assert!(out.contains("Situation remains tense across regions"));
+    assert!(out.contains("Key trend: supply chain splits"));
 }

@@ -1091,8 +1091,9 @@ flowchart TD
     end
 
     subgraph Respond["⑤ Response Delivery"]
-        AGENT_RESULT --> FORMAT["Format for platform<br/>(markdown → platform markup,<br/>split long messages)"]
-        FORMAT --> SEND["Response<br/>POST to platform API"]
+        AGENT_RESULT --> FORMAT["ChannelFormatter::format()<br/>(formatter_for(platform) dispatch,<br/>markdown → platform markup)"]
+        FORMAT --> CHUNK["chunk_message()<br/>(split to platform limit:<br/>Telegram 4096, Discord 2000)"]
+        CHUNK --> SEND["Response<br/>POST to platform API"]
         SEND --> RATE_LIMIT{"Rate limited?"}
         RATE_LIMIT -->|yes| BACKOFF["Exponential backoff<br/>+ retry"]
         BACKOFF --> SEND
@@ -1516,6 +1517,7 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `p
 | Crate | Module | Functions to Test | Mock Strategy |
 | ------- | -------- | ------------------- | --------------- |
 | ironclad-channels | telegram.rs, whatsapp.rs, web.rs | `parse_inbound()`, `format_outbound()` | Mock HTTP payloads |
+| ironclad-channels | formatter.rs | `formatter_for()`, `TelegramFormatter::format()`, `WhatsAppFormatter::format()`, `SignalFormatter::format()`, `DiscordFormatter::format()`, `WebFormatter::format()`, `EmailFormatter::format()` | Pure function tests (31 tests) |
 | ironclad-db | sessions.rs | `find_or_create()`, `append_message()` | In-memory SQLite |
 | ironclad-agent | context.rs | `build_context()`, `progressive_load()` | Fixture sessions |
 | ironclad-agent | prompt.rs | `build_system_prompt()`, `inject_hmac_boundaries()` | Known inputs/outputs |

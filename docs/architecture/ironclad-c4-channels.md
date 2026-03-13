@@ -1,4 +1,4 @@
-<!-- last_updated: 2026-02-26, version: 0.8.0 -->
+<!-- last_updated: 2026-03-13, version: 0.9.7 -->
 # C4 Level 3: Component Diagram -- ironclad-channels
 
 *Channel adapters for user-facing chat platforms and the zero-trust agent-to-agent (A2A) communication protocol.*
@@ -11,6 +11,7 @@
 flowchart TB
     subgraph IroncladChannels ["ironclad-channels"]
         ROUTER["router.rs<br/>ChannelRouter"]
+        FORMATTER["formatter.rs<br/>ChannelFormatter trait<br/>(per-platform output formatting)"]
         TELEGRAM["telegram.rs<br/>Telegram Bot API"]
         WHATSAPP["whatsapp.rs<br/>WhatsApp Cloud API"]
         WEB["web.rs<br/>WebSocket Interface"]
@@ -23,17 +24,29 @@ flowchart TB
         FILTER["filter.rs<br/>Addressability Filter<br/>(per-channel routing rules)"]
     end
 
+    subgraph FormatterDetail ["formatter.rs — ChannelFormatter Trait"]
+        FMT_TRAIT["trait ChannelFormatter:<br/>fn platform() -> &str<br/>fn format(content) -> String"]
+        FMT_REGISTRY["formatter_for(platform):<br/>static dispatch by name<br/>(case-insensitive, WebFormatter fallback)"]
+        FMT_TG["TelegramFormatter:<br/>Markdown → MarkdownV2,<br/>18-char escaping, headers→bold"]
+        FMT_DC["DiscordFormatter:<br/>passthrough (native MD),<br/>metadata + citation strip"]
+        FMT_WA["WhatsAppFormatter:<br/>**bold**→*bold*,<br/>links→bare URLs"]
+        FMT_SIG["SignalFormatter:<br/>strip all formatting,<br/>code block indentation"]
+        FMT_WEB["WebFormatter:<br/>preserve full Markdown,<br/>metadata strip only"]
+        FMT_EMAIL["EmailFormatter:<br/>preserve Markdown,<br/>metadata + citation strip"]
+        FMT_SHARED["Shared utilities:<br/>strip_internal_metadata(),<br/>strip_bracket_citations(),<br/>collapse_blank_lines()"]
+    end
+
     subgraph TelegramDetail ["telegram.rs"]
         TG_POLL["Long-poll getUpdates<br/>or webhook receiver"]
         TG_PARSE["parse_inbound():<br/>extract text, media refs,<br/>chat_id, user info"]
-        TG_FORMAT["format_outbound():<br/>Markdown V2 formatting,<br/>message chunking (4096 char limit),<br/>inline keyboard for actions"]
+        TG_FORMAT["format_outbound():<br/>delegates to TelegramFormatter,<br/>message chunking (4096 char limit),<br/>inline keyboard for actions"]
         TG_SEND["send_message():<br/>POST to Bot API"]
     end
 
     subgraph WhatsAppDetail ["whatsapp.rs"]
         WA_WEBHOOK["Webhook receiver<br/>(verify token, parse payload)"]
         WA_PARSE["parse_inbound():<br/>extract text, media,<br/>phone number, profile"]
-        WA_FORMAT["format_outbound():<br/>WhatsApp message templates,<br/>text formatting"]
+        WA_FORMAT["format_outbound():<br/>delegates to WhatsAppFormatter,<br/>message templates"]
         WA_SEND["send_message():<br/>POST to Cloud API"]
     end
 
@@ -64,7 +77,7 @@ flowchart TB
     subgraph DiscordDetail ["discord.rs — Full Gateway Integration"]
         DC_GATEWAY["Discord Gateway:<br/>WebSocket connection,<br/>heartbeat, resume"]
         DC_PARSE["parse_inbound():<br/>extract text, embeds,<br/>guild_id, channel_id"]
-        DC_FORMAT["format_outbound():<br/>rich embeds, components,<br/>message chunking (2000 char)"]
+        DC_FORMAT["format_outbound():<br/>delegates to DiscordFormatter,<br/>rich embeds, components,<br/>message chunking (2000 char)"]
         DC_SEND["send_message():<br/>POST to Discord REST API"]
         DC_SLASH["Slash commands:<br/>register, handle interactions"]
     end
@@ -93,7 +106,8 @@ flowchart TB
     end
 
     TELEGRAM & WHATSAPP & WEB & A2A & DISCORD & SIGNAL & VOICE & EMAIL -.-> CHANNEL_TRAIT
-    ROUTER --> FILTER
+    ROUTER --> FORMATTER
+    FORMATTER --> FILTER
     FILTER --> DELIVERY
 ```
 
@@ -130,6 +144,29 @@ sequenceDiagram
     AgentB->>RelMem: update trust_score for A
     AgentB-->>AgentA: encrypted response
 ```
+
+## Key Components
+
+### `formatter.rs` — ChannelFormatter Trait (v0.9.7)
+
+The `ChannelFormatter` trait provides a single-dispatch interface for converting LLM Markdown output into platform-native formatting. Each channel has a concrete implementation that understands the platform's markup capabilities and constraints.
+
+**Trait**: `ChannelFormatter { fn platform() -> &str; fn format(content) -> String }`
+
+**Registry**: `formatter_for(platform: &str) -> &'static dyn ChannelFormatter` — case-insensitive lookup, falls back to `WebFormatter` for unknown platforms.
+
+| Formatter | Platform Markup | Key Conversions |
+|-----------|----------------|-----------------|
+| `TelegramFormatter` | MarkdownV2 | `**bold**` → `*bold*`, `# Heading` → `*Heading*`, 18-char escaping |
+| `DiscordFormatter` | Native Markdown | Passthrough; strip metadata + citations |
+| `WhatsAppFormatter` | WhatsApp formatting | `**bold**` → `*bold*`, links → bare URLs |
+| `SignalFormatter` | Plain text | Strip all formatting, indent code blocks |
+| `WebFormatter` | Full Markdown | Preserve all; strip internal metadata only |
+| `EmailFormatter` | Markdown (HTML-capable) | Preserve markdown; strip metadata + citations |
+
+**Shared utilities**: `strip_internal_metadata()`, `strip_bracket_citations()`, `collapse_blank_lines()` — applied before platform-specific conversion.
+
+**Pipeline position**: Called via `format_channel_reply_for_delivery()` in `channel_message.rs` → `formatter_for(platform).format(content)` → then passed to adapter `send()` → `chunk_message()`.
 
 ## Dependencies
 

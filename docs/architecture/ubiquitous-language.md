@@ -221,13 +221,27 @@ compose the system prompt sent to the LLM.
 
 | Adapter | Platform | Transport | Notes |
 |---|---|---|---|
-| **TelegramAdapter** | Telegram | Bot API (long-poll + webhook) | Markdown V2 formatting |
-| **WhatsAppAdapter** | WhatsApp | Cloud API (webhook) | Message templates, media via Graph API |
-| **DiscordAdapter** | Discord | Gateway WebSocket + REST | Slash commands, embeds, CDN attachments |
-| **SignalAdapter** | Signal | signal-cli daemon (JSON-RPC) | End-to-end encrypted |
-| **EmailAdapter** | Email | IMAP listener + SMTP sender | OAuth2 (XOAUTH2), IDLE support, RFC 5322 parsing |
+| **TelegramAdapter** | Telegram | Bot API (long-poll + webhook) | MarkdownV2 via TelegramFormatter |
+| **WhatsAppAdapter** | WhatsApp | Cloud API (webhook) | WhatsApp formatting via WhatsAppFormatter |
+| **DiscordAdapter** | Discord | Gateway WebSocket + REST | Native Markdown via DiscordFormatter |
+| **SignalAdapter** | Signal | signal-cli daemon (JSON-RPC) | Plain text via SignalFormatter |
+| **EmailAdapter** | Email | IMAP listener + SMTP sender | Markdown via EmailFormatter |
+| **WebSocketChannel** | Web | WebSocket (axum) | Full Markdown via WebFormatter |
 | **VoicePipeline** | Voice | WebRTC | STT (Whisper), TTS, bidirectional audio |
 | **A2aProtocol** | Agent-to-Agent | Custom | Zero-trust: ECDH key exchange, AES-256-GCM |
+
+### Output Formatting
+
+| Term | Type | Definition |
+|---|---|---|
+| **ChannelFormatter** | `trait` | Per-platform output formatting interface: `platform() -> &str`, `format(content) -> String`. Lives in `ironclad-channels/formatter.rs`. |
+| **formatter_for()** | `fn` | Static dispatch registry: maps platform name (case-insensitive) to `&'static dyn ChannelFormatter`. Falls back to `WebFormatter`. |
+| **TelegramFormatter** | `struct` | Converts LLM Markdown to Telegram MarkdownV2: `**bold**` → `*bold*`, headers → bold text, 18-char escaping, code fence preservation. |
+| **DiscordFormatter** | `struct` | Passthrough (Discord natively supports Markdown). Strips internal metadata and bracket citations. |
+| **WhatsAppFormatter** | `struct` | Converts Markdown to WhatsApp formatting: `**bold**` → `*bold*`, links → bare URLs, code → monospace. |
+| **SignalFormatter** | `struct` | Strips all formatting to plain text. Code blocks indented with 2-space prefix. |
+| **WebFormatter** | `struct` | Preserves full Markdown for client-side `renderSafeMarkdown()`. Strips internal metadata only. |
+| **EmailFormatter** | `struct` | Preserves Markdown for HTML-capable clients. Strips metadata and bracket citations. |
 
 ---
 

@@ -150,7 +150,8 @@ sequenceDiagram
     Note over Cache: Periodic flush to SQLite (5 min)
 
     Loop->>Channel: OutboundMessage
-    Channel->>Channel: format_outbound()
+    Channel->>Channel: ChannelFormatter::format()
+    Channel->>Channel: chunk_message()
     Channel->>User: response
 ```
 
@@ -293,14 +294,16 @@ sequenceDiagram
     participant Intents as agent/intents.rs
     participant Tools as agent/tools.rs
     participant Guards as agent/guards.rs
-    participant Channel as channel formatter
+    participant Formatter as ChannelFormatter
+    participant Channel as channel adapter
 
     User->>Route: Prompt
     Route->>Intents: classify prompt intent
     alt deterministic shortcut match
         Route->>Tools: execute_tool_call(...)
         Tools-->>Route: verified tool output
-        Route-->>Channel: user-facing deterministic result
+        Route->>Formatter: formatter_for(platform).format()
+        Formatter-->>Channel: platform-formatted content
     else LLM path
         Route->>Route: run inference + react loop
         Route->>Guards: execution_truth + protocol stripping
@@ -308,7 +311,8 @@ sequenceDiagram
         alt content degraded/empty
             Route->>Route: deterministic_quality_fallback(...)
         end
-        Route-->>Channel: user-facing guarded response
+        Route->>Formatter: formatter_for(platform).format()
+        Formatter-->>Channel: platform-formatted content
     end
     Channel-->>User: Final reply
 ```
