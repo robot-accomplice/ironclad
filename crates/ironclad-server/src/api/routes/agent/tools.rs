@@ -291,7 +291,7 @@ async fn execute_tool_call_internal(
     if tool_name == "run_script" {
         let script_arg = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let config = state.config.read().await;
-        let runner = ScriptRunner::new(config.skills.clone());
+        let runner = ScriptRunner::new(config.skills.clone(), config.security.filesystem.clone());
         let maybe_script_path = runner
             .resolve_script_path(std::path::Path::new(script_arg))
             .ok()

@@ -245,10 +245,13 @@ impl PolicyRule for FinancialRule {
     }
 }
 
-/// Priority 4: blocks access to protected path patterns.
+/// Priority 4: blocks access to protected path patterns and enforces
+/// workspace-only confinement for agent file tools.
 pub struct PathProtectionRule {
     /// Path patterns that are not allowed in tool arguments.
     pub protected: Vec<String>,
+    /// When true, absolute paths outside `/tmp` are denied (workspace-only mode).
+    pub workspace_only: bool,
 }
 
 impl Default for PathProtectionRule {
@@ -262,13 +265,29 @@ impl Default for PathProtectionRule {
                 ".ssh/".into(),
                 "ironclad.toml".into(),
             ],
+            workspace_only: true,
         }
     }
 }
 
 impl PathProtectionRule {
     pub fn new(protected: Vec<String>) -> Self {
-        Self { protected }
+        Self {
+            protected,
+            workspace_only: true,
+        }
+    }
+
+    /// Build from the `[security.filesystem]` config section.
+    /// Merges `protected_paths` + `extra_protected_paths` and reads
+    /// `workspace_only` flag.
+    pub fn from_config(fs_cfg: &ironclad_core::config::FilesystemSecurityConfig) -> Self {
+        let mut protected = fs_cfg.protected_paths.clone();
+        protected.extend(fs_cfg.extra_protected_paths.iter().cloned());
+        Self {
+            protected,
+            workspace_only: fs_cfg.workspace_only,
+        }
     }
 
     fn matches_protected(&self, s: &str) -> Option<&str> {
@@ -295,6 +314,26 @@ impl PolicyRule for PathProtectionRule {
     fn evaluate(&self, call: &ToolCallRequest, _ctx: &PolicyContext) -> PolicyDecision {
         let mut strings = Vec::new();
         collect_string_values(&call.params, &mut strings);
+
+        // Workspace-only gate: deny absolute paths outside /tmp.
+        // Relative paths are fine — they resolve against the workspace root
+        // in the tool layer (resolve_workspace_path).
+        if self.workspace_only {
+            for s in &strings {
+                let p = std::path::Path::new(s);
+                if p.is_absolute() && !s.starts_with("/tmp") {
+                    return PolicyDecision::Deny {
+                        rule: self.name().into(),
+                        reason: format!(
+                            "workspace_only mode: absolute path '{}' outside /tmp not allowed",
+                            s
+                        ),
+                    };
+                }
+            }
+        }
+
+        // Blacklist scan: check all string values against protected patterns.
         for s in &strings {
             if let Some(pattern) = self.matches_protected(s) {
                 return PolicyDecision::Deny {
@@ -967,6 +1006,138 @@ mod tests {
                 .evaluate_all(&make_request("anything", RiskLevel::Forbidden), &ctx)
                 .is_allowed()
         );
+    }
+
+    // ── PathProtectionRule workspace_only + from_config ────────────
+
+    #[test]
+    fn path_protection_workspace_only_blocks_absolute() {
+        let rule = PathProtectionRule {
+            protected: vec![],
+            workspace_only: true,
+        };
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+            claim: None,
+        };
+
+        let abs = ToolCallRequest {
+            tool_name: "read_file".into(),
+            params: serde_json::json!({ "path": "/home/user/secret.txt" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(
+            !rule.evaluate(&abs, &ctx).is_allowed(),
+            "workspace_only should block absolute paths outside /tmp"
+        );
+
+        let tmp = ToolCallRequest {
+            tool_name: "write_file".into(),
+            params: serde_json::json!({ "path": "/tmp/scratch.txt" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(
+            rule.evaluate(&tmp, &ctx).is_allowed(),
+            "workspace_only should allow /tmp paths"
+        );
+
+        let relative = ToolCallRequest {
+            tool_name: "read_file".into(),
+            params: serde_json::json!({ "path": "src/main.rs" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(
+            rule.evaluate(&relative, &ctx).is_allowed(),
+            "workspace_only should allow relative paths"
+        );
+    }
+
+    #[test]
+    fn path_protection_workspace_only_disabled() {
+        let rule = PathProtectionRule {
+            protected: vec![],
+            workspace_only: false,
+        };
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+            claim: None,
+        };
+
+        let abs = ToolCallRequest {
+            tool_name: "read_file".into(),
+            params: serde_json::json!({ "path": "/home/user/document.txt" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(
+            rule.evaluate(&abs, &ctx).is_allowed(),
+            "workspace_only=false should allow absolute paths"
+        );
+    }
+
+    #[test]
+    fn path_protection_from_config_merges_lists() {
+        let cfg = ironclad_core::config::FilesystemSecurityConfig {
+            workspace_only: false,
+            protected_paths: vec![".env".into(), "secret.key".into()],
+            extra_protected_paths: vec!["custom.pem".into()],
+            script_fs_confinement: true,
+            script_allowed_paths: vec![],
+        };
+        let rule = PathProtectionRule::from_config(&cfg);
+        assert!(!rule.workspace_only);
+        assert_eq!(rule.protected.len(), 3);
+        assert!(rule.protected.contains(&"custom.pem".to_string()));
+
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+            claim: None,
+        };
+
+        let custom = ToolCallRequest {
+            tool_name: "read_file".into(),
+            params: serde_json::json!({ "path": "deploy/custom.pem" }),
+            risk_level: RiskLevel::Safe,
+        };
+        assert!(
+            !rule.evaluate(&custom, &ctx).is_allowed(),
+            "extra_protected_paths should be merged and enforced"
+        );
+    }
+
+    #[test]
+    fn path_protection_expanded_defaults_block_ssh_keys() {
+        let cfg = ironclad_core::config::FilesystemSecurityConfig::default();
+        let rule = PathProtectionRule::from_config(&cfg);
+        let ctx = PolicyContext {
+            authority: InputAuthority::Creator,
+            survival_tier: SurvivalTier::Normal,
+            claim: None,
+        };
+
+        for path in [
+            "/home/user/.ssh/id_rsa",
+            "config/.aws/credentials",
+            "/etc/shadow",
+            "app/.env.production",
+            ".gnupg/private-keys-v1.d/key",
+            "deploy/id_ed25519",
+            ".kube/config",
+            "db/data.sqlite",
+        ] {
+            let req = ToolCallRequest {
+                tool_name: "read_file".into(),
+                params: serde_json::json!({ "path": path }),
+                risk_level: RiskLevel::Safe,
+            };
+            assert!(
+                !rule.evaluate(&req, &ctx).is_allowed(),
+                "default protected paths should block '{}'",
+                path
+            );
+        }
     }
 
     #[test]

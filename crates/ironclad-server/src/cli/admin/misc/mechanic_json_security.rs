@@ -246,6 +246,65 @@ fn collect_mechanic_json_security_and_plugin_findings(
         }
     }
 
+    // ── Filesystem security policy findings ───────────────────────
+    if let Some(ref cfg_path) = security_config_path
+        && let Ok(raw) = std::fs::read_to_string(cfg_path)
+        && let Ok(cfg) = toml::from_str::<ironclad_core::IroncladConfig>(&raw)
+    {
+        let fs = &cfg.security.filesystem;
+
+        // Workspace-only mode disabled
+        if !fs.workspace_only {
+            findings.push(finding(
+                "filesystem-workspace-unrestricted",
+                "high",
+                0.95,
+                "Workspace-only mode disabled — agent tools can access entire filesystem",
+                "security.filesystem.workspace_only = false. Agent file tools can read/write \
+                 any path the process user has access to, not just the workspace directory.",
+                "Set security.filesystem.workspace_only = true in config.",
+                vec!["ironclad config set security.filesystem.workspace_only true".to_string()],
+                false,
+                false,
+            ));
+        }
+
+        // Script filesystem confinement disabled
+        if !fs.script_fs_confinement {
+            findings.push(finding(
+                "filesystem-script-unconfined",
+                "medium",
+                0.90,
+                "Script filesystem confinement disabled",
+                "security.filesystem.script_fs_confinement = false. Sandboxed skill scripts \
+                 run without OS-level write isolation (macOS sandbox-exec).",
+                "Set security.filesystem.script_fs_confinement = true in config.",
+                vec!["ironclad config set security.filesystem.script_fs_confinement true".to_string()],
+                false,
+                false,
+            ));
+        }
+
+        // Protected paths list too small
+        if fs.protected_paths.len() < 10 {
+            findings.push(finding(
+                "filesystem-blacklist-minimal",
+                "medium",
+                0.85,
+                format!(
+                    "Protected paths list has only {} entries (default is ~25)",
+                    fs.protected_paths.len()
+                ),
+                "The filesystem blacklist may have been trimmed too aggressively, leaving \
+                 sensitive paths unprotected.",
+                "Review security.filesystem.protected_paths or reset to defaults.",
+                vec![],
+                false,
+                false,
+            ));
+        }
+    }
+
     // Plugin health checks
     {
         use ironclad_plugin_sdk::manifest::PluginManifest;

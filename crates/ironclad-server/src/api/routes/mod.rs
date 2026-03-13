@@ -4147,12 +4147,13 @@ params = { path = "README.md" }
         .unwrap();
 
         let mut registry = ToolRegistry::new();
-        let skills_cfg = {
+        let (skills_cfg, fs_security) = {
             let cfg = state.config.read().await;
-            cfg.skills.clone()
+            (cfg.skills.clone(), cfg.security.filesystem.clone())
         };
         registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
             skills_cfg,
+            fs_security,
         )));
         state.tools = Arc::new(registry);
 
@@ -4359,12 +4360,13 @@ params = { path = "README.md" }
         .unwrap();
 
         let mut registry = ToolRegistry::new();
-        let skills_cfg = {
+        let (skills_cfg, fs_security) = {
             let cfg = state.config.read().await;
-            cfg.skills.clone()
+            (cfg.skills.clone(), cfg.security.filesystem.clone())
         };
         registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
             skills_cfg,
+            fs_security,
         )));
         state.tools = Arc::new(registry);
 
@@ -4453,12 +4455,13 @@ params = { path = "README.md" }
         assert_eq!(toggled, Some(false));
 
         let mut registry = ToolRegistry::new();
-        let skills_cfg = {
+        let (skills_cfg, fs_security) = {
             let cfg = state.config.read().await;
-            cfg.skills.clone()
+            (cfg.skills.clone(), cfg.security.filesystem.clone())
         };
         registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
             skills_cfg,
+            fs_security,
         )));
         state.tools = Arc::new(registry);
 
@@ -4511,12 +4514,13 @@ params = { path = "README.md" }
         .unwrap();
 
         let mut registry = ToolRegistry::new();
-        let skills_cfg = {
+        let (skills_cfg, fs_security) = {
             let cfg = state.config.read().await;
-            cfg.skills.clone()
+            (cfg.skills.clone(), cfg.security.filesystem.clone())
         };
         registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
             skills_cfg,
+            fs_security,
         )));
         state.tools = Arc::new(registry);
 

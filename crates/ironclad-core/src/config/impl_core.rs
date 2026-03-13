@@ -235,6 +235,16 @@ impl IroncladConfig {
             ));
         }
 
+        // ── Filesystem security validation ─────────────────────────
+        for p in &self.security.filesystem.script_allowed_paths {
+            if !p.is_absolute() {
+                return Err(IroncladError::Config(format!(
+                    "security.filesystem.script_allowed_paths: '{}' must be an absolute path",
+                    p.display()
+                )));
+            }
+        }
+
         // ── Routing config validation ──────────────────────────────
         if !matches!(self.models.routing.mode.as_str(), "primary" | "metascore") {
             return Err(IroncladError::Config(format!(

@@ -4060,6 +4060,64 @@
             + 'Maximum authority when the threat scanner flags input as Caution. Must be below Creator.'
             + '</div>';
           accHtml += '</div>';
+
+          // ── Filesystem Security section ────────────────────────────
+          var fsSec = (sec.filesystem || {});
+          var wsOnly = fsSec.workspace_only !== false;
+          var scriptConf = fsSec.script_fs_confinement !== false;
+          var protectedPaths = (fsSec.protected_paths || []).join('\n');
+          var extraProtected = (fsSec.extra_protected_paths || []).join('\n');
+          var scriptAllowed = (fsSec.script_allowed_paths || []).join('\n');
+
+          accHtml += '<div class="settings-section"><div class="settings-section-title">Filesystem Security</div>'
+            + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">'
+            + 'Controls filesystem access for agent tools and skill scripts.'
+            + '</div>';
+
+          accHtml += '<div class="settings-row"><div class="settings-label">Workspace-only mode</div>'
+            + '<div class="settings-toggle-wrap"><label class="toggle">'
+            + '<input type="checkbox" data-settings-path="security.filesystem.workspace_only"' + (wsOnly ? ' checked' : '') + '>'
+            + '<span class="toggle-track"></span></label>'
+            + '<span class="settings-toggle-label">' + (wsOnly ? 'On' : 'Off') + '</span></div></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Restrict agent file tools to the workspace directory. Absolute paths outside workspace are denied.'
+            + '</div>';
+
+          accHtml += '<div class="settings-row"><div class="settings-label">Script FS confinement</div>'
+            + '<div class="settings-toggle-wrap"><label class="toggle">'
+            + '<input type="checkbox" data-settings-path="security.filesystem.script_fs_confinement"' + (scriptConf ? ' checked' : '') + '>'
+            + '<span class="toggle-track"></span></label>'
+            + '<span class="settings-toggle-label">' + (scriptConf ? 'On' : 'Off') + '</span></div></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'OS-level sandbox for skill scripts (macOS sandbox-exec). Confines writes to workspace + /tmp.'
+            + '</div>';
+
+          accHtml += '<div class="settings-row" style="align-items:start"><div class="settings-label" style="padding-top:0.3rem">Protected paths</div>'
+            + '<textarea class="settings-input" data-settings-path="security.filesystem.protected_paths" data-settings-array="1" '
+            + 'rows="6" style="font-family:var(--font-mono);font-size:0.7rem;resize:vertical"'
+            + ' placeholder="One pattern per line">' + esc(protectedPaths) + '</textarea></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Blacklisted path patterns (case-insensitive substring match). One per line.'
+            + '</div>';
+
+          accHtml += '<div class="settings-row" style="align-items:start"><div class="settings-label" style="padding-top:0.3rem">Extra protected paths</div>'
+            + '<textarea class="settings-input" data-settings-path="security.filesystem.extra_protected_paths" data-settings-array="1" '
+            + 'rows="3" style="font-family:var(--font-mono);font-size:0.7rem;resize:vertical"'
+            + ' placeholder="Your custom patterns (merged with defaults)">' + esc(extraProtected) + '</textarea></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Additional patterns merged with the default list above.'
+            + '</div>';
+
+          accHtml += '<div class="settings-row" style="align-items:start"><div class="settings-label" style="padding-top:0.3rem">Script allowed paths</div>'
+            + '<textarea class="settings-input" data-settings-path="security.filesystem.script_allowed_paths" data-settings-array="1" '
+            + 'rows="2" style="font-family:var(--font-mono);font-size:0.7rem;resize:vertical"'
+            + ' placeholder="Absolute paths scripts may write to (one per line)">' + esc(scriptAllowed) + '</textarea></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Additional absolute paths that sandboxed scripts may access for writing. One per line.'
+            + '</div>';
+
+          accHtml += '</div>';
+
           accHtml += '<div class="settings-section"><div class="settings-section-title">How Claims Are Resolved</div>'
             + '<div style="font-size:0.72rem;line-height:1.6;color:var(--text)">'
             + '<strong>Positive grants</strong> OR across layers \u2014 any layer can grant authority (best grant wins):<br>'
@@ -6067,7 +6125,11 @@
       var path = formInput.getAttribute('data-settings-path');
       var draft = App._getSettingsDraft();
       var rawVal = formInput.value;
-      var newVal = formInput.type === 'checkbox' ? formInput.checked : formInput.type === 'number' ? Number(rawVal) : (rawVal === '' ? null : rawVal);
+      var newVal;
+      if (formInput.type === 'checkbox') { newVal = formInput.checked; }
+      else if (formInput.type === 'number') { newVal = Number(rawVal); }
+      else if (formInput.hasAttribute('data-settings-array')) { newVal = rawVal.split('\n').map(function(s){return s.trim()}).filter(function(s){return s.length > 0}); }
+      else { newVal = rawVal === '' ? null : rawVal; }
       App._setNestedValue(draft, path, newVal);
       App._settingsDirty = JSON.stringify(draft) !== JSON.stringify(_cachedConfig);
       App._settingsJsonText = null;
@@ -6189,6 +6251,7 @@
       if (formInput.type === 'checkbox') { newVal = formInput.checked; }
       else if (formInput.tagName === 'SELECT') { newVal = formInput.value; }
       else if (formInput.type === 'number') { newVal = Number(formInput.value); }
+      else if (formInput.hasAttribute('data-settings-array')) { newVal = formInput.value.split('\n').map(function(s){return s.trim()}).filter(function(s){return s.length > 0}); }
       else { newVal = formInput.value === '' ? null : formInput.value; }
       App._setNestedValue(draft, path, newVal);
       App._settingsDirty = JSON.stringify(draft) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;
