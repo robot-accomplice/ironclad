@@ -101,7 +101,7 @@ const NULL_EXPIRY_MAX_AGE_DAYS: u32 = 7;
 ///
 /// Evicts rows where:
 /// 1. `expires_at` has passed, OR
-/// 2. `expires_at IS NULL` and the row is older than [`NULL_EXPIRY_MAX_AGE_DAYS`].
+/// 2. `expires_at IS NULL` and the row is older than `NULL_EXPIRY_MAX_AGE_DAYS` (7 days).
 pub fn evict_expired_cache(db: &Database) -> Result<usize> {
     let conn = db.conn();
     let deleted = conn
