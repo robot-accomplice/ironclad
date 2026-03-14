@@ -240,7 +240,7 @@ enum Commands {
     #[command(alias = "upgrade", next_help_heading = "S-Z")]
     #[command(subcommand)]
     Update(UpdateCmd),
-    /// Report firmware version and build
+    /// Report version and build information
     #[command(next_help_heading = "S-Z")]
     Version,
     /// Inspect wallet and treasury

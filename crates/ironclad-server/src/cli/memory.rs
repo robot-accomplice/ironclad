@@ -12,7 +12,7 @@ pub async fn cmd_memory(
     let c = IroncladClient::new(url)?;
     match tier {
         "working" => {
-            let sid = session_id.ok_or("--session required for working memory")?;
+            let sid = session_id.ok_or("--session required for working memory. Use 'ironclad sessions list' to find session IDs.")?;
             let data = c
                 .get(&format!("/api/memory/working/{sid}"))
                 .await
