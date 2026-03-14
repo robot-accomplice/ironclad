@@ -319,7 +319,10 @@ async fn handle_breaker_command(state: &AppState, args: &str, authority: InputAu
 }
 
 pub(super) async fn build_status_reply(state: &AppState) -> String {
-    let config = state.config.read().await;
+    let (agent_name, agent_id) = {
+        let config = state.config.read().await;
+        (config.agent.name.clone(), config.agent.id.clone())
+    };
     let diag = collect_runtime_diagnostics(state).await;
     let balance = state.wallet.wallet.get_usdc_balance().await.unwrap_or(0.0);
     let channels = state.channel_router.channel_status().await;
@@ -374,7 +377,7 @@ pub(super) async fn build_status_reply(state: &AppState) -> String {
     subagent_breakdown.sort();
 
     let mut lines = vec![
-        format!("🤖 {} ({})", config.agent.name, config.agent.id),
+        format!("🤖 {} ({})", agent_name, agent_id),
         "  state: running".to_string(),
         format!("  version: v{}", env!("CARGO_PKG_VERSION")),
         format!("  primary: {}", diag.primary_model),

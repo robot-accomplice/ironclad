@@ -455,34 +455,63 @@ pub(super) async fn resolve_inference_provider(
     state: &AppState,
     model: &str,
 ) -> Option<ResolvedInferenceProvider> {
-    let llm = state.llm.read().await;
-    let provider = llm.providers.get_by_model(model)?;
-    let url = format!("{}{}", provider.url, provider.chat_path);
+    // Extract all needed fields from the provider entry into owned values,
+    // then drop the lock before calling resolve_provider_key (which may
+    // perform OAuth token refresh or keystore I/O).
+    let (
+        name,
+        is_local,
+        auth_mode,
+        api_key_ref,
+        api_key_env,
+        url,
+        auth_header,
+        extra_headers,
+        format,
+        cost_in,
+        cost_out,
+    ) = {
+        let llm = state.llm.read().await;
+        let p = llm.providers.get_by_model(model)?;
+        (
+            p.name.clone(),
+            p.is_local,
+            p.auth_mode.clone(),
+            p.api_key_ref.clone(),
+            p.api_key_env.clone(),
+            format!("{}{}", p.url, p.chat_path),
+            p.auth_header.clone(),
+            p.extra_headers.clone(),
+            p.format,
+            p.cost_per_input_token,
+            p.cost_per_output_token,
+        )
+    };
     let key = super::super::admin::resolve_provider_key(
-        &provider.name,
-        provider.is_local,
-        &provider.auth_mode,
-        provider.api_key_ref.as_deref(),
-        &provider.api_key_env,
+        &name,
+        is_local,
+        &auth_mode,
+        api_key_ref.as_deref(),
+        &api_key_env,
         &state.oauth,
         &state.keystore,
     )
     .await
     .unwrap_or_else(|| {
-        if !provider.is_local {
-            tracing::warn!(provider = %provider.name, "API key resolved to None for non-local provider");
+        if !is_local {
+            tracing::warn!(provider = %name, "API key resolved to None for non-local provider");
         }
         String::new()
     });
     Some(ResolvedInferenceProvider {
         url,
         api_key: key,
-        auth_header: provider.auth_header.clone(),
-        extra_headers: provider.extra_headers.clone(),
-        format: provider.format,
-        cost_in: provider.cost_per_input_token,
-        cost_out: provider.cost_per_output_token,
-        is_local: provider.is_local,
+        auth_header,
+        extra_headers,
+        format,
+        cost_in,
+        cost_out,
+        is_local,
         provider_prefix: model.split('/').next().unwrap_or("unknown").to_string(),
     })
 }
@@ -676,11 +705,17 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
         attempted += 1;
 
         let inference_start = std::time::Instant::now();
-        let llm = state.llm.read().await;
+        // Clone the HTTP client so we can release the RwLock before the
+        // potentially long-running network call (SA-HIGH-1, matching
+        // the streaming path fix in streaming.rs).
+        let client = {
+            let llm = state.llm.read().await;
+            llm.client.clone()
+        };
         let attempt_timeout = std::cmp::min(budget.per_provider_timeout, remaining_budget);
         let result = match tokio::time::timeout(
             attempt_timeout,
-            llm.client.forward_with_provider(
+            client.forward_with_provider(
                 &resolved.url,
                 &resolved.api_key,
                 llm_body,
@@ -709,7 +744,6 @@ pub(super) async fn infer_with_fallback_with_budget_and_preferred(
                 )))
             }
         };
-        drop(llm);
 
         match result {
             Ok(resp) => {

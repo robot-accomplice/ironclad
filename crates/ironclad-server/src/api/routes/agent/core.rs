@@ -272,26 +272,27 @@ pub(super) async fn prepare_inference(
         tracing::warn!(session_id = %input.session_id, model = %model, error = %e, "failed to update session model");
     }
 
-    // Tier resolution
-    let tier = {
+    // Tier resolution + embedding client — single lock acquisition.
+    let (tier, embedding_client) = {
         let llm = state.llm.read().await;
-        llm.providers
+        let tier = llm
+            .providers
             .get_by_model(&model)
             .map(|p| p.tier)
-            .unwrap_or_else(|| ironclad_llm::tier::classify(&model))
+            .unwrap_or_else(|| ironclad_llm::tier::classify(&model));
+        (tier, llm.embedding.clone())
     };
 
-    // Embedding for RAG + cache L2
-    let query_embedding = {
-        let llm = state.llm.read().await;
-        llm.embedding
-            .embed_single(input.user_content)
-            .await
-            .inspect_err(|e| {
-                tracing::warn!(error = %e, "embedding generation failed, RAG retrieval will be skipped")
-            })
-            .ok()
-    };
+    // Embedding for RAG + cache L2.
+    // EmbeddingClient cloned above so the LLM read lock is released before
+    // this potentially I/O-bound call.
+    let query_embedding = embedding_client
+        .embed_single(input.user_content)
+        .await
+        .inspect_err(|e| {
+            tracing::warn!(error = %e, "embedding generation failed, RAG retrieval will be skipped")
+        })
+        .ok();
 
     // Cache lookup
     let cache_hash = ironclad_llm::SemanticCache::compute_hash("", "", input.user_content);
