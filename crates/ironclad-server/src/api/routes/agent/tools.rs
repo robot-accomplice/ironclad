@@ -84,14 +84,8 @@ pub(super) fn parse_tool_calls(response: &str) -> Vec<(String, serde_json::Value
         // But only accept it if there's no intervening closing brace (this brace
         // belongs to the tool_call, not a prior JSON object).
         if response[brace_start + 1..abs_pos].contains('}') {
-            // The opening brace belongs to an earlier JSON — try the next `{` forward
-            let fallback_start = response[abs_pos..].find('{').map(|i| abs_pos + i);
-            if let Some(fb) = fallback_start
-                && fb < abs_pos
-            {
-                search_start = abs_pos + 1;
-                continue;
-            }
+            // The opening brace belongs to an earlier JSON object — skip past the
+            // current "tool_use" marker and resume scanning for the next `{`.
             search_start = abs_pos + 1;
             continue;
         }
@@ -195,9 +189,17 @@ fn extract_timeout_hint(raw: &str) -> String {
     // or:    "configured limit: models.routing.max_total_inference_seconds = 120"
     if let Some(start) = raw.find("configured limit: ") {
         let after = &raw[start + "configured limit: ".len()..];
-        // Extract just the "key = value" part, up to the closing paren
-        let segment = after.split(')').next().unwrap_or(after).trim();
-        if let Some((key, value)) = segment.split_once(" = ") {
+        // Split on " = " first to handle labels containing parentheses, e.g.
+        // "models.routing.max_total_inference_seconds (remaining budget) = 120)"
+        if let Some((key_part, rest)) = after.split_once(" = ") {
+            // Strip the trailing ')' from the value and any extra text.
+            let value = rest.split(')').next().unwrap_or(rest).trim();
+            // Strip any parenthetical suffix from the key for the user-facing label.
+            let key = key_part
+                .find(" (")
+                .map(|i| &key_part[..i])
+                .unwrap_or(key_part)
+                .trim();
             let short_key = key.strip_prefix("models.routing.").unwrap_or(key);
             return format!(
                 "The {short_key} is set to {value}s (configurable in [models.routing])."

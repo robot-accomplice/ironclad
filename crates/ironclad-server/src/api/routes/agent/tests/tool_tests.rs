@@ -123,7 +123,10 @@ fn check_tool_policy_critical_tier_restricts() {
         ironclad_core::SurvivalTier::Critical,
         ironclad_core::RiskLevel::Safe,
     );
-    assert!(result.is_ok() || result.is_err());
+    // External + Safe passes AuthorityRule (Safe <= Safe) and CommandSafetyRule
+    // (only blocks Forbidden). SurvivalTier::Critical is not evaluated by
+    // these rules — it applies at the governor layer, not the policy engine.
+    assert!(result.is_ok());
 }
 
 // ── classify_provider_error / info-disclosure tests ──────────
@@ -278,6 +281,19 @@ fn provider_failure_message_includes_timeout_config_hint() {
     assert!(
         msg_total.contains("max_total_inference_seconds is set to 120s"),
         "total timeout hint missing: {msg_total}"
+    );
+
+    // "remaining budget" variant — nested parentheses in the key label must not
+    // truncate the hint (regression: split on ')' before '=' dropped the value).
+    let raw_budget = "inference timeout after 45s (configured limit: models.routing.max_total_inference_seconds (remaining budget) = 75)";
+    let msg_budget = provider_failure_user_message(raw_budget, true);
+    assert!(
+        msg_budget.contains("max_total_inference_seconds is set to 75s"),
+        "remaining-budget timeout hint missing: {msg_budget}"
+    );
+    assert!(
+        !msg_budget.contains("remaining budget"),
+        "parenthetical qualifier should be stripped from user-facing hint: {msg_budget}"
     );
 
     // Non-timeout errors should NOT get a hint
