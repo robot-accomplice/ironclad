@@ -665,6 +665,92 @@ Scoring contract reference: `docs/evals/METASCORE_V1_SPEC.md` (spec-only).
 
 ---
 
+### 2.23 Tool Output Noise Filter
+
+**Current state**: Tool execution results are injected verbatim into the conversation context. A `read_file` returning 500 lines, a `bash` command dumping verbose logs, or an API response with pagination headers all consume tokens at full cost — even when the model only needs a fraction of the output to reason about the task.
+
+**Target**: A configurable filter layer between tool execution and context injection that strips structural noise, truncates excessive output, and collapses repetitive content — reducing token spend on tool-heavy turns by 30–70% with no quality loss.
+
+**Builds on**: `execute_tool_call()` in `tools.rs`, ReAct observation assembly in `core.rs` (L702–733), `ironclad-agent/src/injection.rs` (output scanning), and `2.8 Prompt Compression` (complementary — noise filter removes categorical junk before compression scores remaining tokens).
+
+**Scope**:
+
+- Define a `ToolOutputFilter` trait with `fn filter(tool_name: &str, raw: &str) -> String`.
+- Implement structural filters applied to ALL tool output:
+  - **Truncation**: Cap output at configurable token limit (default: 4096 tokens) with head/tail preservation and `[...N lines truncated...]` marker.
+  - **ANSI/control code stripping**: Remove terminal escape sequences, progress bars, spinner characters.
+  - **Whitespace normalization**: Collapse runs of blank lines, trailing whitespace, indentation beyond a threshold.
+- Implement tool-specific filters:
+  - **File reads**: For large files, keep first N + last M lines with truncation marker. Optionally extract only lines around a search pattern if the triggering prompt contains a grep/search intent.
+  - **Directory listings**: Strip permission bits, ownership, timestamps — keep only names and types.
+  - **JSON responses**: Prune deeply nested objects beyond depth N, remove known noise fields (`_links`, `pagination`, `rate_limit_*`, `request_id`).
+  - **Command output**: Detect and collapse repetitive log lines (e.g., 1000 identical warnings → `[repeated 1000x]: <line>`).
+  - **Search results**: Limit match context to ±N lines, collapse consecutive matches in the same file.
+- Config: `[agent.noise_filter]` with `enabled`, `max_output_tokens`, `tool_specific_rules` (override per tool name), `strip_ansi`, `collapse_repeats`.
+- Metrics: Track tokens saved per tool call, per session. Surface in dashboard efficiency panel.
+- Integration point: Between `execute_tool_call()` return and observation formatting at `core.rs:712`. Filter runs BEFORE injection scan (`injection::scan_output`).
+- Composability: Noise filter output feeds into 2.8 Prompt Compression for further reduction — the two layers are complementary, not competing.
+
+**Non-goals for v1**: Semantic summarization of tool output (that's compression territory), tool output caching/dedup across turns, or modifying tool implementations themselves.
+
+---
+
+### 2.24 Cross-Platform Filesystem Sandboxing (Linux Landlock + Windows AppContainer)
+
+**Current state**: Skill script filesystem confinement exists only on macOS via
+`sandbox-exec(1)` profiles generated in `script_runner.rs`. Linux has network isolation
+(`unshare(CLONE_NEWNET)`) and memory limits (`RLIMIT_AS`), but no filesystem write
+confinement — scripts can write anywhere the process user can. Windows has no
+confinement at all. The config field `script_fs_confinement` already references Landlock
+in its doc comment, but the implementation is macOS-only.
+
+**Target**: OS-native filesystem sandboxing on all three supported platforms, so
+`script_fs_confinement = true` enforces write-denial boundaries regardless of OS.
+
+**Builds on**: `ScriptRunner` in `ironclad-agent/src/script_runner.rs` (macOS
+sandbox-exec path), `FilesystemSecurityConfig` in `preamble_types.rs`
+(`script_fs_confinement`, `script_allowed_paths`), `pre_exec` Unix hooks.
+
+**Scope**:
+
+- **Linux — Landlock LSM** (kernel 5.13+, ABI v1-v5):
+  - Apply Landlock ruleset in `pre_exec` closure (after fork, before exec).
+  - Grant `LANDLOCK_ACCESS_FS_READ_*` globally (matching macOS write-denial model).
+  - Grant `LANDLOCK_ACCESS_FS_WRITE_*` only to: `/tmp`, `workspace_dir`,
+    `script_allowed_paths`.
+  - Graceful degradation: if `prctl(PR_SET_NO_NEW_PRIVS)` or `landlock_create_ruleset`
+    fails (unprivileged container, old kernel), log warning via mechanic health check
+    and continue unsandboxed — same pattern as the existing `unshare` fallback.
+  - Detect kernel ABI version at startup; use `LANDLOCK_ACCESS_FS_REFER` (ABI v2),
+    `LANDLOCK_ACCESS_FS_TRUNCATE` (ABI v3), `LANDLOCK_ACCESS_FS_IOCTL_DEV` (ABI v5)
+    when available.
+- **Windows — AppContainer or Job Objects**:
+  - Use Win32 `CreateProcessW` with `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`
+    to launch scripts in an AppContainer — a lightweight sandbox that restricts
+    filesystem access to explicitly granted capabilities.
+  - Alternatively, use Job Objects with `JOB_OBJECT_UILIMIT_*` restrictions for
+    simpler confinement without AppContainer SID management overhead.
+  - Grant read access globally; write access only to `%TEMP%`, `workspace_dir`,
+    `script_allowed_paths`.
+  - Graceful degradation: if AppContainer creation fails (older Windows, missing
+    capabilities), fall back to standard process with warning.
+- **Config**: Existing `[filesystem_security]` fields are sufficient. No new config
+  keys needed — `script_fs_confinement`, `script_allowed_paths`, `workspace_dir`
+  already describe the sandboxing intent.
+- **Mechanic health check**: Extend `ironclad status` to report sandboxing capability
+  per-platform: `sandbox-exec` (macOS), `landlock` (Linux), `AppContainer` (Windows),
+  with kernel/OS version details and fallback warnings.
+- **Testing**:
+  - Integration tests mirroring the existing macOS `sandbox_exec_confines_script_filesystem`
+    test — write outside sandbox, expect `BLOCKED`.
+  - CI matrix already covers Linux + macOS; add Windows runner.
+
+**Non-goals for v1**: Read-path confinement (writes are the security boundary),
+syscall filtering beyond filesystem (that is seccomp-bpf territory), or container/VM
+isolation for untrusted skills (out of scope for process-level sandboxing).
+
+---
+
 ## Tier 3 — Frontier
 
 Ambitious capabilities that push the architecture into new territory. High effort, high potential.
@@ -1194,7 +1280,7 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 1.22 | Built-in introspection skill | 1 | Tool trait, ToolRegistry, ToolContext, SessionScope, ChannelRouter | Low |
 | 1.23 | Context budget tuning | 1 | context.rs, token_budget, build_context, complexity scorer | Low |
 | 1.24 | Built-in CLI agent skills (Claude Code + Codex CLI) | 1 | SkillLoader, SkillRegistry, ToolRegistry, script sandbox, policy engine | Medium |
-| 1.25 | Channel-aware response formatting + rich dashboard markdown parity | 1 | channel adapters, formatter pipeline, dashboard renderer, capability negotiation metadata | Medium |
+| 1.25 | Channel-aware response formatting (partial ✅) + rich dashboard markdown parity | 1 | channel adapters, formatter pipeline, dashboard renderer, capability negotiation metadata | ~~Medium~~ Remaining: dashboard parity |
 | 2.1 | ML-based model routing | 2 | Heuristic router, RouterBackend trait | High |
 | 2.2 | Accuracy-target routing | 2 | Router infrastructure | High |
 | 2.3 | Tiered inference pipeline | 2 | Fallback chain, local model config | Medium |
@@ -1217,6 +1303,8 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 2.20 | Voice channels (promoted from 3.6) | 2 | Channel adapters, whisper-rs, local TTS | High |
 | 2.21 | Skill registry protocol | 2 | SkillLoader, 2.14 skills catalog, skill manifests, wallet/ECDSA | Medium |
 | 2.22 | Anchored agent audit ledger (sanitized on-chain provenance) | 2 | Event bus/audit records, wallet/chain integration, proof verification tooling | High |
+| 2.23 | Tool output noise filter | 2 | tools.rs, core.rs observation assembly, injection.rs, 2.8 prompt compression | Medium |
+| 2.24 | Cross-platform filesystem sandboxing (Landlock + AppContainer) | 2 | ScriptRunner, FilesystemSecurityConfig, pre_exec hooks, sandbox-exec (macOS) | Medium |
 | 3.1 | Compile-time agent safety | 3 | Agent loop, policy engine | High |
 | 3.2 | ~~MCP integration~~ ✅ | 3 | Tool registry, config | ~~High~~ Done |
 | 3.3 | Multi-agent orchestration (partial) | 3 | SubagentRegistry, A2A, 2.9 | High |

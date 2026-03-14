@@ -205,6 +205,7 @@ impl LlmService {
             api_key_env: provider.api_key_env.clone(),
             auth_header: provider.auth_header.clone(),
             extra_headers: provider.extra_headers.clone(),
+            is_local: provider.is_local,
         })
     }
 }

@@ -366,7 +366,6 @@ fn system_table_metadata(table_name: &str) -> (&'static str, &'static str) {
         "cron_runs" => ("Cron job execution history", "read"),
         "transactions" => ("Wallet transaction log", "internal"),
         "inference_costs" => ("LLM inference cost tracking", "internal"),
-        "proxy_stats" => ("API proxy statistics", "internal"),
         "semantic_cache" => ("Semantic response cache", "internal"),
         "identity" => ("Agent identity and credentials", "internal"),
         "os_personality_history" => ("OS personality evolution log", "internal"),

@@ -9,11 +9,27 @@ use crate::api::{AppState, execute_scheduled_agent_task, subagent_integrity};
 pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
     let mut interval = tokio::time::interval(Duration::from_secs(60));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let concurrency = Arc::new(Semaphore::new(4));
+    let initial_limit = state.config.read().await.server.cron_max_concurrency as usize;
+    let mut concurrency = Arc::new(Semaphore::new(initial_limit));
+    let mut current_limit = initial_limit;
     tracing::info!("Server cron worker started");
 
     loop {
         interval.tick().await;
+
+        // Re-read concurrency limit on each tick so hot-reloaded config takes
+        // effect.  Outstanding permits from the old semaphore drain naturally;
+        // new acquisitions use the updated limit.
+        let configured_limit = state.config.read().await.server.cron_max_concurrency as usize;
+        if configured_limit != current_limit {
+            tracing::info!(
+                old = current_limit,
+                new = configured_limit,
+                "cron concurrency limit changed via hot-reload"
+            );
+            concurrency = Arc::new(Semaphore::new(configured_limit));
+            current_limit = configured_limit;
+        }
         let jobs = match ironclad_db::cron::list_jobs(&state.db) {
             Ok(j) => j,
             Err(e) => {
@@ -28,6 +44,7 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
             }
             let kind = match job.schedule_kind.as_str() {
                 "interval" => "every",
+                "once" => "at",
                 other => other,
             };
             let due = match kind {
@@ -67,6 +84,29 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                         &now,
                     )
                 }
+                "at" => match job.schedule_expr.as_deref() {
+                    Some(expr) => {
+                        // "once"/"at" jobs fire when now >= target and haven't run yet.
+                        if job.last_run_at.is_some() {
+                            false // already fired
+                        } else {
+                            ironclad_schedule::DurableScheduler::evaluate_at(expr, &now)
+                        }
+                    }
+                    None => {
+                        tracing::warn!(job_id = %job.id, job_name = %job.name,
+                            "once-type job has no schedule_expr; auto-disabling");
+                        let _ = ironclad_db::cron::update_job(
+                            &state.db,
+                            &job.id,
+                            None,
+                            None,
+                            None,
+                            Some(false),
+                        );
+                        false
+                    }
+                },
                 other_kind => {
                     tracing::warn!(job_id = %job.id, job_name = %job.name, schedule_kind = other_kind,
                         "unrecognized schedule_kind; job will not be scheduled");
@@ -119,9 +159,12 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                     );
                 }
                 let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-                // Map "every" back to "interval" for calculate_next_run, which matches
-                // on the DB-canonical "interval" string, not the dispatch alias "every".
-                let next_kind = if kind == "every" { "interval" } else { &kind };
+                // Map dispatch aliases back to DB-canonical kinds for
+                // calculate_next_run: "every" → "interval", "at" → "at".
+                let next_kind = match kind.as_str() {
+                    "every" => "interval",
+                    other => other,
+                };
                 // Resolve the effective interval_ms the same way the due-time
                 // evaluation does: prefer schedule_every_ms, fall back to
                 // parsing schedule_expr (e.g. "30m").  Without this, expr-based
@@ -145,6 +188,27 @@ pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
                         job_id = %job_clone.id, job_name = %job_clone.name, error = %e,
                         "CRITICAL: failed to update next_run_at; job may re-fire prematurely"
                     );
+                }
+                // Auto-disable "once"/"at" jobs after their single execution.
+                if next_kind == "at" {
+                    if let Err(e) = ironclad_db::cron::update_job(
+                        &state_clone.db,
+                        &job_clone.id,
+                        None,
+                        None,
+                        None,
+                        Some(false),
+                    ) {
+                        tracing::error!(
+                            job_id = %job_clone.id, job_name = %job_clone.name, error = %e,
+                            "CRITICAL: failed to auto-disable once job after execution"
+                        );
+                    } else {
+                        tracing::info!(
+                            job_id = %job_clone.id, job_name = %job_clone.name,
+                            "once job auto-disabled after successful execution"
+                        );
+                    }
                 }
                 if let Err(e) = ironclad_db::cron::release_lease(
                     &state_clone.db,

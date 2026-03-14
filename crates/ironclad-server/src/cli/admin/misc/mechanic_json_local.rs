@@ -242,6 +242,148 @@ fn collect_mechanic_json_local_findings(
             false,
         ));
     }
+
+    // Memory hygiene — canned responses, memorised fallbacks, hallucinated output.
+    let mem_hygiene = run_memory_hygiene(&ironclad_dir.join("state.db"), repair)?;
+    if mem_hygiene.total_detected > 0 {
+        let mut details_parts = Vec::new();
+        if mem_hygiene.working_canned > 0 {
+            details_parts.push(format!(
+                "{} canned response(s) in working_memory",
+                mem_hygiene.working_canned
+            ));
+        }
+        if mem_hygiene.semantic_canned > 0 {
+            details_parts.push(format!(
+                "{} canned response(s) learned as semantic facts",
+                mem_hygiene.semantic_canned
+            ));
+        }
+        if mem_hygiene.episodic_hallucinated > 0 {
+            details_parts.push(format!(
+                "{} hallucinated subagent output(s) in episodic_memory",
+                mem_hygiene.episodic_hallucinated
+            ));
+        }
+
+        let mut f = finding(
+            "memory-contamination",
+            "high",
+            0.95,
+            format!(
+                "Memory contamination: {} entries across {} tier(s)",
+                mem_hygiene.total_detected,
+                details_parts.len()
+            ),
+            details_parts.join("; "),
+            "Purge canned/hallucinated entries from memory tiers and VACUUM.",
+            vec!["ironclad mechanic --repair".to_string()],
+            true,
+            false,
+        );
+        if repair && mem_hygiene.total_purged > 0 {
+            f.auto_repaired = true;
+            actions.memory_entries_purged = mem_hygiene.total_purged;
+        }
+        findings.push(f);
+    }
+
+    // Model & channel triage — key resolution, API reachability, token validity.
+    let config_path = std::path::Path::new("ironclad.toml");
+    let alt_config = ironclad_dir.join("ironclad.toml");
+    let triage_config_path = if config_path.exists() {
+        Some(config_path.to_path_buf())
+    } else if alt_config.exists() {
+        Some(alt_config)
+    } else {
+        None
+    };
+    if let Some(ref cfg_path) = triage_config_path
+        && let Ok(raw) = std::fs::read_to_string(cfg_path)
+        && let Ok(cfg) = toml::from_str::<ironclad_core::IroncladConfig>(&raw)
+    {
+        let triage = run_model_triage(&cfg, true);
+
+        for m in &triage.models {
+            if !m.key_status.is_healthy() {
+                findings.push(finding(
+                    "model-key-unhealthy",
+                    m.key_status.severity(),
+                    0.97,
+                    format!(
+                        "Model '{}' ({}) — {}",
+                        m.model_id,
+                        m.role,
+                        m.key_status.summary()
+                    ),
+                    format!(
+                        "The {} model '{}' (provider: {}) has an unhealthy key: {}",
+                        m.role, m.model_id, m.provider, m.key_status.summary()
+                    ),
+                    m.key_status.remediation(),
+                    vec![m.key_status.remediation()],
+                    false,
+                    true,
+                ));
+            }
+            if m.reachable == Some(false) {
+                findings.push(finding(
+                    "model-unreachable",
+                    "high",
+                    0.90,
+                    format!("Model '{}' ({}) — API unreachable", m.model_id, m.role),
+                    m.probe_detail
+                        .as_deref()
+                        .unwrap_or("Provider endpoint did not respond.")
+                        .to_string(),
+                    "Verify provider URL and network connectivity.",
+                    vec!["ironclad channels status".to_string()],
+                    false,
+                    false,
+                ));
+            }
+        }
+
+        for c in &triage.channels {
+            if !c.enabled {
+                continue;
+            }
+            if !c.key_status.is_healthy() {
+                findings.push(finding(
+                    "channel-key-unhealthy",
+                    c.key_status.severity(),
+                    0.97,
+                    format!("{} channel — {}", c.channel, c.key_status.summary()),
+                    format!(
+                        "{} channel has an unhealthy token: {}",
+                        c.channel,
+                        c.key_status.summary()
+                    ),
+                    c.key_status.remediation(),
+                    vec![c.key_status.remediation()],
+                    false,
+                    true,
+                ));
+            }
+            if c.reachable == Some(false) {
+                findings.push(finding(
+                    "channel-unreachable",
+                    "high",
+                    0.90,
+                    format!("{} channel — endpoint unreachable", c.channel),
+                    c.probe_detail
+                        .as_deref()
+                        .unwrap_or("Channel endpoint did not respond.")
+                        .to_string(),
+                    "Verify channel configuration and network connectivity.",
+                    vec!["ironclad channels status".to_string()],
+                    false,
+                    false,
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 

@@ -1,14 +1,9 @@
-//! Dedup guard, subagent claim enforcement, and repetition detection.
+//! Dedup guard, response quality filters, scope validation, and current-events truth guard.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::intents::{
-    requests_acknowledgement, requests_cron, requests_current_events, requests_delegation,
-    requests_email_triage, requests_execution, requests_file_distribution, requests_folder_scan,
-    requests_image_count_scan, requests_model_identity, requests_obsidian_insights,
-    requests_wallet_address_scan,
-};
+use super::intents::{requests_acknowledgement, requests_current_events};
 
 /// RAII guard that releases a dedup fingerprint when dropped.
 /// Ensures cleanup on all exit paths, including async stream disconnects.
@@ -22,49 +17,22 @@ impl Drop for DedupGuard {
         if self.fingerprint.is_empty() {
             return;
         }
-        let llm = Arc::clone(&self.llm);
         let fp = std::mem::take(&mut self.fingerprint);
-        tokio::spawn(async move {
-            let mut llm = llm.write().await;
+        // Try synchronous release first (avoids race with sequential callers).
+        // Falls back to tokio::spawn if the lock is contended.
+        if let Ok(mut llm) = self.llm.try_write() {
             llm.dedup.release(&fp);
-        });
+        } else {
+            let llm = Arc::clone(&self.llm);
+            tokio::spawn(async move {
+                let mut llm = llm.write().await;
+                llm.dedup.release(&fp);
+            });
+        }
     }
 }
 
-pub(super) fn claims_unverified_subagent_output(response: &str) -> bool {
-    let lower = response.to_ascii_lowercase();
-    let markers = [
-        "[delegating to subagent",
-        "delegating to geopolitical specialist now",
-        "came directly from the running subagent",
-        "came directly from a running subagent",
-        "subagent status - live",
-        "geopolitical flash update",
-        "standing by for tasking",
-        "taskable subagents operational",
-        "subagent-generated sitrep",
-        "subagent-generated",
-        "geopolitical specialist is live",
-    ];
-    markers.iter().any(|m| lower.contains(m))
-}
-
-pub(super) fn enforce_subagent_claim_guard(
-    response: String,
-    provenance: &super::DelegationProvenance,
-    agent_name: &str,
-) -> String {
-    let allow_claim = provenance.subagent_task_started
-        && provenance.subagent_task_completed
-        && provenance.subagent_result_attached;
-    if allow_claim || !claims_unverified_subagent_output(&response) {
-        return response;
-    }
-    tracing::warn!("Blocking unverified channel response that claims subagent-produced output");
-    format!(
-        "{agent_name}: by your command, I will not fake delegation. I can't claim live subagent-produced output unless I actually run a delegated subagent/tool turn in this reply. Ask me to run a concrete delegated task and I'll return that output directly."
-    )
-}
+// ── Token analysis utilities ─────────────────────────────────
 
 pub(super) fn repeat_tokens(text: &str) -> HashSet<String> {
     text.to_ascii_lowercase()
@@ -89,62 +57,7 @@ pub(super) fn common_prefix_ratio(a: &str, b: &str) -> f64 {
     shared as f64 / max_len as f64
 }
 
-pub(super) fn looks_repetitive(current: &str, previous: &str) -> bool {
-    let cur = current.trim();
-    let prev = previous.trim();
-    if cur.is_empty() || prev.is_empty() {
-        return false;
-    }
-    if cur.eq_ignore_ascii_case(prev) {
-        return true;
-    }
-    if cur.len() < 80 || prev.len() < 80 {
-        return false;
-    }
-
-    let a = repeat_tokens(cur);
-    let b = repeat_tokens(prev);
-    if a.is_empty() || b.is_empty() {
-        return false;
-    }
-    let overlap = a.intersection(&b).count() as f64;
-    let denom = a.len().max(b.len()) as f64;
-    let overlap_ratio = overlap / denom;
-    let prefix_ratio = common_prefix_ratio(&cur.to_ascii_lowercase(), &prev.to_ascii_lowercase());
-    overlap_ratio >= 0.86 || (overlap_ratio >= 0.72 && prefix_ratio >= 0.55)
-}
-
-fn user_requests_fresh_delta(user_prompt: &str) -> bool {
-    let lower = user_prompt.to_ascii_lowercase();
-    let markers = [
-        "status",
-        "update",
-        "what changed",
-        "anything changed",
-        "fresh check",
-        "check again",
-        "still",
-        "latest",
-        "current",
-        "sitrep",
-    ];
-    markers.iter().any(|m| lower.contains(m))
-}
-
-pub(super) fn enforce_non_repetition(
-    user_prompt: &str,
-    response: String,
-    previous_assistant: Option<&str>,
-) -> String {
-    if previous_assistant.is_some_and(|prev| looks_repetitive(&response, prev)) {
-        if user_requests_fresh_delta(user_prompt) {
-            return "No verified delta since my last report. Name the exact check you want and I will run it now."
-                .to_string();
-        }
-        return response;
-    }
-    response
-}
+// ── Response quality filters ─────────────────────────────────
 
 pub(super) fn is_low_value_response(user_prompt: &str, response: &str) -> bool {
     if requests_acknowledgement(user_prompt) {
@@ -171,10 +84,10 @@ pub(super) fn is_low_value_response(user_prompt: &str, response: &str) -> bool {
         "i await your insights",
         "acknowledged. working on that now.",
         "acknowledged. working on that now",
-        "⚔️ duncan is on it…",
-        "⚔️ duncan is on it...",
-        "🤖🧠…",
-        "🤖🧠...",
+        "\u{2694}\u{FE0F} duncan is on it\u{2026}",
+        "\u{2694}\u{FE0F} duncan is on it...",
+        "\u{1F916}\u{1F9E0}\u{2026}",
+        "\u{1F916}\u{1F9E0}...",
     ];
     let lines = trimmed
         .lines()
@@ -236,209 +149,7 @@ pub(super) fn is_parroting_user_prompt(user_prompt: &str, response: &str) -> boo
     overlap_vs_prompt >= 0.88 && prefix_ratio >= 0.55 && length_ratio <= 1.35
 }
 
-fn looks_like_unexecuted_claim(response: &str) -> bool {
-    let lower = response.to_ascii_lowercase();
-    lower.contains("\"tool_call\"")
-        || lower.contains("you can use the following")
-        || lower.contains("you can run")
-        || lower.contains("would use the following")
-        || lower.contains("crontab entry")
-        || lower.contains("unable to directly execute")
-}
-
-fn denies_local_runtime_capability(response: &str) -> bool {
-    let lower = response.to_ascii_lowercase();
-    (lower.contains("can't access your files")
-        || lower.contains("cannot access your files")
-        || lower.contains("can't access your local files")
-        || lower.contains("cannot access your local files")
-        || lower.contains("can't access your folders")
-        || lower.contains("cannot access your folders")
-        || lower.contains("can't browse your files")
-        || lower.contains("cannot browse your files")
-        || lower.contains("can't write directly to your local filesystem")
-        || lower.contains("cannot write directly to your local filesystem")
-        || lower.contains("i'm not able to directly access")
-        || lower.contains("i am not able to directly access"))
-        && (lower.contains("folder")
-            || lower.contains("filesystem")
-            || lower.contains("device")
-            || lower.contains("local"))
-}
-
-pub(super) fn enforce_execution_truth_guard(
-    user_prompt: &str,
-    response: String,
-    tool_results: &[(String, String)],
-    agent_name: &str,
-) -> String {
-    let runtime_execution_prompt = requests_execution(user_prompt)
-        || requests_file_distribution(user_prompt)
-        || requests_folder_scan(user_prompt)
-        || requests_wallet_address_scan(user_prompt)
-        || requests_image_count_scan(user_prompt)
-        || requests_obsidian_insights(user_prompt)
-        || requests_email_triage(user_prompt);
-
-    if requests_delegation(user_prompt)
-        && !tool_results.iter().any(|(name, output)| {
-            let n = name.to_ascii_lowercase();
-            let is_delegate_tool = n.contains("subagent")
-                || n.contains("delegate")
-                || n.contains("assign")
-                || n.contains("orchestrate");
-            let succeeded = !output.to_ascii_lowercase().starts_with("error:");
-            is_delegate_tool && succeeded
-        })
-    {
-        tracing::warn!("execution truth guard blocked unverified delegation claim");
-        return format!(
-            "{agent_name}: by your command, execution truth is strict. I did not execute a delegated subagent task for that request. I can only claim delegated results when a subagent tool call actually runs."
-        );
-    }
-    if requests_cron(user_prompt)
-        && !tool_results.iter().any(|(name, output)| {
-            name.to_ascii_lowercase().contains("cron")
-                && !output.to_ascii_lowercase().starts_with("error:")
-        })
-    {
-        tracing::warn!("execution truth guard blocked unverified cron claim");
-        return format!(
-            "{agent_name}: by your command, execution truth is strict. I did not execute a cron scheduling tool for that request. I can only confirm schedules that were actually created or validated by a tool run."
-        );
-    }
-
-    if !runtime_execution_prompt {
-        return response;
-    }
-    if !tool_results.is_empty() {
-        return response;
-    }
-    let lower = response.to_ascii_lowercase();
-    if lower.contains("encountered an error reaching all llm providers") {
-        return response;
-    }
-    if looks_like_unexecuted_claim(&response)
-        || lower.contains("tool successfully executed")
-        || lower.contains("the `")
-        || lower.starts_with('{')
-    {
-        tracing::warn!("execution truth guard rewrote unverified execution-style response");
-        return format!(
-            "{agent_name}: by your command, execution truth is strict. I did not execute a tool for that request. I can only claim execution when I actually run a tool and return its output."
-        );
-    }
-    if denies_local_runtime_capability(&response) {
-        tracing::warn!("execution truth guard rewrote false local-runtime capability denial");
-        return format!(
-            "{agent_name}: execution truth is strict. I do have tool/runtime access for local operations, but I did not execute a tool in that turn. Give me the exact path/action and I will run it."
-        );
-    }
-    // If there is no explicit execution claim, keep the response.
-    response
-}
-
-pub(super) fn enforce_model_identity_truth_guard(
-    user_prompt: &str,
-    response: String,
-    executed_model: &str,
-    agent_name: &str,
-) -> String {
-    if !requests_model_identity(user_prompt) {
-        return response;
-    }
-    tracing::warn!(
-        executed_model,
-        "model identity guard emitted canonical model identity"
-    );
-    format!("{agent_name} reporting in. I am currently running on {executed_model}.")
-}
-
-fn contains_foreign_identity_boilerplate(response: &str) -> bool {
-    let lower = response.to_ascii_lowercase();
-    let markers = [
-        "as an ai developed by microsoft",
-        "as an ai developed by",
-        "as an ai language model",
-        "as an ai text-based interface",
-        "as an ai, i can't",
-        "as an ai, i cannot",
-        "as an ai i can't",
-        "as an ai i cannot",
-        "as a language model",
-        "i am claude",
-        "i'm claude",
-        "i am chatgpt",
-        "i'm chatgpt",
-    ];
-    markers.iter().any(|m| lower.contains(m))
-}
-
-fn filter_foreign_identity_sentences(response: &str) -> String {
-    let markers = [
-        "as an ai developed by microsoft",
-        "as an ai developed by",
-        "as an ai language model",
-        "as an ai text-based interface",
-        "as an ai, i can't",
-        "as an ai, i cannot",
-        "as an ai i can't",
-        "as an ai i cannot",
-        "as a language model",
-        "i am claude",
-        "i'm claude",
-        "i am chatgpt",
-        "i'm chatgpt",
-    ];
-
-    let mut out = String::new();
-    for chunk in response.split_inclusive(['\n', '.', '!', '?']) {
-        let lower = chunk.to_ascii_lowercase();
-        if markers.iter().any(|m| lower.contains(m)) {
-            continue;
-        }
-        out.push_str(chunk);
-    }
-    out.trim().to_string()
-}
-
-pub(super) fn enforce_personality_integrity_guard(
-    user_prompt: &str,
-    response: String,
-    agent_name: &str,
-    executed_model: &str,
-) -> String {
-    if !contains_foreign_identity_boilerplate(&response) {
-        return response;
-    }
-    tracing::warn!("personality integrity guard stripped foreign identity boilerplate");
-    let cleaned = filter_foreign_identity_sentences(&response);
-    if !cleaned.is_empty() {
-        return cleaned;
-    }
-    let lower_prompt = user_prompt.to_ascii_lowercase();
-    let asks_release_summary = lower_prompt.contains("release")
-        || lower_prompt.contains("changelog")
-        || lower_prompt.contains("linkedin")
-        || lower_prompt.contains("x.com")
-        || lower_prompt.contains("twitter")
-        || lower_prompt.contains("v0.9.5")
-        || lower_prompt.contains("0.9.5");
-    if asks_release_summary {
-        return "I need concrete Ironclad 0.9.5 context to summarize accurately. I can pull from changelog/roadmap memory if available, or you can provide release notes and I’ll format them for operator, LinkedIn, and X."
-            .to_string();
-    }
-    if requests_model_identity(user_prompt) {
-        return format!(
-            "I am {} and I am currently running on {}.",
-            agent_name, executed_model
-        );
-    }
-    format!(
-        "I’m {}. I’ll continue in my configured voice and avoid foreign boilerplate.",
-        agent_name
-    )
-}
+// ── Current-events truth guard ───────────────────────────────
 
 fn looks_like_stale_knowledge_disclaimer(response: &str) -> bool {
     let lower = response.to_ascii_lowercase();
@@ -468,48 +179,7 @@ pub(super) fn enforce_current_events_truth_guard(user_prompt: &str, response: St
         .to_string()
 }
 
-pub(super) fn is_overbroad_sensitive_conflict_refusal(response: &str) -> bool {
-    let lower = response.to_ascii_lowercase();
-    let markers = [
-        "i cannot provide quotes related to ongoing conflicts",
-        "i can't provide quotes related to ongoing conflicts",
-        "i cannot provide quotes",
-        "sensitive geopolitical situations",
-        "helpful and harmless",
-        "avoiding engagement with potentially harmful or biased content",
-        "if you have other requests that do not involve sensitive topics",
-    ];
-    markers.iter().any(|m| lower.contains(m))
-}
-
-pub(super) fn enforce_internal_jargon_guard(response: String, agent_name: &str) -> String {
-    let mut kept = Vec::new();
-    let mut removed = false;
-    for line in response.lines() {
-        let t = line.trim();
-        let lower = t.to_ascii_lowercase();
-        let internal = lower.contains("decomposition gate decision")
-            || lower.contains("expected_utility_margin")
-            || lower.starts_with("centralized delegation is sensible")
-            || lower.starts_with("delegation gate decision");
-        if internal {
-            removed = true;
-            continue;
-        }
-        kept.push(line);
-    }
-    if !removed {
-        return response;
-    }
-    let cleaned = kept.join("\n").trim().to_string();
-    if cleaned.is_empty() {
-        return format!(
-            "{} here. I’ll keep internals out of the reply and focus on actionable results.",
-            agent_name
-        );
-    }
-    cleaned
-}
+// ── Internal metadata stripping ──────────────────────────────
 
 fn is_internal_delegation_metadata_line(line: &str) -> bool {
     let t = line.trim();
@@ -564,28 +234,7 @@ pub(super) fn strip_internal_delegation_metadata(content: &str) -> String {
         .to_string()
 }
 
-pub(super) fn enforce_internal_protocol_guard(response: String, agent_name: &str) -> String {
-    let lower = response.to_ascii_lowercase();
-    if !lower.contains("\"tool_call\"")
-        && !lower.contains("unexecuted_streaming_tool_call")
-        && !lower.contains("delegated_subagent=")
-        && !lower.contains("selected_subagent=")
-        && !lower.contains("subtask ")
-    {
-        return response;
-    }
-
-    let stripped = strip_internal_delegation_metadata(&response);
-    if stripped.is_empty() {
-        return format!(
-            "{} here. I filtered internal execution protocol and will continue with user-facing output only.",
-            agent_name
-        );
-    }
-    stripped
-}
-
-// ── Scope validation ──────────────────────────────────────────
+// ── Scope validation ─────────────────────────────────────────
 
 /// Max length for scope identifiers (peer_id, group_id, channel).
 pub(super) const MAX_SCOPE_ID: usize = 256;

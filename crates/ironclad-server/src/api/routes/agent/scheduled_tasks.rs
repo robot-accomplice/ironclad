@@ -1,3 +1,11 @@
+//! Scheduled (cron) task execution via the unified pipeline.
+//!
+//! ## Security fix
+//!
+//! Injection defense was completely absent from this entry point.
+//! Now routed through `PipelineConfig::cron()` which enables injection
+//! defense (block at >0.7, sanitize at 0.3-0.7).
+
 use serde_json::json;
 
 use super::AppState;
@@ -5,6 +13,7 @@ use super::decomposition::{
     DecompositionOutcome, DelegationProvenance, apply_decomposition_decision,
     build_gate_system_note, evaluate_decomposition_gate,
 };
+use super::pipeline::{PipelineConfig, UnifiedPipelineInput};
 
 pub(crate) async fn execute_scheduled_agent_task(
     state: &AppState,
@@ -25,7 +34,32 @@ pub(crate) async fn execute_scheduled_agent_task(
         )
         .await;
     }
+    drop(config);
 
+    // ── SECURITY FIX: injection defense (was completely missing) ─────
+    let pipeline_config = PipelineConfig::cron();
+    let task_content = if pipeline_config.injection_defense {
+        let threat = ironclad_agent::injection::check_injection(task);
+        if threat.is_blocked() {
+            return Err(format!(
+                "scheduled task blocked: injection detected (score={:.2})",
+                threat.value()
+            ));
+        }
+        if threat.is_caution() {
+            tracing::info!(
+                score = threat.value(),
+                "Sanitizing caution-level cron task input"
+            );
+            ironclad_agent::injection::sanitize(task)
+        } else {
+            task.to_string()
+        }
+    } else {
+        task.to_string()
+    };
+
+    // ── Session resolution (Dedicated: agent-scoped) ────────────────
     let session_id = ironclad_db::sessions::find_or_create(
         &state.db,
         agent_id,
@@ -33,7 +67,7 @@ pub(crate) async fn execute_scheduled_agent_task(
     )
     .map_err(|e| format!("failed to create scheduled-task session: {e}"))?;
 
-    let _ = ironclad_db::sessions::append_message(&state.db, &session_id, "user", task)
+    let _ = ironclad_db::sessions::append_message(&state.db, &session_id, "user", &task_content)
         .map_err(|e| format!("failed to store scheduled-task prompt: {e}"))?;
 
     let turn_id = uuid::Uuid::new_v4().to_string();
@@ -49,14 +83,10 @@ pub(crate) async fn execute_scheduled_agent_task(
         tracing::warn!(error = %e, "failed to pre-create scheduled-task turn");
     }
 
-    let personality = state.personality.read().await;
-    let os_text = personality.os_text.clone();
-    let firmware_text = personality.firmware_text.clone();
-    drop(personality);
-
-    let features = ironclad_llm::extract_features(task, 0, 1);
+    // ── Decomposition gate ──────────────────────────────────────────
+    let features = ironclad_llm::extract_features(&task_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
-    let gate_decision = evaluate_decomposition_gate(state, task, complexity).await;
+    let gate_decision = evaluate_decomposition_gate(state, &task_content, complexity).await;
     let outcome = apply_decomposition_decision(state, &gate_decision, &session_id, "cron").await;
     let delegation_workflow_note = match outcome {
         DecompositionOutcome::SpecialistProposalPending { prompt } => {
@@ -70,38 +100,20 @@ pub(crate) async fn execute_scheduled_agent_task(
     let gate_system_note =
         build_gate_system_note(&gate_decision, delegation_workflow_note.as_deref());
 
-    let input = super::core::InferenceInput {
+    // ── Unified pipeline (replaces manual InferenceInput + prepare + execute) ──
+    let input = UnifiedPipelineInput {
         state,
+        config: &pipeline_config,
         session_id: &session_id,
-        user_content: task,
+        user_content: &task_content,
         turn_id: &turn_id,
-        channel_label: "cron",
-        agent_name: config.agent.name.clone(),
-        agent_id: root_agent_id,
-        os_text,
-        firmware_text,
-        primary_model: config.models.primary.clone(),
-        tier_adapt: config.tier_adapt.clone(),
+        is_correction_turn: false,
         delegation_workflow_note,
-        inject_diagnostics: false,
         gate_system_note: Some(gate_system_note),
         delegated_execution_note: None,
+        delegation_provenance: DelegationProvenance::default(),
     };
-    drop(config);
 
-    let prepared = super::core::prepare_inference(&input).await?;
-    let mut provenance = DelegationProvenance::default();
-    let result = super::core::execute_inference_pipeline(
-        state,
-        &prepared,
-        &session_id,
-        task,
-        &turn_id,
-        ironclad_core::InputAuthority::SelfGenerated,
-        Some("cron"),
-        &mut provenance,
-    )
-    .await?;
-
+    let result = super::pipeline::execute_unified_pipeline(input).await?;
     Ok(result.content)
 }

@@ -206,7 +206,7 @@ mod tests {
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES (?1, ?2, 'agent', 'ended')",
+                "INSERT INTO sessions (id, agent_id, scope_key, status) VALUES (?1, ?2, 'agent', 'archived')",
                 rusqlite::params!["s2", "alpha"],
             )
             .unwrap();

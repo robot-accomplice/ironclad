@@ -315,17 +315,19 @@ async fn run_llm_recommendation_analysis(
         tools: vec![],
     };
 
-    let llm = state.llm.read().await;
-    let provider = match llm.providers.get_by_model(&model) {
-        Some(p) => p.clone(),
-        None => {
-            return Err(JsonError(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("no provider configured for model {model}"),
-            ));
-        }
+    let (provider, client) = {
+        let llm = state.llm.read().await;
+        let provider = match llm.providers.get_by_model(&model) {
+            Some(p) => p.clone(),
+            None => {
+                return Err(JsonError(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("no provider configured for model {model}"),
+                ));
+            }
+        };
+        (provider, llm.client.clone())
     };
-    drop(llm);
 
     let key = resolve_provider_key(
         &provider.name,
@@ -352,9 +354,7 @@ async fn run_llm_recommendation_analysis(
             format!("failed to translate request: {e}"),
         )
     })?;
-    let llm = state.llm.read().await;
-    let resp = llm
-        .client
+    let resp = client
         .forward_with_provider(
             &url,
             &key,
@@ -369,7 +369,6 @@ async fn run_llm_recommendation_analysis(
                 format!("analysis provider call failed: {e}"),
             )
         })?;
-    drop(llm);
 
     let unified =
         ironclad_llm::format::translate_response(&resp, provider.format).unwrap_or_else(|e| {

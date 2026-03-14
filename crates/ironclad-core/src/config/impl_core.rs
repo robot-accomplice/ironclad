@@ -68,6 +68,17 @@ impl IroncladConfig {
                 source.path = Some(expand_tilde(p));
             }
         }
+
+        // Auto-populate tool_allowed_paths from feature configs so that
+        // workspace_only mode doesn't block configured external paths.
+        if self.obsidian.enabled
+            && let Some(ref vp) = self.obsidian.vault_path
+        {
+            let canonical = vp.clone();
+            if !self.security.filesystem.tool_allowed_paths.contains(&canonical) {
+                self.security.filesystem.tool_allowed_paths.push(canonical);
+            }
+        }
     }
 
     fn merge_bundled_providers(&mut self) {
@@ -214,6 +225,13 @@ impl IroncladConfig {
             )));
         }
 
+        if self.server.cron_max_concurrency == 0 || self.server.cron_max_concurrency > 16 {
+            return Err(IroncladError::Config(format!(
+                "server.cron_max_concurrency must be between 1 and 16, got {}",
+                self.server.cron_max_concurrency
+            )));
+        }
+
         // ── Security validation ─────────────────────────────────
         // Allow-list authority must not exceed trusted authority (the allow-list
         // is a weaker authentication signal than trusted_sender_ids).
@@ -233,6 +251,16 @@ impl IroncladConfig {
                  (otherwise the threat scanner has no effect)"
                     .into(),
             ));
+        }
+
+        // ── Filesystem security validation ─────────────────────────
+        for p in &self.security.filesystem.script_allowed_paths {
+            if !p.is_absolute() {
+                return Err(IroncladError::Config(format!(
+                    "security.filesystem.script_allowed_paths: '{}' must be an absolute path",
+                    p.display()
+                )));
+            }
         }
 
         // ── Routing config validation ──────────────────────────────
@@ -314,6 +342,39 @@ impl IroncladConfig {
                     "models.routing.blocked_models entries must be non-empty".into(),
                 ));
             }
+        }
+        if self.models.routing.per_provider_timeout_seconds < 5 {
+            return Err(IroncladError::Config(format!(
+                "models.routing.per_provider_timeout_seconds must be >= 5, got {}",
+                self.models.routing.per_provider_timeout_seconds
+            )));
+        }
+        if self.models.routing.max_total_inference_seconds < self.models.routing.per_provider_timeout_seconds {
+            return Err(IroncladError::Config(
+                "models.routing.max_total_inference_seconds must be >= per_provider_timeout_seconds".into(),
+            ));
+        }
+        if self.models.routing.max_fallback_attempts == 0 {
+            return Err(IroncladError::Config(
+                "models.routing.max_fallback_attempts must be >= 1".into(),
+            ));
+        }
+
+        // Warn (not error) when the total budget can't sustain all fallback attempts.
+        // Users may intentionally cap wall-clock time below the theoretical max.
+        let min_useful_total = self
+            .models
+            .routing
+            .per_provider_timeout_seconds
+            .saturating_mul(self.models.routing.max_fallback_attempts as u64);
+        if self.models.routing.max_total_inference_seconds < min_useful_total {
+            tracing::warn!(
+                per_provider = self.models.routing.per_provider_timeout_seconds,
+                max_total = self.models.routing.max_total_inference_seconds,
+                max_attempts = self.models.routing.max_fallback_attempts,
+                "max_total_inference_seconds < per_provider_timeout_seconds * max_fallback_attempts; \
+                 the fallback chain may be truncated by the total budget"
+            );
         }
 
         Ok(())

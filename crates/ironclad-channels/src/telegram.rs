@@ -278,6 +278,95 @@ impl TelegramAdapter {
             tracing::debug!(chat_id, message_id, error = %e, "Telegram message delete failed");
         }
     }
+
+    /// Send a single chunk with MarkdownV2 parse mode.
+    ///
+    /// Returns `Ok(true)` if the message was accepted, `Ok(false)` if Telegram
+    /// rejected it due to entity-parse failure (caller should retry as plain
+    /// text), or `Err` for non-recoverable transport/auth errors.
+    async fn send_chunk_mdv2(&self, url: &str, chat_id: &str, text: &str) -> Result<bool> {
+        let body = json!({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "MarkdownV2",
+        });
+        let resp = self
+            .client
+            .post(url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| IroncladError::Network(format!("sendMessage failed: {e}")))?;
+
+        let status = resp.status();
+
+        // 400 with "can't parse entities" → recoverable, caller retries as plain text.
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let resp_body: Value = resp
+                .json()
+                .await
+                .unwrap_or_else(|_| json!({"description": "unknown"}));
+            let desc = resp_body
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if desc.contains("can't parse entities") || desc.contains("Can't parse entities") {
+                return Ok(false);
+            }
+            // Some other 400 — propagate as error.
+            return Err(IroncladError::Network(format!("Telegram API 400: {desc}")));
+        }
+
+        // All other statuses go through the standard handler.
+        // We need to reconstruct enough for handle_api_response, but it
+        // already consumed the response above only on 400. For non-400 we
+        // still have the response.
+        self.handle_api_response(resp).await?;
+        Ok(true)
+    }
+}
+
+/// Strip MarkdownV2 escape sequences to produce clean plain text.
+///
+/// MarkdownV2 escapes special chars with a preceding backslash
+/// (`\_`, `\*`, `\[`, `\.`, etc.). This function removes the backslash
+/// so the text reads naturally when sent without parse_mode.
+fn strip_markdownv2_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\'
+            && let Some(&next) = chars.peek()
+        {
+            // MarkdownV2 special chars that get escaped.
+            if matches!(
+                next,
+                '_' | '*'
+                    | '['
+                    | ']'
+                    | '('
+                    | ')'
+                    | '~'
+                    | '`'
+                    | '>'
+                    | '#'
+                    | '+'
+                    | '-'
+                    | '='
+                    | '|'
+                    | '{'
+                    | '}'
+                    | '.'
+                    | '!'
+            ) {
+                out.push(next);
+                chars.next();
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    out
 }
 
 #[async_trait]
@@ -389,13 +478,26 @@ impl ChannelAdapter for TelegramAdapter {
         let chunks = Self::chunk_message(&msg.content, 4096);
 
         for chunk in chunks {
-            let body = json!({
-                "chat_id": msg.recipient_id,
-                "text": chunk,
-            });
-
             debug!(chat_id = %msg.recipient_id, len = chunk.len(), "sending Telegram message");
 
+            // Try MarkdownV2 first (the formatter produces MarkdownV2 output).
+            if self
+                .send_chunk_mdv2(&url, &msg.recipient_id, &chunk)
+                .await?
+            {
+                continue;
+            }
+
+            // MarkdownV2 was rejected — fall back to plain text with escapes stripped.
+            tracing::warn!(
+                chat_id = %msg.recipient_id,
+                "Telegram rejected MarkdownV2; retrying as plain text"
+            );
+            let plain = strip_markdownv2_escapes(&chunk);
+            let body = json!({
+                "chat_id": msg.recipient_id,
+                "text": plain,
+            });
             let resp = self
                 .client
                 .post(&url)
@@ -403,7 +505,6 @@ impl ChannelAdapter for TelegramAdapter {
                 .send()
                 .await
                 .map_err(|e| IroncladError::Network(format!("sendMessage failed: {e}")))?;
-
             self.handle_api_response(resp).await?;
         }
 
@@ -909,5 +1010,28 @@ mod tests {
         let result = adapter.recv().await.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().content, "buffered");
+    }
+
+    #[test]
+    fn strip_mdv2_escapes_removes_backslashes() {
+        assert_eq!(
+            strip_markdownv2_escapes("Hello\\. How are you\\?"),
+            "Hello. How are you\\?" // `?` is NOT a MarkdownV2 special char
+        );
+        assert_eq!(
+            strip_markdownv2_escapes("Price is \\$10\\.00"),
+            "Price is \\$10.00" // `$` is not special, `.` is
+        );
+        assert_eq!(
+            strip_markdownv2_escapes("*bold* and \\_italic\\_"),
+            "*bold* and _italic_"
+        );
+        assert_eq!(
+            strip_markdownv2_escapes("no escapes here"),
+            "no escapes here"
+        );
+        assert_eq!(strip_markdownv2_escapes(""), "");
+        // Trailing backslash preserved.
+        assert_eq!(strip_markdownv2_escapes("end\\"), "end\\");
     }
 }

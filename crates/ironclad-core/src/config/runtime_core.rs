@@ -54,6 +54,20 @@ pub struct SkillsConfig {
     pub sandbox_env: bool,
     #[serde(default = "default_true")]
     pub hot_reload: bool,
+    /// Maximum virtual memory (bytes) a skill script process may allocate.
+    /// Enforced via RLIMIT_AS on Unix. None = no limit. Default: 256 MiB.
+    #[serde(default = "default_script_max_memory")]
+    pub script_max_memory_bytes: Option<u64>,
+    /// Whether sandboxed scripts are allowed outbound network access.
+    /// When false the runner attempts platform-specific network isolation
+    /// (macOS sandbox-exec, Linux unshare). Default: false (deny by default).
+    #[serde(default)]
+    pub network_allowed: bool,
+    /// Optional workspace root exposed to scripts as $IRONCLAD_WORKSPACE.
+    /// Scripts are confined to skills_dir for their own code, but may read/write
+    /// within this workspace path. If None, no workspace path is exposed.
+    #[serde(default)]
+    pub workspace_dir: Option<PathBuf>,
 }
 
 impl Default for SkillsConfig {
@@ -65,6 +79,9 @@ impl Default for SkillsConfig {
             allowed_interpreters: default_interpreters(),
             sandbox_env: true,
             hot_reload: true,
+            script_max_memory_bytes: default_script_max_memory(),
+            network_allowed: false,
+            workspace_dir: None,
         }
     }
 }
@@ -77,6 +94,9 @@ fn default_script_timeout() -> u64 {
 }
 fn default_script_max_output() -> usize {
     1_048_576
+}
+fn default_script_max_memory() -> Option<u64> {
+    Some(256 * 1024 * 1024) // 256 MiB
 }
 fn default_interpreters() -> Vec<String> {
     #[cfg(windows)]

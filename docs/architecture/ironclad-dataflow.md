@@ -127,7 +127,7 @@ flowchart TD
     PROMPT_BUILD --> MODEL_SELECT
 
     subgraph LlmPipeline["④ LLM Inference Pipeline"]
-        MODEL_SELECT["ironclad-llm/router.rs<br/>select_for_complexity"]
+        MODEL_SELECT["ironclad-llm/router.rs<br/>select_routed_model_with_audit"]
         MODEL_SELECT --> CIRCUIT{"Circuit Breaker<br/>blocked?"}
         CIRCUIT -->|"blocked → advance fallback"| MODEL_SELECT
         CIRCUIT -->|open| DEDUP{"In-flight<br/>duplicate?"}
@@ -314,24 +314,22 @@ flowchart TD
 
 ---
 
-## 4.1 Behavior Guard + Deterministic Shortcut Dataflow
-<!-- last_updated: 2026-03-06, version: 0.9.5-prep -->
+## 4.1 Unified Pipeline — Intent Registry, Shortcut Dispatcher & Guard Chain
+<!-- last_updated: 2026-03-13, version: 0.9.7 -->
 
-High-frequency operator prompts with deterministic intent (for example, filesystem counts and direct capability checks) now prefer the execution-shortcut path. Guardrails sanitize internal protocol metadata and force user-facing fallbacks when model output degrades.
+All user prompts flow through the unified pipeline: `IntentRegistry::classify()` evaluates all 22 intent matchers once, `ShortcutDispatcher` routes deterministic intents to registered `ShortcutHandler` implementations (15 handlers), and `GuardChain::apply()` runs the appropriate guard set (`full`, `cached`, or `streaming`) on LLM output.
 
 ```mermaid
 flowchart TD
-    U["User Prompt"] --> I["Intent Classifier (intents.rs)"]
-    I --> B{"Bypass cache?"}
-    B -->|yes| S{"Deterministic shortcut match?"}
-    S -->|yes| T["Execute tool/runtime shortcut<br/>(core::try_execution_shortcut)"]
+    U["User Prompt"] --> I["IntentRegistry::classify()"]
+    I --> B{"Bypass cache?<br/>(registry.should_bypass_cache)"}
+    B -->|yes| S{"ShortcutDispatcher match?"}
+    S -->|yes| T["ShortcutHandler::execute()<br/>(15 registered handlers)"]
     T --> R["Verified result + tool evidence"]
     S -->|no| M["LLM inference path"]
     B -->|no| M
-    M --> G1["Execution truth guard"]
-    G1 --> G2["Personality + jargon guards"]
-    G2 --> G3["Internal protocol guard<br/>(strip delegation/tool metadata)"]
-    G3 --> F{"Content empty/degraded?"}
+    M --> G["GuardChain::apply()<br/>(guard_sets::full — 12 guards)"]
+    G --> F{"Content empty/degraded?"}
     F -->|yes| D["Deterministic quality fallback"]
     F -->|no| R
     D --> R
@@ -1093,8 +1091,9 @@ flowchart TD
     end
 
     subgraph Respond["⑤ Response Delivery"]
-        AGENT_RESULT --> FORMAT["Format for platform<br/>(markdown → platform markup,<br/>split long messages)"]
-        FORMAT --> SEND["Response<br/>POST to platform API"]
+        AGENT_RESULT --> FORMAT["ChannelFormatter::format()<br/>(formatter_for(platform) dispatch,<br/>markdown → platform markup)"]
+        FORMAT --> CHUNK["chunk_message()<br/>(split to platform limit:<br/>Telegram 4096, Discord 2000)"]
+        CHUNK --> SEND["Response<br/>POST to platform API"]
         SEND --> RATE_LIMIT{"Rate limited?"}
         RATE_LIMIT -->|yes| BACKOFF["Exponential backoff<br/>+ retry"]
         BACKOFF --> SEND
@@ -1518,6 +1517,7 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `p
 | Crate | Module | Functions to Test | Mock Strategy |
 | ------- | -------- | ------------------- | --------------- |
 | ironclad-channels | telegram.rs, whatsapp.rs, web.rs | `parse_inbound()`, `format_outbound()` | Mock HTTP payloads |
+| ironclad-channels | formatter.rs | `formatter_for()`, `TelegramFormatter::format()`, `WhatsAppFormatter::format()`, `SignalFormatter::format()`, `DiscordFormatter::format()`, `WebFormatter::format()`, `EmailFormatter::format()` | Pure function tests (31 tests) |
 | ironclad-db | sessions.rs | `find_or_create()`, `append_message()` | In-memory SQLite |
 | ironclad-agent | context.rs | `build_context()`, `progressive_load()` | Fixture sessions |
 | ironclad-agent | prompt.rs | `build_system_prompt()`, `inject_hmac_boundaries()` | Known inputs/outputs |
@@ -1538,7 +1538,7 @@ Tables not referenced by any diagram: `schema_version` (infrastructure-only), `p
 
 | Module | Functions to Test | Mock Strategy |
 | -------- | ------------------- | --------------- |
-| ironclad-llm/router.rs | `extract_features()`, `classify_complexity()`, `select_model()`, `select_for_complexity()`, `advance_fallback()`, `reset()` | HeuristicBackend (no mock; pure functions), mock ProviderRegistry |
+| ironclad-llm/router.rs | `extract_features()`, `classify_complexity()`, `select_model()`, `select_routed_model_with_audit()`, `advance_fallback()`, `reset()` | HeuristicBackend (no mock; pure functions), mock ProviderRegistry |
 
 ### Diagram 4 -- Memory
 

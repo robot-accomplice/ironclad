@@ -53,7 +53,7 @@ in older comments, commits, or conversations.
 | **OS** | soul, personality, character, persona | The agent's identity layer — the frequently updated surface. Loaded from `OS.toml` as `OsConfig` (containing `OsIdentity` + `OsVoice` + `prompt_text`). Identity tuning, voice adjustments, and personality evolution happen here. "Soul" and "personality" are acceptable as casual descriptors but **OS** is the canonical term in code, config files, and docs. |
 | **Firmware** | system prompt, system message, rules | The foundational behavioral rule layer — essentially immutable once defined. Loaded from `FIRMWARE.toml` as `FirmwareConfig`. Composed into the system prompt via `compose_firmware_text()`. Not the same as a raw "system prompt" — firmware is structured rules, the system prompt is the final composed text sent to the LLM. |
 | **PersonalityState** | personality | Runtime container struct holding the composed OS + Firmware text. The struct name is legacy; the _concept_ it represents is "the loaded OS and Firmware." Scheduled for rename — see [Pending Renames](#pending-renames-via-mechanic---repair). |
-| **Unified Pipeline** | dual path, agent_message path, channel_message path | Since v0.9.0: both API (`agent_message`) and channel (`process_channel_message`) entry points converge into `prepare_inference` → `execute_inference_pipeline` in `core.rs`. The two entry-point function names remain for routing purposes, but the inference path is shared. |
+| **Unified Pipeline** | dual path, agent_message path, channel_message path | Since v0.9.0: all entry points (API, streaming, channel, cron) converge through `PipelineConfig` presets. Since v0.9.7: `execute_unified_pipeline()` / `prepare_unified_pipeline()` in `pipeline.rs` replace direct `prepare_inference` calls. Each entry point selects a preset (`PipelineConfig::api()`, `::streaming()`, `::channel()`, `::cron()`) that declares which pipeline stages are active. |
 | **Metascore** | quality score, model score, performance score | 5-dimension composite score (efficacy, cost, availability, locality, confidence) used for model selection. Defined in `profile.rs`. Not the same as `QualityTracker` accuracy metrics, which feed _into_ the metascore. |
 | **QualityTracker** | accuracy tracker | Per-model accuracy/correctness metrics in `accuracy.rs`. Feeds data into metascore computation. |
 | **Soft trim** | context pruning, needs_pruning | Token-budget-aware removal of oldest turns from context. Renamed from `needs_pruning()` → `soft_trim()` in v0.9.0. |
@@ -156,6 +156,15 @@ compose the system prompt sent to the LLM.
 | **DedupTracker** | `struct` | In-flight duplicate detection. Prevents re-querying the same prompt while a prior request is pending. |
 | **PromptCompressor** | `struct` | Token pruning and summarization to fit content within context limits. |
 | **CircuitBreaker** | per-provider | Tracks failures per provider. Opens after `failure_threshold` consecutive failures; recovers after `recovery_timeout` with exponential backoff. |
+| **IntentRegistry** | `struct` | Single-entry-point intent classification. `classify()` lowercases once, evaluates all `IntentDescriptor` matchers (keyword, compound, custom), resolves conflicts by priority. Replaces triple-evaluation in `intents.rs` / `try_execution_shortcut()` / `guards.rs`. |
+| **Intent** | `enum` | 22-variant enum: `Execution`, `Delegation`, `Cron`, `FileDistribution`, `FolderScan`, `RandomToolUse`, `ModelIdentity`, `CurrentEvents`, `Introspection`, `Acknowledgement`, `ProviderInventory`, `PersonalityProfile`, `CapabilitySummary`, `WalletAddressScan`, `ImageCountScan`, `MarkdownCountScan`, `ObsidianInsights`, `EmailTriage`, `LiteraryQuoteContext`, `Contradiction`, `ShortFollowup`, `ReactiveSarcasm`. |
+| **GuardChain** | `struct` | Ordered sequence of `Guard` trait objects applied to LLM output. Preset sets: `full()` (12 guards, post-inference), `cached()` (8 guards, cache path — fixes previously-missing SubagentClaim + LiteraryQuoteRetry), `streaming()` (6 guards, SSE). |
+| **Guard** | `trait` | Single post-inference content guard: `id() → GuardId`, `is_relevant(ctx) → bool`, `evaluate(content, ctx) → GuardVerdict`. Verdicts: `Pass`, `Rewritten(String)`, `RetryRequested`, `FallbackRequired`. |
+| **ShortcutDispatcher** | `struct` | Ordered list of `ShortcutHandler` trait objects. `try_dispatch()` iterates handlers; first match wins. Replaces 983-line `try_execution_shortcut()` god function. |
+| **ShortcutHandler** | `trait` | Single deterministic-response handler: `handles(intents) → bool`, `execute(ctx) → Result<Option<InferenceOutput>>`. |
+| **PipelineConfig** | `struct` | Declarative pipeline stage configuration. Fields: `injection_defense`, `dedup_tracking`, `session_resolution`, `decomposition_gate`, `shortcuts_enabled`, `inference_mode`, `guard_set`, `cache_enabled`, `authority_resolution`, `react_loop`, `post_turn_ingest`, `nickname_refinement`. Presets: `api()`, `streaming()`, `channel()`, `cron()`. |
+| **UnifiedPipelineInput** | `struct` | Shared input for all pipeline entry points: `state`, `config`, `session_id`, `user_content`, `turn_id`, `is_correction_turn`, `delegation_workflow_note`, `gate_system_note`, `delegated_execution_note`, `delegation_provenance`. |
+| **DedupGuard** | `struct` | RAII dedup fingerprint release. On `Drop`, releases the dedup fingerprint via `try_write()` (synchronous) with `tokio::spawn` fallback when the lock is contended. Replaces 11 manual `llm.dedup.release()` patterns. |
 
 ---
 
@@ -212,13 +221,27 @@ compose the system prompt sent to the LLM.
 
 | Adapter | Platform | Transport | Notes |
 |---|---|---|---|
-| **TelegramAdapter** | Telegram | Bot API (long-poll + webhook) | Markdown V2 formatting |
-| **WhatsAppAdapter** | WhatsApp | Cloud API (webhook) | Message templates, media via Graph API |
-| **DiscordAdapter** | Discord | Gateway WebSocket + REST | Slash commands, embeds, CDN attachments |
-| **SignalAdapter** | Signal | signal-cli daemon (JSON-RPC) | End-to-end encrypted |
-| **EmailAdapter** | Email | IMAP listener + SMTP sender | OAuth2 (XOAUTH2), IDLE support, RFC 5322 parsing |
+| **TelegramAdapter** | Telegram | Bot API (long-poll + webhook) | MarkdownV2 via TelegramFormatter |
+| **WhatsAppAdapter** | WhatsApp | Cloud API (webhook) | WhatsApp formatting via WhatsAppFormatter |
+| **DiscordAdapter** | Discord | Gateway WebSocket + REST | Native Markdown via DiscordFormatter |
+| **SignalAdapter** | Signal | signal-cli daemon (JSON-RPC) | Plain text via SignalFormatter |
+| **EmailAdapter** | Email | IMAP listener + SMTP sender | Markdown via EmailFormatter |
+| **WebSocketChannel** | Web | WebSocket (axum) | Full Markdown via WebFormatter |
 | **VoicePipeline** | Voice | WebRTC | STT (Whisper), TTS, bidirectional audio |
 | **A2aProtocol** | Agent-to-Agent | Custom | Zero-trust: ECDH key exchange, AES-256-GCM |
+
+### Output Formatting
+
+| Term | Type | Definition |
+|---|---|---|
+| **ChannelFormatter** | `trait` | Per-platform output formatting interface: `platform() -> &str`, `format(content) -> String`. Lives in `ironclad-channels/formatter.rs`. |
+| **formatter_for()** | `fn` | Static dispatch registry: maps platform name (case-insensitive) to `&'static dyn ChannelFormatter`. Falls back to `WebFormatter`. |
+| **TelegramFormatter** | `struct` | Converts LLM Markdown to Telegram MarkdownV2: `**bold**` → `*bold*`, headers → bold text, 18-char escaping, code fence preservation. |
+| **DiscordFormatter** | `struct` | Passthrough (Discord natively supports Markdown). Strips internal metadata and bracket citations. |
+| **WhatsAppFormatter** | `struct` | Converts Markdown to WhatsApp formatting: `**bold**` → `*bold*`, links → bare URLs, code → monospace. |
+| **SignalFormatter** | `struct` | Strips all formatting to plain text. Code blocks indented with 2-space prefix. |
+| **WebFormatter** | `struct` | Preserves full Markdown for client-side `renderSafeMarkdown()`. Strips internal metadata only. |
+| **EmailFormatter** | `struct` | Preserves Markdown for HTML-capable clients. Strips metadata and bracket citations. |
 
 ---
 
@@ -340,7 +363,7 @@ subagent contract, model selection flowchart, and dataflow diagrams.
 | Pattern | Canonical Name | Definition |
 |---|---|---|
 | **ReAct Loop** | ReAct state machine | Think → Act → Observe → Persist cycle with idle detection, loop detection, and max-turn enforcement. |
-| **Unified Pipeline** | unified inference pipeline | `prepare_inference()` → `execute_inference_pipeline()` in `core.rs`. Both API and channel entry points converge here. |
+| **Unified Pipeline** | unified inference pipeline | `PipelineConfig` preset → `execute_unified_pipeline()` / `prepare_unified_pipeline()` in `pipeline.rs`. All four entry points (API, streaming, channel, cron) converge here. Intent classification → shortcut dispatch → cache check → inference → guard chain → delivery. |
 | **Claim-based RBAC** | security claim composition | Multiple `ClaimSource` layers contribute grants; the final `SecurityClaim` is capped by threat ceiling. |
 | **5-Tier Memory** | 5-tier hybrid retrieval | FTS5 full-text + vector cosine across five memory tiers with configurable budget allocation. |
 | **Tiered Inference** | tiered inference with escalation | Start cheap (T1), escalate on low confidence. Distinct from cascade (which handles _failure_, not _quality_). |
@@ -364,6 +387,10 @@ These terms are **no longer valid** and should not be used in new code or docs:
 | `uniroute.rs` | `router.rs` + `profile.rs` | v0.9.2 | Dead code removed (`ModelVector`, `QueryRequirements`) |
 | `select_for_complexity()` | `select_routed_model_with_audit()` | v0.9.2 | Dead code removed |
 | `select_cheapest_qualified()` | `select_routed_model_with_audit()` | v0.9.2 | Dead code removed |
+| `try_execution_shortcut()` | `ShortcutDispatcher` | v0.9.7 | 983-line god function replaced by 15 `ShortcutHandler` trait objects |
+| inline guard chains (core.rs) | `GuardChain` | v0.9.7 | 12+ inline guard calls replaced by `guard_sets::full()` / `::cached()` / `::streaming()` |
+| triple intent classification | `IntentRegistry` | v0.9.7 | `intents.rs` keyword detectors + `try_execution_shortcut()` branches + `guards.rs` corrections → single `classify()` |
+| manual dedup release (11 sites) | `DedupGuard` RAII | v0.9.7 | 11 manual `llm.dedup.release()` + `drop()` patterns replaced by RAII struct |
 
 ### Pending Renames (via `mechanic --repair`)
 
@@ -382,4 +409,4 @@ use the canonical terms.
 
 ---
 
-_Last updated: v0.9.3 — Channel Expansion release._
+_Last updated: v0.9.7 — Unified Pipeline Architecture (IntentRegistry, GuardChain, ShortcutDispatcher, PipelineConfig)._

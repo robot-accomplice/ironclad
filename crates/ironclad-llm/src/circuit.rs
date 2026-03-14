@@ -15,6 +15,10 @@ struct CircuitBreaker {
     state: CircuitState,
     failure_count: u32,
     last_failure_at: Option<Instant>,
+    /// First failure timestamp in the current accumulation window.  The counter
+    /// resets only when `now - window_start > window` (rolling window), NOT when
+    /// the gap between two consecutive failures exceeds the window.
+    window_start: Option<Instant>,
     cooldown: Duration,
     max_cooldown: Duration,
     threshold: u32,
@@ -35,6 +39,7 @@ impl CircuitBreaker {
             state: CircuitState::Closed,
             failure_count: 0,
             last_failure_at: None,
+            window_start: None,
             cooldown: Duration::from_secs(config.cooldown_seconds),
             max_cooldown: Duration::from_secs(config.max_cooldown_seconds),
             threshold: config.threshold,
@@ -107,15 +112,18 @@ impl CircuitBreakerRegistry {
             CircuitState::HalfOpen => {
                 if cb.preemptive_half_open {
                     cb.failure_count = 0;
+                    cb.window_start = None;
                     cb.preemptive_half_open = false;
                     return;
                 }
                 cb.state = CircuitState::Closed;
                 cb.failure_count = 0;
+                cb.window_start = None;
                 cb.cooldown = Duration::from_secs(base_cooldown);
             }
             CircuitState::Closed => {
                 cb.failure_count = 0;
+                cb.window_start = None;
             }
             CircuitState::Open => {}
         }
@@ -132,10 +140,18 @@ impl CircuitBreakerRegistry {
             }
             CircuitState::Closed => {
                 let now = Instant::now();
-                if let Some(last) = cb.last_failure_at
-                    && now.duration_since(last) > cb.window
-                {
-                    cb.failure_count = 0;
+                // Rolling-window accumulation: reset counter only when the
+                // *entire window* has elapsed since the first failure in the
+                // current accumulation period — NOT on the gap between two
+                // consecutive failures.  This ensures failures spaced ~window
+                // apart still accumulate toward the threshold.
+                if let Some(start) = cb.window_start {
+                    if now.duration_since(start) > cb.window {
+                        cb.failure_count = 0;
+                        cb.window_start = Some(now);
+                    }
+                } else {
+                    cb.window_start = Some(now);
                 }
                 cb.failure_count += 1;
                 cb.last_failure_at = Some(now);
@@ -161,6 +177,7 @@ impl CircuitBreakerRegistry {
         cb.state = CircuitState::Closed;
         cb.failure_count = 0;
         cb.last_failure_at = None;
+        cb.window_start = None;
         cb.cooldown = Duration::from_secs(base_cooldown);
         cb.credit_tripped = false;
         cb.operator_forced_open = false;
@@ -212,6 +229,13 @@ impl CircuitBreakerRegistry {
             return;
         }
         cb.preemptive_half_open = pressured;
+    }
+
+    /// Update the config used for newly-created breakers. Existing breakers
+    /// retain their current thresholds — only breakers created after this
+    /// call will use the updated values.
+    pub fn sync_config(&mut self, config: &CircuitBreakerConfig) {
+        self.config = config.clone();
     }
 }
 

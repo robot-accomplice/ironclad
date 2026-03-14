@@ -352,6 +352,53 @@ pub struct SecurityConfig {
     /// Default: `External` (Safe tools only).
     #[serde(default = "default_threat_ceiling")]
     pub threat_caution_ceiling: crate::types::InputAuthority,
+
+    /// Filesystem access control for agent tools and skill scripts.
+    #[serde(default)]
+    pub filesystem: FilesystemSecurityConfig,
+}
+
+/// Filesystem security policy for agent tools and skill scripts.
+///
+/// Controls two distinct surfaces:
+/// - **Tool layer**: `workspace_only` confines agent file tools to the workspace
+///   root; `protected_paths` blocks access to sensitive files as defense-in-depth.
+/// - **Script layer**: `script_fs_confinement` enables OS-level sandbox
+///   (macOS `sandbox-exec`) restricting scripts to `skills_dir`, `workspace_dir`,
+///   `/tmp`, and any `script_allowed_paths`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilesystemSecurityConfig {
+    /// Workspace-only mode: tool file operations confined to workspace root.
+    /// When true, absolute paths outside the workspace are denied by the
+    /// policy engine. Default: true.
+    #[serde(default = "default_true")]
+    pub workspace_only: bool,
+
+    /// Protected path patterns (blacklist). Case-insensitive substring match.
+    /// Default: ~25 patterns covering secrets, system files, agent internals.
+    #[serde(default = "default_protected_paths")]
+    pub protected_paths: Vec<String>,
+
+    /// Additional user-defined protected paths (merged with defaults at runtime).
+    /// Keeps defaults intact — users add patterns here without overriding.
+    #[serde(default)]
+    pub extra_protected_paths: Vec<String>,
+
+    /// OS-level filesystem confinement for skill scripts via sandbox-exec
+    /// (macOS) or Landlock (Linux 5.13+). Default: true.
+    #[serde(default = "default_true")]
+    pub script_fs_confinement: bool,
+
+    /// Additional absolute paths scripts may access beyond `skills_dir` and
+    /// `workspace_dir`. Read-only access unless the path is also the workspace.
+    #[serde(default)]
+    pub script_allowed_paths: Vec<PathBuf>,
+
+    /// Absolute paths that agent tools (read_file, write_file, etc.) may
+    /// access even in `workspace_only` mode. Auto-populated from feature
+    /// configs (e.g. `obsidian.vault_path`) during config expansion.
+    #[serde(default)]
+    pub tool_allowed_paths: Vec<PathBuf>,
 }
 
 fn default_allowlist_authority() -> crate::types::InputAuthority {
@@ -367,6 +414,46 @@ fn default_threat_ceiling() -> crate::types::InputAuthority {
     crate::types::InputAuthority::External
 }
 
+fn default_protected_paths() -> Vec<String> {
+    vec![
+        // Secrets & credentials
+        "/etc/shadow".into(),
+        "/etc/passwd".into(),
+        ".env".into(),
+        ".env.local".into(),
+        ".env.production".into(),
+        "credentials.json".into(),
+        "service-account.json".into(),
+        "wallet.json".into(),
+        "keystore.json".into(),
+        "private_key".into(),
+        ".ssh/".into(),
+        ".gnupg/".into(),
+        ".aws/credentials".into(),
+        ".kube/config".into(),
+        // System / boot
+        "/etc/sudoers".into(),
+        "/boot/".into(),
+        "/proc/".into(),
+        "/sys/".into(),
+        // Agent self-protection
+        "ironclad.toml".into(),
+        "state.db".into(),
+        "keystore.db".into(),
+        // Common sensitive patterns
+        ".htpasswd".into(),
+        ".pgpass".into(),
+        "id_rsa".into(),
+        "id_ed25519".into(),
+        ".npmrc".into(),
+        ".pypirc".into(),
+        ".netrc".into(),
+        // Database files
+        ".sqlite".into(),
+        ".db-journal".into(),
+    ]
+}
+
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
@@ -375,6 +462,20 @@ impl Default for SecurityConfig {
             trusted_authority: default_trusted_authority(),
             api_authority: default_api_authority(),
             threat_caution_ceiling: default_threat_ceiling(),
+            filesystem: FilesystemSecurityConfig::default(),
+        }
+    }
+}
+
+impl Default for FilesystemSecurityConfig {
+    fn default() -> Self {
+        Self {
+            workspace_only: true,
+            protected_paths: default_protected_paths(),
+            extra_protected_paths: Vec::new(),
+            script_fs_confinement: true,
+            script_allowed_paths: Vec::new(),
+            tool_allowed_paths: Vec::new(),
         }
     }
 }

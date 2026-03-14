@@ -135,14 +135,14 @@ mod tests {
             &db,
             Some("t2"),
             "exec",
-            "escalate",
+            "deny",
             Some("human_review"),
             Some("needs approval"),
         )
         .unwrap();
         let decisions = get_decisions_for_turn(&db, "t2").unwrap();
         assert_eq!(decisions[0].tool_name, "exec");
-        assert_eq!(decisions[0].decision, "escalate");
+        assert_eq!(decisions[0].decision, "deny");
         assert_eq!(decisions[0].rule_name.as_deref(), Some("human_review"));
         assert_eq!(decisions[0].reason.as_deref(), Some("needs approval"));
         assert!(!decisions[0].id.is_empty());

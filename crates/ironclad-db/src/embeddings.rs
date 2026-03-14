@@ -58,8 +58,7 @@ pub fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// Store an embedding using binary BLOB format (with JSON fallback column for
-/// backward compatibility).
+/// Store an embedding using binary BLOB format.
 pub fn store_embedding(
     db: &Database,
     id: &str,
@@ -74,28 +73,28 @@ pub fn store_embedding(
     let conn = db.conn();
     conn.execute(
         "INSERT OR REPLACE INTO embeddings \
-         (id, source_table, source_id, content_preview, embedding_json, embedding_blob, dimensions) \
-         VALUES (?1, ?2, ?3, ?4, '', ?5, ?6)",
-        rusqlite::params![id, source_table, source_id, content_preview, blob, dimensions],
+         (id, source_table, source_id, content_preview, embedding_blob, dimensions) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            id,
+            source_table,
+            source_id,
+            content_preview,
+            blob,
+            dimensions
+        ],
     )
     .map_err(|e| IroncladError::Database(e.to_string()))?;
 
     Ok(())
 }
 
-/// Load an embedding from a row, preferring BLOB over JSON.
-fn load_embedding_from_row(blob: Option<Vec<u8>>, json_text: &str) -> Option<Vec<f32>> {
+/// Load an embedding from a BLOB column value.
+fn load_embedding_from_row(blob: Option<Vec<u8>>) -> Option<Vec<f32>> {
     if let Some(b) = blob
         && !b.is_empty()
     {
         return Some(blob_to_embedding(&b));
-    }
-    if !json_text.is_empty() {
-        return serde_json::from_str(json_text)
-            .inspect_err(
-                |e| tracing::warn!(error = %e, "embeddings: failed to parse JSON embedding"),
-            )
-            .ok();
     }
     None
 }
@@ -117,7 +116,7 @@ pub fn search_similar(
     let conn = db.conn();
     let mut stmt = conn
         .prepare(
-            "SELECT source_table, source_id, content_preview, embedding_blob, embedding_json \
+            "SELECT source_table, source_id, content_preview, embedding_blob \
              FROM embeddings LIMIT 10000",
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -129,7 +128,6 @@ pub fn search_similar(
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<Vec<u8>>>(3)?,
-                row.get::<_, String>(4)?,
             ))
         })
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -137,10 +135,10 @@ pub fn search_similar(
     let mut results: Vec<SearchResult> = Vec::new();
 
     for row in rows {
-        let (source_table, source_id, content_preview, blob, json_text) =
+        let (source_table, source_id, content_preview, blob) =
             row.map_err(|e| IroncladError::Database(e.to_string()))?;
 
-        let embedding = match load_embedding_from_row(blob, &json_text) {
+        let embedding = match load_embedding_from_row(blob) {
             Some(e) => e,
             None => continue,
         };
@@ -217,6 +215,29 @@ pub fn hybrid_search(
     fts_results.truncate(limit);
 
     Ok(fts_results)
+}
+
+/// Delete embeddings whose `source_table + source_id` no longer reference an
+/// existing row in the parent memory table.
+///
+/// Checks `working_memory`, `episodic_memory`, `semantic_memory`,
+/// `procedural_memory`, and `relationship_memory`.  Returns the number of
+/// orphaned rows removed.
+pub fn cleanup_orphaned_embeddings(db: &Database) -> Result<usize> {
+    let conn = db.conn();
+    let deleted = conn
+        .execute(
+            "DELETE FROM embeddings WHERE NOT ( \
+               (source_table = 'working_memory'      AND source_id IN (SELECT id FROM working_memory)) \
+            OR (source_table = 'episodic_memory'      AND source_id IN (SELECT id FROM episodic_memory)) \
+            OR (source_table = 'semantic_memory'      AND source_id IN (SELECT id FROM semantic_memory)) \
+            OR (source_table = 'procedural_memory'    AND source_id IN (SELECT id FROM procedural_memory)) \
+            OR (source_table = 'relationship_memory'  AND source_id IN (SELECT id FROM relationship_memory)) \
+            )",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(deleted)
 }
 
 #[cfg(test)]
@@ -303,9 +324,9 @@ mod tests {
         let emb2 = vec![0.0, 1.0, 0.0];
         let emb3 = vec![0.9, 0.1, 0.0];
 
-        store_embedding(&db, "e1", "episodic", "ep1", "first entry", &emb1).unwrap();
-        store_embedding(&db, "e2", "episodic", "ep2", "second entry", &emb2).unwrap();
-        store_embedding(&db, "e3", "semantic", "s1", "third entry", &emb3).unwrap();
+        store_embedding(&db, "e1", "episodic_memory", "ep1", "first entry", &emb1).unwrap();
+        store_embedding(&db, "e2", "episodic_memory", "ep2", "second entry", &emb2).unwrap();
+        store_embedding(&db, "e3", "semantic_memory", "s1", "third entry", &emb3).unwrap();
 
         let query = vec![1.0, 0.0, 0.0];
         let results = search_similar(&db, &query, 10, 0.5).unwrap();
@@ -321,16 +342,16 @@ mod tests {
         let db = test_db();
         let emb1 = vec![1.0, 0.0];
         let emb2 = vec![0.0, 1.0];
-        store_embedding(&db, "e1", "test", "t1", "v1", &emb1).unwrap();
-        store_embedding(&db, "e1", "test", "t1", "v2", &emb2).unwrap();
+        store_embedding(&db, "e1", "episodic_memory", "t1", "v1", &emb1).unwrap();
+        store_embedding(&db, "e1", "episodic_memory", "t1", "v2", &emb2).unwrap();
         assert_eq!(embedding_count(&db).unwrap(), 1);
     }
 
     #[test]
     fn search_min_similarity_filter() {
         let db = test_db();
-        store_embedding(&db, "e1", "t", "1", "a", &[1.0, 0.0]).unwrap();
-        store_embedding(&db, "e2", "t", "2", "b", &[0.0, 1.0]).unwrap();
+        store_embedding(&db, "e1", "episodic_memory", "1", "a", &[1.0, 0.0]).unwrap();
+        store_embedding(&db, "e2", "episodic_memory", "2", "b", &[0.0, 1.0]).unwrap();
 
         let results = search_similar(&db, &[1.0, 0.0], 10, 0.99).unwrap();
         assert_eq!(results.len(), 1);
@@ -340,7 +361,7 @@ mod tests {
     fn embedding_count_works() {
         let db = test_db();
         assert_eq!(embedding_count(&db).unwrap(), 0);
-        store_embedding(&db, "e1", "t", "1", "a", &[1.0]).unwrap();
+        store_embedding(&db, "e1", "episodic_memory", "1", "a", &[1.0]).unwrap();
         assert_eq!(embedding_count(&db).unwrap(), 1);
     }
 
@@ -354,8 +375,24 @@ mod tests {
     #[test]
     fn hybrid_search_vector_only() {
         let db = test_db();
-        store_embedding(&db, "e1", "test", "t1", "hello world", &[1.0, 0.0, 0.0]).unwrap();
-        store_embedding(&db, "e2", "test", "t2", "goodbye", &[0.0, 1.0, 0.0]).unwrap();
+        store_embedding(
+            &db,
+            "e1",
+            "episodic_memory",
+            "t1",
+            "hello world",
+            &[1.0, 0.0, 0.0],
+        )
+        .unwrap();
+        store_embedding(
+            &db,
+            "e2",
+            "episodic_memory",
+            "t2",
+            "goodbye",
+            &[0.0, 1.0, 0.0],
+        )
+        .unwrap();
 
         let results =
             hybrid_search(&db, "zzzznonexistent", Some(&[1.0, 0.0, 0.0]), 10, 0.5).unwrap();
@@ -376,7 +413,7 @@ mod tests {
             store_embedding(
                 &db,
                 &format!("e{i}"),
-                "test",
+                "episodic_memory",
                 &format!("t{i}"),
                 &format!("entry {i}"),
                 &[1.0, 0.0],
@@ -390,7 +427,15 @@ mod tests {
     #[test]
     fn hybrid_search_no_embedding() {
         let db = test_db();
-        store_embedding(&db, "e1", "test", "t1", "hello world", &[1.0, 0.0]).unwrap();
+        store_embedding(
+            &db,
+            "e1",
+            "episodic_memory",
+            "t1",
+            "hello world",
+            &[1.0, 0.0],
+        )
+        .unwrap();
         let results = hybrid_search(&db, "hello", None, 10, 0.5).unwrap();
         assert!(results.is_empty() || !results.is_empty());
     }
@@ -398,9 +443,33 @@ mod tests {
     #[test]
     fn hybrid_search_sorted_by_similarity() {
         let db = test_db();
-        store_embedding(&db, "e1", "test", "t1", "first", &[1.0, 0.0, 0.0]).unwrap();
-        store_embedding(&db, "e2", "test", "t2", "second", &[0.5, 0.5, 0.0]).unwrap();
-        store_embedding(&db, "e3", "test", "t3", "third", &[0.0, 0.0, 1.0]).unwrap();
+        store_embedding(
+            &db,
+            "e1",
+            "episodic_memory",
+            "t1",
+            "first",
+            &[1.0, 0.0, 0.0],
+        )
+        .unwrap();
+        store_embedding(
+            &db,
+            "e2",
+            "episodic_memory",
+            "t2",
+            "second",
+            &[0.5, 0.5, 0.0],
+        )
+        .unwrap();
+        store_embedding(
+            &db,
+            "e3",
+            "episodic_memory",
+            "t3",
+            "third",
+            &[0.0, 0.0, 1.0],
+        )
+        .unwrap();
 
         let results = hybrid_search(&db, "query", Some(&[1.0, 0.0, 0.0]), 10, 1.0).unwrap();
         for w in results.windows(2) {
@@ -409,55 +478,47 @@ mod tests {
     }
 
     #[test]
-    fn load_embedding_prefers_blob() {
+    fn load_embedding_from_blob() {
         let emb = vec![1.0f32, 2.0, 3.0];
         let blob = embedding_to_blob(&emb);
-        let json = serde_json::to_string(&vec![4.0f32, 5.0, 6.0]).unwrap();
-        let loaded = load_embedding_from_row(Some(blob), &json).unwrap();
+        let loaded = load_embedding_from_row(Some(blob)).unwrap();
         assert_eq!(loaded, emb);
     }
 
     #[test]
-    fn load_embedding_falls_back_to_json() {
-        let json = serde_json::to_string(&vec![7.0f32, 8.0]).unwrap();
-        let loaded = load_embedding_from_row(None, &json).unwrap();
-        assert_eq!(loaded, vec![7.0, 8.0]);
-    }
-
-    #[test]
-    fn load_embedding_empty_both() {
-        let loaded = load_embedding_from_row(None, "");
+    fn load_embedding_none_returns_none() {
+        let loaded = load_embedding_from_row(None);
         assert!(loaded.is_none());
     }
 
     #[test]
-    fn load_embedding_empty_blob_with_json() {
-        let json = serde_json::to_string(&vec![1.0f32, 2.0]).unwrap();
-        // Empty blob (not None) should fall back to JSON
-        let loaded = load_embedding_from_row(Some(vec![]), &json).unwrap();
-        assert_eq!(loaded, vec![1.0, 2.0]);
-    }
-
-    #[test]
-    fn load_embedding_empty_blob_empty_json() {
-        let loaded = load_embedding_from_row(Some(vec![]), "");
+    fn load_embedding_empty_blob_returns_none() {
+        let loaded = load_embedding_from_row(Some(vec![]));
         assert!(loaded.is_none());
     }
 
     #[test]
     fn search_similar_skips_row_without_embedding() {
         let db = test_db();
-        // Insert a row with empty embedding data (both blob and json empty)
+        // Insert a row with no embedding data (NULL blob)
         {
             let conn = db.conn();
             conn.execute(
-                "INSERT INTO embeddings (id, source_table, source_id, content_preview, embedding_json, embedding_blob, dimensions) \
-                 VALUES ('e-no-emb', 'test', 't1', 'no embedding here', '', NULL, 0)",
+                "INSERT INTO embeddings (id, source_table, source_id, content_preview, embedding_blob, dimensions) \
+                 VALUES ('e-no-emb', 'episodic_memory', 't1', 'no embedding here', NULL, 0)",
                 [],
             ).unwrap();
         }
         // Also insert one with a real embedding
-        store_embedding(&db, "e-real", "test", "t2", "has embedding", &[1.0, 0.0]).unwrap();
+        store_embedding(
+            &db,
+            "e-real",
+            "episodic_memory",
+            "t2",
+            "has embedding",
+            &[1.0, 0.0],
+        )
+        .unwrap();
 
         let results = search_similar(&db, &[1.0, 0.0], 10, 0.0).unwrap();
         // Should only find the one with a real embedding
@@ -471,7 +532,15 @@ mod tests {
         // Store data in FTS-indexed tables (working_memory populates memory_fts)
         crate::memory::store_working(&db, "sess", "note", "quantum computing breakthrough", 5)
             .unwrap();
-        store_embedding(&db, "e1", "test", "t1", "classical computing", &[0.0, 1.0]).unwrap();
+        store_embedding(
+            &db,
+            "e1",
+            "episodic_memory",
+            "t1",
+            "classical computing",
+            &[0.0, 1.0],
+        )
+        .unwrap();
 
         // Search with FTS query that should match the working memory entry
         let results = hybrid_search(&db, "quantum", Some(&[1.0, 0.0]), 10, 0.5).unwrap();
@@ -503,7 +572,7 @@ mod tests {
         store_embedding(
             &db,
             "e1",
-            "test",
+            "episodic_memory",
             "t1",
             "machine learning",
             &[1.0, 0.0, 0.0],
@@ -517,5 +586,63 @@ mod tests {
         for w in results.windows(2) {
             assert!(w[0].similarity >= w[1].similarity);
         }
+    }
+
+    // ── Orphan cleanup tests ─────────────────────────────────
+
+    #[test]
+    fn cleanup_orphaned_embeddings_removes_dangling() {
+        let db = test_db();
+        // Create a working_memory entry and its embedding (should survive).
+        crate::memory::store_working(&db, "s1", "note", "valid", 5).unwrap();
+        let wm_id = {
+            let conn = db.conn();
+            conn.query_row("SELECT id FROM working_memory LIMIT 1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
+        };
+        store_embedding(
+            &db,
+            "e-valid",
+            "working_memory",
+            &wm_id,
+            "valid",
+            &[1.0, 0.0],
+        )
+        .unwrap();
+
+        // Create an orphaned embedding pointing at a non-existent source.
+        store_embedding(
+            &db,
+            "e-orphan",
+            "working_memory",
+            "no-such-id",
+            "orphan",
+            &[0.0, 1.0],
+        )
+        .unwrap();
+
+        assert_eq!(embedding_count(&db).unwrap(), 2);
+        let deleted = cleanup_orphaned_embeddings(&db).unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(embedding_count(&db).unwrap(), 1);
+    }
+
+    #[test]
+    fn cleanup_orphaned_embeddings_noop_when_clean() {
+        let db = test_db();
+        crate::memory::store_semantic(&db, "facts", "k1", "v1", 0.9).unwrap();
+        let sem_id = {
+            let conn = db.conn();
+            conn.query_row("SELECT id FROM semantic_memory LIMIT 1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
+        };
+        store_embedding(&db, "e1", "semantic_memory", &sem_id, "valid", &[1.0, 0.0]).unwrap();
+
+        let deleted = cleanup_orphaned_embeddings(&db).unwrap();
+        assert_eq!(deleted, 0);
     }
 }

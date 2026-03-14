@@ -84,14 +84,8 @@ pub(super) fn parse_tool_calls(response: &str) -> Vec<(String, serde_json::Value
         // But only accept it if there's no intervening closing brace (this brace
         // belongs to the tool_call, not a prior JSON object).
         if response[brace_start + 1..abs_pos].contains('}') {
-            // The opening brace belongs to an earlier JSON — try the next `{` forward
-            let fallback_start = response[abs_pos..].find('{').map(|i| abs_pos + i);
-            if let Some(fb) = fallback_start
-                && fb < abs_pos
-            {
-                search_start = abs_pos + 1;
-                continue;
-            }
+            // The opening brace belongs to an earlier JSON object — skip past the
+            // current "tool_use" marker and resume scanning for the next `{`.
             search_start = abs_pos + 1;
             continue;
         }
@@ -168,16 +162,51 @@ pub(super) fn provider_failure_user_message(
     message_already_stored: bool,
 ) -> String {
     let category = classify_provider_error(last_error);
+    // Surface timeout config hints to the user so they know the limit is adjustable.
+    let timeout_hint = extract_timeout_hint(last_error);
+    let suffix = if !timeout_hint.is_empty() {
+        format!(" {timeout_hint}")
+    } else {
+        String::new()
+    };
     if message_already_stored {
         format!(
-            "Acknowledged. I hit provider routing failure across all LLM providers ({category}). \
+            "Acknowledged. I hit provider routing failure across all LLM providers ({category}).{suffix} \
              Your message is stored and I will retry as soon as a provider path is healthy."
         )
     } else {
         format!(
-            "Acknowledged. I hit provider routing failure across all LLM providers ({category}). Please retry."
+            "Acknowledged. I hit provider routing failure across all LLM providers ({category}).{suffix} Please retry."
         )
     }
+}
+
+/// Extract a user-safe timeout hint from the raw error string.
+/// Returns a brief note like "The per-provider timeout is set to 30s (configurable in models.routing)."
+/// Returns empty string if the error isn't timeout-related.
+fn extract_timeout_hint(raw: &str) -> String {
+    // Match: "configured limit: models.routing.per_provider_timeout_seconds = 30"
+    // or:    "configured limit: models.routing.max_total_inference_seconds = 120"
+    if let Some(start) = raw.find("configured limit: ") {
+        let after = &raw[start + "configured limit: ".len()..];
+        // Split on " = " first to handle labels containing parentheses, e.g.
+        // "models.routing.max_total_inference_seconds (remaining budget) = 120)"
+        if let Some((key_part, rest)) = after.split_once(" = ") {
+            // Strip the trailing ')' from the value and any extra text.
+            let value = rest.split(')').next().unwrap_or(rest).trim();
+            // Strip any parenthetical suffix from the key for the user-facing label.
+            let key = key_part
+                .find(" (")
+                .map(|i| &key_part[..i])
+                .unwrap_or(key_part)
+                .trim();
+            let short_key = key.strip_prefix("models.routing.").unwrap_or(key);
+            return format!(
+                "The {short_key} is set to {value}s (configurable in [models.routing])."
+            );
+        }
+    }
+    String::new()
 }
 
 /// Execute a tool call through the ToolRegistry, enforcing policy and recording audit trails.
@@ -291,7 +320,7 @@ async fn execute_tool_call_internal(
     if tool_name == "run_script" {
         let script_arg = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let config = state.config.read().await;
-        let runner = ScriptRunner::new(config.skills.clone());
+        let runner = ScriptRunner::new(config.skills.clone(), config.security.filesystem.clone());
         let maybe_script_path = runner
             .resolve_script_path(std::path::Path::new(script_arg))
             .ok()

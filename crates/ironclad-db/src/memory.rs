@@ -569,6 +569,43 @@ pub fn fts_search(db: &Database, query: &str, limit: i64) -> Result<Vec<MemorySe
     Ok(results)
 }
 
+// ── Episodic dead-entry cleanup ────────────────────────────────
+
+/// Delete episodic entries with `importance <= 1` that are older than
+/// `stale_days` days.  These low-signal entries accumulate over time and
+/// bloat the episodic tier without contributing useful retrieval context.
+///
+/// Returns the number of rows deleted.
+pub fn prune_dead_episodic(db: &Database, stale_days: u32) -> Result<usize> {
+    let conn = db.conn();
+    let deleted = conn
+        .execute(
+            "DELETE FROM episodic_memory \
+             WHERE importance <= 1 \
+               AND created_at < datetime('now', ?1)",
+            [format!("-{stale_days} days")],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(deleted)
+}
+
+// ── Orphan cleanup ─────────────────────────────────────────────
+
+/// Delete working_memory rows whose `session_id` no longer exists in `sessions`.
+///
+/// Returns the number of orphaned rows removed.
+pub fn cleanup_orphaned_working_memory(db: &Database) -> Result<usize> {
+    let conn = db.conn();
+    let deleted = conn
+        .execute(
+            "DELETE FROM working_memory \
+             WHERE session_id NOT IN (SELECT id FROM sessions)",
+            [],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(deleted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1035,5 +1072,92 @@ mod tests {
         let pruned = prune_stale_procedural(&db, 30).unwrap();
         assert_eq!(pruned, 0);
         assert!(retrieve_procedural(&db, "fresh-tool").unwrap().is_some());
+    }
+
+    // ── Episodic dead-entry cleanup tests ─────────────────────
+
+    #[test]
+    fn prune_dead_episodic_removes_low_importance_old() {
+        let db = test_db();
+        store_episodic(&db, "noise", "irrelevant chatter", 1).unwrap();
+        store_episodic(&db, "signal", "critical event", 8).unwrap();
+
+        // Backdate the low-importance entry
+        db.conn()
+            .execute(
+                "UPDATE episodic_memory SET created_at = datetime('now', '-60 days') \
+                 WHERE importance <= 1",
+                [],
+            )
+            .unwrap();
+
+        let pruned = prune_dead_episodic(&db, 30).unwrap();
+        assert_eq!(pruned, 1);
+
+        let remaining = retrieve_episodic(&db, 100).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].content, "critical event");
+    }
+
+    #[test]
+    fn prune_dead_episodic_keeps_recent_low_importance() {
+        let db = test_db();
+        store_episodic(&db, "recent-noise", "just happened", 1).unwrap();
+        // Don't backdate — should not be pruned
+        let pruned = prune_dead_episodic(&db, 30).unwrap();
+        assert_eq!(pruned, 0);
+    }
+
+    #[test]
+    fn prune_dead_episodic_keeps_old_high_importance() {
+        let db = test_db();
+        store_episodic(&db, "important", "old but critical", 5).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE episodic_memory SET created_at = datetime('now', '-90 days')",
+                [],
+            )
+            .unwrap();
+        let pruned = prune_dead_episodic(&db, 30).unwrap();
+        assert_eq!(pruned, 0);
+    }
+
+    // ── Orphan cleanup tests ─────────────────────────────────
+
+    #[test]
+    fn cleanup_orphaned_working_memory_removes_dangling() {
+        let db = test_db();
+        // Create a real session so its working_memory survives.
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO sessions (id, agent_id) VALUES ('live-sess', 'a')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        store_working(&db, "live-sess", "note", "survives", 5).unwrap();
+        store_working(&db, "dead-sess", "note", "orphaned", 5).unwrap();
+
+        let deleted = cleanup_orphaned_working_memory(&db).unwrap();
+        assert_eq!(deleted, 1);
+
+        let remaining = retrieve_working(&db, "live-sess").unwrap();
+        assert_eq!(remaining.len(), 1);
+        let gone = retrieve_working(&db, "dead-sess").unwrap();
+        assert!(gone.is_empty());
+    }
+
+    #[test]
+    fn cleanup_orphaned_working_memory_noop_when_clean() {
+        let db = test_db();
+        let conn = db.conn();
+        conn.execute("INSERT INTO sessions (id, agent_id) VALUES ('s1', 'a')", [])
+            .unwrap();
+        drop(conn);
+
+        store_working(&db, "s1", "note", "ok", 5).unwrap();
+        let deleted = cleanup_orphaned_working_memory(&db).unwrap();
+        assert_eq!(deleted, 0);
     }
 }

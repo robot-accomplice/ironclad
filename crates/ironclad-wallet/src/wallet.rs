@@ -350,6 +350,12 @@ impl Wallet {
             .map_err(|e| IroncladError::Wallet(format!("RPC response parse failed: {e}")))?;
 
         if let Some(err) = body.get("error") {
+            let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+            if code == -32016 || code == -32005 || code == 429 {
+                return Err(IroncladError::Wallet(format!(
+                    "RPC rate-limited (code {code}): {err}"
+                )));
+            }
             return Err(IroncladError::Wallet(format!("RPC error: {err}")));
         }
 
@@ -404,6 +410,12 @@ impl Wallet {
             .map_err(|e| IroncladError::Wallet(format!("RPC response parse failed: {e}")))?;
 
         if let Some(err) = body.get("error") {
+            let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+            if code == -32016 || code == -32005 || code == 429 {
+                return Err(IroncladError::Wallet(format!(
+                    "RPC rate-limited (code {code}): {err}"
+                )));
+            }
             return Err(IroncladError::Wallet(format!("RPC error: {err}")));
         }
 
@@ -441,7 +453,17 @@ impl Wallet {
                 decimals: 18,
                 is_native: true,
             }),
-            Err(e) => tracing::warn!(error = %e, "failed to fetch native balance"),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("RPC rate-limited") {
+                    warn!(
+                        error = %e,
+                        "rate-limited by RPC provider; skipping all token queries"
+                    );
+                    return balances;
+                }
+                warn!(error = %e, "failed to fetch native balance");
+            }
         }
 
         for token in self.known_tokens() {
@@ -454,10 +476,20 @@ impl Wallet {
                     decimals: token.decimals as u32,
                     is_native: false,
                 }),
-                Err(e) => tracing::warn!(
-                    error = %e, token = token.symbol,
-                    "failed to fetch token balance"
-                ),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("RPC rate-limited") {
+                        warn!(
+                            error = %e,
+                            "rate-limited by RPC provider; skipping remaining token queries"
+                        );
+                        break;
+                    }
+                    warn!(
+                        error = %e, token = token.symbol,
+                        "failed to fetch token balance"
+                    );
+                }
             }
         }
 

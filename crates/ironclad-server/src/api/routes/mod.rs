@@ -3397,7 +3397,7 @@ primary = "ollama/qwen3:8b"
         let skill_id = ironclad_db::skills::register_skill(
             &state.db,
             "test-skill",
-            "tool",
+            "instruction",
             Some("A test skill"),
             "/path/to/skill",
             "abc123",
@@ -3421,7 +3421,7 @@ primary = "ollama/qwen3:8b"
         let body = json_body(resp).await;
         assert_eq!(body["id"], skill_id);
         assert_eq!(body["name"], "test-skill");
-        assert_eq!(body["kind"], "tool");
+        assert_eq!(body["kind"], "instruction");
         assert_eq!(body["description"], "A test skill");
     }
 
@@ -4147,12 +4147,13 @@ params = { path = "README.md" }
         .unwrap();
 
         let mut registry = ToolRegistry::new();
-        let skills_cfg = {
+        let (skills_cfg, fs_security) = {
             let cfg = state.config.read().await;
-            cfg.skills.clone()
+            (cfg.skills.clone(), cfg.security.filesystem.clone())
         };
         registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
             skills_cfg,
+            fs_security,
         )));
         state.tools = Arc::new(registry);
 
@@ -4359,12 +4360,13 @@ params = { path = "README.md" }
         .unwrap();
 
         let mut registry = ToolRegistry::new();
-        let skills_cfg = {
+        let (skills_cfg, fs_security) = {
             let cfg = state.config.read().await;
-            cfg.skills.clone()
+            (cfg.skills.clone(), cfg.security.filesystem.clone())
         };
         registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
             skills_cfg,
+            fs_security,
         )));
         state.tools = Arc::new(registry);
 
@@ -4393,61 +4395,31 @@ params = { path = "README.md" }
 
     #[tokio::test]
     async fn run_script_invalid_skill_risk_level_is_denied() {
-        let mut state = test_state();
-        let skills_dir = tempfile::tempdir().unwrap();
-        let script = skills_dir.path().join("invalid-risk.sh");
-        std::fs::write(&script, "#!/bin/bash\necho risk").unwrap();
-        let script_canonical = std::fs::canonicalize(&script).unwrap();
-
-        {
-            let mut cfg = state.config.write().await;
-            cfg.skills.skills_dir = skills_dir.path().to_path_buf();
-        }
-
-        ironclad_db::skills::register_skill_full(
+        // The skills table has a CHECK constraint on risk_level that only
+        // allows Safe/Caution/Dangerous/Forbidden. Verify the DB rejects
+        // an invalid risk_level at insert time (schema-level enforcement).
+        let state = test_state();
+        let result = ironclad_db::skills::register_skill_full(
             &state.db,
             "invalid-risk-runner",
             "structured",
             Some("invalid risk in db"),
-            &script_canonical.to_string_lossy(),
+            "/tmp/invalid-risk.sh",
             "hash-invalid-risk",
             Some(r#"{"keywords":["invalid-risk"]}"#),
             None,
             None,
-            Some(&script_canonical.to_string_lossy()),
+            Some("/tmp/invalid-risk.sh"),
             "TotallyInvalid",
-        )
-        .unwrap();
+        );
 
-        let mut registry = ToolRegistry::new();
-        let skills_cfg = {
-            let cfg = state.config.read().await;
-            cfg.skills.clone()
-        };
-        registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
-            skills_cfg,
-        )));
-        state.tools = Arc::new(registry);
-
-        let sid =
-            ironclad_db::sessions::find_or_create(&state.db, "test-turn-agent", None).unwrap();
-        let turn_id =
-            ironclad_db::sessions::create_turn(&state.db, &sid, None, None, None, None).unwrap();
-
-        let result = agent::execute_tool_call(
-            &state,
-            "run_script",
-            &serde_json::json!({ "path": "invalid-risk.sh" }),
-            &turn_id,
-            InputAuthority::Creator,
-            None,
-        )
-        .await;
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
         assert!(
-            err.contains("invalid skill risk_level"),
+            result.is_err(),
+            "expected CHECK constraint to reject invalid risk_level"
+        );
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(
+            err.contains("CHECK constraint failed"),
             "unexpected error: {err}"
         );
     }
@@ -4483,12 +4455,13 @@ params = { path = "README.md" }
         assert_eq!(toggled, Some(false));
 
         let mut registry = ToolRegistry::new();
-        let skills_cfg = {
+        let (skills_cfg, fs_security) = {
             let cfg = state.config.read().await;
-            cfg.skills.clone()
+            (cfg.skills.clone(), cfg.security.filesystem.clone())
         };
         registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
             skills_cfg,
+            fs_security,
         )));
         state.tools = Arc::new(registry);
 
@@ -4541,12 +4514,13 @@ params = { path = "README.md" }
         .unwrap();
 
         let mut registry = ToolRegistry::new();
-        let skills_cfg = {
+        let (skills_cfg, fs_security) = {
             let cfg = state.config.read().await;
-            cfg.skills.clone()
+            (cfg.skills.clone(), cfg.security.filesystem.clone())
         };
         registry.register(Box::new(ironclad_agent::tools::ScriptRunnerTool::new(
             skills_cfg,
+            fs_security,
         )));
         state.tools = Arc::new(registry);
 

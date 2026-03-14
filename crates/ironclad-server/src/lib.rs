@@ -273,7 +273,9 @@ pub async fn bootstrap_with_config_path(
     policy_engine.add_rule(Box::new(FinancialRule::new(
         config.treasury.per_payment_cap,
     )));
-    policy_engine.add_rule(Box::new(PathProtectionRule::default()));
+    policy_engine.add_rule(Box::new(PathProtectionRule::from_config(
+        &config.security.filesystem,
+    )));
     policy_engine.add_rule(Box::new(RateLimitRule::default()));
     policy_engine.add_rule(Box::new(ValidationRule));
     let policy_engine = Arc::new(policy_engine);
@@ -562,7 +564,10 @@ pub async fn bootstrap_with_config_path(
     let mut tool_registry = ToolRegistry::new();
     tool_registry.register(Box::new(EchoTool));
     tool_registry.register(Box::new(BashTool));
-    tool_registry.register(Box::new(ScriptRunnerTool::new(config.skills.clone())));
+    tool_registry.register(Box::new(ScriptRunnerTool::new(
+        config.skills.clone(),
+        config.security.filesystem.clone(),
+    )));
     tool_registry.register(Box::new(ReadFileTool));
     tool_registry.register(Box::new(WriteFileTool));
     tool_registry.register(Box::new(EditFileTool));

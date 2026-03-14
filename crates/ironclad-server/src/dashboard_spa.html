@@ -58,28 +58,30 @@
     }
     .layout { display: flex; width: 100%; height: 100%; }
     .sidebar {
-      width: 252px; min-width: 252px; background: var(--surface);
+      width: 252px; min-width: 252px; height: 100%; background: var(--surface);
       border-right: 1px solid var(--border); display: flex; flex-direction: column;
       flex-shrink: 0; transition: width 0.2s, min-width 0.2s; overflow: hidden;
     }
     .sidebar.collapsed { width: 56px; min-width: 56px; }
     .sidebar-header { padding: 1.25rem; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 0.75rem; white-space: normal; overflow: hidden; transition: padding 0.2s, justify-content 0.2s; }
-    .sidebar.collapsed .sidebar-header { padding: 0.75rem; justify-content: center; align-items: center; gap: 0; }
+    .sidebar.collapsed .sidebar-header { padding: 0; justify-content: center; align-items: center; gap: 0; height: 56px; min-height: 56px; max-height: 56px; overflow: hidden; }
     .sidebar-brand { display: flex; flex-direction: column; min-width: 0; overflow: hidden; transition: width 0.2s, opacity 0.2s; }
     .sidebar.collapsed .sidebar-brand { opacity: 0; width: 0; overflow: hidden; margin: 0; padding: 0; }
     .sidebar-title { font-size: 1.125rem; font-weight: 600; margin-bottom: 0.25rem; letter-spacing: 0.15em; text-transform: uppercase; }
     .sidebar-subtitle { font-size: 0.66rem; line-height: 1.25; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; white-space: normal; overflow-wrap: anywhere; }
-    .robot-icon { flex-shrink: 0; margin-top: 2px; }
-    .agent-badge { display: inline-flex; align-items: center; gap: 0.375rem; margin-top: 0.75rem; padding: 0.375rem 0.75rem; max-width: 100%; background: var(--accent-dim); border-radius: 3px; font-size: 0.8125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .sidebar.collapsed .agent-badge { display: none; }
+    .robot-icon { flex-shrink: 0; margin-top: 2px; transition: width 0.2s, height 0.2s; }
+    .sidebar.collapsed .robot-icon { width: 20px; height: 20px; }
+    .agent-badge { display: inline-flex; align-items: center; gap: 0.375rem; margin-top: 0.75rem; padding: 0.375rem 0.75rem; max-width: 100%; background: var(--accent-dim); border-radius: 3px; font-size: 0.8125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity 0.15s, max-height 0.2s, margin 0.2s, padding 0.2s; max-height: 40px; }
+    .sidebar.collapsed .agent-badge { opacity: 0; max-height: 0; margin: 0; padding: 0; overflow: hidden; pointer-events: none; }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex-shrink: 0; animation: statusPulse 2s ease-in-out infinite; }
     .status-dot.warning { background: var(--warning); animation: none; }
     .status-dot.error { background: var(--error); animation: none; }
     @keyframes statusPulse { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34,197,94,0.4); } 50% { opacity: 0.7; box-shadow: 0 0 6px 2px rgba(34,197,94,0.3); } }
     .sidebar-nav { flex: 1; overflow-y: auto; padding: 0.75rem 0; }
     .sidebar-nav a { display: flex; align-items: center; gap: 0.75rem; padding: 0.625rem 1.25rem; color: var(--muted); text-decoration: none; font-size: 0.875rem; transition: color 0.15s, background 0.15s; cursor: pointer; white-space: nowrap; overflow: hidden; }
-    .sidebar.collapsed .sidebar-nav a { justify-content: center; padding: 0.625rem 0; }
-    .sidebar.collapsed .sidebar-nav a .nav-label { display: none; }
+    .sidebar.collapsed .sidebar-nav a { justify-content: center; padding: 0.5rem 0; }
+    .sidebar-nav a .nav-label { transition: opacity 0.15s, max-width 0.2s; max-width: 200px; opacity: 1; overflow: hidden; }
+    .sidebar.collapsed .sidebar-nav a .nav-label { opacity: 0; max-width: 0; margin: 0; padding: 0; }
     .nav-icon { width: 16px; height: 16px; flex-shrink: 0; color: currentColor; }
     .ui-icon { width: 14px; height: 14px; flex-shrink: 0; color: currentColor; display: inline-block; }
     .sidebar-nav a:hover { color: var(--text); background: rgba(255,255,255,0.03); }
@@ -104,9 +106,10 @@
     .sidebar-collapse-btn:hover { color: var(--text); background: rgba(255,255,255,0.03); }
     .sidebar-collapse-btn .collapse-icon { width: 16px; height: 16px; flex-shrink: 0; transition: transform 0.2s; }
     .sidebar.collapsed .sidebar-collapse-btn .collapse-icon { transform: rotate(180deg); }
-    .sidebar.collapsed .sidebar-collapse-btn .collapse-label { display: none; }
-    .sidebar-footer { padding: 1rem 1.25rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); white-space: normal; overflow: visible; }
-    .sidebar.collapsed .sidebar-footer { text-align: center; padding: 0.75rem 0.5rem; }
+    .sidebar-collapse-btn .collapse-label { transition: opacity 0.15s, max-width 0.2s; max-width: 100px; opacity: 1; overflow: hidden; }
+    .sidebar.collapsed .sidebar-collapse-btn .collapse-label { opacity: 0; max-width: 0; margin: 0; padding: 0; }
+    .sidebar-footer { padding: 1rem 1.25rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); white-space: normal; overflow: visible; transition: padding 0.2s, text-align 0.2s; }
+    .sidebar.collapsed .sidebar-footer { text-align: center; padding: 0.5rem 0.25rem; font-size: 0.625rem; }
     .main-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100%; overflow: hidden; }
     .header-bar { height: 56px; padding: 0 1.5rem; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
     .breadcrumb { font-size: 0.875rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
@@ -119,8 +122,10 @@
     .card-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.5rem; }
     .card-value { font-size: 1.25rem; font-weight: 600; }
     .card-mono { font-family: var(--font-mono); font-size: 0.8125rem; }
-    .session-nick { cursor: copy; border-bottom: 1px dashed var(--border); transition: color 0.15s; }
-    .session-nick:hover { color: var(--accent); }
+    .session-nick { transition: color 0.15s; }
+    .copy-id-btn { display: inline-flex; align-items: center; justify-content: center; width: 1.125rem; height: 1.125rem; padding: 0; margin-left: 0.375rem; background: none; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); cursor: pointer; vertical-align: middle; transition: color 0.15s, border-color 0.15s; flex-shrink: 0; }
+    .copy-id-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .copy-id-btn svg { width: 0.6875rem; height: 0.6875rem; }
     .badge { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.75rem; font-weight: 500; }
     .badge.success { background: rgba(34, 197, 94, 0.2); color: var(--success); }
     .badge.error { background: rgba(239, 68, 68, 0.2); color: var(--error); }
@@ -194,6 +199,9 @@
     .message { margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 3px; max-width: 85%; }
     .message.user { margin-left: auto; background: var(--accent-dim); border: 1px solid rgba(99,102,241,0.3); }
     .message.assistant { margin-right: auto; background: var(--surface); border: 1px solid var(--border); }
+    .message .md-table { width: auto; margin: 0.5rem 0; font-size: 0.8125rem; }
+    .message .md-table th, .message .md-table td { padding: 0.375rem 0.75rem; border: 1px solid var(--border); }
+    .message .md-table th { background: rgba(255,255,255,0.04); }
     .message-role { font-size: 0.7rem; text-transform: uppercase; color: var(--muted); margin-bottom: 0.25rem; display: flex; align-items: center; gap: 0.5rem; }
     .ctx-expand-btn { background: none; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); cursor: pointer; padding: 1px 5px; font-size: 0.625rem; line-height: 1.2; transition: all 0.15s; font-family: var(--font); margin-left: auto; }
     .ctx-expand-btn:hover { color: var(--accent); border-color: var(--accent); }
@@ -288,7 +296,7 @@
     .ctx-analyze-btn { margin-top: 0.5rem; font-size: 0.6875rem; padding: 0.25rem 0.625rem; }
     .ctx-insights { margin-top: 1rem; }
     .streaming-content { white-space: pre-wrap; word-break: break-word; }
-    .streaming-content::after { content: '\u2588'; animation: cursorBlink 0.8s step-end infinite; color: var(--accent); }
+    .streaming-content::after { content: '\2588'; animation: cursorBlink 0.8s step-end infinite; color: var(--accent); }
     @keyframes cursorBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
     .thinking-indicator { margin-right: auto; padding: 0.75rem 1rem; display: flex; align-items: center; gap: 0.625rem; }
     .thinking-brain { display: inline-block; font-size: 1.25rem; animation: brainBounce 1.2s ease-in-out infinite; }
@@ -534,24 +542,12 @@
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <svg class="robot-icon" viewBox="0 0 32 32" width="32" height="32" xmlns="http://www.w3.org/2000/svg">
-          <rect x="11" y="1" width="10" height="10.5" fill="var(--surface)" stroke="var(--robot-color, #22c55e)" stroke-width="1.5"/>
-          <circle cx="14" cy="5" r="2" fill="var(--robot-color, #22c55e)"/>
-          <circle cx="14" cy="5" r="0.8" fill="var(--surface)"/>
-          <circle cx="18" cy="5" r="2" fill="var(--robot-color, #22c55e)"/>
-          <circle cx="18" cy="5" r="0.8" fill="var(--surface)"/>
-          <rect x="13" y="8.5" width="6" height="1.5" fill="var(--robot-color, #22c55e)"/>
-          <rect x="14.5" y="11.5" width="3" height="2.5" fill="var(--robot-color, #22c55e)" opacity="0.6"/>
-          <rect x="8" y="14" width="16" height="8.5" fill="var(--surface)" stroke="var(--robot-color, #22c55e)" stroke-width="1.5"/>
-          <rect x="12" y="15" width="8" height="6.5" fill="var(--robot-color, #22c55e)" opacity="0.1"/>
-          <line x1="16" y1="14" x2="16" y2="22.5" stroke="var(--robot-color, #22c55e)" stroke-width="0.6" opacity="0.35"/>
-          <rect x="3.5" y="16.5" width="4.5" height="3" fill="var(--robot-color, #22c55e)" opacity="0.45"/>
-          <rect x="24" y="16.5" width="4.5" height="3" fill="var(--robot-color, #22c55e)" opacity="0.45"/>
-          <rect x="0.5" y="16" width="3" height="4" fill="var(--robot-color, #22c55e)" opacity="0.85"/>
-          <rect x="28.5" y="16" width="3" height="4" fill="var(--robot-color, #22c55e)" opacity="0.85"/>
-          <rect x="12.5" y="22.5" width="2.5" height="4" fill="var(--robot-color, #22c55e)" opacity="0.6"/>
-          <rect x="17" y="22.5" width="2.5" height="4" fill="var(--robot-color, #22c55e)" opacity="0.6"/>
-          <rect x="10.5" y="26.5" width="5" height="2" fill="var(--robot-color, #22c55e)"/>
-          <rect x="16.5" y="26.5" width="5" height="2" fill="var(--robot-color, #22c55e)"/>
+          <rect width="32" height="32" rx="4" fill="var(--bg, #0a0b0f)"/>
+          <rect x="10" y="5" width="12" height="18" rx="0.8" fill="none" stroke="var(--robot-color, #22c55e)" stroke-width="2"/>
+          <circle cx="13.6" cy="11.5" r="1.35" fill="var(--robot-color, #22c55e)"/>
+          <circle cx="18.4" cy="11.5" r="1.35" fill="var(--robot-color, #22c55e)"/>
+          <rect x="13.6" y="16.8" width="4.8" height="1.35" fill="var(--robot-color, #22c55e)"/>
+          <rect x="15" y="23" width="2" height="4" fill="var(--robot-color, #22c55e)"/>
         </svg>
         <div class="sidebar-brand">
           <div class="sidebar-title">Ironclad</div>
@@ -654,6 +650,7 @@
     }
   }
   function uiBtnLabel(iconName, label) { return uiIcon(iconName) + '<span>' + label + '</span>'; }
+  function copyIdBtn(id) { return '<button class="copy-id-btn" data-copy-id="' + esc(id) + '" title="Copy session ID"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="5" y="5" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M3 11V3a1 1 0 011-1h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>'; }
   function truncate(s, n) { return (s && s.length > n) ? s.slice(0, n) + '\u2026' : (s || ''); }
   function clamp01(v) {
     var n = Number(v);
@@ -1006,7 +1003,7 @@
     var html = esc(src);
     var inlineCodes = [];
     html = html.replace(/`([^`]+)`/g, function(_, code) {
-      var token = '__MD_INLINE_CODE_' + inlineCodes.length + '__';
+      var token = '\x01IC' + inlineCodes.length + '\x01';
       inlineCodes.push('<code>' + code + '</code>');
       return token;
     });
@@ -1021,7 +1018,8 @@
     html = html.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
     html = html.replace(/_([^_\n]+)_/g, '<em>$1</em>');
     html = html.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-    html = html.replace(/__MD_INLINE_CODE_(\d+)__/g, function(_, idx) {
+    html = html.replace(/~([^~\n]+)~/g, '<del>$1</del>');
+    html = html.replace(/\x01IC(\d+)\x01/g, function(_, idx) {
       var n = Number(idx);
       return inlineCodes[n] || '';
     });
@@ -1087,6 +1085,32 @@
         closeLists();
         closeQuote();
         htmlParts.push('<hr>');
+        continue;
+      }
+      // Table: | col | col | with separator line following
+      if (trimmed.charAt(0) === '|' && i + 1 < lines.length && /^\|[\s\-:|]+\|$/.test(lines[i + 1].trim())) {
+        flushParagraph();
+        closeLists();
+        closeQuote();
+        var headerCells = trimmed.split('|').slice(1, -1).map(function(c) { return c.trim(); });
+        var tbl = '<table class="md-table"><thead><tr>';
+        for (var h = 0; h < headerCells.length; h++) {
+          tbl += '<th>' + renderInlineMarkdown(headerCells[h]) + '</th>';
+        }
+        tbl += '</tr></thead><tbody>';
+        i += 2; // skip header + separator
+        while (i < lines.length && lines[i].trim().charAt(0) === '|') {
+          var cells = lines[i].trim().split('|').slice(1, -1).map(function(c) { return c.trim(); });
+          tbl += '<tr>';
+          for (var c = 0; c < cells.length; c++) {
+            tbl += '<td>' + renderInlineMarkdown(cells[c]) + '</td>';
+          }
+          tbl += '</tr>';
+          i++;
+        }
+        tbl += '</tbody></table>';
+        htmlParts.push(tbl);
+        i--; // compensate for the for-loop i++
         continue;
       }
       var quoteMatch = trimmed.match(/^>\s?(.*)$/);
@@ -1302,7 +1326,7 @@
         for (var k = 0; k < keys.length; k++) { var val = seriesMap[keys[k]][i]; layers.push({ bottom: cum, top: cum + val, key: keys[k] }); cum += val; }
         stacked.push({ layers: layers, total: cum });
       }
-      var maxTotal = Math.max.apply(null, stacked.map(function(s) { return s.total; }));
+      var maxTotal = opts.fixedMax != null ? opts.fixedMax : Math.max.apply(null, stacked.map(function(s) { return s.total; }));
       if (maxTotal === 0) maxTotal = 1;
       function toX(i) { return padLeft + (i / (len - 1)) * chartW; }
       function toY(v) { return padTop + chartH - (v / maxTotal) * chartH; }
@@ -1720,11 +1744,14 @@
         if (TS.cronSuccess.length === 0) TS.cronSuccess = repeatedSeries(buckets, cronSuccessVal);
         pushFleetSnapshot(agents, agentActivity);
         TS.agentLoadByAgent = {};
+        var agentCount = agents.length;
         agents.forEach(function(a) {
           var k = a.name || a.id;
           var history = (_fleetHistory.byAgent[k] || []).slice();
           if (history.length === 0) history = [agentActivity[k] || 0];
-          TS.agentLoadByAgent[k] = history;
+          // Normalize: each agent contributes at most 1/agentCount to the
+          // stacked total so that 100% = all agents active simultaneously.
+          TS.agentLoadByAgent[k] = history.map(function(v) { return v / agentCount; });
         });
         TS.agentLoadLabels = _fleetHistory.labels.slice();
 
@@ -1753,7 +1780,9 @@
           var fleetLegend = agents.map(function(a) {
             var k = a.name || a.id;
             var stDot = (a.state || '').toLowerCase() === 'running' ? 'var(--success)' : 'var(--warning)';
-            var lastVal = TS.agentLoadByAgent[k] ? seriesLast(TS.agentLoadByAgent[k]) : 0;
+            // Use raw per-agent score (0–1) for the legend bar, not the
+            // normalized fleet-fraction used in the stacked chart.
+            var lastVal = agentActivity[k] || 0;
             var stateLabel = (a.activity || a.state || 'idle').toString().toLowerCase();
             var color = a.color || '#6366f1';
             fleetColors[k] = color;
@@ -1774,7 +1803,8 @@
               labels: TS.agentLoadLabels.length > 1,
               xLabels: TS.agentLoadLabels,
               yAxis: true,
-              yFormat: function(v) { return v.toFixed(1); }
+              fixedMax: 1.0,
+              yFormat: function(v) { return (v * 100).toFixed(0) + '%'; }
             }
           );
           cardFleet = '<div class="card composite-card"><div class="cc-header"><div class="cc-left"><div class="cc-label">Agent Fleet Activity</div><div class="cc-value">' + (seriesLast(TS.agentLoad) * 100).toFixed(0) + '% active load</div><div class="cc-sub">' + agentActiveNow + ' / ' + agents.length + ' agents active now</div></div><div class="cc-right">' + deltaHtml(seriesLast(TS.agentLoad), seriesPrev(TS.agentLoad)) + '</div></div>' + fleetChart + '<div class="metrics-legend" style="padding:0.5rem 1rem 0.75rem">' + fleetLegend + '</div></div>';
@@ -1859,7 +1889,7 @@
             }).join('') || '<p style="color:var(--muted);padding:1rem">Send a message to begin the conversation.</p>';
             var chatLabel = self._activeSession.nickname || truncate(self._activeSession.id, 16);
             var chatAgentLabel = sessionAssistantLabel(self._activeSession, self._activeSession.agent_id || 'default');
-            return '<div class="session-chat-wrap"><div class="session-chat-header"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="btn-back-sessions">' + uiBtnLabel('back', 'Back') + '</button><span style="font-weight:600">' + esc(chatAgentLabel) + '</span><span class="session-nick" data-copy-id="' + esc(self._activeSession.id) + '" title="' + esc(self._activeSession.id) + '" style="color:var(--muted);font-size:0.75rem">' + esc(chatLabel) + '</span></div><div class="message-thread">' + msgs + '</div><div class="session-chat-input"><input type="text" id="session-msg-input" placeholder="Type a message\u2026" autocomplete="off"><button class="btn" id="btn-send-msg">' + uiBtnLabel('send', 'Send') + '</button></div></div>';
+            return '<div class="session-chat-wrap"><div class="session-chat-header"><button class="btn secondary" style="font-size:0.75rem;padding:0.3rem 0.75rem" id="btn-back-sessions">' + uiBtnLabel('back', 'Back') + '</button><span style="font-weight:600">' + esc(chatAgentLabel) + '</span><span class="session-nick" title="' + esc(self._activeSession.id) + '" style="color:var(--muted);font-size:0.75rem">' + esc(chatLabel) + '</span>' + copyIdBtn(self._activeSession.id) + '</div><div class="message-thread">' + msgs + '</div><div class="session-chat-input"><input type="text" id="session-msg-input" placeholder="Type a message\u2026" autocomplete="off"><button class="btn" id="btn-send-msg">' + uiBtnLabel('send', 'Send') + '</button></div></div>';
           });
         }
 
@@ -1872,7 +1902,7 @@
           var label = s.nickname || truncate(s.id, 16);
           var st = s.status || 'active';
           var stCls = st === 'active' ? 'success' : (st === 'closed' ? '' : 'warning');
-          return '<tr data-id="' + esc(s.id || '') + '" style="cursor:pointer" title="' + esc(s.id || '') + '"><td><span class="session-nick" data-copy-id="' + esc(s.id || '') + '">' + esc(label) + '</span></td><td>' + esc(s.agent_id || '') + '</td><td><span class="badge ' + stCls + '" style="font-size:0.5625rem">' + esc(st) + '</span></td><td>' + esc(s.created_at || '') + '</td><td>' + esc(s.updated_at || '') + '</td><td style="display:flex;gap:0.25rem"><button class="btn secondary" style="font-size:0.65rem;padding:0.2rem 0.5rem">Open</button><button class="btn secondary danger session-delete-btn" data-delete-session="' + esc(s.id || '') + '" style="font-size:0.65rem;padding:0.2rem 0.5rem" title="Delete">\u2715</button></td></tr>';
+          return '<tr data-id="' + esc(s.id || '') + '" style="cursor:pointer" title="' + esc(s.id || '') + '"><td><span class="session-nick">' + esc(label) + '</span>' + copyIdBtn(s.id || '') + '</td><td>' + esc(s.agent_id || '') + '</td><td><span class="badge ' + stCls + '" style="font-size:0.5625rem">' + esc(st) + '</span></td><td>' + esc(s.created_at || '') + '</td><td>' + esc(s.updated_at || '') + '</td><td style="display:flex;gap:0.25rem"><button class="btn secondary" style="font-size:0.65rem;padding:0.2rem 0.5rem">Open</button><button class="btn secondary danger session-delete-btn" data-delete-session="' + esc(s.id || '') + '" style="font-size:0.65rem;padding:0.2rem 0.5rem" title="Delete">\u2715</button></td></tr>';
         }).join('');
         var emptyHint = sessions.length === 0 ? '<div class="card" style="margin-top:1rem;color:var(--muted)">No sessions yet. Click <strong>New session</strong> to start one.</div>' : '';
         var pager = totalPages > 1 ? '<div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.75rem;justify-content:center"><button class="btn secondary" id="sess-prev" style="font-size:0.75rem;padding:0.2rem 0.6rem"' + (page === 0 ? ' disabled' : '') + '>\u2190 Prev</button><span style="font-size:0.75rem;color:var(--muted)">Page ' + (page + 1) + ' of ' + totalPages + '</span><button class="btn secondary" id="sess-next" style="font-size:0.75rem;padding:0.2rem 0.6rem"' + (page >= totalPages - 1 ? ' disabled' : '') + '>Next \u2192</button></div>' : '';
@@ -4057,6 +4087,64 @@
             + 'Maximum authority when the threat scanner flags input as Caution. Must be below Creator.'
             + '</div>';
           accHtml += '</div>';
+
+          // ── Filesystem Security section ────────────────────────────
+          var fsSec = (sec.filesystem || {});
+          var wsOnly = fsSec.workspace_only !== false;
+          var scriptConf = fsSec.script_fs_confinement !== false;
+          var protectedPaths = (fsSec.protected_paths || []).join('\n');
+          var extraProtected = (fsSec.extra_protected_paths || []).join('\n');
+          var scriptAllowed = (fsSec.script_allowed_paths || []).join('\n');
+
+          accHtml += '<div class="settings-section"><div class="settings-section-title">Filesystem Security</div>'
+            + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">'
+            + 'Controls filesystem access for agent tools and skill scripts.'
+            + '</div>';
+
+          accHtml += '<div class="settings-row"><div class="settings-label">Workspace-only mode</div>'
+            + '<div class="settings-toggle-wrap"><label class="toggle">'
+            + '<input type="checkbox" data-settings-path="security.filesystem.workspace_only"' + (wsOnly ? ' checked' : '') + '>'
+            + '<span class="toggle-track"></span></label>'
+            + '<span class="settings-toggle-label">' + (wsOnly ? 'On' : 'Off') + '</span></div></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Restrict agent file tools to the workspace directory. Absolute paths outside workspace are denied.'
+            + '</div>';
+
+          accHtml += '<div class="settings-row"><div class="settings-label">Script FS confinement</div>'
+            + '<div class="settings-toggle-wrap"><label class="toggle">'
+            + '<input type="checkbox" data-settings-path="security.filesystem.script_fs_confinement"' + (scriptConf ? ' checked' : '') + '>'
+            + '<span class="toggle-track"></span></label>'
+            + '<span class="settings-toggle-label">' + (scriptConf ? 'On' : 'Off') + '</span></div></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'OS-level sandbox for skill scripts (macOS sandbox-exec). Confines writes to workspace + /tmp.'
+            + '</div>';
+
+          accHtml += '<div class="settings-row" style="align-items:start"><div class="settings-label" style="padding-top:0.3rem">Protected paths</div>'
+            + '<textarea class="settings-input" data-settings-path="security.filesystem.protected_paths" data-settings-array="1" '
+            + 'rows="6" style="font-family:var(--font-mono);font-size:0.7rem;resize:vertical"'
+            + ' placeholder="One pattern per line">' + esc(protectedPaths) + '</textarea></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Blacklisted path patterns (case-insensitive substring match). One per line.'
+            + '</div>';
+
+          accHtml += '<div class="settings-row" style="align-items:start"><div class="settings-label" style="padding-top:0.3rem">Extra protected paths</div>'
+            + '<textarea class="settings-input" data-settings-path="security.filesystem.extra_protected_paths" data-settings-array="1" '
+            + 'rows="3" style="font-family:var(--font-mono);font-size:0.7rem;resize:vertical"'
+            + ' placeholder="Your custom patterns (merged with defaults)">' + esc(extraProtected) + '</textarea></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Additional patterns merged with the default list above.'
+            + '</div>';
+
+          accHtml += '<div class="settings-row" style="align-items:start"><div class="settings-label" style="padding-top:0.3rem">Script allowed paths</div>'
+            + '<textarea class="settings-input" data-settings-path="security.filesystem.script_allowed_paths" data-settings-array="1" '
+            + 'rows="2" style="font-family:var(--font-mono);font-size:0.7rem;resize:vertical"'
+            + ' placeholder="Absolute paths scripts may write to (one per line)">' + esc(scriptAllowed) + '</textarea></div>'
+            + '<div style="font-size:0.68rem;color:var(--muted);margin:-0.25rem 0 0.6rem 0;padding-left:0.5rem">'
+            + 'Additional absolute paths that sandboxed scripts may access for writing. One per line.'
+            + '</div>';
+
+          accHtml += '</div>';
+
           accHtml += '<div class="settings-section"><div class="settings-section-title">How Claims Are Resolved</div>'
             + '<div style="font-size:0.72rem;line-height:1.6;color:var(--text)">'
             + '<strong>Positive grants</strong> OR across layers \u2014 any layer can grant authority (best grant wins):<br>'
@@ -5005,10 +5093,11 @@
                 + '<div style="display:flex;gap:0.4rem;align-items:center;margin-top:6px">'
                 + '<select id="roster-model-select" style="flex:1;font-size:0.75rem;font-family:var(--mono);padding:4px 6px;border-radius:4px;background:var(--surface);color:var(--text);border:1px solid var(--border)">'
                 + '<option value="">-- quick add known model --</option>' + opts + '</select>'
-                + '<button id="roster-model-order-add" class="btn secondary" style="font-size:0.7rem;padding:3px 8px">Add</button>'
+                + '<button id="roster-model-order-add" class="btn secondary roster-model-add-btn" style="font-size:0.7rem;padding:3px 8px">Add</button>'
                 + '</div>'
                 + '<div style="display:flex;gap:0.4rem;align-items:center;margin-top:4px">'
                 + '<input id="roster-model-custom" type="text" placeholder="or type provider/model and click Add" style="flex:1;font-size:0.75rem;font-family:var(--mono);padding:4px 6px;border-radius:4px;background:var(--surface);color:var(--text);border:1px solid var(--border)">'
+                + '<button class="btn secondary roster-model-add-btn" style="font-size:0.7rem;padding:3px 8px">Add</button>'
                 + '</div>'
                 + '<div style="display:flex;gap:0.4rem;margin-top:6px">'
                 + '<button id="roster-model-save" class="btn" style="font-size:0.7rem;padding:3px 10px">Apply</button>'
@@ -5074,7 +5163,7 @@
             if (disp2) disp2.style.display = 'flex';
             if (ed2) ed2.style.display = 'none';
           }
-          if (ev.target.closest('#roster-model-order-add')) {
+          if (ev.target.closest('.roster-model-add-btn')) {
             var selAdd = document.getElementById('roster-model-select');
             var customAdd = document.getElementById('roster-model-custom');
             var toAdd = (customAdd && customAdd.value.trim()) || (selAdd && selAdd.value) || '';
@@ -5757,10 +5846,15 @@
     var calDay = e.target.closest('.cal-day[data-date]');
     if (calDay) { var date = calDay.getAttribute('data-date'); App._calSelected = App._calSelected === date ? null : date; App.navigate('scheduler'); return; }
 
-    var nickEl = e.target.closest('.session-nick[data-copy-id]');
-    if (nickEl) {
-      var copyId = nickEl.getAttribute('data-copy-id');
-      navigator.clipboard.writeText(copyId).then(function() { toast('Session ID copied'); }).catch(function() { toast('Copy failed \u2014 try HTTPS'); });
+    var copyBtn = e.target.closest('.copy-id-btn[data-copy-id]');
+    if (copyBtn) {
+      e.stopPropagation();
+      var copyId = copyBtn.getAttribute('data-copy-id');
+      var svgEl = copyBtn.querySelector('svg');
+      navigator.clipboard.writeText(copyId).then(function() {
+        toast('Session ID copied');
+        if (svgEl) { svgEl.innerHTML = '<polyline points="4 8 7 11 12 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'; setTimeout(function() { svgEl.innerHTML = '<rect x="5" y="5" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M3 11V3a1 1 0 011-1h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'; }, 1500); }
+      }).catch(function() { toast('Copy failed \u2014 try HTTPS'); });
       return;
     }
     var row = e.target.closest('tbody tr[data-id]');
@@ -6064,7 +6158,11 @@
       var path = formInput.getAttribute('data-settings-path');
       var draft = App._getSettingsDraft();
       var rawVal = formInput.value;
-      var newVal = formInput.type === 'checkbox' ? formInput.checked : formInput.type === 'number' ? Number(rawVal) : (rawVal === '' ? null : rawVal);
+      var newVal;
+      if (formInput.type === 'checkbox') { newVal = formInput.checked; }
+      else if (formInput.type === 'number') { newVal = Number(rawVal); }
+      else if (formInput.hasAttribute('data-settings-array')) { newVal = rawVal.split('\n').map(function(s){return s.trim()}).filter(function(s){return s.length > 0}); }
+      else { newVal = rawVal === '' ? null : rawVal; }
       App._setNestedValue(draft, path, newVal);
       App._settingsDirty = JSON.stringify(draft) !== JSON.stringify(_cachedConfig);
       App._settingsJsonText = null;
@@ -6186,6 +6284,7 @@
       if (formInput.type === 'checkbox') { newVal = formInput.checked; }
       else if (formInput.tagName === 'SELECT') { newVal = formInput.value; }
       else if (formInput.type === 'number') { newVal = Number(formInput.value); }
+      else if (formInput.hasAttribute('data-settings-array')) { newVal = formInput.value.split('\n').map(function(s){return s.trim()}).filter(function(s){return s.length > 0}); }
       else { newVal = formInput.value === '' ? null : formInput.value; }
       App._setNestedValue(draft, path, newVal);
       App._settingsDirty = JSON.stringify(draft) !== JSON.stringify(_cachedConfig); App._settingsJsonText = null;

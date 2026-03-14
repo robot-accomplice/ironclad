@@ -93,12 +93,24 @@ pub fn load_cache_entries(db: &Database) -> Result<Vec<(String, PersistedCacheEn
         .map_err(|e| IroncladError::Database(e.to_string()))
 }
 
+/// Maximum age (days) for cache entries that lack an explicit `expires_at`.
+/// Prevents NULL-expiry rows from accumulating indefinitely.
+const NULL_EXPIRY_MAX_AGE_DAYS: u32 = 7;
+
 /// Remove expired entries from the semantic_cache table.
+///
+/// Evicts rows where:
+/// 1. `expires_at` has passed, OR
+/// 2. `expires_at IS NULL` and the row is older than `NULL_EXPIRY_MAX_AGE_DAYS` (7 days).
 pub fn evict_expired_cache(db: &Database) -> Result<usize> {
     let conn = db.conn();
     let deleted = conn
         .execute(
-            "DELETE FROM semantic_cache WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')",
+            &format!(
+                "DELETE FROM semantic_cache WHERE \
+                 (expires_at IS NOT NULL AND expires_at <= datetime('now')) \
+                 OR (expires_at IS NULL AND created_at <= datetime('now', '-{NULL_EXPIRY_MAX_AGE_DAYS} days'))"
+            ),
             [],
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
@@ -204,6 +216,45 @@ mod tests {
         let evicted = evict_expired_cache(&db).unwrap();
         assert_eq!(evicted, 1);
         assert_eq!(cache_count(&db).unwrap(), 1);
+    }
+
+    #[test]
+    fn evict_null_expiry_after_max_age() {
+        let db = test_db();
+
+        // Old entry with NULL expires_at — should be evicted.
+        let old_null = PersistedCacheEntry {
+            prompt_hash: "old_null".into(),
+            response: "ancient".into(),
+            model: "m".into(),
+            tokens_saved: 0,
+            hit_count: 0,
+            embedding: None,
+            created_at: "2020-01-01T00:00:00".into(),
+            expires_at: None,
+        };
+        // Recent entry with NULL expires_at — should survive.
+        let recent_null = PersistedCacheEntry {
+            prompt_hash: "recent_null".into(),
+            response: "fresh".into(),
+            model: "m".into(),
+            tokens_saved: 0,
+            hit_count: 0,
+            embedding: None,
+            created_at: "2099-01-01T00:00:00".into(),
+            expires_at: None,
+        };
+
+        save_cache_entry(&db, "c1", &old_null).unwrap();
+        save_cache_entry(&db, "c2", &recent_null).unwrap();
+        assert_eq!(cache_count(&db).unwrap(), 2);
+
+        let evicted = evict_expired_cache(&db).unwrap();
+        assert_eq!(evicted, 1);
+        assert_eq!(cache_count(&db).unwrap(), 1);
+
+        let remaining = load_cache_entries(&db).unwrap();
+        assert_eq!(remaining[0].1.prompt_hash, "recent_null");
     }
 
     #[test]

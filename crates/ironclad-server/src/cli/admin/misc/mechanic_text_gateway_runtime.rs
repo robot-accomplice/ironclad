@@ -592,13 +592,34 @@ fn run_gateway_log_and_runtime_diagnostics(
         let tg_404_count =
             count_occurrences(snapshot, "Telegram API error\",\"status\":\"404 Not Found");
         let tg_poll_err_count = count_occurrences(snapshot, "Telegram poll error, backing off 5s");
-        if tg_404_count >= 3 || tg_poll_err_count >= 3 {
+        let tg_401_count =
+            count_occurrences(snapshot, "Telegram API error\",\"status\":\"401");
+        if tg_401_count >= 3 {
+            // 401 Unauthorized is a clear token/auth issue
             println!(
-                "  {WARN} Detected repeated Telegram transport failures (404/poll backoff loop)."
+                "  {WARN} Detected repeated Telegram 401 Unauthorized errors."
             );
             println!("         Likely cause: invalid/revoked Telegram bot token in keystore.");
             println!(
                 "         Repair: `ironclad keystore set telegram_bot_token \"<TOKEN>\"` then `ironclad daemon restart`"
+            );
+        } else if tg_404_count >= 3 || tg_poll_err_count >= 3 {
+            // 404 / poll backoff — transport issue, not necessarily a keystore problem
+            println!(
+                "  {WARN} Detected repeated Telegram transport failures ({tg_404_count} 404 errors, {tg_poll_err_count} poll backoffs)."
+            );
+            // Cross-reference channel connectivity to refine the diagnostic
+            let tg_connected = channels_status
+                .and_then(|cs| cs.iter().find(|c| c.get("name").and_then(|v| v.as_str()) == Some("telegram")))
+                .and_then(|tg| tg.get("connected").and_then(|v| v.as_bool()))
+                .unwrap_or(false);
+            if tg_connected {
+                println!("         Channel currently shows connected — failures may be transient network issues.");
+            } else {
+                println!("         Channel is disconnected. Check Telegram bot configuration, API connectivity, and bot status.");
+            }
+            println!(
+                "         Diagnostic: `ironclad channels status` and inspect logs for specific error patterns."
             );
         }
 

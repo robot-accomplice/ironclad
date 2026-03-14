@@ -26,6 +26,7 @@ struct RepairActionSummary {
     internalized_skills_cleaned: Vec<String>,
     paused_jobs_reenabled: Vec<String>,
     security_configured: bool,
+    memory_entries_purged: u32,
 }
 
 #[derive(Debug, Serialize)]

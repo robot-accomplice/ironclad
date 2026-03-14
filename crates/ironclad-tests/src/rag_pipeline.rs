@@ -161,7 +161,15 @@ fn binary_embedding_storage_roundtrip() {
     let db = test_db();
 
     let original = vec![0.1f32, -0.5, 1.23, 0.0, f32::MAX, f32::MIN_POSITIVE];
-    embeddings::store_embedding(&db, "bin-test", "test", "source", "preview", &original).unwrap();
+    embeddings::store_embedding(
+        &db,
+        "bin-test",
+        "episodic_memory",
+        "source",
+        "preview",
+        &original,
+    )
+    .unwrap();
 
     // Search should find it and the similarity should be 1.0
     let results = embeddings::search_similar(&db, &original, 10, 0.99).unwrap();

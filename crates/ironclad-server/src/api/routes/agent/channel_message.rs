@@ -11,61 +11,16 @@ use super::decomposition::{
     apply_decomposition_decision, build_gate_system_note, evaluate_decomposition_gate,
     maybe_handle_specialist_creation_controls,
 };
+use super::guards::DedupGuard;
 use super::intents::{
     requests_cron, requests_current_events, requests_delegation, requests_execution,
     requests_file_distribution, requests_introspection,
 };
+use super::pipeline::{PipelineConfig, UnifiedPipelineInput};
 use super::strip_internal_delegation_metadata;
 use ironclad_core::InputAuthority;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-fn strip_numeric_bracket_citations(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let chars: Vec<char> = input.chars().collect();
-    let mut i = 0usize;
-    while i < chars.len() {
-        if chars[i] == '[' {
-            let mut j = i + 1;
-            let mut has_digit = false;
-            while j < chars.len() && chars[j].is_ascii_digit() {
-                has_digit = true;
-                j += 1;
-            }
-            if has_digit && j < chars.len() && chars[j] == ']' {
-                i = j + 1;
-                continue;
-            }
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
-    out
-}
-
-fn normalize_telegram_text(content: &str) -> String {
-    let mut out = Vec::new();
-    let mut in_fence = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
-            continue;
-        }
-        let mut normalized = if in_fence {
-            line.to_string()
-        } else {
-            line.trim_start_matches('#').trim_start().to_string()
-        };
-        normalized = normalized
-            .replace("**", "")
-            .replace("__", "")
-            .replace('`', "");
-        normalized = strip_numeric_bracket_citations(&normalized);
-        out.push(normalized);
-    }
-    out.join("\n").trim().to_string()
-}
 
 fn is_short_followup_for_previous_reply(user_content: &str) -> bool {
     let lower = user_content.trim().to_ascii_lowercase();
@@ -167,11 +122,7 @@ async fn contextualize_short_followup(
 }
 
 pub(super) fn format_channel_reply_for_delivery(platform: &str, content: &str) -> String {
-    let cleaned = strip_internal_delegation_metadata(content);
-    if platform.eq_ignore_ascii_case("telegram") {
-        return normalize_telegram_text(&cleaned);
-    }
-    cleaned
+    ironclad_channels::formatter::formatter_for(platform).format(content)
 }
 
 pub async fn process_channel_message(
@@ -274,6 +225,13 @@ pub async fn process_channel_message(
             return Ok(());
         }
     }
+    // DedupGuard RAII: fingerprint is released automatically when _dedup_guard
+    // drops, regardless of which exit path is taken (early return, error, or
+    // normal completion). This replaces 8 manual `llm.dedup.release()` calls.
+    let _dedup_guard = DedupGuard {
+        llm: Arc::clone(&state.llm),
+        fingerprint: dedup_fp,
+    };
 
     let config = state.config.read().await;
     let agent_id = config.agent.id.clone();
@@ -283,20 +241,18 @@ pub async fn process_channel_message(
     {
         Ok(id) => id,
         Err(e) => {
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-            drop(llm);
             return Err(e.to_string());
         }
     };
     if let Err(e) =
         ironclad_db::sessions::append_message(&state.db, &session_id, "user", &inbound.content)
     {
-        let mut llm = state.llm.write().await;
-        llm.dedup.release(&dedup_fp);
-        drop(llm);
         return Err(e.to_string());
     }
+    // Detect correction/contradiction *before* expansion — the expanded text may
+    // contain keywords from the previous reply that would trigger unrelated shortcuts.
+    let is_correction_turn =
+        is_short_contradiction_followup(&user_content) || is_short_reactive_sarcasm(&user_content);
     user_content = contextualize_short_followup(state, &session_id, &user_content).await;
     if let Some(reply) =
         maybe_handle_specialist_creation_controls(state, &session_id, &user_content).await
@@ -308,9 +264,6 @@ pub async fn process_channel_message(
             .await
             .inspect_err(|e| tracing::warn!(error = %e, "failed to send specialist control reply"))
             .ok();
-        let mut llm = state.llm.write().await;
-        llm.dedup.release(&dedup_fp);
-        drop(llm);
         return Ok(());
     }
 
@@ -343,9 +296,6 @@ pub async fn process_channel_message(
                 .await
                 .inspect_err(|e| tracing::warn!(error = %e, "failed to send specialist proposal"))
                 .ok();
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-            drop(llm);
             return Ok(());
         }
         DecompositionOutcome::Centralized => None,
@@ -356,10 +306,7 @@ pub async fn process_channel_message(
 
     // ── Concrete delegation execution (before inference) ──────────
     let config = state.config.read().await;
-    let agent_name = config.agent.name.clone();
-    let agent_id = config.agent.id.clone();
     let primary_model = config.models.primary.clone();
-    let tier_adapt = config.tier_adapt.clone();
     let thinking_threshold = config.channels.thinking_threshold_seconds;
     let trusted = config.channels.trusted_sender_ids.clone();
     let security_config = config.security.clone();
@@ -428,10 +375,6 @@ pub async fn process_channel_message(
         _ => (false, false),
     };
     drop(config);
-    let personality = state.personality.read().await;
-    let os_text = personality.os_text.clone();
-    let firmware_text = personality.firmware_text.clone();
-    drop(personality);
 
     // Resolve authority via the unified claim-based RBAC system.
     let security_claim = ironclad_core::security::resolve_channel_claim(
@@ -512,40 +455,25 @@ pub async fn process_channel_message(
             .await
             .inspect_err(|e| tracing::warn!(error = %e, "failed to send skill-first reply"))
             .ok();
-        let mut llm = state.llm.write().await;
-        llm.dedup.release(&dedup_fp);
-        drop(llm);
         return Ok(());
     }
 
-    // ── Prepare inference via core ───────────────────────────────────
-    let input = core::InferenceInput {
+    // ── Prepare inference via unified pipeline ──────────────────────
+    let pipeline_config = PipelineConfig::channel(&platform);
+    let pipeline_input = UnifiedPipelineInput {
         state,
+        config: &pipeline_config,
         session_id: &session_id,
         user_content: &user_content,
         turn_id: &channel_turn_id,
-        channel_label: &platform,
-        agent_name,
-        agent_id: agent_id.clone(),
-        os_text,
-        firmware_text,
-        primary_model: primary_model.clone(),
-        tier_adapt,
+        is_correction_turn,
         delegation_workflow_note,
-        inject_diagnostics: false,
         gate_system_note: Some(gate_system_note),
         delegated_execution_note,
+        delegation_provenance: DelegationProvenance::default(), // not consumed by prepare
     };
 
-    let mut prepared = match core::prepare_inference(&input).await {
-        Ok(p) => p,
-        Err(msg) => {
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-            drop(llm);
-            return Err(msg);
-        }
-    };
+    let mut prepared = super::pipeline::prepare_unified_pipeline(&pipeline_input).await?;
 
     // Model switch for complex delegated tasks
     let mut model_switch_notice: Option<String> = None;
@@ -671,9 +599,6 @@ pub async fn process_channel_message(
         Err(msg) => {
             typing_keepalive_stop.store(true, Ordering::Release);
             thinking_sent.store(true, Ordering::Release);
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-            drop(llm);
             return Err(msg);
         }
     };
@@ -687,20 +612,12 @@ pub async fn process_channel_message(
     {
         typing_keepalive_stop.store(true, Ordering::Release);
         thinking_sent.store(true, Ordering::Release);
-        let mut llm = state.llm.write().await;
-        llm.dedup.release(&dedup_fp);
-        drop(llm);
         return Err(e.to_string());
     }
     typing_keepalive_stop.store(true, Ordering::Release);
     thinking_sent.store(true, Ordering::Release);
 
-    // Release dedup tracking
-    {
-        let mut llm = state.llm.write().await;
-        llm.dedup.release(&dedup_fp);
-    }
-
+    // _dedup_guard drops here → DedupGuard::drop() releases fingerprint via tokio::spawn
     Ok(())
 }
 

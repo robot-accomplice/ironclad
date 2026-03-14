@@ -395,11 +395,15 @@ pub(super) async fn execute_virtual_subagent_tool_call(
             quality_target: None,
             tools: vec![],
         };
+        let budget = {
+            let config = state.config.read().await;
+            super::delegated_inference_budget(&config.models.routing)
+        };
         let result = match super::infer_with_fallback_with_budget_and_preferred(
             state,
             &req,
             &effective_model,
-            super::DELEGATED_INFERENCE_BUDGET,
+            budget,
             &preferred_fallbacks,
         )
         .await
@@ -438,11 +442,15 @@ pub(super) async fn execute_virtual_subagent_tool_call(
                         quality_target: req.quality_target,
                         tools: req.tools.clone(),
                     };
+                    let retry_budget = {
+                        let config = state.config.read().await;
+                        super::delegated_inference_budget(&config.models.routing)
+                    };
                     super::infer_with_fallback_with_budget_and_preferred(
                         state,
                         &retry_req,
                         &rescue_model,
-                        super::DELEGATED_INFERENCE_BUDGET,
+                        retry_budget,
                         &preferred_fallbacks,
                     )
                     .await?

@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
     scope_key TEXT NOT NULL DEFAULT 'agent',
-    status TEXT NOT NULL DEFAULT 'active',
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived', 'expired')),
     model TEXT,
     nickname TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS session_messages (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(id),
     parent_id TEXT,
-    role TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
     content TEXT NOT NULL,
     usage_json TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS turns (
     model TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, created_at);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
     id TEXT PRIMARY KEY,
@@ -66,21 +67,24 @@ CREATE TABLE IF NOT EXISTS policy_decisions (
     id TEXT PRIMARY KEY,
     turn_id TEXT,
     tool_name TEXT NOT NULL,
-    decision TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK(decision IN ('allow', 'deny')),
     rule_name TEXT,
     reason TEXT,
     context_json TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_policy_decisions_session ON policy_decisions(turn_id);
+CREATE INDEX IF NOT EXISTS idx_policy_decisions_created ON policy_decisions(created_at);
 
 CREATE TABLE IF NOT EXISTS working_memory (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
-    entry_type TEXT NOT NULL,
+    entry_type TEXT NOT NULL CHECK(entry_type IN ('goal', 'note', 'turn_summary', 'decision', 'observation', 'fact')),
     content TEXT NOT NULL,
     importance INTEGER NOT NULL DEFAULT 5,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_working_memory_session ON working_memory(session_id);
 
 CREATE TABLE IF NOT EXISTS episodic_memory (
     id TEXT PRIMARY KEY,
@@ -178,12 +182,13 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
 CREATE TABLE IF NOT EXISTS cron_runs (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES cron_jobs(id),
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('success', 'error')),
     duration_ms INTEGER,
     error TEXT,
     output_text TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_cron_runs_job ON cron_runs(job_id, created_at);
 
 CREATE TABLE IF NOT EXISTS transactions (
     id TEXT PRIMARY KEY,
@@ -280,12 +285,6 @@ CREATE TABLE IF NOT EXISTS inference_costs (
 );
 CREATE INDEX IF NOT EXISTS idx_inference_costs_time ON inference_costs(created_at DESC);
 
-CREATE TABLE IF NOT EXISTS proxy_stats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    snapshot_json TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE IF NOT EXISTS semantic_cache (
     id TEXT PRIMARY KEY,
     prompt_hash TEXT NOT NULL,
@@ -335,7 +334,7 @@ CREATE INDEX IF NOT EXISTS idx_discovered_agents_did ON discovered_agents(did);
 CREATE TABLE IF NOT EXISTS skills (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
-    kind TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('structured', 'instruction', 'scripted', 'builtin')),
     description TEXT,
     source_path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -343,7 +342,7 @@ CREATE TABLE IF NOT EXISTS skills (
     tool_chain_json TEXT,
     policy_overrides_json TEXT,
     script_path TEXT,
-    risk_level TEXT NOT NULL DEFAULT 'Caution',
+    risk_level TEXT NOT NULL DEFAULT 'Caution' CHECK(risk_level IN ('Safe', 'Caution', 'Dangerous', 'Forbidden')),
     enabled INTEGER NOT NULL DEFAULT 1,
     last_loaded_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -359,7 +358,7 @@ CREATE TABLE IF NOT EXISTS delivery_queue (
     recipient_id TEXT NOT NULL,
     content TEXT NOT NULL,
     idempotency_key TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'in_flight', 'delivered', 'dead_letter')),
     attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 5,
     next_retry_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -374,7 +373,7 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     tool_name TEXT NOT NULL,
     tool_input TEXT NOT NULL,
     session_id TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'denied', 'timed_out')),
     decided_by TEXT,
     decided_at TEXT,
     timeout_at TEXT NOT NULL,
@@ -398,7 +397,6 @@ CREATE TABLE IF NOT EXISTS embeddings (
     source_table TEXT NOT NULL,
     source_id TEXT NOT NULL,
     content_preview TEXT NOT NULL,
-    embedding_json TEXT NOT NULL DEFAULT '',
     embedding_blob BLOB,
     dimensions INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -455,7 +453,7 @@ CREATE INDEX IF NOT EXISTS idx_turn_feedback_session ON turn_feedback(session_id
 
 CREATE TABLE IF NOT EXISTS context_snapshots (
     turn_id TEXT PRIMARY KEY REFERENCES turns(id),
-    complexity_level TEXT NOT NULL,
+    complexity_level TEXT NOT NULL CHECK(complexity_level IN ('L0', 'L1', 'L2', 'L3')),
     token_budget INTEGER NOT NULL,
     system_prompt_tokens INTEGER,
     memory_tokens INTEGER,
@@ -509,7 +507,7 @@ CREATE TABLE IF NOT EXISTS abuse_events (
     origin TEXT NOT NULL,
     channel TEXT NOT NULL,
     signal_type TEXT NOT NULL,
-    severity TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK(severity IN ('low', 'medium', 'high')),
     action_taken TEXT NOT NULL,
     detail TEXT,
     score REAL NOT NULL,
@@ -836,6 +834,30 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
         )
         .map_err(|e| IroncladError::Database(e.to_string()))?;
     }
+    // v0.9.7 DF-18: drop dead proxy_stats table from existing databases.
+    conn.execute_batch("DROP TABLE IF EXISTS proxy_stats;")
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    // v0.9.7 DF-15: drop legacy embedding_json column.  New databases never
+    // create it; existing databases still have it until this migration runs.
+    if has_column(&conn, "embeddings", "embedding_json")? {
+        // Migrate any JSON-only rows (BLOB is NULL or empty) to BLOB format.
+        // This is idempotent — already-migrated rows have non-empty BLOBs.
+        let migrated: usize = conn
+            .execute(
+                "UPDATE embeddings SET embedding_blob = NULL \
+                 WHERE (embedding_blob IS NULL OR length(embedding_blob) = 0) \
+                   AND embedding_json = ''",
+                [],
+            )
+            .unwrap_or(0);
+        // Note: rows with non-empty embedding_json but no BLOB cannot be
+        // auto-migrated here (JSON→BLOB requires Rust deserialization), but
+        // the ANN index rebuild on next boot will handle them.  Drop the column.
+        let _ = conn.execute_batch("ALTER TABLE embeddings DROP COLUMN embedding_json;");
+        if migrated > 0 {
+            tracing::info!(count = migrated, "DF-15: cleaned empty embedding rows");
+        }
+    }
     Ok(())
 }
 
@@ -1042,8 +1064,8 @@ mod tests {
         // + context_snapshots + model_selection_events + abuse_events
         // + shadow_routing_predictions (v0.9.4) + service_requests + revenue_opportunities
         // + revenue_feedback (v0.9.6) + learned_skills (v0.9.6)
-        // + hygiene_log (v0.9.6) = 41
-        assert_eq!(count, 41, "expected 41 user-defined tables, got {count}");
+        // + hygiene_log (v0.9.6) - proxy_stats (dropped v0.9.7) = 40
+        assert_eq!(count, 40, "expected 40 user-defined tables, got {count}");
     }
 
     #[test]
@@ -1052,7 +1074,7 @@ mod tests {
         initialize_db(&db).unwrap();
         initialize_db(&db).unwrap();
         let count = table_count(&db).unwrap();
-        assert_eq!(count, 41);
+        assert_eq!(count, 40);
     }
 
     #[test]

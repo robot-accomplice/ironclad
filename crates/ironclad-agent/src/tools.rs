@@ -394,9 +394,12 @@ pub struct ScriptRunnerTool {
 }
 
 impl ScriptRunnerTool {
-    pub fn new(config: ironclad_core::config::SkillsConfig) -> Self {
+    pub fn new(
+        config: ironclad_core::config::SkillsConfig,
+        fs_security: ironclad_core::config::FilesystemSecurityConfig,
+    ) -> Self {
         Self {
-            runner: crate::script_runner::ScriptRunner::new(config),
+            runner: crate::script_runner::ScriptRunner::new(config, fs_security),
         }
     }
 }
@@ -2623,7 +2626,10 @@ mod tests {
     #[test]
     fn script_runner_tool_metadata() {
         let cfg = SkillsConfig::default();
-        let tool = ScriptRunnerTool::new(cfg);
+        let tool = ScriptRunnerTool::new(
+            cfg,
+            ironclad_core::config::FilesystemSecurityConfig::default(),
+        );
         assert_eq!(tool.name(), "run_script");
         assert_eq!(tool.risk_level(), RiskLevel::Caution);
     }
@@ -2666,7 +2672,10 @@ mod tests {
             allowed_interpreters: vec!["bash".to_string()],
             ..Default::default()
         };
-        let tool = ScriptRunnerTool::new(cfg);
+        let tool = ScriptRunnerTool::new(
+            cfg,
+            ironclad_core::config::FilesystemSecurityConfig::default(),
+        );
         let ctx = test_ctx();
         let out = tool
             .execute(serde_json::json!({"path": "ok.sh"}), &ctx)
@@ -2695,7 +2704,10 @@ mod tests {
             allowed_interpreters: vec!["bash".to_string()],
             ..Default::default()
         };
-        let tool = ScriptRunnerTool::new(cfg);
+        let tool = ScriptRunnerTool::new(
+            cfg,
+            ironclad_core::config::FilesystemSecurityConfig::default(),
+        );
         let ctx = test_ctx();
 
         let err = tool

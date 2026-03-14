@@ -19,6 +19,8 @@ pub struct EmbeddingConfig {
     pub api_key_env: String,
     pub auth_header: String,
     pub extra_headers: HashMap<String, String>,
+    /// Local providers (Ollama, llama.cpp) don't require API key auth.
+    pub is_local: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -68,12 +70,17 @@ impl EmbeddingClient {
         cfg: &EmbeddingConfig,
         texts: &[&str],
     ) -> Result<Vec<Vec<f32>>> {
-        let api_key = std::env::var(&cfg.api_key_env).map_err(|_| {
-            IroncladError::Llm(format!(
-                "embedding API key not found: set the {} environment variable",
-                cfg.api_key_env
-            ))
-        })?;
+        // Local providers (Ollama, llama.cpp) don't require API key auth.
+        let api_key = if cfg.is_local {
+            std::env::var(&cfg.api_key_env).ok()
+        } else {
+            Some(std::env::var(&cfg.api_key_env).map_err(|_| {
+                IroncladError::Llm(format!(
+                    "embedding API key not found: set the {} environment variable",
+                    cfg.api_key_env
+                ))
+            })?)
+        };
         let url = build_embedding_url(cfg, texts.len());
         let body = build_embedding_request(cfg, texts);
 
@@ -82,7 +89,7 @@ impl EmbeddingClient {
         } else {
             &url
         };
-        debug!(url = %log_url, model = %cfg.model, count = texts.len(), "embedding request");
+        debug!(url = %log_url, model = %cfg.model, count = texts.len(), is_local = cfg.is_local, "embedding request");
 
         let is_query_auth = cfg.auth_header.starts_with("query:");
 
@@ -91,11 +98,13 @@ impl EmbeddingClient {
             .post(&url)
             .header("Content-Type", "application/json");
 
-        if !is_query_auth {
+        if let Some(ref key) = api_key
+            && !is_query_auth
+        {
             let auth_value = if cfg.auth_header.eq_ignore_ascii_case("authorization") {
-                format!("Bearer {api_key}")
+                format!("Bearer {key}")
             } else {
-                api_key.clone()
+                key.clone()
             };
             request = request.header(&cfg.auth_header, &auth_value);
         }
@@ -338,6 +347,7 @@ mod tests {
             api_key_env: "OLLAMA_API_KEY".into(),
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            is_local: true,
         };
         let client = EmbeddingClient::new(Some(cfg)).unwrap();
         assert!(client.has_provider());
@@ -371,6 +381,7 @@ mod tests {
             api_key_env: "OPENAI_API_KEY".into(),
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let body = build_embedding_request(&cfg, &["hello", "world"]);
         assert_eq!(body["model"], "text-embedding-3-small");
@@ -389,6 +400,7 @@ mod tests {
             api_key_env: "GOOGLE_API_KEY".into(),
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let body = build_embedding_request(&cfg, &["hello"]);
         assert!(body.get("content").is_some());
@@ -405,6 +417,7 @@ mod tests {
             api_key_env: "GOOGLE_API_KEY".into(),
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let body = build_embedding_request(&cfg, &["hello", "world"]);
         assert!(body.get("requests").is_some());
@@ -422,6 +435,7 @@ mod tests {
             api_key_env: "OPENAI_API_KEY".into(),
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let url = build_embedding_url(&cfg, 1);
         assert_eq!(url, "https://api.openai.com/v1/embeddings");
@@ -443,6 +457,7 @@ mod tests {
             api_key_env: "IRONCLAD_TEST_GOOGLE_EMBED_KEY".into(),
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let url = build_embedding_url(&cfg, 1);
         assert!(url.contains("text-embedding-004"));
@@ -465,6 +480,7 @@ mod tests {
             api_key_env: "TEST_GOOGLE_BATCH_KEY".into(),
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let url = build_embedding_url(&cfg, 3);
         assert!(url.contains(":batchEmbedContents"));
@@ -483,6 +499,7 @@ mod tests {
             api_key_env: String::new(),
             auth_header: String::new(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let resp = json!({
             "data": [
@@ -507,6 +524,7 @@ mod tests {
             api_key_env: String::new(),
             auth_header: String::new(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let resp = json!({
             "embeddings": [
@@ -530,6 +548,7 @@ mod tests {
             api_key_env: String::new(),
             auth_header: String::new(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let resp = json!({
             "embedding": { "values": [0.1, 0.2, 0.3] }
@@ -550,6 +569,7 @@ mod tests {
             api_key_env: String::new(),
             auth_header: String::new(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let resp = json!({
             "embeddings": [
@@ -572,6 +592,7 @@ mod tests {
             api_key_env: String::new(),
             auth_header: String::new(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let resp = json!({ "unexpected": "format" });
         let result = parse_embedding_response(&cfg, &resp, 2);
@@ -589,6 +610,7 @@ mod tests {
             api_key_env: "NONEXISTENT_KEY".into(),
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let client = EmbeddingClient::new(Some(cfg)).unwrap();
         let err = client.embed(&["test"]).await;
@@ -606,6 +628,7 @@ mod tests {
             api_key_env: String::new(),
             auth_header: String::new(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let resp = json!({ "unexpected": "garbage" });
         let result = parse_embedding_response(&cfg, &resp, 3);
@@ -623,6 +646,7 @@ mod tests {
             api_key_env: String::new(),
             auth_header: String::new(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let resp = json!({
             "embeddings": [
@@ -644,6 +668,7 @@ mod tests {
             api_key_env: String::new(),
             auth_header: "Authorization".into(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let url = build_embedding_url(&cfg, 1);
         assert_eq!(url, "http://localhost:11434/api/embed");
@@ -661,6 +686,7 @@ mod tests {
             api_key_env: "TEST_QUERY_KEY".into(),
             auth_header: "query:api_key".into(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let url = build_embedding_url(&cfg, 1);
         assert!(url.contains("api_key=test-dummy-key-not-real"));
@@ -690,6 +716,7 @@ mod tests {
             api_key_env: String::new(),
             auth_header: String::new(),
             extra_headers: HashMap::new(),
+            is_local: false,
         };
         let resp = json!({
             "data": [

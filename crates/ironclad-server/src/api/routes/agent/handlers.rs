@@ -1,4 +1,7 @@
 //! HTTP handler for the non-streaming agent message endpoint.
+//!
+//! Uses `DedupGuard` RAII for in-flight deduplication (auto-release on drop)
+//! and `execute_unified_pipeline_with_authority()` for the inference ceremony.
 
 use std::sync::Arc;
 
@@ -7,11 +10,12 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde_json::json;
 
-use super::core;
 use super::decomposition::{
     DecompositionDecision, DecompositionOutcome, DelegationProvenance,
     apply_decomposition_decision, build_gate_system_note, evaluate_decomposition_gate,
 };
+use super::guards::DedupGuard;
+use super::pipeline::{PipelineConfig, UnifiedPipelineInput};
 use super::resolve_web_scope;
 use super::{AgentMessageRequest, AppState};
 
@@ -21,6 +25,7 @@ pub async fn agent_message(
 ) -> impl IntoResponse {
     tracing::info!(channel = "api", session_id = ?body.session_id, "Processing agent message");
     let config = state.config.read().await;
+    let pipeline_config = PipelineConfig::api();
 
     if body.content.trim().is_empty() {
         return Err((
@@ -35,7 +40,7 @@ pub async fn agent_message(
         ));
     }
 
-    // Injection defense: block (>0.7), sanitize (0.3-0.7), or pass (<0.3)
+    // ── Injection defense ───────────────────────────────────────────
     let threat = ironclad_agent::injection::check_injection(&body.content);
     let reduced_authority = threat.is_caution();
     if threat.is_blocked() {
@@ -55,7 +60,7 @@ pub async fn agent_message(
         body.content.clone()
     };
 
-    // In-flight deduplication
+    // ── In-flight deduplication (RAII — auto-releases on drop) ──────
     let dedup_fp = ironclad_llm::DedupTracker::fingerprint(
         "",
         &[ironclad_llm::format::UnifiedMessage {
@@ -76,24 +81,26 @@ pub async fn agent_message(
             ));
         }
     }
+    // DedupGuard RAII: fingerprint is released automatically when _dedup_guard
+    // drops, regardless of which exit path is taken (early return, error, or
+    // normal completion). This replaces 10 manual `llm.dedup.release()` calls.
+    let _dedup_guard = DedupGuard {
+        llm: Arc::clone(&state.llm),
+        fingerprint: dedup_fp,
+    };
 
+    // ── Session resolution ──────────────────────────────────────────
     let agent_id = config.agent.id.clone();
     let session_id = match &body.session_id {
         Some(sid) => match ironclad_db::sessions::get_session(&state.db, sid) {
             Ok(Some(session)) if session.agent_id == agent_id => sid.clone(),
             Ok(Some(_)) => {
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-                drop(llm);
                 return Err((
                     StatusCode::FORBIDDEN,
                     axum::Json(json!({"error": "session does not belong to this agent"})),
                 ));
             }
             Ok(None) => {
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-                drop(llm);
                 return Err((
                     StatusCode::NOT_FOUND,
                     axum::Json(json!({"error": "session not found"})),
@@ -101,9 +108,6 @@ pub async fn agent_message(
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to retrieve session");
-                let mut llm = state.llm.write().await;
-                llm.dedup.release(&dedup_fp);
-                drop(llm);
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     axum::Json(json!({"error": "internal server error"})),
@@ -114,9 +118,6 @@ pub async fn agent_message(
             let scope = match resolve_web_scope(&config, &body) {
                 Ok(scope) => scope,
                 Err(msg) => {
-                    let mut llm = state.llm.write().await;
-                    llm.dedup.release(&dedup_fp);
-                    drop(llm);
                     return Err((StatusCode::BAD_REQUEST, axum::Json(json!({"error": msg}))));
                 }
             };
@@ -124,9 +125,6 @@ pub async fn agent_message(
                 Ok(sid) => sid,
                 Err(e) => {
                     tracing::error!(error = %e, "failed to create session");
-                    let mut llm = state.llm.write().await;
-                    llm.dedup.release(&dedup_fp);
-                    drop(llm);
                     return Err((
                         StatusCode::INTERNAL_SERVER_ERROR,
                         axum::Json(json!({"error": "internal server error"})),
@@ -149,7 +147,7 @@ pub async fn agent_message(
         _ => None,
     };
 
-    // Store user message
+    // ── Store user message ──────────────────────────────────────────
     let user_msg_id = match ironclad_db::sessions::append_message(
         &state.db,
         &session_id,
@@ -159,9 +157,6 @@ pub async fn agent_message(
         Ok(id) => id,
         Err(e) => {
             tracing::error!(error = %e, "failed to store user message");
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-            drop(llm);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(json!({"error": "internal server error"})),
@@ -169,12 +164,8 @@ pub async fn agent_message(
         }
     };
 
-    // Create a turn ID early so model-selection audit can be tied to this task.
+    // ── Turn creation ───────────────────────────────────────────────
     let turn_id = uuid::Uuid::new_v4().to_string();
-
-    // Pre-create the turn record so that any tool calls executed during
-    // delegation (before the main inference pipeline) can reference it
-    // without violating the tool_calls.turn_id FK constraint.
     if let Err(e) = ironclad_db::sessions::create_turn_with_id(
         &state.db,
         &turn_id,
@@ -187,18 +178,13 @@ pub async fn agent_message(
         tracing::warn!(error = %e, "failed to pre-create turn record for API handler");
     }
 
-    // Use the ModelRouter to select a model based on complexity
+    // ── Decomposition gate ──────────────────────────────────────────
     let features = ironclad_llm::extract_features(&user_content, 0, 1);
     let complexity = ironclad_llm::classify_complexity(&features);
-
-    // Decomposition gate: evaluate whether this task should be delegated
     let gate_decision = evaluate_decomposition_gate(&state, &user_content, complexity).await;
     let outcome = apply_decomposition_decision(&state, &gate_decision, &session_id, "api").await;
     let delegation_workflow_note = match outcome {
         DecompositionOutcome::SpecialistProposalPending { prompt } => {
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-            drop(llm);
             drop(config);
             return Ok(axum::Json(json!({
                 "session_id": session_id,
@@ -210,12 +196,11 @@ pub async fn agent_message(
         DecompositionOutcome::Delegated { workflow_note } => Some(workflow_note),
     };
 
-    // ── Gate system note & delegated execution ─────────────────────
+    // ── Gate system note & delegated execution ──────────────────────
     let gate_system_note =
         build_gate_system_note(&gate_decision, delegation_workflow_note.as_deref());
 
     // Resolve authority via the unified claim-based RBAC system.
-    // HTTP API callers are authenticated via API key / WS ticket — no channel allow-list.
     let api_claim =
         ironclad_core::security::resolve_api_claim(reduced_authority, "api", &config.security);
     let authority = api_claim.authority;
@@ -254,82 +239,36 @@ pub async fn agent_message(
     } else {
         None
     };
-
-    // ── Prepare inference via core ───────────────────────────────────
-    let config = state.config.read().await;
-    let agent_name = config.agent.name.clone();
-    let primary_model = config.models.primary.clone();
-    let tier_adapt = config.tier_adapt.clone();
     drop(config);
-    let personality = state.personality.read().await;
-    let os_text = personality.os_text.clone();
-    let firmware_text = personality.firmware_text.clone();
-    drop(personality);
 
-    let input = core::InferenceInput {
+    // ── Unified inference pipeline ──────────────────────────────────
+    let input = UnifiedPipelineInput {
         state: &state,
+        config: &pipeline_config,
         session_id: &session_id,
         user_content: &user_content,
         turn_id: &turn_id,
-        channel_label: "api",
-        agent_name,
-        agent_id: agent_id.clone(),
-        os_text,
-        firmware_text,
-        primary_model,
-        tier_adapt,
+        is_correction_turn: false,
         delegation_workflow_note,
-        inject_diagnostics: true,
         gate_system_note: Some(gate_system_note),
         delegated_execution_note,
+        delegation_provenance,
     };
 
-    let prepared = match core::prepare_inference(&input).await {
-        Ok(p) => p,
-        Err(msg) => {
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-            drop(llm);
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": msg})),
-            ));
-        }
-    };
+    let result =
+        match super::pipeline::execute_unified_pipeline_with_authority(input, authority).await {
+            Ok(r) => r,
+            Err(msg) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"error": msg})),
+                ));
+            }
+        };
 
-    // ── Unified inference pipeline (cache → inference → post-turn) ──
-    let result = match core::execute_inference_pipeline(
-        &state,
-        &prepared,
-        &session_id,
-        &user_content,
-        &turn_id,
-        authority,
-        Some("api"),
-        &mut delegation_provenance,
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(msg) => {
-            let mut llm = state.llm.write().await;
-            llm.dedup.release(&dedup_fp);
-            drop(llm);
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": msg})),
-            ));
-        }
-    };
-
-    // Release dedup tracking so subsequent identical requests are allowed
-    {
-        let mut llm = state.llm.write().await;
-        llm.dedup.release(&dedup_fp);
-    }
-
-    // Background nickname refinement after 4+ messages
-    if let Ok(count) = ironclad_db::sessions::message_count(&state.db, &session_id)
+    // ── Background nickname refinement ──────────────────────────────
+    if pipeline_config.nickname_refinement
+        && let Ok(count) = ironclad_db::sessions::message_count(&state.db, &session_id)
         && count >= 4
     {
         let refine_db = state.db.clone();
@@ -351,6 +290,8 @@ pub async fn agent_message(
             }
         });
     }
+
+    // _dedup_guard drops here → DedupGuard::drop() releases fingerprint via tokio::spawn
 
     Ok(axum::Json(json!({
         "session_id": session_id,

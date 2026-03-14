@@ -7,13 +7,17 @@ mod core;
 mod decomposition;
 mod delegation;
 mod diagnostics;
+mod guard_registry;
 mod guards;
 mod handlers;
+mod intent_registry;
 mod intents;
 mod orchestration;
+mod pipeline;
 mod poll_loops;
 mod routing;
 mod scheduled_tasks;
+mod shortcuts;
 mod streaming;
 #[cfg(test)]
 mod tests;
@@ -27,7 +31,7 @@ pub(crate) use self::channel_helpers::channel_chat_id_for_inbound;
 use self::channel_helpers::{metadata_str, resolve_channel_is_group};
 use self::channel_helpers::{parse_skills_json, resolve_channel_chat_id, resolve_channel_scope};
 pub use self::channel_message::process_channel_message;
-use self::decomposition::{DelegationProvenance, capability_tokens};
+use self::decomposition::capability_tokens;
 #[cfg(test)]
 use self::decomposition::{
     SpecialistProposal, proposal_to_json, split_subtasks, utility_margin_for_delegation,
@@ -39,11 +43,7 @@ use self::diagnostics::is_model_proxy_role;
 use self::diagnostics::{RuntimeDiagnostics, diagnostics_system_note, sanitize_diag_token};
 #[cfg(test)]
 use self::guards::{
-    MAX_SCOPE_ID, claims_unverified_subagent_output, common_prefix_ratio,
-    enforce_current_events_truth_guard, enforce_execution_truth_guard,
-    enforce_internal_jargon_guard, enforce_model_identity_truth_guard, enforce_non_repetition,
-    enforce_personality_integrity_guard, enforce_subagent_claim_guard,
-    is_overbroad_sensitive_conflict_refusal, looks_repetitive, repeat_tokens,
+    MAX_SCOPE_ID, common_prefix_ratio, enforce_current_events_truth_guard, repeat_tokens,
 };
 use self::guards::{resolve_web_scope, strip_internal_delegation_metadata};
 pub use self::handlers::agent_message;
@@ -52,7 +52,7 @@ pub(crate) use self::poll_loops::CHANNEL_PROCESSING_ERROR_REPLY;
 pub use self::poll_loops::{
     discord_poll_loop, email_poll_loop, signal_poll_loop, telegram_poll_loop,
 };
-use self::routing::{DELEGATED_INFERENCE_BUDGET, infer_with_fallback_with_budget_and_preferred};
+use self::routing::{delegated_inference_budget, infer_with_fallback_with_budget_and_preferred};
 #[cfg(test)]
 use self::routing::{estimate_cost_from_provider, fallback_candidates, summarize_user_excerpt};
 pub(crate) use self::routing::{infer_content_with_fallback, select_routed_model};

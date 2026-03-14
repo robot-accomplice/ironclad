@@ -386,6 +386,225 @@ fn run_mechanic_text_security_and_finalize(
         }
     }
 
+    // ── Sandbox configuration health check ─────────────────────────
+    println!("\n  {BOLD}Sandbox Configuration{RESET}\n");
+    {
+        let cfg_path = if config_path.exists() {
+            config_path.to_path_buf()
+        } else if alt_config.exists() {
+            alt_config.clone()
+        } else {
+            PathBuf::new()
+        };
+
+        if cfg_path.as_os_str().is_empty() {
+            println!("  {WARN} No config file found — cannot audit sandbox settings");
+        } else if let Ok(raw) = std::fs::read_to_string(&cfg_path) {
+            if let Ok(cfg) = toml::from_str::<ironclad_core::IroncladConfig>(&raw) {
+                let sk = &cfg.skills;
+                let mut any_issue = false;
+
+                // Check 1: Sandbox disabled entirely
+                if !sk.sandbox_env {
+                    any_issue = true;
+                    println!(
+                        "  {RED}{ERR}{RESET} Sandbox disabled — skill scripts run with full env access"
+                    );
+                    println!(
+                        "    {DETAIL} Set sandbox_env = true in [skills] to isolate script execution."
+                    );
+                }
+
+                // Check 2: Bare interpreter names (PATH hijacking risk)
+                let bare_interpreters: Vec<&str> = sk
+                    .allowed_interpreters
+                    .iter()
+                    .filter(|i| !std::path::Path::new(i.as_str()).is_absolute())
+                    .map(|s| s.as_str())
+                    .collect();
+                if !bare_interpreters.is_empty() {
+                    any_issue = true;
+                    println!(
+                        "  {WARN} {} interpreter{} use bare names (PATH hijacking risk)",
+                        bare_interpreters.len(),
+                        if bare_interpreters.len() == 1 { "" } else { "s" }
+                    );
+                    for name in &bare_interpreters {
+                        println!("    {DETAIL} {name} — resolve to absolute path for safety");
+                    }
+                    println!(
+                        "    {DETAIL} At runtime, the script runner resolves to absolute paths automatically."
+                    );
+                    println!(
+                        "    {DETAIL} For defense-in-depth, set absolute paths in allowed_interpreters."
+                    );
+                }
+
+                // Check 3: No memory limit configured
+                if sk.script_max_memory_bytes.is_none() {
+                    any_issue = true;
+                    println!("  {WARN} No memory ceiling for skill scripts (script_max_memory_bytes = none)");
+                    println!("    {DETAIL} A runaway script could exhaust system memory.");
+                }
+
+                // Check 4: Network access allowed
+                if sk.network_allowed {
+                    println!(
+                        "  {YELLOW}ℹ{RESET}  Network access enabled for sandboxed scripts (network_allowed = true)"
+                    );
+                }
+
+                // Check 5: Platform limitations
+                #[cfg(target_os = "macos")]
+                {
+                    println!(
+                        "  {YELLOW}ℹ{RESET}  macOS: RLIMIT_AS memory enforcement unavailable (virtual memory model)"
+                    );
+                    println!(
+                        "  {YELLOW}ℹ{RESET}  macOS: network namespace isolation unavailable (no unshare)"
+                    );
+                }
+
+                // Summary
+                if !any_issue {
+                    println!("  {OK} Sandbox configuration looks healthy");
+                    println!(
+                        "    {DETAIL} sandbox_env: {}",
+                        if sk.sandbox_env { "enabled" } else { "disabled" }
+                    );
+                    println!(
+                        "    {DETAIL} interpreters: {} configured",
+                        sk.allowed_interpreters.len()
+                    );
+                    if let Some(mem) = sk.script_max_memory_bytes {
+                        println!(
+                            "    {DETAIL} memory ceiling: {} MiB",
+                            mem / (1024 * 1024)
+                        );
+                    }
+                    println!(
+                        "    {DETAIL} network: {}",
+                        if sk.network_allowed { "allowed" } else { "denied" }
+                    );
+                    println!(
+                        "    {DETAIL} timeout: {}s",
+                        sk.script_timeout_seconds
+                    );
+                }
+            } else {
+                println!("  {WARN} Could not parse config file for sandbox audit");
+            }
+        } else {
+            println!("  {WARN} Could not read config file for sandbox audit");
+        }
+    }
+
+    // ── Filesystem security policy check ──────────────────────────
+    println!("\n  {BOLD}Filesystem Security{RESET}\n");
+    {
+        let cfg_path = if config_path.exists() {
+            config_path.to_path_buf()
+        } else if alt_config.exists() {
+            alt_config.clone()
+        } else {
+            PathBuf::new()
+        };
+
+        if cfg_path.as_os_str().is_empty() {
+            println!("  {WARN} No config file found — cannot audit filesystem policy");
+        } else if let Ok(raw) = std::fs::read_to_string(&cfg_path) {
+            if let Ok(cfg) = toml::from_str::<ironclad_core::IroncladConfig>(&raw) {
+                let fs = &cfg.security.filesystem;
+                let mut any_issue = false;
+
+                // Check 1: Workspace-only mode disabled
+                if !fs.workspace_only {
+                    any_issue = true;
+                    println!(
+                        "  {WARN} Workspace-only mode disabled — agent tools can access the entire filesystem"
+                    );
+                    println!(
+                        "    {DETAIL} Set security.filesystem.workspace_only = true to confine file tools."
+                    );
+                }
+
+                // Check 2: Script FS confinement disabled
+                if !fs.script_fs_confinement {
+                    any_issue = true;
+                    println!(
+                        "  {WARN} Script filesystem confinement disabled — sandboxed scripts run without OS sandbox"
+                    );
+                    println!(
+                        "    {DETAIL} Set security.filesystem.script_fs_confinement = true for OS-level write isolation."
+                    );
+                }
+
+                // Check 3: Protected paths list too small
+                if fs.protected_paths.len() < 10 {
+                    any_issue = true;
+                    println!(
+                        "  {WARN} Protected paths list has only {} entries (default is ~25)",
+                        fs.protected_paths.len()
+                    );
+                    println!(
+                        "    {DETAIL} The blacklist may be too aggressively trimmed. Review security.filesystem.protected_paths."
+                    );
+                }
+
+                // Info: Extra protected paths configured
+                if !fs.extra_protected_paths.is_empty() {
+                    println!(
+                        "  {YELLOW}ℹ{RESET}  {} extra protected path pattern{} configured",
+                        fs.extra_protected_paths.len(),
+                        if fs.extra_protected_paths.len() == 1 { "" } else { "s" }
+                    );
+                }
+
+                // Info: Script allowed paths configured
+                if !fs.script_allowed_paths.is_empty() {
+                    println!(
+                        "  {YELLOW}ℹ{RESET}  {} script-allowed path{} configured",
+                        fs.script_allowed_paths.len(),
+                        if fs.script_allowed_paths.len() == 1 { "" } else { "s" }
+                    );
+                    // Warn on non-absolute paths
+                    let non_abs: Vec<_> = fs.script_allowed_paths.iter()
+                        .filter(|p| !p.is_absolute())
+                        .collect();
+                    if !non_abs.is_empty() {
+                        any_issue = true;
+                        println!(
+                            "  {WARN} {} script_allowed_path{} not absolute",
+                            non_abs.len(),
+                            if non_abs.len() == 1 { " is" } else { "s are" }
+                        );
+                    }
+                }
+
+                if !any_issue {
+                    println!("  {OK} Filesystem security policy looks healthy");
+                    println!(
+                        "    {DETAIL} workspace_only: {}",
+                        if fs.workspace_only { "enabled" } else { "disabled" }
+                    );
+                    println!(
+                        "    {DETAIL} script_fs_confinement: {}",
+                        if fs.script_fs_confinement { "enabled" } else { "disabled" }
+                    );
+                    println!(
+                        "    {DETAIL} protected paths: {} pattern{}",
+                        fs.protected_paths.len(),
+                        if fs.protected_paths.len() == 1 { "" } else { "s" }
+                    );
+                }
+            } else {
+                println!("  {WARN} Could not parse config file for filesystem audit");
+            }
+        } else {
+            println!("  {WARN} Could not read config file for filesystem audit");
+        }
+    }
+
     if repair {
         let state_db = ironclad_dir.join("state.db");
         match normalize_schema_safe(&state_db) {

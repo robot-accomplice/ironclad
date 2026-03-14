@@ -185,6 +185,89 @@ fn run_mechanic_text_local_preflight(
         println!("  {OK} OAuth token storage healthy");
     }
 
+    // ── Model & channel triage ──────────────────────────────────────
+    // Validate every configured model's API key resolution chain and
+    // optionally probe the provider endpoint for reachability.
+    if let Some(cfg_path) = effective_config_path
+        && let Ok(raw) = std::fs::read_to_string(cfg_path)
+        && let Ok(cfg) = toml::from_str::<ironclad_core::IroncladConfig>(&raw)
+    {
+        println!("\n  {BOLD}Model & Channel Triage{RESET}");
+        let triage = run_model_triage(&cfg, true);
+
+        for m in &triage.models {
+            let icon = if m.key_status.is_healthy() { OK } else { ERR };
+            let reach = match m.reachable {
+                Some(true) => format!(" {GREEN}reachable{RESET}"),
+                Some(false) => format!(" {RED}unreachable{RESET}"),
+                None => String::new(),
+            };
+            println!(
+                "  {icon} [{role}] {CYAN}{model}{RESET} via {provider}: {status}{reach}",
+                role = m.role,
+                model = m.model_id,
+                provider = m.provider,
+                status = m.key_status.summary(),
+            );
+            if let Some(ref detail) = m.probe_detail {
+                println!("    {DETAIL} {detail}");
+            }
+            if !m.key_status.is_healthy() {
+                let rem = m.key_status.remediation();
+                if !rem.is_empty() {
+                    println!("    {DETAIL} Fix: {MONO}{rem}{RESET}");
+                }
+            }
+        }
+
+        for c in &triage.channels {
+            if !c.enabled {
+                println!(
+                    "  {DIM}  [{ch}] disabled{RESET}",
+                    ch = c.channel,
+                );
+                continue;
+            }
+            let icon = if c.key_status.is_healthy() { OK } else { ERR };
+            let reach = match c.reachable {
+                Some(true) => format!(" {GREEN}reachable{RESET}"),
+                Some(false) => format!(" {RED}unreachable{RESET}"),
+                None => String::new(),
+            };
+            println!(
+                "  {icon} [{ch}] {status}{reach}",
+                ch = c.channel,
+                status = c.key_status.summary(),
+            );
+            if let Some(ref detail) = c.probe_detail {
+                println!("    {DETAIL} {detail}");
+            }
+            if !c.key_status.is_healthy() {
+                let rem = c.key_status.remediation();
+                if !rem.is_empty() {
+                    println!("    {DETAIL} Fix: {MONO}{rem}{RESET}");
+                }
+            }
+        }
+
+        let unhealthy = triage.total_unhealthy();
+        let unreachable = triage.total_unreachable();
+        if unhealthy == 0 && unreachable == 0 {
+            println!("  {OK} All configured models and channels are healthy");
+        } else {
+            if unhealthy > 0 {
+                println!(
+                    "  {RED}{ERR}{RESET} {unhealthy} model/channel key issue(s) — see remediation above"
+                );
+            }
+            if unreachable > 0 {
+                println!(
+                    "  {YELLOW}{WARN}{RESET} {unreachable} endpoint(s) unreachable — check network/config"
+                );
+            }
+        }
+    }
+
     // Check Go toolchain
     let mut go_bin = which_binary("go");
     match go_bin.as_ref() {
@@ -465,6 +548,61 @@ fn run_mechanic_text_local_preflight(
     }
     if capability_skill_parity.missing_in_registry.is_empty() {
         println!("  {OK} Capability-to-skill parity checks passed");
+    }
+
+    // Check memory hygiene — detect canned responses, memorised fallbacks,
+    // and hallucinated subagent output lodged in memory tiers.
+    let mem_hygiene = run_memory_hygiene(&ironclad_dir.join("state.db"), repair)?;
+    if mem_hygiene.total_detected > 0 {
+        if repair {
+            println!(
+                "  {ACTION} Memory hygiene: purged {} contaminated entr{}",
+                mem_hygiene.total_purged,
+                if mem_hygiene.total_purged == 1 { "y" } else { "ies" }
+            );
+            *fixed += mem_hygiene.total_purged;
+        } else {
+            let tier_count = [
+                mem_hygiene.working_canned > 0,
+                mem_hygiene.semantic_canned > 0,
+                mem_hygiene.episodic_hallucinated > 0,
+            ]
+            .iter()
+            .filter(|&&b| b)
+            .count();
+            println!(
+                "  {WARN} Memory hygiene: {} contaminated entr{} across {} tier{}",
+                mem_hygiene.total_detected,
+                if mem_hygiene.total_detected == 1 { "y" } else { "ies" },
+                tier_count,
+                if tier_count == 1 { "" } else { "s" }
+            );
+            if mem_hygiene.working_canned > 0 {
+                println!(
+                    "    {DETAIL} {} canned response{} in working_memory",
+                    mem_hygiene.working_canned,
+                    if mem_hygiene.working_canned == 1 { "" } else { "s" }
+                );
+            }
+            if mem_hygiene.semantic_canned > 0 {
+                println!(
+                    "    {DETAIL} {} canned response{} learned as semantic fact{}",
+                    mem_hygiene.semantic_canned,
+                    if mem_hygiene.semantic_canned == 1 { "" } else { "s" },
+                    if mem_hygiene.semantic_canned == 1 { "" } else { "s" }
+                );
+            }
+            if mem_hygiene.episodic_hallucinated > 0 {
+                println!(
+                    "    {DETAIL} {} hallucinated subagent output{} in episodic_memory",
+                    mem_hygiene.episodic_hallucinated,
+                    if mem_hygiene.episodic_hallucinated == 1 { "" } else { "s" }
+                );
+            }
+            println!("    {DETAIL} Run `ironclad mechanic --repair` to purge.");
+        }
+    } else {
+        println!("  {OK} Memory hygiene OK");
     }
 
     Ok(())

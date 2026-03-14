@@ -98,8 +98,28 @@ impl Database {
         }
         .map_err(|e| IroncladError::Database(e.to_string()))?;
 
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        // WAL mode + foreign keys + synchronous=NORMAL (safe under WAL, ~2x
+        // write throughput vs FULL which adds an unnecessary extra fsync on
+        // every checkpoint).  auto_vacuum=INCREMENTAL lets us reclaim space
+        // on demand via `PRAGMA incremental_vacuum` without full-db rewrites.
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; \
+             PRAGMA foreign_keys=ON; \
+             PRAGMA synchronous=NORMAL; \
+             PRAGMA auto_vacuum=INCREMENTAL;",
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+
+        // For existing databases that were created with auto_vacuum=NONE,
+        // switching to INCREMENTAL requires a one-time full VACUUM.  Check
+        // current mode and upgrade if needed.  This is a no-op on new DBs.
+        let current_auto_vacuum: i64 = conn
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+            .unwrap_or(0);
+        if current_auto_vacuum == 0 {
+            // 0 = NONE, 2 = INCREMENTAL.  VACUUM rewrites the DB file once.
+            let _ = conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM;");
+        }
 
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),

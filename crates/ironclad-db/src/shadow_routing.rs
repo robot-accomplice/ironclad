@@ -147,6 +147,21 @@ pub fn recent_shadow_predictions(db: &Database, limit: usize) -> Result<Vec<Shad
     Ok(results)
 }
 
+/// Delete shadow routing predictions older than `retention_days` days.
+///
+/// Returns the number of rows deleted.
+pub fn prune_shadow_predictions(db: &Database, retention_days: u32) -> Result<usize> {
+    let conn = db.conn();
+    let deleted = conn
+        .execute(
+            "DELETE FROM shadow_routing_predictions \
+             WHERE created_at < datetime('now', ?1)",
+            [format!("-{retention_days} days")],
+        )
+        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    Ok(deleted)
+}
+
 /// Count disagreements where shadow would have picked a different model,
 /// grouped by (production_model, shadow_model) pair. Useful for identifying
 /// systematic divergence patterns.

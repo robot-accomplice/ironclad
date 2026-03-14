@@ -11,12 +11,15 @@ fn collect_mechanic_json_security_and_plugin_findings(
         let tg_404_count =
             count_occurrences(snapshot, "Telegram API error\",\"status\":\"404 Not Found");
         let tg_poll_err_count = count_occurrences(snapshot, "Telegram poll error, backing off 5s");
-        if tg_404_count >= 3 || tg_poll_err_count >= 3 {
+        let tg_401_count =
+            count_occurrences(snapshot, "Telegram API error\",\"status\":\"401");
+        if tg_401_count >= 3 {
+            // 401 Unauthorized is a clear token/auth issue — keystore is the right fix
             findings.push(finding(
                 "telegram-invalid-token-likely",
                 "high",
                 0.96,
-                "Repeated Telegram 404/poll-backoff failures",
+                "Repeated Telegram 401 Unauthorized errors",
                 "Log signatures strongly suggest an invalid or revoked Telegram bot token.",
                 "Set a valid token and restart daemon.",
                 vec![
@@ -25,6 +28,26 @@ fn collect_mechanic_json_security_and_plugin_findings(
                 ],
                 false,
                 true,
+            ));
+        } else if tg_404_count >= 3 || tg_poll_err_count >= 3 {
+            // 404 / poll backoff — transport-level issue, not a keystore problem
+            findings.push(finding(
+                "telegram-transport-degraded",
+                "medium",
+                0.80,
+                format!(
+                    "Telegram transport degraded ({tg_404_count} 404 errors, {tg_poll_err_count} poll backoffs)"
+                ),
+                "Repeated Telegram API 404 errors or poll backoff loops indicate transport-level \
+                 failures. This is typically caused by network issues, Telegram API changes, or \
+                 bot configuration problems — not an invalid keystore token.",
+                "Check Telegram bot configuration and API connectivity with `ironclad channels status`.",
+                vec![
+                    "ironclad channels status".to_string(),
+                    "ironclad daemon restart".to_string(),
+                ],
+                false,
+                false,
             ));
         }
         let unknown_action_count = count_occurrences(snapshot, "unknown action: unknown");
@@ -173,6 +196,135 @@ fn collect_mechanic_json_security_and_plugin_findings(
                             ));
                 }
             }
+        }
+    }
+
+    // ── Sandbox configuration findings ───────────────────────────────
+    if let Some(ref cfg_path) = security_config_path
+        && let Ok(raw) = std::fs::read_to_string(cfg_path)
+        && let Ok(cfg) = toml::from_str::<ironclad_core::IroncladConfig>(&raw)
+    {
+        let sk = &cfg.skills;
+
+        // Sandbox disabled entirely
+        if !sk.sandbox_env {
+            findings.push(finding(
+                "sandbox-disabled",
+                "high",
+                0.99,
+                "Sandbox disabled — skill scripts run with full environment access",
+                "sandbox_env = false in [skills]. Scripts inherit the agent's full \
+                 environment and filesystem access. This negates all sandbox protections.",
+                "Set sandbox_env = true in [skills].",
+                vec!["ironclad mechanic --repair".to_string()],
+                false,
+                true,
+            ));
+        }
+
+        // Bare interpreter names (PATH hijacking risk)
+        let bare_interpreters: Vec<&str> = sk
+            .allowed_interpreters
+            .iter()
+            .filter(|i| !std::path::Path::new(i.as_str()).is_absolute())
+            .map(|s| s.as_str())
+            .collect();
+        if !bare_interpreters.is_empty() {
+            findings.push(finding(
+                "sandbox-bare-interpreters",
+                "medium",
+                0.90,
+                format!(
+                    "{} interpreter(s) use bare names (PATH hijacking risk)",
+                    bare_interpreters.len()
+                ),
+                format!(
+                    "allowed_interpreters contains bare names: [{}]. A malicious PATH entry \
+                     could shadow a legitimate interpreter. The script runner resolves to \
+                     absolute paths at runtime, but config-level absolute paths provide \
+                     defense-in-depth.",
+                    bare_interpreters.join(", ")
+                ),
+                "Set absolute paths for allowed_interpreters in [skills] config.",
+                vec![],
+                false,
+                false,
+            ));
+        }
+
+        // No memory limit
+        if sk.script_max_memory_bytes.is_none() {
+            findings.push(finding(
+                "sandbox-no-memory-limit",
+                "medium",
+                0.85,
+                "No memory ceiling for skill scripts",
+                "script_max_memory_bytes is not set — a runaway script could exhaust \
+                 system memory. Default is 256 MiB on Linux (RLIMIT_AS).",
+                "Set script_max_memory_bytes in [skills] config.",
+                vec![],
+                false,
+                false,
+            ));
+        }
+    }
+
+    // ── Filesystem security policy findings ───────────────────────
+    if let Some(ref cfg_path) = security_config_path
+        && let Ok(raw) = std::fs::read_to_string(cfg_path)
+        && let Ok(cfg) = toml::from_str::<ironclad_core::IroncladConfig>(&raw)
+    {
+        let fs = &cfg.security.filesystem;
+
+        // Workspace-only mode disabled
+        if !fs.workspace_only {
+            findings.push(finding(
+                "filesystem-workspace-unrestricted",
+                "high",
+                0.95,
+                "Workspace-only mode disabled — agent tools can access entire filesystem",
+                "security.filesystem.workspace_only = false. Agent file tools can read/write \
+                 any path the process user has access to, not just the workspace directory.",
+                "Set security.filesystem.workspace_only = true in config.",
+                vec!["ironclad config set security.filesystem.workspace_only true".to_string()],
+                false,
+                false,
+            ));
+        }
+
+        // Script filesystem confinement disabled
+        if !fs.script_fs_confinement {
+            findings.push(finding(
+                "filesystem-script-unconfined",
+                "medium",
+                0.90,
+                "Script filesystem confinement disabled",
+                "security.filesystem.script_fs_confinement = false. Sandboxed skill scripts \
+                 run without OS-level write isolation (macOS sandbox-exec).",
+                "Set security.filesystem.script_fs_confinement = true in config.",
+                vec!["ironclad config set security.filesystem.script_fs_confinement true".to_string()],
+                false,
+                false,
+            ));
+        }
+
+        // Protected paths list too small
+        if fs.protected_paths.len() < 10 {
+            findings.push(finding(
+                "filesystem-blacklist-minimal",
+                "medium",
+                0.85,
+                format!(
+                    "Protected paths list has only {} entries (default is ~25)",
+                    fs.protected_paths.len()
+                ),
+                "The filesystem blacklist may have been trimmed too aggressively, leaving \
+                 sensitive paths unprotected.",
+                "Review security.filesystem.protected_paths or reset to defaults.",
+                vec![],
+                false,
+                false,
+            ));
         }
     }
 
