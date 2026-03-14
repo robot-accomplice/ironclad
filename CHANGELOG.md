@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.7] - 2026-03-13
+## [0.9.7] - 2026-03-14
 
 ### Added
 
@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Filesystem security overhaul**: `FilesystemSecurityConfig` with `workspace_only` mode, ~25 default protected path patterns, `tool_allowed_paths` whitelist (auto-populated from Obsidian vault path), macOS `sandbox-exec` write-denial confinement, and dashboard UI toggles.
 - **Unified pipeline architecture**: `IntentRegistry` (22-variant `Intent` enum), `GuardChain` (12 guards with `full()`/`cached()`/`streaming()` presets), `ShortcutDispatcher` (15 handlers replacing 983-line god function), `PipelineConfig` (4 presets: `api`/`streaming`/`channel`/`cron`), and `DedupGuard` RAII replacing 11 manual release patterns. Net ~653 lines removed.
 - **ChannelFormatter trait**: Per-platform output formatting with static dispatch registry — `TelegramFormatter` (Markdown→MarkdownV2), `DiscordFormatter`, `WhatsAppFormatter`, `SignalFormatter`, `WebFormatter`, `EmailFormatter` — wired into `channel_message.rs` delivery path. 31 unit tests.
+- **Configurable inference timeouts**: Per-provider `timeout_seconds` setting (`[providers.*.timeout_seconds]`) with 300-second default, surfaced in dashboard provider configuration.
+- **Dashboard session ID copy button**: One-click copy-to-clipboard for session IDs in the Sessions panel.
 
 ### Fixed
 
@@ -32,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cron once-type orphan jobs**: Jobs with `schedule_kind: "once"` and no `schedule_expr` are now auto-disabled on first encounter instead of emitting a warning every 60s.
 - **Dashboard sidebar footer**: Navigation bar footer now stays pinned to the bottom of the viewport (added `height: 100%` to sidebar container).
 - **Dashboard custom model Add button**: Custom model text input row now has its own Add button; both Add buttons use a shared class selector.
+- **Telegram double-underscore italic**: `__text__` was incorrectly emitted as Telegram underline instead of italic — formatter now maps to `_text_`.
+- **Config hot-reload path divergence**: `normalize_paths()` and `merge_bundled_providers()` were skipped during hot-reload — reloaded configs now match boot-time normalization.
+- **Routing audit fixes**: Attempt counter not incrementing on retry, `u32` truncation on cost metrics, misleading timeout error message wording.
+- **Dashboard UI stall during inference**: 4 `RwLock` guard-scope fixes release locks before async I/O, preventing cascading reader starvation.
+- **Cron semaphore hot-reload race**: Semaphore not released when cron runtime reloads config, causing phantom permit exhaustion. Dead `LlmService` method removed, lock consolidation in admin routes.
+- **Agent audit fixes**: Tautological always-true test condition, timeout hint parsing edge case, unreachable branch removal.
 
 ## [0.9.6] - 2026-03-11
 

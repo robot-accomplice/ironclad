@@ -1547,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-agent"
-version = "0.9.4"
+version = "0.9.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1557,6 +1557,7 @@ dependencies = [
  "ironclad-db",
  "ironclad-llm",
  "k256",
+ "libc",
  "pdf-extract",
  "rand 0.8.5",
  "regex",
@@ -1566,6 +1567,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",
@@ -1585,7 +1587,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-core"
-version = "0.9.4"
+version = "0.9.6"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1601,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-db"
-version = "0.9.4"
+version = "0.9.6"
 dependencies = [
  "chrono",
  "instant-distance",
@@ -1615,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "ironclad-llm"
-version = "0.9.4"
+version = "0.9.6"
 dependencies = [
  "base64",
  "bytes",
