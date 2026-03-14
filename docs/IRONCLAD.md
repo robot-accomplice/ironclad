@@ -11,18 +11,18 @@ Ironclad compiles to a single static binary. Every subsystem -- LLM routing, age
 | Metric | Value |
 | --- | --- |
 | Language | Rust (edition 2024) |
-| Workspace crates | 11 |
+| Workspace crates | 12 |
 | Source files | 117 |
 | Lines of code | ~32,000 |
 | Test count | ~1,271 unit + integration |
-| SQLite tables | 32 |
+| SQLite tables | 39 |
 | Architecture docs | 17 (C4 + dataflow + sequence diagrams) |
 
 ### Crate Map
 
 ```text
 ironclad-core        Shared types, config, error definitions, personality system
-ironclad-db          SQLite persistence (32 tables, FTS5, WAL mode, BLOB embeddings, ANN index, cache persistence, efficiency analytics)
+ironclad-db          SQLite persistence (39 tables, FTS5, WAL mode, BLOB embeddings, ANN index, cache persistence, efficiency analytics)
 ironclad-llm         LLM client pipeline, format translation, routing, caching (persistent), circuit breakers, embedding client
 ironclad-agent       ReAct loop, tool system, policy engine, injection defense, hybrid RAG, skills, subagents
 ironclad-wallet      Ethereum wallet, x402 payments, treasury policy, yield engine
@@ -93,7 +93,7 @@ ironclad-tests       Integration test suite
 - **Durable scheduler** -- cron expressions, interval, one-time timestamps; all state in SQLite
 - **Lease-based execution** -- prevents double-execution across instances
 - **Heartbeat daemon** -- configurable tick interval, builds TickContext (balance, survival tier) per tick
-- **7 built-in tasks**: SurvivalCheck, UsdcMonitor, YieldTask, MemoryPrune, CacheEvict, MetricSnapshot, AgentCardRefresh
+- **8 built-in tasks**: SurvivalCheck, UsdcMonitor, YieldTask, MemoryPrune, CacheEvict, MetricSnapshot, AgentCardRefresh
 
 ### Financial
 

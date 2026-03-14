@@ -1555,20 +1555,19 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("helper.gosh"), "// helper").unwrap();
 
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         let _ = super::cmd_plugin_install(dir.path().to_str().unwrap()).await;
-        unsafe { std::env::remove_var("HOME") };
     }
 
     #[test]
     fn cmd_plugin_uninstall_not_found() {
-        unsafe { std::env::set_var("HOME", "/tmp/ironclad_test_uninstall_home") };
+        let _home_guard =
+            crate::test_support::EnvGuard::set("HOME", "/tmp/ironclad_test_uninstall_home");
         let result = super::cmd_plugin_uninstall("nonexistent");
         assert!(
             result.is_err(),
             "uninstall of nonexistent plugin should fail"
         );
-        unsafe { std::env::remove_var("HOME") };
     }
 
     #[test]
@@ -1581,10 +1580,9 @@ mod tests {
             .join("myplugin");
         std::fs::create_dir_all(&plugins_dir).unwrap();
         std::fs::write(plugins_dir.join("plugin.toml"), "name = \"myplugin\"").unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         super::cmd_plugin_uninstall("myplugin").unwrap();
         assert!(!plugins_dir.exists());
-        unsafe { std::env::remove_var("HOME") };
     }
 
     // ── Models ────────────────────────────────────────────────
@@ -1966,9 +1964,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ironclad_dir = dir.path().join(".ironclad");
         std::fs::create_dir_all(&ironclad_dir).unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         super::cmd_reset(true).unwrap();
-        unsafe { std::env::remove_var("HOME") };
     }
 
     #[test]
@@ -1982,13 +1979,12 @@ mod tests {
         std::fs::write(ironclad_dir.join("ironclad.toml"), "[server]").unwrap();
         std::fs::create_dir_all(ironclad_dir.join("logs")).unwrap();
         std::fs::write(ironclad_dir.join("wallet.json"), "{}").unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         super::cmd_reset(true).unwrap();
         assert!(!ironclad_dir.join("state.db").exists());
         assert!(!ironclad_dir.join("ironclad.toml").exists());
         assert!(!ironclad_dir.join("logs").exists());
         assert!(ironclad_dir.join("wallet.json").exists());
-        unsafe { std::env::remove_var("HOME") };
     }
 
     // ── Mechanic ──────────────────────────────────────────────
@@ -2023,9 +2019,8 @@ mod tests {
             std::fs::create_dir_all(ironclad_dir.join(sub)).unwrap();
         }
         std::fs::write(ironclad_dir.join("ironclad.toml"), "[server]").unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         let _ = super::cmd_mechanic(&s.uri(), false, false, &[]).await;
-        unsafe { std::env::remove_var("HOME") };
     }
 
     #[tokio::test]
@@ -2037,9 +2032,8 @@ mod tests {
             .mount(&s)
             .await;
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         let _ = super::cmd_mechanic(&s.uri(), false, false, &[]).await;
-        unsafe { std::env::remove_var("HOME") };
     }
 
     #[tokio::test]
@@ -2062,9 +2056,8 @@ mod tests {
             .mount(&s)
             .await;
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         let _ = super::cmd_mechanic(&s.uri(), true, false, &[]).await;
         assert!(dir.path().join(".ironclad").join("workspace").exists());
-        unsafe { std::env::remove_var("HOME") };
     }
 }

@@ -9,12 +9,12 @@
 [![crates.io](https://img.shields.io/crates/v/ironclad-server.svg)](https://crates.io/crates/ironclad-server)
 [![downloads](https://img.shields.io/crates/d/ironclad-server.svg)](https://crates.io/crates/ironclad-server)
 [![docs.rs](https://docs.rs/ironclad-server/badge.svg)](https://docs.rs/ironclad-server)
-[![SQLite Tables](https://img.shields.io/badge/SQLite_tables-32-informational?logo=sqlite)](#architecture)
+[![SQLite Tables](https://img.shields.io/badge/SQLite_tables-39-informational?logo=sqlite)](#architecture)
 [![Lines of Code](https://img.shields.io/badge/lines_of_code-~32k-informational)](#architecture)
 
 **Ironclad has no cryptocurrency token. Any token using this name is unaffiliated with this project.**
 
-Ironclad is an autonomous agent runtime built in Rust as a single optimized binary. It features streaming LLM responses, heuristic model routing, 3-level semantic caching with SQLite persistence, hybrid RAG retrieval (FTS5 keyword + vector cosine with optional HNSW ANN indexing), multi-provider embeddings (OpenAI/Ollama/Google with n-gram fallback), zero-trust agent-to-agent communication, 4-layer prompt injection defense, a dual-format skill system, human-in-the-loop approval workflow, headless browser tool integration, Context Observatory (efficiency metrics, outcome grading, cost attribution, optimization recommendations), response transform pipeline, addressability filtering for group chats, flexible network binding, and built-in financial management with DeFi yield optimization. All eleven crates compile into one process with no IPC overhead — inter-component communication is direct async function calls on the tokio runtime, backed by a single SQLite database (32 tables including FTS5).
+Ironclad is an autonomous agent runtime built in Rust as a single optimized binary. It features streaming LLM responses, heuristic model routing, 3-level semantic caching with SQLite persistence, hybrid RAG retrieval (FTS5 keyword + vector cosine with optional HNSW ANN indexing), multi-provider embeddings (OpenAI/Ollama/Google with n-gram fallback), zero-trust agent-to-agent communication, 4-layer prompt injection defense, a dual-format skill system, human-in-the-loop approval workflow, headless browser tool integration, Context Observatory (efficiency metrics, outcome grading, cost attribution, optimization recommendations), response transform pipeline, addressability filtering for group chats, flexible network binding, and built-in financial management with DeFi yield optimization. All twelve crates compile into one process with no IPC overhead — inter-component communication is direct async function calls on the tokio runtime, backed by a single SQLite database (39 tables including FTS5).
 
 ## Installation
 
@@ -74,12 +74,12 @@ ironclad update binary --method download --yes
 
 ## Architecture
 
-The workspace is organized as eleven crates with a strict dependency hierarchy:
+The workspace is organized as twelve crates with a strict dependency hierarchy:
 
 | Crate | Purpose |
 | ------- | --------- |
 | `ironclad-core` | Shared types (`SurvivalTier`, `ApiFormat`, `ModelTier`, `RiskLevel`, `SkillKind`), unified config parsing, personality system, error types |
-| `ironclad-db` | SQLite persistence via rusqlite — 32 tables (incl. FTS5), WAL mode, migration system, embedding storage (BLOB + JSON), HNSW ANN index, semantic cache persistence, efficiency analytics |
+| `ironclad-db` | SQLite persistence via rusqlite — 39 tables (incl. FTS5), WAL mode, migration system, embedding storage (BLOB + JSON), HNSW ANN index, semantic cache persistence, efficiency analytics |
 | `ironclad-llm` | LLM client pipeline — format translation (4 API formats), circuit breaker, in-flight dedup, heuristic model router, 3-level semantic cache (persistent), tier-based prompt adaptation, multi-provider embedding client |
 | `ironclad-agent` | Agent core — ReAct loop state machine, tool system (trait-based), policy engine, 4-layer injection defense, HMAC trust boundaries, 5-tier memory system, hybrid RAG retrieval, content chunking, dual-format skill loader, sandboxed script runner, Obsidian vault integration |
 | `ironclad-wallet` | Ethereum wallet (alloy-rs), x402 payment protocol (EIP-3009), treasury policy engine, DeFi yield engine (Aave/Compound on Base) |
@@ -368,7 +368,7 @@ Detailed documentation in `docs/architecture/`:
 
 | Document | Contents |
 | ---------- | ---------- |
-| [ironclad-design.md](docs/architecture/ironclad-design.md) | Full blueprint — workspace layout, trait hierarchy, database schema (28 tables), complete config reference |
+| [ironclad-design.md](docs/architecture/ironclad-design.md) | Full blueprint — workspace layout, trait hierarchy, database schema (39 tables), complete config reference |
 | [ironclad-dataflow.md](docs/architecture/ironclad-dataflow.md) | 9 dataflow diagrams — request lifecycle, semantic cache, heuristic router, memory, A2A, injection defense, financial/yield, scheduling, skill execution |
 | [ironclad-sequences.md](docs/architecture/ironclad-sequences.md) | 7 cross-crate sequence diagrams — end-to-end request, cache pipeline, x402 payment, bootstrap, injection attack, skill execution, cron leasing |
 | [ironclad-c4-system-context.md](docs/architecture/ironclad-c4-system-context.md) | C4 Level 1: System context |

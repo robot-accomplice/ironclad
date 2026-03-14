@@ -31,7 +31,7 @@ Returns server health status.
 ```json
 {
   "status": "ok",
-  "version": "0.6.0",
+  "version": "0.9.7",
   "agent": "Roboticus",
   "uptime_seconds": 3600,
   "models": {
