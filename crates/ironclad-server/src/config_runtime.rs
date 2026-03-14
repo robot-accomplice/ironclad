@@ -549,12 +549,7 @@ primary = "ollama/qwen3:8b"
         let remaining: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_str()
-                    .unwrap_or("")
-                    .contains(".bak.")
-            })
+            .filter(|e| e.file_name().to_str().unwrap_or("").contains(".bak."))
             .collect();
 
         assert_eq!(remaining.len(), 10);
