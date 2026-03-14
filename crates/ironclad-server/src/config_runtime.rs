@@ -107,10 +107,11 @@ pub fn resolve_default_config_path() -> PathBuf {
 }
 
 pub fn parse_and_validate_toml(content: &str) -> Result<IroncladConfig, ConfigRuntimeError> {
-    let cfg: IroncladConfig = toml::from_str(content)?;
-    cfg.validate()
-        .map_err(|e| ConfigRuntimeError::Validation(e.to_string()))?;
-    Ok(cfg)
+    // Delegate to IroncladConfig::from_str which runs normalize_paths(),
+    // merge_bundled_providers(), and validate() — matching the startup path.
+    // Without this, hot-reloaded configs would have raw ~ paths and missing
+    // bundled providers.
+    IroncladConfig::from_str(content).map_err(|e| ConfigRuntimeError::Validation(e.to_string()))
 }
 
 pub fn parse_and_validate_file(path: &Path) -> Result<IroncladConfig, ConfigRuntimeError> {

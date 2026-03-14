@@ -517,6 +517,11 @@ pub(super) fn interactive_inference_budget(
 /// Delegated (sub-agent) inference gets a slightly extended budget: +20% on
 /// the per-provider timeout and +50% on total time to accommodate the
 /// extra latency of orchestrated multi-step calls.
+///
+/// NOTE: The config-level validation (`per_provider <= max_total`) only covers
+/// the interactive path's raw values. After these multipliers, the invariant
+/// still holds (1.2x < 1.5x), but documentation should note that delegated
+/// calls run with inflated budgets beyond the configured values.
 pub(super) fn delegated_inference_budget(
     routing: &ironclad_core::config::RoutingConfig,
 ) -> InferenceBudget {

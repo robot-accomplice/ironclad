@@ -360,6 +360,23 @@ impl IroncladConfig {
             ));
         }
 
+        // Warn (not error) when the total budget can't sustain all fallback attempts.
+        // Users may intentionally cap wall-clock time below the theoretical max.
+        let min_useful_total = self
+            .models
+            .routing
+            .per_provider_timeout_seconds
+            .saturating_mul(self.models.routing.max_fallback_attempts as u64);
+        if self.models.routing.max_total_inference_seconds < min_useful_total {
+            tracing::warn!(
+                per_provider = self.models.routing.per_provider_timeout_seconds,
+                max_total = self.models.routing.max_total_inference_seconds,
+                max_attempts = self.models.routing.max_fallback_attempts,
+                "max_total_inference_seconds < per_provider_timeout_seconds * max_fallback_attempts; \
+                 the fallback chain may be truncated by the total budget"
+            );
+        }
+
         Ok(())
     }
 }
