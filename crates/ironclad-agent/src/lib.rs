@@ -74,3 +74,6 @@ pub mod tools;
 pub mod typestate;
 pub mod wasm;
 pub mod workspace;
+
+#[cfg(test)]
+mod test_support;
