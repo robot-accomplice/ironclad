@@ -16,7 +16,6 @@ pub struct ScriptResult {
 pub struct ScriptRunner {
     config: SkillsConfig,
     // Used in the macOS sandbox-exec path (`#[cfg(target_os = "macos")]`).
-    #[allow(dead_code)]
     fs_security: FilesystemSecurityConfig,
 }
 

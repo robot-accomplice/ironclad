@@ -9,7 +9,6 @@ use serde_json::json;
 
 use super::AppState;
 
-#[allow(dead_code)] // model/provider reserved for future per-turn audit trails
 pub(super) struct InferenceResult {
     pub content: String,
     pub model: String,

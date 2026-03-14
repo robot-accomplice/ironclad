@@ -962,7 +962,6 @@ pub(super) fn post_turn_ingest(
     });
 }
 
-#[allow(dead_code)] // all fields used by various callers (API, streaming, channel)
 /// Result of the unified inference pipeline (cache check → inference → post-turn ops).
 pub(super) struct PipelineResult {
     pub content: String,

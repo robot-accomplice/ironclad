@@ -84,7 +84,7 @@ pub(super) enum GuardSetPreset {
 
 impl GuardSetPreset {
     /// Materialize the preset into a concrete guard chain.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn resolve(self) -> GuardChain {
         match self {
             Self::Full => guard_sets::full(),
@@ -117,7 +117,7 @@ pub(super) enum SessionResolutionMode {
     Dedicated,
     /// Pre-resolved: session already created by caller (useful for
     /// testing or specialized workflows).
-    #[allow(dead_code)]
+    #[cfg(test)]
     Provided { session_id: String },
 }
 
@@ -176,7 +176,6 @@ pub(super) enum InferenceMode {
 /// [`channel`]: PipelineConfig::channel
 /// [`cron`]: PipelineConfig::cron
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(super) struct PipelineConfig {
     // ── Input defense ─────────────────────────────────────────────
     /// Run injection detection: block (>0.7), sanitize (0.3-0.7), pass (<0.3).
@@ -354,7 +353,6 @@ impl PipelineConfig {
 // Convenience methods for querying pipeline capabilities. These are used by
 // `execute_unified_pipeline()` (Phase 5) to branch on stage availability.
 
-#[allow(dead_code)]
 impl PipelineConfig {
     /// Whether this pipeline uses the standard ReAct inference path.
     pub fn is_standard_inference(&self) -> bool {

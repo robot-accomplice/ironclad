@@ -26,8 +26,6 @@ const GATEWAY_ENCODING: &str = "json";
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WsSink = SplitSink<WsStream, WsMessage>;
-#[allow(dead_code)]
-type WsSource = SplitStream<WsStream>;
 
 pub struct DiscordAdapter {
     pub token: String,

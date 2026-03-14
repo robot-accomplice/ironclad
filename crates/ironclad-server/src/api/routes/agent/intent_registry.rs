@@ -5,10 +5,6 @@
 //! [`IntentRegistry::classify()`] entry point that lowercases the prompt
 //! exactly once and evaluates all registered descriptors.
 
-// Phase 1 additive: items are exercised by tests but not yet wired into
-// the production pipeline (Phase 2 will remove this allow).
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 
 // ── Intent enum ──────────────────────────────────────────────────────────
