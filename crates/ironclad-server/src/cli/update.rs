@@ -2026,8 +2026,8 @@ fn describe_channel_allowlists(config: &ironclad_core::IroncladConfig) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::EnvGuard;
     use axum::{Json, Router, extract::State, routing::get};
-    use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
     use tokio::net::TcpListener;
 
@@ -2036,32 +2036,6 @@ mod tests {
         manifest: String,
         providers: String,
         skill_payload: String,
-    }
-
-    struct EnvGuard {
-        key: &'static str,
-        old: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let old = std::env::var_os(key);
-            // SAFETY: test-scoped environment mutation restored on Drop.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.old {
-                // SAFETY: restoring previous process env value.
-                unsafe { std::env::set_var(self.key, v) };
-            } else {
-                // SAFETY: restoring previous process env value.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
     }
 
     fn env_lock() -> &'static Mutex<()> {

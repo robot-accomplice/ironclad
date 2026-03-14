@@ -1193,9 +1193,12 @@ pub async fn bootstrap_with_config_path(
 }
 
 #[cfg(test)]
+pub mod test_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
+    use crate::test_support::EnvGuard;
     use std::sync::{Mutex, OnceLock};
 
     const BOOTSTRAP_CONFIG: &str = r#"
@@ -1263,32 +1266,6 @@ primary = "ollama/qwen3:8b"
         assert!(is_taskable_subagent_role("specialist"));
         assert!(is_taskable_subagent_role("SubAgent"));
         assert!(!is_taskable_subagent_role("model-proxy"));
-    }
-
-    struct EnvGuard {
-        key: &'static str,
-        old: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let old = std::env::var_os(key);
-            // SAFETY: test-local env change restored on Drop.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.old {
-                // SAFETY: restoring previous env state.
-                unsafe { std::env::set_var(self.key, v) };
-            } else {
-                // SAFETY: restoring previous env state.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
     }
 
     fn env_lock() -> &'static Mutex<()> {
