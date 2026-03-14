@@ -25,6 +25,7 @@
 //! - `filter` -- Addressability filter (per-channel routing rules)
 
 pub mod a2a;
+pub mod allowlist;
 pub mod delivery;
 pub mod discord;
 pub mod email;

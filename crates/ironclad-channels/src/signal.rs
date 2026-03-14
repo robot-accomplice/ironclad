@@ -53,10 +53,7 @@ impl SignalAdapter {
     }
 
     fn is_sender_allowed(&self, sender: &str) -> bool {
-        if self.allowed_numbers.is_empty() {
-            return !self.deny_on_empty;
-        }
-        self.allowed_numbers.iter().any(|n| n == sender)
+        crate::allowlist::check_allowlist(&self.allowed_numbers, sender, self.deny_on_empty)
     }
 
     fn rpc_url(&self) -> &str {

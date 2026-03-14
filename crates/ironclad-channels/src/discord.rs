@@ -72,10 +72,7 @@ impl DiscordAdapter {
     }
 
     fn is_guild_allowed(&self, guild_id: &str) -> bool {
-        if self.allowed_guild_ids.is_empty() {
-            return !self.deny_on_empty;
-        }
-        self.allowed_guild_ids.iter().any(|g| g == guild_id)
+        crate::allowlist::check_allowlist(&self.allowed_guild_ids, guild_id, self.deny_on_empty)
     }
 
     pub fn push_message(&self, msg: InboundMessage) {

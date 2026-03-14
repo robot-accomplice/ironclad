@@ -135,7 +135,44 @@ pub fn backup_config_file(path: &Path) -> Result<Option<PathBuf>, ConfigRuntimeE
     let backup_name = format!("{file_name}.bak.{stamp}");
     let backup_path = parent.join(backup_name);
     std::fs::copy(path, &backup_path)?;
+    prune_old_backups(path, 10);
     Ok(Some(backup_path))
+}
+
+/// Remove old config backups, keeping only the most recent `keep` files.
+fn prune_old_backups(config_path: &Path, keep: usize) {
+    let Some(dir) = config_path.parent() else {
+        return;
+    };
+    let Some(filename) = config_path.file_name().and_then(|f| f.to_str()) else {
+        return;
+    };
+    let prefix = format!("{filename}.bak.");
+
+    let mut backups: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .map(|e| e.path())
+        .collect();
+
+    if backups.len() <= keep {
+        return;
+    }
+
+    // Sort by name ascending — the timestamp suffix is ISO-8601 so
+    // lexicographic order == chronological order (oldest first).
+    backups.sort();
+
+    let to_remove = backups.len() - keep;
+    for path in backups.into_iter().take(to_remove) {
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 /// Recursively normalize Windows backslash paths to forward slashes in JSON
@@ -493,5 +530,33 @@ primary = "ollama/qwen3:8b"
     fn parse_and_validate_file_errors_for_missing_file() {
         let err = parse_and_validate_file(std::path::Path::new("/nonexistent/file.toml"));
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn prune_old_backups_keeps_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("test.toml");
+        std::fs::write(&config, "").unwrap();
+
+        // Create 15 backups with lexicographically ordered timestamps.
+        for i in 0..15 {
+            let name = format!("test.toml.bak.20260301T12{i:02}00.000Z");
+            std::fs::write(dir.path().join(&name), "").unwrap();
+        }
+
+        prune_old_backups(&config, 10);
+
+        let remaining: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .unwrap_or("")
+                    .contains(".bak.")
+            })
+            .collect();
+
+        assert_eq!(remaining.len(), 10);
     }
 }
