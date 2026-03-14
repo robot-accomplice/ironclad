@@ -695,6 +695,62 @@ Scoring contract reference: `docs/evals/METASCORE_V1_SPEC.md` (spec-only).
 
 ---
 
+### 2.24 Cross-Platform Filesystem Sandboxing (Linux Landlock + Windows AppContainer)
+
+**Current state**: Skill script filesystem confinement exists only on macOS via
+`sandbox-exec(1)` profiles generated in `script_runner.rs`. Linux has network isolation
+(`unshare(CLONE_NEWNET)`) and memory limits (`RLIMIT_AS`), but no filesystem write
+confinement — scripts can write anywhere the process user can. Windows has no
+confinement at all. The config field `script_fs_confinement` already references Landlock
+in its doc comment, but the implementation is macOS-only.
+
+**Target**: OS-native filesystem sandboxing on all three supported platforms, so
+`script_fs_confinement = true` enforces write-denial boundaries regardless of OS.
+
+**Builds on**: `ScriptRunner` in `ironclad-agent/src/script_runner.rs` (macOS
+sandbox-exec path), `FilesystemSecurityConfig` in `preamble_types.rs`
+(`script_fs_confinement`, `script_allowed_paths`), `pre_exec` Unix hooks.
+
+**Scope**:
+
+- **Linux — Landlock LSM** (kernel 5.13+, ABI v1-v5):
+  - Apply Landlock ruleset in `pre_exec` closure (after fork, before exec).
+  - Grant `LANDLOCK_ACCESS_FS_READ_*` globally (matching macOS write-denial model).
+  - Grant `LANDLOCK_ACCESS_FS_WRITE_*` only to: `/tmp`, `workspace_dir`,
+    `script_allowed_paths`.
+  - Graceful degradation: if `prctl(PR_SET_NO_NEW_PRIVS)` or `landlock_create_ruleset`
+    fails (unprivileged container, old kernel), log warning via mechanic health check
+    and continue unsandboxed — same pattern as the existing `unshare` fallback.
+  - Detect kernel ABI version at startup; use `LANDLOCK_ACCESS_FS_REFER` (ABI v2),
+    `LANDLOCK_ACCESS_FS_TRUNCATE` (ABI v3), `LANDLOCK_ACCESS_FS_IOCTL_DEV` (ABI v5)
+    when available.
+- **Windows — AppContainer or Job Objects**:
+  - Use Win32 `CreateProcessW` with `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`
+    to launch scripts in an AppContainer — a lightweight sandbox that restricts
+    filesystem access to explicitly granted capabilities.
+  - Alternatively, use Job Objects with `JOB_OBJECT_UILIMIT_*` restrictions for
+    simpler confinement without AppContainer SID management overhead.
+  - Grant read access globally; write access only to `%TEMP%`, `workspace_dir`,
+    `script_allowed_paths`.
+  - Graceful degradation: if AppContainer creation fails (older Windows, missing
+    capabilities), fall back to standard process with warning.
+- **Config**: Existing `[filesystem_security]` fields are sufficient. No new config
+  keys needed — `script_fs_confinement`, `script_allowed_paths`, `workspace_dir`
+  already describe the sandboxing intent.
+- **Mechanic health check**: Extend `ironclad status` to report sandboxing capability
+  per-platform: `sandbox-exec` (macOS), `landlock` (Linux), `AppContainer` (Windows),
+  with kernel/OS version details and fallback warnings.
+- **Testing**:
+  - Integration tests mirroring the existing macOS `sandbox_exec_confines_script_filesystem`
+    test — write outside sandbox, expect `BLOCKED`.
+  - CI matrix already covers Linux + macOS; add Windows runner.
+
+**Non-goals for v1**: Read-path confinement (writes are the security boundary),
+syscall filtering beyond filesystem (that is seccomp-bpf territory), or container/VM
+isolation for untrusted skills (out of scope for process-level sandboxing).
+
+---
+
 ## Tier 3 — Frontier
 
 Ambitious capabilities that push the architecture into new territory. High effort, high potential.
@@ -1247,6 +1303,8 @@ Effort sizing legend: `S = 1-2 days`, `M = 3-5 days`, `L = 1-2 weeks`.
 | 2.20 | Voice channels (promoted from 3.6) | 2 | Channel adapters, whisper-rs, local TTS | High |
 | 2.21 | Skill registry protocol | 2 | SkillLoader, 2.14 skills catalog, skill manifests, wallet/ECDSA | Medium |
 | 2.22 | Anchored agent audit ledger (sanitized on-chain provenance) | 2 | Event bus/audit records, wallet/chain integration, proof verification tooling | High |
+| 2.23 | Tool output noise filter | 2 | tools.rs, core.rs observation assembly, injection.rs, 2.8 prompt compression | Medium |
+| 2.24 | Cross-platform filesystem sandboxing (Landlock + AppContainer) | 2 | ScriptRunner, FilesystemSecurityConfig, pre_exec hooks, sandbox-exec (macOS) | Medium |
 | 3.1 | Compile-time agent safety | 3 | Agent loop, policy engine | High |
 | 3.2 | ~~MCP integration~~ ✅ | 3 | Tool registry, config | ~~High~~ Done |
 | 3.3 | Multi-agent orchestration (partial) | 3 | SubagentRegistry, A2A, 2.9 | High |
