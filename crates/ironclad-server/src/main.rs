@@ -824,9 +824,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             lines,
             follow,
             level,
-        }) => cli::cmd_logs(url, lines, follow, &level).await,
+        }) => cli::cmd_logs(url, lines, follow, &level, parsed.json).await,
         Some(Commands::Circuit(sub)) => match sub {
-            CircuitCmd::Status => cli::cmd_circuit_status(url).await,
+            CircuitCmd::Status => cli::cmd_circuit_status(url, parsed.json).await,
             CircuitCmd::Reset { provider } => {
                 cli::cmd_circuit_reset(url, provider.as_deref()).await
             }
@@ -834,8 +834,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // ── Data ────────────────────────────────────────────
         Some(Commands::Sessions(sub)) => match sub {
-            SessionsCmd::List => cli::cmd_sessions_list(url).await,
-            SessionsCmd::Show { id } => cli::cmd_session_detail(url, &id).await,
+            SessionsCmd::List => cli::cmd_sessions_list(url, parsed.json).await,
+            SessionsCmd::Show { id } => cli::cmd_session_detail(url, &id, parsed.json).await,
             SessionsCmd::Create { agent_id } => cli::cmd_session_create(url, &agent_id).await,
             SessionsCmd::Export { id, format, output } => {
                 cli::cmd_session_export(url, &id, &format, output.as_deref()).await
@@ -847,18 +847,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tier,
                 session,
                 limit,
-            } => cli::cmd_memory(url, &tier, session.as_deref(), None, limit).await,
+            } => cli::cmd_memory(url, &tier, session.as_deref(), None, limit, parsed.json).await,
             MemoryCmd::Search { query, limit } => {
-                cli::cmd_memory(url, "search", None, Some(query.as_str()), limit).await
+                cli::cmd_memory(
+                    url,
+                    "search",
+                    None,
+                    Some(query.as_str()),
+                    limit,
+                    parsed.json,
+                )
+                .await
             }
         },
         Some(Commands::Ingest { path, json }) => cmd_ingest(&path, json, config_flag.as_deref()),
         Some(Commands::Skills(sub)) => match sub {
-            SkillsCmd::List => cli::cmd_skills_list(url).await,
-            SkillsCmd::Show { id } => cli::cmd_skill_detail(url, &id).await,
+            SkillsCmd::List => cli::cmd_skills_list(url, parsed.json).await,
+            SkillsCmd::Show { id } => cli::cmd_skill_detail(url, &id, parsed.json).await,
             SkillsCmd::Reload => cli::cmd_skills_reload(url).await,
             SkillsCmd::CatalogList { query } => {
-                cli::cmd_skills_catalog_list(url, query.as_deref()).await
+                cli::cmd_skills_catalog_list(url, query.as_deref(), parsed.json).await
             }
             SkillsCmd::CatalogInstall { skills, activate } => {
                 cli::cmd_skills_catalog_install(url, &skills, activate).await
@@ -880,25 +888,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         Some(Commands::Schedule(sub)) => match sub {
-            ScheduleCmd::List => cli::cmd_schedule_list(url).await,
-            ScheduleCmd::Run { job } => cli::cmd_schedule_run(url, &job).await,
+            ScheduleCmd::List => cli::cmd_schedule_list(url, parsed.json).await,
+            ScheduleCmd::Run { job } => cli::cmd_schedule_run(url, &job, parsed.json).await,
             ScheduleCmd::Recover {
                 all,
                 names,
                 dry_run,
-            } => cli::cmd_schedule_recover(url, &names, all, dry_run).await,
+            } => cli::cmd_schedule_recover(url, &names, all, dry_run, parsed.json).await,
         },
         Some(Commands::Metrics(sub)) => match sub {
-            MetricsCmd::Costs => cli::cmd_metrics(url, "costs", None).await,
+            MetricsCmd::Costs => cli::cmd_metrics(url, "costs", None, parsed.json).await,
             MetricsCmd::Transactions { hours } => {
-                cli::cmd_metrics(url, "transactions", hours).await
+                cli::cmd_metrics(url, "transactions", hours, parsed.json).await
             }
-            MetricsCmd::Cache => cli::cmd_metrics(url, "cache", None).await,
+            MetricsCmd::Cache => cli::cmd_metrics(url, "cache", None, parsed.json).await,
         },
         Some(Commands::Wallet(sub)) => match sub {
-            WalletCmd::Show => cli::cmd_wallet(url).await,
-            WalletCmd::Address => cli::cmd_wallet_address(url).await,
-            WalletCmd::Balance => cli::cmd_wallet_balance(url).await,
+            WalletCmd::Show => cli::cmd_wallet(url, parsed.json).await,
+            WalletCmd::Address => cli::cmd_wallet_address(url, parsed.json).await,
+            WalletCmd::Balance => cli::cmd_wallet_balance(url, parsed.json).await,
         },
 
         // ── Authentication ──────────────────────────────────
@@ -913,7 +921,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // ── Configuration ───────────────────────────────────
         Some(Commands::Config(sub)) => match sub {
-            ConfigCmd::Show => cli::cmd_config(url).await,
+            ConfigCmd::Show => cli::cmd_config(url, parsed.json).await,
             ConfigCmd::Get { path } => cli::cmd_config_get(url, &path).await,
             ConfigCmd::Set {
                 path,
@@ -942,12 +950,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ConfigCmd::Backup { file } => cli::cmd_config_backup(&file),
         },
         Some(Commands::Models(sub)) => match sub {
-            ModelsCmd::List => cli::cmd_models_list(url).await,
+            ModelsCmd::List => cli::cmd_models_list(url, parsed.json).await,
             ModelsCmd::Scan { provider } => cli::cmd_models_scan(url, provider.as_deref()).await,
         },
         Some(Commands::Plugins(sub)) => match sub {
-            PluginsCmd::List => cli::cmd_plugins_list(url).await,
-            PluginsCmd::Info { name } => cli::cmd_plugin_info(url, &name).await,
+            PluginsCmd::List => cli::cmd_plugins_list(url, parsed.json).await,
+            PluginsCmd::Info { name } => cli::cmd_plugin_info(url, &name, parsed.json).await,
             PluginsCmd::Install { source } => cli::cmd_plugin_install(&source).await,
             PluginsCmd::Uninstall { name } => cli::cmd_plugin_uninstall(&name),
             PluginsCmd::Enable { name } => cli::cmd_plugin_toggle(url, &name, true).await,
@@ -956,13 +964,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             PluginsCmd::Pack { dir, output } => cli::cmd_plugin_pack(&dir, output.as_deref()),
         },
         Some(Commands::Agents(sub)) => match sub {
-            AgentsCmd::List => cli::cmd_agents_list(url).await,
+            AgentsCmd::List => cli::cmd_agents_list(url, parsed.json).await,
             AgentsCmd::Start { id } => cli::cmd_agent_start(url, &id).await,
             AgentsCmd::Stop { id } => cli::cmd_agent_stop(url, &id).await,
         },
         Some(Commands::Channels(sub)) => match sub {
-            ChannelsCmd::List => cli::cmd_channels_status(url).await,
-            ChannelsCmd::DeadLetter { limit } => cli::cmd_channels_dead_letter(url, limit).await,
+            ChannelsCmd::List => cli::cmd_channels_status(url, parsed.json).await,
+            ChannelsCmd::DeadLetter { limit } => {
+                cli::cmd_channels_dead_letter(url, limit, parsed.json).await
+            }
             ChannelsCmd::Replay { id } => cli::cmd_channels_replay(url, &id).await,
         },
         Some(Commands::Security(sub)) => match sub {

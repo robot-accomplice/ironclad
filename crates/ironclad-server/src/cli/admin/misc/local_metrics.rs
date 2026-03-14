@@ -2,6 +2,7 @@ pub async fn cmd_metrics(
     url: &str,
     kind: &str,
     hours: Option<i64>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
@@ -13,6 +14,10 @@ pub async fn cmd_metrics(
                 IroncladClient::check_connectivity_hint(&*e);
                 e
             })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+                return Ok(());
+            }
             heading("Inference Costs");
             let costs = data["costs"].as_array();
             match costs {
@@ -114,6 +119,10 @@ pub async fn cmd_metrics(
                     IroncladClient::check_connectivity_hint(&*e);
                     e
                 })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+                return Ok(());
+            }
             heading(&format!("Transactions (last {h}h)"));
             let txs = data["transactions"].as_array();
             match txs {
@@ -159,6 +168,10 @@ pub async fn cmd_metrics(
                 IroncladClient::check_connectivity_hint(&*e);
                 e
             })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+                return Ok(());
+            }
             heading("Cache Statistics");
             let hits = data["hits"].as_u64().unwrap_or(0);
             let misses = data["misses"].as_u64().unwrap_or(0);

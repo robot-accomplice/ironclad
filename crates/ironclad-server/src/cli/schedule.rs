@@ -1,6 +1,6 @@
 use super::*;
 
-pub async fn cmd_schedule_list(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_schedule_list(url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
@@ -8,6 +8,10 @@ pub async fn cmd_schedule_list(url: &str) -> Result<(), Box<dyn std::error::Erro
         IroncladClient::check_connectivity_hint(&*e);
         e
     })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
     heading("Cron Jobs");
     let jobs = data["jobs"].as_array();
     match jobs {
@@ -64,6 +68,7 @@ pub async fn cmd_schedule_recover(
     names: &[String],
     all: bool,
     dry_run: bool,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
@@ -73,6 +78,10 @@ pub async fn cmd_schedule_recover(
         IroncladClient::check_connectivity_hint(&*e);
         e
     })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
     let jobs = data["jobs"].as_array().cloned().unwrap_or_default();
 
     let paused: Vec<Value> = jobs
@@ -183,6 +192,7 @@ pub async fn cmd_schedule_recover(
 pub async fn cmd_schedule_run(
     url: &str,
     name_or_id: &str,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (_DIM, _BOLD, ACCENT, GREEN, _YELLOW, RED, _CYAN, RESET, _MONO) = colors();
     let (_OK, ACTION, _WARN, _DETAIL, _ERR) = icons();
@@ -202,6 +212,10 @@ pub async fn cmd_schedule_run(
     let body = c
         .post(&format!("/api/cron/jobs/{id}/run"), serde_json::json!({}))
         .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
     let status = body["status"].as_str().unwrap_or("unknown");
     let error = body["error"].as_str().unwrap_or("");
     let output_text = body["output_text"].as_str().unwrap_or("").trim();

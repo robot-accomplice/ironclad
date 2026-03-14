@@ -2,7 +2,7 @@ use super::*;
 
 // ── Skills ────────────────────────────────────────────────────
 
-pub async fn cmd_skills_list(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_skills_list(url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
@@ -10,6 +10,10 @@ pub async fn cmd_skills_list(url: &str) -> Result<(), Box<dyn std::error::Error>
         IroncladClient::check_connectivity_hint(&*e);
         e
     })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
 
     heading("Skills");
 
@@ -44,12 +48,20 @@ pub async fn cmd_skills_list(url: &str) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub async fn cmd_skill_detail(url: &str, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_skill_detail(
+    url: &str,
+    id: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let c = IroncladClient::new(url)?;
     let s = c.get(&format!("/api/skills/{id}")).await.map_err(|e| {
         IroncladClient::check_connectivity_hint(&*e);
         e
     })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&s)?);
+        return Ok(());
+    }
 
     heading(&format!("Skill: {}", s["name"].as_str().unwrap_or(id)));
 
@@ -105,6 +117,7 @@ pub async fn cmd_skills_reload(url: &str) -> Result<(), Box<dyn std::error::Erro
 pub async fn cmd_skills_catalog_list(
     url: &str,
     query: Option<&str>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let c = IroncladClient::new(url)?;
     let path = if let Some(q) = query {
@@ -113,6 +126,10 @@ pub async fn cmd_skills_catalog_list(
         "/api/skills/catalog".to_string()
     };
     let data = c.get(&path).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
     heading("Skills Catalog");
     let items = data["items"].as_array().cloned().unwrap_or_default();
     if items.is_empty() {

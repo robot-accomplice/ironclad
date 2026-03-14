@@ -1,6 +1,6 @@
 use super::*;
 
-pub async fn cmd_sessions_list(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_sessions_list(url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
@@ -8,6 +8,10 @@ pub async fn cmd_sessions_list(url: &str) -> Result<(), Box<dyn std::error::Erro
         IroncladClient::check_connectivity_hint(&*e);
         e
     })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
     heading("Sessions");
     let sessions = data["sessions"].as_array();
     match sessions {
@@ -38,7 +42,11 @@ pub async fn cmd_sessions_list(url: &str) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-pub async fn cmd_session_detail(url: &str, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_session_detail(
+    url: &str,
+    id: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
@@ -47,6 +55,11 @@ pub async fn cmd_session_detail(url: &str, id: &str) -> Result<(), Box<dyn std::
         e
     })?;
     let messages = c.get(&format!("/api/sessions/{id}/messages")).await?;
+    if json {
+        let combined = serde_json::json!({ "session": session, "messages": messages });
+        println!("{}", serde_json::to_string_pretty(&combined)?);
+        return Ok(());
+    }
     let nickname = session["nickname"].as_str().unwrap_or("\u{2014}");
     heading(&format!("Session {}", truncate_id(id, 12)));
     kv_mono("ID", id);

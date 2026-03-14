@@ -2,7 +2,7 @@ use super::*;
 
 // ── Models ───────────────────────────────────────────────────
 
-pub async fn cmd_models_list(base_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_models_list(base_url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let resp = super::http_client()?
@@ -10,6 +10,10 @@ pub async fn cmd_models_list(base_url: &str) -> Result<(), Box<dyn std::error::E
         .send()
         .await?;
     let config: serde_json::Value = resp.json().await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&config)?);
+        return Ok(());
+    }
 
     println!("\n  {BOLD}Configured Models{RESET}\n");
 

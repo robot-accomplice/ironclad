@@ -4,7 +4,7 @@ use ironclad_core::IroncladConfig;
 
 // ── Config (show from API) ────────────────────────────────────
 
-pub async fn cmd_config(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_config(url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
@@ -12,6 +12,10 @@ pub async fn cmd_config(url: &str) -> Result<(), Box<dyn std::error::Error>> {
         IroncladClient::check_connectivity_hint(&*e);
         e
     })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
 
     heading("Configuration");
 
