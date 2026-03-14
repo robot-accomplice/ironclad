@@ -15,6 +15,8 @@ pub struct ScriptResult {
 
 pub struct ScriptRunner {
     config: SkillsConfig,
+    // Used in the macOS sandbox-exec path (`#[cfg(target_os = "macos")]`).
+    #[allow(dead_code)]
     fs_security: FilesystemSecurityConfig,
 }
 
@@ -120,14 +122,12 @@ impl ScriptRunner {
                     let _ = mem_limit;
                     // Network isolation via unshare(CLONE_NEWNET) on Linux.
                     #[cfg(target_os = "linux")]
-                    if deny_net {
-                        if libc::unshare(libc::CLONE_NEWNET) != 0 {
-                            // Non-fatal: user namespaces may be disabled.
-                            // The mechanic health check will warn about this.
-                            eprintln!(
-                                "ironclad: warning: network isolation unavailable (unshare failed)"
-                            );
-                        }
+                    if deny_net && libc::unshare(libc::CLONE_NEWNET) != 0 {
+                        // Non-fatal: user namespaces may be disabled.
+                        // The mechanic health check will warn about this.
+                        eprintln!(
+                            "ironclad: warning: network isolation unavailable (unshare failed)"
+                        );
                     }
                     // On macOS there is no unprivileged network namespace API.
                     // The mechanic health check notes this platform limitation.
