@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingEntry {
@@ -84,7 +84,7 @@ pub fn store_embedding(
             dimensions
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
     Ok(())
 }
@@ -119,7 +119,7 @@ pub fn search_similar(
             "SELECT source_table, source_id, content_preview, embedding_blob \
              FROM embeddings LIMIT 10000",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([], |row| {
@@ -130,13 +130,12 @@ pub fn search_similar(
                 row.get::<_, Option<Vec<u8>>>(3)?,
             ))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let mut results: Vec<SearchResult> = Vec::new();
 
     for row in rows {
-        let (source_table, source_id, content_preview, blob) =
-            row.map_err(|e| IroncladError::Database(e.to_string()))?;
+        let (source_table, source_id, content_preview, blob) = row.db_err()?;
 
         let embedding = match load_embedding_from_row(blob) {
             Some(e) => e,
@@ -179,16 +178,16 @@ pub fn hybrid_search(
         let safe_query = crate::memory::sanitize_fts_query(query_text);
         let mut stmt = conn
             .prepare("SELECT content, category FROM memory_fts WHERE memory_fts MATCH ?1 LIMIT ?2")
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
 
         let rows = stmt
             .query_map(rusqlite::params![safe_query, limit * 2], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
 
         for (i, row) in rows.enumerate() {
-            let (content, category) = row.map_err(|e| IroncladError::Database(e.to_string()))?;
+            let (content, category) = row.db_err()?;
             let fts_score = 1.0 - (i as f64 * 0.05).min(0.9);
             fts_results.push(SearchResult {
                 source_table: category,
@@ -236,7 +235,7 @@ pub fn cleanup_orphaned_embeddings(db: &Database) -> Result<usize> {
             )",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(deleted)
 }
 
@@ -245,7 +244,7 @@ pub(crate) fn embedding_count(db: &Database) -> Result<usize> {
     let conn = db.conn();
     let count: usize = conn
         .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(count)
 }
 

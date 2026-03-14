@@ -1,4 +1,4 @@
-use crate::Database;
+use crate::{Database, DbResultExt};
 use ironclad_core::{IroncladError, Result};
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
@@ -24,7 +24,7 @@ pub fn list_revenue_tax_tasks(db: &Database, limit: usize) -> Result<Vec<Value>>
              WHERE lower(COALESCE(source, '')) LIKE '%\"type\":\"revenue_tax_payout\"%' \
              ORDER BY updated_at DESC, created_at DESC LIMIT ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map([limit], |row| {
             let id: String = row.get(0)?;
@@ -49,9 +49,8 @@ pub fn list_revenue_tax_tasks(db: &Database, limit: usize) -> Result<Vec<Value>>
                 "updated_at": row.get::<_, String>(5)?,
             }))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+        .db_err()?;
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn get_revenue_tax_task(
@@ -76,7 +75,7 @@ pub fn get_revenue_tax_task(
         },
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 pub fn mark_revenue_tax_in_progress(db: &Database, opportunity_id: &str) -> Result<bool> {
@@ -87,7 +86,7 @@ pub fn mark_revenue_tax_in_progress(db: &Database, opportunity_id: &str) -> Resu
             "UPDATE tasks SET status = 'in_progress', updated_at = datetime('now') WHERE id = ?1 AND status = 'pending'",
             [task_id.as_str()],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(updated > 0)
 }
 
@@ -102,7 +101,7 @@ pub fn claim_revenue_tax_submission(db: &Database, opportunity_id: &str) -> Resu
              WHERE id = ?1 AND status = 'in_progress'",
             [task_id.as_str()],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(updated > 0)
 }
 
@@ -116,7 +115,7 @@ pub fn release_revenue_tax_claim(db: &Database, opportunity_id: &str) -> Result<
              WHERE id = ?1 AND status = 'submitting'",
             [task_id.as_str()],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(updated > 0)
 }
 
@@ -178,7 +177,7 @@ fn update_revenue_tax_status(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let Some((existing_source_opt, current_status)) = existing else {
         return Ok(false);
     };
@@ -216,12 +215,11 @@ fn update_revenue_tax_status(
             rusqlite::params![
                 task_id,
                 status,
-                serde_json::to_string(&source_value)
-                    .map_err(|e| IroncladError::Database(e.to_string()))?,
+                serde_json::to_string(&source_value).db_err()?,
                 current_status,
             ],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(updated > 0)
 }
 

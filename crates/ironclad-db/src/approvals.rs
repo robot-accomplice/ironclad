@@ -1,5 +1,5 @@
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 
 pub fn record_approval_request(
     db: &Database,
@@ -22,7 +22,7 @@ pub fn record_approval_request(
            timeout_at = excluded.timeout_at",
         rusqlite::params![id, tool_name, tool_input, session_id, status, timeout_at],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -40,7 +40,7 @@ pub fn record_approval_decision(
          WHERE id = ?1",
         rusqlite::params![id, status, decided_by, decided_at],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 

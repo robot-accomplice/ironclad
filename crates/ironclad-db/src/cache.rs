@@ -1,6 +1,6 @@
-use crate::Database;
 use crate::embeddings::{blob_to_embedding, embedding_to_blob};
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 
 /// A single persisted cache entry.
 #[derive(Debug, Clone)]
@@ -36,7 +36,7 @@ pub fn save_cache_entry(db: &Database, id: &str, entry: &PersistedCacheEntry) ->
             entry.expires_at,
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
     Ok(())
 }
@@ -51,7 +51,7 @@ pub fn load_cache_entries(db: &Database) -> Result<Vec<(String, PersistedCacheEn
              FROM semantic_cache \
              WHERE expires_at IS NULL OR expires_at > datetime('now')",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([], |row| {
@@ -87,10 +87,9 @@ pub fn load_cache_entries(db: &Database) -> Result<Vec<(String, PersistedCacheEn
                 },
             ))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 /// Maximum age (days) for cache entries that lack an explicit `expires_at`.
@@ -113,7 +112,7 @@ pub fn evict_expired_cache(db: &Database) -> Result<usize> {
             ),
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(deleted)
 }
 
@@ -122,7 +121,7 @@ pub fn cache_count(db: &Database) -> Result<usize> {
     let conn = db.conn();
     let count: usize = conn
         .query_row("SELECT COUNT(*) FROM semantic_cache", [], |row| row.get(0))
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(count)
 }
 

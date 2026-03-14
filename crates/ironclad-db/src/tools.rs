@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct ToolCallRecord {
@@ -72,7 +72,7 @@ pub fn record_tool_call_with_skill(
             duration_ms
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 
@@ -84,7 +84,7 @@ pub fn get_tool_calls_for_turn(db: &Database, turn_id: &str) -> Result<Vec<ToolC
              status, duration_ms, created_at \
              FROM tool_calls WHERE turn_id = ?1 ORDER BY created_at ASC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([turn_id], |row| {
@@ -102,10 +102,9 @@ pub fn get_tool_calls_for_turn(db: &Database, turn_id: &str) -> Result<Vec<ToolC
                 created_at: row.get(10)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 /// Batch-fetch all tool calls for every turn in a session, grouped by turn_id.
@@ -124,7 +123,7 @@ pub fn get_tool_calls_for_session(
              WHERE t.session_id = ?1 \
              ORDER BY tc.created_at ASC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([session_id], |row| {
@@ -142,11 +141,11 @@ pub fn get_tool_calls_for_session(
                 created_at: row.get(10)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let mut map: HashMap<String, Vec<ToolCallRecord>> = HashMap::new();
     for row in rows {
-        let record = row.map_err(|e| IroncladError::Database(e.to_string()))?;
+        let record = row.db_err()?;
         map.entry(record.turn_id.clone()).or_default().push(record);
     }
     Ok(map)

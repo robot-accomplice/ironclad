@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::Database;
+use crate::{Database, DbResultExt};
 use ironclad_core::{IroncladError, Result};
 
 const SCHEMA_SQL: &str = r#"
@@ -561,7 +561,7 @@ pub fn initialize_db(db: &Database) -> Result<()> {
                 row.get::<_, i64>(0)
             })
             .map(|c| c > 0)
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
 
         if !version_exists {
             // The embedded schema already incorporates migrations through v0.9.4.
@@ -570,7 +570,7 @@ pub fn initialize_db(db: &Database) -> Result<()> {
                 "INSERT INTO schema_version (version) VALUES (?1)",
                 [EMBEDDED_SCHEMA_VERSION],
             )
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
         }
     }
 
@@ -586,12 +586,10 @@ fn has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> Result<
             "PRAGMA table_info(\"{}\")",
             table.replace('"', "\"\"")
         ))
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1)).db_err()?;
     for col in rows {
-        if col.map_err(|e| IroncladError::Database(e.to_string()))? == column {
+        if col.db_err()? == column {
             return Ok(true);
         }
     }
@@ -605,31 +603,31 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
             "ALTER TABLE skills ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'Caution'",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "tool_calls", "skill_id")? {
         conn.execute("ALTER TABLE tool_calls ADD COLUMN skill_id TEXT", [])
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
     }
     if !has_column(&conn, "tool_calls", "skill_name")? {
         conn.execute("ALTER TABLE tool_calls ADD COLUMN skill_name TEXT", [])
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
     }
     if !has_column(&conn, "tool_calls", "skill_hash")? {
         conn.execute("ALTER TABLE tool_calls ADD COLUMN skill_hash TEXT", [])
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
     }
     if !has_column(&conn, "delivery_queue", "idempotency_key")? {
         conn.execute(
             "ALTER TABLE delivery_queue ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
         conn.execute(
             "UPDATE delivery_queue SET idempotency_key = id WHERE idempotency_key = ''",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     // v0.9.2: inference_costs extension — latency, quality, escalation
     if !has_column(&conn, "inference_costs", "latency_ms")? {
@@ -637,21 +635,21 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
             "ALTER TABLE inference_costs ADD COLUMN latency_ms INTEGER",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "inference_costs", "quality_score")? {
         conn.execute(
             "ALTER TABLE inference_costs ADD COLUMN quality_score REAL",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "inference_costs", "escalation")? {
         conn.execute(
             "ALTER TABLE inference_costs ADD COLUMN escalation INTEGER NOT NULL DEFAULT 0",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     // v0.9.2: hippocampus extension — access_level, row_count
     if !has_column(&conn, "hippocampus", "access_level")? {
@@ -659,21 +657,21 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
             "ALTER TABLE hippocampus ADD COLUMN access_level TEXT NOT NULL DEFAULT 'internal'",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "hippocampus", "row_count")? {
         conn.execute(
             "ALTER TABLE hippocampus ADD COLUMN row_count INTEGER NOT NULL DEFAULT 0",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "sub_agents", "fallback_models_json")? {
         conn.execute(
             "ALTER TABLE sub_agents ADD COLUMN fallback_models_json TEXT NOT NULL DEFAULT '[]'",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     // v0.9.4: routing baseline hardening — schema version, attribution, features
     if !has_column(&conn, "model_selection_events", "schema_version")? {
@@ -681,128 +679,128 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
             "ALTER TABLE model_selection_events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "model_selection_events", "attribution")? {
         conn.execute(
             "ALTER TABLE model_selection_events ADD COLUMN attribution TEXT",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "model_selection_events", "metascore_json")? {
         conn.execute(
             "ALTER TABLE model_selection_events ADD COLUMN metascore_json TEXT",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "model_selection_events", "features_json")? {
         conn.execute(
             "ALTER TABLE model_selection_events ADD COLUMN features_json TEXT",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     // v0.9.4: inference_costs turn linkage
     if !has_column(&conn, "inference_costs", "turn_id")? {
         conn.execute("ALTER TABLE inference_costs ADD COLUMN turn_id TEXT", [])
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
     }
     if has_column(&conn, "inference_costs", "turn_id")? {
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_inference_costs_turn ON inference_costs(turn_id)",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "cron_runs", "output_text")? {
         conn.execute("ALTER TABLE cron_runs ADD COLUMN output_text TEXT", [])
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "attributable_costs_usdc")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN attributable_costs_usdc REAL NOT NULL DEFAULT 0",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "net_profit_usdc")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN net_profit_usdc REAL",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "tax_rate")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN tax_rate REAL NOT NULL DEFAULT 0",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "tax_amount_usdc")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN tax_amount_usdc REAL NOT NULL DEFAULT 0",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "retained_earnings_usdc")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN retained_earnings_usdc REAL",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "tax_destination_wallet")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN tax_destination_wallet TEXT",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "confidence_score")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN confidence_score REAL NOT NULL DEFAULT 0",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "effort_score")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN effort_score REAL NOT NULL DEFAULT 0",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "risk_score")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN risk_score REAL NOT NULL DEFAULT 0",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "priority_score")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN priority_score REAL NOT NULL DEFAULT 0",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "recommended_approved")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN recommended_approved INTEGER NOT NULL DEFAULT 0",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "revenue_opportunities", "score_reason")? {
         conn.execute(
             "ALTER TABLE revenue_opportunities ADD COLUMN score_reason TEXT",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     // v0.9.5: settled_at for cycle-time analytics
     if !has_column(&conn, "revenue_opportunities", "settled_at")? {
@@ -810,7 +808,7 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
             "ALTER TABLE revenue_opportunities ADD COLUMN settled_at TEXT",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     // v0.9.6: skill registry protocol — version, author, registry_source
     if !has_column(&conn, "skills", "version")? {
@@ -818,25 +816,25 @@ fn ensure_optional_columns(db: &Database) -> Result<()> {
             "ALTER TABLE skills ADD COLUMN version TEXT NOT NULL DEFAULT '0.0.0'",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "skills", "author")? {
         conn.execute(
             "ALTER TABLE skills ADD COLUMN author TEXT NOT NULL DEFAULT 'local'",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(&conn, "skills", "registry_source")? {
         conn.execute(
             "ALTER TABLE skills ADD COLUMN registry_source TEXT NOT NULL DEFAULT 'local'",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     // v0.9.7 DF-18: drop dead proxy_stats table from existing databases.
     conn.execute_batch("DROP TABLE IF EXISTS proxy_stats;")
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     // v0.9.7 DF-15: drop legacy embedding_json column.  New databases never
     // create it; existing databases still have it until this migration runs.
     if has_column(&conn, "embeddings", "embedding_json")? {
@@ -900,7 +898,7 @@ pub fn run_migrations(db: &Database) -> Result<()> {
             [],
             |row| row.get(0),
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     for path in entries {
         let version = version_from_name(path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
@@ -926,7 +924,7 @@ pub fn run_migrations(db: &Database) -> Result<()> {
             "INSERT INTO schema_version (version) VALUES (?1)",
             [version],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
         tx.commit()
             .map_err(|e| IroncladError::Database(format!("commit migration {version}: {e}")))?;
     }
@@ -941,41 +939,41 @@ fn apply_migration_13_idempotent(conn: &rusqlite::Transaction<'_>) -> Result<()>
             "ALTER TABLE model_selection_events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(conn, "model_selection_events", "attribution")? {
         conn.execute(
             "ALTER TABLE model_selection_events ADD COLUMN attribution TEXT",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(conn, "model_selection_events", "metascore_json")? {
         conn.execute(
             "ALTER TABLE model_selection_events ADD COLUMN metascore_json TEXT",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(conn, "model_selection_events", "features_json")? {
         conn.execute(
             "ALTER TABLE model_selection_events ADD COLUMN features_json TEXT",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
 
     // inference_costs turn linkage
     if !has_column(conn, "inference_costs", "turn_id")? {
         conn.execute("ALTER TABLE inference_costs ADD COLUMN turn_id TEXT", [])
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
     }
     if has_column(conn, "inference_costs", "turn_id")? {
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_inference_costs_turn ON inference_costs(turn_id)",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
 
     // shadow routing table + indexes
@@ -996,7 +994,7 @@ CREATE INDEX IF NOT EXISTS idx_shadow_routing_created ON shadow_routing_predicti
 CREATE INDEX IF NOT EXISTS idx_shadow_routing_turn ON shadow_routing_predictions(turn_id);
 "#,
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
     Ok(())
 }
@@ -1012,21 +1010,21 @@ fn apply_migration_22_idempotent(conn: &rusqlite::Transaction<'_>) -> Result<()>
             "ALTER TABLE skills ADD COLUMN version TEXT NOT NULL DEFAULT '0.0.0'",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(conn, "skills", "author")? {
         conn.execute(
             "ALTER TABLE skills ADD COLUMN author TEXT NOT NULL DEFAULT 'local'",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     if !has_column(conn, "skills", "registry_source")? {
         conn.execute(
             "ALTER TABLE skills ADD COLUMN registry_source TEXT NOT NULL DEFAULT 'local'",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
     Ok(())
 }
@@ -1048,7 +1046,7 @@ pub(crate) fn table_count(db: &Database) -> Result<usize> {
             [],
             |row| row.get(0),
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(count)
 }
 

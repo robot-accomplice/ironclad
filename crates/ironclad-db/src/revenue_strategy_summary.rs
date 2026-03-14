@@ -1,5 +1,5 @@
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 use serde_json::{Value, json};
 
 pub fn revenue_strategy_summary(db: &Database) -> Result<Vec<Value>> {
@@ -16,7 +16,7 @@ pub fn revenue_strategy_summary(db: &Database) -> Result<Vec<Value>> {
              ORDER BY net_profit_usdc DESC, gross_revenue_usdc DESC, strategy ASC \
              LIMIT 200",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map([], |row| {
             Ok(json!({
@@ -28,9 +28,8 @@ pub fn revenue_strategy_summary(db: &Database) -> Result<Vec<Value>> {
                 "avg_priority_score": row.get::<_, f64>(5)?,
             }))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+        .db_err()?;
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 /// Per-strategy profitability metrics: cycle time, conversion rate, cost ratio, variance.
@@ -60,7 +59,7 @@ pub fn revenue_strategy_profitability(db: &Database) -> Result<Vec<Value>> {
              ORDER BY net_profit_usdc DESC, strategy ASC \
              LIMIT 200",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map([], |row| {
             let total: i64 = row.get(1)?;
@@ -88,9 +87,8 @@ pub fn revenue_strategy_profitability(db: &Database) -> Result<Vec<Value>> {
                 "rejected_or_stale": row.get::<_, i64>(9)?,
             }))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+        .db_err()?;
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 /// Recent revenue opportunity audit log — the last N settlement events ordered newest-first.
@@ -107,7 +105,7 @@ pub fn revenue_audit_log(db: &Database, limit: i64) -> Result<Vec<Value>> {
              ORDER BY updated_at DESC, created_at DESC \
              LIMIT ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map(rusqlite::params![limit], |row| {
             let created: String = row.get(10)?;
@@ -137,9 +135,8 @@ pub fn revenue_audit_log(db: &Database, limit: i64) -> Result<Vec<Value>> {
                 "updated_at": row.get::<_, String>(11)?,
             }))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+        .db_err()?;
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 /// Parse cycle time in seconds from two SQLite datetime strings ("YYYY-MM-DD HH:MM:SS").

@@ -1,4 +1,4 @@
-use crate::Database;
+use crate::{Database, DbResultExt};
 use ironclad_core::{IroncladError, Result};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -39,8 +39,7 @@ pub fn register_table(
     row_count: i64,
 ) -> Result<()> {
     let conn = db.conn();
-    let columns_json =
-        serde_json::to_string(columns).map_err(|e| IroncladError::Database(e.to_string()))?;
+    let columns_json = serde_json::to_string(columns).db_err()?;
 
     conn.execute(
         "INSERT OR REPLACE INTO hippocampus \
@@ -56,7 +55,7 @@ pub fn register_table(
             row_count
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
     Ok(())
 }
@@ -94,7 +93,7 @@ pub fn get_table(db: &Database, table_name: &str) -> Result<Option<SchemaEntry>>
         row_to_entry,
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 /// List all tables in the hippocampus.
@@ -104,14 +103,11 @@ pub fn list_tables(db: &Database) -> Result<Vec<SchemaEntry>> {
         .prepare(&format!(
             "SELECT {SELECT_COLS} FROM hippocampus ORDER BY table_name"
         ))
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    let rows = stmt
-        .query_map([], row_to_entry)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows = stmt.query_map([], row_to_entry).db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 /// List only agent-created tables.
@@ -121,14 +117,11 @@ pub fn list_agent_tables(db: &Database, agent_id: &str) -> Result<Vec<SchemaEntr
         .prepare(&format!(
             "SELECT {SELECT_COLS} FROM hippocampus WHERE agent_owned = 1 AND created_by = ?1 ORDER BY table_name"
         ))
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    let rows = stmt
-        .query_map([agent_id], row_to_entry)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows = stmt.query_map([agent_id], row_to_entry).db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 fn validate_identifier(s: &str) -> Result<()> {
@@ -189,8 +182,7 @@ pub fn create_agent_table(
 
     {
         let conn = db.conn();
-        conn.execute(&create_sql, [])
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        conn.execute(&create_sql, []).db_err()?;
     }
 
     register_table(
@@ -213,9 +205,7 @@ pub fn drop_agent_table(db: &Database, agent_id: &str, table_name: &str) -> Resu
     validate_identifier(table_name)?;
 
     let conn = db.conn();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let tx = conn.unchecked_transaction().db_err()?;
 
     // Atomic check: verify ownership inside the transaction
     let owned: bool = tx
@@ -238,15 +228,14 @@ pub fn drop_agent_table(db: &Database, agent_id: &str, table_name: &str) -> Resu
     }
 
     tx.execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), [])
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     tx.execute(
         "DELETE FROM hippocampus WHERE table_name = ?1",
         [table_name],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
-    tx.commit()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.commit().db_err()?;
 
     Ok(())
 }
@@ -417,18 +406,17 @@ pub fn bootstrap_hippocampus(db: &Database) -> Result<()> {
                  WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
                  ORDER BY name",
             )
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
 
         let table_names: Vec<String> = stmt
             .query_map([], |row| row.get(0))
-            .map_err(|e| IroncladError::Database(e.to_string()))?
+            .db_err()?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
 
         let mut data = Vec::with_capacity(table_names.len());
         for name in table_names {
-            let columns = introspect_columns(&conn, &name)
-                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            let columns = introspect_columns(&conn, &name).db_err()?;
 
             let row_count: i64 = conn
                 .query_row(&format!("SELECT COUNT(*) FROM \"{}\"", name), [], |row| {
@@ -491,7 +479,7 @@ pub fn bootstrap_hippocampus(db: &Database) -> Result<()> {
                 "DELETE FROM hippocampus WHERE table_name = ?1",
                 [&entry.table_name],
             )
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
         }
     }
 

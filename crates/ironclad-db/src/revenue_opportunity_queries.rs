@@ -1,5 +1,5 @@
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 use rusqlite::params;
 use serde_json::{Value, json};
 
@@ -20,18 +20,15 @@ pub fn list_revenue_opportunities(
     } else {
         "SELECT id, source, strategy, status, expected_revenue_usdc, confidence_score, effort_score, risk_score, priority_score, recommended_approved, score_reason, settlement_ref, settled_amount_usdc, net_profit_usdc, created_at, updated_at FROM revenue_opportunities ORDER BY priority_score DESC, created_at DESC LIMIT ?1"
     };
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let mut stmt = conn.prepare(sql).db_err()?;
     let rows = if let Some(status) = query.status {
         stmt.query_map(params![status, limit], map_row)
     } else {
         stmt.query_map(params![limit], map_row)
     }
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {

@@ -1,5 +1,5 @@
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct AbuseEventRecord {
@@ -34,7 +34,7 @@ pub fn record_abuse_event(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![id, actor_id, origin, channel, signal_type, severity, action_taken, detail, score],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 
@@ -50,7 +50,7 @@ pub fn recent_events_for_actor(
             "SELECT id, actor_id, origin, channel, signal_type, severity, action_taken, detail, score, created_at \
              FROM abuse_events WHERE actor_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map(rusqlite::params![actor_id, limit.max(1)], |row| {
@@ -67,10 +67,9 @@ pub fn recent_events_for_actor(
                 created_at: row.get(9)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 /// Returns recent abuse events for a given origin (IP or source), ordered newest-first.
@@ -85,7 +84,7 @@ pub fn recent_events_for_origin(
             "SELECT id, actor_id, origin, channel, signal_type, severity, action_taken, detail, score, created_at \
              FROM abuse_events WHERE origin = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map(rusqlite::params![origin, limit.max(1)], |row| {
@@ -102,10 +101,9 @@ pub fn recent_events_for_origin(
                 created_at: row.get(9)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 /// Count abuse events since a given ISO-8601 timestamp (for aggregate scoring).
@@ -117,7 +115,7 @@ pub fn count_events_since(db: &Database, actor_id: &str, since: &str) -> Result<
             rusqlite::params![actor_id, since],
             |row| row.get(0),
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(count as u64)
 }
 

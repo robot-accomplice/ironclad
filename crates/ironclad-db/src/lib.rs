@@ -43,6 +43,8 @@ pub mod cron;
 pub mod delivery_queue;
 pub mod efficiency;
 pub mod embeddings;
+mod ext;
+pub use ext::*;
 pub mod hippocampus;
 pub mod hygiene_log;
 pub mod learned_skills;
@@ -72,7 +74,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 pub use rusqlite::params_from_iter;
 
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::Result;
 
 #[derive(Clone)]
 pub struct Database {
@@ -96,7 +98,7 @@ impl Database {
         } else {
             Connection::open(path)
         }
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
         // WAL mode + foreign keys + synchronous=NORMAL (safe under WAL, ~2x
         // write throughput vs FULL which adds an unnecessary extra fsync on
@@ -108,7 +110,7 @@ impl Database {
              PRAGMA synchronous=NORMAL; \
              PRAGMA auto_vacuum=INCREMENTAL;",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
         // For existing databases that were created with auto_vacuum=NONE,
         // switching to INCREMENTAL requires a one-time full VACUUM.  Check

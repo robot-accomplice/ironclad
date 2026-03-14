@@ -1,5 +1,5 @@
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 use rusqlite::OptionalExtension;
 
 #[derive(Debug, Clone)]
@@ -29,7 +29,7 @@ pub fn save_checkpoint(
     conn.execute(
         "INSERT INTO context_checkpoints (id, session_id, system_prompt_hash, memory_summary, active_tasks, conversation_digest, turn_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![id, session_id, system_prompt_hash, memory_summary, active_tasks, conversation_digest, turn_count],
-    ).map_err(|e| IroncladError::Database(e.to_string()))?;
+    ).db_err()?;
     Ok(id)
 }
 
@@ -54,7 +54,7 @@ pub fn load_checkpoint(db: &Database, session_id: &str) -> Result<Option<Context
         },
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 /// Delete all checkpoints for a session (used on session archive/expiry).
@@ -65,7 +65,7 @@ pub fn clear_checkpoints(db: &Database, session_id: &str) -> Result<usize> {
             "DELETE FROM context_checkpoints WHERE session_id = ?1",
             [session_id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(deleted)
 }
 
@@ -84,7 +84,7 @@ pub fn prune_checkpoints(db: &Database, keep_per_session: usize) -> Result<usize
              )",
             [keep_per_session as i64],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(deleted)
 }
 
@@ -96,7 +96,7 @@ pub fn count_checkpoints(db: &Database, session_id: &str) -> Result<i64> {
         [session_id],
         |row| row.get(0),
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 #[cfg(test)]

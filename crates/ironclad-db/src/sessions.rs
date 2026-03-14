@@ -1,7 +1,7 @@
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
-use crate::Database;
+use crate::{Database, DbResultExt};
 use ironclad_core::{IroncladError, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,9 +116,7 @@ pub fn find_or_create(
         .map(|s| s.scope_key())
         .unwrap_or_else(|| SessionScope::Agent.scope_key());
 
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let tx = conn.unchecked_transaction().db_err()?;
 
     let existing: Option<String> = tx
         .query_row(
@@ -130,8 +128,7 @@ pub fn find_or_create(
         .ok();
 
     if let Some(id) = existing {
-        tx.commit()
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        tx.commit().db_err()?;
         return Ok(id);
     }
 
@@ -141,7 +138,7 @@ pub fn find_or_create(
             "INSERT OR IGNORE INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",
             rusqlite::params![id, agent_id, &scope_key],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     if inserted == 0 {
         let existing_after_conflict: Option<String> = tx
@@ -153,8 +150,7 @@ pub fn find_or_create(
             .inspect_err(|e| tracing::warn!(error = %e, "session query failed"))
             .ok();
         if let Some(id) = existing_after_conflict {
-            tx.commit()
-                .map_err(|e| IroncladError::Database(e.to_string()))?;
+            tx.commit().db_err()?;
             return Ok(id);
         }
         return Err(IroncladError::Database(
@@ -162,8 +158,7 @@ pub fn find_or_create(
         ));
     }
 
-    tx.commit()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.commit().db_err()?;
 
     Ok(id)
 }
@@ -179,16 +174,14 @@ pub fn create_new(db: &Database, agent_id: &str, scope: Option<&SessionScope>) -
         "INSERT INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, ?3)",
         rusqlite::params![id, agent_id, scope_key],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 
 /// Archive any active agent-scoped session for `agent_id`, then create a new one atomically.
 pub fn rotate_agent_session(db: &Database, agent_id: &str) -> Result<String> {
     let conn = db.conn();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let tx = conn.unchecked_transaction().db_err()?;
 
     tx.execute(
         "UPDATE sessions
@@ -198,17 +191,16 @@ pub fn rotate_agent_session(db: &Database, agent_id: &str) -> Result<String> {
            AND COALESCE(scope_key, 'agent') = 'agent'",
         rusqlite::params![agent_id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
     let id = uuid::Uuid::new_v4().to_string();
     tx.execute(
         "INSERT INTO sessions (id, agent_id, scope_key) VALUES (?1, ?2, 'agent')",
         rusqlite::params![id, agent_id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
-    tx.commit()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.commit().db_err()?;
     Ok(id)
 }
 
@@ -233,7 +225,7 @@ pub fn get_session(db: &Database, id: &str) -> Result<Option<Session>> {
         },
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 pub fn append_message(
@@ -244,21 +236,18 @@ pub fn append_message(
 ) -> Result<String> {
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let tx = conn.unchecked_transaction().db_err()?;
     tx.execute(
         "INSERT INTO session_messages (id, session_id, role, content) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![id, session_id, role, content],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     tx.execute(
         "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1",
         [session_id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
-    tx.commit()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
+    tx.commit().db_err()?;
     Ok(id)
 }
 
@@ -270,7 +259,7 @@ pub fn list_messages(db: &Database, session_id: &str, limit: Option<i64>) -> Res
             "SELECT id, session_id, parent_id, role, content, usage_json, created_at \
              FROM session_messages WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC LIMIT ?2",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map(rusqlite::params![session_id, effective_limit], |row| {
@@ -284,10 +273,9 @@ pub fn list_messages(db: &Database, session_id: &str, limit: Option<i64>) -> Res
                 created_at: row.get(6)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 /// Create a turn record for tool-use tracking within a session.
@@ -306,7 +294,7 @@ pub fn create_turn(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![id, session_id, model, tokens_in, tokens_out, cost],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 
@@ -326,7 +314,7 @@ pub fn create_turn_with_id(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![id, session_id, model, tokens_in, tokens_out, cost],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -338,7 +326,7 @@ pub fn update_metadata(db: &Database, session_id: &str, metadata_json: &str) -> 
             "UPDATE sessions SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2",
             rusqlite::params![metadata_json, session_id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     if changed == 0 {
         return Err(IroncladError::Database(format!(
             "session not found: {session_id}"
@@ -355,7 +343,7 @@ pub fn archive_session(db: &Database, session_id: &str) -> Result<()> {
             "UPDATE sessions SET status = 'archived', updated_at = datetime('now') WHERE id = ?1",
             [session_id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     if changed == 0 {
         return Err(IroncladError::Database(format!(
             "session not found: {session_id}"
@@ -372,7 +360,7 @@ pub fn update_nickname(db: &Database, session_id: &str, nickname: &str) -> Resul
             "UPDATE sessions SET nickname = ?1, updated_at = datetime('now') WHERE id = ?2",
             rusqlite::params![nickname, session_id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     if changed == 0 {
         return Err(IroncladError::Database(format!(
             "session not found: {session_id}"
@@ -388,7 +376,7 @@ pub fn update_model(db: &Database, session_id: &str, model: &str) -> Result<()> 
         "UPDATE sessions SET model = ?1, updated_at = datetime('now') WHERE id = ?2",
         rusqlite::params![model, session_id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -402,7 +390,7 @@ pub fn expire_stale_sessions(db: &Database, max_age_seconds: u64) -> Result<usiz
              AND (julianday('now') - julianday(updated_at)) * 86400 > ?1",
             rusqlite::params![max_age_seconds as f64],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(expired)
 }
 
@@ -413,12 +401,11 @@ pub fn list_stale_active_session_ids(db: &Database, max_age_seconds: u64) -> Res
             "SELECT id FROM sessions WHERE status = 'active' \
              AND (julianday('now') - julianday(updated_at)) * 86400 > ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map(rusqlite::params![max_age_seconds as f64], |row| row.get(0))
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+        .db_err()?;
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn set_session_status(db: &Database, session_id: &str, status: SessionStatus) -> Result<()> {
@@ -428,7 +415,7 @@ pub fn set_session_status(db: &Database, session_id: &str, status: SessionStatus
             "UPDATE sessions SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
             rusqlite::params![status.to_string(), session_id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     if changed == 0 {
         return Err(IroncladError::Database(format!(
             "session not found: {session_id}"
@@ -448,7 +435,7 @@ pub fn list_active_sessions(db: &Database, agent_id: Option<&str>) -> Result<Vec
                 "SELECT id, agent_id, scope_key, status, model, nickname, created_at, updated_at, metadata \
                  FROM sessions WHERE agent_id = ?1 AND status = 'active' ORDER BY created_at DESC",
             )
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
         let rows = stmt
             .query_map([aid], |row| {
                 Ok(Session {
@@ -463,9 +450,9 @@ pub fn list_active_sessions(db: &Database, agent_id: Option<&str>) -> Result<Vec
                     metadata: row.get(8)?,
                 })
             })
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
         for row in rows {
-            sessions.push(row.map_err(|e| IroncladError::Database(e.to_string()))?);
+            sessions.push(row.db_err()?);
         }
     } else {
         let mut stmt = conn
@@ -473,7 +460,7 @@ pub fn list_active_sessions(db: &Database, agent_id: Option<&str>) -> Result<Vec
                 "SELECT id, agent_id, scope_key, status, model, nickname, created_at, updated_at, metadata \
                  FROM sessions WHERE status = 'active' ORDER BY created_at DESC",
             )
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(Session {
@@ -488,9 +475,9 @@ pub fn list_active_sessions(db: &Database, agent_id: Option<&str>) -> Result<Vec
                     metadata: row.get(8)?,
                 })
             })
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
         for row in rows {
-            sessions.push(row.map_err(|e| IroncladError::Database(e.to_string()))?);
+            sessions.push(row.db_err()?);
         }
     }
 
@@ -592,11 +579,11 @@ pub fn backfill_nicknames(db: &Database) -> Result<usize> {
                  ORDER BY created_at ASC LIMIT 1) \
              FROM sessions s WHERE s.nickname IS NULL",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows: Vec<(String, Option<String>)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .db_err()?
         .filter_map(|r| {
             r.inspect_err(
                 |e| tracing::warn!(error = %e, "sessions: skipping malformed session row"),
@@ -615,7 +602,7 @@ pub fn backfill_nicknames(db: &Database) -> Result<usize> {
             "UPDATE sessions SET nickname = ?1 WHERE id = ?2",
             rusqlite::params![nick, session_id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
 
     Ok(count)
@@ -643,7 +630,7 @@ pub fn list_turns_for_session(db: &Database, session_id: &str) -> Result<Vec<Tur
             "SELECT id, session_id, thinking, tool_calls_json, tokens_in, tokens_out, cost, model, created_at \
              FROM turns WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([session_id], |row| {
@@ -659,10 +646,9 @@ pub fn list_turns_for_session(db: &Database, session_id: &str) -> Result<Vec<Tur
                 created_at: row.get(8)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn get_turn_by_id(db: &Database, turn_id: &str) -> Result<Option<TurnRecord>> {
@@ -686,7 +672,7 @@ pub fn get_turn_by_id(db: &Database, turn_id: &str) -> Result<Option<TurnRecord>
         },
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 // ── Turn feedback ──────────────────────────────────────────────
@@ -718,7 +704,7 @@ pub fn record_feedback(
              ON CONFLICT(turn_id) DO UPDATE SET grade = excluded.grade, source = excluded.source, comment = excluded.comment",
             rusqlite::params![id, turn_id, session_id, grade, source, comment],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(id)
 }
 
@@ -741,7 +727,7 @@ pub fn get_feedback(db: &Database, turn_id: &str) -> Result<Option<TurnFeedback>
         },
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 pub fn update_feedback(
@@ -756,7 +742,7 @@ pub fn update_feedback(
             "UPDATE turn_feedback SET grade = ?1, comment = ?2 WHERE turn_id = ?3",
             rusqlite::params![grade, comment, turn_id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     if changed == 0 {
         return Err(IroncladError::Database(format!(
             "no feedback found for turn: {turn_id}"
@@ -772,7 +758,7 @@ pub fn list_session_feedback(db: &Database, session_id: &str) -> Result<Vec<Turn
             "SELECT id, turn_id, session_id, grade, source, comment, created_at \
              FROM turn_feedback WHERE session_id = ?1 ORDER BY created_at ASC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([session_id], |row| {
@@ -786,10 +772,9 @@ pub fn list_session_feedback(db: &Database, session_id: &str) -> Result<Vec<Turn
                 created_at: row.get(6)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 /// Count messages in a session.
@@ -800,7 +785,7 @@ pub fn message_count(db: &Database, session_id: &str) -> Result<i64> {
         [session_id],
         |row| row.get(0),
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 // ── Retention pruning for high-write tables ───────────────────

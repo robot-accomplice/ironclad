@@ -1,9 +1,9 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::params;
 
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::Result;
 
-use crate::Database;
+use crate::{Database, DbResultExt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryQueueRecord {
@@ -64,7 +64,7 @@ pub fn upsert_delivery_item(db: &Database, item: &DeliveryQueueRecord) -> Result
             item.created_at.to_rfc3339(),
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -81,7 +81,7 @@ pub fn list_recoverable(db: &Database, max_items: usize) -> Result<Vec<DeliveryQ
             LIMIT ?1
             "#,
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map(params![max_items as i64], |row| {
@@ -104,10 +104,9 @@ pub fn list_recoverable(db: &Database, max_items: usize) -> Result<Vec<DeliveryQ
                 created_at: parse_db_ts(&created_raw).unwrap_or_else(Utc::now),
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn mark_delivered(db: &Database, id: &str) -> Result<()> {
@@ -116,7 +115,7 @@ pub fn mark_delivered(db: &Database, id: &str) -> Result<()> {
         "UPDATE delivery_queue SET status = 'delivered', last_error = NULL WHERE id = ?1",
         params![id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -126,7 +125,7 @@ pub fn mark_in_flight(db: &Database, id: &str) -> Result<()> {
         "UPDATE delivery_queue SET status = 'in_flight' WHERE id = ?1",
         params![id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -143,7 +142,7 @@ pub fn list_dead_letters(db: &Database, max_items: usize) -> Result<Vec<Delivery
             LIMIT ?1
             "#,
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map(params![max_items as i64], |row| {
@@ -166,10 +165,9 @@ pub fn list_dead_letters(db: &Database, max_items: usize) -> Result<Vec<Delivery
                 created_at: parse_db_ts(&created_raw).unwrap_or_else(Utc::now),
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn replay_dead_letter(db: &Database, id: &str) -> Result<bool> {
@@ -179,7 +177,7 @@ pub fn replay_dead_letter(db: &Database, id: &str) -> Result<bool> {
             "UPDATE delivery_queue SET status = 'pending', next_retry_at = ?1 WHERE id = ?2 AND status = 'dead_letter'",
             params![Utc::now().to_rfc3339(), id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(rows > 0)
 }
 

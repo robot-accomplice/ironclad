@@ -1,6 +1,6 @@
-use crate::Database;
+use crate::{Database, DbResultExt};
 use chrono::Utc;
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::Result;
 use rusqlite::OptionalExtension;
 
 // ── Working memory ──────────────────────────────────────────────
@@ -25,28 +25,25 @@ pub fn store_working(
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let tx = conn.unchecked_transaction().db_err()?;
     tx.execute(
         "INSERT INTO working_memory (id, session_id, entry_type, content, importance, created_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![id, session_id, entry_type, content, importance, now],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     // Remove any existing FTS row before inserting to avoid duplicates.
     tx.execute(
         "DELETE FROM memory_fts WHERE source_table = 'working' AND source_id = ?1",
         rusqlite::params![id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     tx.execute(
         "INSERT INTO memory_fts (content, category, source_table, source_id) VALUES (?1, ?2, 'working', ?3)",
         rusqlite::params![content, entry_type, id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
-    tx.commit()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
+    tx.commit().db_err()?;
     Ok(id)
 }
 
@@ -57,7 +54,7 @@ pub fn retrieve_working(db: &Database, session_id: &str) -> Result<Vec<WorkingEn
             "SELECT id, session_id, entry_type, content, importance, created_at \
              FROM working_memory WHERE session_id = ?1 ORDER BY importance DESC, created_at DESC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([session_id], |row| {
@@ -70,10 +67,9 @@ pub fn retrieve_working(db: &Database, session_id: &str) -> Result<Vec<WorkingEn
                 created_at: row.get(5)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn retrieve_working_all(db: &Database, limit: i64) -> Result<Vec<WorkingEntry>> {
@@ -83,7 +79,7 @@ pub fn retrieve_working_all(db: &Database, limit: i64) -> Result<Vec<WorkingEntr
             "SELECT id, session_id, entry_type, content, importance, created_at \
              FROM working_memory ORDER BY importance DESC, created_at DESC LIMIT ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([limit], |row| {
@@ -96,10 +92,9 @@ pub fn retrieve_working_all(db: &Database, limit: i64) -> Result<Vec<WorkingEntr
                 created_at: row.get(5)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 // ── Episodic memory ─────────────────────────────────────────────
@@ -127,7 +122,7 @@ pub fn store_episodic(
          VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![id, classification, content, importance, now],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
     // FTS insert handled by episodic_ai trigger
 
@@ -141,7 +136,7 @@ pub fn retrieve_episodic(db: &Database, limit: i64) -> Result<Vec<EpisodicEntry>
             "SELECT id, classification, content, importance, created_at \
              FROM episodic_memory ORDER BY importance DESC, created_at DESC LIMIT ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([limit], |row| {
@@ -153,10 +148,9 @@ pub fn retrieve_episodic(db: &Database, limit: i64) -> Result<Vec<EpisodicEntry>
                 created_at: row.get(4)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 // ── Semantic memory ─────────────────────────────────────────────
@@ -182,9 +176,7 @@ pub fn store_semantic(
     let conn = db.conn();
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let tx = conn.unchecked_transaction().db_err()?;
     tx.execute(
         "INSERT INTO semantic_memory (id, category, key, value, confidence, created_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
@@ -192,7 +184,7 @@ pub fn store_semantic(
          confidence = excluded.confidence, updated_at = ?6",
         rusqlite::params![id, category, key, value, confidence, now],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
     let actual_id: String = tx
         .query_row(
@@ -200,21 +192,20 @@ pub fn store_semantic(
             rusqlite::params![category, key],
             |row| row.get(0),
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     // Remove any existing FTS row before re-inserting to avoid duplicates on upsert.
     tx.execute(
         "DELETE FROM memory_fts WHERE source_table = 'semantic' AND source_id = ?1",
         rusqlite::params![actual_id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     tx.execute(
         "INSERT INTO memory_fts (content, category, source_table, source_id) VALUES (?1, ?2, 'semantic', ?3)",
         rusqlite::params![value, category, actual_id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
-    tx.commit()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
+    tx.commit().db_err()?;
 
     Ok(actual_id)
 }
@@ -226,7 +217,7 @@ pub fn retrieve_semantic(db: &Database, category: &str) -> Result<Vec<SemanticEn
             "SELECT id, category, key, value, confidence, created_at, updated_at \
              FROM semantic_memory WHERE category = ?1 ORDER BY confidence DESC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([category], |row| {
@@ -240,10 +231,9 @@ pub fn retrieve_semantic(db: &Database, category: &str) -> Result<Vec<SemanticEn
                 updated_at: row.get(6)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn list_semantic_categories(db: &Database) -> Result<Vec<(String, i64)>> {
@@ -253,16 +243,15 @@ pub fn list_semantic_categories(db: &Database) -> Result<Vec<(String, i64)>> {
             "SELECT category, COUNT(*) as cnt FROM semantic_memory \
              GROUP BY category ORDER BY cnt DESC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn retrieve_semantic_all(db: &Database, limit: i64) -> Result<Vec<SemanticEntry>> {
@@ -272,7 +261,7 @@ pub fn retrieve_semantic_all(db: &Database, limit: i64) -> Result<Vec<SemanticEn
             "SELECT id, category, key, value, confidence, created_at, updated_at \
              FROM semantic_memory ORDER BY confidence DESC, updated_at DESC LIMIT ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([limit], |row| {
@@ -286,10 +275,9 @@ pub fn retrieve_semantic_all(db: &Database, limit: i64) -> Result<Vec<SemanticEn
                 updated_at: row.get(6)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 // ── Procedural memory ───────────────────────────────────────────
@@ -314,7 +302,7 @@ pub fn store_procedural(db: &Database, name: &str, steps: &str) -> Result<String
          ON CONFLICT(name) DO UPDATE SET steps = excluded.steps, updated_at = ?4",
         rusqlite::params![id, name, steps, now],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 
@@ -337,7 +325,7 @@ pub fn retrieve_procedural(db: &Database, name: &str) -> Result<Option<Procedura
         },
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 pub fn record_procedural_success(db: &Database, name: &str) -> Result<()> {
@@ -352,12 +340,12 @@ pub fn record_procedural_success(db: &Database, name: &str) -> Result<()> {
          ON CONFLICT(name) DO NOTHING",
         [name],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     conn.execute(
         "UPDATE procedural_memory SET success_count = success_count + 1, updated_at = datetime('now') WHERE name = ?1",
         [name],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -371,12 +359,12 @@ pub fn record_procedural_failure(db: &Database, name: &str) -> Result<()> {
          ON CONFLICT(name) DO NOTHING",
         [name],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     conn.execute(
         "UPDATE procedural_memory SET failure_count = failure_count + 1, updated_at = datetime('now') WHERE name = ?1",
         [name],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -393,7 +381,7 @@ pub fn prune_stale_procedural(db: &Database, stale_days: u32) -> Result<usize> {
                AND updated_at < datetime('now', ?1)",
             [format!("-{stale_days} days")],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(deleted)
 }
 
@@ -428,7 +416,7 @@ pub fn store_relationship(
          last_interaction = ?5",
         rusqlite::params![id, entity_id, entity_name, trust_score, now],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 
@@ -453,7 +441,7 @@ pub fn retrieve_relationship(db: &Database, entity_id: &str) -> Result<Option<Re
         },
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 // ── Full-text search across memory tiers ────────────────────────
@@ -585,7 +573,7 @@ pub fn prune_dead_episodic(db: &Database, stale_days: u32) -> Result<usize> {
                AND created_at < datetime('now', ?1)",
             [format!("-{stale_days} days")],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(deleted)
 }
 
@@ -602,7 +590,7 @@ pub fn cleanup_orphaned_working_memory(db: &Database) -> Result<usize> {
              WHERE session_id NOT IN (SELECT id FROM sessions)",
             [],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(deleted)
 }
 

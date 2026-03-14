@@ -1,7 +1,7 @@
 use ironclad_core::{IroncladError, Result};
 use std::collections::HashMap;
 
-use crate::Database;
+use crate::{Database, DbResultExt};
 
 #[derive(Debug, Clone)]
 pub struct SubAgentRow {
@@ -64,7 +64,7 @@ pub fn list_sub_agents(db: &Database) -> Result<Vec<SubAgentRow>> {
             "SELECT id, name, display_name, model, fallback_models_json, role, description, skills_json, enabled, session_count
              FROM sub_agents ORDER BY name",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([], |row| {
@@ -83,9 +83,9 @@ pub fn list_sub_agents(db: &Database) -> Result<Vec<SubAgentRow>> {
                 session_count: row.get(9)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .db_err()?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     Ok(rows)
 }
@@ -99,7 +99,7 @@ pub fn list_session_counts_by_agent(db: &Database) -> Result<HashMap<String, i64
     let conn = db.conn();
     let mut stmt = conn
         .prepare("SELECT agent_id, COUNT(*) FROM sessions GROUP BY agent_id")
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([], |row| {
@@ -107,9 +107,9 @@ pub fn list_session_counts_by_agent(db: &Database) -> Result<HashMap<String, i64
             let count: i64 = row.get(1)?;
             Ok((agent_id, count))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .db_err()?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     Ok(rows.into_iter().collect())
 }
@@ -121,7 +121,7 @@ pub fn delete_sub_agent(db: &Database, name: &str) -> Result<bool> {
             "DELETE FROM sub_agents WHERE name = ?1",
             rusqlite::params![name],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(deleted > 0)
 }
 

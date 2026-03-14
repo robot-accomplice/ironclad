@@ -1,7 +1,7 @@
 use rusqlite::OptionalExtension;
 
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct CronJob {
@@ -61,7 +61,7 @@ pub fn create_job(
             payload_json
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 
@@ -75,7 +75,7 @@ pub fn list_jobs(db: &Database) -> Result<Vec<CronJob>> {
              consecutive_errors, next_run_at, last_error, lease_holder, lease_expires_at \
              FROM cron_jobs ORDER BY name ASC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([], |row| {
@@ -103,10 +103,9 @@ pub fn list_jobs(db: &Database) -> Result<Vec<CronJob>> {
                 lease_expires_at: row.get(20)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn get_job(db: &Database, id: &str) -> Result<Option<CronJob>> {
@@ -145,7 +144,7 @@ pub fn get_job(db: &Database, id: &str) -> Result<Option<CronJob>> {
         },
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 pub fn delete_job(db: &Database, id: &str) -> Result<bool> {
@@ -154,9 +153,7 @@ pub fn delete_job(db: &Database, id: &str) -> Result<bool> {
     }
 
     let conn = db.conn();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let tx = conn.unchecked_transaction().db_err()?;
 
     // Delete dependent rows from every table that has an FK to cron_jobs.
     // This keeps delete robust across schema versions/custom local tables.
@@ -165,28 +162,26 @@ pub fn delete_job(db: &Database, id: &str) -> Result<bool> {
             "SELECT name FROM sqlite_master \
              WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let table_names = table_stmt
         .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .db_err()?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     drop(table_stmt);
 
     for table in table_names {
         let pragma_sql = format!("PRAGMA foreign_key_list({})", quote_ident(&table));
-        let mut fk_stmt = tx
-            .prepare(&pragma_sql)
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        let mut fk_stmt = tx.prepare(&pragma_sql).db_err()?;
         let fk_cols = fk_stmt
             .query_map([], |row| {
                 let ref_table: String = row.get(2)?;
                 let from_col: String = row.get(3)?;
                 Ok((ref_table, from_col))
             })
-            .map_err(|e| IroncladError::Database(e.to_string()))?
+            .db_err()?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
         drop(fk_stmt);
 
         for (ref_table, from_col) in fk_cols {
@@ -196,17 +191,15 @@ pub fn delete_job(db: &Database, id: &str) -> Result<bool> {
                     quote_ident(&table),
                     quote_ident(&from_col)
                 );
-                tx.execute(&delete_sql, [id])
-                    .map_err(|e| IroncladError::Database(e.to_string()))?;
+                tx.execute(&delete_sql, [id]).db_err()?;
             }
         }
     }
 
     let changed = tx
         .execute("DELETE FROM cron_jobs WHERE id = ?1", [id])
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    tx.commit()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
+    tx.commit().db_err()?;
     Ok(changed > 0)
 }
 
@@ -257,9 +250,7 @@ pub fn update_job(
     params.push(Box::new(id.to_string()));
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|b| b.as_ref()).collect();
-    let changed = conn
-        .execute(&sql, param_refs.as_slice())
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let changed = conn.execute(&sql, param_refs.as_slice()).db_err()?;
     Ok(changed > 0)
 }
 
@@ -270,7 +261,7 @@ pub fn update_job_description(db: &Database, id: &str, description: Option<&str>
             "UPDATE cron_jobs SET description = ?1 WHERE id = ?2",
             rusqlite::params![description, id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(changed > 0)
 }
 
@@ -284,7 +275,7 @@ pub fn acquire_lease(db: &Database, job_id: &str, instance_id: &str) -> Result<b
              WHERE id = ?2 AND (lease_holder IS NULL OR lease_expires_at < datetime('now'))",
             rusqlite::params![instance_id, job_id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(changed > 0)
 }
 
@@ -295,7 +286,7 @@ pub fn release_lease(db: &Database, job_id: &str, lease_holder: &str) -> Result<
          WHERE id = ?1 AND lease_holder = ?2",
         rusqlite::params![job_id, lease_holder],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -306,7 +297,7 @@ pub fn update_next_run_at(db: &Database, job_id: &str, next_run_at: Option<&str>
         "UPDATE cron_jobs SET next_run_at = ?1 WHERE id = ?2",
         rusqlite::params![next_run_at, job_id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -319,9 +310,7 @@ pub fn record_run(
     output_text: Option<&str>,
 ) -> Result<String> {
     let conn = db.conn();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let tx = conn.unchecked_transaction().db_err()?;
 
     let id = uuid::Uuid::new_v4().to_string();
     tx.execute(
@@ -329,7 +318,7 @@ pub fn record_run(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![id, job_id, status, duration_ms, error, output_text],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
     if status == "success" {
         tx.execute(
@@ -337,7 +326,7 @@ pub fn record_run(
              last_duration_ms = ?2, consecutive_errors = 0, last_error = NULL WHERE id = ?3",
             rusqlite::params![status, duration_ms, job_id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     } else {
         tx.execute(
             "UPDATE cron_jobs SET last_run_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), last_status = ?1, \
@@ -345,11 +334,10 @@ pub fn record_run(
              last_error = ?3 WHERE id = ?4",
             rusqlite::params![status, duration_ms, error, job_id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     }
 
-    tx.commit()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.commit().db_err()?;
     Ok(id)
 }
 
@@ -368,9 +356,7 @@ pub fn list_runs(
                  AND (?3 IS NULL OR job_id = ?3)
                ORDER BY created_at DESC
                LIMIT ?4";
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let mut stmt = conn.prepare(sql).db_err()?;
     let rows = stmt
         .query_map(rusqlite::params![from, to, job_id, limit], |row| {
             Ok(CronRun {
@@ -383,9 +369,8 @@ pub fn list_runs(
                 created_at: row.get(6)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+        .db_err()?;
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 #[cfg(test)]

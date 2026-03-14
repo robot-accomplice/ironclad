@@ -1,5 +1,5 @@
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -199,7 +199,7 @@ pub fn persist_revenue_opportunity_score(
                 score.score_reason,
             ],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(updated > 0)
 }
 

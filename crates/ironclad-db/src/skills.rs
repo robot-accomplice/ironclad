@@ -1,4 +1,4 @@
-use crate::Database;
+use crate::{Database, DbResultExt};
 use ironclad_core::{IroncladError, Result};
 use rusqlite::OptionalExtension;
 
@@ -131,7 +131,7 @@ pub fn register_skill_with_provenance(
             registry_source,
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 
@@ -146,7 +146,7 @@ pub fn get_skill(db: &Database, id: &str) -> Result<Option<SkillRecord>> {
         row_to_skill,
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 pub fn list_skills(db: &Database) -> Result<Vec<SkillRecord>> {
@@ -158,14 +158,11 @@ pub fn list_skills(db: &Database) -> Result<Vec<SkillRecord>> {
              enabled, last_loaded_at, created_at, version, author, registry_source \
              FROM skills ORDER BY name ASC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    let rows = stmt
-        .query_map([], row_to_skill)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows = stmt.query_map([], row_to_skill).db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn update_skill(
@@ -181,7 +178,7 @@ pub fn update_skill(
          last_loaded_at = datetime('now') WHERE id = ?4",
         rusqlite::params![content_hash, triggers_json, tool_chain_json, id],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -267,15 +264,14 @@ pub fn update_skill_with_provenance(
     params.push(Box::new(id.to_string()));
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    conn.execute(&sql, param_refs.as_slice())
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    conn.execute(&sql, param_refs.as_slice()).db_err()?;
     Ok(())
 }
 
 pub fn delete_skill(db: &Database, id: &str) -> Result<()> {
     let conn = db.conn();
     conn.execute("DELETE FROM skills WHERE id = ?1", [id])
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(())
 }
 
@@ -286,7 +282,7 @@ pub fn toggle_skill_enabled(db: &Database, id: &str) -> Result<Option<bool>> {
             row.get(0)
         })
         .optional()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     match current {
         Some(val) => {
@@ -295,7 +291,7 @@ pub fn toggle_skill_enabled(db: &Database, id: &str) -> Result<Option<bool>> {
                 "UPDATE skills SET enabled = ?1 WHERE id = ?2",
                 rusqlite::params![new_val, id],
             )
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+            .db_err()?;
             Ok(Some(new_val != 0))
         }
         None => Ok(None),
@@ -314,14 +310,11 @@ pub fn find_by_trigger(db: &Database, keyword: &str) -> Result<Vec<SkillRecord>>
              enabled, last_loaded_at, created_at, version, author, registry_source \
              FROM skills WHERE triggers_json LIKE ?1 ESCAPE '\\' AND enabled = 1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    let rows = stmt
-        .query_map([&pattern], row_to_skill)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows = stmt.query_map([&pattern], row_to_skill).db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn find_enabled_skill_by_script_path(
@@ -338,7 +331,7 @@ pub fn find_enabled_skill_by_script_path(
         row_to_skill,
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 pub fn find_skill_by_script_path(db: &Database, script_path: &str) -> Result<Option<SkillRecord>> {
@@ -350,13 +343,9 @@ pub fn find_skill_by_script_path(db: &Database, script_path: &str) -> Result<Opt
              enabled, last_loaded_at, created_at, version, author, registry_source \
              FROM skills WHERE script_path = ?1 ORDER BY created_at DESC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    let rows = stmt
-        .query_map([script_path], row_to_skill)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    let mut matches = rows
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
+    let rows = stmt.query_map([script_path], row_to_skill).db_err()?;
+    let mut matches = rows.collect::<std::result::Result<Vec<_>, _>>().db_err()?;
     if matches.len() > 1 {
         return Err(IroncladError::Database(format!(
             "ambiguous script_path '{}' matches {} skills",
