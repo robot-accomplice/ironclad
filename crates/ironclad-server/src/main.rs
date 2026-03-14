@@ -1558,7 +1558,8 @@ async fn cmd_serve(
     step_detail(t, "name", &config.agent.name);
     step_detail(t, "id", &config.agent.id);
 
-    let _llm = ironclad_llm::LlmService::new(&config)?;
+    // LlmService is already constructed inside bootstrap_with_config_path and
+    // stored in AppState.  No need to instantiate a second (dead) copy here.
     step(t, 7, STEPS, "LLM service ready");
     step_detail(t, "primary", &config.models.primary);
     let fallback_str = if config.models.fallbacks.is_empty() {

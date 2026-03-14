@@ -9,13 +9,27 @@ use crate::api::{AppState, execute_scheduled_agent_task, subagent_integrity};
 pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
     let mut interval = tokio::time::interval(Duration::from_secs(60));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let concurrency = Arc::new(Semaphore::new(
-        state.config.read().await.server.cron_max_concurrency as usize,
-    ));
+    let initial_limit = state.config.read().await.server.cron_max_concurrency as usize;
+    let mut concurrency = Arc::new(Semaphore::new(initial_limit));
+    let mut current_limit = initial_limit;
     tracing::info!("Server cron worker started");
 
     loop {
         interval.tick().await;
+
+        // Re-read concurrency limit on each tick so hot-reloaded config takes
+        // effect.  Outstanding permits from the old semaphore drain naturally;
+        // new acquisitions use the updated limit.
+        let configured_limit = state.config.read().await.server.cron_max_concurrency as usize;
+        if configured_limit != current_limit {
+            tracing::info!(
+                old = current_limit,
+                new = configured_limit,
+                "cron concurrency limit changed via hot-reload"
+            );
+            concurrency = Arc::new(Semaphore::new(configured_limit));
+            current_limit = configured_limit;
+        }
         let jobs = match ironclad_db::cron::list_jobs(&state.db) {
             Ok(j) => j,
             Err(e) => {
