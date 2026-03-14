@@ -127,7 +127,7 @@ fn deterministic_quality_fallback(user_prompt: &str, agent_name: &str) -> String
     )
 }
 
-/// Build a retry [`UnifiedRequest`] for a guard that requests inference retry.
+/// Build a retry `UnifiedRequest` for a guard that requests inference retry.
 ///
 /// Each guard that can emit `RetryRequested` needs a specific operator directive
 /// and token budget. This function encapsulates the mapping from `GuardId` to

@@ -129,7 +129,7 @@ impl TelegramFormatter {
     ///
     /// Handles: **bold** → *bold*, *italic*/_italic_/__italic__ → _italic_,
     /// ~~strikethrough~~ → ~strikethrough~, `inline code` → `inline code`,
-    /// [text](url) → [text](url), > blockquotes.
+    /// `[text](url)` → `[text](url)`, > blockquotes.
     /// Markdown headers (# / ## / ###) are converted to bold lines.
     fn convert_line(line: &str) -> String {
         let trimmed = line.trim();
