@@ -477,13 +477,18 @@ async fn execute_tool_call_internal(
         }
     }
 
-    let workspace_root = {
+    let (workspace_root, agent_id, agent_name) = {
         let cfg = state.config.read().await;
-        cfg.agent.workspace.clone()
+        (
+            cfg.agent.workspace.clone(),
+            cfg.agent.id.clone(),
+            cfg.agent.name.clone(),
+        )
     };
     let ctx = ToolContext {
         session_id: turn_id.to_string(),
-        agent_id: "ironclad".to_string(),
+        agent_id,
+        agent_name,
         authority,
         workspace_root,
         channel: channel.map(|s| s.to_string()),

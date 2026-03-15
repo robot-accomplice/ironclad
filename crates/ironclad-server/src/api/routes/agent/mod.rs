@@ -55,11 +55,15 @@ pub use self::poll_loops::{
 use self::routing::{delegated_inference_budget, infer_with_fallback_with_budget_and_preferred};
 #[cfg(test)]
 use self::routing::{estimate_cost_from_provider, fallback_candidates, summarize_user_excerpt};
-pub(crate) use self::routing::{infer_content_with_fallback, select_routed_model};
+pub(crate) use self::routing::{
+    infer_content_with_fallback, infer_with_fallback, select_routed_model,
+};
 pub(crate) use self::scheduled_tasks::execute_scheduled_agent_task;
 pub use self::streaming::agent_message_stream;
+#[cfg(test)]
+pub(crate) use self::tools::classify_provider_error;
 pub(crate) use self::tools::{
-    check_tool_policy, classify_provider_error, execute_tool_call, execute_tool_call_after_approval,
+    check_tool_policy, execute_tool_call, execute_tool_call_after_approval,
 };
 #[cfg(test)]
 use self::tools::{parse_tool_call, provider_failure_user_message};

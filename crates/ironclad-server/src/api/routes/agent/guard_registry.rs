@@ -112,6 +112,7 @@ pub(super) struct GuardChain {
 
 impl GuardChain {
     /// Create an empty guard chain that passes all content through unchanged.
+    #[cfg(test)]
     pub fn empty() -> Self {
         Self { guards: vec![] }
     }
@@ -641,6 +642,7 @@ pub(super) mod guard_sets {
 
     /// Reduced guard chain for SSE streaming responses where retries are
     /// impractical (content is already partially delivered).
+    #[cfg(test)]
     pub fn streaming() -> GuardChain {
         GuardChain {
             guards: vec![

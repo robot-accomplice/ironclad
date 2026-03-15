@@ -89,7 +89,11 @@ enum Commands {
     Channels(ChannelsCmd),
     /// Validate configuration
     #[command(next_help_heading = "A-C")]
-    Check,
+    Check {
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Inspect circuit breaker state
     #[command(next_help_heading = "A-C")]
     #[command(subcommand)]
@@ -746,8 +750,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Serve { port, bind }) => cmd_serve(config_flag.clone(), port, bind).await,
         Some(Commands::Init { path }) => cmd_init(&path),
         Some(Commands::Setup) => cli::cmd_setup(),
-        Some(Commands::Check) => match resolve_config_path(config_flag.as_deref()) {
-            Some(p) => cmd_check(&p.to_string_lossy()),
+        Some(Commands::Check { json }) => match resolve_config_path(config_flag.as_deref()) {
+            Some(p) => cmd_check(&p.to_string_lossy(), json || parsed.json),
             None => {
                 let t = cli::theme();
                 print_banner(t);
@@ -2038,18 +2042,26 @@ fn cmd_init(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let t = cli::theme();
-    print_banner(t);
-    let (s, b, r) = (t.success(), t.bold(), t.reset());
-    let (ok, warn) = (t.icon_ok(), t.icon_warn());
-    let tw = |text: &str| t.typewrite_line(text, 4);
-
-    tw(&format!("  {b}Validating{r} {config_path}\n"));
-
+fn cmd_check(config_path: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let config = match IroncladConfig::from_file(Path::new(config_path)) {
         Ok(c) => c,
         Err(e) => {
+            if json {
+                let msg = format!("{e}");
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "valid": false,
+                        "config_path": config_path,
+                        "error": msg,
+                    })
+                );
+                return Err(Box::new(e));
+            }
+            let t = cli::theme();
+            print_banner(t);
+            let (b, r) = (t.bold(), t.reset());
+            let warn = t.icon_warn();
             let msg = format!("{e}");
             if msg.contains("No such file") || msg.contains("not found") || msg.contains("NotFound")
             {
@@ -2062,9 +2074,118 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             return Err(Box::new(e));
         }
     };
-    tw(&format!("  {ok} TOML syntax valid"));
 
-    config.validate()?;
+    if let Err(e) = config.validate() {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "valid": false,
+                    "config_path": config_path,
+                    "error": format!("{e}"),
+                })
+            );
+        }
+        return Err(Box::new(e));
+    }
+
+    let mem_sum = config.memory.working_budget_pct
+        + config.memory.episodic_budget_pct
+        + config.memory.semantic_budget_pct
+        + config.memory.procedural_budget_pct
+        + config.memory.relationship_budget_pct;
+
+    let skills_dir_exists = config.skills.skills_dir.exists();
+
+    let mut warnings: Vec<String> = Vec::new();
+
+    if !skills_dir_exists {
+        warnings.push(format!(
+            "Skills dir missing: {}",
+            config.skills.skills_dir.display()
+        ));
+    }
+
+    // Per-channel allow-list warnings
+    {
+        if let Some(ref tg) = config.channels.telegram
+            && tg.allowed_chat_ids.is_empty()
+            && config.security.deny_on_empty_allowlist
+        {
+            warnings.push(
+                "Telegram: allowed_chat_ids is empty (all messages will be rejected)".to_string(),
+            );
+        }
+        if let Some(ref dc) = config.channels.discord
+            && dc.allowed_guild_ids.is_empty()
+            && config.security.deny_on_empty_allowlist
+        {
+            warnings.push(
+                "Discord: allowed_guild_ids is empty (all messages will be rejected)".to_string(),
+            );
+        }
+        if let Some(ref wa) = config.channels.whatsapp
+            && wa.allowed_numbers.is_empty()
+            && config.security.deny_on_empty_allowlist
+        {
+            warnings.push(
+                "WhatsApp: allowed_numbers is empty (all messages will be rejected)".to_string(),
+            );
+        }
+        if let Some(ref sig) = config.channels.signal
+            && sig.allowed_numbers.is_empty()
+            && config.security.deny_on_empty_allowlist
+        {
+            warnings.push(
+                "Signal: allowed_numbers is empty (all messages will be rejected)".to_string(),
+            );
+        }
+        if config.channels.email.enabled
+            && config.channels.email.allowed_senders.is_empty()
+            && config.security.deny_on_empty_allowlist
+        {
+            warnings.push(
+                "Email: allowed_senders is empty (all messages will be rejected)".to_string(),
+            );
+        }
+        if config.channels.trusted_sender_ids.is_empty() {
+            warnings.push("No trusted senders — no user can reach Creator authority".to_string());
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "valid": true,
+                "config_path": config_path,
+                "agent_name": config.agent.name,
+                "agent_id": config.agent.id,
+                "server": format!("{}:{}", config.server.bind, config.server.port),
+                "primary_model": config.models.primary,
+                "database": config.database.path.display().to_string(),
+                "memory_budget_sum_pct": mem_sum,
+                "treasury_per_payment_cap": config.treasury.per_payment_cap,
+                "treasury_minimum_reserve": config.treasury.minimum_reserve,
+                "skills_dir": config.skills.skills_dir.display().to_string(),
+                "skills_dir_exists": skills_dir_exists,
+                "a2a_enabled": config.a2a.enabled,
+                "trusted_senders": config.channels.trusted_sender_ids.len(),
+                "warnings": warnings,
+            }))?
+        );
+        return Ok(());
+    }
+
+    // ── Human-readable output ──────────────────────────────────
+    let t = cli::theme();
+    print_banner(t);
+    let (s, b, r) = (t.success(), t.bold(), t.reset());
+    let (ok, warn) = (t.icon_ok(), t.icon_warn());
+    let tw = |text: &str| t.typewrite_line(text, 4);
+
+    tw(&format!("  {b}Validating{r} {config_path}\n"));
+    tw(&format!("  {ok} TOML syntax valid"));
     tw(&format!("  {ok} Configuration semantics valid"));
 
     tw(&format!(
@@ -2080,20 +2201,13 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         "  {ok} Database: {}",
         config.database.path.display()
     ));
-
-    let mem_sum = config.memory.working_budget_pct
-        + config.memory.episodic_budget_pct
-        + config.memory.semantic_budget_pct
-        + config.memory.procedural_budget_pct
-        + config.memory.relationship_budget_pct;
     tw(&format!("  {ok} Memory budgets sum to {mem_sum}%"));
-
     tw(&format!(
         "  {ok} Treasury: cap=${:.2}/payment, reserve=${:.2}",
         config.treasury.per_payment_cap, config.treasury.minimum_reserve
     ));
 
-    if config.skills.skills_dir.exists() {
+    if skills_dir_exists {
         tw(&format!(
             "  {ok} Skills dir exists: {}",
             config.skills.skills_dir.display()
@@ -2126,7 +2240,7 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         config.channels.trusted_sender_ids.len()
     ));
 
-    // Per-channel allow-list warnings
+    // Per-channel allow-list warnings (human-readable)
     {
         let mut any_channel_warn = false;
         if let Some(ref tg) = config.channels.telegram {
@@ -2646,7 +2760,7 @@ tier = "T3"
         cmd_init(dir.path().to_str().unwrap()).expect("init should succeed");
         let cfg_path = dir.path().join("ironclad.toml");
         assert!(cfg_path.exists());
-        cmd_check(cfg_path.to_str().unwrap()).expect("check should succeed");
+        cmd_check(cfg_path.to_str().unwrap(), false).expect("check should succeed");
     }
 
     #[test]

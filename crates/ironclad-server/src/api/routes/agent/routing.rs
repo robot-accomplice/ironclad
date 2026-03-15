@@ -9,9 +9,10 @@ use serde_json::json;
 
 use super::AppState;
 
-pub(super) struct InferenceResult {
+pub(crate) struct InferenceResult {
     pub content: String,
     pub model: String,
+    #[allow(dead_code)] // populated during inference; consumed by upcoming routing audit feature
     pub provider: String,
     pub tokens_in: i64,
     pub tokens_out: i64,
@@ -21,7 +22,7 @@ pub(super) struct InferenceResult {
     pub escalated: bool,
 }
 
-pub(super) struct ResolvedInferenceProvider {
+pub(crate) struct ResolvedInferenceProvider {
     pub url: String,
     pub api_key: String,
     pub auth_header: String,
@@ -140,7 +141,7 @@ pub(super) async fn persist_model_selection_audit(
     );
 }
 
-pub(super) fn fallback_candidates(
+pub(crate) fn fallback_candidates(
     config: &ironclad_core::IroncladConfig,
     initial_model: &str,
 ) -> Vec<String> {
@@ -450,7 +451,7 @@ pub(super) async fn select_routed_model_with_audit(
     }
 }
 
-pub(super) async fn resolve_inference_provider(
+pub(crate) async fn resolve_inference_provider(
     state: &AppState,
     model: &str,
 ) -> Option<ResolvedInferenceProvider> {
@@ -574,7 +575,7 @@ pub(super) fn delegated_inference_budget(
 /// latency budget allows, inference escalates to the next (cloud) candidate.
 /// The low-confidence local response is preserved as a fallback in case all
 /// cloud candidates fail.
-pub(super) async fn infer_with_fallback(
+pub(crate) async fn infer_with_fallback(
     state: &AppState,
     unified_req: &ironclad_llm::format::UnifiedRequest,
     initial_model: &str,
