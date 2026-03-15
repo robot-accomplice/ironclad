@@ -33,6 +33,7 @@ rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 wasmer = "7"
 urlencoding = "2"
+thiserror = "2"
 rmcp = { workspace = true, features = ["server", "client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 pdf-extract = "0.7"
 notify = { version = "7", optional = true }
