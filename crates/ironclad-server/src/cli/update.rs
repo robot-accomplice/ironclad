@@ -316,9 +316,27 @@ fn parse_semver(v: &str) -> (u32, u32, u32) {
     let v = v.split_once('+').map(|(core, _)| core).unwrap_or(v);
     let v = v.split_once('-').map(|(core, _)| core).unwrap_or(v);
     let parts: Vec<&str> = v.split('.').collect();
-    let major = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let minor = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let patch = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let major = parts
+        .first()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| {
+            tracing::warn!(version = v, "failed to parse major version component");
+            0
+        });
+    let minor = parts
+        .get(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| {
+            tracing::warn!(version = v, "failed to parse minor version component");
+            0
+        });
+    let patch = parts
+        .get(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| {
+            tracing::warn!(version = v, "failed to parse patch version component");
+            0
+        });
     (major, minor, patch)
 }
 

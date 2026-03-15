@@ -76,7 +76,10 @@ pub fn read_log_entries(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
         Err(e) => return Err(format!("failed to read log directory: {}", e)),
     }
-    .filter_map(|e| e.ok())
+    .filter_map(|e| {
+        e.inspect_err(|e| tracing::warn!("skipping unreadable log dir entry: {e}"))
+            .ok()
+    })
     .map(|e| e.path())
     .filter(|p| {
         p.is_file()

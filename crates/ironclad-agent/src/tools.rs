@@ -1299,8 +1299,12 @@ impl Tool for GetSubagentStatusTool {
                         "created_at": row.get::<_, String>(5)?,
                     }))
                 })
+                .inspect_err(|e| tracing::warn!("failed to query tasks: {e}"))
                 .ok()
-                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+                .map(|rows| rows.filter_map(|r| {
+                    r.inspect_err(|e| tracing::warn!("skipping corrupted task row: {e}"))
+                        .ok()
+                }).collect::<Vec<_>>())
                 .unwrap_or_default()
             })
             .unwrap_or_default()

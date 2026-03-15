@@ -731,8 +731,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = if parsed.url == "http://127.0.0.1:18789" {
         // Default URL — try to derive server address from resolved config
         resolve_config_path(parsed.config.as_deref())
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|contents| IroncladConfig::from_str(&contents).ok())
+            .and_then(|p| {
+                std::fs::read_to_string(p)
+                    .inspect_err(|e| {
+                        tracing::warn!("failed to read config for URL resolution: {e}")
+                    })
+                    .ok()
+            })
+            .and_then(|contents| {
+                IroncladConfig::from_str(&contents)
+                    .inspect_err(|e| {
+                        tracing::warn!("failed to parse config for URL resolution: {e}")
+                    })
+                    .ok()
+            })
             .map(|cfg| format!("http://{}:{}", cfg.server.bind, cfg.server.port))
             .unwrap_or_else(|| parsed.url.clone())
     } else {

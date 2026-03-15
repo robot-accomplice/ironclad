@@ -237,24 +237,27 @@ impl MemoryRetriever {
                 Ok(r) => r,
                 Err(_) => return,
             };
-            rows.filter_map(|r| r.ok())
-                .filter_map(|(id, ts)| {
-                    chrono::DateTime::parse_from_rfc3339(&ts)
-                        .ok()
-                        .map(|created| {
-                            // Age in days. Future timestamps (clock skew) yield a
-                            // negative chrono::Duration whose .to_std() returns Err,
-                            // mapping to age=0 (fresh). This is correct: only the
-                            // agent writes to episodic_memory so future-dated entries
-                            // are clock-skew artifacts, not attacker-injectable.
-                            let age = (now - created.with_timezone(&chrono::Utc))
-                                .to_std()
-                                .map(|d| d.as_secs_f64() / 86_400.0)
-                                .unwrap_or(0.0);
-                            (id, age)
-                        })
-                })
-                .collect()
+            rows.filter_map(|r| {
+                r.inspect_err(|e| tracing::warn!("skipping corrupted episodic row: {e}"))
+                    .ok()
+            })
+            .filter_map(|(id, ts)| {
+                chrono::DateTime::parse_from_rfc3339(&ts)
+                    .ok()
+                    .map(|created| {
+                        // Age in days. Future timestamps (clock skew) yield a
+                        // negative chrono::Duration whose .to_std() returns Err,
+                        // mapping to age=0 (fresh). This is correct: only the
+                        // agent writes to episodic_memory so future-dated entries
+                        // are clock-skew artifacts, not attacker-injectable.
+                        let age = (now - created.with_timezone(&chrono::Utc))
+                            .to_std()
+                            .map(|d| d.as_secs_f64() / 86_400.0)
+                            .unwrap_or(0.0);
+                        (id, age)
+                    })
+            })
+            .collect()
         }; // conn dropped here — DB connection released before mutation loop
 
         for result in results.iter_mut() {
@@ -309,8 +312,12 @@ impl MemoryRetriever {
                     row.get::<_, i64>(3)?,
                 ))
             })
+            .inspect_err(|e| tracing::warn!("failed to query tool experience: {e}"))
             .ok()?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| {
+                r.inspect_err(|e| tracing::warn!("skipping corrupted tool experience row: {e}"))
+                    .ok()
+            })
             .collect();
 
         if rows.is_empty() {
@@ -370,8 +377,12 @@ impl MemoryRetriever {
                     row.get::<_, i64>(3)?,
                 ))
             })
+            .inspect_err(|e| tracing::warn!("failed to query relationship memory: {e}"))
             .ok()?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| {
+                r.inspect_err(|e| tracing::warn!("skipping corrupted relationship row: {e}"))
+                    .ok()
+            })
             .collect();
 
         if rows.is_empty() {
