@@ -291,7 +291,12 @@ pub fn cmd_config_lint(file: &str) -> Result<(), Box<dyn std::error::Error>> {
 pub fn cmd_config_backup(file: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (OK, _, _, _, _) = icons();
     let path = std::path::Path::new(file);
-    match config_runtime::backup_config_file(path, 10, 30)? {
+    // Try to read backup limits from the config itself; fall back to defaults
+    // if the file is missing or unparseable (we still want the backup to succeed).
+    let backups = IroncladConfig::from_file(path)
+        .map(|c| c.backups)
+        .unwrap_or_default();
+    match config_runtime::backup_config_file(path, backups.max_count, backups.max_age_days)? {
         Some(backup) => println!("  {OK} Backup created: {}", backup.display()),
         None => println!("  {OK} No backup needed; config file does not exist: {file}"),
     }

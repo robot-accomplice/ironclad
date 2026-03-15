@@ -29,8 +29,6 @@ pub mod allowlist;
 pub mod delivery;
 pub mod discord;
 pub mod email;
-mod ext;
-pub use ext::*;
 pub mod filter;
 pub mod formatter;
 pub mod media;

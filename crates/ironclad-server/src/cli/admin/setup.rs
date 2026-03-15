@@ -742,12 +742,6 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use crate::test_support::EnvGuard;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     #[test]
     fn write_starter_skills_is_idempotent() {
@@ -783,7 +777,6 @@ mod tests {
 
     #[test]
     fn has_hf_model_cache_detects_models_directory() {
-        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let hf_home = dir.path().join(".cache").join("huggingface");
         let hub = hf_home.join("hub");
@@ -795,7 +788,6 @@ mod tests {
 
     #[test]
     fn has_hf_model_cache_false_when_unset_or_empty() {
-        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let hf_home = dir.path().join("empty_hf");
         std::fs::create_dir_all(&hf_home).unwrap();

@@ -976,7 +976,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ChannelsCmd::Replay { id } => cli::cmd_channels_replay(url, &id).await,
         },
         Some(Commands::Security(sub)) => match sub {
-            SecurityCmd::Audit { config } => cli::cmd_security_audit(&config),
+            SecurityCmd::Audit { config } => cli::cmd_security_audit(&config, parsed.json),
         },
 
         // ── Credentials ──────────────────────────────────────

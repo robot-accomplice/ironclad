@@ -1931,7 +1931,7 @@ mod tests {
 
     #[test]
     fn cmd_security_audit_missing_config() {
-        super::cmd_security_audit("/tmp/ironclad_test_nonexistent_config.toml").unwrap();
+        super::cmd_security_audit("/tmp/ironclad_test_nonexistent_config.toml", false).unwrap();
     }
 
     #[test]
@@ -1944,7 +1944,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+        super::cmd_security_audit(config.to_str().unwrap(), false).unwrap();
     }
 
     #[test]
@@ -1957,7 +1957,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+        super::cmd_security_audit(config.to_str().unwrap(), false).unwrap();
     }
 
     #[test]
@@ -1965,7 +1965,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("ironclad.toml");
         std::fs::write(&config, "[providers.openai]\napi_key = \"${OPENAI_KEY}\"\n").unwrap();
-        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+        super::cmd_security_audit(config.to_str().unwrap(), false).unwrap();
     }
 
     #[test]
@@ -1977,7 +1977,7 @@ mod tests {
             "[server]\nbind = \"0.0.0.0\"\n\n[cors]\norigins = \"*\"\n",
         )
         .unwrap();
-        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+        super::cmd_security_audit(config.to_str().unwrap(), false).unwrap();
     }
 
     #[cfg(unix)]
@@ -1988,7 +1988,7 @@ mod tests {
         std::fs::write(&config, "[server]\nport = 18789\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).unwrap();
-        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+        super::cmd_security_audit(config.to_str().unwrap(), false).unwrap();
     }
 
     // ── Reset (with --yes to skip stdin) ─────────────────────

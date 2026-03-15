@@ -1199,7 +1199,6 @@ pub mod test_support;
 mod tests {
     use super::*;
     use crate::test_support::EnvGuard;
-    use std::sync::{Mutex, OnceLock};
 
     const BOOTSTRAP_CONFIG: &str = r#"
 [agent]
@@ -1268,14 +1267,8 @@ primary = "ollama/qwen3:8b"
         assert!(!is_taskable_subagent_role("model-proxy"));
     }
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     #[test]
     fn resolve_token_prefers_keystore_reference_then_env_then_empty() {
-        let _lock = env_lock().lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let keystore_path = dir.path().join("keystore.enc");
         let keystore = ironclad_core::keystore::Keystore::new(keystore_path);

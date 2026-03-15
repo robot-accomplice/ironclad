@@ -1,11 +1,5 @@
     use super::*;
     use crate::test_support::EnvGuard;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
     #[test]
     fn path_contains_dir_and_go_bin_detection() {
         let dir = tempfile::tempdir().unwrap();

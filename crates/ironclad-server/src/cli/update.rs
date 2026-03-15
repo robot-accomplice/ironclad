@@ -2028,7 +2028,6 @@ mod tests {
     use super::*;
     use crate::test_support::EnvGuard;
     use axum::{Json, Router, extract::State, routing::get};
-    use std::sync::{Mutex, OnceLock};
     use tokio::net::TcpListener;
 
     #[derive(Clone)]
@@ -2036,11 +2035,6 @@ mod tests {
         manifest: String,
         providers: String,
         skill_payload: String,
-    }
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
     }
 
     async fn start_mock_registry(
@@ -2547,9 +2541,7 @@ def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn apply_providers_update_fetches_and_writes_local_file() {
-        let _lock = env_lock().lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let _home_guard = EnvGuard::set("HOME", temp.path().to_str().unwrap());
         let config_path = temp.path().join("ironclad.toml");
@@ -2579,9 +2571,7 @@ def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn apply_skills_update_installs_and_then_reports_up_to_date() {
-        let _lock = env_lock().lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let _home_guard = EnvGuard::set("HOME", temp.path().to_str().unwrap());
         let skills_dir = temp.path().join("skills");
@@ -2724,9 +2714,7 @@ def456  ironclad-0.8.0-linux-x86_64.tar.gz\n";
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn multi_registry_namespaces_non_default_skills() {
-        let _lock = env_lock().lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let _home_guard = EnvGuard::set("HOME", temp.path().to_str().unwrap());
         let skills_dir = temp.path().join("skills");

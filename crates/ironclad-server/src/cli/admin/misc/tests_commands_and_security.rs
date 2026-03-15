@@ -1,7 +1,5 @@
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn mechanic_json_repair_mode_creates_default_layout() {
-        let _lock = env_lock().lock().unwrap();
         let home = tempfile::tempdir().unwrap();
         let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
         let ironclad_dir = home.path().join(".ironclad");
@@ -48,7 +46,6 @@
 
     #[test]
     fn cmd_reset_yes_removes_state_and_preserves_wallet() {
-        let _lock = env_lock().lock().unwrap();
         let home = tempfile::tempdir().unwrap();
         let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
         let ironclad_dir = home.path().join(".ironclad");
@@ -72,7 +69,6 @@
 
     #[test]
     fn cmd_uninstall_purge_removes_data_dir() {
-        let _lock = env_lock().lock().unwrap();
         let home = tempfile::tempdir().unwrap();
         let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
         let ironclad_dir = home.path().join(".ironclad");
@@ -268,18 +264,17 @@ allowed_origins = ["*"]
         .unwrap();
 
         // Should succeed even with warnings about plaintext keys, 0.0.0.0 bind, and wildcard CORS
-        cmd_security_audit(cfg_path.to_str().unwrap()).unwrap();
+        cmd_security_audit(cfg_path.to_str().unwrap(), false).unwrap();
     }
 
     #[test]
     fn cmd_security_audit_nonexistent_config() {
         // Should handle missing config gracefully
-        cmd_security_audit("/nonexistent/path/ironclad.toml").unwrap();
+        cmd_security_audit("/nonexistent/path/ironclad.toml", false).unwrap();
     }
 
     #[test]
     fn cmd_security_audit_runs_against_local_config() {
-        let _lock = env_lock().lock().unwrap();
         let home = tempfile::tempdir().unwrap();
         let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
         let cfg_dir = tempfile::tempdir().unwrap();
@@ -300,12 +295,11 @@ primary = "ollama/qwen3:8b"
         )
         .unwrap();
 
-        cmd_security_audit(cfg_path.to_str().unwrap()).unwrap();
+        cmd_security_audit(cfg_path.to_str().unwrap(), false).unwrap();
     }
 
     #[test]
     fn resolve_security_audit_config_path_falls_back_to_home_default() {
-        let _lock = env_lock().lock().unwrap();
         let home = tempfile::tempdir().unwrap();
         let _home_guard = EnvGuard::set("HOME", home.path().to_str().unwrap());
         let ironclad_dir = home.path().join(".ironclad");
