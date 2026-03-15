@@ -26,23 +26,32 @@ fn cleanup_internalized_skill_artifacts(
 ) -> InternalizedSkillCleanupReport {
     let mut report = InternalizedSkillCleanupReport::default();
 
-    if state_db_path.exists()
-        && let Ok(db) = ironclad_db::Database::new(state_db_path.to_string_lossy().as_ref())
-        && let Ok(skills) = ironclad_db::skills::list_skills(&db)
-    {
-        for skill in skills {
-            let is_internalized = INTERNALIZED_SKILLS
-                .iter()
-                .any(|name| skill.name.eq_ignore_ascii_case(name));
-            let is_deprecated_generic = DEPRECATED_GENERIC_SKILLS
-                .iter()
-                .any(|name| skill.name.eq_ignore_ascii_case(name));
-            if is_internalized || is_deprecated_generic {
-                report.stale_db_skills.push(skill.name.clone());
-                if repair && ironclad_db::skills::delete_skill(&db, &skill.id).is_ok() {
-                    report.removed_db_skills.push(skill.name);
+    if state_db_path.exists() {
+        match ironclad_db::Database::new(state_db_path.to_string_lossy().as_ref()) {
+            Ok(db) => match ironclad_db::skills::list_skills(&db) {
+                Ok(skills) => {
+                    for skill in skills {
+                        let is_internalized = INTERNALIZED_SKILLS
+                            .iter()
+                            .any(|name| skill.name.eq_ignore_ascii_case(name));
+                        let is_deprecated_generic = DEPRECATED_GENERIC_SKILLS
+                            .iter()
+                            .any(|name| skill.name.eq_ignore_ascii_case(name));
+                        if is_internalized || is_deprecated_generic {
+                            report.stale_db_skills.push(skill.name.clone());
+                            if repair {
+                                if let Err(e) = ironclad_db::skills::delete_skill(&db, &skill.id) {
+                                    tracing::warn!(skill = %skill.name, "failed to delete stale skill: {e}");
+                                } else {
+                                    report.removed_db_skills.push(skill.name);
+                                }
+                            }
+                        }
+                    }
                 }
-            }
+                Err(e) => tracing::warn!("failed to list skills for cleanup: {e}"),
+            },
+            Err(e) => tracing::warn!("failed to open state DB for skill cleanup: {e}"),
         }
     }
 
@@ -128,15 +137,20 @@ fn evaluate_capability_skill_parity(state_db_path: &Path) -> CapabilitySkillPari
             .collect();
 
     let mut db_skills: std::collections::HashSet<String> = if state_db_path.exists() {
-        if let Ok(db) = ironclad_db::Database::new(state_db_path.to_string_lossy().as_ref()) {
-            ironclad_db::skills::list_skills(&db)
-                .unwrap_or_default()
+        match ironclad_db::Database::new(state_db_path.to_string_lossy().as_ref()) {
+            Ok(db) => ironclad_db::skills::list_skills(&db)
+                .unwrap_or_else(|e| {
+                    tracing::warn!("failed to list skills from DB: {e}");
+                    Vec::new()
+                })
                 .into_iter()
                 .filter(|s| s.enabled)
                 .map(|s| s.name.to_ascii_lowercase())
-                .collect()
-        } else {
-            std::collections::HashSet::new()
+                .collect(),
+            Err(e) => {
+                tracing::warn!("failed to open state DB for parity check: {e}");
+                std::collections::HashSet::new()
+            }
         }
     } else {
         std::collections::HashSet::new()
@@ -475,7 +489,10 @@ async fn probe_revenue_swap_reconcile(
         ))
         .into());
     }
-    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+    let body: serde_json::Value = resp.json().await.unwrap_or_else(|e| {
+        tracing::warn!("failed to parse swap listing response: {e}");
+        serde_json::Value::default()
+    });
     let tasks = body
         .get("swap_tasks")
         .and_then(|v| v.as_array())
@@ -520,7 +537,10 @@ async fn probe_revenue_swap_reconcile(
         if !reconcile.status().is_success() {
             continue;
         }
-        let reconcile_body: serde_json::Value = reconcile.json().await.unwrap_or_default();
+        let reconcile_body: serde_json::Value = reconcile.json().await.unwrap_or_else(|e| {
+            tracing::warn!(opportunity_id, "failed to parse reconcile response: {e}");
+            serde_json::Value::default()
+        });
         match reconcile_body
             .get("receipt_status")
             .and_then(|v| v.as_str())

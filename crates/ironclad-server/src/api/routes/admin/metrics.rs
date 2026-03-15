@@ -81,62 +81,80 @@ pub async fn get_overview_timeseries(
         }
     };
 
-    if let Ok(mut stmt) = conn.prepare(
+    match conn.prepare(
         "SELECT cost, tokens_in, tokens_out, created_at FROM inference_costs
          WHERE created_at >= datetime('now', ?1)",
     ) {
-        let window = format!("-{} hours", hours);
-        if let Ok(rows) = stmt.query_map([window], |row| {
-            Ok((
-                row.get::<_, f64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        }) {
-            for (cost, tin, tout, created_at) in rows.flatten() {
-                if let Some(ts) = parse_ts(&created_at)
-                    && let Some(idx) = bucket_for(ts)
-                {
-                    cost_per_hour[idx] += cost;
-                    tokens_per_hour[idx] += (tin + tout) as f64;
+        Ok(mut stmt) => {
+            let window = format!("-{} hours", hours);
+            match stmt.query_map([window], |row| {
+                Ok((
+                    row.get::<_, f64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            }) {
+                Ok(rows) => {
+                    for (cost, tin, tout, created_at) in rows.flatten() {
+                        if let Some(ts) = parse_ts(&created_at)
+                            && let Some(idx) = bucket_for(ts)
+                        {
+                            cost_per_hour[idx] += cost;
+                            tokens_per_hour[idx] += (tin + tout) as f64;
+                        }
+                    }
                 }
+                Err(e) => tracing::warn!("failed to query inference_costs timeseries: {e}"),
             }
         }
+        Err(e) => tracing::warn!("failed to prepare inference_costs timeseries query: {e}"),
     }
 
-    if let Ok(mut stmt) = conn.prepare(
+    match conn.prepare(
         "SELECT created_at FROM sessions
          WHERE created_at >= datetime('now', ?1)",
     ) {
-        let window = format!("-{} hours", hours);
-        if let Ok(rows) = stmt.query_map([window], |row| row.get::<_, String>(0)) {
-            for created_at in rows.flatten() {
-                if let Some(ts) = parse_ts(&created_at)
-                    && let Some(idx) = bucket_for(ts)
-                {
-                    sessions_per_hour[idx] += 1;
+        Ok(mut stmt) => {
+            let window = format!("-{} hours", hours);
+            match stmt.query_map([window], |row| row.get::<_, String>(0)) {
+                Ok(rows) => {
+                    for created_at in rows.flatten() {
+                        if let Some(ts) = parse_ts(&created_at)
+                            && let Some(idx) = bucket_for(ts)
+                        {
+                            sessions_per_hour[idx] += 1;
+                        }
+                    }
                 }
+                Err(e) => tracing::warn!("failed to query sessions timeseries: {e}"),
             }
         }
+        Err(e) => tracing::warn!("failed to prepare sessions timeseries query: {e}"),
     }
 
-    if let Ok(mut stmt) = conn.prepare(
+    match conn.prepare(
         "SELECT duration_ms, created_at FROM tool_calls
          WHERE created_at >= datetime('now', ?1) AND duration_ms IS NOT NULL",
     ) {
-        let window = format!("-{} hours", hours);
-        if let Ok(rows) = stmt.query_map([window], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        }) {
-            for (dur, created_at) in rows.flatten() {
-                if let Some(ts) = parse_ts(&created_at)
-                    && let Some(idx) = bucket_for(ts)
-                {
-                    latency_samples[idx].push(dur);
+        Ok(mut stmt) => {
+            let window = format!("-{} hours", hours);
+            match stmt.query_map([window], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            }) {
+                Ok(rows) => {
+                    for (dur, created_at) in rows.flatten() {
+                        if let Some(ts) = parse_ts(&created_at)
+                            && let Some(idx) = bucket_for(ts)
+                        {
+                            latency_samples[idx].push(dur);
+                        }
+                    }
                 }
+                Err(e) => tracing::warn!("failed to query tool_calls timeseries: {e}"),
             }
         }
+        Err(e) => tracing::warn!("failed to prepare tool_calls timeseries query: {e}"),
     }
 
     let mut latency_p50 = vec![0.0f64; hours];
@@ -153,25 +171,31 @@ pub async fn get_overview_timeseries(
         };
     }
 
-    if let Ok(mut stmt) = conn.prepare(
+    match conn.prepare(
         "SELECT status, created_at FROM cron_runs
          WHERE created_at >= datetime('now', ?1)",
     ) {
-        let window = format!("-{} hours", hours);
-        if let Ok(rows) = stmt.query_map([window], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        }) {
-            for (status, created_at) in rows.flatten() {
-                if let Some(ts) = parse_ts(&created_at)
-                    && let Some(idx) = bucket_for(ts)
-                {
-                    cron_total[idx] += 1;
+        Ok(mut stmt) => {
+            let window = format!("-{} hours", hours);
+            match stmt.query_map([window], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }) {
+                Ok(rows) => {
+                    for (status, created_at) in rows.flatten() {
+                        if let Some(ts) = parse_ts(&created_at)
+                            && let Some(idx) = bucket_for(ts)
+                        {
+                            cron_total[idx] += 1;
                     if status == "success" {
                         cron_ok[idx] += 1;
                     }
                 }
             }
+                }
+                Err(e) => tracing::warn!("failed to query cron_runs timeseries: {e}"),
+            }
         }
+        Err(e) => tracing::warn!("failed to prepare cron_runs timeseries query: {e}"),
     }
     for i in 0..hours {
         cron_success[i] = if cron_total[i] > 0 {

@@ -83,7 +83,10 @@ pub async fn cmd_plugin_info(base_url: &str, name: &str) -> Result<(), Box<dyn s
         .get(format!("{base_url}/api/plugins"))
         .send()
         .await?;
-    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+    let body: serde_json::Value = resp.json().await.unwrap_or_else(|e| {
+        tracing::warn!("failed to parse plugin info response: {e}");
+        serde_json::Value::default()
+    });
     let plugins: Vec<serde_json::Value> = body
         .get("plugins")
         .and_then(|v| v.as_array())
