@@ -35,7 +35,7 @@ impl SignalAdapter {
                 .unwrap_or_default(),
             allowed_numbers: Vec::new(),
             deny_on_empty: true,
-            message_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            message_buffer: crate::helpers::new_message_buffer(),
         }
     }
 
@@ -203,11 +203,7 @@ impl ChannelAdapter for SignalAdapter {
     }
 
     async fn recv(&self) -> Result<Option<InboundMessage>> {
-        let mut buf = self
-            .message_buffer
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        Ok(buf.pop_front())
+        Ok(crate::helpers::recv_from_buffer(&self.message_buffer))
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {

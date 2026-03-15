@@ -36,7 +36,7 @@ impl TelegramAdapter {
             allowed_chat_ids: Vec::new(),
             webhook_secret: None,
             deny_on_empty: true,
-            message_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            message_buffer: crate::helpers::new_message_buffer(),
         }
     }
 
@@ -112,31 +112,7 @@ impl TelegramAdapter {
     }
 
     pub fn chunk_message(text: &str, max_len: usize) -> Vec<String> {
-        if text.len() <= max_len {
-            return vec![text.to_string()];
-        }
-
-        let mut chunks = Vec::new();
-        let mut remaining = text;
-
-        while !remaining.is_empty() {
-            if remaining.len() <= max_len {
-                chunks.push(remaining.to_string());
-                break;
-            }
-
-            let safe_max = remaining.floor_char_boundary(max_len);
-            let boundary = &remaining[..safe_max];
-            let split_at = boundary
-                .rfind(|c: char| c.is_whitespace())
-                .unwrap_or(safe_max);
-
-            let (chunk, rest) = remaining.split_at(split_at);
-            chunks.push(chunk.to_string());
-            remaining = rest.trim_start();
-        }
-
-        chunks
+        crate::helpers::chunk_message(text, max_len)
     }
 
     pub async fn register_webhook(&self, url: &str) -> Result<()> {
@@ -377,14 +353,8 @@ impl ChannelAdapter for TelegramAdapter {
 
     async fn recv(&self) -> Result<Option<InboundMessage>> {
         // Return buffered messages first before polling for new ones
-        {
-            let mut buffer = self
-                .message_buffer
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if let Some(msg) = buffer.pop_front() {
-                return Ok(Some(msg));
-            }
+        if let Some(msg) = crate::helpers::recv_from_buffer(&self.message_buffer) {
+            return Ok(Some(msg));
         }
 
         let offset = {

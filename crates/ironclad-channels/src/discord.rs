@@ -52,7 +52,7 @@ impl DiscordAdapter {
                 .unwrap_or_default(),
             allowed_guild_ids: Vec::new(),
             deny_on_empty: true,
-            message_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            message_buffer: crate::helpers::new_message_buffer(),
             gateway_connection: Arc::new(GatewayConnection::new()),
             gateway_handle: Mutex::new(None),
             shutdown: Arc::new(Notify::new()),
@@ -238,49 +238,7 @@ impl DiscordAdapter {
     }
 
     pub fn chunk_message(text: &str, max_len: usize) -> Vec<String> {
-        if text.len() <= max_len {
-            return vec![text.to_string()];
-        }
-
-        let mut chunks = Vec::new();
-        let mut remaining = text;
-
-        while !remaining.is_empty() {
-            if remaining.len() <= max_len {
-                chunks.push(remaining.to_string());
-                break;
-            }
-
-            let safe_max = remaining.floor_char_boundary(max_len);
-
-            // Guard: if floor_char_boundary returned 0 (first char wider than max_len),
-            // force progress by advancing one char boundary to avoid an infinite loop.
-            if safe_max == 0 {
-                let next = remaining
-                    .char_indices()
-                    .nth(1)
-                    .map(|(i, _)| i)
-                    .unwrap_or(remaining.len());
-                chunks.push(remaining[..next].to_string());
-                remaining = &remaining[next..];
-                continue;
-            }
-
-            let boundary = &remaining[..safe_max];
-            let split_at = boundary
-                .rfind('\n')
-                .or_else(|| boundary.rfind(|c: char| c.is_whitespace()))
-                .unwrap_or(safe_max);
-
-            let (chunk, rest) = remaining.split_at(split_at);
-            // Skip empty chunks (e.g. when message starts with a newline)
-            if !chunk.is_empty() {
-                chunks.push(chunk.to_string());
-            }
-            remaining = rest.trim_start_matches('\n').trim_start();
-        }
-
-        chunks
+        crate::helpers::chunk_message(text, max_len)
     }
 
     async fn handle_api_response(&self, resp: reqwest::Response) -> Result<Value> {
@@ -326,11 +284,7 @@ impl ChannelAdapter for DiscordAdapter {
     }
 
     async fn recv(&self) -> Result<Option<InboundMessage>> {
-        let mut buf = self
-            .message_buffer
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        Ok(buf.pop_front())
+        Ok(crate::helpers::recv_from_buffer(&self.message_buffer))
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {

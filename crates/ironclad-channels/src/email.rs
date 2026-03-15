@@ -79,7 +79,7 @@ impl EmailAdapter {
             password,
             allowed_senders: Vec::new(),
             deny_on_empty: true,
-            buffer: Arc::new(Mutex::new(VecDeque::new())),
+            buffer: crate::helpers::new_message_buffer(),
             transport,
             poll_interval: Duration::from_secs(30),
             oauth2_token: None,
@@ -555,8 +555,7 @@ impl ChannelAdapter for EmailAdapter {
     }
 
     async fn recv(&self) -> Result<Option<InboundMessage>> {
-        let mut buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(buf.pop_front())
+        Ok(crate::helpers::recv_from_buffer(&self.buffer))
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {

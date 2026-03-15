@@ -30,6 +30,7 @@ pub mod discord;
 pub mod email;
 pub mod filter;
 pub mod formatter;
+pub mod helpers;
 pub mod media;
 pub mod router;
 pub mod signal;
