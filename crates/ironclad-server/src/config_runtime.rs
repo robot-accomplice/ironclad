@@ -39,58 +39,25 @@ pub struct RuntimeApplyReport {
     pub deferred_apply: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConfigRuntimeError {
-    Io(std::io::Error),
-    TomlDeserialize(toml::de::Error),
-    TomlSerialize(toml::ser::Error),
-    JsonSerialize(serde_json::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("TOML parse error: {0}")]
+    TomlDeserialize(#[from] toml::de::Error),
+    #[error("TOML serialize error: {0}")]
+    TomlSerialize(#[from] toml::ser::Error),
+    #[error("JSON serialize error: {0}")]
+    JsonSerialize(#[from] serde_json::Error),
+    #[error("validation failed: {0}")]
     Validation(String),
+    #[error("config parent directory is missing for '{}'", .0.display())]
     MissingParent(PathBuf),
 }
 
-impl std::fmt::Display for ConfigRuntimeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "I/O error: {e}"),
-            Self::TomlDeserialize(e) => write!(f, "TOML parse error: {e}"),
-            Self::TomlSerialize(e) => write!(f, "TOML serialize error: {e}"),
-            Self::JsonSerialize(e) => write!(f, "JSON serialize error: {e}"),
-            Self::Validation(e) => write!(f, "validation failed: {e}"),
-            Self::MissingParent(p) => {
-                write!(
-                    f,
-                    "config parent directory is missing for '{}'",
-                    p.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ConfigRuntimeError {}
-
-impl From<std::io::Error> for ConfigRuntimeError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<toml::de::Error> for ConfigRuntimeError {
-    fn from(value: toml::de::Error) -> Self {
-        Self::TomlDeserialize(value)
-    }
-}
-
-impl From<toml::ser::Error> for ConfigRuntimeError {
-    fn from(value: toml::ser::Error) -> Self {
-        Self::TomlSerialize(value)
-    }
-}
-
-impl From<serde_json::Error> for ConfigRuntimeError {
-    fn from(value: serde_json::Error) -> Self {
-        Self::JsonSerialize(value)
+impl From<ConfigRuntimeError> for ironclad_core::error::IroncladError {
+    fn from(e: ConfigRuntimeError) -> Self {
+        Self::Config(e.to_string())
     }
 }
 
