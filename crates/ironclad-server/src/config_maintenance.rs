@@ -16,7 +16,7 @@ pub fn migrate_removed_legacy_config_file(
         return Ok(None);
     };
 
-    backup_config_file(path)?;
+    backup_config_file(path, 10, 30)?;
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, rewritten)?;
     std::fs::rename(&tmp, path)?;

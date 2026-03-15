@@ -287,6 +287,8 @@ pub struct IroncladConfig {
     pub obsidian: ObsidianConfig,
     #[serde(default)]
     pub security: SecurityConfig,
+    #[serde(default)]
+    pub backups: BackupsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -356,6 +358,34 @@ pub struct SecurityConfig {
     /// Filesystem access control for agent tools and skill scripts.
     #[serde(default)]
     pub filesystem: FilesystemSecurityConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupsConfig {
+    /// Maximum number of config backups to retain. Default: 10.
+    /// Set to 0 to disable count-based pruning (only age-based).
+    #[serde(default = "default_backup_max_count")]
+    pub max_count: usize,
+    /// Maximum age of backups in days. Backups older than this are pruned. Default: 30.
+    /// Set to 0 to disable age-based pruning (only count-based).
+    #[serde(default = "default_backup_max_age_days")]
+    pub max_age_days: u32,
+}
+
+impl Default for BackupsConfig {
+    fn default() -> Self {
+        Self {
+            max_count: default_backup_max_count(),
+            max_age_days: default_backup_max_age_days(),
+        }
+    }
+}
+
+fn default_backup_max_count() -> usize {
+    10
+}
+fn default_backup_max_age_days() -> u32 {
+    30
 }
 
 /// Filesystem security policy for agent tools and skill scripts.

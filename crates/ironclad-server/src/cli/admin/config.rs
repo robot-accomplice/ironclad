@@ -291,7 +291,7 @@ pub fn cmd_config_lint(file: &str) -> Result<(), Box<dyn std::error::Error>> {
 pub fn cmd_config_backup(file: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (OK, _, _, _, _) = icons();
     let path = std::path::Path::new(file);
-    match config_runtime::backup_config_file(path)? {
+    match config_runtime::backup_config_file(path, 10, 30)? {
         Some(backup) => println!("  {OK} Backup created: {}", backup.display()),
         None => println!("  {OK} No backup needed; config file does not exist: {file}"),
     }
