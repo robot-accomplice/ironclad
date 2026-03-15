@@ -160,6 +160,9 @@ pub async fn agent_message_stream(
 
     let turn_id = uuid::Uuid::new_v4().to_string();
 
+    let per_provider_timeout =
+        std::time::Duration::from_secs(config.models.routing.per_provider_timeout_seconds);
+
     drop(config);
 
     // ── Prepare inference via unified pipeline ──────────────────────
@@ -244,16 +247,28 @@ pub async fn agent_message_stream(
         let llm_client = state.llm.read().await.client.clone();
         let mut llm_body_stream = llm_body;
         llm_body_stream["stream"] = serde_json::json!(true);
-        let result = llm_client
-            .forward_stream(
+        let result = match tokio::time::timeout(
+            per_provider_timeout,
+            llm_client.forward_stream(
                 &resolved.url,
                 &resolved.api_key,
                 llm_body_stream,
                 &resolved.auth_header,
                 &resolved.extra_headers,
-            )
-            .await
-            .map(|raw| ironclad_llm::SseChunkStream::new(raw, resolved.format));
+            ),
+        )
+        .await
+        {
+            Ok(inner) => inner.map(|raw| ironclad_llm::SseChunkStream::new(raw, resolved.format)),
+            Err(_elapsed) => {
+                last_error = format!(
+                    "{} timed out after {}s",
+                    candidate,
+                    per_provider_timeout.as_secs()
+                );
+                continue;
+            }
+        };
 
         match result {
             Ok(stream) => {
@@ -307,8 +322,9 @@ pub async fn agent_message_stream(
     let state_clone = state.clone();
 
     let sse_stream = async_stream::stream! {
-        // Move the guard into the generator so it drops with the stream
-        let _dedup_guard = dedup_guard;
+        // Release dedup fingerprint early — once streaming begins, the response
+        // is committed and retries should be allowed to queue new requests.
+        drop(dedup_guard);
 
         // Opening event with session metadata
         let open = json!({
@@ -332,11 +348,25 @@ pub async fn agent_message_stream(
 
         let mut accumulator = ironclad_llm::format::StreamAccumulator::default();
         let stream_start = std::time::Instant::now();
+        let stream_timeout = per_provider_timeout * 3; // Total stream budget = 3x per-provider
+        let mut warned_timeout = false;
         let mut stream = std::pin::pin!(chunk_stream);
 
         while let Some(item) = stream.next().await {
             match item {
                 Ok(chunk) => {
+                    // Emit mid-stream timeout warning when past halfway budget
+                    if !warned_timeout && stream_start.elapsed() > stream_timeout / 2 {
+                        warned_timeout = true;
+                        let remaining = stream_timeout.saturating_sub(stream_start.elapsed());
+                        let warn_event = json!({
+                            "type": "stream_warning",
+                            "message": format!("This request is taking longer than anticipated. Timeout in {}s.", remaining.as_secs()),
+                            "session_id": session_id_clone,
+                        });
+                        yield Ok(Event::default().data(warn_event.to_string()));
+                    }
+
                     accumulator.push(&chunk);
 
                     let chunk_event = json!({
@@ -392,80 +422,84 @@ pub async fn agent_message_stream(
             assistant_content
         };
 
-        // Post-stream: store assistant response (scanned content)
-        if let Err(e) = ironclad_db::sessions::append_message(
-            &db,
-            &session_id_clone,
-            "assistant",
-            &assistant_content,
-        ) {
-            tracing::error!(error = %e, session_id = %session_id_clone, "failed to persist assistant response after streaming inference");
+        // Post-stream: store assistant response (scanned content) — skip if empty (stream error)
+        if assistant_content.trim().is_empty() {
+            tracing::warn!(session_id = %session_id_clone, "skipping persistence of empty streaming response");
+        } else {
+            if let Err(e) = ironclad_db::sessions::append_message(
+                &db,
+                &session_id_clone,
+                "assistant",
+                &assistant_content,
+            ) {
+                tracing::error!(error = %e, session_id = %session_id_clone, "failed to persist assistant response after streaming inference");
+            }
+
+            // Record inference cost via core
+            let cost = unified_resp.tokens_in as f64 * cost_in + unified_resp.tokens_out as f64 * cost_out;
+            if let Err(e) = ironclad_db::sessions::create_turn_with_id(
+                &db,
+                &turn_id_clone,
+                &session_id_clone,
+                Some(&model_clone),
+                Some(unified_resp.tokens_in as i64),
+                Some(unified_resp.tokens_out as i64),
+                Some(cost),
+            ) {
+                tracing::warn!(error = %e, turn_id = %turn_id_clone, "failed to persist streaming turn");
+            }
+            let stream_latency_ms = stream_start.elapsed().as_millis() as i64;
+            core::record_cost(
+                &state_clone,
+                &model_clone,
+                &provider_prefix,
+                unified_resp.tokens_in as i64,
+                unified_resp.tokens_out as i64,
+                cost,
+                None,
+                false,
+                Some(stream_latency_ms),
+                None, // quality_score not computed for streaming
+                false,
+                Some(&turn_id_clone),
+            );
+
+            // Capacity + breaker tracking (streaming-specific -- needs raw LLM access)
+            {
+                let mut llm = llm_arc.write().await;
+                llm.breakers.record_success(&provider_prefix);
+                let total_tokens = unified_resp.tokens_in + unified_resp.tokens_out;
+                llm.capacity.record(&provider_prefix, total_tokens as u64);
+                let pressured = llm.capacity.is_sustained_hot(&provider_prefix);
+                llm.breakers.set_capacity_pressure(&provider_prefix, pressured);
+            }
+
+            // Cache write-through via core
+            core::store_in_cache(
+                &state_clone,
+                &cache_hash,
+                &user_content_clone,
+                &assistant_content,
+                &model_clone,
+                unified_resp.tokens_out as i64,
+            ).await;
+
+            // Background memory ingestion.
+            // Streaming currently does not execute a ReAct tool loop, but it may still emit
+            // tool-call intents in provider output; persist those intents so episodic memory
+            // is not blind on the streaming path.
+            let streamed_tool_results: Vec<(String, String)> = super::tools::parse_tool_calls(&assistant_content)
+                .into_iter()
+                .map(|(name, params)| (name, format!("unexecuted_streaming_tool_call: {params}")))
+                .collect();
+            core::post_turn_ingest(
+                &state_clone,
+                &session_id_clone,
+                &user_content_clone,
+                &assistant_content,
+                &streamed_tool_results,
+            );
         }
-
-        // Record inference cost via core
-        let cost = unified_resp.tokens_in as f64 * cost_in + unified_resp.tokens_out as f64 * cost_out;
-        if let Err(e) = ironclad_db::sessions::create_turn_with_id(
-            &db,
-            &turn_id_clone,
-            &session_id_clone,
-            Some(&model_clone),
-            Some(unified_resp.tokens_in as i64),
-            Some(unified_resp.tokens_out as i64),
-            Some(cost),
-        ) {
-            tracing::warn!(error = %e, turn_id = %turn_id_clone, "failed to persist streaming turn");
-        }
-        let stream_latency_ms = stream_start.elapsed().as_millis() as i64;
-        core::record_cost(
-            &state_clone,
-            &model_clone,
-            &provider_prefix,
-            unified_resp.tokens_in as i64,
-            unified_resp.tokens_out as i64,
-            cost,
-            None,
-            false,
-            Some(stream_latency_ms),
-            None, // quality_score not computed for streaming
-            false,
-            Some(&turn_id_clone),
-        );
-
-        // Capacity + breaker tracking (streaming-specific -- needs raw LLM access)
-        {
-            let mut llm = llm_arc.write().await;
-            llm.breakers.record_success(&provider_prefix);
-            let total_tokens = unified_resp.tokens_in + unified_resp.tokens_out;
-            llm.capacity.record(&provider_prefix, total_tokens as u64);
-            let pressured = llm.capacity.is_sustained_hot(&provider_prefix);
-            llm.breakers.set_capacity_pressure(&provider_prefix, pressured);
-        }
-
-        // Cache write-through via core
-        core::store_in_cache(
-            &state_clone,
-            &cache_hash,
-            &user_content_clone,
-            &assistant_content,
-            &model_clone,
-            unified_resp.tokens_out as i64,
-        ).await;
-
-        // Background memory ingestion.
-        // Streaming currently does not execute a ReAct tool loop, but it may still emit
-        // tool-call intents in provider output; persist those intents so episodic memory
-        // is not blind on the streaming path.
-        let streamed_tool_results: Vec<(String, String)> = super::tools::parse_tool_calls(&assistant_content)
-            .into_iter()
-            .map(|(name, params)| (name, format!("unexecuted_streaming_tool_call: {params}")))
-            .collect();
-        core::post_turn_ingest(
-            &state_clone,
-            &session_id_clone,
-            &user_content_clone,
-            &assistant_content,
-            &streamed_tool_results,
-        );
 
         let done_event = json!({
             "type": "stream_chunk",
@@ -495,8 +529,6 @@ pub async fn agent_message_stream(
             "content_blocked": content_blocked,
         });
         yield Ok(Event::default().data(final_event.to_string()));
-
-        // Guard drops here on normal completion, releasing the fingerprint
     };
 
     Ok(Sse::new(sse_stream).keep_alive(KeepAlive::default()))

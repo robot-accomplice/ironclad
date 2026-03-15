@@ -1,6 +1,6 @@
 use super::*;
 
-pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_wallet(url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
@@ -9,6 +9,11 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
         e
     })?;
     let address = c.get("/api/wallet/address").await?;
+    if json {
+        let combined = serde_json::json!({ "balance": balance, "address": address });
+        println!("{}", serde_json::to_string_pretty(&combined)?);
+        return Ok(());
+    }
     heading("Wallet");
     let bal = balance["balance"].as_str().unwrap_or("0.00");
     let currency = balance["currency"].as_str().unwrap_or("USDC");
@@ -190,7 +195,7 @@ pub async fn cmd_wallet(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub async fn cmd_wallet_address(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_wallet_address(url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
@@ -198,6 +203,10 @@ pub async fn cmd_wallet_address(url: &str) -> Result<(), Box<dyn std::error::Err
         IroncladClient::check_connectivity_hint(&*e);
         e
     })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&address)?);
+        return Ok(());
+    }
     let addr = address["address"].as_str().unwrap_or("not connected");
     eprintln!();
     eprintln!("    {MONO}{addr}{RESET}");
@@ -205,7 +214,7 @@ pub async fn cmd_wallet_address(url: &str) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_wallet_balance(url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
@@ -213,6 +222,10 @@ pub async fn cmd_wallet_balance(url: &str) -> Result<(), Box<dyn std::error::Err
         IroncladClient::check_connectivity_hint(&*e);
         e
     })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&balance)?);
+        return Ok(());
+    }
     let bal = balance["balance"].as_str().unwrap_or("0.00");
     let currency = balance["currency"].as_str().unwrap_or("USDC");
     let swap = &balance["treasury"]["revenue_swap"];

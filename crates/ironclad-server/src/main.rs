@@ -89,7 +89,11 @@ enum Commands {
     Channels(ChannelsCmd),
     /// Validate configuration
     #[command(next_help_heading = "A-C")]
-    Check,
+    Check {
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Inspect circuit breaker state
     #[command(next_help_heading = "A-C")]
     #[command(subcommand)]
@@ -240,7 +244,7 @@ enum Commands {
     #[command(alias = "upgrade", next_help_heading = "S-Z")]
     #[command(subcommand)]
     Update(UpdateCmd),
-    /// Report firmware version and build
+    /// Report version and build information
     #[command(next_help_heading = "S-Z")]
     Version,
     /// Inspect wallet and treasury
@@ -746,8 +750,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Serve { port, bind }) => cmd_serve(config_flag.clone(), port, bind).await,
         Some(Commands::Init { path }) => cmd_init(&path),
         Some(Commands::Setup) => cli::cmd_setup(),
-        Some(Commands::Check) => match resolve_config_path(config_flag.as_deref()) {
-            Some(p) => cmd_check(&p.to_string_lossy()),
+        Some(Commands::Check { json }) => match resolve_config_path(config_flag.as_deref()) {
+            Some(p) => cmd_check(&p.to_string_lossy(), json || parsed.json),
             None => {
                 let t = cli::theme();
                 print_banner(t);
@@ -824,9 +828,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             lines,
             follow,
             level,
-        }) => cli::cmd_logs(url, lines, follow, &level).await,
+        }) => cli::cmd_logs(url, lines, follow, &level, parsed.json).await,
         Some(Commands::Circuit(sub)) => match sub {
-            CircuitCmd::Status => cli::cmd_circuit_status(url).await,
+            CircuitCmd::Status => cli::cmd_circuit_status(url, parsed.json).await,
             CircuitCmd::Reset { provider } => {
                 cli::cmd_circuit_reset(url, provider.as_deref()).await
             }
@@ -834,8 +838,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // ── Data ────────────────────────────────────────────
         Some(Commands::Sessions(sub)) => match sub {
-            SessionsCmd::List => cli::cmd_sessions_list(url).await,
-            SessionsCmd::Show { id } => cli::cmd_session_detail(url, &id).await,
+            SessionsCmd::List => cli::cmd_sessions_list(url, parsed.json).await,
+            SessionsCmd::Show { id } => cli::cmd_session_detail(url, &id, parsed.json).await,
             SessionsCmd::Create { agent_id } => cli::cmd_session_create(url, &agent_id).await,
             SessionsCmd::Export { id, format, output } => {
                 cli::cmd_session_export(url, &id, &format, output.as_deref()).await
@@ -847,18 +851,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tier,
                 session,
                 limit,
-            } => cli::cmd_memory(url, &tier, session.as_deref(), None, limit).await,
+            } => cli::cmd_memory(url, &tier, session.as_deref(), None, limit, parsed.json).await,
             MemoryCmd::Search { query, limit } => {
-                cli::cmd_memory(url, "search", None, Some(query.as_str()), limit).await
+                cli::cmd_memory(
+                    url,
+                    "search",
+                    None,
+                    Some(query.as_str()),
+                    limit,
+                    parsed.json,
+                )
+                .await
             }
         },
         Some(Commands::Ingest { path, json }) => cmd_ingest(&path, json, config_flag.as_deref()),
         Some(Commands::Skills(sub)) => match sub {
-            SkillsCmd::List => cli::cmd_skills_list(url).await,
-            SkillsCmd::Show { id } => cli::cmd_skill_detail(url, &id).await,
+            SkillsCmd::List => cli::cmd_skills_list(url, parsed.json).await,
+            SkillsCmd::Show { id } => cli::cmd_skill_detail(url, &id, parsed.json).await,
             SkillsCmd::Reload => cli::cmd_skills_reload(url).await,
             SkillsCmd::CatalogList { query } => {
-                cli::cmd_skills_catalog_list(url, query.as_deref()).await
+                cli::cmd_skills_catalog_list(url, query.as_deref(), parsed.json).await
             }
             SkillsCmd::CatalogInstall { skills, activate } => {
                 cli::cmd_skills_catalog_install(url, &skills, activate).await
@@ -880,25 +892,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         Some(Commands::Schedule(sub)) => match sub {
-            ScheduleCmd::List => cli::cmd_schedule_list(url).await,
-            ScheduleCmd::Run { job } => cli::cmd_schedule_run(url, &job).await,
+            ScheduleCmd::List => cli::cmd_schedule_list(url, parsed.json).await,
+            ScheduleCmd::Run { job } => cli::cmd_schedule_run(url, &job, parsed.json).await,
             ScheduleCmd::Recover {
                 all,
                 names,
                 dry_run,
-            } => cli::cmd_schedule_recover(url, &names, all, dry_run).await,
+            } => cli::cmd_schedule_recover(url, &names, all, dry_run, parsed.json).await,
         },
         Some(Commands::Metrics(sub)) => match sub {
-            MetricsCmd::Costs => cli::cmd_metrics(url, "costs", None).await,
+            MetricsCmd::Costs => cli::cmd_metrics(url, "costs", None, parsed.json).await,
             MetricsCmd::Transactions { hours } => {
-                cli::cmd_metrics(url, "transactions", hours).await
+                cli::cmd_metrics(url, "transactions", hours, parsed.json).await
             }
-            MetricsCmd::Cache => cli::cmd_metrics(url, "cache", None).await,
+            MetricsCmd::Cache => cli::cmd_metrics(url, "cache", None, parsed.json).await,
         },
         Some(Commands::Wallet(sub)) => match sub {
-            WalletCmd::Show => cli::cmd_wallet(url).await,
-            WalletCmd::Address => cli::cmd_wallet_address(url).await,
-            WalletCmd::Balance => cli::cmd_wallet_balance(url).await,
+            WalletCmd::Show => cli::cmd_wallet(url, parsed.json).await,
+            WalletCmd::Address => cli::cmd_wallet_address(url, parsed.json).await,
+            WalletCmd::Balance => cli::cmd_wallet_balance(url, parsed.json).await,
         },
 
         // ── Authentication ──────────────────────────────────
@@ -913,7 +925,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // ── Configuration ───────────────────────────────────
         Some(Commands::Config(sub)) => match sub {
-            ConfigCmd::Show => cli::cmd_config(url).await,
+            ConfigCmd::Show => cli::cmd_config(url, parsed.json).await,
             ConfigCmd::Get { path } => cli::cmd_config_get(url, &path).await,
             ConfigCmd::Set {
                 path,
@@ -942,12 +954,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ConfigCmd::Backup { file } => cli::cmd_config_backup(&file),
         },
         Some(Commands::Models(sub)) => match sub {
-            ModelsCmd::List => cli::cmd_models_list(url).await,
+            ModelsCmd::List => cli::cmd_models_list(url, parsed.json).await,
             ModelsCmd::Scan { provider } => cli::cmd_models_scan(url, provider.as_deref()).await,
         },
         Some(Commands::Plugins(sub)) => match sub {
-            PluginsCmd::List => cli::cmd_plugins_list(url).await,
-            PluginsCmd::Info { name } => cli::cmd_plugin_info(url, &name).await,
+            PluginsCmd::List => cli::cmd_plugins_list(url, parsed.json).await,
+            PluginsCmd::Info { name } => cli::cmd_plugin_info(url, &name, parsed.json).await,
             PluginsCmd::Install { source } => cli::cmd_plugin_install(&source).await,
             PluginsCmd::Uninstall { name } => cli::cmd_plugin_uninstall(&name),
             PluginsCmd::Enable { name } => cli::cmd_plugin_toggle(url, &name, true).await,
@@ -956,17 +968,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             PluginsCmd::Pack { dir, output } => cli::cmd_plugin_pack(&dir, output.as_deref()),
         },
         Some(Commands::Agents(sub)) => match sub {
-            AgentsCmd::List => cli::cmd_agents_list(url).await,
+            AgentsCmd::List => cli::cmd_agents_list(url, parsed.json).await,
             AgentsCmd::Start { id } => cli::cmd_agent_start(url, &id).await,
             AgentsCmd::Stop { id } => cli::cmd_agent_stop(url, &id).await,
         },
         Some(Commands::Channels(sub)) => match sub {
-            ChannelsCmd::List => cli::cmd_channels_status(url).await,
-            ChannelsCmd::DeadLetter { limit } => cli::cmd_channels_dead_letter(url, limit).await,
+            ChannelsCmd::List => cli::cmd_channels_status(url, parsed.json).await,
+            ChannelsCmd::DeadLetter { limit } => {
+                cli::cmd_channels_dead_letter(url, limit, parsed.json).await
+            }
             ChannelsCmd::Replay { id } => cli::cmd_channels_replay(url, &id).await,
         },
         Some(Commands::Security(sub)) => match sub {
-            SecurityCmd::Audit { config } => cli::cmd_security_audit(&config),
+            SecurityCmd::Audit { config } => cli::cmd_security_audit(&config, parsed.json),
         },
 
         // ── Credentials ──────────────────────────────────────
@@ -2028,18 +2042,26 @@ fn cmd_init(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let t = cli::theme();
-    print_banner(t);
-    let (s, b, r) = (t.success(), t.bold(), t.reset());
-    let (ok, warn) = (t.icon_ok(), t.icon_warn());
-    let tw = |text: &str| t.typewrite_line(text, 4);
-
-    tw(&format!("  {b}Validating{r} {config_path}\n"));
-
+fn cmd_check(config_path: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let config = match IroncladConfig::from_file(Path::new(config_path)) {
         Ok(c) => c,
         Err(e) => {
+            if json {
+                let msg = format!("{e}");
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "valid": false,
+                        "config_path": config_path,
+                        "error": msg,
+                    })
+                );
+                return Err(Box::new(e));
+            }
+            let t = cli::theme();
+            print_banner(t);
+            let (b, r) = (t.bold(), t.reset());
+            let warn = t.icon_warn();
             let msg = format!("{e}");
             if msg.contains("No such file") || msg.contains("not found") || msg.contains("NotFound")
             {
@@ -2052,9 +2074,118 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             return Err(Box::new(e));
         }
     };
-    tw(&format!("  {ok} TOML syntax valid"));
 
-    config.validate()?;
+    if let Err(e) = config.validate() {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "valid": false,
+                    "config_path": config_path,
+                    "error": format!("{e}"),
+                })
+            );
+        }
+        return Err(Box::new(e));
+    }
+
+    let mem_sum = config.memory.working_budget_pct
+        + config.memory.episodic_budget_pct
+        + config.memory.semantic_budget_pct
+        + config.memory.procedural_budget_pct
+        + config.memory.relationship_budget_pct;
+
+    let skills_dir_exists = config.skills.skills_dir.exists();
+
+    let mut warnings: Vec<String> = Vec::new();
+
+    if !skills_dir_exists {
+        warnings.push(format!(
+            "Skills dir missing: {}",
+            config.skills.skills_dir.display()
+        ));
+    }
+
+    // Per-channel allow-list warnings
+    {
+        if let Some(ref tg) = config.channels.telegram
+            && tg.allowed_chat_ids.is_empty()
+            && config.security.deny_on_empty_allowlist
+        {
+            warnings.push(
+                "Telegram: allowed_chat_ids is empty (all messages will be rejected)".to_string(),
+            );
+        }
+        if let Some(ref dc) = config.channels.discord
+            && dc.allowed_guild_ids.is_empty()
+            && config.security.deny_on_empty_allowlist
+        {
+            warnings.push(
+                "Discord: allowed_guild_ids is empty (all messages will be rejected)".to_string(),
+            );
+        }
+        if let Some(ref wa) = config.channels.whatsapp
+            && wa.allowed_numbers.is_empty()
+            && config.security.deny_on_empty_allowlist
+        {
+            warnings.push(
+                "WhatsApp: allowed_numbers is empty (all messages will be rejected)".to_string(),
+            );
+        }
+        if let Some(ref sig) = config.channels.signal
+            && sig.allowed_numbers.is_empty()
+            && config.security.deny_on_empty_allowlist
+        {
+            warnings.push(
+                "Signal: allowed_numbers is empty (all messages will be rejected)".to_string(),
+            );
+        }
+        if config.channels.email.enabled
+            && config.channels.email.allowed_senders.is_empty()
+            && config.security.deny_on_empty_allowlist
+        {
+            warnings.push(
+                "Email: allowed_senders is empty (all messages will be rejected)".to_string(),
+            );
+        }
+        if config.channels.trusted_sender_ids.is_empty() {
+            warnings.push("No trusted senders — no user can reach Creator authority".to_string());
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "valid": true,
+                "config_path": config_path,
+                "agent_name": config.agent.name,
+                "agent_id": config.agent.id,
+                "server": format!("{}:{}", config.server.bind, config.server.port),
+                "primary_model": config.models.primary,
+                "database": config.database.path.display().to_string(),
+                "memory_budget_sum_pct": mem_sum,
+                "treasury_per_payment_cap": config.treasury.per_payment_cap,
+                "treasury_minimum_reserve": config.treasury.minimum_reserve,
+                "skills_dir": config.skills.skills_dir.display().to_string(),
+                "skills_dir_exists": skills_dir_exists,
+                "a2a_enabled": config.a2a.enabled,
+                "trusted_senders": config.channels.trusted_sender_ids.len(),
+                "warnings": warnings,
+            }))?
+        );
+        return Ok(());
+    }
+
+    // ── Human-readable output ──────────────────────────────────
+    let t = cli::theme();
+    print_banner(t);
+    let (s, b, r) = (t.success(), t.bold(), t.reset());
+    let (ok, warn) = (t.icon_ok(), t.icon_warn());
+    let tw = |text: &str| t.typewrite_line(text, 4);
+
+    tw(&format!("  {b}Validating{r} {config_path}\n"));
+    tw(&format!("  {ok} TOML syntax valid"));
     tw(&format!("  {ok} Configuration semantics valid"));
 
     tw(&format!(
@@ -2070,20 +2201,13 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         "  {ok} Database: {}",
         config.database.path.display()
     ));
-
-    let mem_sum = config.memory.working_budget_pct
-        + config.memory.episodic_budget_pct
-        + config.memory.semantic_budget_pct
-        + config.memory.procedural_budget_pct
-        + config.memory.relationship_budget_pct;
     tw(&format!("  {ok} Memory budgets sum to {mem_sum}%"));
-
     tw(&format!(
         "  {ok} Treasury: cap=${:.2}/payment, reserve=${:.2}",
         config.treasury.per_payment_cap, config.treasury.minimum_reserve
     ));
 
-    if config.skills.skills_dir.exists() {
+    if skills_dir_exists {
         tw(&format!(
             "  {ok} Skills dir exists: {}",
             config.skills.skills_dir.display()
@@ -2116,7 +2240,7 @@ fn cmd_check(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         config.channels.trusted_sender_ids.len()
     ));
 
-    // Per-channel allow-list warnings
+    // Per-channel allow-list warnings (human-readable)
     {
         let mut any_channel_warn = false;
         if let Some(ref tg) = config.channels.telegram {
@@ -2636,7 +2760,7 @@ tier = "T3"
         cmd_init(dir.path().to_str().unwrap()).expect("init should succeed");
         let cfg_path = dir.path().join("ironclad.toml");
         assert!(cfg_path.exists());
-        cmd_check(cfg_path.to_str().unwrap()).expect("check should succeed");
+        cmd_check(cfg_path.to_str().unwrap(), false).expect("check should succeed");
     }
 
     #[test]

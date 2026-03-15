@@ -1,4 +1,4 @@
-use crate::Database;
+use crate::{Database, DbResultExt};
 use ironclad_core::{IroncladError, Result};
 use serde_json::{Value, json};
 
@@ -22,9 +22,7 @@ pub fn record_revenue_feedback(
         ));
     }
     let conn = db.conn();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let tx = conn.unchecked_transaction().db_err()?;
     let id = uuid::Uuid::new_v4().to_string();
     // Verify the opportunity exists before inserting the feedback row, so we
     // never create orphan feedback pointing at a deleted opportunity.
@@ -33,10 +31,9 @@ pub fn record_revenue_feedback(
             "UPDATE revenue_opportunities SET updated_at = datetime('now') WHERE id = ?1",
             [opportunity_id],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     if touched == 0 {
-        tx.rollback()
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        tx.rollback().db_err()?;
         return Err(IroncladError::Database(format!(
             "revenue opportunity '{opportunity_id}' not found for feedback touch"
         )));
@@ -46,9 +43,8 @@ pub fn record_revenue_feedback(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![id, opportunity_id, strategy, grade, source, comment],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
-    tx.commit()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
+    tx.commit().db_err()?;
     Ok(id)
 }
 
@@ -63,7 +59,7 @@ pub fn revenue_feedback_summary_by_strategy(db: &Database) -> Result<Vec<Value>>
              ORDER BY AVG(grade) DESC, COUNT(*) DESC, strategy ASC \
              LIMIT 200",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map([], |row| {
             Ok(json!({
@@ -73,9 +69,8 @@ pub fn revenue_feedback_summary_by_strategy(db: &Database) -> Result<Vec<Value>>
                 "latest_feedback_at": row.get::<_, String>(3)?,
             }))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+        .db_err()?;
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 pub fn revenue_feedback_signal_for_strategy(
@@ -97,7 +92,7 @@ pub fn revenue_feedback_signal_for_strategy(
             }))
         },
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 #[cfg(test)]

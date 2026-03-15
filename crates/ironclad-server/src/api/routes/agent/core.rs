@@ -962,7 +962,6 @@ pub(super) fn post_turn_ingest(
     });
 }
 
-#[allow(dead_code)] // all fields used by various callers (API, streaming, channel)
 /// Result of the unified inference pipeline (cache check → inference → post-turn ops).
 pub(super) struct PipelineResult {
     pub content: String,
@@ -976,13 +975,21 @@ pub(super) struct PipelineResult {
     pub tokens_out: i64,
     pub cost: f64,
     pub react_turns: usize,
+    #[allow(dead_code)]
+    // populated during pipeline execution; consumed by upcoming routing audit feature
     pub latency_ms: u64,
+    #[allow(dead_code)]
+    // populated during pipeline execution; consumed by upcoming routing audit feature
     pub quality_score: f64,
+    #[allow(dead_code)]
+    // populated during pipeline execution; consumed by upcoming routing audit feature
     pub escalated: bool,
     pub cached: bool,
     pub tokens_saved: u32,
     pub assistant_message_id: String,
     /// Tool calls executed during inference: (tool_name, result_text).
+    #[allow(dead_code)]
+    // populated during pipeline execution; consumed by upcoming routing audit feature
     pub tool_results: Vec<(String, String)>,
 }
 

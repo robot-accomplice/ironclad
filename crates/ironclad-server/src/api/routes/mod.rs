@@ -455,6 +455,10 @@ async fn security_headers_layer(
     response
 }
 
+async fn dashboard_redirect() -> axum::response::Redirect {
+    axum::response::Redirect::permanent("/")
+}
+
 // ── Router ──────────────────────────────────────────────────────
 
 pub fn build_router(state: AppState) -> Router {
@@ -509,7 +513,10 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/", get(crate::dashboard::dashboard_handler))
+        .route("/dashboard", get(dashboard_redirect))
+        .route("/dashboard/", get(dashboard_redirect))
         .route("/api/health", get(health))
+        .route("/health", get(health))
         .route("/api/config", get(get_config).put(update_config))
         .route("/api/config/capabilities", get(get_config_capabilities))
         .route("/api/config/status", get(get_config_apply_status))

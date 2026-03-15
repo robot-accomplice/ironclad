@@ -114,18 +114,17 @@ impl EmailAdapter {
         self
     }
 
-    /// Check if a sender is in the allowed list.
+    /// Check if a sender is in the allowed list (case-insensitive for email).
     ///
     /// When `deny_on_empty` is `true`, an empty list rejects all senders (secure default).
     /// When `deny_on_empty` is `false`, an empty list allows all senders (legacy behavior).
     pub fn is_sender_allowed(&self, sender: &str) -> bool {
-        if self.allowed_senders.is_empty() {
-            return !self.deny_on_empty;
-        }
-        let sender_lower = sender.to_lowercase();
-        self.allowed_senders
+        let lower: Vec<String> = self
+            .allowed_senders
             .iter()
-            .any(|s| s.to_lowercase() == sender_lower)
+            .map(|s| s.to_lowercase())
+            .collect();
+        crate::allowlist::check_allowlist(&lower, &sender.to_lowercase(), self.deny_on_empty)
     }
 
     /// Parse a raw email into an InboundMessage.
@@ -373,11 +372,8 @@ pub fn parse_email_rfc5322(
 
 /// Static sender-allowed check (no &self needed — usable from free functions).
 fn is_sender_allowed_static(sender: &str, allowed: &[String], deny_on_empty: bool) -> bool {
-    if allowed.is_empty() {
-        return !deny_on_empty;
-    }
-    let sender_lower = sender.to_lowercase();
-    allowed.iter().any(|s| s.to_lowercase() == sender_lower)
+    let lower: Vec<String> = allowed.iter().map(|s| s.to_lowercase()).collect();
+    crate::allowlist::check_allowlist(&lower, &sender.to_lowercase(), deny_on_empty)
 }
 
 /// Rough HTML tag stripping for text/html fallback.

@@ -1,5 +1,5 @@
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct TransactionRecord {
@@ -49,7 +49,7 @@ pub fn record_inference_cost(
             turn_id
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 
@@ -80,7 +80,7 @@ pub fn record_transaction_with_metadata(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![id, tx_type, amount, currency, counterparty, tx_hash, metadata_json],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 
@@ -96,7 +96,7 @@ pub fn query_transactions(db: &Database, hours: i64) -> Result<Vec<TransactionRe
              WHERE created_at >= datetime('now', ?1) \
              ORDER BY created_at DESC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let offset = format!("-{hours} hours");
     let rows = stmt
@@ -112,10 +112,9 @@ pub fn query_transactions(db: &Database, hours: i64) -> Result<Vec<TransactionRe
                 created_at: row.get(7)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 /// Sum transaction amounts within the given time window (in hours).
@@ -131,7 +130,7 @@ pub fn sum_transaction_amounts(db: &Database, hours: i64) -> Result<f64> {
             [&offset],
             |row| row.get(0),
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(total)
 }
 
@@ -147,12 +146,12 @@ pub fn recent_quality_scores(db: &Database, limit: i64) -> Result<Vec<(String, f
              WHERE quality_score IS NOT NULL \
              ORDER BY created_at DESC, rowid DESC LIMIT ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows: Vec<(String, f64)> = stmt
         .query_map(rusqlite::params![limit], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .db_err()?
         .filter_map(|r| {
             r.inspect_err(|e| tracing::warn!(error = %e, "metrics: skipping malformed cost row"))
                 .ok()
@@ -171,7 +170,7 @@ pub fn record_metric_snapshot(db: &Database, metrics_json: &str) -> Result<Strin
         "INSERT INTO metric_snapshots (id, metrics_json) VALUES (?1, ?2)",
         rusqlite::params![id, metrics_json],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 

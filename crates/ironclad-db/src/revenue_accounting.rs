@@ -1,5 +1,5 @@
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 
 #[derive(Debug, Clone, Default)]
 pub struct RevenueAccountingSummary {
@@ -45,7 +45,7 @@ pub fn revenue_accounting_summary(db: &Database) -> Result<RevenueAccountingSumm
             })
         },
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 pub fn revenue_swap_queue_summary(db: &Database) -> Result<RevenueSwapQueueSummary> {
@@ -56,7 +56,7 @@ pub fn revenue_swap_queue_summary(db: &Database) -> Result<RevenueSwapQueueSumma
             [],
             |row| row.get(0),
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     if tasks_exists == 0 {
         return Ok(RevenueSwapQueueSummary::default());
     }
@@ -82,7 +82,7 @@ pub fn revenue_swap_queue_summary(db: &Database) -> Result<RevenueSwapQueueSumma
             })
         },
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 #[cfg(test)]

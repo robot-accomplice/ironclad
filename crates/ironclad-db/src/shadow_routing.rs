@@ -5,9 +5,9 @@
 //! without affecting live routing. Agreement rate and regret analysis run
 //! against this data to decide when (if ever) to promote the ML model.
 
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::Result;
 
-use crate::Database;
+use crate::{Database, DbResultExt};
 
 /// A single shadow routing prediction row.
 #[derive(Debug, Clone)]
@@ -49,7 +49,7 @@ pub fn record_shadow_prediction(db: &Database, row: &ShadowPredictionRow) -> Res
             row.created_at,
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -93,7 +93,7 @@ pub fn shadow_agreement_summary(
         .query_row(sql, rusqlite::params_from_iter(params.iter()), |r| {
             Ok((r.get::<_, usize>(0)?, r.get::<_, usize>(1)?))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let disagreed = total.saturating_sub(agreed);
     let agreement_rate = if total > 0 {
@@ -122,7 +122,7 @@ pub fn recent_shadow_predictions(db: &Database, limit: usize) -> Result<Vec<Shad
              ORDER BY created_at DESC
              LIMIT ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map(rusqlite::params![limit as i64], |r| {
@@ -138,11 +138,11 @@ pub fn recent_shadow_predictions(db: &Database, limit: usize) -> Result<Vec<Shad
                 created_at: r.get(8)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let mut results = Vec::new();
     for row in rows {
-        results.push(row.map_err(|e| IroncladError::Database(e.to_string()))?);
+        results.push(row.db_err()?);
     }
     Ok(results)
 }
@@ -158,7 +158,7 @@ pub fn prune_shadow_predictions(db: &Database, retention_days: u32) -> Result<us
              WHERE created_at < datetime('now', ?1)",
             [format!("-{retention_days} days")],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(deleted)
 }
 
@@ -190,9 +190,7 @@ pub fn disagreement_pairs(
         )
     };
 
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let mut stmt = conn.prepare(sql).db_err()?;
 
     let rows = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |r| {
@@ -202,11 +200,11 @@ pub fn disagreement_pairs(
                 r.get::<_, usize>(2)?,
             ))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let mut results = Vec::new();
     for row in rows {
-        results.push(row.map_err(|e| IroncladError::Database(e.to_string()))?);
+        results.push(row.db_err()?);
     }
     Ok(results)
 }

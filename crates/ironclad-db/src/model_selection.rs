@@ -1,7 +1,7 @@
 use ironclad_core::{IroncladError, Result};
 use rusqlite::OptionalExtension;
 
-use crate::Database;
+use crate::{Database, DbResultExt};
 
 /// Current routing feature schema version. Bump when feature extraction or
 /// scoring logic changes to invalidate historical reproducibility.
@@ -76,7 +76,7 @@ pub fn get_model_selection_by_turn_id(
              ORDER BY created_at DESC
              LIMIT 1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let row = stmt
         .query_row(rusqlite::params![turn_id], |r| {
             Ok(ModelSelectionEventRow {
@@ -100,7 +100,7 @@ pub fn get_model_selection_by_turn_id(
             })
         })
         .optional()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(row)
 }
 
@@ -118,7 +118,7 @@ pub fn list_model_selection_events(
              ORDER BY created_at DESC
              LIMIT ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map(rusqlite::params![limit as i64], |r| {
             Ok(ModelSelectionEventRow {
@@ -141,9 +141,9 @@ pub fn list_model_selection_events(
                 features_json: r.get(16)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .db_err()?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(rows)
 }
 
@@ -167,16 +167,14 @@ pub fn attribution_breakdown(db: &Database, since: Option<&str>) -> Result<Vec<(
             vec![],
         ),
     };
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let mut stmt = conn.prepare(sql).db_err()?;
     let rows = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .db_err()?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(rows)
 }
 

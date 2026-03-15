@@ -45,6 +45,7 @@ pub async fn cmd_logs(
     lines: usize,
     follow: bool,
     level: &str,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
@@ -97,6 +98,10 @@ pub async fn cmd_logs(
         match resp {
             Ok(r) if r.status().is_success() => {
                 let body: serde_json::Value = r.json().await.unwrap_or_default();
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&body)?);
+                    return Ok(());
+                }
                 if let Some(entries) = body.get("entries").and_then(|v| v.as_array()) {
                     if entries.is_empty() {
                         println!("  No log entries found.");

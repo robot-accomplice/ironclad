@@ -119,23 +119,79 @@ pub fn parse_and_validate_file(path: &Path) -> Result<IroncladConfig, ConfigRunt
     parse_and_validate_toml(&content)
 }
 
-pub fn backup_config_file(path: &Path) -> Result<Option<PathBuf>, ConfigRuntimeError> {
+pub fn backup_config_file(
+    path: &Path,
+    max_count: usize,
+    max_age_days: u32,
+) -> Result<Option<PathBuf>, ConfigRuntimeError> {
     if !path.exists() {
         return Ok(None);
     }
     let parent = path
         .parent()
         .ok_or_else(|| ConfigRuntimeError::MissingParent(path.to_path_buf()))?;
-    std::fs::create_dir_all(parent)?;
+    let backup_dir = parent.join("backups");
+    std::fs::create_dir_all(&backup_dir)?;
     let stamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
     let file_name = path
         .file_name()
         .and_then(|v| v.to_str())
         .unwrap_or("ironclad.toml");
     let backup_name = format!("{file_name}.bak.{stamp}");
-    let backup_path = parent.join(backup_name);
+    let backup_path = backup_dir.join(backup_name);
     std::fs::copy(path, &backup_path)?;
+    let prefix = format!("{file_name}.bak.");
+    prune_old_backups(&backup_dir, &prefix, max_count, max_age_days);
     Ok(Some(backup_path))
+}
+
+/// Remove old config backups by count and age.
+///
+/// - `max_count = 0`: skip count-based pruning (only age-based).
+/// - `max_age_days = 0`: skip age-based pruning (only count-based).
+fn prune_old_backups(backup_dir: &Path, prefix: &str, max_count: usize, max_age_days: u32) {
+    let mut backups: Vec<PathBuf> = std::fs::read_dir(backup_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(prefix))
+        })
+        .map(|e| e.path())
+        .collect();
+
+    // Sort by name ascending — the timestamp suffix is ISO-8601 so
+    // lexicographic order == chronological order (oldest first).
+    backups.sort();
+
+    // Age-based pruning: remove backups older than max_age_days.
+    if max_age_days > 0 {
+        let cutoff = Utc::now() - chrono::Duration::days(i64::from(max_age_days));
+        let cutoff_stamp = cutoff.format("%Y%m%dT%H%M%S%.3fZ").to_string();
+        backups.retain(|p| {
+            let dominated_by_age = p
+                .file_name()
+                .and_then(|f| f.to_str())
+                .and_then(|name| name.strip_prefix(prefix))
+                .is_some_and(|ts| ts < cutoff_stamp.as_str());
+            if dominated_by_age {
+                let _ = std::fs::remove_file(p);
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    // Count-based pruning: keep only the newest max_count.
+    if max_count > 0 && backups.len() > max_count {
+        let to_remove = backups.len() - max_count;
+        for path in backups.into_iter().take(to_remove) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Recursively normalize Windows backslash paths to forward slashes in JSON
@@ -218,7 +274,11 @@ pub async fn apply_runtime_config(
 ) -> Result<RuntimeApplyReport, ConfigRuntimeError> {
     let config_path = state.config_path.as_ref().clone();
     let old_config = state.config.read().await.clone();
-    let backup_path = backup_config_file(&config_path)?;
+    let backup_path = backup_config_file(
+        &config_path,
+        old_config.backups.max_count,
+        old_config.backups.max_age_days,
+    )?;
     write_config_atomic(&config_path, &updated)?;
 
     // Only settings that genuinely require a process restart belong here.
@@ -329,12 +389,14 @@ primary = "ollama/qwen3:8b"
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("ironclad.toml");
         std::fs::write(&path, test_config()).expect("seed config");
-        let backup = backup_config_file(&path)
+        let backup = backup_config_file(&path, 10, 30)
             .expect("backup ok")
             .expect("backup path");
         assert!(backup.exists());
         let name = backup.file_name().and_then(|v| v.to_str()).unwrap_or("");
         assert!(name.starts_with("ironclad.toml.bak."));
+        // Verify backup is in the backups/ subdirectory
+        assert!(backup.parent().unwrap().ends_with("backups"));
     }
 
     #[test]
@@ -476,7 +538,7 @@ primary = "ollama/qwen3:8b"
     fn backup_config_file_returns_none_for_missing_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("does_not_exist.toml");
-        let result = backup_config_file(&path).expect("ok");
+        let result = backup_config_file(&path, 10, 30).expect("ok");
         assert!(result.is_none());
     }
 
@@ -493,5 +555,87 @@ primary = "ollama/qwen3:8b"
     fn parse_and_validate_file_errors_for_missing_file() {
         let err = parse_and_validate_file(std::path::Path::new("/nonexistent/file.toml"));
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn prune_old_backups_keeps_newest_by_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        // Create 15 backups with lexicographically ordered timestamps.
+        for i in 0..15 {
+            let name = format!("test.toml.bak.20260301T12{i:02}00.000Z");
+            std::fs::write(backup_dir.join(&name), "").unwrap();
+        }
+
+        // max_age_days=0 disables age pruning; only count-based.
+        prune_old_backups(&backup_dir, "test.toml.bak.", 10, 0);
+
+        let remaining: Vec<_> = std::fs::read_dir(&backup_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_str().unwrap_or("").contains(".bak."))
+            .collect();
+
+        assert_eq!(remaining.len(), 10);
+    }
+
+    #[test]
+    fn prune_old_backups_removes_old_by_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        // Create backups: 5 from 60 days ago (should be pruned with max_age_days=30)
+        // and 5 from today (should be kept).
+        let old_date = (Utc::now() - chrono::Duration::days(60))
+            .format("%Y%m%dT%H%M%S%.3fZ")
+            .to_string();
+        let new_date = Utc::now().format("%Y%m%dT%H%M%S%.3fZ").to_string();
+
+        for i in 0..5 {
+            // Old backups — tweak last digit so they're unique.
+            let name = format!("cfg.toml.bak.{old_date}{i}");
+            std::fs::write(backup_dir.join(&name), "").unwrap();
+        }
+        for i in 0..5 {
+            let name = format!("cfg.toml.bak.{new_date}{i}");
+            std::fs::write(backup_dir.join(&name), "").unwrap();
+        }
+
+        // max_count=0 disables count pruning; only age-based (30 days).
+        prune_old_backups(&backup_dir, "cfg.toml.bak.", 0, 30);
+
+        let remaining: Vec<_> = std::fs::read_dir(&backup_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_str().unwrap_or("").contains(".bak."))
+            .collect();
+
+        assert_eq!(remaining.len(), 5, "only recent backups should remain");
+    }
+
+    #[test]
+    fn prune_old_backups_both_criteria() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+
+        // Create 12 recent backups — count pruning should reduce to 5.
+        for i in 0..12 {
+            let name = format!("t.toml.bak.20260315T00{i:02}00.000Z");
+            std::fs::write(backup_dir.join(&name), "").unwrap();
+        }
+
+        prune_old_backups(&backup_dir, "t.toml.bak.", 5, 30);
+
+        let remaining: Vec<_> = std::fs::read_dir(&backup_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_str().unwrap_or("").contains(".bak."))
+            .collect();
+
+        assert_eq!(remaining.len(), 5);
     }
 }

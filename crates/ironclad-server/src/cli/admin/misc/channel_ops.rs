@@ -1,4 +1,4 @@
-pub async fn cmd_circuit_status(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_circuit_status(url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
@@ -6,6 +6,10 @@ pub async fn cmd_circuit_status(url: &str) -> Result<(), Box<dyn std::error::Err
         IroncladClient::check_connectivity_hint(&*e);
         e
     })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
 
     heading("Circuit Breaker Status");
 
@@ -138,10 +142,14 @@ pub async fn cmd_agent_stop(base_url: &str, id: &str) -> Result<(), Box<dyn std:
     Ok(())
 }
 
-pub async fn cmd_agents_list(base_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_agents_list(base_url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let client = super::http_client()?;
     let resp = client.get(format!("{base_url}/api/agents")).send().await?;
     let body: serde_json::Value = resp.json().await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
 
     let agents = body
         .get("agents")
@@ -170,12 +178,21 @@ pub async fn cmd_agents_list(base_url: &str) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-pub async fn cmd_channels_status(base_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_channels_status(
+    base_url: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let resp = super::http_client()?
         .get(format!("{base_url}/api/channels/status"))
         .send()
         .await?;
-    let channels: Vec<serde_json::Value> = resp.json().await?;
+    let body: serde_json::Value = resp.json().await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
+    let channels: Vec<serde_json::Value> =
+        serde_json::from_value(body).unwrap_or_default();
 
     if channels.is_empty() {
         println!("  No channels configured.");
@@ -214,12 +231,17 @@ pub async fn cmd_channels_status(base_url: &str) -> Result<(), Box<dyn std::erro
 pub async fn cmd_channels_dead_letter(
     base_url: &str,
     limit: usize,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resp = super::http_client()?
         .get(format!("{base_url}/api/channels/dead-letter?limit={limit}"))
         .send()
         .await?;
     let body: serde_json::Value = resp.json().await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
     let items = body
         .get("items")
         .and_then(|v| v.as_array())

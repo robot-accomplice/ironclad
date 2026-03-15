@@ -1,5 +1,5 @@
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 
@@ -93,15 +93,15 @@ pub fn normalize_task_sources_in_db(db: &Database) -> Result<i64> {
     let conn = db.conn();
     let mut stmt = conn
         .prepare("SELECT id, source FROM tasks WHERE source IS NOT NULL AND trim(source) != ''")
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let mut updated = 0i64;
     for row in rows {
-        let (id, source) = row.map_err(|e| IroncladError::Database(e.to_string()))?;
+        let (id, source) = row.db_err()?;
         let normalized = canonical_task_source_json(Some(&source));
         if normalized.as_deref() != Some(source.trim()) {
             updated += conn
@@ -109,7 +109,7 @@ pub fn normalize_task_sources_in_db(db: &Database) -> Result<i64> {
                     "UPDATE tasks SET source = ?2 WHERE id = ?1",
                     rusqlite::params![id, normalized],
                 )
-                .map_err(|e| IroncladError::Database(e.to_string()))? as i64;
+                .db_err()? as i64;
         }
     }
     Ok(updated)
@@ -119,13 +119,11 @@ pub fn count_task_sources_needing_normalization(db: &Database) -> Result<i64> {
     let conn = db.conn();
     let mut stmt = conn
         .prepare("SELECT source FROM tasks WHERE source IS NOT NULL AND trim(source) != ''")
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0)).db_err()?;
     let mut count = 0i64;
     for row in rows {
-        let source = row.map_err(|e| IroncladError::Database(e.to_string()))?;
+        let source = row.db_err()?;
         let normalized = canonical_task_source_json(Some(&source));
         if normalized.as_deref() != Some(source.trim()) {
             count += 1;
@@ -142,16 +140,16 @@ pub fn classify_open_tasks(db: &Database) -> Result<(i64, i64)> {
              FROM tasks \
              WHERE lower(status) IN ('pending','in_progress')",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let mut revenue_like = 0i64;
     let mut obvious_noise = 0i64;
     for row in rows {
-        let (title, source_raw) = row.map_err(|e| IroncladError::Database(e.to_string()))?;
+        let (title, source_raw) = row.db_err()?;
         let source = normalize_task_source_value(source_raw.as_deref());
         if task_is_revenue_like(&title, &source) {
             revenue_like += 1;
@@ -172,15 +170,15 @@ pub fn count_stale_revenue_tasks(db: &Database) -> Result<i64> {
              WHERE lower(status) = 'in_progress' \
                AND datetime(COALESCE(updated_at, created_at)) < datetime('now','-24 hours')",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let mut count = 0i64;
     for row in rows {
-        let (title, source_raw) = row.map_err(|e| IroncladError::Database(e.to_string()))?;
+        let (title, source_raw) = row.db_err()?;
         let source = normalize_task_source_value(source_raw.as_deref());
         if task_is_revenue_like(&title, &source) && !source.to_string().contains("revenue_swap") {
             count += 1;
@@ -198,7 +196,7 @@ pub fn mark_stale_revenue_tasks_needs_review(db: &Database) -> Result<i64> {
              WHERE lower(status) = 'in_progress' \
                AND datetime(COALESCE(updated_at, created_at)) < datetime('now','-24 hours')",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map([], |row| {
             Ok((
@@ -207,10 +205,10 @@ pub fn mark_stale_revenue_tasks_needs_review(db: &Database) -> Result<i64> {
                 row.get::<_, Option<String>>(2)?,
             ))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let mut updated = 0i64;
     for row in rows {
-        let (id, title, source_raw) = row.map_err(|e| IroncladError::Database(e.to_string()))?;
+        let (id, title, source_raw) = row.db_err()?;
         let source = normalize_task_source_value(source_raw.as_deref());
         if task_is_revenue_like(&title, &source) && !source.to_string().contains("revenue_swap") {
             updated += conn
@@ -218,7 +216,7 @@ pub fn mark_stale_revenue_tasks_needs_review(db: &Database) -> Result<i64> {
                     "UPDATE tasks SET status = 'needs_review', updated_at = datetime('now') WHERE id = ?1",
                     [id],
                 )
-                .map_err(|e| IroncladError::Database(e.to_string()))? as i64;
+                .db_err()? as i64;
         }
     }
     Ok(updated)
@@ -232,7 +230,7 @@ pub fn dismiss_obvious_noise_tasks(db: &Database) -> Result<i64> {
              FROM tasks \
              WHERE lower(status) IN ('pending','in_progress')",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let rows = stmt
         .query_map([], |row| {
             Ok((
@@ -241,10 +239,10 @@ pub fn dismiss_obvious_noise_tasks(db: &Database) -> Result<i64> {
                 row.get::<_, Option<String>>(2)?,
             ))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let mut updated = 0i64;
     for row in rows {
-        let (id, title, source_raw) = row.map_err(|e| IroncladError::Database(e.to_string()))?;
+        let (id, title, source_raw) = row.db_err()?;
         let source = normalize_task_source_value(source_raw.as_deref());
         if task_is_obvious_noise(&title, &source) {
             updated += conn
@@ -252,7 +250,7 @@ pub fn dismiss_obvious_noise_tasks(db: &Database) -> Result<i64> {
                     "UPDATE tasks SET status = 'dismissed', updated_at = datetime('now') WHERE id = ?1",
                     [id],
                 )
-                .map_err(|e| IroncladError::Database(e.to_string()))? as i64;
+                .db_err()? as i64;
         }
     }
     Ok(updated)
@@ -265,7 +263,7 @@ pub fn get_task_source(db: &Database, id: &str) -> Result<Option<Value>> {
             row.get::<_, Option<String>>(0)
         })
         .optional()
-        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .db_err()?
         .flatten();
     Ok(Some(normalize_task_source_value(source.as_deref())).filter(|v| !v.is_null()))
 }

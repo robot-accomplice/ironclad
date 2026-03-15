@@ -16,7 +16,6 @@ pub struct ScriptResult {
 pub struct ScriptRunner {
     config: SkillsConfig,
     // Used in the macOS sandbox-exec path (`#[cfg(target_os = "macos")]`).
-    #[allow(dead_code)]
     fs_security: FilesystemSecurityConfig,
 }
 
@@ -511,11 +510,9 @@ pub fn check_interpreter(script_path: &Path, allowed: &[String]) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::EnvGuard;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn test_config() -> SkillsConfig {
         SkillsConfig {
@@ -832,10 +829,10 @@ mod tests {
         );
     }
 
-    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn sandbox_env_strips_secrets() {
-        let _env_guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let _guard = EnvGuard::set("OPENAI_API_KEY", "top-secret-test-value");
+
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("print_secret.sh");
         fs::write(
@@ -844,12 +841,6 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-
-        // This variable should never leak to script env when sandbox_env=true.
-        // SAFETY: test-only env mutation is serialized via ENV_LOCK.
-        unsafe {
-            std::env::set_var("OPENAI_API_KEY", "top-secret-test-value");
-        }
 
         let mut cfg = test_config();
         cfg.sandbox_env = true;
@@ -866,10 +857,6 @@ mod tests {
             "MISSING",
             "sandboxed script must not inherit secret env vars"
         );
-        // SAFETY: test-only env mutation is serialized via ENV_LOCK.
-        unsafe {
-            std::env::remove_var("OPENAI_API_KEY");
-        }
     }
 
     #[test]
@@ -897,10 +884,8 @@ mod tests {
         );
     }
 
-    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn sandbox_exposes_workspace_env_vars() {
-        let _env_guard = ENV_LOCK.lock().expect("env lock poisoned");
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("check_ws.sh");
@@ -937,10 +922,11 @@ mod tests {
         );
     }
 
-    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn sandbox_env_keeps_minimal_runtime_vars_only() {
-        let _env_guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let _g1 = EnvGuard::set("SECRET_TOKEN", "definitely-secret");
+        let _g2 = EnvGuard::set("LANG", "en_US.UTF-8");
+
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("print_env_subset.sh");
         fs::write(
@@ -949,12 +935,6 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-
-        // SAFETY: test-only env mutation is serialized via ENV_LOCK.
-        unsafe {
-            std::env::set_var("SECRET_TOKEN", "definitely-secret");
-            std::env::set_var("LANG", "en_US.UTF-8");
-        }
 
         let mut cfg = test_config();
         cfg.sandbox_env = true;
@@ -974,11 +954,6 @@ mod tests {
             result.stdout.ends_with("TOKEN=MISSING"),
             "non-allowlisted secrets must not be present"
         );
-        // SAFETY: test-only env mutation is serialized via ENV_LOCK.
-        unsafe {
-            std::env::remove_var("SECRET_TOKEN");
-            std::env::remove_var("LANG");
-        }
     }
 
     #[cfg(target_os = "macos")]

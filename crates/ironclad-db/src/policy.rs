@@ -1,5 +1,5 @@
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 
 #[derive(Debug, Clone)]
 pub struct PolicyRecord {
@@ -28,7 +28,7 @@ pub fn record_policy_decision(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![id, turn_id, tool_name, decision, rule_name, reason],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(id)
 }
 
@@ -39,7 +39,7 @@ pub fn get_decisions_for_turn(db: &Database, turn_id: &str) -> Result<Vec<Policy
             "SELECT id, turn_id, tool_name, decision, rule_name, reason, context_json, created_at \
              FROM policy_decisions WHERE turn_id = ?1 ORDER BY created_at ASC",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([turn_id], |row| {
@@ -54,10 +54,9 @@ pub fn get_decisions_for_turn(db: &Database, turn_id: &str) -> Result<Vec<Policy
                 created_at: row.get(7)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 #[cfg(test)]

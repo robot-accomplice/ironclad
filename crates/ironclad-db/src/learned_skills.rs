@@ -4,9 +4,9 @@
 //! and synthesizes reusable skill documents.  This module tracks those learned
 //! skills and their reinforcement history (success/failure counts, priority).
 
-use crate::Database;
+use crate::{Database, DbResultExt};
 use chrono::Utc;
-use ironclad_core::{IroncladError, Result};
+use ironclad_core::Result;
 use rusqlite::OptionalExtension;
 
 // ── Record type ────────────────────────────────────────────────
@@ -61,7 +61,7 @@ pub fn store_learned_skill(
              updated_at       = ?7",
         rusqlite::params![id, name, description, trigger_tools, steps_json, source_session_id, now],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
     // Return the actual persisted id (the upsert may have kept the original row's id).
     let persisted_id: String = conn
@@ -70,7 +70,7 @@ pub fn store_learned_skill(
             [name],
             |r| r.get(0),
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(persisted_id)
 }
 
@@ -86,7 +86,7 @@ pub fn get_learned_skill_by_name(db: &Database, name: &str) -> Result<Option<Lea
         row_to_record,
     )
     .optional()
-    .map_err(|e| IroncladError::Database(e.to_string()))
+    .db_err()
 }
 
 /// List learned skills ordered by priority descending.
@@ -98,14 +98,11 @@ pub fn list_learned_skills(db: &Database, limit: usize) -> Result<Vec<LearnedSki
                     success_count, failure_count, priority, skill_md_path, created_at, updated_at \
              FROM learned_skills ORDER BY priority DESC LIMIT ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    let rows = stmt
-        .query_map([limit as i64], row_to_record)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let rows = stmt.query_map([limit as i64], row_to_record).db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 // ── Reinforcement ──────────────────────────────────────────────
@@ -117,7 +114,7 @@ pub fn record_learned_skill_success(db: &Database, name: &str) -> Result<()> {
          updated_at = datetime('now') WHERE name = ?1",
         [name],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -128,7 +125,7 @@ pub fn record_learned_skill_failure(db: &Database, name: &str) -> Result<()> {
          updated_at = datetime('now') WHERE name = ?1",
         [name],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -140,7 +137,7 @@ pub fn update_learned_skill_priority(db: &Database, name: &str, new_priority: i6
         "UPDATE learned_skills SET priority = ?1, updated_at = datetime('now') WHERE name = ?2",
         rusqlite::params![new_priority, name],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -152,7 +149,7 @@ pub fn set_learned_skill_md_path(db: &Database, name: &str, path: &str) -> Resul
         "UPDATE learned_skills SET skill_md_path = ?1, updated_at = datetime('now') WHERE name = ?2",
         rusqlite::params![path, name],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -176,11 +173,11 @@ pub fn find_dead_learned_skills(
     let conn = db.conn();
     let mut stmt = conn
         .prepare("SELECT name, skill_md_path FROM learned_skills WHERE priority <= ?1")
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let dead: Vec<(String, Option<String>)> = stmt
         .query_map([threshold], |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(|e| IroncladError::Database(e.to_string()))?
+        .db_err()?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -203,8 +200,7 @@ pub fn delete_learned_skills_by_names(db: &Database, names: &[String]) -> Result
         .iter()
         .map(|n| n as &dyn rusqlite::types::ToSql)
         .collect();
-    conn.execute(&sql, params.as_slice())
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    conn.execute(&sql, params.as_slice()).db_err()?;
     Ok(())
 }
 
@@ -232,7 +228,7 @@ pub fn count_learned_skills(db: &Database) -> Result<usize> {
     let conn = db.conn();
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM learned_skills", [], |r| r.get(0))
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(count as usize)
 }
 

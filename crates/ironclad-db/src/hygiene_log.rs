@@ -5,8 +5,8 @@
 //! time-series that the mechanic can query for forensics ("when did that skill
 //! disappear?") and that a future auto-tuner can use as training data.
 
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 
 /// Snapshot of a single hygiene sweep, suitable for trend analysis.
 #[derive(Debug, Clone)]
@@ -61,7 +61,7 @@ pub fn log_hygiene_sweep(db: &Database, input: &HygieneSweepInput) -> Result<()>
             input.avg_skill_priority,
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -75,7 +75,7 @@ pub fn recent_hygiene_log(db: &Database, limit: usize) -> Result<Vec<HygieneLogE
                     skills_total, skills_dead, skills_pruned, avg_skill_priority \
              FROM hygiene_log ORDER BY sweep_at DESC LIMIT ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let rows = stmt
         .query_map([limit as i64], |row| {
@@ -93,10 +93,9 @@ pub fn recent_hygiene_log(db: &Database, limit: usize) -> Result<Vec<HygieneLogE
                 avg_skill_priority: row.get(10)?,
             })
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| IroncladError::Database(e.to_string()))
+    rows.collect::<std::result::Result<Vec<_>, _>>().db_err()
 }
 
 // ── Tests ──────────────────────────────────────────────────────

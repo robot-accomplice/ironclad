@@ -33,12 +33,19 @@ fn detect_source(source: &str) -> InstallSource {
 
 // ── Plugin listing ────────────────────────────────────────────
 
-pub async fn cmd_plugins_list(base_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_plugins_list(
+    base_url: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let resp = super::http_client()?
         .get(format!("{base_url}/api/plugins"))
         .send()
         .await?;
     let body: serde_json::Value = resp.json().await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
 
     let plugins = body
         .get("plugins")
@@ -76,7 +83,11 @@ pub async fn cmd_plugins_list(base_url: &str) -> Result<(), Box<dyn std::error::
 
 // ── Plugin info ─────────────────────────────────────────────
 
-pub async fn cmd_plugin_info(base_url: &str, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_plugin_info(
+    base_url: &str,
+    name: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (_dim, bold, _accent, green, yellow, red, _cyan, reset, _mono) = colors();
     let (ok, _action, _warn, _detail, _err_icon) = icons();
     let resp = super::http_client()?
@@ -84,6 +95,10 @@ pub async fn cmd_plugin_info(base_url: &str, name: &str) -> Result<(), Box<dyn s
         .send()
         .await?;
     let body: serde_json::Value = resp.json().await.unwrap_or_default();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
     let plugins: Vec<serde_json::Value> = body
         .get("plugins")
         .and_then(|v| v.as_array())

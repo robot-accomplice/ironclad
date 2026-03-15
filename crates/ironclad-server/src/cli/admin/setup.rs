@@ -741,39 +741,7 @@ pub fn cmd_setup() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
-    use std::sync::{Mutex, OnceLock};
-
-    struct EnvGuard {
-        key: &'static str,
-        old: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let old = std::env::var_os(key);
-            // SAFETY: test-scoped environment mutation restored on Drop.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.old {
-                // SAFETY: restoring previous process env value.
-                unsafe { std::env::set_var(self.key, v) };
-            } else {
-                // SAFETY: restoring previous process env value.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
-    }
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    use crate::test_support::EnvGuard;
 
     #[test]
     fn write_starter_skills_is_idempotent() {
@@ -809,7 +777,6 @@ mod tests {
 
     #[test]
     fn has_hf_model_cache_detects_models_directory() {
-        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let hf_home = dir.path().join(".cache").join("huggingface");
         let hub = hf_home.join("hub");
@@ -821,7 +788,6 @@ mod tests {
 
     #[test]
     fn has_hf_model_cache_false_when_unset_or_empty() {
-        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let hf_home = dir.path().join("empty_hf");
         std::fs::create_dir_all(&hf_home).unwrap();

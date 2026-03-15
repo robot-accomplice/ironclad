@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Database;
-use ironclad_core::{IroncladError, Result};
+use crate::{Database, DbResultExt};
+use ironclad_core::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryImpact {
@@ -245,9 +245,7 @@ pub fn compute_efficiency(
          ORDER BY total_cost DESC"
     );
 
-    let mut stmt = conn
-        .prepare(&main_sql)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let mut stmt = conn.prepare(&main_sql).db_err()?;
 
     let map_row = |row: &rusqlite::Row| -> rusqlite::Result<RawModelRow> {
         Ok(RawModelRow {
@@ -267,9 +265,9 @@ pub fn compute_efficiency(
     } else {
         stmt.query_map([], map_row)
     }
-    .map_err(|e| IroncladError::Database(e.to_string()))?
+    .db_err()?
     .collect::<std::result::Result<Vec<_>, _>>()
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
     // ── Time-series (daily buckets) ──────────────────────────
     let ts_sql = format!(
@@ -286,9 +284,7 @@ pub fn compute_efficiency(
          ORDER BY bucket"
     );
 
-    let mut ts_stmt = conn
-        .prepare(&ts_sql)
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let mut ts_stmt = conn.prepare(&ts_sql).db_err()?;
 
     let ts_map = |row: &rusqlite::Row| -> rusqlite::Result<TimeSeriesPoint> {
         Ok(TimeSeriesPoint {
@@ -307,9 +303,9 @@ pub fn compute_efficiency(
     } else {
         ts_stmt.query_map([], ts_map)
     }
-    .map_err(|e| IroncladError::Database(e.to_string()))?
+    .db_err()?
     .collect::<std::result::Result<Vec<_>, _>>()
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
 
     // ── Build per-model trend data from time series ──────────
     let mut model_ts: HashMap<String, Vec<&TimeSeriesPoint>> = HashMap::new();
@@ -542,7 +538,7 @@ pub fn build_user_profile(db: &Database, period: &str) -> Result<RecommendationU
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let (total_turns, total_cost, avg_tokens_per_turn, cache_hit_rate): (i64, f64, f64, f64) = conn
         .query_row(
@@ -560,7 +556,7 @@ pub fn build_user_profile(db: &Database, period: &str) -> Result<RecommendationU
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let mut model_stmt = conn
         .prepare(&format!(
@@ -577,7 +573,7 @@ pub fn build_user_profile(db: &Database, period: &str) -> Result<RecommendationU
              GROUP BY model \
              ORDER BY turns DESC"
         ))
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let mut models_used = Vec::new();
     let mut model_stats = HashMap::new();
@@ -592,11 +588,10 @@ pub fn build_user_profile(db: &Database, period: &str) -> Result<RecommendationU
                 row.get::<_, Option<f64>>(4)?,
             ))
         })
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     for row in rows {
-        let (model, turns, avg_cost, cache_rate, avg_density) =
-            row.map_err(|e| IroncladError::Database(e.to_string()))?;
+        let (model, turns, avg_cost, cache_rate, avg_density) = row.db_err()?;
         models_used.push(model.clone());
         model_stats.insert(
             model,
@@ -621,7 +616,7 @@ pub fn build_user_profile(db: &Database, period: &str) -> Result<RecommendationU
             [],
             |row| row.get(0),
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let (graded_turns, avg_quality): (i64, Option<f64>) = conn
         .query_row(

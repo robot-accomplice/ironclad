@@ -1,37 +1,5 @@
     use super::*;
-    use std::ffi::OsString;
-    use std::sync::{Mutex, OnceLock};
-
-    struct EnvGuard {
-        key: &'static str,
-        old: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let old = std::env::var_os(key);
-            // SAFETY: test-local environment mutation restored on Drop.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(v) = &self.old {
-                // SAFETY: restoring previous process env value.
-                unsafe { std::env::set_var(self.key, v) };
-            } else {
-                // SAFETY: restoring previous process env value.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
-    }
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    use crate::test_support::EnvGuard;
     #[test]
     fn path_contains_dir_and_go_bin_detection() {
         let dir = tempfile::tempdir().unwrap();

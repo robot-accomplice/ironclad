@@ -151,7 +151,7 @@ fn parse_iso(s: &str) -> Option<NaiveDateTime> {
         .or_else(|| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
 }
 
-#[allow(dead_code)] // convenience wrapper — will be used when cron scheduler is wired
+#[cfg(test)]
 fn split_schedule_timezone(schedule: &str) -> (FixedOffset, &str) {
     split_schedule_timezone_at(schedule, Utc::now())
 }
@@ -169,7 +169,7 @@ fn split_schedule_timezone_at(schedule: &str, at: DateTime<Utc>) -> (FixedOffset
     (zero_offset(), schedule)
 }
 
-#[allow(dead_code)] // convenience wrapper — will be used when cron scheduler is wired
+#[cfg(test)]
 fn parse_timezone(raw: &str) -> Option<FixedOffset> {
     parse_timezone_at(raw, Utc::now())
 }

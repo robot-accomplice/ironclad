@@ -4,7 +4,7 @@ use ironclad_core::IroncladConfig;
 
 // ── Config (show from API) ────────────────────────────────────
 
-pub async fn cmd_config(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_config(url: &str, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
@@ -12,6 +12,10 @@ pub async fn cmd_config(url: &str) -> Result<(), Box<dyn std::error::Error>> {
         IroncladClient::check_connectivity_hint(&*e);
         e
     })?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
 
     heading("Configuration");
 
@@ -287,7 +291,12 @@ pub fn cmd_config_lint(file: &str) -> Result<(), Box<dyn std::error::Error>> {
 pub fn cmd_config_backup(file: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (OK, _, _, _, _) = icons();
     let path = std::path::Path::new(file);
-    match config_runtime::backup_config_file(path)? {
+    // Try to read backup limits from the config itself; fall back to defaults
+    // if the file is missing or unparseable (we still want the backup to succeed).
+    let backups = IroncladConfig::from_file(path)
+        .map(|c| c.backups)
+        .unwrap_or_default();
+    match config_runtime::backup_config_file(path, backups.max_count, backups.max_age_days)? {
         Some(backup) => println!("  {OK} Backup created: {}", backup.display()),
         None => println!("  {OK} No backup needed; config file does not exist: {file}"),
     }

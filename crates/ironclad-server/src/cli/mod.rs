@@ -607,21 +607,21 @@ mod tests {
                 {"name": "calc", "kind": "gosh", "description": "Math stuff", "enabled": false}
             ]
         })).await;
-        super::cmd_skills_list(&s.uri()).await.unwrap();
+        super::cmd_skills_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
     async fn cmd_skills_list_empty() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/skills", serde_json::json!({"skills": []})).await;
-        super::cmd_skills_list(&s.uri()).await.unwrap();
+        super::cmd_skills_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
     async fn cmd_skills_list_null_skills() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/skills", serde_json::json!({})).await;
-        super::cmd_skills_list(&s.uri()).await.unwrap();
+        super::cmd_skills_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -638,7 +638,9 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_skill_detail(&s.uri(), "greet").await.unwrap();
+        super::cmd_skill_detail(&s.uri(), "greet", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -654,7 +656,9 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_skill_detail(&s.uri(), "calc").await.unwrap();
+        super::cmd_skill_detail(&s.uri(), "calc", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -670,7 +674,7 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_skill_detail(&s.uri(), "x").await.unwrap();
+        super::cmd_skill_detail(&s.uri(), "x", false).await.unwrap();
     }
 
     #[tokio::test]
@@ -689,7 +693,7 @@ mod tests {
             serde_json::json!({"items":[{"name":"foo","kind":"instruction","source":"registry"}]}),
         )
         .await;
-        super::cmd_skills_catalog_list(&s.uri(), None)
+        super::cmd_skills_catalog_list(&s.uri(), None, false)
             .await
             .unwrap();
     }
@@ -729,7 +733,7 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_wallet(&s.uri()).await.unwrap();
+        super::cmd_wallet(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -751,7 +755,7 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_wallet(&s.uri()).await.unwrap();
+        super::cmd_wallet(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -765,7 +769,7 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_wallet_address(&s.uri()).await.unwrap();
+        super::cmd_wallet_address(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -779,7 +783,7 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_wallet_balance(&s.uri()).await.unwrap();
+        super::cmd_wallet_balance(&s.uri(), false).await.unwrap();
     }
 
     // ── Schedule ──────────────────────────────────────────────
@@ -806,14 +810,14 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_schedule_list(&s.uri()).await.unwrap();
+        super::cmd_schedule_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
     async fn cmd_schedule_list_empty() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/cron/jobs", serde_json::json!({"jobs": []})).await;
-        super::cmd_schedule_list(&s.uri()).await.unwrap();
+        super::cmd_schedule_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -848,7 +852,7 @@ mod tests {
             serde_json::json!({"updated": true}),
         )
         .await;
-        super::cmd_schedule_recover(&s.uri(), &[], true, false)
+        super::cmd_schedule_recover(&s.uri(), &[], true, false, false)
             .await
             .unwrap();
     }
@@ -872,7 +876,7 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_schedule_recover(&s.uri(), &[], true, true)
+        super::cmd_schedule_recover(&s.uri(), &[], true, true, false)
             .await
             .unwrap();
     }
@@ -909,9 +913,15 @@ mod tests {
             serde_json::json!({"updated": true}),
         )
         .await;
-        super::cmd_schedule_recover(&s.uri(), &["revenue-check".to_string()], false, false)
-            .await
-            .unwrap();
+        super::cmd_schedule_recover(
+            &s.uri(),
+            &["revenue-check".to_string()],
+            false,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
     }
 
     // ── Memory ────────────────────────────────────────────────
@@ -924,7 +934,7 @@ mod tests {
                 {"id": "e1", "entry_type": "fact", "content": "The sky is blue", "importance": 5}
             ]
         })).await;
-        super::cmd_memory(&s.uri(), "working", Some("sess-1"), None, None)
+        super::cmd_memory(&s.uri(), "working", Some("sess-1"), None, None, false)
             .await
             .unwrap();
     }
@@ -938,14 +948,14 @@ mod tests {
             serde_json::json!({"entries": []}),
         )
         .await;
-        super::cmd_memory(&s.uri(), "working", Some("sess-2"), None, None)
+        super::cmd_memory(&s.uri(), "working", Some("sess-2"), None, None, false)
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn cmd_memory_working_no_session_errors() {
-        let result = super::cmd_memory("http://unused", "working", None, None, None).await;
+        let result = super::cmd_memory("http://unused", "working", None, None, None, false).await;
         assert!(result.is_err());
     }
 
@@ -961,7 +971,7 @@ mod tests {
             })))
             .mount(&s)
             .await;
-        super::cmd_memory(&s.uri(), "episodic", None, None, Some(10))
+        super::cmd_memory(&s.uri(), "episodic", None, None, Some(10), false)
             .await
             .unwrap();
     }
@@ -976,7 +986,7 @@ mod tests {
             )
             .mount(&s)
             .await;
-        super::cmd_memory(&s.uri(), "episodic", None, None, None)
+        super::cmd_memory(&s.uri(), "episodic", None, None, None, false)
             .await
             .unwrap();
     }
@@ -994,7 +1004,7 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_memory(&s.uri(), "semantic", None, None, None)
+        super::cmd_memory(&s.uri(), "semantic", None, None, None, false)
             .await
             .unwrap();
     }
@@ -1010,7 +1020,7 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_memory(&s.uri(), "semantic", Some("prefs"), None, None)
+        super::cmd_memory(&s.uri(), "semantic", Some("prefs"), None, None, false)
             .await
             .unwrap();
     }
@@ -1025,7 +1035,7 @@ mod tests {
             })))
             .mount(&s)
             .await;
-        super::cmd_memory(&s.uri(), "search", None, Some("hello"), None)
+        super::cmd_memory(&s.uri(), "search", None, Some("hello"), None, false)
             .await
             .unwrap();
     }
@@ -1040,20 +1050,20 @@ mod tests {
             )
             .mount(&s)
             .await;
-        super::cmd_memory(&s.uri(), "search", None, Some("nope"), None)
+        super::cmd_memory(&s.uri(), "search", None, Some("nope"), None, false)
             .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn cmd_memory_search_no_query_errors() {
-        let result = super::cmd_memory("http://unused", "search", None, None, None).await;
+        let result = super::cmd_memory("http://unused", "search", None, None, None, false).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn cmd_memory_unknown_tier_errors() {
-        let result = super::cmd_memory("http://unused", "bogus", None, None, None).await;
+        let result = super::cmd_memory("http://unused", "bogus", None, None, None, false).await;
         assert!(result.is_err());
     }
 
@@ -1068,14 +1078,14 @@ mod tests {
                 {"id": "s-002", "agent_id": "duncan", "created_at": "2025-01-02T00:00:00Z", "updated_at": "2025-01-02T01:00:00Z"}
             ]
         })).await;
-        super::cmd_sessions_list(&s.uri()).await.unwrap();
+        super::cmd_sessions_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
     async fn cmd_sessions_list_empty() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/sessions", serde_json::json!({"sessions": []})).await;
-        super::cmd_sessions_list(&s.uri()).await.unwrap();
+        super::cmd_sessions_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -1098,7 +1108,9 @@ mod tests {
                 {"role": "tool", "content": "Result", "created_at": "2025-01-01T00:00:07Z"}
             ]
         })).await;
-        super::cmd_session_detail(&s.uri(), "s-001").await.unwrap();
+        super::cmd_session_detail(&s.uri(), "s-001", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1119,7 +1131,9 @@ mod tests {
             serde_json::json!({"messages": []}),
         )
         .await;
-        super::cmd_session_detail(&s.uri(), "s-002").await.unwrap();
+        super::cmd_session_detail(&s.uri(), "s-002", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1288,7 +1302,7 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_circuit_status(&s.uri()).await.unwrap();
+        super::cmd_circuit_status(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -1300,14 +1314,14 @@ mod tests {
             serde_json::json!({"providers": {}}),
         )
         .await;
-        super::cmd_circuit_status(&s.uri()).await.unwrap();
+        super::cmd_circuit_status(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
     async fn cmd_circuit_status_no_providers_key() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/breaker/status", serde_json::json!({})).await;
-        super::cmd_circuit_status(&s.uri()).await.unwrap();
+        super::cmd_circuit_status(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -1380,14 +1394,14 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_agents_list(&s.uri()).await.unwrap();
+        super::cmd_agents_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
     async fn cmd_agents_list_empty() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/agents", serde_json::json!({"agents": []})).await;
-        super::cmd_agents_list(&s.uri()).await.unwrap();
+        super::cmd_agents_list(&s.uri(), false).await.unwrap();
     }
 
     // ── Channels ──────────────────────────────────────────────
@@ -1403,7 +1417,7 @@ mod tests {
             ])))
             .mount(&s)
             .await;
-        super::cmd_channels_status(&s.uri()).await.unwrap();
+        super::cmd_channels_status(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -1414,7 +1428,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
             .mount(&s)
             .await;
-        super::cmd_channels_status(&s.uri()).await.unwrap();
+        super::cmd_channels_status(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -1429,7 +1443,9 @@ mod tests {
             })))
             .mount(&s)
             .await;
-        super::cmd_channels_dead_letter(&s.uri(), 10).await.unwrap();
+        super::cmd_channels_dead_letter(&s.uri(), 10, false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1454,14 +1470,14 @@ mod tests {
                 {"name": "empty", "version": "0.1", "status": "inactive", "tools": []}
             ]
         })).await;
-        super::cmd_plugins_list(&s.uri()).await.unwrap();
+        super::cmd_plugins_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
     async fn cmd_plugins_list_empty() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/plugins", serde_json::json!({"plugins": []})).await;
-        super::cmd_plugins_list(&s.uri()).await.unwrap();
+        super::cmd_plugins_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -1481,7 +1497,9 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_plugin_info(&s.uri(), "weather").await.unwrap();
+        super::cmd_plugin_info(&s.uri(), "weather", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1495,14 +1513,16 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_plugin_info(&s.uri(), "old").await.unwrap();
+        super::cmd_plugin_info(&s.uri(), "old", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     async fn cmd_plugin_info_not_found() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/plugins", serde_json::json!({"plugins": []})).await;
-        let result = super::cmd_plugin_info(&s.uri(), "nonexistent").await;
+        let result = super::cmd_plugin_info(&s.uri(), "nonexistent", false).await;
         assert!(result.is_err());
     }
 
@@ -1555,20 +1575,19 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("helper.gosh"), "// helper").unwrap();
 
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         let _ = super::cmd_plugin_install(dir.path().to_str().unwrap()).await;
-        unsafe { std::env::remove_var("HOME") };
     }
 
     #[test]
     fn cmd_plugin_uninstall_not_found() {
-        unsafe { std::env::set_var("HOME", "/tmp/ironclad_test_uninstall_home") };
+        let _home_guard =
+            crate::test_support::EnvGuard::set("HOME", "/tmp/ironclad_test_uninstall_home");
         let result = super::cmd_plugin_uninstall("nonexistent");
         assert!(
             result.is_err(),
             "uninstall of nonexistent plugin should fail"
         );
-        unsafe { std::env::remove_var("HOME") };
     }
 
     #[test]
@@ -1581,10 +1600,9 @@ mod tests {
             .join("myplugin");
         std::fs::create_dir_all(&plugins_dir).unwrap();
         std::fs::write(plugins_dir.join("plugin.toml"), "name = \"myplugin\"").unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         super::cmd_plugin_uninstall("myplugin").unwrap();
         assert!(!plugins_dir.exists());
-        unsafe { std::env::remove_var("HOME") };
     }
 
     // ── Models ────────────────────────────────────────────────
@@ -1599,14 +1617,14 @@ mod tests {
                 "routing": { "mode": "adaptive", "confidence_threshold": 0.85, "local_first": false }
             }
         })).await;
-        super::cmd_models_list(&s.uri()).await.unwrap();
+        super::cmd_models_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
     async fn cmd_models_list_minimal_config() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/config", serde_json::json!({})).await;
-        super::cmd_models_list(&s.uri()).await.unwrap();
+        super::cmd_models_list(&s.uri(), false).await.unwrap();
     }
 
     #[tokio::test]
@@ -1751,14 +1769,18 @@ mod tests {
                 {"model": "gpt-4o", "provider": "openai", "tokens_in": 200, "tokens_out": 100, "cost": 0.01, "cached": true}
             ]
         })).await;
-        super::cmd_metrics(&s.uri(), "costs", None).await.unwrap();
+        super::cmd_metrics(&s.uri(), "costs", None, false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     async fn cmd_metrics_costs_empty() {
         let s = MockServer::start().await;
         mock_get(&s, "/api/stats/costs", serde_json::json!({"costs": []})).await;
-        super::cmd_metrics(&s.uri(), "costs", None).await.unwrap();
+        super::cmd_metrics(&s.uri(), "costs", None, false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1776,7 +1798,7 @@ mod tests {
             })))
             .mount(&s)
             .await;
-        super::cmd_metrics(&s.uri(), "transactions", Some(48))
+        super::cmd_metrics(&s.uri(), "transactions", Some(48), false)
             .await
             .unwrap();
     }
@@ -1791,7 +1813,7 @@ mod tests {
             )
             .mount(&s)
             .await;
-        super::cmd_metrics(&s.uri(), "transactions", None)
+        super::cmd_metrics(&s.uri(), "transactions", None, false)
             .await
             .unwrap();
     }
@@ -1807,13 +1829,15 @@ mod tests {
             }),
         )
         .await;
-        super::cmd_metrics(&s.uri(), "cache", None).await.unwrap();
+        super::cmd_metrics(&s.uri(), "cache", None, false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     async fn cmd_metrics_unknown_kind() {
         let s = MockServer::start().await;
-        let result = super::cmd_metrics(&s.uri(), "bogus", None).await;
+        let result = super::cmd_metrics(&s.uri(), "bogus", None, false).await;
         assert!(result.is_err());
     }
 
@@ -1857,7 +1881,9 @@ mod tests {
             })))
             .mount(&s)
             .await;
-        super::cmd_logs(&s.uri(), 50, false, "info").await.unwrap();
+        super::cmd_logs(&s.uri(), 50, false, "info", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1870,7 +1896,9 @@ mod tests {
             )
             .mount(&s)
             .await;
-        super::cmd_logs(&s.uri(), 10, false, "info").await.unwrap();
+        super::cmd_logs(&s.uri(), 10, false, "info", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1881,7 +1909,9 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
             .mount(&s)
             .await;
-        super::cmd_logs(&s.uri(), 10, false, "info").await.unwrap();
+        super::cmd_logs(&s.uri(), 10, false, "info", false)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1892,14 +1922,16 @@ mod tests {
             .respond_with(ResponseTemplate::new(500))
             .mount(&s)
             .await;
-        super::cmd_logs(&s.uri(), 10, false, "info").await.unwrap();
+        super::cmd_logs(&s.uri(), 10, false, "info", false)
+            .await
+            .unwrap();
     }
 
     // ── Security audit (filesystem) ──────────────────────────
 
     #[test]
     fn cmd_security_audit_missing_config() {
-        super::cmd_security_audit("/tmp/ironclad_test_nonexistent_config.toml").unwrap();
+        super::cmd_security_audit("/tmp/ironclad_test_nonexistent_config.toml", false).unwrap();
     }
 
     #[test]
@@ -1912,7 +1944,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+        super::cmd_security_audit(config.to_str().unwrap(), false).unwrap();
     }
 
     #[test]
@@ -1925,7 +1957,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+        super::cmd_security_audit(config.to_str().unwrap(), false).unwrap();
     }
 
     #[test]
@@ -1933,7 +1965,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("ironclad.toml");
         std::fs::write(&config, "[providers.openai]\napi_key = \"${OPENAI_KEY}\"\n").unwrap();
-        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+        super::cmd_security_audit(config.to_str().unwrap(), false).unwrap();
     }
 
     #[test]
@@ -1945,7 +1977,7 @@ mod tests {
             "[server]\nbind = \"0.0.0.0\"\n\n[cors]\norigins = \"*\"\n",
         )
         .unwrap();
-        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+        super::cmd_security_audit(config.to_str().unwrap(), false).unwrap();
     }
 
     #[cfg(unix)]
@@ -1956,7 +1988,7 @@ mod tests {
         std::fs::write(&config, "[server]\nport = 18789\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).unwrap();
-        super::cmd_security_audit(config.to_str().unwrap()).unwrap();
+        super::cmd_security_audit(config.to_str().unwrap(), false).unwrap();
     }
 
     // ── Reset (with --yes to skip stdin) ─────────────────────
@@ -1966,9 +1998,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ironclad_dir = dir.path().join(".ironclad");
         std::fs::create_dir_all(&ironclad_dir).unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         super::cmd_reset(true).unwrap();
-        unsafe { std::env::remove_var("HOME") };
     }
 
     #[test]
@@ -1982,13 +2013,12 @@ mod tests {
         std::fs::write(ironclad_dir.join("ironclad.toml"), "[server]").unwrap();
         std::fs::create_dir_all(ironclad_dir.join("logs")).unwrap();
         std::fs::write(ironclad_dir.join("wallet.json"), "{}").unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         super::cmd_reset(true).unwrap();
         assert!(!ironclad_dir.join("state.db").exists());
         assert!(!ironclad_dir.join("ironclad.toml").exists());
         assert!(!ironclad_dir.join("logs").exists());
         assert!(ironclad_dir.join("wallet.json").exists());
-        unsafe { std::env::remove_var("HOME") };
     }
 
     // ── Mechanic ──────────────────────────────────────────────
@@ -2023,9 +2053,8 @@ mod tests {
             std::fs::create_dir_all(ironclad_dir.join(sub)).unwrap();
         }
         std::fs::write(ironclad_dir.join("ironclad.toml"), "[server]").unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         let _ = super::cmd_mechanic(&s.uri(), false, false, &[]).await;
-        unsafe { std::env::remove_var("HOME") };
     }
 
     #[tokio::test]
@@ -2037,9 +2066,8 @@ mod tests {
             .mount(&s)
             .await;
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         let _ = super::cmd_mechanic(&s.uri(), false, false, &[]).await;
-        unsafe { std::env::remove_var("HOME") };
     }
 
     #[tokio::test]
@@ -2062,9 +2090,8 @@ mod tests {
             .mount(&s)
             .await;
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("HOME", dir.path().to_str().unwrap()) };
+        let _home_guard = crate::test_support::EnvGuard::set("HOME", dir.path().to_str().unwrap());
         let _ = super::cmd_mechanic(&s.uri(), true, false, &[]).await;
         assert!(dir.path().join(".ironclad").join("workspace").exists());
-        unsafe { std::env::remove_var("HOME") };
     }
 }

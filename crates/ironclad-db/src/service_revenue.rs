@@ -1,4 +1,4 @@
-use crate::Database;
+use crate::{Database, DbResultExt};
 use ironclad_core::{IroncladError, Result};
 use rusqlite::OptionalExtension;
 
@@ -126,7 +126,7 @@ pub fn create_service_request(db: &Database, req: &NewServiceRequest<'_>) -> Res
             req.quote_expires_at
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -139,7 +139,7 @@ pub fn get_service_request(db: &Database, id: &str) -> Result<Option<ServiceRequ
                     fulfilled_at, failure_reason, created_at, updated_at \
              FROM service_requests WHERE id = ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     let row = stmt
         .query_row([id], |row| {
@@ -164,7 +164,7 @@ pub fn get_service_request(db: &Database, id: &str) -> Result<Option<ServiceRequ
             })
         })
         .optional()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
 
     Ok(row)
 }
@@ -190,7 +190,7 @@ pub fn mark_payment_verified(
                 STATUS_QUOTED
             ],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(updated > 0)
 }
 
@@ -209,7 +209,7 @@ pub fn mark_fulfilled(db: &Database, id: &str, fulfillment_output: &str) -> Resu
                 STATUS_PAYMENT_VERIFIED
             ],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(updated > 0)
 }
 
@@ -228,7 +228,7 @@ pub fn mark_service_request_failed(db: &Database, id: &str, reason: &str) -> Res
                 STATUS_PAYMENT_VERIFIED
             ],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(updated > 0)
 }
 
@@ -248,7 +248,7 @@ pub fn create_revenue_opportunity(db: &Database, opp: &NewRevenueOpportunity<'_>
             opp.request_id
         ],
     )
-    .map_err(|e| IroncladError::Database(e.to_string()))?;
+    .db_err()?;
     Ok(())
 }
 
@@ -266,7 +266,7 @@ pub fn get_revenue_opportunity(
                     settled_at, created_at, updated_at \
              FROM revenue_opportunities WHERE id = ?1",
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let row = stmt
         .query_row([id], |row| {
             Ok(RevenueOpportunityRecord {
@@ -300,7 +300,7 @@ pub fn get_revenue_opportunity(
             })
         })
         .optional()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(row)
 }
 
@@ -323,7 +323,7 @@ pub fn qualify_revenue_opportunity(
              WHERE id = ?1 AND status = ?4",
             rusqlite::params![id, status, reason, OPPORTUNITY_STATUS_INTAKE],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(updated > 0)
 }
 
@@ -341,7 +341,7 @@ pub fn plan_revenue_opportunity(db: &Database, id: &str, plan_json: &str) -> Res
                 OPPORTUNITY_STATUS_QUALIFIED
             ],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(updated > 0)
 }
 
@@ -363,7 +363,7 @@ pub fn mark_revenue_opportunity_fulfilled(
                 OPPORTUNITY_STATUS_PLANNED
             ],
         )
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     Ok(updated > 0)
 }
 
@@ -397,9 +397,7 @@ pub fn settle_revenue_opportunity(
 
     let settlement_ref = settlement_ref.trim();
     let conn = db.conn();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    let tx = conn.unchecked_transaction().db_err()?;
 
     let existing: Option<(String, Option<String>)> = tx
         .query_row(
@@ -408,22 +406,19 @@ pub fn settle_revenue_opportunity(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+        .db_err()?;
     let Some((status, existing_ref)) = existing else {
-        tx.commit()
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        tx.commit().db_err()?;
         return Ok(SettlementResult::NotFound);
     };
     if status.eq_ignore_ascii_case(OPPORTUNITY_STATUS_SETTLED)
         && existing_ref.as_deref().map(str::trim) == Some(settlement_ref)
     {
-        tx.commit()
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        tx.commit().db_err()?;
         return Ok(SettlementResult::AlreadySettled);
     }
     if status.eq_ignore_ascii_case(OPPORTUNITY_STATUS_SETTLED) {
-        tx.commit()
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        tx.commit().db_err()?;
         return Ok(SettlementResult::WrongState(format!(
             "revenue opportunity '{}' is already settled with a different settlement_ref",
             id,
@@ -453,7 +448,7 @@ pub fn settle_revenue_opportunity(
             if err.code == rusqlite::ErrorCode::ConstraintViolation =>
         {
             tx.commit()
-                .map_err(|e| IroncladError::Database(e.to_string()))?;
+                .db_err()?;
             return Ok(SettlementResult::WrongState(format!(
                 "settlement_ref '{}' is already used by another revenue opportunity",
                 settlement_ref
@@ -462,15 +457,13 @@ pub fn settle_revenue_opportunity(
         Err(e) => return Err(IroncladError::Database(e.to_string())),
     };
     if updated == 0 {
-        tx.commit()
-            .map_err(|e| IroncladError::Database(e.to_string()))?;
+        tx.commit().db_err()?;
         return Ok(SettlementResult::WrongState(format!(
             "revenue opportunity '{}' is in status '{}'; must be '{}' before settlement",
             id, status, OPPORTUNITY_STATUS_FULFILLED
         )));
     }
-    tx.commit()
-        .map_err(|e| IroncladError::Database(e.to_string()))?;
+    tx.commit().db_err()?;
     Ok(SettlementResult::Settled)
 }
 

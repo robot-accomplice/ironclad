@@ -6,13 +6,14 @@ pub async fn cmd_memory(
     session_id: Option<&str>,
     query: Option<&str>,
     limit: Option<i64>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     let c = IroncladClient::new(url)?;
     match tier {
         "working" => {
-            let sid = session_id.ok_or("--session required for working memory")?;
+            let sid = session_id.ok_or("--session required for working memory. Use 'ironclad sessions list' to find session IDs.")?;
             let data = c
                 .get(&format!("/api/memory/working/{sid}"))
                 .await
@@ -20,6 +21,10 @@ pub async fn cmd_memory(
                     IroncladClient::check_connectivity_hint(&*e);
                     e
                 })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+                return Ok(());
+            }
             heading("Working Memory");
             let entries = data["entries"].as_array();
             match entries {
@@ -55,6 +60,10 @@ pub async fn cmd_memory(
                     IroncladClient::check_connectivity_hint(&*e);
                     e
                 })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+                return Ok(());
+            }
             heading("Episodic Memory");
             let entries = data["entries"].as_array();
             match entries {
@@ -90,6 +99,10 @@ pub async fn cmd_memory(
                     IroncladClient::check_connectivity_hint(&*e);
                     e
                 })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+                return Ok(());
+            }
             heading(&format!("Semantic Memory [{category}]"));
             let entries = data["entries"].as_array();
             match entries {
@@ -121,6 +134,10 @@ pub async fn cmd_memory(
                     IroncladClient::check_connectivity_hint(&*e);
                     e
                 })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+                return Ok(());
+            }
             heading(&format!("Memory Search: \"{q}\""));
             let results = data["results"].as_array();
             match results {
