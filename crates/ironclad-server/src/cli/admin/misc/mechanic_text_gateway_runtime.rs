@@ -244,6 +244,7 @@ fn run_gateway_plugin_checks(
                     super::plugins::companion_skill_install_name(&manifest.name, skill_rel);
                 let dest = skills_dir.join(&installed_name);
                 if src.exists() && !dest.exists() {
+                    // best-effort: dir creation failure caught by subsequent copy
                     std::fs::create_dir_all(&skills_dir).ok();
                     if let Err(e) = std::fs::copy(&src, &dest) {
                         println!(

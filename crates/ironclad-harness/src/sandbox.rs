@@ -169,6 +169,7 @@ impl Drop for SandboxedServer {
             handle.abort();
         }
 
+        // best-effort: process cleanup during drop
         #[cfg(feature = "full-process")]
         if let Some(mut child) = self._child.take() {
             let _ = child.kill();

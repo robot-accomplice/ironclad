@@ -621,6 +621,7 @@ async fn apply_binary_download_update(
             ])
             .status()?;
         if !status.success() {
+            // best-effort: temp dir cleanup on extraction failure
             let _ = std::fs::remove_dir_all(&temp_root);
             return Err(
                 format!("Failed to extract {archive} with PowerShell Expand-Archive").into(),
@@ -634,6 +635,7 @@ async fn apply_binary_download_update(
             .arg(&temp_root)
             .status()?;
         if !status.success() {
+            // best-effort: temp dir cleanup on extraction failure
             let _ = std::fs::remove_dir_all(&temp_root);
             return Err(format!("Failed to extract {archive} with tar").into());
         }
@@ -648,6 +650,7 @@ async fn apply_binary_download_update(
         .ok_or_else(|| format!("Could not locate extracted {bin_name} binary"))?;
     let bytes = std::fs::read(&extracted)?;
     install_binary_bytes(&bytes)?;
+    // best-effort: temp dir cleanup after successful install
     let _ = std::fs::remove_dir_all(&temp_root);
     Ok(())
 }

@@ -417,6 +417,7 @@ fn collect_mechanic_json_security_and_plugin_findings(
                                 );
                                 let dest = skills_dir.join(&installed_name);
                                 if src.exists() && !dest.exists() {
+                                    // best-effort: dir creation failure caught by subsequent copy
                                     std::fs::create_dir_all(&skills_dir).ok();
                                     if std::fs::copy(&src, &dest).is_ok() {
                                         findings.push(finding(

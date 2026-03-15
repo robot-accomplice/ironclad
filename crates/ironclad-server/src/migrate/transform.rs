@@ -236,6 +236,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
     let soul_name = {
         let soul_path = oc_root.join("workspace").join("SOUL.md");
         if soul_path.exists() {
+            // best-effort: SOUL.md name extraction is a nice-to-have during migration
             fs::read_to_string(&soul_path).ok().and_then(|s| {
                 // Look for "I am <Name>" in the Identity section
                 s.lines().find_map(|l| {

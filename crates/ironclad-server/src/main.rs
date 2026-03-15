@@ -708,6 +708,7 @@ enum UpdateCmd {
 fn prompt_yes_no(question: &str) -> bool {
     use std::io::Write;
     eprint!("  {question} [y/N] ");
+    // best-effort: flush failure is non-critical for interactive prompt
     std::io::stderr().flush().ok();
     let mut input = String::new();
     if std::io::stdin().read_line(&mut input).is_err() {
@@ -1642,6 +1643,7 @@ async fn cmd_serve(
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "failed to install SIGTERM handler, falling back to SIGINT only");
+                    // best-effort: signal wait result is irrelevant during shutdown
                     ctrl_c.await.ok();
                     info!("SIGINT received, shutting down gracefully");
                 }
@@ -1649,6 +1651,7 @@ async fn cmd_serve(
         }
         #[cfg(not(unix))]
         {
+            // best-effort: signal wait result is irrelevant during shutdown
             ctrl_c.await.ok();
             info!("SIGINT received, shutting down gracefully");
         }

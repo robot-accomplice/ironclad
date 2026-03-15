@@ -128,6 +128,7 @@ impl BrowserManager {
 
 impl Drop for BrowserManager {
     fn drop(&mut self) {
+        // best-effort: browser process cleanup during drop
         if let Some(mut child) = self.process.take() {
             let _ = child.start_kill();
         }
