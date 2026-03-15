@@ -57,6 +57,12 @@ pub enum ArchiveError {
     PathTraversal(String),
 }
 
+impl From<ArchiveError> for ironclad_core::error::IroncladError {
+    fn from(e: ArchiveError) -> Self {
+        Self::Config(format!("archive error: {e}"))
+    }
+}
+
 /// Compute SHA-256 hex digest of a byte slice.
 pub fn sha256_hex(data: &[u8]) -> String {
     let hash = Sha256::digest(data);
