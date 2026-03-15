@@ -124,10 +124,11 @@ pub enum ColumnValue {
 }
 
 /// Storage error type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{kind}: {message}")]
 pub struct StorageError {
-    pub message: String,
     pub kind: StorageErrorKind,
+    pub message: String,
 }
 
 impl StorageError {
@@ -139,36 +140,27 @@ impl StorageError {
     }
 }
 
-impl std::fmt::Display for StorageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.kind, self.message)
+impl From<StorageError> for ironclad_core::error::IroncladError {
+    fn from(e: StorageError) -> Self {
+        Self::Database(e.to_string())
     }
 }
-
-impl std::error::Error for StorageError {}
 
 /// Categories of storage errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StorageErrorKind {
+    #[error("connection_failed")]
     ConnectionFailed,
+    #[error("query_failed")]
     QueryFailed,
+    #[error("transaction_failed")]
     TransactionFailed,
+    #[error("constraint_violation")]
     ConstraintViolation,
+    #[error("not_found")]
     NotFound,
+    #[error("internal")]
     Internal,
-}
-
-impl std::fmt::Display for StorageErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            StorageErrorKind::ConnectionFailed => write!(f, "connection_failed"),
-            StorageErrorKind::QueryFailed => write!(f, "query_failed"),
-            StorageErrorKind::TransactionFailed => write!(f, "transaction_failed"),
-            StorageErrorKind::ConstraintViolation => write!(f, "constraint_violation"),
-            StorageErrorKind::NotFound => write!(f, "not_found"),
-            StorageErrorKind::Internal => write!(f, "internal"),
-        }
-    }
 }
 
 /// In-memory storage backend for testing.

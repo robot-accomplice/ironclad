@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
@@ -300,18 +299,20 @@ pub struct ToolResult {
     pub metadata: Option<Value>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("ToolError: {message}")]
 pub struct ToolError {
     pub message: String,
 }
 
-impl fmt::Display for ToolError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ToolError: {}", self.message)
+impl From<ToolError> for ironclad_core::error::IroncladError {
+    fn from(e: ToolError) -> Self {
+        Self::Tool {
+            tool: String::new(),
+            message: e.message,
+        }
     }
 }
-
-impl std::error::Error for ToolError {}
 
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
