@@ -236,6 +236,7 @@ pub(crate) fn import_config(oc_root: &Path, ic_root: &Path) -> AreaResult {
     let soul_name = {
         let soul_path = oc_root.join("workspace").join("SOUL.md");
         if soul_path.exists() {
+            // best-effort: SOUL.md name extraction is a nice-to-have during migration
             fs::read_to_string(&soul_path).ok().and_then(|s| {
                 // Look for "I am <Name>" in the Identity section
                 s.lines().find_map(|l| {
@@ -695,8 +696,11 @@ pub(crate) fn export_config(ic_root: &Path, oc_root: &Path) -> AreaResult {
     let oc_config_path = oc_root.join("legacy.json");
     let mut merged: serde_json::Map<String, serde_json::Value> = if oc_config_path.exists() {
         fs::read_to_string(&oc_config_path)
+            .inspect_err(|e| tracing::warn!(path = %oc_config_path.display(), "failed to read legacy.json: {e}"))
             .ok()
-            .and_then(|c| serde_json::from_str(&c).ok())
+            .and_then(|c| serde_json::from_str(&c)
+                .inspect_err(|e| tracing::warn!(path = %oc_config_path.display(), "failed to parse legacy.json: {e}"))
+                .ok())
             .unwrap_or_default()
     } else {
         serde_json::Map::new()
@@ -1025,8 +1029,15 @@ pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path, no_safety_check: boo
 
     // Read skills.entries from legacy.json for enabled/disabled state
     let skill_entries: HashMap<String, bool> = fs::read_to_string(oc_root.join("legacy.json"))
+        .inspect_err(|e| tracing::warn!("failed to read legacy.json for skill entries: {e}"))
         .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|s| {
+            serde_json::from_str::<serde_json::Value>(&s)
+                .inspect_err(|e| {
+                    tracing::warn!("failed to parse legacy.json for skill entries: {e}")
+                })
+                .ok()
+        })
         .and_then(|v| {
             v.get("skills")?.get("entries")?.as_object().map(|obj| {
                 obj.iter()
@@ -1083,6 +1094,9 @@ pub(crate) fn import_skills(oc_root: &Path, ic_root: &Path, no_safety_check: boo
                     // Parse SKILL.md frontmatter for description if available
                     let skill_md = out_dir.join(name).join("SKILL.md");
                     let description = fs::read_to_string(&skill_md)
+                        .inspect_err(
+                            |e| tracing::warn!(skill = %name, "failed to read SKILL.md: {e}"),
+                        )
                         .ok()
                         .and_then(|content| parse_skill_description(&content));
 
@@ -1430,7 +1444,12 @@ pub(crate) fn export_sessions(ic_root: &Path, oc_root: &Path) -> AreaResult {
             row.get::<_, String>(2)?,
         ))
     }) {
-        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Ok(rows) => rows
+            .filter_map(|r| {
+                r.inspect_err(|e| tracing::warn!("skipping corrupted session row: {e}"))
+                    .ok()
+            })
+            .collect(),
         Err(e) => {
             return err(
                 MigrationArea::Sessions,
@@ -1454,7 +1473,15 @@ pub(crate) fn export_sessions(ic_root: &Path, oc_root: &Path) -> AreaResult {
                     "timestamp": row.get::<_, String>(2)?,
                 }))
             })
-            .map(|iter| iter.filter_map(|r| r.ok()).collect())
+            .map(|iter| {
+                iter.filter_map(|r| {
+                    r.inspect_err(
+                        |e| tracing::warn!(session = %sid, "skipping corrupted message row: {e}"),
+                    )
+                    .ok()
+                })
+                .collect()
+            })
             .unwrap_or_default();
 
         all.push(serde_json::json!({
@@ -1667,7 +1694,13 @@ pub(crate) fn export_cron(ic_root: &Path, oc_root: &Path) -> AreaResult {
                 "enabled": row.get::<_, bool>(3)?,
             }))
         })
-        .map(|iter| iter.filter_map(|r| r.ok()).collect())
+        .map(|iter| {
+            iter.filter_map(|r| {
+                r.inspect_err(|e| tracing::warn!("skipping corrupted cron job row: {e}"))
+                    .ok()
+            })
+            .collect()
+        })
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "failed to iterate cron job rows during export");
             vec![]

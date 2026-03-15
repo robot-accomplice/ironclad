@@ -179,25 +179,39 @@ pub struct Mission {
 pub fn load_os(workspace: &Path) -> Option<OsConfig> {
     let path = workspace.join("OS.toml");
     let text = std::fs::read_to_string(&path).ok()?;
-    toml::from_str(&text).ok()
+    toml::from_str(&text)
+        .inspect_err(|e| tracing::warn!(path = %path.display(), "failed to parse OS.toml: {e}"))
+        .ok()
 }
 
 pub fn load_firmware(workspace: &Path) -> Option<FirmwareConfig> {
     let path = workspace.join("FIRMWARE.toml");
     let text = std::fs::read_to_string(&path).ok()?;
-    toml::from_str(&text).ok()
+    toml::from_str(&text)
+        .inspect_err(
+            |e| tracing::warn!(path = %path.display(), "failed to parse FIRMWARE.toml: {e}"),
+        )
+        .ok()
 }
 
 pub fn load_operator(workspace: &Path) -> Option<OperatorConfig> {
     let path = workspace.join("OPERATOR.toml");
     let text = std::fs::read_to_string(&path).ok()?;
-    toml::from_str(&text).ok()
+    toml::from_str(&text)
+        .inspect_err(
+            |e| tracing::warn!(path = %path.display(), "failed to parse OPERATOR.toml: {e}"),
+        )
+        .ok()
 }
 
 pub fn load_directives(workspace: &Path) -> Option<DirectivesConfig> {
     let path = workspace.join("DIRECTIVES.toml");
     let text = std::fs::read_to_string(&path).ok()?;
-    toml::from_str(&text).ok()
+    toml::from_str(&text)
+        .inspect_err(
+            |e| tracing::warn!(path = %path.display(), "failed to parse DIRECTIVES.toml: {e}"),
+        )
+        .ok()
 }
 
 // ---------------------------------------------------------------------------

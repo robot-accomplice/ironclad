@@ -83,7 +83,10 @@ pub async fn cmd_plugin_info(base_url: &str, name: &str) -> Result<(), Box<dyn s
         .get(format!("{base_url}/api/plugins"))
         .send()
         .await?;
-    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+    let body: serde_json::Value = resp.json().await.unwrap_or_else(|e| {
+        tracing::warn!("failed to parse plugin info response: {e}");
+        serde_json::Value::default()
+    });
     let plugins: Vec<serde_json::Value> = body
         .get("plugins")
         .and_then(|v| v.as_array())
@@ -277,6 +280,7 @@ fn deploy_companion_skills(
         let dest_skill = skills_dir.join(&installed_name);
 
         if let Err(e) = std::fs::copy(&src_skill, &dest_skill) {
+            // best-effort: rollback cleanup on install failure
             for path in installed.iter().rev() {
                 let _ = std::fs::remove_file(path);
             }
@@ -383,11 +387,13 @@ fn install_from_directory(source_path: &std::path::Path) -> Result<(), Box<dyn s
 
     std::fs::create_dir_all(&dest)?;
     if let Err(e) = copy_dir_recursive(source_path, &dest) {
+        // best-effort: rollback cleanup on install failure
         let _ = std::fs::remove_dir_all(&dest);
         return Err(Box::new(e));
     }
 
     if let Err(e) = deploy_companion_skills(&manifest, source_path) {
+        // best-effort: rollback cleanup on install failure
         let _ = std::fs::remove_dir_all(&dest);
         return Err(e);
     }
@@ -424,7 +430,7 @@ fn install_from_archive(archive_path: &std::path::Path) -> Result<(), Box<dyn st
 
     // Requirements check
     if !check_requirements(&result.manifest) {
-        // Clean up staging
+        // best-effort: staging cleanup on early exit
         let _ = std::fs::remove_dir_all(&result.dest_dir);
         return Err("missing required plugin dependencies".into());
     }
@@ -433,6 +439,7 @@ fn install_from_archive(archive_path: &std::path::Path) -> Result<(), Box<dyn st
     let dest = match check_not_installed(&result.manifest.name) {
         Ok(d) => d,
         Err(()) => {
+            // best-effort: staging cleanup on early exit
             let _ = std::fs::remove_dir_all(&result.dest_dir);
             return Err(format!("plugin '{}' already installed", result.manifest.name).into());
         }

@@ -883,7 +883,11 @@ pub fn run_migrations(db: &Database) -> Result<()> {
 
     let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
         .map_err(|e| IroncladError::Database(format!("read migrations dir: {e}")))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter_map(|e| {
+            e.inspect_err(|e| tracing::warn!("skipping unreadable migration entry: {e}"))
+                .ok()
+                .map(|e| e.path())
+        })
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("sql"))
         .collect();
 

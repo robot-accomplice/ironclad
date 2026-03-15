@@ -57,7 +57,10 @@ pub async fn cmd_circuit_reset(
             return Ok(());
         }
 
-        let body: serde_json::Value = status.json().await.unwrap_or_default();
+        let body: serde_json::Value = status.json().await.unwrap_or_else(|e| {
+            tracing::warn!("failed to parse breaker status response: {e}");
+            serde_json::Value::default()
+        });
         body.get("providers")
             .and_then(|v| v.as_object())
             .map(|m| m.keys().cloned().collect())
@@ -116,7 +119,10 @@ pub async fn cmd_agent_start(base_url: &str, id: &str) -> Result<(), Box<dyn std
         .await?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp.text().await.unwrap_or_else(|e| {
+            tracing::warn!("failed to read agent start error body: {e}");
+            String::new()
+        });
         return Err(format!("HTTP {status}: {body}").into());
     }
     eprintln!("  Agent {id} started");
@@ -131,7 +137,10 @@ pub async fn cmd_agent_stop(base_url: &str, id: &str) -> Result<(), Box<dyn std:
         .await?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp.text().await.unwrap_or_else(|e| {
+            tracing::warn!("failed to read agent stop error body: {e}");
+            String::new()
+        });
         return Err(format!("HTTP {status}: {body}").into());
     }
     eprintln!("  Agent {id} stopped");

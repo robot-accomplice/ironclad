@@ -708,6 +708,7 @@ enum UpdateCmd {
 fn prompt_yes_no(question: &str) -> bool {
     use std::io::Write;
     eprint!("  {question} [y/N] ");
+    // best-effort: flush failure is non-critical for interactive prompt
     std::io::stderr().flush().ok();
     let mut input = String::new();
     if std::io::stdin().read_line(&mut input).is_err() {
@@ -731,8 +732,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = if parsed.url == "http://127.0.0.1:18789" {
         // Default URL — try to derive server address from resolved config
         resolve_config_path(parsed.config.as_deref())
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|contents| IroncladConfig::from_str(&contents).ok())
+            .and_then(|p| {
+                std::fs::read_to_string(p)
+                    .inspect_err(|e| {
+                        tracing::warn!("failed to read config for URL resolution: {e}")
+                    })
+                    .ok()
+            })
+            .and_then(|contents| {
+                IroncladConfig::from_str(&contents)
+                    .inspect_err(|e| {
+                        tracing::warn!("failed to parse config for URL resolution: {e}")
+                    })
+                    .ok()
+            })
             .map(|cfg| format!("http://{}:{}", cfg.server.bind, cfg.server.port))
             .unwrap_or_else(|| parsed.url.clone())
     } else {
@@ -1630,6 +1643,7 @@ async fn cmd_serve(
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "failed to install SIGTERM handler, falling back to SIGINT only");
+                    // best-effort: signal wait result is irrelevant during shutdown
                     ctrl_c.await.ok();
                     info!("SIGINT received, shutting down gracefully");
                 }
@@ -1637,6 +1651,7 @@ async fn cmd_serve(
         }
         #[cfg(not(unix))]
         {
+            // best-effort: signal wait result is irrelevant during shutdown
             ctrl_c.await.ok();
             info!("SIGINT received, shutting down gracefully");
         }

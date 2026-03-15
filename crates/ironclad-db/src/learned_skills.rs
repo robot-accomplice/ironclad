@@ -181,7 +181,10 @@ pub fn find_dead_learned_skills(
     let dead: Vec<(String, Option<String>)> = stmt
         .query_map([threshold], |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|e| IroncladError::Database(e.to_string()))?
-        .filter_map(|r| r.ok())
+        .filter_map(|r| {
+            r.inspect_err(|e| tracing::warn!("skipping corrupted learned_skills row: {e}"))
+                .ok()
+        })
         .collect();
 
     Ok(dead)

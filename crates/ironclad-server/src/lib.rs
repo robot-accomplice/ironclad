@@ -168,6 +168,7 @@ fn cleanup_old_logs(log_dir: &std::path::Path, max_days: u32) {
             && let Ok(modified) = meta.modified()
             && modified < cutoff
         {
+            // best-effort: log rotation cleanup failure is non-critical
             let _ = std::fs::remove_file(&path);
         }
     }
