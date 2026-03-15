@@ -71,7 +71,7 @@ pub async fn cmd_logs(
         }
 
         let mut stream = resp.bytes_stream();
-        use tokio_stream::StreamExt;
+        use futures_util::StreamExt;
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(bytes) => {

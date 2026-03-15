@@ -65,7 +65,12 @@ fn finding(
     }
 }
 
+/// State hygiene callback type — accepts a db path, returns whether changes were made.
+pub type SchemaHygieneFn = dyn Fn(&Path) -> Result<bool, Box<dyn std::error::Error>>;
+
+/// Run state hygiene checks on the database, normalizing legacy rows.
 fn normalize_schema_safe(state_db_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    Ok(crate::state_hygiene::run_state_hygiene(state_db_path)?.changed)
+    let report = crate::state_hygiene::run_state_hygiene(state_db_path)?;
+    Ok(report.changed)
 }
 

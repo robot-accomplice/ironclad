@@ -1,18 +1,14 @@
 [package]
-name = "ironclad-server"
+name = "ironclad-api"
 version.workspace = true
 edition.workspace = true
-description = "Autonomous agent runtime — HTTP API, CLI, WebSocket push, and migration engine"
+description = "HTTP routes, WebSocket, auth, rate limiting, and dashboard for the Ironclad agent runtime"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-readme = "README.md"
-
-[[bin]]
-name = "ironclad"
-path = "src/main.rs"
+publish = false
 
 [dependencies]
 ironclad-core.workspace = true
@@ -24,8 +20,6 @@ ironclad-schedule.workspace = true
 ironclad-channels.workspace = true
 ironclad-plugin-sdk.workspace = true
 ironclad-browser.workspace = true
-ironclad-cli.workspace = true
-ironclad-api.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -34,31 +28,22 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["limit"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tower-http = { version = "0.6", features = ["cors"] }
-clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 tokio-stream = "0.1"
 toml = "0.8"
-rusqlite = { workspace = true }
-dialoguer = "0.11"
-tracing-appender = "0.2"
 futures-util = "0.3"
 async-stream = "0.3"
-open = "5.3.3"
 rand = "0.8"
 subtle = { workspace = true }
-libc = "0.2"
 regex = "1"
-ureq = "2"
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server", "tower"] }
 async-trait = "0.1"
+rusqlite = { workspace = true }
 
 [dev-dependencies]
-assert_cmd = "2"
-predicates = "3"
 tempfile = "3"
 wiremock = "0.6.5"
