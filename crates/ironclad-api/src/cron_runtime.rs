@@ -6,7 +6,7 @@ use tokio::sync::Semaphore;
 
 use crate::api::{AppState, execute_scheduled_agent_task, subagent_integrity};
 
-pub(crate) async fn run_cron_worker(state: AppState, instance_id: String) {
+pub async fn run_cron_worker(state: AppState, instance_id: String) {
     let mut interval = tokio::time::interval(Duration::from_secs(60));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let initial_limit = state.config.read().await.server.cron_max_concurrency as usize;

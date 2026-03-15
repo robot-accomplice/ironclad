@@ -8,6 +8,8 @@ members = [
     "crates/ironclad-wallet",
     "crates/ironclad-schedule",
     "crates/ironclad-channels",
+    "crates/ironclad-cli",
+    "crates/ironclad-api",
     "crates/ironclad-server",
     "crates/ironclad-plugin-sdk",
     "crates/ironclad-browser",
@@ -36,6 +38,8 @@ ironclad-schedule = { path = "crates/ironclad-schedule", version = "0.9.0" }
 ironclad-channels = { path = "crates/ironclad-channels", version = "0.9.0" }
 ironclad-plugin-sdk = { path = "crates/ironclad-plugin-sdk", version = "0.9.0" }
 ironclad-browser = { path = "crates/ironclad-browser", version = "0.9.0" }
+ironclad-cli = { path = "crates/ironclad-cli" }
+ironclad-api = { path = "crates/ironclad-api" }
 
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

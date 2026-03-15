@@ -3326,6 +3326,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironclad-api"
+version = "0.9.7"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures-util",
+ "hex",
+ "hmac",
+ "ironclad-agent",
+ "ironclad-browser",
+ "ironclad-channels",
+ "ironclad-core",
+ "ironclad-db",
+ "ironclad-llm",
+ "ironclad-plugin-sdk",
+ "ironclad-schedule",
+ "ironclad-wallet",
+ "rand 0.8.5",
+ "regex",
+ "reqwest 0.12.28",
+ "rmcp",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tower",
+ "tower-http",
+ "tracing",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "ironclad-browser"
 version = "0.9.7"
 dependencies = [
@@ -3369,6 +3409,36 @@ dependencies = [
  "tracing",
  "uuid",
  "x25519-dalek",
+]
+
+[[package]]
+name = "ironclad-cli"
+version = "0.9.7"
+dependencies = [
+ "axum",
+ "chrono",
+ "dialoguer",
+ "futures-util",
+ "hex",
+ "ironclad-core",
+ "ironclad-db",
+ "ironclad-llm",
+ "ironclad-plugin-sdk",
+ "ironclad-schedule",
+ "regex",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tracing",
+ "ureq",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -3507,8 +3577,10 @@ dependencies = [
  "hex",
  "hmac",
  "ironclad-agent",
+ "ironclad-api",
  "ironclad-browser",
  "ironclad-channels",
+ "ironclad-cli",
  "ironclad-core",
  "ironclad-db",
  "ironclad-llm",

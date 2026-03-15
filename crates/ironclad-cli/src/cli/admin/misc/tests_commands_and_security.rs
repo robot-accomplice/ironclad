@@ -79,7 +79,7 @@
         std::fs::create_dir_all(&ironclad_dir).unwrap();
         std::fs::write(ironclad_dir.join("state.db"), "db").unwrap();
 
-        cmd_uninstall(true).unwrap();
+        cmd_uninstall(true, None).unwrap();
         assert!(!ironclad_dir.exists());
     }
 

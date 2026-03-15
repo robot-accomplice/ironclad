@@ -22,6 +22,7 @@
 //!   `ModelTier`, `PolicyDecision`, `RiskLevel`, `SkillManifest`, etc.
 
 pub mod config;
+pub mod config_utils;
 pub mod error;
 pub mod input_capability_scan;
 pub mod keystore;

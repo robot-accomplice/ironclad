@@ -32,7 +32,7 @@ fn migrate_removed_legacy_config_if_needed(
     if !repair {
         return Ok(None);
     }
-    crate::config_maintenance::migrate_removed_legacy_config_file(config_path)
+    ironclad_core::config_utils::migrate_removed_legacy_config_file(config_path)
 }
 
 /// Read a line of input from the user, returning the trimmed string.

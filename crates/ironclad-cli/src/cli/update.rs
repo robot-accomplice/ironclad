@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use ironclad_core::config::IroncladConfig;
 use ironclad_core::home_dir;
 use ironclad_llm::oauth::check_and_repair_oauth_storage;
 
@@ -263,19 +262,31 @@ fn run_oauth_storage_maintenance() {
     }
 }
 
-fn run_mechanic_checks_maintenance(config_path: &str) {
+/// Callback type for state hygiene. The closure receives a config file path
+/// and returns `Ok(Some((changed_rows, subagent, cron_payload, cron_disabled)))`
+/// on success, or an error.
+pub type HygieneFn = Box<
+    dyn Fn(&str) -> Result<Option<(u64, u64, u64, u64)>, Box<dyn std::error::Error>> + Send + Sync,
+>;
+
+/// Callback type for daemon operations (restart after update).
+pub type DaemonOps = Box<dyn Fn() -> Result<(), Box<dyn std::error::Error>> + Send + Sync>;
+
+/// Result of the daemon installed check + restart.
+pub struct DaemonCallbacks {
+    pub is_installed: Box<dyn Fn() -> bool + Send + Sync>,
+    pub restart: DaemonOps,
+}
+
+fn run_mechanic_checks_maintenance(config_path: &str, hygiene_fn: Option<&HygieneFn>) {
     let (OK, _, WARN, DETAIL, _) = icons();
-    let state_db = IroncladConfig::from_file(Path::new(config_path))
-        .map(|cfg| cfg.database.path)
-        .unwrap_or_else(|_| home_dir().join(".ironclad").join("state.db"));
-    match crate::state_hygiene::run_state_hygiene(&state_db) {
-        Ok(report) if report.changed => {
+    let Some(hygiene) = hygiene_fn else {
+        return;
+    };
+    match hygiene(config_path) {
+        Ok(Some((changed_rows, subagent, cron_payload, cron_disabled))) if changed_rows > 0 => {
             println!(
-                "    {OK} Mechanic checks repaired {} row(s) (subagents={}, cron_payloads={}, invalid_cron_disabled={})",
-                report.changed_rows,
-                report.subagent_rows_normalized,
-                report.cron_payload_rows_repaired,
-                report.cron_jobs_disabled_invalid_expr
+                "    {OK} Mechanic checks repaired {changed_rows} row(s) (subagents={subagent}, cron_payloads={cron_payload}, invalid_cron_disabled={cron_disabled})"
             );
         }
         Ok(_) => println!("    {OK} Mechanic checks found no repairs needed"),
@@ -291,7 +302,7 @@ fn apply_removed_legacy_config_migration(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(config_path);
     let (_, _, WARN, DETAIL, _) = icons();
-    if let Some(report) = crate::config_maintenance::migrate_removed_legacy_config_file(path)? {
+    if let Some(report) = ironclad_core::config_utils::migrate_removed_legacy_config_file(path)? {
         println!("    {WARN} Removed legacy config compatibility settings during update");
         if report.renamed_server_host_to_bind {
             println!("    {DETAIL} Renamed [server].host to [server].bind");
@@ -1764,6 +1775,8 @@ pub async fn cmd_update_all(
     no_restart: bool,
     registry_url_override: Option<&str>,
     config_path: &str,
+    hygiene_fn: Option<&HygieneFn>,
+    daemon_cbs: Option<&DaemonCallbacks>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (_, BOLD, _, _, _, _, _, RESET, _) = colors();
     let (OK, _, WARN, DETAIL, _) = icons();
@@ -1800,7 +1813,7 @@ pub async fn cmd_update_all(
     apply_providers_update(yes, &registry_url, config_path).await?;
     apply_multi_registry_skills_update(yes, registry_url_override, config_path).await?;
     run_oauth_storage_maintenance();
-    run_mechanic_checks_maintenance(config_path);
+    run_mechanic_checks_maintenance(config_path, hygiene_fn);
     if let Err(e) = apply_removed_legacy_config_migration(config_path) {
         println!("    {WARN} Legacy config migration skipped: {e}");
     }
@@ -1813,18 +1826,20 @@ pub async fn cmd_update_all(
     }
 
     // Restart the daemon if a binary update was applied and --no-restart was not passed.
-    if binary_updated && !no_restart && crate::daemon::is_installed() {
-        println!("\n    Restarting daemon to apply update...");
-        match crate::daemon::restart_daemon() {
-            Ok(()) => println!("    {OK} Daemon restarted"),
-            Err(e) => {
-                println!("    {WARN} Could not restart daemon: {e}");
-                println!("    {DETAIL} Run `ironclad daemon restart` manually.");
+    if let Some(daemon) = daemon_cbs {
+        if binary_updated && !no_restart && (daemon.is_installed)() {
+            println!("\n    Restarting daemon to apply update...");
+            match (daemon.restart)() {
+                Ok(()) => println!("    {OK} Daemon restarted"),
+                Err(e) => {
+                    println!("    {WARN} Could not restart daemon: {e}");
+                    println!("    {DETAIL} Run `ironclad daemon restart` manually.");
+                }
             }
+        } else if binary_updated && no_restart {
+            println!("\n    {DETAIL} Skipping daemon restart (--no-restart).");
+            println!("    {DETAIL} Run `ironclad daemon restart` to apply the update.");
         }
-    } else if binary_updated && no_restart {
-        println!("\n    {DETAIL} Skipping daemon restart (--no-restart).");
-        println!("    {DETAIL} Run `ironclad daemon restart` to apply the update.");
     }
 
     println!("\n  {BOLD}Update complete.{RESET}\n");
@@ -1835,13 +1850,14 @@ pub async fn cmd_update_binary(
     _channel: &str,
     yes: bool,
     method: &str,
+    hygiene_fn: Option<&HygieneFn>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     heading("Ironclad Binary Update");
     apply_binary_update(yes, method).await?;
     run_oauth_storage_maintenance();
     let config_path = ironclad_core::config::resolve_config_path(None)
         .unwrap_or_else(|| home_dir().join(".ironclad").join("ironclad.toml"));
-    run_mechanic_checks_maintenance(&config_path.to_string_lossy());
+    run_mechanic_checks_maintenance(&config_path.to_string_lossy(), hygiene_fn);
     println!();
     Ok(())
 }
@@ -1850,12 +1866,13 @@ pub async fn cmd_update_providers(
     yes: bool,
     registry_url_override: Option<&str>,
     config_path: &str,
+    hygiene_fn: Option<&HygieneFn>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     heading("Provider Config Update");
     let registry_url = resolve_registry_url(registry_url_override, config_path);
     apply_providers_update(yes, &registry_url, config_path).await?;
     run_oauth_storage_maintenance();
-    run_mechanic_checks_maintenance(config_path);
+    run_mechanic_checks_maintenance(config_path, hygiene_fn);
     println!();
     Ok(())
 }
@@ -1864,11 +1881,12 @@ pub async fn cmd_update_skills(
     yes: bool,
     registry_url_override: Option<&str>,
     config_path: &str,
+    hygiene_fn: Option<&HygieneFn>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     heading("Skills Update");
     apply_multi_registry_skills_update(yes, registry_url_override, config_path).await?;
     run_oauth_storage_maintenance();
-    run_mechanic_checks_maintenance(config_path);
+    run_mechanic_checks_maintenance(config_path, hygiene_fn);
     println!();
     Ok(())
 }

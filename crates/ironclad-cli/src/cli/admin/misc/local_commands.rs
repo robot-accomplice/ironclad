@@ -61,14 +61,19 @@ pub fn cmd_completion(shell: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub fn cmd_uninstall(purge: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_uninstall(
+    purge: bool,
+    daemon_uninstall: Option<&dyn Fn() -> Result<(), Box<dyn std::error::Error>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (DIM, BOLD, ACCENT, GREEN, YELLOW, RED, CYAN, RESET, MONO) = colors();
     let (OK, ACTION, WARN, DETAIL, ERR) = icons();
     println!("\n  {BOLD}Ironclad Uninstall{RESET}\n");
 
-    match crate::daemon::uninstall_daemon() {
-        Ok(()) => println!("  {OK} Daemon service removed"),
-        Err(e) => println!("  {WARN} Daemon removal: {e}"),
+    if let Some(uninstall) = daemon_uninstall {
+        match uninstall() {
+            Ok(()) => println!("  {OK} Daemon service removed"),
+            Err(e) => println!("  {WARN} Daemon removal: {e}"),
+        }
     }
 
     if purge {

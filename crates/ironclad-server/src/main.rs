@@ -716,6 +716,35 @@ fn prompt_yes_no(question: &str) -> bool {
     matches!(input.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
 }
 
+fn make_hygiene_fn() -> cli::HygieneFn {
+    Box::new(|config_path: &str| {
+        let state_db = IroncladConfig::from_file(std::path::Path::new(config_path))
+            .map(|cfg| cfg.database.path)
+            .unwrap_or_else(|_| ironclad_core::home_dir().join(".ironclad").join("state.db"));
+        let report = ironclad_server::state_hygiene::run_state_hygiene(&state_db)?;
+        if report.changed {
+            Ok(Some((
+                report.changed_rows,
+                report.subagent_rows_normalized,
+                report.cron_payload_rows_repaired,
+                report.cron_jobs_disabled_invalid_expr,
+            )))
+        } else {
+            Ok(None)
+        }
+    })
+}
+
+fn make_daemon_callbacks() -> cli::DaemonCallbacks {
+    cli::DaemonCallbacks {
+        is_installed: Box::new(ironclad_server::daemon::is_installed),
+        restart: Box::new(|| {
+            ironclad_server::daemon::restart_daemon()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+        }),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let parsed = Cli::parse();
@@ -786,12 +815,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     no_restart,
                     registry_url,
                 } => {
+                    let hygiene = make_hygiene_fn();
+                    let daemon = make_daemon_callbacks();
                     cli::cmd_update_all(
                         &channel,
                         yes,
                         no_restart,
                         registry_url.as_deref(),
                         config_path,
+                        Some(&hygiene),
+                        Some(&daemon),
                     )
                     .await
                 }
@@ -799,12 +832,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     channel,
                     yes,
                     method,
-                } => cli::cmd_update_binary(&channel, yes, &method).await,
+                } => {
+                    let hygiene = make_hygiene_fn();
+                    cli::cmd_update_binary(&channel, yes, &method, Some(&hygiene)).await
+                }
                 UpdateCmd::Providers { yes, registry_url } => {
-                    cli::cmd_update_providers(yes, registry_url.as_deref(), config_path).await
+                    let hygiene = make_hygiene_fn();
+                    cli::cmd_update_providers(
+                        yes,
+                        registry_url.as_deref(),
+                        config_path,
+                        Some(&hygiene),
+                    )
+                    .await
                 }
                 UpdateCmd::Skills { yes, registry_url } => {
-                    cli::cmd_update_skills(yes, registry_url.as_deref(), config_path).await
+                    let hygiene = make_hygiene_fn();
+                    cli::cmd_update_skills(
+                        yes,
+                        registry_url.as_deref(),
+                        config_path,
+                        Some(&hygiene),
+                    )
+                    .await
                 }
             }
         }
@@ -1054,7 +1104,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         Some(Commands::Web) => cmd_web(config_flag.as_deref(), url),
-        Some(Commands::Uninstall { purge }) => cli::cmd_uninstall(purge),
+        Some(Commands::Uninstall { purge }) => cli::cmd_uninstall(
+            purge,
+            Some(&|| {
+                ironclad_server::daemon::uninstall_daemon()
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+            }),
+        ),
         Some(Commands::Reset { yes }) => cli::cmd_reset(yes),
         Some(Commands::Completion { shell }) => cli::cmd_completion(&shell),
 

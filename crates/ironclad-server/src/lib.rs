@@ -32,26 +32,31 @@
 //! 5. Spawn background daemons (heartbeat, cron, cache flush, ANN rebuild)
 //! 6. Build axum router with auth + CORS + rate limiting
 
-pub mod abuse;
-pub mod api;
-pub mod auth;
-pub mod cli;
-pub mod config_maintenance;
-pub mod config_runtime;
-mod cron_runtime;
-pub mod daemon;
-pub mod dashboard;
-pub mod migrate;
-pub mod plugins;
-pub mod rate_limit;
-pub mod state_hygiene;
-pub mod ws;
-pub mod ws_ticket;
+// ── Re-exports from ironclad-api ──────────────────────────────
+pub use ironclad_api as api_crate;
+pub use ironclad_api::abuse;
+pub use ironclad_api::api;
+pub use ironclad_api::auth;
+pub use ironclad_api::config_runtime;
+pub use ironclad_api::cron_runtime;
+pub use ironclad_api::dashboard;
+pub use ironclad_api::rate_limit;
+pub use ironclad_api::ws;
+pub use ironclad_api::ws_ticket;
+pub use ironclad_api::{
+    AppState, EventBus, PersonalityState, TicketStore, build_dashboard_html, build_mcp_router,
+    build_public_router, build_router, dashboard_handler, ws_route,
+};
 
-pub use api::{AppState, PersonalityState, build_mcp_router, build_public_router, build_router};
-pub use dashboard::{build_dashboard_html, dashboard_handler};
-pub use ws::{EventBus, ws_route};
-pub use ws_ticket::TicketStore;
+// ── Re-exports from ironclad-cli ─────────────────────────────
+pub use ironclad_cli::cli;
+pub use ironclad_cli::migrate;
+
+// ── Server-local modules ─────────────────────────────────────
+pub mod config_maintenance;
+pub mod daemon;
+pub mod plugins;
+pub use ironclad_cli::state_hygiene;
 
 use std::sync::Arc;
 use std::sync::OnceLock;
